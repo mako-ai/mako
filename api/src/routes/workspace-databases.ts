@@ -25,7 +25,7 @@ import { Types } from "mongoose";
 import { loggers } from "../logging";
 import { ConsoleManager } from "../utils/console-manager";
 import {
-  maskPasswordInConnectionString,
+  connectionStringGroupKey,
   redactConnectionSecrets,
   restoreKeptSecrets,
 } from "../utils/connection-secrets";
@@ -418,7 +418,10 @@ workspaceDatabaseRoutes.openapi(
 
       // Transform to API response format without connection details for security
       const transformedDatabases = databases.map((db: IDatabaseConnection) => {
-        // Create masked hostKey for grouping per database type
+        // Create a credential-free hostKey for grouping per database type.
+        // This response goes to EVERY member of the workspace, so the key is
+        // derived host-only (see connectionStringGroupKey) rather than masked:
+        // masking is fail-open on formats we cannot parse.
         let hostKey: string;
         let hostName: string;
         const conn: any = db.connection || {};
@@ -427,7 +430,7 @@ workspaceDatabaseRoutes.openapi(
           hostKey = `bigquery://${projectId}`;
           hostName = `BigQuery (${projectId})`;
         } else if (conn.connectionString) {
-          hostKey = maskPasswordInConnectionString(conn.connectionString);
+          hostKey = connectionStringGroupKey(conn.connectionString);
           hostName =
             db.type === "mongodb" ? "MongoDB Atlas" : db.type.toUpperCase();
         } else {
