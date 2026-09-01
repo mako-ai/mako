@@ -58,10 +58,7 @@ async function repoDirIfExists(workspaceId: string): Promise<string | null> {
   return (await repoExists(repoDir)) ? repoDir : null;
 }
 
-async function uniqueNotebookPath(
-  workspaceId: string,
-  index: INotebookIndex,
-): Promise<string> {
+async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
   const base = slugifyNotebookName(index.name);
   let slug = base;
   for (let i = 2; i < 100; i++) {
@@ -105,7 +102,7 @@ export async function checkpointNotebook(
   // in the file so the file stands alone.
   const contents = serializeNotebookFile({ ...doc, name: index.name });
   const sha = blobOid(contents);
-  const wantedPath = await uniqueNotebookPath(workspaceId, index);
+  const wantedPath = await uniqueNotebookPath(index);
   if (index.checkpointBlobSha === sha && index.path === wantedPath) {
     return { committed: false };
   }
@@ -352,7 +349,7 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
     });
     const sha = blobOid(contents);
     if (index.checkpointBlobSha === sha && index.path) continue;
-    const path = await uniqueNotebookPath(workspaceId, index);
+    const path = await uniqueNotebookPath(index);
     writes[path] = contents;
     stamps.push({ index, path, sha });
   }
