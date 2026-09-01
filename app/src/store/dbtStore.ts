@@ -13,6 +13,7 @@ import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import { toLoadError, type LoadError } from "../api/result";
 import { realtimeClientId } from "../lib/realtime-client-id";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 
 export interface DbtEnvironment {
   name: string;
@@ -1221,4 +1222,70 @@ export const useDbtStore = create<DbtStore>()(
 
     reset: () => set(initialState),
   })),
+);
+
+// ── Realtime reactions (registered here so the dbt domain owns them) ──
+// All echo-suppressed by clientId. User-scoped events (drafts, checkouts)
+// carry forUserId: they only concern the acting user's windows — a draft is
+// invisible to everyone else, so other users must not react (or even
+// refetch).
+
+// Server-executed dbt file mutation tools: pull the fresh file content (or
+// drop a deleted file) for OPEN dbt projects.
+onRealtimeEvent(
+  "dbt.file.updated",
+  "dbtStore",
+  (event, ctx) => {
+    if (event.forUserId && event.forUserId !== ctx.currentUserId) return;
+    if (!ctx.workspaceId) return;
+    const dbt = useDbtStore.getState();
+    // Only touch projects this window has loaded.
+    if (!dbt.filePathsByProject[event.projectId]) return;
+    void dbt.applyRemoteFileUpdate(
+      ctx.workspaceId,
+      event.projectId,
+      event.path,
+      event.deleted,
+    );
+  },
+  { suppressOwnEcho: true },
+);
+
+onRealtimeEvent(
+  "dbt.job.updated",
+  "dbtStore",
+  (event, ctx) => {
+    if (!ctx.workspaceId) return;
+    const dbt = useDbtStore.getState();
+    if (!dbt.projects.some(p => p._id === event.projectId)) return;
+    void dbt.fetchJobs(ctx.workspaceId, event.projectId);
+  },
+  { suppressOwnEcho: true },
+);
+
+onRealtimeEvent(
+  "dbt.run.updated",
+  "dbtStore",
+  (event, ctx) => {
+    if (!ctx.workspaceId) return;
+    const dbt = useDbtStore.getState();
+    if (!dbt.projects.some(p => p._id === event.projectId)) return;
+    void dbt.fetchRuns(ctx.workspaceId, event.projectId);
+    if (event.jobId) {
+      void dbt.fetchRuns(ctx.workspaceId, event.projectId, event.jobId);
+    }
+  },
+  { suppressOwnEcho: true },
+);
+
+onRealtimeEvent(
+  "dbt.project.updated",
+  "dbtStore",
+  (_event, ctx) => {
+    if (!ctx.workspaceId) return;
+    // Refresh the project list lazily — only when the dbt surface was used.
+    if (!useDbtStore.getState().projectsLoaded) return;
+    void useDbtStore.getState().fetchProjects(ctx.workspaceId);
+  },
+  { suppressOwnEcho: true },
 );

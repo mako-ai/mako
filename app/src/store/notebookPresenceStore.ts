@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 
 /**
  * Live "who's in this notebook" state — presence, live cursors, and soft cell
@@ -85,3 +86,18 @@ export const useNotebookPresenceStore = create<NotebookPresenceStore>(set => ({
       return { viewers: { ...state.viewers, [notebookId]: next } };
     }),
 }));
+
+// ── Realtime reaction (presence frames route straight into this store) ──
+onRealtimeEvent("notebook.presence", "notebookPresenceStore", event => {
+  const presence = useNotebookPresenceStore.getState();
+  if (event.gone) {
+    presence.remove(event.notebookId, event.clientId);
+    return;
+  }
+  presence.touch(event.notebookId, {
+    clientId: event.clientId,
+    userId: event.userId,
+    userName: event.userName,
+    activeCellId: event.activeCellId ?? null,
+  });
+});

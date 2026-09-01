@@ -14,7 +14,8 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
 import { api, unwrapBody, ApiError, toErrorMessage as message } from "../api";
-import { reconcileAppsTabs } from "../apps-runtime/shell";
+import { focusAppsTab, reconcileAppsTabs } from "../apps-runtime/shell";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 
 export interface AppMeta {
   id: string;
@@ -1873,3 +1874,50 @@ export const useAppsStore = create<AppsStore>()(
     },
   ),
 );
+
+// ── Realtime reactions (registered here so the apps domain owns them) ──
+
+// Apps (git-backed): any durable change (agent turn, WIP flush, merge)
+// pokes open windows; the store refetches from the API (git is the
+// authority, so a refetch is always safe — openFile preserves dirty local
+// edits and only refreshes clean buffers).
+onRealtimeEvent("app.updated", "appsStore", (event, ctx) => {
+  const workspaceId = ctx.workspaceId;
+  if (!workspaceId) return;
+  const v2 = useAppsStore.getState();
+  // Explorer list (titles, new/deleted apps).
+  void v2.fetchApps(workspaceId);
+  if (event.origin === "lifecycle") return;
+  // §10 monorepo: appId "" = workspace-wide (a workspace worktree
+  // changed; it may span apps) — refresh every app this window has
+  // loaded. A non-empty appId scopes to that app as before.
+  const appIds = event.appId ? [event.appId] : Object.keys(v2.filesByApp);
+  for (const appId of appIds) {
+    // Only refresh heavier per-app state when this window has it loaded.
+    if (v2.filesByApp[appId]) {
+      void v2.fetchFiles(workspaceId, appId);
+      void v2.fetchStatus(workspaceId, appId);
+    }
+    if (v2.branchesByApp[appId]) {
+      void v2.fetchBranches(workspaceId, appId);
+    }
+    const selected = v2.selectedFile[appId];
+    if (selected) {
+      const entry = v2.fileContents[`${appId}\u0000${selected}`];
+      if (entry && !entry.dirty) {
+        void v2.openFile(workspaceId, appId, selected);
+      }
+    }
+  }
+});
+
+onRealtimeEvent("app.box-state", "appsStore", event => {
+  useAppsStore.getState().applyBoxState(event.userId, event.state);
+});
+
+onRealtimeEvent("app.open-app", "appsStore", (event, ctx) => {
+  // The user's own agent asked the UI to show an app. Scoped to the
+  // requesting user — a teammate's agent must not steal this focus.
+  if (!ctx.currentUserId || event.userId !== ctx.currentUserId) return;
+  focusAppsTab(event.appId, event.title ?? event.slug ?? "App", event.slug);
+});

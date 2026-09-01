@@ -4,6 +4,7 @@ import {
   type ResourceTreeEntry,
   type TreeAccessLevel,
 } from "./lib/createResourceTreeStore";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 
 export type NotebookAccessLevel = TreeAccessLevel;
 export type NotebookEntry = ResourceTreeEntry;
@@ -76,4 +77,11 @@ export const useNotebookTreeStore = createResourceTreeStore<NotebookEntry>({
         }),
       ),
   },
+});
+
+// ── Realtime reaction: any tree mutation refreshes the explorer ──
+onRealtimeEvent("notebook.tree.updated", "notebookTreeStore", (_event, ctx) => {
+  if (ctx.workspaceId) {
+    void useNotebookTreeStore.getState().refresh(ctx.workspaceId);
+  }
 });

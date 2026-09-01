@@ -17,6 +17,7 @@ import {
   type GlobalFilter,
   type TableRelationship,
 } from "../dashboard-runtime/types";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 
 export type {
   Dashboard,
@@ -1281,3 +1282,32 @@ export const selectSavedHash =
   (id: string | undefined) =>
   (state: DashboardStoreState): string | undefined =>
     id ? state.savedStateHashes[id] : undefined;
+
+// ── Realtime reaction (registered here so the dashboard domain owns it) ──
+
+// Server-persisted dashboard saves/restores (draft/published model): pull
+// the authoritative dashboard for an OPEN dashboard when its version
+// advances — but NEVER clobber a user mid-edit. Skips the reload if this
+// tab is editing or holds unsaved local changes (their work wins until they
+// save/discard); echo-suppressed by clientId; stale events ignored.
+onRealtimeEvent(
+  "dashboard.updated",
+  "dashboardStore",
+  (event, ctx) => {
+    if (!ctx.workspaceId) return;
+    const ds = useDashboardStore.getState();
+    const open = ds.openDashboards[event.dashboardId];
+    if (!open) return; // not open here — explorer/canvas refreshes lazily
+    if ((open.version ?? 0) >= event.version) return; // stale / own echo
+    if (ds.editingDashboards[event.dashboardId]) return; // don't stomp editor
+    const savedHash = ds.savedStateHashes[event.dashboardId];
+    if (
+      savedHash !== undefined &&
+      computeDashboardStateHash(open) !== savedHash
+    ) {
+      return; // unsaved local changes — preserve them
+    }
+    void ds.reloadDashboard(ctx.workspaceId, event.dashboardId);
+  },
+  { suppressOwnEcho: true },
+);

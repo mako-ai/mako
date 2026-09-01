@@ -23,129 +23,28 @@ import {
   hasBlockedDraftSave,
   hasPendingAgentReview,
 } from "./consoleStore";
-import { useAppsStore, type AppsBoxState } from "./appsStore";
-import { focusAppsTab } from "../apps-runtime/shell";
-import { useDashboardStore } from "./dashboardStore";
-import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
-import { useNotebookTreeStore } from "./notebookTreeStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
-import { useNotebookPresenceStore } from "./notebookPresenceStore";
-import { computeDashboardStateHash } from "../utils/stateHash";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
+import {
+  dispatchRealtimeEvent,
+  onRealtimeEvent,
+  type RealtimeEvent,
+} from "./lib/realtime-channel";
+// Each kind registers its realtime reaction next to its own store
+// (realtime-channel registry). Imported for those side effects so every
+// handler is installed before the first event can arrive; the store modules
+// above (console/notebook) register through the same mechanism where they
+// react.
+import "./appsStore";
+import "./dashboardStore";
+import "./dbtStore";
+import "./notebookPresenceStore";
+import "./notebookTreeStore";
 
-/** Mirror of the server's RealtimeEvent union (api realtime.service.ts). */
-export type RealtimeEvent =
-  | {
-      type: "console.updated";
-      consoleId: string;
-      draftRevision: number;
-      name?: string;
-      updatedBy: string;
-      clientId?: string;
-      origin: "draft" | "save" | "agent";
-    }
-  | { type: "console.deleted"; consoleId: string }
-  | {
-      type: "console.run.completed";
-      consoleId: string;
-      status: "success" | "error";
-      rowCount?: number;
-      durationMs?: number;
-      error?: string;
-    }
-  | {
-      type: "chat.ui-intent";
-      chatId: string;
-      intent: "open_console";
-      consoleId: string;
-    }
-  | {
-      type: "chat.ui-intent";
-      chatId: string;
-      intent: "open_notebook";
-      notebookId: string;
-      title?: string;
-    }
-  | { type: "chat.activity"; chatId: string; state: "streaming" | "idle" }
-  | {
-      type: "app.updated";
-      appId: string;
-      updatedBy?: string;
-      origin:
-        | "commit"
-        | "merge"
-        | "discard"
-        | "checkout"
-        | "lifecycle"
-        | "push";
-    }
-  | {
-      type: "dbt.file.updated";
-      projectId: string;
-      path: string;
-      deleted?: boolean;
-      updatedBy: string;
-      clientId?: string;
-      origin: "agent" | "save";
-      /** Draft (uncommitted) edit: only this user's windows should react. */
-      forUserId?: string;
-    }
-  | { type: "dbt.job.updated"; projectId: string; clientId?: string }
-  | {
-      type: "dbt.run.updated";
-      projectId: string;
-      runId?: string;
-      jobId?: string;
-      clientId?: string;
-    }
-  | { type: "dbt.project.updated"; projectId?: string; clientId?: string }
-  | {
-      type: "dashboard.updated";
-      dashboardId: string;
-      version: number;
-      updatedBy: string;
-      clientId?: string;
-      origin: "agent" | "save";
-    }
-  | {
-      type: "notebook.updated";
-      notebookId: string;
-      version: number;
-      updatedBy: string;
-      clientId?: string;
-      origin: "agent" | "save";
-    }
-  | {
-      type: "notebook.presence";
-      notebookId: string;
-      clientId: string;
-      userId: string;
-      userName: string;
-      activeCellId?: string | null;
-      gone?: boolean;
-    }
-  | {
-      type: "notebook.tree.updated";
-    }
-  // The (workspace, user) sandbox reported its own state, pushed from inside
-  // the box the moment it changed. Applied directly — no refetch.
-  | {
-      type: "app.box-state";
-      userId: string;
-      state: AppsBoxState;
-    }
-  // An agent in this user's chat asked the UI to open an Apps app tab
-  // (app_open_app). Scoped to the requesting user.
-  | {
-      type: "app.open-app";
-      userId: string;
-      appId: string;
-      slug?: string;
-      title?: string;
-    };
+export type { RealtimeEvent } from "./lib/realtime-channel";
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
 
@@ -424,247 +323,35 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
-    // Apps (git-backed): any durable change (agent turn, WIP flush, merge)
-    // pokes open windows; the store refetches from the API (git is the
-    // authority, so a refetch is always safe — openFile preserves dirty local
-    // edits and only refreshes clean buffers).
-    const handleAppUpdated = (
-      event: Extract<RealtimeEvent, { type: "app.updated" }>,
-    ) => {
-      const workspaceId = get().workspaceId;
-      if (!workspaceId) return;
-      const v2 = useAppsStore.getState();
-      // Explorer list (titles, new/deleted apps).
-      void v2.fetchApps(workspaceId);
-      if (event.origin === "lifecycle") return;
-      // §10 monorepo: appId "" = workspace-wide (a workspace worktree
-      // changed; it may span apps) — refresh every app this window has
-      // loaded. A non-empty appId scopes to that app as before.
-      const appIds = event.appId ? [event.appId] : Object.keys(v2.filesByApp);
-      for (const appId of appIds) {
-        // Only refresh heavier per-app state when this window has it loaded.
-        if (v2.filesByApp[appId]) {
-          void v2.fetchFiles(workspaceId, appId);
-          void v2.fetchStatus(workspaceId, appId);
-        }
-        if (v2.branchesByApp[appId]) {
-          void v2.fetchBranches(workspaceId, appId);
-        }
-        const selected = v2.selectedFile[appId];
-        if (selected) {
-          const entry = v2.fileContents[`${appId}\u0000${selected}`];
-          if (entry && !entry.dirty) {
-            void v2.openFile(workspaceId, appId, selected);
-          }
-        }
-      }
-    };
-
-    // User-scoped dbt events (drafts, checkouts) carry forUserId: they only
-    // concern the acting user's windows — a draft is invisible to everyone
-    // else, so other users must not react (or even refetch).
-    const isForAnotherUser = (forUserId?: string): boolean =>
-      Boolean(forUserId && forUserId !== get().currentUserId);
-
-    // Server-executed dbt file mutation tools: pull the fresh file content (or
-    // drop a deleted file) for OPEN dbt projects. Echo-suppressed by clientId;
-    // draft edits (forUserId) only apply to the author's windows.
-    const handleDbtFileUpdated = (
-      event: Extract<RealtimeEvent, { type: "dbt.file.updated" }>,
-    ) => {
-      if (event.clientId && event.clientId === realtimeClientId) return;
-      if (isForAnotherUser(event.forUserId)) return;
-      const workspaceId = get().workspaceId;
-      if (!workspaceId) return;
-      const dbt = useDbtStore.getState();
-      // Only touch projects this window has loaded.
-      if (!dbt.filePathsByProject[event.projectId]) return;
-      void dbt.applyRemoteFileUpdate(
-        workspaceId,
-        event.projectId,
-        event.path,
-        event.deleted,
-      );
-    };
-
-    const handleDbtJobUpdated = (
-      event: Extract<RealtimeEvent, { type: "dbt.job.updated" }>,
-    ) => {
-      if (event.clientId && event.clientId === realtimeClientId) return;
-      const workspaceId = get().workspaceId;
-      if (!workspaceId) return;
-      const dbt = useDbtStore.getState();
-      if (!dbt.projects.some(p => p._id === event.projectId)) return;
-      void dbt.fetchJobs(workspaceId, event.projectId);
-    };
-
-    const handleDbtRunUpdated = (
-      event: Extract<RealtimeEvent, { type: "dbt.run.updated" }>,
-    ) => {
-      if (event.clientId && event.clientId === realtimeClientId) return;
-      const workspaceId = get().workspaceId;
-      if (!workspaceId) return;
-      const dbt = useDbtStore.getState();
-      if (!dbt.projects.some(p => p._id === event.projectId)) return;
-      void dbt.fetchRuns(workspaceId, event.projectId);
-      if (event.jobId) {
-        void dbt.fetchRuns(workspaceId, event.projectId, event.jobId);
-      }
-    };
-
-    const handleDbtProjectUpdated = (
-      event: Extract<RealtimeEvent, { type: "dbt.project.updated" }>,
-    ) => {
-      if (event.clientId && event.clientId === realtimeClientId) return;
-      const workspaceId = get().workspaceId;
-      if (!workspaceId) return;
-      // Refresh the project list lazily — only when the dbt surface was used.
-      if (!useDbtStore.getState().projectsLoaded) return;
-      void useDbtStore.getState().fetchProjects(workspaceId);
-    };
-
-    // Server-persisted dashboard saves/restores (draft/published model): pull
-    // the authoritative dashboard for an OPEN dashboard when its version
-    // advances — but NEVER clobber a user mid-edit. Skips the reload if this
-    // tab is editing or holds unsaved local changes (their work wins until they
-    // save/discard); echo-suppressed by clientId; stale events ignored.
-    const handleDashboardUpdated = (
-      event: Extract<RealtimeEvent, { type: "dashboard.updated" }>,
-    ) => {
-      if (event.clientId && event.clientId === realtimeClientId) return;
-      const workspaceId = get().workspaceId;
-      if (!workspaceId) return;
-      const ds = useDashboardStore.getState();
-      const open = ds.openDashboards[event.dashboardId];
-      if (!open) return; // not open here — explorer/canvas refreshes lazily
-      if ((open.version ?? 0) >= event.version) return; // stale / own echo
-      if (ds.editingDashboards[event.dashboardId]) return; // don't stomp editor
-      const savedHash = ds.savedStateHashes[event.dashboardId];
-      if (
-        savedHash !== undefined &&
-        computeDashboardStateHash(open) !== savedHash
-      ) {
-        return; // unsaved local changes — preserve them
-      }
-      void ds.reloadDashboard(workspaceId, event.dashboardId);
-    };
-
-    // Notebook document changed (human or agent save): pull the authoritative
-    // notebook for an OPEN notebook when its version advances (a tab that is
-    // mid-save is skipped so it never stomps an in-flight local edit); if the
-    // notebook isn't open here, refresh the explorer list so new notebooks
-    // appear. Echo-suppressed by clientId.
-    const handleNotebookUpdated = (
-      event: Extract<RealtimeEvent, { type: "notebook.updated" }>,
-    ) => {
-      if (event.clientId && event.clientId === realtimeClientId) return;
-      const nb = useNotebookStore.getState();
-      const open = nb.openNotebooks[event.notebookId];
-      if (!open) {
-        void nb.loadNotebooks();
-        return;
-      }
-      if ((open.version ?? 0) >= event.version) return; // stale / own echo
-      void nb.reloadOpenNotebook(event.notebookId);
-    };
-
-    const handleNotebookPresence = (
-      event: Extract<RealtimeEvent, { type: "notebook.presence" }>,
-    ) => {
-      const presence = useNotebookPresenceStore.getState();
-      if (event.gone) {
-        presence.remove(event.notebookId, event.clientId);
-        return;
-      }
-      presence.touch(event.notebookId, {
-        clientId: event.clientId,
-        userId: event.userId,
-        userName: event.userName,
-        activeCellId: event.activeCellId ?? null,
+    // The console + chat reactions live here because they ARE this store's
+    // business: they drive the poke-then-pull revision sync and the chat
+    // activity state above. Everything else registers next to its own store.
+    onRealtimeEvent("console.updated", "realtimeStore", handleConsoleUpdated);
+    onRealtimeEvent("console.deleted", "realtimeStore", handleConsoleDeleted);
+    onRealtimeEvent(
+      "console.run.completed",
+      "realtimeStore",
+      handleRunCompleted,
+    );
+    onRealtimeEvent("chat.ui-intent", "realtimeStore", handleChatUiIntent);
+    onRealtimeEvent("chat.activity", "realtimeStore", event => {
+      set(state => {
+        state.chatActivity[event.chatId] = event.state;
       });
-    };
-
-    const handleNotebookTreeUpdated = () => {
-      const ws = get().workspaceId;
-      if (ws) void useNotebookTreeStore.getState().refresh(ws);
-    };
-
-    const handleBoxState = (
-      event: Extract<RealtimeEvent, { type: "app.box-state" }>,
-    ) => {
-      useAppsStore.getState().applyBoxState(event.userId, event.state);
-    };
-
-    const handleOpenApp = (
-      event: Extract<RealtimeEvent, { type: "app.open-app" }>,
-    ) => {
-      // The user's own agent asked the UI to show an app. Scoped to the
-      // requesting user — a teammate's agent must not steal this focus.
-      const me = get().currentUserId;
-      if (!me || event.userId !== me) return;
-      focusAppsTab(event.appId, event.title ?? event.slug ?? "App", event.slug);
-    };
+      // Agent turn finished: reconcile open consoles. Tool-agnostic
+      // catch-all for any console.updated poke missed during the turn
+      // (SSE blip, poke-before-tab-open race) and for detached
+      // server-side runs that completed while this window was attached.
+      if (event.state === "idle" && event.chatId === get().activeChatId) {
+        scheduleSync();
+      }
+    });
 
     const handleEvent = (event: RealtimeEvent) => {
-      switch (event.type) {
-        case "console.updated":
-          handleConsoleUpdated(event);
-          break;
-        case "app.updated":
-          handleAppUpdated(event);
-          break;
-        case "app.box-state":
-          handleBoxState(event);
-          break;
-        case "app.open-app":
-          handleOpenApp(event);
-          break;
-        case "dashboard.updated":
-          handleDashboardUpdated(event);
-          break;
-        case "notebook.updated":
-          handleNotebookUpdated(event);
-          break;
-        case "notebook.tree.updated":
-          handleNotebookTreeUpdated();
-          break;
-        case "notebook.presence":
-          handleNotebookPresence(event);
-          break;
-        case "dbt.file.updated":
-          handleDbtFileUpdated(event);
-          break;
-        case "dbt.job.updated":
-          handleDbtJobUpdated(event);
-          break;
-        case "dbt.run.updated":
-          handleDbtRunUpdated(event);
-          break;
-        case "dbt.project.updated":
-          handleDbtProjectUpdated(event);
-          break;
-        case "console.deleted":
-          handleConsoleDeleted(event);
-          break;
-        case "console.run.completed":
-          handleRunCompleted(event);
-          break;
-        case "chat.ui-intent":
-          handleChatUiIntent(event);
-          break;
-        case "chat.activity":
-          set(state => {
-            state.chatActivity[event.chatId] = event.state;
-          });
-          // Agent turn finished: reconcile open consoles. Tool-agnostic
-          // catch-all for any console.updated poke missed during the turn
-          // (SSE blip, poke-before-tab-open race) and for detached
-          // server-side runs that completed while this window was attached.
-          if (event.state === "idle" && event.chatId === get().activeChatId) {
-            scheduleSync();
-          }
-          break;
-      }
+      dispatchRealtimeEvent(event, {
+        workspaceId: get().workspaceId,
+        currentUserId: get().currentUserId,
+      });
     };
 
     const scheduleReconnect = () => {
