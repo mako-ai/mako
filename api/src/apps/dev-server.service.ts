@@ -302,7 +302,14 @@ const makoData = {
                 body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name }),
                 // A materialized query can be slow (a heavy dashboard mart runs
                 // for a minute); give it room rather than failing the table.
-                signal: AbortSignal.timeout(180000),
+                // Longer than the API's own query ceiling (300s), deliberately:
+                // when this was SHORTER, every binding taking 180-300s was
+                // unsatisfiable through this path — the box abandoned a request
+                // the API was still serving, so the answer could never arrive,
+                // while the warehouse job it started ran on and billed. The
+                // client must outlast the server it is waiting for, or it turns
+                // slow into impossible.
+                signal: AbortSignal.timeout(330000),
               },
             );
             if (!upstream.ok) {
