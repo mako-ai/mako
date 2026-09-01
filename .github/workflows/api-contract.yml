@@ -62,8 +62,25 @@ jobs:
         # specs self-skip without RUN_DB_INTEGRATION (see destination-integration.yml).
         run: pnpm --filter api run test:destinations
 
+      - name: API dbt tests
+        # vitest.config.ts — src/dbt/**, src/integrations/github/**, the dbt
+        # route integration spec and the dbt-* agent tools. The real-dbt engine
+        # contract self-skips without RUN_DBT_ENGINE_CONTRACT.
+        run: pnpm --filter api run test:dbt
+
       - name: Frontend typed-client tests
+        # Deliberately just the typed client, not the whole app suite: this
+        # workflow exists to keep the OpenAPI contract honest, and the client
+        # is the frontend half of that contract. The full frontend suite runs
+        # in frontend-tests.yml, on app/src changes — running it here too
+        # would double up on PRs touching both, and running ONLY it here would
+        # leave api-only PRs with no client check at all.
         run: pnpm --filter app exec vitest run src/api/client.test.ts
+
+      - name: Cloudflare app-router tests
+        # Maintenance-mode edge worker: raw webhook body forwarding, operator
+        # bypass, redirect rewriting, response streaming.
+        run: pnpm run cf:app:test
 
       - name: Regenerate OpenAPI spec + frontend types
         run: pnpm run openapi:sync
