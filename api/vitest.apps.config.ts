@@ -30,6 +30,12 @@ export default defineConfig({
       "src/apps/live-binding-guard.test.ts",
       "src/apps/preview.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
+      // These two were written as vitest suites but listed in no vitest
+      // config, so neither runner could execute them: tsx dies on them
+      // with "Vitest failed to access its internal state", and vitest
+      // never collected them. Invisible to both, until the coverage guard.
+      "src/apps/repository.service.test.ts",
+      "src/services/workspace-repos.service.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
