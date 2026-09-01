@@ -80,10 +80,8 @@ async function main(): Promise<void> {
   );
 
   console.log("schema-encryption fail-closed tests passed");
-  process.exit(0);
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exit(1);
+main().catch((error: unknown) => {
+  throw error;
 });
