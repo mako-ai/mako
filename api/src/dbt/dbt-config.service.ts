@@ -19,7 +19,11 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
-import { ensureLocalRepo, queueMirrorPush } from "../apps/cloud-repo.service";
+import {
+  ensureLocalRepo,
+  freshenBeforeMainWrite,
+  queueMirrorPush,
+} from "../apps/cloud-repo.service";
 import {
   DEFAULT_BRANCH,
   repoDirFor,
@@ -90,9 +94,13 @@ async function commitConfig(
   author?: GitAuthor,
 ): Promise<void> {
   const repoDir = await repoDirIfExists(workspaceId);
-  // No repo (pre-§17 workspace): Mongo remains the only home — nothing to
-  // write through. RealAdvisor and every §17-era workspace has one.
   if (!repoDir) return;
+  // Config-as-code commits land on main, so they must be judged against the
+  // mirror's main, not this instance's cache. Without this a stale instance
+  // commits onto an old tip and pushes it — the divergence class #897 fixed
+  // for skills and worktree writes, which these two write paths never
+  // adopted. Coalesced and non-blocking on failure.
+  await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
