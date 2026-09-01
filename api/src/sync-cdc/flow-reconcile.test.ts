@@ -56,7 +56,11 @@ import {
 import { runGit } from "../apps/git";
 import { DEFAULT_BRANCH, initRepo } from "../apps/repository.service";
 import type { FlowFile } from "../services/flow-config-files";
-import { reconcileFlowsFromRepo, type DesiredFlow } from "./flow-reconcile";
+import {
+  dryRunFlowReconcile,
+  reconcileFlowsFromRepo,
+  type DesiredFlow,
+} from "./flow-reconcile";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -330,5 +334,167 @@ describe("pause ownership", () => {
     // would restart a stream the repartition still needs stopped.
     const after = await Flow.findById(flow._id);
     expect(after?.streamState).toBe("paused");
+  });
+});
+
+describe("dry run", () => {
+  it("predicts exactly what the reconcile then does", async () => {
+    // The property that makes a dry-run worth having: run it, run the real
+    // thing, and they agree. Asserted against the SAME fixture rather than
+    // two hand-written expectations, so the two cannot drift apart in a way
+    // the test still accepts.
+    const kept = await seedFlow("kept", ["leads"]);
+    const gone = await seedFlow("gone");
+    for (const [flow, entity] of [
+      [kept, "leads"],
+      [kept, "dropped"],
+      [gone, "whatever"],
+    ] as const) {
+      await CdcEntityState.create({
+        workspaceId: WS,
+        flowId: flow._id,
+        entity,
+        mode: "steady",
+        lastIngestSeq: 5,
+        lastMaterializedSeq: 5,
+        backlogCount: 0,
+        lifetimeEventsProcessed: 1,
+        lifetimeRowsApplied: 1,
+        mergeIntervalSeconds: 30,
+        consecutiveFailures: 0,
+      });
+    }
+    const desired = [desiredOf(kept)];
+
+    const plan = await dryRunFlowReconcile({
+      workspaceId: WS.toString(),
+      desired,
+      treeSha: mirrorMain,
+    });
+    expect(plan.wouldTeardown).toEqual(["gone"]);
+    expect(plan.wouldReconfigure).toEqual([
+      { slug: "kept", entities: ["dropped"] },
+    ]);
+    expect(plan.guard).toEqual({ required: true, verdict: "verified" });
+
+    const actual = await reconcileFlowsFromRepo({
+      workspaceId: WS.toString(),
+      desired,
+      treeSha: mirrorMain,
+    });
+    expect(actual.removed).toEqual(plan.wouldTeardown);
+    expect(actual.entitiesDropped).toEqual(plan.wouldReconfigure);
+  });
+
+  it("changes nothing at all", async () => {
+    const kept = await seedFlow("kept", ["leads"]);
+    const gone = await seedFlow("gone");
+    await CdcEntityState.create({
+      workspaceId: WS,
+      flowId: kept._id,
+      entity: "dropped",
+      mode: "steady",
+      lastIngestSeq: 9,
+      lastMaterializedSeq: 9,
+      backlogCount: 0,
+      lifetimeEventsProcessed: 1,
+      lifetimeRowsApplied: 1,
+      mergeIntervalSeconds: 30,
+      consecutiveFailures: 0,
+    });
+
+    await dryRunFlowReconcile({
+      workspaceId: WS.toString(),
+      desired: [desiredOf(kept)],
+      treeSha: mirrorMain,
+    });
+
+    // Everything it said it WOULD do is still undone.
+    expect(await Flow.findById(gone._id)).not.toBeNull();
+    expect(await CdcEntityState.countDocuments({ flowId: kept._id })).toBe(1);
+    expect((await Flow.findById(kept._id))?.streamState).toBe("active");
+    expect(state.sent).toEqual([]);
+  });
+
+  it("answers before any row exists — the moment worth asking", async () => {
+    // An agent about to push has files and no rows. Matching removals on the
+    // row id alone would call every existing flow a teardown here.
+    const existing = await seedFlow("already-there");
+    const plan = await dryRunFlowReconcile({
+      workspaceId: WS.toString(),
+      desired: [
+        { slug: "already-there", file: FILE },
+        { slug: "brand-new", file: FILE },
+      ],
+      treeSha: mirrorMain,
+    });
+    expect(plan.wouldCreate).toEqual(["brand-new"]);
+    expect(plan.wouldTeardown).toEqual([]);
+    expect(await Flow.findById(existing._id)).not.toBeNull();
+  });
+
+  it("names the flow an omitted file would destroy", async () => {
+    // The agent failure this exists for: not a typo — a typo fails to parse —
+    // but a confidently incomplete tree that pushes and verifies fine.
+    await seedFlow("stripe");
+    await seedFlow("close");
+    const plan = await dryRunFlowReconcile({
+      workspaceId: WS.toString(),
+      desired: [{ slug: "stripe", file: FILE }], // close/ left out
+      treeSha: mirrorMain,
+    });
+    expect(plan.wouldTeardown).toEqual(["close"]);
+  });
+
+  it("reports the guard's refusal as an answer, not an error", async () => {
+    await seedFlow("kept");
+    await seedFlow("gone");
+    const plan = await dryRunFlowReconcile({
+      workspaceId: WS.toString(),
+      desired: [{ slug: "kept", file: FILE }],
+      treeSha: "0".repeat(40),
+    });
+    expect(plan.wouldTeardown).toEqual(["gone"]);
+    expect(plan.guard.verdict).toBe("would-defer");
+    expect(plan.guard.reason).toMatch(/mirror/i);
+  });
+
+  it("a settled workspace plans to do nothing", async () => {
+    // The shape of the real first production run: every file present, most
+    // with an explicit selection, nothing at risk.
+    const flows = await Promise.all([
+      seedFlow("a", ["x"]),
+      seedFlow("b", ["y"]),
+      seedFlow("c"),
+    ]);
+    for (const [flow, entity] of [
+      [flows[0], "x"],
+      [flows[1], "y"],
+    ] as const) {
+      await CdcEntityState.create({
+        workspaceId: WS,
+        flowId: flow._id,
+        entity,
+        mode: "steady",
+        lastIngestSeq: 1,
+        lastMaterializedSeq: 1,
+        backlogCount: 0,
+        lifetimeEventsProcessed: 1,
+        lifetimeRowsApplied: 1,
+        mergeIntervalSeconds: 30,
+        consecutiveFailures: 0,
+      });
+    }
+    const plan = await dryRunFlowReconcile({
+      workspaceId: WS.toString(),
+      desired: flows.map(desiredOf),
+      treeSha: mirrorMain,
+    });
+    expect(plan).toEqual({
+      wouldCreate: [],
+      wouldReconfigure: [],
+      wouldTeardown: [],
+      guard: { required: false, verdict: "not-needed" },
+    });
   });
 });
