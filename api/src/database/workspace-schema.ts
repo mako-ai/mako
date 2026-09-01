@@ -4240,8 +4240,12 @@ export interface ISkill extends Document {
   createdBy: string;
   /** Soft-disable without deletion — lets admins A/B whether a skill helps. */
   suppressed: boolean;
+  /** Explicit load_skill calls — the honest "someone reached for this". */
   useCount: number;
   lastUsedAt?: Date;
+  /** Auto-injection exposure (pre-turn retrieval). NOT a usefulness signal. */
+  injectedCount?: number;
+  lastInjectedAt?: Date;
   /** Single-slot undo for wrong overwrites. */
   previousBody?: string;
   previousUpdatedAt?: Date;
@@ -4272,6 +4276,8 @@ const SkillSchema = new Schema<ISkill>(
     createdBy: { type: String, required: true },
     suppressed: { type: Boolean, default: false },
     useCount: { type: Number, default: 0 },
+    injectedCount: { type: Number, default: 0 },
+    lastInjectedAt: { type: Date },
     lastUsedAt: { type: Date },
     previousBody: { type: String },
     previousUpdatedAt: { type: Date },

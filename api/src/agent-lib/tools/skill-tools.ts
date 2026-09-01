@@ -120,20 +120,44 @@ export function createSkillTools(workspaceId: string, userId?: string) {
   return {
     save_skill: tool({
       description: [
-        "Save or overwrite a workspace-scoped skill — a named playbook that",
-        "will be auto-injected into future sessions when its `loadWhen`",
-        "trigger matches the user query. Use this whenever the user teaches",
-        "you something durable about this workspace (a schema fact, a gotcha,",
-        "a query pattern, a definition). Skills survive across sessions.",
+        "Propose or update a workspace-scoped skill — a named playbook",
+        "retrieved in future sessions when its `loadWhen` trigger matches.",
         "",
-        "Choose `name` as a stable snake_case identifier (e.g.",
-        "`mrr_walkthrough_fr`, `sms_funnel_conversion`). Write `loadWhen` as",
-        "a trigger phrase — what query or task should cause this to load.",
-        "Keep `body` compact and structured.",
+        "THE BAR: save only knowledge a TEAMMATE would need in a MONTH —",
+        "durable, cross-cutting workspace facts (metric definitions, mart",
+        "semantics, domain rules, data-source caveats). Do NOT save:",
+        "session-specific bug workarounds, product behavior of Mako itself",
+        "(it changes under you), or one-off task notes.",
+        "",
+        "ROUTE BY SCOPE before saving: knowledge about ONE app belongs in",
+        "that app's AGENTS.md (`apps/<slug>/AGENTS.md`, edit it with the app",
+        "file tools); dbt-project conventions belong in `dbt/.makorules.md`;",
+        "the workspace's overall business context belongs in `PROMPT.md`.",
+        "Only what fits none of those becomes a skill.",
+        "",
+        "A NEW skill you save is a PROPOSAL: it is committed to the repo but",
+        "stays inactive (suppressed) until a person activates it in the",
+        "Skills panel or flips `suppressed: false` in its SKILL.md. Tell the",
+        "user you proposed it. Updates to an existing skill apply directly.",
+        "",
+        "Choose `name` as a stable snake_case identifier; write `loadWhen`",
+        "as the trigger phrase; keep `body` compact and structured.",
       ].join("\n"),
       inputSchema: saveSkillSchema,
       execute: async input => {
-        return saveSkill(workspaceId, input, authorId);
+        const result = await saveSkill(workspaceId, input, authorId, {
+          origin: "agent",
+        });
+        if (result.success && result.skill.pendingApproval) {
+          return {
+            ...result,
+            note:
+              "Saved as a PROPOSAL — inactive until a person activates it " +
+              "in the Skills panel (or sets `suppressed: false` in " +
+              `skills/${result.skill.name}/SKILL.md). Let the user know.`,
+          };
+        }
+        return result;
       },
     }),
     delete_skill: tool({
