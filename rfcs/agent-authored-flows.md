@@ -1,6 +1,7 @@
 # RFC: Agent-authored flows — "add a Stripe connector and sync it to BigQuery"
 
-**Status:** proposed
+**Status:** implemented except gap 3 (headless connector creation) — see
+"Where this landed" at the end
 **Continues:** RFC #904 (flows as code), which shipped 2026-09-01
 **Written from:** the code as it stands at `0d0eec98`, a production census, and
 an end-to-end test against the live workspace — not from memory.
@@ -233,8 +234,10 @@ agent that can be trusted with a repo and one that cannot.
 
 ### The skill
 
-Ships in `skills/` in the workspace repo, so it is present the moment someone
-opens Claude in their checkout. It carries:
+Ships as a **system skill** in `api/src/agent-skills/` (revised — first draft
+said the workspace repo's `skills/`; the knowledge is platform-wide, and system
+skills reach a local Claude Code over MCP through `list_skills` / `load_skill`
+with nothing in the checkout). It carries:
 
 - the format, and the four things that never go in a file (credentials, run
   state, the webhook endpoint, cursors)
@@ -274,6 +277,29 @@ being unverified for new flows is a hole in the block-3 story.
 - **What happens to the connector if the flow file is never pushed?** An
   orphaned connection holding a secret, created by step 3 and abandoned at
   step 4.
+
+## Where this landed (2026-09-01, evening)
+
+| Item | PR | What actually shipped |
+| --- | --- | --- |
+| 1 Validator | #938 | `validateFlowFiles` + `pnpm flows:validate`. **The CLI lives in this repo, which the person in the scenario does not have** — reachable only via item 2's tool. |
+| 2 Dry-run | #937, #944 | `dryRunFlowReconcile` shipped in #937 with **zero non-test callers**. #944 gave it a caller: `check_flow_files`, one MCP-bridged tool that validates, hydrates the row and `validateSync()`s it, and plans against running streams. It reads the rest of `flows/` itself, so a partial input cannot manufacture a phantom teardown; its `guard` verdict is `unevaluated` pre-push rather than a laundered "verified". |
+| 3 Webhook endpoint | #939 | Minted on create from `workspaceId` + `_id`. No secret from the file, by design. |
+| 4 Discovery | #940 | `list_connectors`, `inspect_connector` bridged. |
+| 4b Secret path | #943 | `applySchemaEncryption` fails closed: misconfigured key → 500 and nothing written, not 201 and plaintext. |
+| 5 "Make it live" | #942 | **The create path had never once worked.** `createdBy` is required on the schema and the sync never set it; `save()` threw and the throw escaped the per-file loop, so the first new file in a push created nothing and skipped the reconciler. Gap 5 was "unproven" because it was impossible. Fixed; verified in production the same evening — an inert probe file created its row 6 s after push, 0 streams touched. |
+| 6 Skill | this PR | `api/src/agent-skills/flows-as-code/SKILL.md`. A **system** skill, not a workspace one as first proposed: the knowledge is platform-wide, and system skills reach a local Claude Code over MCP via `list_skills` / `load_skill` without anything in the workspace repo. |
+| — | #945 | Found while building #944: a YAML typo in an existing flow's file was a **teardown** — the row was dropped from the desired set and the reconciler read that as a removal. The row's own definition now stands in for an unparseable file. |
+
+**Gap 3 remains open.** Nothing creates a connector headlessly; the skill says
+so and routes the agent to the UI for that one step. It is a credential-
+accepting tool over MCP and needs the auth-tier decision from "Open questions"
+before it is built, not after.
+
+**Changed since first written:** the skill's home (system skill, above), and
+the claim that "steps 4–6 exist and were verified in production" — step 6 had
+been verified for edits to existing flows only; for a new file it did not
+work at all until #942.
 
 ## Related
 
