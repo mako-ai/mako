@@ -1376,13 +1376,11 @@ workspaceRoutes.openapi(
       );
     } catch (error) {
       logger.error("Error creating invite", { error });
+      const message =
+        error instanceof Error ? error.message : "Failed to create invite";
       return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error ? error.message : "Failed to create invite",
-        },
-        500,
+        { success: false, error: message },
+        message.includes("already a member") ? 409 : 500,
       );
     }
   },

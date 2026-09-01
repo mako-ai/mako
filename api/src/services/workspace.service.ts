@@ -282,6 +282,36 @@ export class WorkspaceService {
   ): Promise<IWorkspaceInvite> {
     const normalizedEmail = validateAndNormalizeEmail(email);
 
+    // The settings UI renders members and pending invites as one list, so an
+    // invite for someone who is already a member shows the person twice.
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      const existingMember = await WorkspaceMember.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        userId: existingUser._id.toString(),
+      });
+      if (existingMember) {
+        throw new Error(
+          `${normalizedEmail} is already a member of this workspace`,
+        );
+      }
+    }
+
+    // Re-inviting the same email refreshes the outstanding invite (new
+    // expiry, email re-sent) instead of stacking a second row.
+    const existingInvite = await WorkspaceInvite.findOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+      email: normalizedEmail,
+      acceptedAt: { $exists: false },
+    });
+    if (existingInvite) {
+      existingInvite.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      existingInvite.invitedBy = invitedBy as any;
+      await existingInvite.save();
+      await this.sendInviteEmail(workspaceId, invitedBy, existingInvite);
+      return existingInvite;
+    }
+
     const invite = new WorkspaceInvite({
       workspaceId: new Types.ObjectId(workspaceId),
       email: normalizedEmail,
@@ -292,7 +322,20 @@ export class WorkspaceService {
     });
     await invite.save();
 
-    // Send invitation email
+    await this.sendInviteEmail(workspaceId, invitedBy, invite);
+
+    return invite;
+  }
+
+  /**
+   * Send (or re-send) the invitation email. Failure is logged, never thrown —
+   * the invite row is already saved and the token link still works.
+   */
+  private async sendInviteEmail(
+    workspaceId: string,
+    invitedBy: string,
+    invite: IWorkspaceInvite,
+  ): Promise<void> {
     let workspaceName = "Unknown Workspace";
     try {
       const workspace = await Workspace.findById(workspaceId);
@@ -303,21 +346,19 @@ export class WorkspaceService {
       const inviteUrl = `${process.env.CLIENT_URL}/invite/${invite.token}`;
 
       await emailService.sendInvitationEmail(
-        normalizedEmail,
+        invite.email,
         workspaceName,
         inviterName,
         inviteUrl,
       );
     } catch (error) {
       logger.error("Failed to send invitation email", {
-        email: normalizedEmail,
+        email: invite.email,
         workspaceName,
         error,
       });
       // Don't fail the invite creation if email fails
     }
-
-    return invite;
   }
 
   /**
@@ -424,13 +465,27 @@ export class WorkspaceService {
    * Get pending invites for workspace
    */
   async getPendingInvites(workspaceId: string): Promise<IWorkspaceInvite[]> {
-    return WorkspaceInvite.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-      acceptedAt: { $exists: false },
-      expiresAt: { $gt: new Date() },
-    })
-      .populate("invitedBy", "email")
-      .sort({ createdAt: -1 });
+    const [invites, members] = await Promise.all([
+      WorkspaceInvite.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        acceptedAt: { $exists: false },
+        expiresAt: { $gt: new Date() },
+      })
+        .populate("invitedBy", "email")
+        .sort({ createdAt: -1 }),
+      this.getMembers(workspaceId),
+    ]);
+
+    // Hide invites whose email already belongs to a member: pre-existing
+    // duplicate rows (created before createInvite refused them) would
+    // otherwise show the person twice in the settings list.
+    const memberEmails = new Set(
+      members
+        .map(m => (m.userId as unknown as { email?: string })?.email)
+        .filter((e): e is string => typeof e === "string")
+        .map(e => e.toLowerCase()),
+    );
+    return invites.filter(i => !memberEmails.has(i.email.toLowerCase()));
   }
 
   /**
