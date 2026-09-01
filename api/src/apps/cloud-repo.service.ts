@@ -355,6 +355,7 @@ const freshenInFlight = new Map<string, Promise<void>>();
 export async function freshenForServe(
   workspaceId: string,
   intervalMs: number = FRESHEN_INTERVAL_MS,
+  intent: "serve" | "write" = "serve",
 ): Promise<void> {
   if (Date.now() - (lastFreshenAt.get(workspaceId) ?? 0) < intervalMs) return;
   const existing = freshenInFlight.get(workspaceId);
@@ -363,10 +364,29 @@ export async function freshenForServe(
     try {
       await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
     } catch (error) {
-      logger.warn("Freshen before serve failed; serving local state", {
+      const details = {
         workspaceId,
         error: error instanceof Error ? error.message : String(error),
-      });
+      };
+      if (intent === "write") {
+        // A failed freshen before a WRITE is not a degraded read — it means
+        // the commit about to happen is being judged against a tip that may
+        // already be behind the mirror, which is how a local repo diverges
+        // and stops being able to push at all. Staying non-blocking is the
+        // right trade (a brief mirror outage must not fail a user's save),
+        // but it must not be silent: this exact failure went unnoticed in
+        // dev because a local bare repo had no fetch remote configured, and
+        // ten commits landed on a diverged main before anyone looked.
+        logger.error(
+          "Freshen before a main write FAILED; committing against a possibly stale tip",
+          details,
+        );
+      } else {
+        logger.warn(
+          "Freshen before serve failed; serving local state",
+          details,
+        );
+      }
     } finally {
       lastFreshenAt.set(workspaceId, Date.now());
     }
@@ -478,7 +498,11 @@ export async function fetchFromCloud(
  * must not block the user's write; the mirror push simply retries later.
  */
 export function freshenBeforeMainWrite(workspaceId: string): Promise<void> {
-  return freshenForServe(workspaceId, 0);
+  // "write" only raises the volume when it fails; the fetch is identical. A
+  // serve-freshen already in flight is shared rather than duplicated, so a
+  // write can occasionally inherit a serve's warn — acceptable, since the
+  // failure is still reported and the next write logs it at full volume.
+  return freshenForServe(workspaceId, 0, "write");
 }
 
 export type ConnectedRepoAdoption =
