@@ -349,13 +349,15 @@ describe("the three validation layers", () => {
     );
   });
 
-  it("treats a file that does not parse as the removal the push path makes it", async () => {
-    // The reactor drops an unparseable file from its desired set while
-    // leaving the rest of the tree in it, and the reconciler reads that
-    // absence as a removal. So a YAML typo in an existing flow's file is a
-    // teardown, not a no-op — a pre-existing behaviour this check surfaces
-    // rather than hides. (`beta` keeps the desired set non-empty; an EMPTY
-    // one returns early and is never a deletion.)
+  it("a file that does not parse is a no-op, not the teardown it used to be", async () => {
+    // The reactor used to drop an unparseable file from its desired set
+    // while leaving the rest of the tree in it, and the reconciler read that
+    // absence as a removal: a YAML typo in an existing flow's file tore the
+    // flow down and disposed its checkpoints. The reactor now stands the
+    // row's own definition in for the file, so the flow is present and
+    // unchanged — and this check must say the same, or it warns of a
+    // teardown that will not happen. (`beta` keeps the desired set
+    // non-empty; an EMPTY one returns early and is never a deletion.)
     await seedRepo({
       "flows/alpha.yml": flowYaml("alpha"),
       "flows/beta.yml": flowYaml("beta"),
@@ -369,7 +371,8 @@ describe("the three validation layers", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.wouldTeardown).toEqual(["alpha"]);
+    expect(result.wouldTeardown).toEqual([]);
+    expect(result.preExisting.wouldTeardown).toEqual([]);
     expect(result.notes.some(n => n.includes("does not parse"))).toBe(true);
   });
 });
