@@ -7,6 +7,7 @@ import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { trackEvent } from "../lib/analytics";
+import { connectorIconUrl } from "../lib/connector-icon";
 
 interface ConnectorTabProps {
   /**
@@ -72,9 +73,9 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
   // Helper to update the tab icon based on connector type
   const updateTabIcon = useCallback(
     (type: string) => {
-      updateIcon(tabId, `/api/connectors/${type}/icon.svg`);
+      updateIcon(tabId, connectorIconUrl(type, currentWorkspace?.id));
     },
-    [updateIcon, tabId],
+    [updateIcon, tabId, currentWorkspace?.id],
   );
 
   /* ------------------ effects ------------------ */

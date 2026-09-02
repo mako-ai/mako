@@ -26,6 +26,7 @@ import ResourceTree, {
 } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { connectorIconUrl } from "../lib/connector-icon";
 
 interface Connector {
   _id: string;
@@ -94,7 +95,7 @@ function ConnectorExplorer() {
         title: source.name,
         content: contentKey,
         kind: "connectors",
-        icon: `/api/connectors/${source.type}/icon.svg`,
+        icon: connectorIconUrl(source.type, currentWorkspace?.id),
       });
       setActiveTab(id);
     } else {
@@ -147,7 +148,7 @@ function ConnectorExplorer() {
     return (
       <Box
         component="img"
-        src={`/api/connectors/${src.type}/icon.svg`}
+        src={connectorIconUrl(src.type, currentWorkspace?.id)}
         alt={`${src.type} icon`}
         sx={{ width: 20, height: 20, display: "block", flexShrink: 0 }}
       />

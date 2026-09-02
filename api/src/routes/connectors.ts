@@ -13,6 +13,10 @@ import {
   workspaceConnectorForm,
 } from "../connectors/workspace/catalog";
 import {
+  loadConnectorDefinition,
+  readConnectorFolder,
+} from "../connectors/workspace/resolver";
+import {
   createRouter,
   errorJson,
   jsonContent,
@@ -41,8 +45,10 @@ export const connectorRoutes = createRouter();
  * either gets the built-in catalog — the routes stay genuinely public — but
  * never another tenant's connectors.
  */
-async function memberWorkspaceId(c: Context): Promise<string | null> {
-  const requested = c.req.header("x-workspace-id");
+async function memberWorkspaceId(
+  c: Context,
+  requested = c.req.header("x-workspace-id"),
+): Promise<string | null> {
   if (!requested || !Types.ObjectId.isValid(requested)) return null;
 
   // The middleware answers with a 401/redirect for an anonymous caller. That
@@ -325,15 +331,43 @@ connectorRoutes.openapi(
       404: errorJson("Icon not found"),
     },
   }),
-  c => {
+  async c => {
     const { type } = c.req.valid("param");
 
-    // An `<img>` carries no workspace header, so a workspace connector's own
-    // icon cannot be fetched from its repo here without putting a tenant id
-    // in a public URL. It gets a generated monogram instead: derived purely
-    // from the slug, so it exposes nothing and still gives the picker a
-    // stable, distinguishable mark per connector.
+    // `<img>` cannot send the workspace header used by catalog requests. The
+    // UI therefore includes the active workspace as a query parameter; it is
+    // only a selector, never authorization. Authenticate the same-origin
+    // session and prove membership before reading the tenant's repo. Callers
+    // without that proof retain the non-sensitive generated monogram.
     if (isWorkspaceConnectorType(type)) {
+      const requested = c.req.query("workspaceId");
+      const workspaceId = requested
+        ? await memberWorkspaceId(c, requested)
+        : null;
+      if (workspaceId) {
+        try {
+          const slug = type.slice(3);
+          const definition = await loadConnectorDefinition(workspaceId, slug);
+          const files = await readConnectorFolder(
+            workspaceId,
+            slug,
+            definition.sha,
+          );
+          const icon = files.get("icon.svg");
+          if (icon) {
+            return c.body(icon, 200, {
+              "Content-Type": "image/svg+xml",
+              "Cache-Control": "private, no-store",
+              "Content-Security-Policy":
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            });
+          }
+        } catch {
+          // A missing/stale icon must not break every place that renders a
+          // connector. Reconciliation will surface connector failures; the
+          // image endpoint keeps the stable fallback.
+        }
+      }
       return c.body(monogramSvg(type.slice(3)), 200, {
         "Content-Type": "image/svg+xml",
         "Cache-Control": "public, max-age=3600",

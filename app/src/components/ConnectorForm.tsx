@@ -33,6 +33,7 @@ import {
 // Zustand stores
 import { useConnectorStore } from "../store/connectorStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
+import { connectorIconUrl } from "../lib/connector-icon";
 
 export interface ConnectorFieldSchema {
   name: string;
@@ -903,7 +904,7 @@ function ConnectorForm({
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <Box
                     component="img"
-                    src={`/api/connectors/${connector.type}/icon.svg`}
+                    src={connectorIconUrl(connector.type, currentWorkspace?.id)}
                     alt={`${connector.type} icon`}
                     sx={{ width: 20, height: 20 }}
                   />
@@ -1100,7 +1101,7 @@ function ConnectorForm({
           >
             <Box
               component="img"
-              src={`/api/connectors/${selectedType}/icon.svg`}
+              src={connectorIconUrl(selectedType, currentWorkspace?.id)}
               alt={`${selectedType} icon`}
               sx={{ width: 32, height: 32 }}
             />
