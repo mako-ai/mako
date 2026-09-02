@@ -73,7 +73,7 @@ let repoSeq = 0;
 const FILE: FlowFile = {
   name: "Close CRM",
   type: "scheduled",
-  source: { type: "connector", connectorId: "close" },
+  source: { type: "connector", connectionId: "close" },
   destination: { connectionId: new Types.ObjectId().toString() },
   sync: {},
 };

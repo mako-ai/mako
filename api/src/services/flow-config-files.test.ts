@@ -168,7 +168,7 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   assert.equal(parsed.type, "webhook");
   assert.deepEqual(parsed.source, {
     type: "connector",
-    connectorId: connectorId.toString(),
+    connectionId: connectorId.toString(),
   });
   assert.equal(parsed.destination.connectionId, destId.toString());
   assert.equal(parsed.destination.table?.tableName, "stripe_charges");
@@ -309,7 +309,7 @@ console.log("flow-config-files tests passed");
   assert.ok(legacy && "file" in legacy ? legacy.file : legacy);
   const legacyFile = (legacy as { file?: unknown }).file ?? legacy;
   assert.equal(
-    (legacyFile as { source: { connectorId: string } }).source.connectorId,
+    (legacyFile as { source: { connectionId: string } }).source.connectionId,
     "6a2bd881b6f8c41ea17e9bc7",
   );
 
@@ -318,7 +318,7 @@ console.log("flow-config-files tests passed");
   );
   const currentFile = (current as { file?: unknown }).file ?? current;
   assert.equal(
-    (currentFile as { source: { connectorId: string } }).source.connectorId,
+    (currentFile as { source: { connectionId: string } }).source.connectionId,
     "6a2bd881b6f8c41ea17e9bc7",
   );
 

@@ -51,23 +51,32 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../sync/connector-registry", () => ({
   syncConnectorRegistry: {
+    getConnectorFor: vi.fn(async () => state.connector),
     getConnector: vi.fn(async () => state.connector),
   },
 }));
 
-vi.mock("../sync/database-data-source-manager", () => ({
-  databaseDataSourceManager: {
-    getDataSource: vi.fn(async (id: string) => ({
-      id,
-      name: "Vercel AI Gateway Usage",
-      type: state.dataSourceType,
-      workspaceId: WS.toString(),
-      active: true,
-      connection: { apiKey: SECRET, lookbackDays: 30, region: "eu" },
-      settings: {},
-    })),
-  },
-}));
+vi.mock("../sync/database-data-source-manager", () => {
+  const getSourceConnection = vi.fn(async (id: string) => ({
+    id,
+    name: "Vercel AI Gateway Usage",
+    type: state.dataSourceType,
+    workspaceId: WS.toString(),
+    active: true,
+    connection: { apiKey: SECRET, lookbackDays: 30, region: "eu" },
+    settings: {},
+  }));
+  return {
+    sourceConnectionManager: {
+      getSourceConnection,
+      getDataSource: getSourceConnection,
+    },
+    databaseDataSourceManager: {
+      getSourceConnection,
+      getDataSource: getSourceConnection,
+    },
+  };
+});
 
 vi.mock("./workspace/reconcile.service", () => ({
   recordConnectionCheck: vi.fn(async (input: Record<string, unknown>) => {

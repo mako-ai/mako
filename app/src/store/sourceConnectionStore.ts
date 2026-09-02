@@ -2,14 +2,14 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
 
-export interface ConnectorDraft {
+export interface SourceConnectionDraft {
   tabId: string;
   values: Record<string, any>;
   isDirty: boolean;
 }
 
-interface ConnectorState {
-  drafts: Record<string, ConnectorDraft>;
+interface SourceConnectionState {
+  drafts: Record<string, SourceConnectionDraft>;
   /**
    * Upsert (create or update) the draft for the given tab.
    */
@@ -24,7 +24,7 @@ interface ConnectorState {
   clearDrafts: () => void;
 }
 
-export const useConnectorStore = create<ConnectorState>()(
+export const useSourceConnectionStore = create<SourceConnectionState>()(
   persist(
     immer(set => ({
       drafts: {},
@@ -51,3 +51,6 @@ export const useConnectorStore = create<ConnectorState>()(
     },
   ),
 );
+
+/** @deprecated use useSourceConnectionStore */
+export const useConnectorStore = useSourceConnectionStore;

@@ -14,6 +14,7 @@ type MarketingEvent =
   | "database_connection_created"
   | "database_connection_verified"
   | "connector_created"
+  | "source_connection_created"
   | "invite_sent"
   | "invite_accepted"
   | "workspace_created"

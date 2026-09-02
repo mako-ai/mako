@@ -12,7 +12,7 @@ import {
   DbSyncChunkState,
 } from "../../services/destination-writer.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
-import { databaseDataSourceManager } from "../../sync/database-data-source-manager";
+import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import { Types } from "mongoose";
 import * as os from "os";
 import { isCronDue } from "../../services/cron-due";
@@ -1115,25 +1115,26 @@ export const flowFunction = inngest.createFunction(
       const supportsChunking = await step.run(
         "check-chunking-support",
         async () => {
-          const dataSource = await databaseDataSourceManager.getDataSource(
-            dataSourceId.toString(),
-          );
-          if (!dataSource) {
+          const sourceConnection =
+            await sourceConnectionManager.getSourceConnection(
+              dataSourceId.toString(),
+            );
+          if (!sourceConnection) {
             throw new Error(`Data source not found: ${dataSourceId}`);
           }
 
           const connector =
-            await syncConnectorRegistry.getConnector(dataSource);
+            await syncConnectorRegistry.getConnectorFor(sourceConnection);
           if (!connector) {
             throw new Error(
-              `Failed to create connector for type: ${dataSource.type}`,
+              `Failed to create connector for type: ${sourceConnection.type}`,
             );
           }
 
           const supports = connector.supportsResumableFetching();
           logger.info("Connector chunking support check", {
             flowId,
-            connectorType: dataSource.type,
+            connectorType: sourceConnection.type,
             supportsChunking: supports,
           });
           return supports;
@@ -1169,28 +1170,29 @@ export const flowFunction = inngest.createFunction(
         const entitiesToSync = await step.run(
           "get-entities-to-sync",
           async () => {
-            const dataSource = await databaseDataSourceManager.getDataSource(
-              dataSourceId.toString(),
-            );
-            if (!dataSource) {
+            const sourceConnection =
+              await sourceConnectionManager.getSourceConnection(
+                dataSourceId.toString(),
+              );
+            if (!sourceConnection) {
               throw new Error(`Data source not found: ${dataSourceId}`);
             }
 
-            // Inject flow queries into dataSource for GraphQL/PostHog connectors
+            // Inject flow queries into sourceConnection for GraphQL/PostHog connectors
             // The registry maps connection -> config when creating the connector
             const flowQueries = (flow as any).queries;
             if (flowQueries && flowQueries.length > 0) {
-              dataSource.connection = {
-                ...dataSource.connection,
+              sourceConnection.connection = {
+                ...sourceConnection.connection,
                 queries: flowQueries,
               };
             }
 
             const connector =
-              await syncConnectorRegistry.getConnector(dataSource);
+              await syncConnectorRegistry.getConnectorFor(sourceConnection);
             if (!connector) {
               throw new Error(
-                `Failed to create connector for type: ${dataSource.type}`,
+                `Failed to create connector for type: ${sourceConnection.type}`,
               );
             }
 
@@ -1376,22 +1378,23 @@ export const flowFunction = inngest.createFunction(
         await throwIfExecutionCancelled("connector-before-non-chunked-sync");
         await step.run("execute-sync", async () => {
           // For non-chunked sync, we need to get the entities
-          const dataSource = await databaseDataSourceManager.getDataSource(
-            dataSourceId.toString(),
-          );
-          if (dataSource) {
-            // Inject flow queries into dataSource for GraphQL/PostHog connectors
+          const sourceConnection =
+            await sourceConnectionManager.getSourceConnection(
+              dataSourceId.toString(),
+            );
+          if (sourceConnection) {
+            // Inject flow queries into sourceConnection for GraphQL/PostHog connectors
             // The registry maps connection -> config when creating the connector
             const flowQueries = (flow as any).queries;
             if (flowQueries && flowQueries.length > 0) {
-              dataSource.connection = {
-                ...dataSource.connection,
+              sourceConnection.connection = {
+                ...sourceConnection.connection,
                 queries: flowQueries,
               };
             }
 
             const connector =
-              await syncConnectorRegistry.getConnector(dataSource);
+              await syncConnectorRegistry.getConnectorFor(sourceConnection);
             if (connector) {
               const availableEntities = connector
                 .getAvailableEntities()

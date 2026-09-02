@@ -143,12 +143,12 @@ export function UrlSync() {
       const connectorId = connectorMatch[1];
       setLeftPane("connectors");
 
-      // A connector tab keeps its id in `content`; the name is fetched by
-      // ConnectorTab, so the title is a placeholder until it loads.
+      // A source-connection tab keeps its id in `content`; the name is
+      // fetched by SourceConnectionTab, so the title is a placeholder until it loads.
       focusOrOpenTab(
         { kind: "connectors", where: t => t.content === connectorId },
         () => ({
-          title: "Connector",
+          title: "Source connection",
           content: connectorId,
           kind: "connectors",
         }),

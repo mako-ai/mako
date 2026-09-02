@@ -35,7 +35,7 @@ export const topNavigationItems: {
   { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
   { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
   { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
-  { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
+  { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Sources" },
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
   { view: "apps", icon: EXPLORER_ICONS["apps"], label: "Apps" },

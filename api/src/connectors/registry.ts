@@ -3,7 +3,7 @@ import {
   type WebhookCapabilities,
   type IncrementalCapabilities,
 } from "./base/BaseConnector";
-import { IConnector } from "../database/workspace-schema";
+import { ISourceConnection } from "../database/workspace-schema";
 import * as fs from "fs";
 import * as path from "path";
 import { loggers } from "../logging";
@@ -15,7 +15,9 @@ import {
 const logger = loggers.connector();
 
 // Type for connector constructor
-type ConnectorConstructor = new (dataSource: IConnector) => BaseConnector;
+type ConnectorConstructor = new (
+  connection: ISourceConnection,
+) => BaseConnector;
 
 // Updated metadata interface
 interface ConnectorRegistryMetadata {
@@ -161,14 +163,14 @@ class ConnectorRegistry {
         dirName,
       });
 
-      // Create a dummy data source to get metadata
+      // Dummy source connection so the constructor can report metadata
       const dummyDataSource = {
         _id: "dummy",
         name: "dummy",
         type: dirName,
         config: {},
         settings: {},
-      } as unknown as IConnector;
+      } as unknown as ISourceConnection;
 
       let metadata;
       try {
@@ -211,7 +213,7 @@ class ConnectorRegistry {
   }
 
   /**
-   * Get a connector instance for a data source
+   * Instantiate connector *code* for a source *connection* (credential).
    *
    * A `ws:` type is a connector the workspace itself wrote, which lives in its
    * git repo rather than in this directory. It resolves to one adapter class
@@ -219,18 +221,23 @@ class ConnectorRegistry {
    * without touching Mongo or a sandbox, because this is a hot, synchronous
    * path and constructing a connector must never boot a machine.
    */
-  getConnector(dataSource: IConnector): BaseConnector | null {
-    if (isWorkspaceConnectorType(dataSource.type)) {
-      return new SandboxedConnector(dataSource);
+  getConnectorFor(connection: ISourceConnection): BaseConnector | null {
+    if (isWorkspaceConnectorType(connection.type)) {
+      return new SandboxedConnector(connection);
     }
 
-    const metadata = this.connectors.get(dataSource.type);
+    const metadata = this.connectors.get(connection.type);
     if (!metadata) {
       return null;
     }
 
     const ConnectorClass = metadata.connector;
-    return new ConnectorClass(dataSource);
+    return new ConnectorClass(connection);
+  }
+
+  /** @deprecated use getConnectorFor */
+  getConnector(dataSource: ISourceConnection): BaseConnector | null {
+    return this.getConnectorFor(dataSource);
   }
 
   /**

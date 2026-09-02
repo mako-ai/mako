@@ -9,7 +9,7 @@ import { isSecretField } from "../agent-lib/tools/connector-tools";
  * Every connector's credential fields must be marked for encryption.
  *
  * Connector secrets are not encrypted by the model. `applySchemaEncryption`
- * in routes/sources.ts encrypts a field only when that connector's OWN config
+ * in routes/source-connections.ts encrypts a field only when that connector's OWN config
  * schema marks it `encrypted: true` or `type: "password"`. So protection is
  * per-connector metadata, and a new connector that omits the marker stores
  * its API key in plaintext — silently, with a 201.
@@ -134,7 +134,10 @@ async function main() {
 
   // The tool that TELLS an agent which fields are secret must use the same
   // rule the route uses to encrypt them, or the two drift apart silently.
-  const source = readFileSync(join(__dirname, "../routes/sources.ts"), "utf8");
+  const source = readFileSync(
+    join(__dirname, "../routes/source-connections.ts"),
+    "utf8",
+  );
   assert.ok(
     /field\.encrypted === true \|\| field\.type === "password"/.test(source),
     "applySchemaEncryption's rule changed — isSecretField in connector-tools.ts mirrors it and must be updated together",

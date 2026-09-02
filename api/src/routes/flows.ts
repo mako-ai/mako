@@ -5,7 +5,7 @@ import {
   CdcChangeEvent,
   CdcEntityState,
   CdcStateTransition,
-  Connector as DataSource,
+  SourceConnection,
   DatabaseConnection,
   FlowExecution,
   WebhookEvent,
@@ -45,7 +45,7 @@ import {
   computePendingLagSeconds,
 } from "../sync-cdc/backlog";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
 import {
@@ -662,24 +662,24 @@ function selectedEntitiesFromFlowBody(body: {
 }
 
 function resolveConnectorIncrementalCapabilities(
-  dataSource:
+  sourceConnection:
     | { type?: string; config?: Record<string, unknown> }
     | null
     | undefined,
 ): IncrementalCapabilities | undefined {
-  if (!dataSource?.type) return undefined;
+  if (!sourceConnection?.type) return undefined;
   try {
-    const connector = connectorRegistry.getConnector({
+    const connector = connectorRegistry.getConnectorFor({
       id: "validation",
-      name: dataSource.type,
-      type: dataSource.type,
-      config: dataSource.config || {},
+      name: sourceConnection.type,
+      type: sourceConnection.type,
+      config: sourceConnection.config || {},
     } as any);
     return connector?.getIncrementalCapabilities?.();
   } catch {
     const meta = connectorRegistry
       .getAllMetadata()
-      .find(entry => entry.type === dataSource.type);
+      .find(entry => entry.type === sourceConnection.type);
     return meta?.metadata?.incremental;
   }
 }
@@ -834,12 +834,12 @@ flowRoutes.openapi(
         }
 
         // Validate data source exists and belongs to workspace
-        const dataSource = await DataSource.findOne({
+        const sourceConnection = await SourceConnection.findOne({
           _id: new Types.ObjectId(body.dataSourceId),
           workspaceId: new Types.ObjectId(workspaceId),
         });
 
-        if (!dataSource) {
+        if (!sourceConnection) {
           return c.json(
             { success: false, error: "Data source not found" },
             404,
@@ -1064,7 +1064,7 @@ flowRoutes.openapi(
 
       let createIncremental: IncrementalCapabilities | undefined;
       if (sourceType !== "database" && body.dataSourceId) {
-        const ds = await DataSource.findById(body.dataSourceId)
+        const ds = await SourceConnection.findById(body.dataSourceId)
           .select({ type: 1, config: 1 })
           .lean();
         createIncremental = resolveConnectorIncrementalCapabilities(ds as any);
@@ -1333,7 +1333,7 @@ flowRoutes.openapi(
 
         let updateIncremental: IncrementalCapabilities | undefined;
         if (flow.sourceType !== "database" && flow.dataSourceId) {
-          const ds = await DataSource.findById(flow.dataSourceId)
+          const ds = await SourceConnection.findById(flow.dataSourceId)
             .select({ type: 1, config: 1 })
             .lean();
           updateIncremental = resolveConnectorIncrementalCapabilities(
@@ -3048,7 +3048,7 @@ flowRoutes.openapi(
         );
       }
 
-      const connectorSource = await DataSource.findOne({
+      const connectorSource = await SourceConnection.findOne({
         _id: new Types.ObjectId(String(flow.dataSourceId)),
         workspaceId: new Types.ObjectId(workspaceId),
       });
@@ -3057,7 +3057,7 @@ flowRoutes.openapi(
       }
 
       const decryptedConnectorSource =
-        await databaseDataSourceManager.getDataSource(
+        await sourceConnectionManager.getSourceConnection(
           connectorSource._id.toString(),
         );
       if (!decryptedConnectorSource) {
@@ -3070,7 +3070,7 @@ flowRoutes.openapi(
         );
       }
 
-      const connector = await syncConnectorRegistry.getConnector(
+      const connector = await syncConnectorRegistry.getConnectorFor(
         decryptedConnectorSource,
       );
       if (!connector || !connector.supportsWebhooks()) {
@@ -3939,11 +3939,11 @@ flowRoutes.openapi(
       > = new Map();
       if (flow.dataSourceId) {
         try {
-          const ds = await databaseDataSourceManager.getDataSource(
+          const ds = await sourceConnectionManager.getSourceConnection(
             String(flow.dataSourceId),
           );
           if (ds) {
-            const connector = await syncConnectorRegistry.getConnector(ds);
+            const connector = await syncConnectorRegistry.getConnectorFor(ds);
             if (connector?.resolveSchema) {
               for (const entity of targetEntities) {
                 try {
@@ -4240,13 +4240,15 @@ flowRoutes.openapi(
         );
       }
 
-      const dataSource = await DataSource.findById(flow.dataSourceId).lean();
-      if (!dataSource) {
+      const sourceConnection = await SourceConnection.findById(
+        flow.dataSourceId,
+      ).lean();
+      if (!sourceConnection) {
         return c.json({ success: false, error: "Data source not found" }, 404);
       }
 
-      const decrypted = await databaseDataSourceManager.getDataSource(
-        String(dataSource._id),
+      const decrypted = await sourceConnectionManager.getSourceConnection(
+        String(sourceConnection._id),
       );
       if (!decrypted) {
         return c.json(
@@ -4254,7 +4256,7 @@ flowRoutes.openapi(
           404,
         );
       }
-      const connector = await syncConnectorRegistry.getConnector(decrypted);
+      const connector = await syncConnectorRegistry.getConnectorFor(decrypted);
       if (!connector) {
         return c.json(
           { success: false, error: "Connector not found for data source type" },

@@ -77,12 +77,13 @@ function decryptObject(obj: any): any {
   }
 }
 
-// Pass-through for DataSource config - encryption handled at route using connector schema
-function encryptDataSourceConfig(config: any): any {
+// Pass-through for source-connection config — encryption is applied at the
+// route using the connector's schema, not by this getter/setter.
+function encryptSourceConnectionConfig(config: any): any {
   return config;
 }
 
-function decryptDataSourceConfig(config: any): any {
+function decryptSourceConnectionConfig(config: any): any {
   return config;
 }
 
@@ -271,9 +272,10 @@ export interface IDatabaseConnection extends Document {
 export type IDatabase = IDatabaseConnection;
 
 /**
- * Connector model interface
+ * Source connection: a credential a workspace configured with a connector
+ * (Stripe key, Close account, …). Stored in collection `connectors`.
  */
-export interface IConnector extends Document {
+export interface ISourceConnection extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   name: string;
@@ -322,6 +324,9 @@ export interface IConnector extends Document {
   lastSyncedAt?: Date;
   isActive: boolean;
 }
+
+/** @deprecated use ISourceConnection */
+export type IConnector = ISourceConnection;
 
 /**
  * ConsoleFolder model interface
@@ -937,10 +942,15 @@ export interface IFlow extends Document {
    */
   sourceBlobSha?: string;
 
-  // Source configuration - either connector or database
+  // Source configuration — either a source connection or a database connection
   sourceType: "connector" | "database";
-  dataSourceId?: Types.ObjectId; // For connector sources (Stripe, Close, etc.)
-  databaseSource?: IDatabaseSource; // For database sources (SQL queries)
+  /**
+   * Id of the source connection this flow reads from (when `sourceType` is
+   * `"connector"`). Persisted field name is historical — do not rename in
+   * Mongo. TypeScript callers should treat this as a SourceConnection id.
+   */
+  dataSourceId?: Types.ObjectId;
+  databaseSource?: IDatabaseSource; // For database-query sources
 
   // Destination configuration
   destinationDatabaseId: Types.ObjectId;
@@ -1562,9 +1572,10 @@ DatabaseConnectionSchema.index({ workspaceId: 1 });
 DatabaseConnectionSchema.index({ workspaceId: 1, name: 1 });
 
 /**
- * Connector Schema
+ * Source-connection schema. Collection name `connectors` is historical and
+ * must never change.
  */
-const ConnectorSchema = new Schema<IConnector>(
+const SourceConnectionSchema = new Schema<ISourceConnection>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -1587,8 +1598,8 @@ const ConnectorSchema = new Schema<IConnector>(
     config: {
       type: Schema.Types.Mixed,
       required: true,
-      set: encryptDataSourceConfig,
-      get: decryptDataSourceConfig,
+      set: encryptSourceConnectionConfig,
+      get: decryptSourceConnectionConfig,
     },
     settings: {
       sync_batch_size: {
@@ -1637,8 +1648,8 @@ const ConnectorSchema = new Schema<IConnector>(
 );
 
 // Indexes
-ConnectorSchema.index({ workspaceId: 1 });
-ConnectorSchema.index({ workspaceId: 1, type: 1 });
+SourceConnectionSchema.index({ workspaceId: 1 });
+SourceConnectionSchema.index({ workspaceId: 1, type: 1 });
 
 /**
  * ConsoleFolder Schema
@@ -4088,10 +4099,12 @@ export const DatabaseConnection = mongoose.model<IDatabaseConnection>(
 );
 /** @deprecated Use DatabaseConnection instead */
 export const Database = DatabaseConnection;
-export const Connector = mongoose.model<IConnector>(
+export const SourceConnection = mongoose.model<ISourceConnection>(
   "Connector",
-  ConnectorSchema,
+  SourceConnectionSchema,
 );
+/** @deprecated use SourceConnection */
+export const Connector = SourceConnection;
 /**
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.

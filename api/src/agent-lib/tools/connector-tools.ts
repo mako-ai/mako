@@ -131,7 +131,7 @@ async function connectorCapabilities(
   identity: { id: string; name: string },
 ): Promise<{ entities: string[]; incremental: Record<string, unknown> }> {
   try {
-    const connector = await syncConnectorRegistry.getConnector({
+    const connector = await syncConnectorRegistry.getConnectorFor({
       id: identity.id,
       name: identity.name,
       type,

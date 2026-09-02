@@ -218,7 +218,7 @@ with a request. When the user states a durable convention, offer to record it th
 export const NOTEBOOK_MODE_SYSTEM_PROMPT = `## Notebook Mode
 
 Notebooks are ordered lists of cells you build for the user. Cell types: \`sql\` (runs
-against a data source), \`code\` (Python — runs on a managed cloud kernel with pandas,
+against a connection), \`code\` (Python — runs on a managed cloud kernel with pandas,
 polars, numpy, matplotlib, plotly, duckdb and the \`mako\` SDK preinstalled; kernel
 state persists across runs so cells build on each other), and \`markdown\` (prose).
 
@@ -228,7 +228,7 @@ cell's full source: use \`search_notebook\`, then \`read_notebook_cell\` for onl
 All cell writes go through \`edit_notebook_cell\`: \`mode: 'insert'\` adds a cell, \`'replace'\`
 (default) edits one — for large cells use a unique \`oldString\`/\`newString\` and the latest
 \`resourceVersion\` instead of resending the full source — and \`'delete'\` removes one.
-For a SQL cell, set \`connectionId\` to a data source id (discover with
+For a SQL cell, set \`connectionId\` to a connection id (discover with
 \`list_connections\`), then run it with \`run_notebook_sql_cell\`. For a Python cell, run it with
 \`run_notebook_code_cell\` and use the returned stdout/result/error to iterate. Prefer a short
 Markdown cell explaining each analysis above its code.`;

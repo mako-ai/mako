@@ -110,7 +110,7 @@ function segmentsForTab(
       return plain(["Source Control", ...path.split("/").filter(Boolean)]);
     }
     case "connectors":
-      return plain(["Connectors", tab.title || "New connector"]);
+      return plain(["Sources", tab.title || "New source connection"]);
     case "flow-editor":
       return plain(["Flows", tab.title || "New flow"]);
     case "settings":

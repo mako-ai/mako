@@ -3,7 +3,7 @@ import type { OpenAPIHono } from "@hono/zod-openapi";
 import type { AuthEnv } from "../openapi/core";
 import { consoleRoutes } from "./consoles";
 import { realtimeRoutes } from "./realtime";
-import { dataSourceRoutes } from "./sources";
+import { sourceConnectionRoutes } from "./source-connections";
 import { customPromptRoutes } from "./custom-prompt";
 import { skillsRoutes } from "./skills";
 import { dbtRoutes } from "./dbt.routes";
@@ -71,7 +71,14 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/dbt", dbtRoutes);
   // GitHub App install callback (session-authed, workspace via state param).
   app.route("/api/github", githubRoutes);
-  app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
+  // Source connections (credentials configured with a connector).
+  // Primary path; `/connectors` is the pre-2026-09 alias and must keep working.
+  app.route(
+    "/api/workspaces/:workspaceId/connections/sources",
+    sourceConnectionRoutes,
+  );
+  /** @deprecated use /api/workspaces/:workspaceId/connections/sources */
+  app.route("/api/workspaces/:workspaceId/connectors", sourceConnectionRoutes);
   app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
   app.route(
     "/api/workspaces/:workspaceId/scheduled-queries",
