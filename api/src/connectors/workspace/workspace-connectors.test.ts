@@ -786,8 +786,9 @@ describe("the SDK installed in a persistent sync box", () => {
         continue;
       }
     }
-    if (!runtimeId)
+    if (!runtimeId) {
       throw new Error("expected a materialized connector runtime");
+    }
 
     const runtimeRoot = path.join(versions, runtimeId);
     await fs.writeFile(
