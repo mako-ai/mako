@@ -384,6 +384,9 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
       defaultEnvironment: body.defaultEnvironment,
       createdBy: userId,
     });
+    // Environments/settings live in dbt/environments.yml (apps.md §23) from
+    // the first commit — not only after the first edit.
+    await commitDbtEnvironmentsFile(project, userId);
 
     // Scaffold straight into the workspace repo: dbt/ appears as one commit
     // on the creator's session branch. A pre-existing dbt/dbt_project.yml

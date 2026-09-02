@@ -118,7 +118,7 @@ async function commitConfig(
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
   author?: GitAuthor,
-): Promise<void> {
+): Promise<boolean> {
   // Freshened by repoDirIfExists: config-as-code commits land on main, so
   // they are judged against the mirror's main rather than this instance's
   // cache (#916, moved up to the choke point so the reads get it too —
@@ -126,13 +126,15 @@ async function commitConfig(
   // cost two sequential fetches per write).
   const repoDir = await repoDirIfExists(workspaceId);
   // No repo (pre-§17 workspace): Mongo remains the only home — nothing to
-  // write through. RealAdvisor and every §17-era workspace has one.
-  if (!repoDir) return;
+  // write through. RealAdvisor and every §17-era workspace has one. Callers
+  // get `false` so they never record a file that was not written.
+  if (!repoDir) return false;
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
   });
   if (!result.unchanged) queueMirrorPush(workspaceId);
+  return true;
 }
 
 /** Reserve a unique slug for a new job and stamp it on the row fields. */
@@ -160,15 +162,19 @@ export async function commitDbtJobFile(
   if (!job.slug) return; // pre-adoption row; the migration stamps slugs
   const contents = serializeJobFile(jobToFile(job));
   const sha = blobOid(contents);
-  if (job.sourceBlobSha !== sha) {
-    await DbtJob.updateOne({ _id: job._id }, { $set: { sourceBlobSha: sha } });
-  }
-  await commitConfig(
+  const written = await commitConfig(
     project.workspaceId.toString(),
     { writes: { [jobFilePath(job.slug)]: contents } },
     messageOverride ?? `dbt: job "${job.name}" (${job.slug})`,
     actorUserId ? await authorForUser(actorUserId) : undefined,
   );
+  // Stamp the row AFTER the file exists. Stamping first meant a failed or
+  // skipped commit (no repo) left the row claiming a sha for a file that was
+  // never written, and the push-sync short-circuits on a matching sha — so
+  // the row could never be repaired from the file.
+  if (written && job.sourceBlobSha !== sha) {
+    await DbtJob.updateOne({ _id: job._id }, { $set: { sourceBlobSha: sha } });
+  }
 }
 
 export async function deleteDbtJobFile(
