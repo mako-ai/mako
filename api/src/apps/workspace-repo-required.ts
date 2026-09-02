@@ -12,7 +12,12 @@
  */
 import { RepoRequiredError } from "./config";
 import { ensureLocalRepo, ensureWorkspaceRepo } from "./cloud-repo.service";
-import { repoDirFor, repoExists } from "./repository.service";
+import {
+  DEFAULT_BRANCH,
+  repoDirFor,
+  repoExists,
+  resolveCommit,
+} from "./repository.service";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 
 /**
@@ -22,11 +27,17 @@ import { getWorkspaceRepo } from "../services/workspace-repos.service";
 export async function requireWorkspaceRepo(
   workspaceId: string,
 ): Promise<string> {
-  await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  if (await repoExists(repoDir)) return repoDir;
   if (await getWorkspaceRepo(workspaceId)) {
     return ensureWorkspaceRepo(workspaceId);
   }
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  if (
+    (await repoExists(repoDir)) &&
+    (await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`))
+  ) {
+    return repoDir;
+  }
+  if (await repoExists(repoDir)) return repoDir;
   throw new RepoRequiredError();
 }
