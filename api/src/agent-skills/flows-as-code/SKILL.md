@@ -14,6 +14,7 @@ entities:
   - check_flow_files
   - list_connectors
   - inspect_connector
+  - probe_connector
   - cdc flow
   - webhook flow
   - scheduled flow
@@ -51,6 +52,11 @@ checkout of that repo, over MCP. For the in-product flow form, load `flows`.
      valid, config field names (never values)
    - `list_connections` → `destination.connection_id` (BigQuery / Postgres
      connection); the same id goes in `destination.table.connection_id`
+   - `probe_connector` → run the connector LIVE before committing a flow:
+     the credential check, and with `entity` one bounded page of real
+     records (`limit` ≤ 200, `fields` to narrow), written nowhere. Use it to
+     confirm a new connector works and to see the fields an entity really
+     carries — that is where `partitionField` and `clusterFields` come from.
 2. **Write `flows/<slug>.yml`.** Copy a neighbouring file for the same
    connector type when one exists — its entity list and `partitionField`
    choices are production-tested. Strip any `_id:` lines inside

@@ -16,6 +16,7 @@ const HELP = `mako — Mako from your terminal
   mako status  [<app>]                            what is LIVE: published commit vs the tip of main
   mako publish [<app>]                            deploy the app's main branch now (enqueue + wait)
   mako connector test [<path>] [--config <file>]  run a connector's own contract against it
+  mako connector probe <id|name> [--entity <e>]   run a configured connector live: check + one page, written nowhere
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env
@@ -33,14 +34,21 @@ export async function main(argv, io = { log: console.log }) {
       return login(ctx, flags, io);
     case "logout": {
       const had = removeCredential(ctx.apiUrl, ctx.workspaceId);
-      io.log(had ? `Signed out of ${ctx.apiUrl}.` : `Nothing stored for ${ctx.apiUrl}.`);
+      io.log(
+        had
+          ? `Signed out of ${ctx.apiUrl}.`
+          : `Nothing stored for ${ctx.apiUrl}.`,
+      );
       return 0;
     }
     case "whoami": {
       const entry = findCredential(ctx.apiUrl, ctx.workspaceId);
-      if (ctx.apiKey) io.log(`API key configured for ${ctx.apiUrl} (MAKO_API_KEY).`);
+      if (ctx.apiKey)
+        io.log(`API key configured for ${ctx.apiUrl} (MAKO_API_KEY).`);
       if (entry) {
-        io.log(`Signed in to ${entry.apiUrl}${entry.workspaceId ? ` / workspace ${entry.workspaceId}` : ""} (token expires ${entry.expiresAt ?? "?"}).`);
+        io.log(
+          `Signed in to ${entry.apiUrl}${entry.workspaceId ? ` / workspace ${entry.workspaceId}` : ""} (token expires ${entry.expiresAt ?? "?"}).`,
+        );
       } else if (!ctx.apiKey) {
         io.log(`Not signed in to ${ctx.apiUrl}. Run \`mako login\`.`);
         return 1;

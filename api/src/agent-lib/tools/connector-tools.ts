@@ -8,7 +8,13 @@
  * different thing with a confusingly similar name — so an agent could resolve
  * a BigQuery destination but never the Stripe connector feeding it.
  *
- * NO CONFIG VALUES ARE RETURNED, from either tool. A connector's `config` is
+ * `probe_connector` is the third tool and the one that actually runs the
+ * connector: a credential check plus one bounded page of an entity, read
+ * live from the platform behind it and written nowhere. Its rules (bounded,
+ * read-only, secrets scrubbed from the result) live in
+ * `connectors/probe.service.ts`, shared with the REST route and the CLI.
+ *
+ * NO CONFIG VALUES ARE RETURNED, from any tool. A connector's `config` is
  * where its credential lives, and the model decrypts it on read via a getter,
  * so any path that returns `config` returns the secret. `inspect_connector`
  * returns the config field *names* and whether each is a secret — which is
@@ -20,6 +26,12 @@ import { tool } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
 
+import {
+  PROBE_DEFAULT_LIMIT,
+  PROBE_MAX_LIMIT,
+  ProbeError,
+  probeConnector,
+} from "../../connectors/probe.service";
 import { Connector as DataSource } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
@@ -201,6 +213,92 @@ export function createConnectorTools(workspaceId: string) {
             error: message,
           });
           return { error: `Failed to inspect connector: ${message}` };
+        }
+      },
+    }),
+    probe_connector: tool({
+      description: [
+        "Run a connector LIVE against the platform behind it: check that its credential works and, when `entity` is given, read one page of that entity (at most `limit` records) straight from the source API.",
+        "Nothing is written anywhere — no destination table, no sync cursor — so this is safe to call repeatedly. Use it to verify a newly configured connector, to see the real shape of an entity before writing a flow, or for a quick exploratory look at a platform's data before it is in the warehouse.",
+        "Get `connectorId` from list_connectors and the entity names from inspect_connector. A workspace-authored connector runs in a sandbox, so its first probe can take tens of seconds.",
+        "Returns the check result, then `entity.records`, `entity.schema` (declared field types), `entity.hasMore` (further pages exist on the platform) and `entity.truncated` (the page held more than `limit`). `fields` keeps only the named top-level fields of each record. `since` (ISO 8601) asks for records changed since then, where the connector can.",
+        "Credential values never appear in the result; if a vendor message would echo one, it is scrubbed.",
+      ].join("\n"),
+      inputSchema: z.object({
+        connectorId: z.string().describe("Connector id from list_connectors."),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            "Entity to read one page of (from inspect_connector). Omit to check the credential only.",
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(PROBE_MAX_LIMIT)
+          .optional()
+          .describe(
+            `Maximum records to return (default ${PROBE_DEFAULT_LIMIT}, max ${PROBE_MAX_LIMIT}).`,
+          ),
+        fields: z
+          .array(z.string())
+          .optional()
+          .describe("Keep only these top-level fields of each record."),
+        since: z
+          .string()
+          .optional()
+          .describe(
+            "ISO 8601 instant: ask for records changed since then, where the connector supports it.",
+          ),
+      }),
+      execute: async ({
+        connectorId,
+        entity,
+        limit,
+        fields,
+        since,
+      }: {
+        connectorId: string;
+        entity?: string;
+        limit?: number;
+        fields?: string[];
+        since?: string;
+      }) => {
+        let sinceDate: Date | undefined;
+        if (since !== undefined) {
+          sinceDate = new Date(since);
+          if (Number.isNaN(sinceDate.getTime())) {
+            return { error: `since is not a valid ISO 8601 instant: ${since}` };
+          }
+        }
+        try {
+          return await probeConnector({
+            workspaceId,
+            connectorId,
+            entity,
+            limit,
+            fields,
+            since: sinceDate,
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+          if (!(error instanceof ProbeError)) {
+            logger.error("probe_connector failed", {
+              workspaceId,
+              connectorId,
+              entity,
+              error: message,
+            });
+          }
+          return {
+            error:
+              error instanceof ProbeError
+                ? message
+                : `Probe failed: ${message}`,
+            ...(error instanceof ProbeError ? { code: error.code } : {}),
+          };
         }
       },
     }),

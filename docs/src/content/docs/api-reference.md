@@ -124,6 +124,26 @@ The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoin
 
 See [Console](/console/) for full API documentation with examples. Scheduled query endpoints require workspace admin access and use the same session/API-key authentication as other workspace endpoints. Version history is covered under [Version History](/version-history/).
 
+## Connectors
+
+SaaS data-source connectors (Stripe, Close, PostHog, workspace-authored `ws:` connectors, …) — the credential and the entities a [flow](#flows) syncs. See [SaaS Connectors](/connectors/).
+
+| Method   | Endpoint                                              | Description                                                                |
+| -------- | ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/connectors`                     | List connectors (credentials masked)                                       |
+| `POST`   | `/api/workspaces/:wid/connectors`                     | Add a connector (secret fields encrypted per the connector's schema)        |
+| `GET`    | `/api/workspaces/:wid/connectors/:id`                 | Get one connector                                                          |
+| `PUT`    | `/api/workspaces/:wid/connectors/:id`                 | Update a connector                                                         |
+| `DELETE` | `/api/workspaces/:wid/connectors/:id`                 | Remove a connector                                                         |
+| `POST`   | `/api/workspaces/:wid/connectors/:id/test`            | Test the credential                                                        |
+| `POST`   | `/api/workspaces/:wid/connectors/:id/probe`           | Probe live: test the credential and read one bounded page of an entity     |
+| `GET`    | `/api/workspaces/:wid/connectors/:id/entities`        | Entities the connector offers                                              |
+| `PATCH`  | `/api/workspaces/:wid/connectors/:id/enable`          | Enable or disable                                                          |
+
+### Probe Request
+
+`POST …/connectors/:id/probe` takes an optional JSON body — `entity` (omit to test the credential only), `limit` (1–200, default 20), `fields` (top-level fields to keep), `since` (ISO 8601 instant, honoured where the connector can) — and answers `{ success, data: { connector, check, entity?, durationMs } }`. `entity` carries `records`, `schema`, `count`, `received`, `truncated`, `hasMore` and `logs`. One API page is read and nothing is written; credential values are scrubbed from every string in the result. Errors carry a `code` (`invalid_input`, `not_found`, `unknown_entity`, `timeout`, `connector_unavailable`). Requires a browser session or a legacy (unscoped) API key: scoped MCP keys stay MCP-only, and reach the same probe through the `probe_connector` tool.
+
 ## Flows
 
 | Method | Endpoint                                                           | Description                                                  |

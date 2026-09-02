@@ -31,6 +31,22 @@ Connectors pull data from external services and sync it into your connected data
 3. **Sync** — Connectors fetch data in chunks with cursor-based pagination
 4. **Resume** — If a sync fails, it resumes from the last saved cursor (idempotent upserts)
 
+## Probing a Connector Live
+
+A connector is defined once — check, entities, read — and a flow is only one of the things that can drive it. The **live probe** runs a configured connector, with the credential Mako holds, directly against its platform: the credential check, then one bounded page of an entity, written nowhere. Use it to confirm a new key works, to see the real shape of an entity before writing a flow, or to look at a platform's data before a flow lands it in the warehouse.
+
+Three surfaces, one implementation, so they cannot drift on what "bounded", "read-only" and "no credential in the result" mean:
+
+| Surface | How |
+| --- | --- |
+| MCP (any agent, or the in-product agent) | `probe_connector({ connectorId, entity?, limit?, fields?, since? })` — ids from `list_connectors`, entity names from `inspect_connector` |
+| CLI | `mako connector probe <id\|name> [--entity <name>] [--limit <n>] [--fields a,b] [--since <iso>] [--json]` |
+| REST | `POST /api/workspaces/:wid/connectors/:id/probe` with the same body fields |
+
+The result carries the check outcome, then `entity.records`, `entity.schema` (declared field types), `entity.hasMore` (further pages exist on the platform), `entity.truncated` (the page held more than `limit`) and the connector's own log lines. Limits: at most `limit` records (default 20, max 200) from a single API page, and a 90-second budget for the whole probe — a [workspace connector](/guides/building-connectors/) runs in a sandbox, so its first probe can take tens of seconds. Every string value of the connector's config is scrubbed from the result, including from a vendor error that would echo the key back.
+
+Nothing is written: no destination table, no sync cursor. The one side effect is the same one **Test connection** has — a workspace connector's last-check mark, which is what moves it to *verified*.
+
 ## Building Custom Connectors
 
 See the [Building Connectors](/guides/building-connectors/) guide for implementing new data sources.

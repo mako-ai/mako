@@ -1680,6 +1680,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/connectors/{id}/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Probe a connector live: check its credential and read one page of an entity */
+        post: operations["post_api_workspaces_workspaceId_connectors_id_probe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/connectors/{id}/enable": {
         parameters: {
             query?: never;
@@ -11469,6 +11486,60 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_connectors_id_probe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Entity to read one page of. Omit to check the credential only. */
+                    entity?: string;
+                    /** @description Maximum records to return (default 20). */
+                    limit?: number;
+                    /** @description Keep only these top-level fields of each record. */
+                    fields?: string[];
+                    /** @description ISO 8601 instant: records changed since then, where the connector supports it. */
+                    since?: string;
+                };
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {
