@@ -108,4 +108,22 @@ describe("call sites", () => {
     expect(source).toMatch(/closeSourceConnectionTabsFor\(sourceId\)/);
     expect(source).toMatch(/if \(!res\.success\)/);
   });
+
+  it("fetchAll reconciles tabs only after a successful listing", () => {
+    const source = readFileSync(
+      join(here, "../store/sourceConnectionEntitiesStore.ts"),
+      "utf8",
+    );
+    expect(source).toMatch(/if \(data\.success\)/);
+    expect(source).toMatch(/reconcileSourceConnectionTabs\(/);
+  });
+
+  it("UrlSync refuses to hydrate a source-connection tab until fetchOne resolves", () => {
+    const source = readFileSync(
+      join(here, "../components/UrlSync.tsx"),
+      "utf8",
+    );
+    expect(source).toMatch(/fetchOne\(currentWorkspace\.id, connectorId\)/);
+    expect(source).toMatch(/closeSourceConnectionTabsFor\(connectorId\)/);
+  });
 });

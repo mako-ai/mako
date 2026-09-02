@@ -18,6 +18,7 @@ const h = vi.hoisted(() => {
     loadConsole: vi.fn(),
     openTab: vi.fn(),
     setActiveTab: vi.fn(),
+    focusOrOpenTab: vi.fn(),
     activeTabId: null as string | null,
     tabs: {} as Record<string, unknown>,
   };
@@ -25,6 +26,8 @@ const h = vi.hoisted(() => {
     focusNotebookTab: vi.fn(),
     setLeftPane: vi.fn(),
     captureOAuthReturn: vi.fn(),
+    fetchOneSourceConnection: vi.fn(),
+    closeSourceConnectionTabsFor: vi.fn(),
     consoleState,
     useConsoleStore: Object.assign(
       (selector: (s: typeof consoleState) => unknown) => selector(consoleState),
@@ -57,6 +60,15 @@ vi.mock("../store/mcpStore", () => ({
   useMcpStore: {
     getState: () => ({ captureOAuthReturn: h.captureOAuthReturn }),
   },
+}));
+vi.mock("../store/sourceConnectionEntitiesStore", () => ({
+  useSourceConnectionEntitiesStore: {
+    getState: () => ({ fetchOne: h.fetchOneSourceConnection }),
+  },
+}));
+vi.mock("../lib/source-connection-tabs", () => ({
+  closeSourceConnectionTabsFor: (...args: unknown[]) =>
+    h.closeSourceConnectionTabsFor(...args),
 }));
 
 // Stores/shells only touched by branches the notebook path never enters; stub
@@ -100,5 +112,39 @@ describe("UrlSync hydration", () => {
       ),
     );
     expect(h.setLeftPane).toHaveBeenCalledWith("notebooks");
+  });
+
+  it("opens a source-connection tab when /cx/:id still exists", async () => {
+    const id = "507f1f77bcf86cd799439011";
+    h.fetchOneSourceConnection.mockResolvedValue({
+      _id: id,
+      name: "Stripe",
+    });
+    window.history.replaceState({}, "", `/cx/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.consoleState.focusOrOpenTab).toHaveBeenCalledWith(
+        { kind: "connectors", where: expect.any(Function) },
+        expect.any(Function),
+      ),
+    );
+    expect(h.setLeftPane).toHaveBeenCalledWith("connectors");
+    expect(h.closeSourceConnectionTabsFor).not.toHaveBeenCalled();
+  });
+
+  it("does not leave a 404 tab when /cx/:id no longer resolves", async () => {
+    const id = "507f1f77bcf86cd799439012";
+    h.fetchOneSourceConnection.mockResolvedValue(null);
+    window.history.replaceState({}, "", `/cx/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.closeSourceConnectionTabsFor).toHaveBeenCalledWith(id),
+    );
+    expect(h.consoleState.focusOrOpenTab).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
   });
 });

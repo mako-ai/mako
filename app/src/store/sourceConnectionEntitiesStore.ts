@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
+import { reconcileSourceConnectionTabs } from "../lib/source-connection-tabs";
 
 interface SourceConnectionEntity {
   _id: string;
@@ -109,6 +110,9 @@ export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
               state.entities[key] = { ...ds, workspaceId };
             });
           });
+          // Persisted tabs outlive the row. Only after a successful list —
+          // an empty set from a failed request would close every tab.
+          reconcileSourceConnectionTabs(new Set(data.data.map(ds => ds._id)));
           return data.data;
         }
       } catch (err) {
