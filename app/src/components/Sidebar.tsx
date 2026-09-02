@@ -10,7 +10,7 @@ import {
 } from "@mui/material";
 import { Logout as LogoutIcon } from "@mui/icons-material";
 import { CircleUserRound as UserIcon } from "lucide-react";
-import { CHAT_ICON as ChatIcon, EXPLORER_ICONS } from "../lib/entity-icons";
+import { CHAT_ICON as ChatIcon } from "../lib/entity-icons";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
@@ -25,6 +25,11 @@ import { useRepoStore } from "../store/repoStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
+import {
+  topNavigationItems,
+  bottomNavigationItems,
+  type NavigationView,
+} from "../lib/explorer-nav";
 import { tabRevealTarget } from "../lib/explorer-reveal";
 
 /**
@@ -68,40 +73,6 @@ const NavButton = styled(Button, {
 // Views that can appear in the sidebar navigation. Extends the core AppView
 // union with additional sidebar-specific entries that don't directly map to
 // a left-pane view managed by the app store.
-type NavigationView =
-  | "databases"
-  | "consoles"
-  | "connectors"
-  | "flows"
-  | "dashboards"
-  | "notebooks"
-  | "apps"
-  | "dbt"
-  | "source-control"
-  | "settings"
-  | "views";
-
-const topNavigationItems: {
-  view: NavigationView;
-  icon: any;
-  label: string;
-}[] = [
-  { view: "databases", icon: EXPLORER_ICONS.databases, label: "Databases" },
-  // The workspace repository, VS Code style — second in the rail, the same
-  // neighbourhood VS Code keeps its SCM icon in.
-  {
-    view: "source-control",
-    icon: EXPLORER_ICONS["source-control"],
-    label: "Source Control",
-  },
-  { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
-  { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
-  { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
-  { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
-  { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
-  { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
-  { view: "apps", icon: EXPLORER_ICONS["apps"], label: "Apps" },
-];
 
 /**
  * Is the workspace checkout dirty? VS Code's SCM badge, reduced to a dot.
@@ -130,19 +101,13 @@ function useRepoDirty(): boolean {
   return dirty;
 }
 
-const bottomNavigationItems: {
-  view: NavigationView;
-  icon: any;
-  label: string;
-}[] = [{ view: "settings", icon: EXPLORER_ICONS.settings, label: "Settings" }];
-
 const preloadDashboardsExplorer = () => {
   void import("./DashboardsExplorer");
 };
 
 /**
  * Avatar button + dropdown (workspace switcher + sign out). Shared between the
- * desktop rail and the mobile AppBar / explorer drawer so logout and workspace
+ * desktop rail and the mobile Browse pane header so logout and workspace
  * switching behave identically everywhere.
  */
 export function SidebarUserMenu({
@@ -250,80 +215,6 @@ export function SidebarUserMenu({
   );
 }
 
-/**
- * Horizontal explorer switcher for the mobile drawer header. Reuses the same
- * nav item definitions as the desktop rail and switches which explorer the
- * drawer body (App.tsx `renderLeftPane`) shows. The drawer stays open so the
- * user can browse explorers; selecting a tree node closes it (handled in
- * App.tsx).
- */
-export function SidebarMobileExplorerNav() {
-  const activeExplorer = useUIStore(selectActiveExplorer);
-  const setLeftPane = useUIStore(state => state.setLeftPane);
-  const openLeftPane = useUIStore(state => state.openLeftPane);
-  const items = [...topNavigationItems, ...bottomNavigationItems];
-
-  return (
-    <Box
-      sx={{
-        display: "grid",
-        // Wrap every destination into an even grid so nothing scrolls off
-        // the right edge or gets clipped mid-label on a phone.
-        gridTemplateColumns: "repeat(auto-fill, minmax(64px, 1fr))",
-        gap: 0.25,
-        px: 0.5,
-        py: 0.25,
-      }}
-    >
-      {items.map(item => {
-        const Icon = item.icon;
-        const isActive = activeExplorer === item.view;
-        return (
-          <Button
-            key={item.view}
-            onClick={() => {
-              startTransition(() => {
-                setLeftPane(item.view as Exclude<NavigationView, "views">);
-                openLeftPane();
-              });
-            }}
-            onTouchStart={
-              item.view === "dashboards" ? preloadDashboardsExplorer : undefined
-            }
-            sx={{
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 0.25,
-              minWidth: 0,
-              width: "100%",
-              px: 0.5,
-              py: 0.5,
-              borderRadius: 1.5,
-              color: isActive ? "primary.main" : "text.secondary",
-              backgroundColor: isActive ? "action.selected" : "transparent",
-            }}
-          >
-            <Icon size={18} strokeWidth={1.5} />
-            <Typography
-              variant="caption"
-              sx={{
-                fontSize: "0.6rem",
-                lineHeight: 1.1,
-                maxWidth: "100%",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {item.label}
-            </Typography>
-          </Button>
-        );
-      })}
-    </Box>
-  );
-}
-
 function Sidebar() {
   // `activeExplorer` is the explorer that's actually visible on the left
   // (null when the pane is collapsed). Use this — not `leftPane`, which is
@@ -363,7 +254,7 @@ function Sidebar() {
   };
 
   // On mobile the 52px rail is hidden; navigation moves to the BottomNavigation
-  // and explorer Drawer rendered by App.tsx (which reuse the helpers above).
+  // and Browse pane rendered by App.tsx (which reuse the helpers above).
   if (isMobile) return null;
 
   return (
