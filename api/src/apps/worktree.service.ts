@@ -260,6 +260,27 @@ export function syncRepoBackedResources(
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  // Workspace connectors (`connectors/<slug>/`): a folder pushed to main is
+  // run in the sync box to capture its `spec`, which is what a credential form
+  // is built from. A connector whose spec fails is indexed as blocked with the
+  // reason, so whoever pushed it can see why it is not in the picker.
+  void import("../connectors/workspace/reconcile.service")
+    .then(m => m.syncConnectorsFromRepo(workspaceId, userId))
+    .then(result => {
+      if (result.blocked > 0 || result.skipped.length > 0) {
+        logger.warn("Some workspace connectors were not indexed", {
+          workspaceId,
+          blocked: result.blocked,
+          skipped: result.skipped,
+        });
+      }
+    })
+    .catch(error => {
+      logger.warn("Connector sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   // Flow definitions (RFC #904 block 3): `flows/<slug>.yml` is authoritative,
   // so an external edit reconfigures a live CDC stream and a removed file
   // tears one down. Caught like the others — one resource's bad YAML must not

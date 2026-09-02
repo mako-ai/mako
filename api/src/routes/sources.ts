@@ -3,6 +3,13 @@ import { decryptEncrypted, encryptString } from "../services/crypto.service";
 import { Connector as DataSource } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
+import {
+  SandboxedConnector,
+  isWorkspaceConnectorType,
+  slugFromType,
+} from "../connectors/workspace/SandboxedConnector";
+import { recordConnectionCheck } from "../connectors/workspace/reconcile.service";
+import { connectorTypeExists } from "../connectors/workspace/catalog";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -262,8 +269,22 @@ dataSourceRoutes.openapi(
         );
       }
 
-      // Check if connector type is supported
-      if (!connectorRegistry.hasConnector(body.type)) {
+      // Check if connector type is supported. A `ws:` type is one this
+      // workspace wrote, so the answer comes from its index rather than from
+      // the global registry, and a blocked connector is refused here rather
+      // than at the first sync.
+      if (isWorkspaceConnectorType(body.type)) {
+        if (!workspaceId) {
+          return c.json(
+            { success: false, error: "workspaceId is required" },
+            400,
+          );
+        }
+        const exists = await connectorTypeExists(body.type, workspaceId);
+        if (!exists.ok) {
+          return c.json({ success: false, error: exists.reason }, 400);
+        }
+      } else if (!connectorRegistry.hasConnector(body.type)) {
         return c.json(
           {
             success: false,
@@ -276,6 +297,7 @@ dataSourceRoutes.openapi(
       // Load connector schema for schema-driven encryption
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         body.type,
+        workspaceId,
       );
 
       // Create connector
@@ -396,6 +418,7 @@ dataSourceRoutes.openapi(
         if (configChanged) {
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             dataSource.type,
+            workspaceId,
           );
           dataSource.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
@@ -519,9 +542,29 @@ dataSourceRoutes.openapi(
   }),
   async c => {
     try {
-      const _workspaceId = c.req.param("workspaceId");
+      const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      // TODO: Add authentication and permission check
+      if (!workspaceId) {
+        return c.json(
+          { success: false, error: "Workspace ID is required" },
+          400,
+        );
+      }
+
+      // The id in the URL is the caller's; the workspace in the URL is the
+      // one the middleware authorized. Testing a connector by id alone would
+      // let a member of one workspace exercise another's credential — and,
+      // now that the outcome is recorded, write to another's index row.
+      const ownershipCheck = await DataSource.findOne(
+        { _id: id, workspaceId },
+        { _id: 1 },
+      ).lean();
+      if (!ownershipCheck) {
+        return c.json(
+          { success: false, error: "Connector not found in this workspace" },
+          404,
+        );
+      }
 
       // Use manager to load decrypted configuration before testing
       const ds = await databaseDataSourceManager.getDataSource(id);
@@ -542,7 +585,37 @@ dataSourceRoutes.openapi(
         );
       }
 
+      const workspaceSourceSha =
+        connector instanceof SandboxedConnector
+          ? await connector.sourceShaForConnectionCheck()
+          : undefined;
       const result = await connector.testConnection();
+
+      // The only path that may write `verified`: a push proves a connector
+      // starts, and nothing else, so this is the one place with a real
+      // credential and a real answer about it. A failure records the reason
+      // rather than the status, so a connector stays offerable in the picker
+      // while whoever entered the key fixes it.
+      if (isWorkspaceConnectorType(ds.type)) {
+        if (!workspaceSourceSha) {
+          throw new Error(
+            `Workspace connector ${ds.type} resolved to an unexpected implementation`,
+          );
+        }
+        await recordConnectionCheck({
+          workspaceId,
+          slug: slugFromType(ds.type),
+          sourceSha: workspaceSourceSha,
+          success: result.success === true,
+          message: result.message,
+        }).catch(error =>
+          logger.warn("Could not record a workspace connector check", {
+            workspaceId,
+            type: ds.type,
+            error,
+          }),
+        );
+      }
 
       return c.json({
         success: true,
@@ -792,14 +865,10 @@ dataSourceRoutes.openapi(
         content: {
           "application/json": {
             schema: z.object({
-              field: z
-                .string()
-                .min(1)
-                .max(128)
-                .openapi({
-                  description:
-                    "Top-level config field name declared encrypted by the connector's schema.",
-                }),
+              field: z.string().min(1).max(128).openapi({
+                description:
+                  "Top-level config field name declared encrypted by the connector's schema.",
+              }),
             }),
           },
         },
@@ -849,6 +918,7 @@ dataSourceRoutes.openapi(
       // so this cannot be used to walk arbitrary config.
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         (dataSource as { type: string }).type,
+        workspaceId,
       );
       const declared = (schema?.fields ?? []).find(
         (f: ConnectorFieldSchema) => f.name === field,
@@ -866,7 +936,10 @@ dataSourceRoutes.openapi(
       const stored = (dataSource as { config?: Record<string, unknown> })
         .config?.[field];
       if (typeof stored !== "string" || !stored) {
-        return c.json({ success: true, data: { value: "", wasEncrypted: false } });
+        return c.json({
+          success: true,
+          data: { value: "", wasEncrypted: false },
+        });
       }
 
       logger.info("Connector secret revealed", {

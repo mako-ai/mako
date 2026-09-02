@@ -142,8 +142,11 @@ export function createConnectorTools(workspaceId: string) {
           }
 
           const type = (row as { type?: string }).type ?? "";
+          // The workspace is part of the question for a `ws:` connector:
+          // its spec — and so which of its fields are secrets — belongs to
+          // this workspace and to no other.
           const schema = await syncConnectorRegistry
-            .getConfigSchemaForType(type)
+            .getConfigSchemaForType(type, workspaceId)
             .catch(() => null);
 
           // Entities and incremental capabilities come from a metadata-only
@@ -156,6 +159,7 @@ export function createConnectorTools(workspaceId: string) {
               id: String(row._id),
               name: (row as { name?: string }).name ?? "",
               type,
+              workspaceId,
               active: true,
               connection: {},
               settings: {},

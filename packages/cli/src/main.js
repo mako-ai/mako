@@ -5,6 +5,7 @@ import { login } from "./login.js";
 import { dev } from "./dev.js";
 import { status } from "./status.js";
 import { publish } from "./publish.js";
+import { connector } from "./connector.js";
 
 const HELP = `mako — Mako from your terminal
 
@@ -14,6 +15,7 @@ const HELP = `mako — Mako from your terminal
   mako dev     [<app>] [--port <n>] [--open]      run apps/<app> locally with real data
   mako status  [<app>]                            what is LIVE: published commit vs the tip of main
   mako publish [<app>]                            deploy the app's main branch now (enqueue + wait)
+  mako connector test [<path>] [--config <file>]  run a connector's own contract against it
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env
@@ -51,6 +53,8 @@ export async function main(argv, io = { log: console.log }) {
       return status(ctx, positional, io);
     case "publish":
       return publish(ctx, positional, io);
+    case "connector":
+      return connector(ctx, positional, flags, io);
     default:
       io.log(`unknown command "${command}"\n\n${HELP}`);
       return 2;

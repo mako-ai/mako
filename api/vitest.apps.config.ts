@@ -38,6 +38,10 @@ export default defineConfig({
       // config, so neither runner could execute them: tsx dies on them
       // with "Vitest failed to access its internal state", and vitest
       // never collected them. Invisible to both, until the coverage guard.
+      // Workspace connectors: real git, real Mongo, and a real child process
+      // per protocol command via the local sandbox provider.
+      "src/connectors/workspace/workspace-connectors.test.ts",
+      "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
     ],

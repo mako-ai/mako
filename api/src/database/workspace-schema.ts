@@ -4340,6 +4340,93 @@ SkillSchema.index(
 export const Skill = mongoose.model<ISkill>("Skill", SkillSchema);
 
 /**
+ * ConnectorDefinition — the derived index of `connectors/` in the workspace
+ * repo, one row per folder on `main`.
+ *
+ * The repo is the truth and this is the index, exactly as skills and flows
+ * are: nothing here is authored through an API, and a row that disagrees with
+ * `main` is wrong by definition and is rewritten on the next push. It exists
+ * so that listing a workspace's connectors, rendering a credential form, and
+ * refusing to run a broken connector are Mongo reads rather than git reads
+ * plus a sandbox boot.
+ *
+ * `status` is the whole point of the row:
+ *   indexed  — `spec` ran, its shape is valid. Enough to offer the connector
+ *              in the picker so a credential can be entered, and no more: a
+ *              push carries no credential, so `check` has nothing to run
+ *              against and the connector is unproven.
+ *   verified — a real `check` succeeded against a real data source. Only ever
+ *              set from the data-source path, never from a push.
+ *   blocked  — `spec` failed, or its shape is invalid. `blockedReason` is
+ *              shown to whoever pushed it, and the connector cannot back a
+ *              flow.
+ */
+export interface IConnectorDefinition extends Document {
+  workspaceId: mongoose.Types.ObjectId;
+  slug: string;
+  runtime: string;
+  /**
+   * The file to run, from `connector.yaml`. Indexed here because every
+   * command after the push — check, discover, read — has to run the same file
+   * the push ran, and only this row remembers which one that was.
+   */
+  entry: string;
+  /** The commit this folder was read at, so a stale row is recognisable. */
+  sha: string;
+  /** Blob sha of connector.yaml plus the entry file: the idempotence check. */
+  sourceSha: string;
+  spec?: Record<string, unknown>;
+  status: "indexed" | "verified" | "blocked";
+  blockedReason?: string;
+  entities: string[];
+  hasIcon: boolean;
+  lastCheckedAt?: Date;
+  /**
+   * Why the last real connection test failed. Distinct from `blockedReason`
+   * on purpose: a bad credential is not a broken connector, and conflating
+   * them would grey out a connector in the picker that only needs a new key.
+   */
+  lastCheckError?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    slug: { type: String, required: true, trim: true },
+    runtime: { type: String, required: true, default: "node" },
+    entry: { type: String, required: true, default: "connector.ts" },
+    sha: { type: String, required: true },
+    sourceSha: { type: String, required: true },
+    spec: { type: Schema.Types.Mixed },
+    status: {
+      type: String,
+      enum: ["indexed", "verified", "blocked"],
+      default: "indexed",
+      required: true,
+    },
+    blockedReason: { type: String, maxlength: 4000 },
+    entities: { type: [String], default: [] },
+    hasIcon: { type: Boolean, default: false },
+    lastCheckedAt: { type: Date },
+    lastCheckError: { type: String, maxlength: 4000 },
+  },
+  { collection: "connectordefinitions", timestamps: true },
+);
+
+ConnectorDefinitionSchema.index({ workspaceId: 1, slug: 1 }, { unique: true });
+
+export const ConnectorDefinition = mongoose.model<IConnectorDefinition>(
+  "ConnectorDefinition",
+  ConnectorDefinitionSchema,
+);
+
+/**
  * RealtimePresence — one document per connected realtime (SSE) client tab.
  *
  * Heartbeated by routes/realtime.ts while the connection is open; reaped by

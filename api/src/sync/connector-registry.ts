@@ -3,6 +3,14 @@ import { BaseConnector } from "../connectors/base/BaseConnector";
 import * as fs from "fs";
 import * as path from "path";
 import { loggers } from "../logging";
+import type { IConnector } from "../database/workspace-schema";
+import {
+  isWorkspaceConnectorType,
+  SandboxedConnector,
+  slugFromType,
+} from "../connectors/workspace/SandboxedConnector";
+import { loadConnectorDefinition } from "../connectors/workspace/resolver";
+import { connectionSpecificationToForm } from "../connectors/workspace/spec-translation";
 
 const logger = loggers.sync("connector-registry");
 
@@ -15,6 +23,26 @@ interface ConnectorRegistryEntry {
     description: string;
     supportedEntities: string[];
   };
+}
+
+/**
+ * The manager's shape -> the shape every connector is constructed from.
+ *
+ * `DataSourceConfig` calls the credential `connection`; a connector reads it
+ * as `config`. One function does the mapping for both the built-in and the
+ * workspace branch on purpose: when they each did it themselves, the
+ * workspace branch handed the raw row straight to `SandboxedConnector`, which
+ * then found no `config` and no `workspaceId` and could not run at all.
+ */
+function toConnectorDataSource(dataSource: DataSourceConfig): IConnector {
+  return {
+    _id: dataSource.id,
+    name: dataSource.name,
+    type: dataSource.type,
+    config: dataSource.connection,
+    settings: dataSource.settings,
+    workspaceId: dataSource.workspaceId,
+  } as unknown as IConnector;
 }
 
 /**
@@ -31,8 +59,38 @@ class SyncConnectorRegistry {
 
   /**
    * Get config schema for a connector type by calling its static getConfigSchema()
+   *
+   * THIS IS A SECURITY PATH, not just a form. `applySchemaEncryption` uses the
+   * returned field list to decide which values are secrets, and a null schema
+   * means every value is stored in plaintext. So a workspace connector must be
+   * resolved here properly — falling through to the directory import below
+   * would look for `../connectors/ws:acme`, fail, return null, and silently
+   * store the customer's API key unencrypted.
+   *
+   * A workspace connector's schema is per-workspace, hence `workspaceId`:
+   * two workspaces may each have a connector called `ws:acme` with different
+   * fields, and answering from a global cache would encrypt by the wrong one.
    */
-  async getConfigSchemaForType(type: string): Promise<any | null> {
+  async getConfigSchemaForType(
+    type: string,
+    workspaceId?: string,
+  ): Promise<any | null> {
+    if (isWorkspaceConnectorType(type)) {
+      if (!workspaceId) {
+        throw new Error(
+          `Resolving the config schema for "${type}" needs a workspaceId. ` +
+            `Without one, secret fields cannot be identified and the credential would be stored in plaintext.`,
+        );
+      }
+      const definition = await loadConnectorDefinition(
+        workspaceId,
+        slugFromType(type),
+      );
+      return connectionSpecificationToForm(
+        (definition.spec as any)?.connectionSpecification,
+      );
+    }
+
     let entry = this.connectors.get(type);
     if (!entry) {
       // Attempt lazy load
@@ -141,6 +199,24 @@ class SyncConnectorRegistry {
   async getConnector(
     dataSource: DataSourceConfig,
   ): Promise<BaseConnector | null> {
+    if (isWorkspaceConnectorType(dataSource.type)) {
+      if (!dataSource.workspaceId) {
+        throw new Error(
+          `Resolving the connector for "${dataSource.type}" needs a workspaceId on the data source; ` +
+            `a workspace connector cannot be resolved globally.`,
+        );
+      }
+      const connector = new SandboxedConnector(
+        toConnectorDataSource(dataSource),
+      );
+      // Load the index row before handing the connector out. This path is
+      // async and its callers go on to ask `getAvailableEntities()`, which is
+      // synchronous by contract and would otherwise answer "no entities" for a
+      // connector that has them.
+      await connector.loadDefinition();
+      return connector;
+    }
+
     let entry = this.connectors.get(dataSource.type);
     if (!entry) {
       // Attempt lazy load by type name (directory)
@@ -206,16 +282,7 @@ class SyncConnectorRegistry {
       }
     }
 
-    // Transform the data source to match what the connector expects
-    const connectorDataSource = {
-      _id: dataSource.id,
-      name: dataSource.name,
-      type: dataSource.type,
-      config: dataSource.connection,
-      settings: dataSource.settings,
-    };
-
-    return new entry.connectorClass(connectorDataSource);
+    return new entry.connectorClass(toConnectorDataSource(dataSource));
   }
 
   /**

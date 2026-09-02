@@ -1,8 +1,17 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import fs from "fs";
 import path from "path";
+import { Types } from "mongoose";
 
 import { connectorRegistry } from "../connectors/registry";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { workspaceService } from "../services/workspace.service";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import {
+  listWorkspaceConnectors,
+  workspaceConnectorForm,
+} from "../connectors/workspace/catalog";
 import {
   createRouter,
   errorJson,
@@ -12,9 +21,57 @@ import {
 
 /**
  * Connector catalog endpoints. Intentionally public (no authentication) — they
- * expose only static metadata and config-field schemas for available connectors.
+ * expose only static metadata and config-field schemas for the BUILT-IN
+ * connectors, which are the same for every tenant.
+ *
+ * A workspace's own connectors are not that. Their slugs, entity names,
+ * credential field names and `blockedReason` (which carries the workspace's
+ * own stderr) belong to one tenant, so they are served only to a caller who
+ * has authenticated AND is a member — see `memberWorkspaceId`.
  */
 export const connectorRoutes = createRouter();
+
+/**
+ * The workspace whose own connectors this caller may see, or null.
+ *
+ * `x-workspace-id` is a header, which means it is whatever the caller typed.
+ * On an authenticated router the auth middleware settles that; here there is
+ * none, so the check is done explicitly: authenticate the request the same
+ * way every other route does, then require membership. A caller who fails
+ * either gets the built-in catalog — the routes stay genuinely public — but
+ * never another tenant's connectors.
+ */
+async function memberWorkspaceId(c: Context): Promise<string | null> {
+  const requested = c.req.header("x-workspace-id");
+  if (!requested || !Types.ObjectId.isValid(requested)) return null;
+
+  // The middleware answers with a 401/redirect for an anonymous caller. That
+  // response is deliberately discarded: this route is public, so "not signed
+  // in" means "built-ins only", not "unauthorized".
+  let authenticated = false;
+  try {
+    await unifiedAuthMiddleware(c, async () => {
+      authenticated = true;
+    });
+  } catch {
+    return null;
+  }
+  if (!authenticated) return null;
+
+  // An API key is scoped to one workspace; a session is scoped to whichever
+  // workspaces the user is a member of.
+  const workspace = c.get("workspace") as {
+    _id: { toString(): string };
+  } | null;
+  if (workspace) {
+    return workspace._id.toString() === requested ? requested : null;
+  }
+  const user = c.get("user") as { id: string } | undefined;
+  if (!user) return null;
+  return (await workspaceService.hasAccess(requested, user.id))
+    ? requested
+    : null;
+}
 
 const WebhookCapabilitiesSchema = z.object({
   supported: z.boolean(),
@@ -63,6 +120,48 @@ const ConnectorMetadataSchema = z
   })
   .openapi("ConnectorMetadata");
 
+/**
+ * What a workspace connector claims it can do, today.
+ *
+ * Both false on purpose. Webhooks are not part of this iteration, and an
+ * incremental cursor is declared per stream in `discover`, which is not known
+ * without a credential. Claiming either would let the flow form offer a sync
+ * mode the connector cannot honour.
+ */
+const DEFAULT_WORKSPACE_WEBHOOK = {
+  supported: false,
+  provisioning: {
+    supported: false,
+    providerLabel: "Provider",
+    storesSecretAutomatically: false,
+  },
+};
+
+const DEFAULT_WORKSPACE_INCREMENTAL = {
+  supported: false,
+  mode: "none" as const,
+};
+
+/**
+ * A letter mark for a connector that ships no icon.
+ *
+ * Deterministic from the slug: the same connector is the same colour in every
+ * session and on every machine, which is what makes it usable as an
+ * identifier in a list rather than decoration.
+ */
+function monogramSvg(slug: string): string {
+  let hash = 0;
+  for (const char of slug) hash = (hash * 31 + char.charCodeAt(0)) % 360;
+  const initial = (slug[0] ?? "?").toUpperCase();
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">`,
+    `<rect width="40" height="40" rx="8" fill="hsl(${hash} 52% 46%)"/>`,
+    `<text x="20" y="27" text-anchor="middle" font-family="system-ui,sans-serif"`,
+    ` font-size="20" font-weight="600" fill="#fff">${initial.replace(/[<>&"]/g, "")}</text>`,
+    `</svg>`,
+  ].join("");
+}
+
 const TypeParam = z.object({
   type: z.string().openapi({ param: { name: "type", in: "path" } }),
 });
@@ -84,16 +183,38 @@ connectorRoutes.openapi(
       500: errorJson("Internal server error"),
     },
   }),
-  c => {
+  async c => {
     try {
       const connectors = connectorRegistry.getAllMetadata();
+      const built = connectors.map(entry => ({
+        type: entry.type,
+        ...entry.metadata,
+      }));
+
+      // A workspace's own connectors are appended only for a member of that
+      // workspace. Anyone else — anonymous, or signed in elsewhere — gets the
+      // built-in list rather than an error, so the route stays public without
+      // becoming a way to enumerate another tenant's connectors.
+      const workspaceId = await memberWorkspaceId(c);
+      const own = workspaceId
+        ? await listWorkspaceConnectors(workspaceId).catch(() => [])
+        : [];
+
       return c.json(
         {
           success: true as const,
-          data: connectors.map(entry => ({
-            type: entry.type,
-            ...entry.metadata,
-          })),
+          data: [
+            ...built,
+            ...own.map(entry => ({
+              type: entry.type,
+              name: entry.name,
+              version: entry.version,
+              description: entry.description,
+              supportedEntities: entry.supportedEntities,
+              webhook: DEFAULT_WORKSPACE_WEBHOOK,
+              incremental: DEFAULT_WORKSPACE_INCREMENTAL,
+            })),
+          ],
         },
         200,
       );
@@ -127,8 +248,42 @@ connectorRoutes.openapi(
       404: errorJson("Connector or schema not found"),
     },
   }),
-  c => {
+  async c => {
     const { type } = c.req.valid("param");
+
+    // A workspace connector has no class to call a static method on: its form
+    // is derived from the `spec` captured when it was pushed, so this stays a
+    // single Mongo read and never boots a sandbox.
+    if (isWorkspaceConnectorType(type)) {
+      // Field names, titles and descriptions of a tenant's credential form:
+      // members only. A non-member gets the same 404 as a type that does not
+      // exist, so the route cannot be used to probe which workspaces have a
+      // connector by a given name.
+      const workspaceId = await memberWorkspaceId(c);
+      if (!workspaceId) {
+        return c.json({ success: false, error: "Connector not found" }, 404);
+      }
+      try {
+        const form = await workspaceConnectorForm(workspaceId, type);
+        return c.json(
+          {
+            success: true as const,
+            data: form as unknown as Record<string, unknown>,
+          },
+          200,
+        );
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error ? error.message : "Connector not found",
+          },
+          404,
+        );
+      }
+    }
+
     const metadata = connectorRegistry.getMetadata(type);
     if (!metadata) {
       return c.json({ success: false, error: "Connector not found" }, 404);
@@ -172,6 +327,25 @@ connectorRoutes.openapi(
   }),
   c => {
     const { type } = c.req.valid("param");
+
+    // An `<img>` carries no workspace header, so a workspace connector's own
+    // icon cannot be fetched from its repo here without putting a tenant id
+    // in a public URL. It gets a generated monogram instead: derived purely
+    // from the slug, so it exposes nothing and still gives the picker a
+    // stable, distinguishable mark per connector.
+    if (isWorkspaceConnectorType(type)) {
+      return c.body(monogramSvg(type.slice(3)), 200, {
+        "Content-Type": "image/svg+xml",
+        "Cache-Control": "public, max-age=3600",
+      });
+    }
+
+    // The type becomes a path segment, so it has to be a plain directory
+    // name. Without this, `..%2f..%2fsomething` reads an icon.svg from
+    // anywhere on the filesystem the process can reach.
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(type)) {
+      return c.json({ success: false, error: "Icon not found" }, 404);
+    }
 
     let iconPath = path.resolve(
       __dirname,
