@@ -24,10 +24,18 @@ import {
   toggleSkillSuppressed,
 } from "../services/skills.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { RepoRequiredError } from "../apps/config";
 
 const logger = loggers.api("skills");
 
 export const skillsRoutes = createRouter();
+
+function repoRequired(c: AuthenticatedContext, error: RepoRequiredError) {
+  return c.json(
+    { success: false, code: error.code, error: error.message },
+    error.status as 412,
+  );
+}
 
 const WorkspaceParam = z.object({
   workspaceId: z
@@ -235,6 +243,7 @@ skillsRoutes.openapi(
       }
       return c.json({ success: true, skill: result.skill });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error updating skill", { error });
       return c.json(
         {
@@ -294,6 +303,7 @@ skillsRoutes.openapi(
       }
       return c.json({ success: true, suppressed });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error toggling skill suppressed", { error });
       return c.json(
         {
@@ -335,6 +345,7 @@ skillsRoutes.openapi(
       }
       return c.json({ success: true });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error deleting skill", { error });
       return c.json(
         {

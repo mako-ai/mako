@@ -40,7 +40,9 @@ import {
 } from "./worktree.service";
 import { AppWorktree } from "../database/workspace-schema";
 import { getSandboxProvider } from "./sandbox/provider";
-import { repoDirFor, resolveCommit } from "./repository.service";
+import { repoDirFor, resolveCommit, initRepo } from "./repository.service";
+import { RepoRequiredError } from "./config";
+import { seededTemplateFiles } from "./workspace-template";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
 let mongo: MongoMemoryServer;
@@ -84,6 +86,7 @@ beforeEach(async () => {
   // starts from an empty workspace repo.
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
 });
 
 /** Lose the machine. Not every provider can, and a test must not pretend. */
@@ -100,6 +103,11 @@ async function makeProject(title = "Test App") {
 }
 
 describe("project lifecycle", () => {
+  it("refuses to create an app when the workspace has no git repo", async () => {
+    await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+    await expect(makeProject()).rejects.toBeInstanceOf(RepoRequiredError);
+  });
+
   it("creates a project whose files read from git with no session", async () => {
     const project = await makeProject();
     const { entries } = await listFiles(project, USER);

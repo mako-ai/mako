@@ -15,6 +15,8 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
+import { initRepo, repoDirFor } from "./repository.service";
+import { seededTemplateFiles } from "./workspace-template";
 import { scopeOf } from "./worktree.service";
 
 let mongo: MongoMemoryServer;
@@ -35,6 +37,7 @@ beforeAll(async () => {
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
 }, 120_000);
 
 afterAll(async () => {

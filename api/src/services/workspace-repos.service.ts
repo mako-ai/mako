@@ -168,11 +168,8 @@ export async function purgeMigratedContentIndex(
     NotebookIndex.deleteMany({ workspaceId: id }),
     NotebookFolder.deleteMany({ workspaceId: id }),
     DbtJob.deleteMany({ workspaceId: id }),
+    DbtProject.deleteMany({ workspaceId: id }),
   ]);
-  await DbtProject.updateMany(
-    { workspaceId: id },
-    { $set: { environments: [] } },
-  );
   await Workspace.updateOne(
     { _id: id },
     { $unset: { "settings.customPrompt": "", selfDirective: "" } },

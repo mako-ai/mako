@@ -86,7 +86,7 @@ import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
   APPS_EXEC_MAX_TIMEOUT_MS,
   previewStagingDir,
-  appsRequireConnectedRepo,
+  RepoRequiredError,
 } from "../apps/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
@@ -310,6 +310,12 @@ function handleError(c: AuthenticatedContext, error: unknown) {
   if (error instanceof WorktreeConflictError) {
     return c.json({ success: false, error: error.message }, 409);
   }
+  if (error instanceof RepoRequiredError) {
+    return c.json(
+      { success: false, code: error.code, error: error.message },
+      error.status as 412,
+    );
+  }
   logger.error("Apps route error", { error });
   return c.json(
     {
@@ -346,9 +352,7 @@ appsRoutes.openapi(
       {
         success: true as const,
         linked: repos.length > 0,
-        // Production requires the workspace's own repo (apps.md §17); dev
-        // and previews work local-only.
-        canCreate: repos.length > 0 || !appsRequireConnectedRepo(),
+        canCreate: repos.length > 0,
         repos: repos.map(r => ({
           owner: r.owner,
           repo: r.repo,
@@ -755,11 +759,11 @@ appsRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description } = c.req.valid("json");
       const userId = actingUserId(c);
-      // Apps live in the workspace's own GitHub repo (apps.md §17): in
-      // production, creating one without a connected repo is refused with an
-      // actionable message. Dev and previews keep local-only repos.
+      // Apps live in the workspace's own GitHub repo (apps.md §17). Creating
+      // one without a connected repo is refused — there is no local-only
+      // Cloud Storage skip (issue #956).
       const repos = await listWorkspaceRepos(workspaceId);
-      if (repos.length === 0 && appsRequireConnectedRepo()) {
+      if (repos.length === 0) {
         return c.json(
           {
             success: false,

@@ -13,6 +13,7 @@ import {
 } from "./workspace-repos.service";
 import {
   ConsoleFolder,
+  DbtProject,
   Flow,
   GitHubInstallation,
   SavedConsole,
@@ -321,5 +322,31 @@ describe("git is the only store (issue #956)", () => {
     await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
     expect(await SavedConsole.countDocuments({ workspaceId: ws })).toBe(0);
     expect(await ConsoleFolder.countDocuments({ workspaceId: ws })).toBe(0);
+  });
+
+  it("disconnect deletes dbt project rows, not just their environments", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    const ws = new Types.ObjectId(workspaceId);
+    await DbtProject.create({
+      workspaceId: ws,
+      name: "ghost",
+      createdBy: "u1",
+      environments: [
+        {
+          name: "dev",
+          connectionId: new Types.ObjectId(),
+          targetSchema: "analytics",
+        },
+      ],
+    });
+    expect(await DbtProject.countDocuments({ workspaceId: ws })).toBe(1);
+    await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
+    expect(await DbtProject.countDocuments({ workspaceId: ws })).toBe(0);
   });
 });

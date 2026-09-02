@@ -38,6 +38,9 @@ function refreshGitDerivedExplorers(
   void import("./flowStore").then(({ useFlowStore }) => {
     void useFlowStore.getState().fetchFlows(workspaceId);
   });
+  void import("./dbtStore").then(({ useDbtStore }) => {
+    void useDbtStore.getState().fetchProjects(workspaceId);
+  });
 }
 
 export interface AppMeta {
@@ -606,7 +609,7 @@ export const useAppsStore = create<AppsStore>()(
           };
           set(s => {
             s.repos = body.repos ?? [];
-            s.canCreate = s.canCreate || (body.repos ?? []).length > 0;
+            s.canCreate = (body.repos ?? []).length > 0;
           });
           return {
             installations: body.installations ?? [],
@@ -752,7 +755,7 @@ export const useAppsStore = create<AppsStore>()(
               r => !(r.owner === owner && r.repo === repo),
             );
           });
-          // canCreate may still be true via cloud storage — let the probe say.
+          // canCreate follows the probe — no GitHub binding means no creates.
           void get().probeEnabled(workspaceId);
           refreshGitDerivedExplorers(workspaceId, get().fetchApps);
         } catch (e) {

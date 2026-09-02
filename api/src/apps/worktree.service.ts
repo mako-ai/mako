@@ -72,16 +72,14 @@ import {
   APPS_MAX_FILE_BYTES,
   appsGitOriginBase,
   appsSessionsRoot,
-  RepoRequiredError,
-  appsRequireConnectedRepo,
 } from "./config";
+import { requireWorkspaceRepo } from "./workspace-repo-required";
 import { assertSafeRelPath, EMPTY_TREE, runGit, ZERO_OID } from "./git";
 import {
   DEFAULT_BRANCH,
   commitTree,
   globTree,
   grepTree,
-  initRepo,
   listTree,
   log as repoLog,
   diffNameStatus,
@@ -96,7 +94,6 @@ import {
   type GrepMatch,
   type TreeEntry,
 } from "./repository.service";
-import { initialWorkspaceFiles } from "./workspace-template";
 import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
 import { syncSkillsIndexFromRepo } from "./workspace-skills.service";
 import { createAppsScaffold } from "./scaffold";
@@ -786,9 +783,11 @@ export async function createProject(input: {
   slug?: string;
 }): Promise<IAppProject> {
   const title = input.title.trim() || "Untitled app";
-  // Production: the workspace's own repo is the only durable store (§17).
+  // Git first (#956): do not init a local-only repo that then lets consoles,
+  // dbt, and prompt writes skip the 412. A GitHub binding (or a test that
+  // already seeded the bare repo) is required.
+  const repoDir = await requireWorkspaceRepo(input.workspaceId);
   const mirror = await resolveMirrorTarget(input.workspaceId);
-  if (appsRequireConnectedRepo() && !mirror) throw new RepoRequiredError();
   const slug = input.slug ?? (await uniqueSlug(input.workspaceId, title));
   const project = await AppProject.create({
     workspaceId: new Types.ObjectId(input.workspaceId),
@@ -801,22 +800,9 @@ export async function createProject(input: {
     defaultBranch: DEFAULT_BRANCH,
   });
 
-  // §10 monorepo: ensure the ONE workspace repo, then commit the scaffold
-  // under apps/<slug>/ onto main.
-  const repoDir = await repoForWorkspace(input.workspaceId);
+  // §10 monorepo: commit the scaffold under apps/<slug>/ onto main.
   let scaffoldCommit: { commitOid: string; previousHead: string } | null = null;
   try {
-    if (!(await repoExists(repoDir))) {
-      // README + .gitignore (seeded once), and the managed template: agent
-      // instructions, MCP wiring, identity stamp, and the vendored
-      // @makoai/app-sdk so `import { useQuery } from "@makoai/app-sdk"` resolves
-      // in vite dev, in npm run build, and in a laptop clone alike. Existing
-      // repos are brought level by ensureWorkspaceTemplate (workspace-template.ts).
-      await initRepo(repoDir, initialWorkspaceFiles(input.workspaceId), {
-        message: "Initialize workspace repository",
-        author: input.author,
-      });
-    }
     const scaffold = createAppsScaffold({
       title: project.title,
       description: input.description,
