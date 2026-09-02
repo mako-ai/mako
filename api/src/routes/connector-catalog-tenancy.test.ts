@@ -33,6 +33,17 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 const ctx = vi.hoisted(() => ({
   signedIn: true,
   memberOf: [] as string[],
+  workspaceIcon: `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 1h1z"/></svg>`,
+}));
+
+vi.mock("../connectors/workspace/resolver", async importOriginal => ({
+  ...(await importOriginal<
+    typeof import("../connectors/workspace/resolver")
+  >()),
+  readConnectorFolder: vi.fn(
+    async () =>
+      new Map([["icon.svg", new TextEncoder().encode(ctx.workspaceIcon)]]),
+  ),
 }));
 
 vi.mock("../auth/unified-auth.middleware", () => ({
@@ -164,5 +175,32 @@ describe("GET /api/connectors/{type}/schema", () => {
         encrypted: true,
       },
     ]);
+  });
+});
+
+describe("GET /api/connectors/{type}/icon.svg", () => {
+  it("returns the repo icon only to a workspace member", async () => {
+    ctx.memberOf = [WS_THEIRS];
+    const response = await app.request(
+      `/api/connectors/ws:acme-crm/icon.svg?workspaceId=${WS_THEIRS}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("content-security-policy")).toContain(
+      "default-src 'none'",
+    );
+    expect(await response.text()).toBe(ctx.workspaceIcon);
+  });
+
+  it("does not reveal the repo icon to a non-member", async () => {
+    ctx.memberOf = [];
+    const response = await app.request(
+      `/api/connectors/ws:acme-crm/icon.svg?workspaceId=${WS_THEIRS}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(await response.text()).not.toBe(ctx.workspaceIcon);
   });
 });
