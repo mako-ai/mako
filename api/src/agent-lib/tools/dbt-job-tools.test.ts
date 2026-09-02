@@ -7,7 +7,14 @@
  * bus, entity versioning) are mocked so the test stays deterministic and
  * offline — it only verifies the tool's workspace scoping, validation, and
  * delete behavior.
+ *
+ * Personal-env auto-provision writes `dbt/environments.yml` through git
+ * (`requireWorkspaceRepo`), so this file uses the same temp APPS_GIT_ROOT
+ * + `initRepo` rig as `dbt-config.service.test.ts`.
  */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   afterAll,
   beforeAll,
@@ -59,10 +66,19 @@ import {
 } from "../../database/workspace-schema";
 import { workspaceService } from "../../services/workspace.service";
 import { triggerDbtRun } from "../../dbt/dbt-run.service";
+import {
+  DEFAULT_BRANCH,
+  initRepo,
+  readBlob,
+  repoDirFor,
+} from "../../apps/repository.service";
+import { DBT_ENVIRONMENTS_PATH } from "../../dbt/dbt-config-files";
 
 let mongo: MongoMemoryServer;
+let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId().toString();
+const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 type DeleteJobInput = { projectId: string; jobId: string };
 type ToolResult = {
@@ -116,13 +132,18 @@ async function seedJob(projectId: string): Promise<string> {
 }
 
 beforeAll(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "dbt-job-tools-test-"));
+  process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  process.env.APPS_SANDBOX_PROVIDER = "local";
+  delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
-});
+}, 120_000);
 
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
+  await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
@@ -138,6 +159,8 @@ beforeEach(async () => {
     mongoose.connection.collection("dbt_jobs").deleteMany({}),
     mongoose.connection.collection("dbt_env_preferences").deleteMany({}),
   ]);
+  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
 });
 
 describe("dbt_delete_job", () => {
@@ -233,6 +256,9 @@ describe("dbt_run_model — per-user environment resolution", () => {
     const personal = project?.environments.find(e => e.ownerUserId === "u1");
     expect(personal?.name).toBe("tester");
     expect(personal?.targetSchema).toBe("dbt_tester");
+    const envFile = await readBlob(repoDirFor(WS), MAIN, DBT_ENVIRONMENTS_PATH);
+    expect(envFile.contents).toContain("name: tester");
+    expect(envFile.contents).toContain("dbt_tester");
 
     // The queued run targets it, not the shared default.
     expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
@@ -245,6 +271,18 @@ describe("dbt_run_model — per-user environment resolution", () => {
     expect(
       after?.environments.filter(e => e.ownerUserId === "u1"),
     ).toHaveLength(1);
+  });
+
+  it("multi-user workspace: a missing git repo does not fall back to shared dev", async () => {
+    await fs.rm(repoDirFor(WS), { recursive: true, force: true });
+    const projectId = await seedProject();
+
+    const result = await runModel({ projectId, model: "stg_orders" });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Connect a GitHub repository/i);
+    expect(vi.mocked(triggerDbtRun)).not.toHaveBeenCalled();
+    const project = await DbtProject.findById(projectId).lean();
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 
   it("single-user workspace: dev IS the personal target — no auto-provisioning", async () => {

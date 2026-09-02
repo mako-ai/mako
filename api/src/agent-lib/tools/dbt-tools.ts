@@ -35,6 +35,7 @@ import {
 } from "../../database/workspace-schema";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { workspaceService } from "../../services/workspace.service";
+import { RepoRequiredError } from "../../apps/config";
 import {
   ensurePersonalDbtEnvironment,
   findPersonalEnvironment,
@@ -882,8 +883,11 @@ export const createDbtServerTools = (
           //  - MULTIPLE players: auto-provision the caller's PERSONAL
           //    environment on first build so teammates never build over each
           //    other's schemas.
-          // An explicit `environment` or a saved per-user choice always wins;
-          // best-effort — a provisioning failure falls back to the default.
+          // An explicit `environment` or a saved per-user choice always wins.
+          // Transient provision failures (display-name lookup, etc.) fall
+          // back to the shared default so a flaky lookup does not block the
+          // run. A missing git repo must not: falling back would let
+          // teammates overwrite each other's schemas (#956).
           let autoProvisionedEnv: string | undefined;
           if (
             !environment &&
@@ -906,8 +910,9 @@ export const createDbtServerTools = (
                   publishProjectUpdated(projectId);
                 }
               }
-            } catch {
-              /* fall back to the resolved default environment */
+            } catch (error) {
+              if (error instanceof RepoRequiredError) throw error;
+              /* transient provision failure: fall back to the resolved default */
             }
           }
           const wantsDefer =
