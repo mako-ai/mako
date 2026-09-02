@@ -1284,7 +1284,8 @@ refusal the binding is rolled back):
 | empty | none | `fresh` — first commit seeds the repo |
 | empty | exists | `seeded` — history pushed into the repo |
 | has content | none | `imported` — the repo's history becomes the workspace repo; its `apps/<slug>/mako.json` folders appear as apps with no registration step (§13 doctrine, now applied to customer repos) |
-| has content | exists | refused — whose history wins is not ours to guess |
+| has content (shares history) | exists | `reconnected` — the disconnect-then-connect-again case: unlinking never touches the local repo, so both sides hold the same lineage. `main` is reconciled like a webhook fetch (remote ahead → fast-forward; local ahead → push; diverged → mirror wins, local tip parked under `refs/mako/diverged/*`), then pushed |
+| has content (unrelated) | exists | refused — whose history wins is not ours to guess |
 
 **A customer remote is never force-pushed.** mako-cloud repos are OUR remotes
 and keep `git push --mirror` (all refs, pruned). Connected repos get explicit
@@ -2045,8 +2046,8 @@ echoes the active session's name instead of a generic caption.
 moment a workspace binds a repo (RealAdvisor → `realadvisor/mako-workspace`),
 `resolveMirrorTarget` prefers the binding over `appsV2CloudRepo`, and every
 mirror push lands in the customer's own repo. Adoption on connect follows a
-matrix (fresh repo → seed; matching history → import; unrelated history →
-refuse), and pushes to a customer remote are NEVER forced: `refs/heads/*` and
+matrix (fresh repo → seed; empty workspace → import; shared history → reconnect;
+unrelated history → refuse), and pushes to a customer remote are NEVER forced: `refs/heads/*` and
 `refs/tags/*` go unforced, only `+refs/mako/*` may move. Divergence therefore
 stalls by design and is reconciled with a merge commit, not `--force`. Inbound,
 the GitHub webhook matches pushes by repo binding

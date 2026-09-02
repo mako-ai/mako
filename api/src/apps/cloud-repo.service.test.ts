@@ -8,7 +8,9 @@
  *    connected tier is enabled (prod / explicit opt-in) — previews and dev on
  *    prod-cloned DBs must treat customer bindings as inert
  *  - connect-time adoption: seed an empty repo, import a non-empty repo into
- *    an empty workspace, refuse when both sides have content
+ *    an empty workspace, reconnect a repo that shares the workspace's
+ *    history (unlink never touches the local repo, so a re-link finds both
+ *    sides populated), refuse only when both sides have UNRELATED content
  *  - a customer remote is NEVER force-pushed: a diverged remote branch
  *    survives our push attempt; only refs/mako/* may move non-fast-forward
  *  - webhook fetch fast-forwards the local branch, leaves a merely-ahead
@@ -194,7 +196,90 @@ describe("adoptConnectedRepo", () => {
     expect(entries.map(e => e.path)).toContain("apps/imported/mako.json");
   });
 
-  it("refuses when both the repo and the workspace have content", async () => {
+  it("reconnects a repo that already holds the workspace's history", async () => {
+    // Connect, disconnect (the local repo stays), connect again.
+    const remoteDir = await makeBareRemote("acme", "relink-same");
+    state.binding = { owner: "acme", repo: "relink-same" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    expect(await adoptConnectedRepo(workspaceId, state.binding)).toBe("seeded");
+    const head = await headOf(repoDirFor(workspaceId));
+
+    expect(await adoptConnectedRepo(workspaceId, state.binding)).toBe(
+      "reconnected",
+    );
+    expect(await headOf(repoDirFor(workspaceId))).toBe(head);
+    expect(await headOf(remoteDir)).toBe(head);
+  });
+
+  it("reconnect pushes commits made while the repo was disconnected", async () => {
+    const remoteDir = await makeBareRemote("acme", "relink-behind");
+    state.binding = { owner: "acme", repo: "relink-behind" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    const local = await commitFiles(
+      repoDirFor(workspaceId),
+      { "apps/b/mako.json": "{}" },
+      "made while unlinked",
+    );
+
+    expect(await adoptConnectedRepo(workspaceId, state.binding)).toBe(
+      "reconnected",
+    );
+    expect(await headOf(remoteDir)).toBe(local);
+  });
+
+  it("reconnect fast-forwards to a repo that moved on GitHub meanwhile", async () => {
+    const remoteDir = await makeBareRemote("acme", "relink-ahead");
+    state.binding = { owner: "acme", repo: "relink-ahead" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    const theirs = await commitFiles(
+      remoteDir,
+      { "apps/c/mako.json": "{}" },
+      "pushed to GitHub while unlinked",
+    );
+
+    expect(await adoptConnectedRepo(workspaceId, state.binding)).toBe(
+      "reconnected",
+    );
+    expect(await headOf(repoDirFor(workspaceId))).toBe(theirs);
+    const entries = await listTree(repoDirFor(workspaceId), DEFAULT_BRANCH);
+    expect(entries.map(e => e.path)).toContain("apps/c/mako.json");
+  });
+
+  it("reconnect on a diverged shared history lets the mirror win and parks the local tip", async () => {
+    const remoteDir = await makeBareRemote("acme", "relink-split");
+    state.binding = { owner: "acme", repo: "relink-split" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    const theirs = await commitFiles(
+      remoteDir,
+      { "theirs.txt": "x" },
+      "theirs",
+    );
+    const ours = await commitFiles(
+      repoDirFor(workspaceId),
+      { "ours.txt": "y" },
+      "ours",
+    );
+
+    expect(await adoptConnectedRepo(workspaceId, state.binding)).toBe(
+      "reconnected",
+    );
+    expect(await headOf(repoDirFor(workspaceId))).toBe(theirs);
+    expect(await headOf(remoteDir)).toBe(theirs);
+    const parked = (
+      await runGit([
+        "-C",
+        remoteDir,
+        "rev-parse",
+        `refs/mako/diverged/${DEFAULT_BRANCH}/${ours.slice(0, 12)}`,
+      ])
+    ).stdout.trim();
+    expect(parked).toBe(ours);
+  });
+
+  it("refuses when both the repo and the workspace have unrelated content", async () => {
     const remoteDir = path.join(remotesRoot, "acme", "busy.git");
     await fs.mkdir(path.dirname(remoteDir), { recursive: true });
     await initRepo(remoteDir, { "README.md": "not mako" });
