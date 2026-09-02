@@ -13,10 +13,13 @@ import { Types } from "mongoose";
 import fs from "node:fs/promises";
 import {
   AppProject,
+  ConsoleFolder,
   DbtJob,
   DbtProject,
+  EntityVersion,
   Flow,
   GitHubInstallation,
+  NotebookFolder,
   NotebookIndex,
   SavedConsole,
   Skill,
@@ -157,10 +160,13 @@ export async function purgeMigratedContentIndex(
   const id = new Types.ObjectId(workspaceId);
   await Promise.all([
     Flow.deleteMany({ workspaceId: id }),
-    SavedConsole.deleteMany({ workspaceId: id, isSaved: true }),
+    SavedConsole.deleteMany({ workspaceId: id }),
+    ConsoleFolder.deleteMany({ workspaceId: id }),
+    EntityVersion.deleteMany({ workspaceId: id, entityType: "console" }),
     Skill.deleteMany({ workspaceId: id }),
     AppProject.deleteMany({ workspaceId: id }),
     NotebookIndex.deleteMany({ workspaceId: id }),
+    NotebookFolder.deleteMany({ workspaceId: id }),
     DbtJob.deleteMany({ workspaceId: id }),
   ]);
   await DbtProject.updateMany(

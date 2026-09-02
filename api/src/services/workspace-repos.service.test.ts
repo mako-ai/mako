@@ -12,8 +12,10 @@ import {
   listWorkspaceRepos,
 } from "./workspace-repos.service";
 import {
+  ConsoleFolder,
   Flow,
   GitHubInstallation,
+  SavedConsole,
   Workspace,
 } from "../database/workspace-schema";
 
@@ -277,5 +279,47 @@ describe("git is the only store (issue #956)", () => {
     await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
     expect(await Flow.countDocuments({ workspaceId })).toBe(0);
     expect(await listWorkspaceRepos(workspaceId)).toHaveLength(0);
+  });
+
+  it("disconnect purges every console row and folder, not only saved files", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    const ws = new Types.ObjectId(workspaceId);
+    await ConsoleFolder.create({
+      workspaceId: ws,
+      name: "scratch",
+      isPrivate: false,
+      access: "workspace",
+    });
+    await SavedConsole.create({
+      workspaceId: ws,
+      name: "draft.sql",
+      code: "select 1",
+      language: "sql",
+      isSaved: false,
+      createdBy: "u1",
+      owner_id: "u1",
+      access: "private",
+      isPrivate: true,
+    });
+    await SavedConsole.create({
+      workspaceId: ws,
+      name: "saved.sql",
+      code: "select 2",
+      language: "sql",
+      isSaved: true,
+      createdBy: "u1",
+      owner_id: "u1",
+      access: "workspace",
+      isPrivate: false,
+    });
+    await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
+    expect(await SavedConsole.countDocuments({ workspaceId: ws })).toBe(0);
+    expect(await ConsoleFolder.countDocuments({ workspaceId: ws })).toBe(0);
   });
 });
