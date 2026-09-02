@@ -16,14 +16,11 @@ import {
   BottomNavigation,
   BottomNavigationAction,
   Paper,
-  IconButton,
-  Typography,
 } from "@mui/material";
 import {
   MessageCircleMore as AskTabIcon,
   Eye as ViewTabIcon,
   Compass as BrowseTabIcon,
-  Settings as SettingsTabIcon,
 } from "lucide-react";
 import {
   Routes,
@@ -41,10 +38,9 @@ import {
 } from "react-resizable-panels";
 import { trackEvent, trackPageView } from "./lib/analytics";
 import { setIframeDragGuard } from "./lib/iframe-drag-guard";
-import Sidebar, {
-  SidebarUserMenu,
-  SidebarMobileExplorerNav,
-} from "./components/Sidebar";
+import Sidebar from "./components/Sidebar";
+import MobileBrowse from "./components/MobileBrowse";
+import { useRecentsStore } from "./store/recentsStore";
 import { useIsMobile } from "./hooks/useIsMobile";
 import {
   CENTER_PANE_MIN_WIDTH_PX,
@@ -82,7 +78,7 @@ const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
-import { WorkspaceProvider, useWorkspace } from "./contexts/workspace-context";
+import { WorkspaceProvider } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
@@ -150,50 +146,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-/**
- * User identity + active workspace shown at the top of the mobile Browse pane.
- * Rendered inside `WorkspaceProvider` (unlike `MainApp`'s body), so it can read
- * the current workspace via `useWorkspace()`.
- */
-function MobileBrowseIdentity() {
-  const { user } = useAuth();
-  const { currentWorkspace } = useWorkspace();
-
-  return (
-    <Box sx={{ flex: 1, minWidth: 0 }}>
-      {user?.email && (
-        <Typography
-          variant="subtitle2"
-          sx={{
-            fontWeight: 600,
-            lineHeight: 1.2,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {user.email}
-        </Typography>
-      )}
-      {currentWorkspace?.name && (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{
-            display: "block",
-            lineHeight: 1.2,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {currentWorkspace.name}
-        </Typography>
-      )}
-    </Box>
-  );
-}
-
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
@@ -212,7 +164,6 @@ function MainApp() {
   const isMobile = useIsMobile();
   const mobileTab = useUIStore(state => state.mobileTab);
   const setMobileTab = useUIStore(state => state.setMobileTab);
-  const setLeftPane = useUIStore(state => state.setLeftPane);
 
   // On mobile, tapping a tree node in Browse opens/focuses a tab. Surface it
   // in View so the result of the tap is visible. Gated on Browse being the
@@ -224,6 +175,39 @@ function MainApp() {
     if (useUIStore.getState().mobileTab !== "browse") return;
     setMobileTab("view");
   }, [activeTabId, isMobile, setMobileTab]);
+
+  // Recents (the Browse tab's list): every activation of a durable, reopenable
+  // tab is recorded locally. Recorded on every device, read on phones.
+  useEffect(() => {
+    if (!activeTabId) return;
+    const tab = useConsoleStore.getState().tabs[activeTabId];
+    const workspaceId = useUIStore.getState().currentWorkspaceId;
+    if (!tab || !workspaceId) return;
+    const kind = tab.kind ?? "console";
+    const record = useRecentsStore.getState().record;
+    if (kind === "console") {
+      record(workspaceId, { kind, id: tab.id, title: tab.title });
+    } else if (kind === "dashboard" && tab.metadata?.dashboardId) {
+      record(workspaceId, {
+        kind,
+        id: tab.metadata.dashboardId as string,
+        title: tab.title,
+      });
+    } else if (kind === "notebook" && tab.metadata?.notebookId) {
+      record(workspaceId, {
+        kind,
+        id: tab.metadata.notebookId as string,
+        title: tab.title,
+      });
+    } else if (kind === "app" && tab.metadata?.appId) {
+      record(workspaceId, {
+        kind,
+        id: tab.metadata.appId as string,
+        title: tab.title,
+        slug: tab.metadata.appSlug as string | undefined,
+      });
+    }
+  }, [activeTabId]);
 
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
   const groupRef = useRef<ImperativePanelGroupHandle | null>(null);
@@ -660,58 +644,34 @@ function MainApp() {
         >
           {/* Content — one pane at a time, all kept mounted for state */}
           <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
-            {/* Browse: the explorers, as a pane rather than a drawer. */}
+            {/* Browse: search, recents and the explorers, as a pane. */}
             <Box
               sx={{
                 position: "absolute",
                 inset: 0,
-                display: mobileTab === "browse" ? "flex" : "none",
-                flexDirection: "column",
+                display: mobileTab === "browse" ? "block" : "none",
               }}
             >
-              <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    px: 1,
-                    pt: 1,
-                  }}
-                >
-                  <SidebarUserMenu tooltipPlacement="bottom" />
-                  <MobileBrowseIdentity />
-                  <IconButton
-                    size="small"
-                    aria-label="Settings"
-                    onClick={() => {
-                      setLeftPane("settings");
-                      openLeftPane();
-                    }}
+              <MobileBrowse
+                explorer={
+                  <Suspense
+                    fallback={
+                      <Box
+                        sx={{
+                          height: "100%",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={20} />
+                      </Box>
+                    }
                   >
-                    <SettingsTabIcon size={20} strokeWidth={1.5} />
-                  </IconButton>
-                </Box>
-                <SidebarMobileExplorerNav />
-              </Box>
-              <Box sx={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-                <Suspense
-                  fallback={
-                    <Box
-                      sx={{
-                        height: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      <CircularProgress size={20} />
-                    </Box>
-                  }
-                >
-                  {leftPaneContent}
-                </Suspense>
-              </Box>
+                    {leftPaneContent}
+                  </Suspense>
+                }
+              />
             </Box>
             {/* View: the active tab (console, app, dashboard, ...). */}
             <Box

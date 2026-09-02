@@ -42,6 +42,12 @@ interface ActiveEditorContent {
  */
 export type MobileTab = "browse" | "view" | "ask";
 
+/**
+ * The Browse tab has two levels: its home (search, recents, the explorer
+ * grid) and one explorer's tree, entered from a tile and left via back.
+ */
+export type MobileBrowseView = "home" | "explorer";
+
 /** Which half of a console tab the mobile View pane shows. */
 export type MobileConsolePane = "query" | "results";
 
@@ -60,6 +66,7 @@ interface UIState {
   // Mobile (< md) navigation — ephemeral, never persisted. Desktop layout is
   // driven by leftPaneOpen/rightPaneOpen; mobile is driven by mobileTab.
   mobileTab: MobileTab;
+  mobileBrowseView: MobileBrowseView;
   mobileConsolePane: MobileConsolePane;
   mobileAppPane: MobileAppPane;
 
@@ -90,6 +97,7 @@ interface UIActions {
 
   // Mobile navigation
   setMobileTab: (tab: MobileTab) => void;
+  setMobileBrowseView: (view: MobileBrowseView) => void;
   setMobileConsolePane: (pane: MobileConsolePane) => void;
   setMobileAppPane: (pane: MobileAppPane) => void;
 
@@ -117,6 +125,7 @@ const initialState: UIState = {
   leftPaneWidthPx: null,
   rightPaneWidthPx: null,
   mobileTab: "ask",
+  mobileBrowseView: "home",
   mobileConsolePane: "query",
   mobileAppPane: "preview",
   loading: {},
@@ -187,6 +196,11 @@ export const useUIStore = create<UIStore>()(
       setMobileTab: tab =>
         set(state => {
           state.mobileTab = tab;
+        }),
+
+      setMobileBrowseView: view =>
+        set(state => {
+          state.mobileBrowseView = view;
         }),
 
       setMobileConsolePane: pane =>
