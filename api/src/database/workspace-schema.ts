@@ -4259,6 +4259,10 @@ export const Dashboard = mongoose.model<IDashboard>(
  *   - loadWhen: short trigger description (what query/task it applies to)
  *   - body:     schema facts + procedural hints (SQL shapes, gotchas, etc.)
  *   - entities: tokens used for retrieval (authored + extracted)
+ *   - declaredEntities: only the authored ones — what the SKILL.md file
+ *     carries. `entities` is derived from it and must never be written
+ *     back to git (that is how the 2026-08-31 adoption put ~200 tokenised
+ *     body words into every skill's frontmatter).
  *
  * Retrieval combines entity overlap with semantic similarity on `loadWhen`.
  * The full index (name + loadWhen) is injected into the agent's system prompt
@@ -4274,6 +4278,8 @@ export interface ISkill extends Document {
   loadWhen: string;
   body: string;
   entities: string[];
+  /** Author-declared entities as written in SKILL.md; absent on rows that predate the field. */
+  declaredEntities?: string[];
   /** Embedding over `loadWhen` only. Bodies are too long to embed usefully. */
   loadWhenEmbedding?: number[];
   embeddingModel?: string;
@@ -4308,6 +4314,7 @@ const SkillSchema = new Schema<ISkill>(
     loadWhen: { type: String, required: true, trim: true, maxlength: 500 },
     body: { type: String, required: true, maxlength: 20000 },
     entities: { type: [String], default: [] },
+    declaredEntities: { type: [String], default: [] },
     loadWhenEmbedding: { type: [Number], select: false },
     embeddingModel: { type: String },
     scopeType: {

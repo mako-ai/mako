@@ -97,6 +97,34 @@ describe("agent saves are proposals", () => {
   });
 });
 
+describe("declared vs derived entities", () => {
+  it("the file carries only what was declared; Mongo carries the union", async () => {
+    const result = await saveSkill(
+      WS,
+      {
+        ...input("feed_rules"),
+        body: "Offers are lead_agents rows; claims set claimed_at.",
+        entities: ["feed"],
+      },
+      "u1",
+      { origin: "user" },
+    );
+    expect(result.success).toBe(true);
+    const row = await Skill.findOne({ name: "feed_rules" });
+    expect(row?.declaredEntities).toEqual(["feed"]);
+    expect(row?.entities).toEqual(
+      expect.arrayContaining(["feed", "lead_agents", "claimed_at"]),
+    );
+    const blob = await readBlob(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+      "skills/feed_rules/SKILL.md",
+    );
+    expect(blob.contents).toContain("entities:\n  - feed\n");
+    expect(blob.contents).not.toContain("lead_agents\n");
+  });
+});
+
 describe("index cap + honest counters", () => {
   it("shows at most 30 workspace entries and reports the omission count", async () => {
     for (let i = 0; i < 35; i++) {

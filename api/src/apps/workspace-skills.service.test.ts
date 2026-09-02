@@ -222,4 +222,58 @@ describe("adoption (migration path)", () => {
       "Adopt workspace skills",
     );
   });
+
+  it("writes the DECLARED entities to the file, never the derived index", async () => {
+    // A row as the extractor leaves it: the author declared one entity, the
+    // index holds that plus every tokenised body word.
+    await Skill.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "mrr_rules",
+      loadWhen: "MRR questions",
+      body: "MRR is working already; null months are pending.",
+      declaredEntities: ["mrr"],
+      entities: ["mrr", "working", "already", "null", "months", "pending"],
+      scopeType: "workspace",
+      createdBy: "agent",
+      suppressed: false,
+      useCount: 0,
+    });
+    // A row from before `declaredEntities` existed: nothing was declared.
+    await Skill.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "legacy_rules",
+      loadWhen: "legacy questions",
+      body: "Legacy body with several tokenised words.",
+      entities: ["legacy", "body", "several", "tokenised", "words"],
+      scopeType: "workspace",
+      createdBy: "agent",
+      suppressed: false,
+      useCount: 0,
+    });
+    await adoptWorkspaceSkills(WS);
+
+    const declared = parseSkillFile(
+      "mrr_rules",
+      (await fileAt(skillFilePath("mrr_rules"))) ?? "",
+    );
+    expect(declared?.entities).toEqual(["mrr"]);
+    const legacy = await fileAt(skillFilePath("legacy_rules"));
+    expect(legacy).not.toContain("entities:");
+  });
+});
+
+describe("index sync keeps declared and derived apart", () => {
+  it("stores the file's list as declaredEntities and the union as entities", async () => {
+    await commitSkillSave(WS, {
+      ...skill("feed_rules", "Offers come from lead_agents rows."),
+      entities: ["feed"],
+    });
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    const row = await Skill.findOne({ name: "feed_rules" });
+    expect(row?.declaredEntities).toEqual(["feed"]);
+    expect(row?.entities).toEqual(
+      expect.arrayContaining(["feed", "lead_agents"]),
+    );
+    expect(row?.entities.length ?? 0).toBeGreaterThan(1);
+  });
 });
