@@ -2,6 +2,49 @@
 
 This directory contains the connector architecture for integrating various data sources into the platform.
 
+## Vocabulary: connector vs connection
+
+Two words, two things — decided 2026-09-02 (mako#954), because until then
+"connector" meant three different rows depending on the file you were in.
+
+- A **connector** is **code**: the thing that knows how to check a credential
+  and read entities. Built-in connectors are the directories here (`stripe`,
+  `close`, …, type = directory name); workspace connectors are
+  `connectors/<slug>/` in a workspace repo, written with
+  `@makoai/connector-sdk`, indexed as `ConnectorDefinition` rows and typed
+  `ws:<slug>`.
+- A **connection** is a **credential a workspace configured with a
+  connector**. Two kinds:
+  - `database` — BigQuery, Postgres, MongoDB, … (`DatabaseConnection`
+    model, collection `databaseconnections`). Queryable; what a flow writes
+    to.
+  - `source` — a Stripe key, a Close account, a Vercel key, …
+    (`Connector` model, collection `connectors` — the historical names, see
+    below). Not queryable; what a flow reads from and what
+    `probe_connection` reads live.
+
+Where the vocabulary is already applied:
+
+| Surface | Connector (code) | Connection (credential) |
+| --- | --- | --- |
+| Agent / MCP tools | `list_connectors`, `inspect_connector({ connector })` | `list_connections` (both kinds, `kind` + `connector` on every row), `inspect_connection`, `probe_connection` |
+| Flow files | `source.type: connector` | `source.connection_id`, `destination.connection_id` (`connector_id` is the pre-2026-09 key and still parses) |
+| CLI | `mako connector test <path>` | `mako connection probe <id\|name>` |
+| Docs / skills | `docs/connectors.md` (Vocabulary note), `flows-as-code` skill, the workspace `AGENTS.md` template, the MCP handshake instructions | same |
+
+Where it is **not yet** applied — stage two, to be moved with aliases and
+never a hard rename:
+
+- REST: `/api/workspaces/:wid/connectors` manages source connections
+  (`routes/sources.ts`); database connections are under `/databases`.
+- Mongoose: the `Connector` model (aliased `SourceConnection` / `DataSource`
+  in code) is a source connection; `ConnectorDefinition` is workspace
+  connector code. **Collection names are never renamed.**
+- UI labels ("Sources → Add", the connector tab) and analytics event names.
+
+When touching any of those, move them toward this vocabulary; when writing
+prompts, skills or tool descriptions, use these words from the start.
+
 ## Architecture Overview
 
 The connector system is designed to be extensible, allowing easy addition of new data source types. Each connector implements a common interface defined in `BaseConnector`.
