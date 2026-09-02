@@ -42,6 +42,16 @@ const WorkspaceParam = z.object({
 const SourceIdParam = WorkspaceParam.extend({
   id: z.string().openapi({ param: { name: "id", in: "path" } }),
 });
+
+/**
+ * Deep links are `/cx/:id` with `[a-zA-Z0-9-]+`, so values like `undefined`
+ * and `new` are legal URLs. Asking mongoose to cast those is a 500
+ * CastError (`Cast to ObjectId failed for value "undefined"`). Refuse them
+ * here instead — same bar as `GET /databases/:id`.
+ */
+function isSourceConnectionId(id: string | undefined): id is string {
+  return Boolean(id) && Types.ObjectId.isValid(id);
+}
 const OpenBody = {
   required: false,
   content: {
@@ -229,7 +239,12 @@ sourceConnectionRoutes.openapi(
     try {
       const _workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      // TODO: Add authentication and permission check
+      if (!isSourceConnectionId(id)) {
+        return c.json(
+          { success: false, error: "Invalid source connection ID format" },
+          400,
+        );
+      }
 
       const sourceConnection = await SourceConnection.findOne({
         _id: id,
@@ -370,7 +385,12 @@ sourceConnectionRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      // TODO: Add authentication and permission check
+      if (!isSourceConnectionId(id)) {
+        return c.json(
+          { success: false, error: "Invalid source connection ID format" },
+          400,
+        );
+      }
       const body = await c.req.json();
 
       // Find existing source connection
@@ -521,7 +541,12 @@ sourceConnectionRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      // TODO: Add authentication and permission check
+      if (!isSourceConnectionId(id)) {
+        return c.json(
+          { success: false, error: "Invalid source connection ID format" },
+          400,
+        );
+      }
 
       const result = await SourceConnection.deleteOne({
         _id: id,
@@ -568,6 +593,12 @@ sourceConnectionRoutes.openapi(
       if (!workspaceId) {
         return c.json(
           { success: false, error: "Workspace ID is required" },
+          400,
+        );
+      }
+      if (!isSourceConnectionId(id)) {
+        return c.json(
+          { success: false, error: "Invalid source connection ID format" },
           400,
         );
       }
@@ -694,6 +725,12 @@ sourceConnectionRoutes.openapi(
     if (!workspaceId) {
       return c.json({ success: false, error: "Workspace ID is required" }, 400);
     }
+    if (!isSourceConnectionId(id)) {
+      return c.json(
+        { success: false, error: "Invalid source connection ID format" },
+        400,
+      );
+    }
 
     let body: {
       entity?: string;
@@ -766,7 +803,12 @@ sourceConnectionRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      // TODO: Add authentication and permission check
+      if (!isSourceConnectionId(id)) {
+        return c.json(
+          { success: false, error: "Invalid source connection ID format" },
+          400,
+        );
+      }
       const body = await c.req.json();
 
       if (typeof body.enabled !== "boolean") {
@@ -832,6 +874,12 @@ sourceConnectionRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
+      if (!isSourceConnectionId(id)) {
+        return c.json(
+          { success: false, error: "Invalid source connection ID format" },
+          400,
+        );
+      }
 
       // First, verify the source connection belongs to the workspace
       const ownershipCheck = await SourceConnection.findOne(
@@ -1013,8 +1061,11 @@ sourceConnectionRoutes.openapi(
       const id = c.req.param("id");
       const { field } = await c.req.json();
 
-      if (!workspaceId || !id || !Types.ObjectId.isValid(id)) {
-        return c.json({ success: false, error: "Invalid connector id" }, 400);
+      if (!workspaceId || !isSourceConnectionId(id)) {
+        return c.json(
+          { success: false, error: "Invalid source connection ID format" },
+          400,
+        );
       }
       if (typeof field !== "string" || !field) {
         return c.json({ success: false, error: "field is required" }, 400);
