@@ -153,13 +153,16 @@ async function skillCommitAuthor(
   return authorForUser(actorId);
 }
 
-async function computeEmbedding(text: string): Promise<{
+async function computeEmbedding(
+  text: string,
+  workspaceId: string,
+): Promise<{
   embedding: number[] | null;
   model: string | null;
 }> {
   if (!isEmbeddingAvailable()) return { embedding: null, model: null };
   try {
-    const embedding = await embedText(text);
+    const embedding = await embedText(text, { workspaceId });
     if (!embedding) return { embedding: null, model: null };
     return { embedding, model: getEmbeddingModelName() };
   } catch (err) {
@@ -210,7 +213,7 @@ export async function saveSkill(
   // Compute embedding over loadWhen ONLY. Body content is too long and noisy
   // for the embedding to represent usefully; entity overlap carries body-
   // level matching. See issue #365 design notes.
-  const { embedding, model } = await computeEmbedding(loadWhen);
+  const { embedding, model } = await computeEmbedding(loadWhen, workspaceId);
 
   const existing = await Skill.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
@@ -531,7 +534,9 @@ export async function searchSkills(
   const canVector = isEmbeddingAvailable() && (await isVectorSearchAvailable());
 
   if (canVector) {
-    const queryEmbedding = await embedText(query).catch(() => null);
+    const queryEmbedding = await embedText(query, { workspaceId }).catch(
+      () => null,
+    );
     if (queryEmbedding) {
       const hits = await vectorSearchSkills(
         queryEmbedding,
@@ -660,7 +665,7 @@ export async function retrieveRelevantSkills(
   const canVector = isEmbeddingAvailable() && (await isVectorSearchAvailable());
   if (canVector) {
     try {
-      const qEmbedding = await embedText(queryText);
+      const qEmbedding = await embedText(queryText, { workspaceId });
       if (qEmbedding) {
         const vecHits = await vectorSearchSkills(
           qEmbedding,

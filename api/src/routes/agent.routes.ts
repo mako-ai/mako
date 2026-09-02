@@ -928,6 +928,7 @@ agentRoutes.openapi(
           budgetTokens: inputBudget,
           summarize: true,
           abortSignal: turnSignal,
+          attribution: { userId: actorId, workspaceId },
         });
         messagesForModel = compaction.messages;
         if (compaction.didCompact) {
