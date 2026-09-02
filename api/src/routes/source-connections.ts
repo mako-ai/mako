@@ -59,7 +59,11 @@ const SourceIdParam = WorkspaceParam.extend({
  * here instead — same bar as `GET /databases/:id`.
  */
 function isSourceConnectionId(id: string | undefined): id is string {
-  return Boolean(id) && Types.ObjectId.isValid(id);
+  return typeof id === "string" && Types.ObjectId.isValid(id);
+}
+
+function asSourceRecord(doc: unknown): Record<string, unknown> {
+  return (doc ?? {}) as Record<string, unknown>;
 }
 const OpenBody = {
   required: false,
@@ -262,25 +266,26 @@ function redactSourceConfig(
 }
 
 async function publicSourceConnection(
-  doc: Record<string, unknown>,
-  workspaceId: string,
+  doc: unknown,
+  workspaceId: string | undefined,
 ): Promise<Record<string, unknown>> {
+  const record = asSourceRecord(doc);
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
   try {
     schema = await syncConnectorRegistry.getConfigSchemaForType(
-      String(doc.type ?? ""),
+      String(record.type ?? ""),
       workspaceId,
     );
   } catch (error) {
     logger.warn("Could not load connector schema while redacting config", {
-      type: doc.type,
+      type: record.type,
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
   }
   return {
-    ...doc,
-    config: redactSourceConfig(doc.config, schema),
+    ...record,
+    config: redactSourceConfig(record.config, schema),
   };
 }
 
@@ -315,9 +320,7 @@ sourceConnectionRoutes.openapi(
         .lean();
 
       const data = await Promise.all(
-        sourceConnections.map(row =>
-          publicSourceConnection(row as Record<string, unknown>, _workspaceId),
-        ),
+        sourceConnections.map(row => publicSourceConnection(row, _workspaceId)),
       );
       return c.json({ success: true, data });
     } catch (error) {
@@ -367,10 +370,7 @@ sourceConnectionRoutes.openapi(
 
       return c.json({
         success: true,
-        data: await publicSourceConnection(
-          sourceConnection as Record<string, unknown>,
-          _workspaceId,
-        ),
+        data: await publicSourceConnection(sourceConnection, _workspaceId),
       });
     } catch (error) {
       return c.json(
@@ -470,7 +470,7 @@ sourceConnectionRoutes.openapi(
         {
           success: true,
           data: await publicSourceConnection(
-            sourceConnection.toObject() as Record<string, unknown>,
+            sourceConnection.toObject(),
             workspaceId,
           ),
           message: "Connector created successfully",
@@ -638,7 +638,7 @@ sourceConnectionRoutes.openapi(
       return c.json({
         success: true,
         data: await publicSourceConnection(
-          sourceConnection.toObject() as Record<string, unknown>,
+          sourceConnection.toObject(),
           workspaceId,
         ),
         message: hasChanges
@@ -974,7 +974,7 @@ sourceConnectionRoutes.openapi(
       return c.json({
         success: true,
         data: await publicSourceConnection(
-          sourceConnection.toObject() as Record<string, unknown>,
+          sourceConnection.toObject(),
           workspaceId,
         ),
         message: `Connector ${
