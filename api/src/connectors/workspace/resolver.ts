@@ -20,7 +20,11 @@ import {
   listTree,
 } from "../../apps/repository.service";
 import type { SandboxExecContext } from "../../apps/sandbox/provider";
-import { hasConnectorRuntime, installConnectorRuntime } from "./sync-box";
+import {
+  CONNECTOR_NODE_VERSION,
+  hasConnectorRuntime,
+  installConnectorRuntime,
+} from "./sync-box";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector();
@@ -263,6 +267,10 @@ let sdkRuntimeIdCache: string | null = null;
 function sdkRuntimeId(files: Map<string, Uint8Array>): string {
   if (sdkRuntimeIdCache) return sdkRuntimeIdCache;
   const hash = createHash("sha256");
+  // The executable is part of the runtime contract just as much as the SDK
+  // bytes. Bumping it must create a fresh root instead of reusing a marker
+  // written for an older Node installation.
+  hash.update(`node:${CONNECTOR_NODE_VERSION}\0`);
   for (const name of [...files.keys()].sort()) {
     hash.update(name);
     hash.update("\0");

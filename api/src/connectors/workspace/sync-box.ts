@@ -52,6 +52,17 @@ export const MAX_CONNECTOR_PROTOCOL_BYTES = 32 * 1024 * 1024;
 export const MAX_CONNECTOR_PROTOCOL_MESSAGES = 50_000;
 
 /**
+ * The sandbox template is not the connector runtime. Templates in the wild
+ * can lag (the current E2B image has Node 20), so the content-addressed
+ * runtime carries a pinned Node that can import TypeScript connectors.
+ */
+export const CONNECTOR_NODE_VERSION = "24.20.0";
+const CONNECTOR_NODE_SHA256 = {
+  arm64: "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7",
+  x64: "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2",
+} as const;
+
+/**
  * The sync box's affinity key.
  *
  * Prefixed so it can never collide with a session box's key, which is a
@@ -91,6 +102,10 @@ function runtimeRoot(ctx: SandboxExecContext, runtimeId: string): string {
     "versions",
     runtimeId,
   );
+}
+
+function runtimeNode(ctx: SandboxExecContext, runtimeId: string): string {
+  return path.posix.join(runtimeRoot(ctx, runtimeId), "node", "bin", "node");
 }
 
 const shellQuote = (value: string): string =>
@@ -174,6 +189,52 @@ export async function installConnectorRuntime(
   for (const [relative, bytes] of files) {
     await provider.writeFile(ctx, path.posix.join(base, relative), bytes);
   }
+
+  // E2B templates are independently versioned and cannot be assumed to carry
+  // the Node version the SDK needs. Download inside the sandbox (never through
+  // the API heap), pin the version, and verify Node's published checksum before
+  // it becomes executable. The local provider reuses a compatible host Node so
+  // development on macOS does not install a Linux binary.
+  const node = runtimeNode(ctx, runtimeId);
+  const installNode = await provider.exec(
+    ctx,
+    `set -eu
+runtime_root=${shellQuote(root)}
+runtime_node=${shellQuote(node)}
+if test -x "$runtime_node"; then exit 0; fi
+platform="$(uname -s)"
+if test "$platform" = Linux; then
+  case "$(uname -m)" in
+    x86_64) node_arch=x64; expected=${CONNECTOR_NODE_SHA256.x64} ;;
+    aarch64|arm64) node_arch=arm64; expected=${CONNECTOR_NODE_SHA256.arm64} ;;
+    *) echo "Unsupported connector runtime architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  archive="node-v${CONNECTOR_NODE_VERSION}-linux-$node_arch.tar.xz"
+  download="$runtime_root/$archive"
+  mkdir -p "$runtime_root/node"
+  curl -fsSL --retry 3 "https://nodejs.org/dist/v${CONNECTOR_NODE_VERSION}/$archive" -o "$download"
+  printf '%s  %s\n' "$expected" "$download" | sha256sum -c -
+  tar -xJf "$download" -C "$runtime_root/node" --strip-components=1
+  rm -f "$download"
+else
+  system_node="$(command -v node || true)"
+  if test -z "$system_node"; then echo "Node is not installed" >&2; exit 1; fi
+  "$system_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'
+  mkdir -p "$(dirname "$runtime_node")"
+  ln -sf "$system_node" "$runtime_node"
+fi
+"$runtime_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'`,
+    { timeoutMs: 120_000 },
+  );
+  if (installNode.timedOut) {
+    throw new Error("Timed out while installing the connector Node runtime.");
+  }
+  if (installNode.exitCode !== 0) {
+    const detail = (installNode.stderr || installNode.stdout).trim();
+    throw new Error(
+      `Could not install the connector Node runtime${detail ? `: ${detail.slice(0, 2000)}` : "."}`,
+    );
+  }
   // Written last: a killed or failed upload is retried rather than mistaken for
   // a complete runtime on the next invocation.
   await provider.writeFile(
@@ -251,7 +312,7 @@ export async function runConnectorCommand(input: {
       "bin",
       "mako-connector.js",
     );
-    const command_ = `node ${shellQuote(bin)} ${args.map(shellQuote).join(" ")} > ${shellQuote(outputPath)}`;
+    const command_ = `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")} > ${shellQuote(outputPath)}`;
 
     const result = await provider.exec(ctx, command_, {
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
