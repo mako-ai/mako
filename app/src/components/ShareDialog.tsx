@@ -420,6 +420,26 @@ export default function ShareDialog({
     });
   };
 
+  // Apps only: a public viewer's "Refresh" re-runs the app's published
+  // queries on the owner's connection (throttled per binding). Off by
+  // default — a link stays a frozen snapshot until the owner says otherwise.
+  const handleAllowLiveQueries = async (allow: boolean) => {
+    if (!workspaceId || !resourceId) return;
+    await run(async () => {
+      const result = await updatePublicShare(
+        resourceType,
+        workspaceId,
+        resourceId,
+        { allowLiveQueries: allow },
+      );
+      if (result.ok && result.publicShare) {
+        setPublicShare(result.publicShare);
+        onSharingChanged?.({ publicShare: result.publicShare });
+      }
+      return result;
+    });
+  };
+
   const handleSaveLinkName = async () => {
     if (!workspaceId || !resourceId) return;
     const draft = linkDraft.trim();
@@ -1029,6 +1049,39 @@ export default function ShareDialog({
                       }}
                     />
                   ))}
+
+                {resourceType === "app" && canManage && (
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1,
+                      mt: 0.5,
+                    }}
+                  >
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="caption" sx={{ display: "block" }}>
+                        Let viewers refresh data
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        Re-runs the app&apos;s published queries on your
+                        connection, at most every few minutes per binding
+                      </Typography>
+                    </Box>
+                    <Switch
+                      size="small"
+                      checked={!!publicShare.allowLiveQueries}
+                      disabled={busy}
+                      onChange={e =>
+                        void handleAllowLiveQueries(e.target.checked)
+                      }
+                    />
+                  </Box>
+                )}
               </Box>
             )}
           </>

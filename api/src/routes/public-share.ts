@@ -31,6 +31,7 @@ import { buildDataSourceMaterializationStatus } from "../services/dashboard-mate
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
+import { refreshBindingHttp } from "../apps/binding-refresh";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 
@@ -667,5 +668,53 @@ async function serveSharedApp(c: Context): Promise<Response> {
 
 app.get("/:token/app", serveSharedApp);
 app.get("/:token/app/*", serveSharedApp);
+
+/**
+ * A shared app's `POST __data/<name>/refresh` — the SDK's `refresh()` from
+ * an anonymous viewer. Runs the owner's published query under the owner's
+ * connection, so it is what `allowLiveQueries` was defined to govern: off by
+ * default (a share stays a frozen snapshot), and when the owner opts in,
+ * throttled per binding with the dashboard share's cooldown — claimed
+ * atomically, so a crowd of viewers is one warehouse query, not a crowd.
+ */
+app.post("/:token/app/__data/:name/refresh", async c => {
+  const token = c.req.param("token");
+  const resource = await findByToken(token);
+  if (!resource || resource.type !== "app") {
+    return c.json({ success: false, error: "Share link not found" }, 404);
+  }
+  const gate = requireUnlock(c, token, resource);
+  if (gate) return gate;
+  const project = resource.doc;
+  if (!project.publishedSha) {
+    return c.json(
+      { success: false, error: "This app has not been published yet" },
+      404,
+    );
+  }
+  if (!project.publicShare?.allowLiveQueries) {
+    return c.json(
+      {
+        success: false,
+        error:
+          "Refreshing data is not enabled for this link — the app's owner can turn it on in the share settings",
+      },
+      403,
+    );
+  }
+  try {
+    const { status, body, headers } = await refreshBindingHttp({
+      project,
+      name: c.req.param("name"),
+      actorId: "",
+      at: project.publishedSha,
+      cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
+    });
+    return c.json(body, status, headers);
+  } catch (error) {
+    logger.error("Error refreshing a shared app's binding", { error });
+    return c.json({ success: false, error: "Failed to refresh" }, 500);
+  }
+});
 
 export const publicShareRoutes = app;

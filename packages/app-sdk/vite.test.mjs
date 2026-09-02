@@ -34,7 +34,7 @@ function fakeServer(root) {
   };
 }
 
-function request(handler, url) {
+function request(handler, url, method) {
   return new Promise(resolve => {
     const chunks = [];
     const res = {
@@ -48,7 +48,7 @@ function request(handler, url) {
     // createReadStream(...).pipe(res) support
     res.pipe = undefined;
     const next = () => resolve({ status: "next" });
-    handler({ url }, res, next);
+    handler({ url, method }, res, next);
   });
 }
 
@@ -120,4 +120,71 @@ test("no credentials → 503 with a hint, never index.html", async () => {
   const r = await request(handlers[0], "/__data/sales.parquet");
   assert.equal(r.status, 503);
   assert.match(JSON.parse(r.body.toString()).hint, /MAKO_API_KEY/);
+});
+
+test("POST __data/<name>/refresh materializes through the API and drops the cache", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method ?? "GET" });
+    if (String(url).endsWith("/materialize")) {
+      return new Response(
+        JSON.stringify({ success: true, rowCount: 7, byteSize: 99, materializedAt: "2026-09-02T10:00:00.000Z" }),
+        { status: 200 },
+      );
+    }
+    return new Response(Buffer.from("PAR1data"), { status: 200 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    // Warm the cache, then refresh: the cached copy must go so the next read
+    // is the rebuilt artifact, not the five-minute-old one.
+    assert.equal((await request(handlers[0], "/__data/sales.parquet")).status, 200);
+    const cached = path.join(app, "node_modules", ".mako-data", "sales.parquet");
+    assert.ok(fs.existsSync(cached));
+
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 200);
+    assert.deepEqual(JSON.parse(r.body.toString()), {
+      success: true,
+      binding: "sales",
+      materialization: "parquet",
+      rowCount: 7,
+      byteSize: 99,
+      materializedAt: "2026-09-02T10:00:00.000Z",
+    });
+    assert.ok(!fs.existsSync(cached), "cache dropped");
+    assert.deepEqual(calls.map(c => c.method + " " + c.url.split("/apps/")[1]), [
+      "GET my-app/bindings/sales/artifact",
+      "POST my-app/bindings/sales/materialize",
+    ]);
+
+    // Not a POST → 405; a bad name → 400; both before any API call.
+    assert.equal((await request(handlers[0], "/__data/sales/refresh")).status, 405);
+    assert.equal((await request(handlers[0], "/__data/..%2Fx/refresh", "POST")).status, 400);
+    assert.equal(calls.length, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("refresh relays the API's refusal with its message", async () => {
+  const { app } = repo();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ success: false, error: "You have read-only access to this app." }), { status: 403 });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 403);
+    assert.deepEqual(JSON.parse(r.body.toString()), {
+      success: false,
+      error: "You have read-only access to this app.",
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

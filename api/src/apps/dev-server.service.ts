@@ -293,6 +293,65 @@ const makoData = {
         }
         return;
       }
+      // POST __data/<name>/refresh — the SDK's refresh(): re-run the binding
+      // through Mako as a real materialization (artifact stored, run
+      // recorded), and keep the fresh bytes as this box's staged copy so the
+      // very next __data/<name>.parquet read serves them. Same upstream as a
+      // live binding, with persist on.
+      const refresh = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\/refresh$/.exec(url);
+      if (refresh) {
+        if (req.method !== "POST") { res.statusCode = 405; return res.end(); }
+        const name = refresh[1];
+        const env = makoEnv();
+        const reply = (status, body) => {
+          res.statusCode = status;
+          res.setHeader("content-type", "application/json");
+          res.setHeader("cache-control", "no-store");
+          res.end(JSON.stringify(body));
+        };
+        (async () => {
+          try {
+            const token = readFileSync(env.MAKO_TOKEN_FILE, "utf8").trim();
+            const upstream = await fetch(
+              env.MAKO_API + "/api/apps-box/" + env.MAKO_WS + "/live-binding",
+              {
+                method: "POST",
+                headers: { "content-type": "application/json", authorization: "Bearer " + token },
+                body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name, persist: true }),
+                signal: AbortSignal.timeout(330000),
+              },
+            );
+            if (!upstream.ok) {
+              let detail = {};
+              try { detail = await upstream.json(); } catch {}
+              return reply(upstream.status === 503 ? 429 : upstream.status === 404 ? 404 : 502, {
+                success: false,
+                error: detail.error || ("Refresh failed (HTTP " + upstream.status + ")"),
+                ...(detail.retryAfterMs ? { retryAfterMs: detail.retryAfterMs } : {}),
+              });
+            }
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            const materializedAt = upstream.headers.get("x-mako-materialized-at");
+            // Write-through, like the live path above: serve these bytes
+            // until the next refresh rather than re-querying on every read.
+            try {
+              writeFileSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet"), buf);
+              rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+            } catch {}
+            reply(200, {
+              success: true,
+              binding: name,
+              materialization: materializedAt ? "parquet" : "live",
+              rowCount: Number(upstream.headers.get("x-mako-row-count")) || 0,
+              byteSize: buf.length,
+              ...(materializedAt ? { materializedAt } : {}),
+            });
+          } catch (error) {
+            reply(502, { success: false, error: "Refresh failed: " + String(error && error.message) });
+          }
+        })();
+        return;
+      }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
       if (!match) return next();
       const name = match[1];

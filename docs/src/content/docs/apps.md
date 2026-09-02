@@ -42,7 +42,13 @@ const { data, loading, error } = useQuery("recent_orders");
 const { data: totals } = useDuckDB(
   'SELECT category, SUM(amount) AS total FROM "orders" GROUP BY 1'
 );
+
+// Rematerialize on demand (SDK 2.3+): re-runs the binding's query and
+// re-renders every hook reading it; the old rows stay while `refreshing`.
+const { refresh, refreshing } = useQuery("recent_orders");
 ```
+
+`refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh (as with a dashboard); a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
 
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 

@@ -12,7 +12,11 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { GitTokenError, verifyGitToken } from "../apps/git-token.service";
 import { patchBoxState } from "../apps/box-state.service";
-import { buildBindingParquet } from "../apps/bindings.service";
+import {
+  buildBindingParquet,
+  materializeAppBinding,
+  readBindingMaterialization,
+} from "../apps/bindings.service";
 import {
   LiveBindingCoolingDown,
   withLiveBindingGuard,
@@ -121,6 +125,12 @@ appsBoxRoutes.post("/:workspaceId/events", async c => {
  * scoped `mgt_` token used for git — so it runs as the box's actor against
  * that actor's connections. Dev/edit only: a published app is served without
  * this token and has no authorized data path yet (apps.md §13.4.1).
+ *
+ * With `persist: true` (the middleware's answer to the SDK's `refresh()`),
+ * the same query is a real materialization: the artifact is stored and the
+ * run recorded, exactly as `app_materialize` would — then streamed back so
+ * the box's staged copy is the same bytes. A `-- materialization: live`
+ * binding stores nothing either way; it is fresh on every read by design.
  */
 appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
   const token = bearer(c);
@@ -139,14 +149,15 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  let body: { slug?: unknown; name?: unknown };
+  let body: { slug?: unknown; name?: unknown; persist?: unknown };
   try {
-    body = (await c.req.json()) as { slug?: unknown; name?: unknown };
+    body = (await c.req.json()) as typeof body;
   } catch {
     return c.json({ error: "Expected a JSON body" }, 400);
   }
   const slug = typeof body.slug === "string" ? body.slug : "";
   const name = typeof body.name === "string" ? body.name : "";
+  const persist = body.persist === true;
   if (!slug || !name || !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
     return c.json({ error: "slug and a valid binding name are required" }, 400);
   }
@@ -158,13 +169,29 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
     })) ?? (await synthesizeProjectFromFolder(workspaceId, slug));
   if (!project) return c.json({ error: "App not found" }, 404);
 
-  let built;
+  let built: { filePath: string; rowCount: number; materializedAt?: Date };
   try {
     // Guarded: a binding that cannot succeed must not be re-queried as fast as
     // a page can re-request it. See live-binding-guard.ts — 41 abandoned
     // BigQuery jobs in 48 minutes is what this exists to stop.
-    built = await withLiveBindingGuard({ workspaceId, slug, name }, () =>
-      buildBindingParquet(project, name, payload.userId),
+    built = await withLiveBindingGuard(
+      { workspaceId, slug, name },
+      async () => {
+        const store =
+          persist &&
+          (await readBindingMaterialization(project, name, payload.userId)) ===
+            "parquet";
+        if (!store) return buildBindingParquet(project, name, payload.userId);
+        const result = await materializeAppBinding(
+          project,
+          name,
+          payload.userId,
+          {
+            keepFile: true,
+          },
+        );
+        return { ...result, filePath: result.filePath as string };
+      },
     );
   } catch (error) {
     if (error instanceof LiveBindingCoolingDown) {
@@ -198,6 +225,10 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
     headers: {
       "content-type": "application/vnd.apache.parquet",
       "cache-control": "no-store",
+      "x-mako-row-count": String(built.rowCount),
+      ...(built.materializedAt
+        ? { "x-mako-materialized-at": built.materializedAt.toISOString() }
+        : {}),
     },
   });
 });

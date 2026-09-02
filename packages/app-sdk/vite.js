@@ -190,21 +190,59 @@ export function makoData(options = {}) {
         return Buffer.from(await res.arrayBuffer());
       }
 
+      // POST __data/<name>/refresh — the SDK's refresh(): rebuild the
+      // binding through the API (the same call app_materialize makes), then
+      // forget the local copy so the next read is the new artifact.
+      async function refreshBinding(name, res) {
+        const cached = path.join(ctx.cacheDir, `${name}.parquet`);
+        try {
+          const built = await apiFetch(
+            `${appBase()}/bindings/${encodeURIComponent(name)}/materialize`,
+            { method: "POST", headers: await headers() },
+          );
+          const body = await built.json().catch(() => ({}));
+          if (!built.ok) {
+            return json(res, built.status, {
+              success: false,
+              error: body.error || `materialize ${name}: HTTP ${built.status}`,
+            });
+          }
+          fs.rmSync(cached, { force: true });
+          json(res, 200, {
+            success: true,
+            binding: name,
+            materialization: "parquet",
+            rowCount: body.rowCount,
+            byteSize: body.byteSize,
+            materializedAt: body.materializedAt,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          server.config.logger.error(`  mako-data: ${message}`);
+          json(res, 502, { success: false, error: message });
+        }
+      }
+
       server.middlewares.use(async (req, res, next) => {
         const [pathname, query = ""] = (req.url || "").split("?");
         if (pathname === "/__data/index.json") {
           return json(res, 200, listBindings(ctx.bindingsDir));
         }
-        const match = /^\/__data\/([^/]+)\.parquet$/.exec(pathname);
+        const match = /^\/__data\/([^/]+)(\.parquet|\/refresh)$/.exec(pathname);
         if (!match) return next();
         const name = decodeURIComponent(match[1]);
+        const isRefresh = match[2] === "/refresh";
         if (!BINDING_NAME.test(name)) return json(res, 400, { error: "invalid binding name" });
+        if (isRefresh && req.method !== "POST") {
+          return json(res, 405, { error: "POST to refresh a binding" });
+        }
         if (problems.length) {
           return json(res, 503, {
             error: `mako-data is not connected: ${problems.join("; ")}`,
             hint: "Run `mako login` in this repo, or put MAKO_API_URL and MAKO_API_KEY in the repo's .env (see AGENTS.md).",
           });
         }
+        if (isRefresh) return refreshBinding(name, res);
         const cached = path.join(ctx.cacheDir, `${name}.parquet`);
         const refresh = /(^|&)refresh(=|&|$)/.test(query);
         try {

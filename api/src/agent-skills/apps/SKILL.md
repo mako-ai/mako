@@ -179,6 +179,17 @@ SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
 
+**Refresh on demand (SDK ≥ 2.3).** `useQuery` / `useDuckDB` return
+`refresh()` and `refreshing`: `refresh()` rematerializes the binding (the
+same rebuild as `app_materialize`) and re-renders every hook reading it,
+keeping the old rows visible while `refreshing` is true. Wire it to a
+button and show the rejection's message (`status` 429 = refreshed too
+recently, 502 = the query failed). Works in the sandbox, the published app
+and the laptop alike (`POST __data/<name>/refresh`, answered by whoever
+serves the data). Public share links refuse it unless the owner enabled
+live queries for the link. Prefer this over a cron for "what is it now?"
+buttons; keep `-- schedule:` for data that must be fresh before anyone asks.
+
 ## The SDK's name
 
 New apps depend on `@makoai/app-sdk` (npm) — vendored at `packages/app-sdk`.
