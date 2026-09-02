@@ -564,12 +564,68 @@ export function buildCloseSearchFieldSelection(
   baseFields: readonly string[],
   customFields: CloseCustomField[],
 ): string[] {
-  const fields = new Set<string>([...baseFields, "custom"]);
-  for (const field of customFields) {
-    if (!field.id) continue;
-    fields.add(`custom.${field.id}`);
+  const fields = new Set<string>(baseFields);
+  for (const selector of closeCustomFieldSelectors(customFields)) {
+    fields.add(selector);
   }
   return Array.from(fields);
+}
+
+/** `custom.cf_<id>` selectors for every custom field, deduplicated, in order. */
+export function closeCustomFieldSelectors(
+  customFields: readonly CloseCustomField[],
+): string[] {
+  const selectors: string[] = [];
+  const seen = new Set<string>();
+  for (const field of customFields) {
+    if (!field.id) continue;
+    const selector = `custom.${field.id}`;
+    if (seen.has(selector)) continue;
+    seen.add(selector);
+    selectors.push(selector);
+  }
+  return selectors;
+}
+
+export interface CloseSearchFieldSelectionPlan {
+  /** Fields for the paged Search request: base fields + the first batch. */
+  primary: string[];
+  /**
+   * Fields for follow-up requests that re-fetch the SAME page by id. Each
+   * entry starts with `id` (the merge key) followed by one batch of
+   * `custom.cf_*` selectors. Empty when everything fits in `primary`.
+   */
+  supplemental: string[][];
+}
+
+/**
+ * Split a Search API field selection so no single request names more than
+ * `maxCustomSelectorsPerRequest` custom-field selectors.
+ *
+ * Close rejects a `_fields` list past a certain size with HTTP 400. Orgs with
+ * 100+ lead custom fields hit that ceiling the moment every field is
+ * requested explicitly (which we do so values arrive as flat `custom.cf_*`
+ * keys — the same shape webhooks deliver — instead of through the deprecated
+ * `custom` blob). Rather than drop selectors, the selection is spread over
+ * one primary request and as many supplemental by-id requests as needed.
+ */
+export function splitCloseSearchFieldSelection(
+  baseFields: readonly string[],
+  customFields: readonly CloseCustomField[],
+  maxCustomSelectorsPerRequest: number,
+): CloseSearchFieldSelectionPlan {
+  const base = Array.from(new Set(baseFields));
+  if (!base.includes("id")) base.unshift("id");
+
+  const selectors = closeCustomFieldSelectors(customFields);
+  const size = Math.max(1, Math.floor(maxCustomSelectorsPerRequest));
+
+  const primary = [...base, ...selectors.slice(0, size)];
+  const supplemental: string[][] = [];
+  for (let offset = size; offset < selectors.length; offset += size) {
+    supplemental.push(["id", ...selectors.slice(offset, offset + size)]);
+  }
+  return { primary, supplemental };
 }
 
 export function resolveCloseEntitySchema(
