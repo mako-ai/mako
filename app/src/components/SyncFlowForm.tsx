@@ -221,7 +221,7 @@ export function SyncFlowForm({
 
   const connectorTypes = useConnectorCatalogStore(state => state.types);
   const fetchCatalog = useConnectorCatalogStore(state => state.fetchCatalog);
-  const { schemas, fetchSchema } = useConnectorCatalogStore();
+  const fetchSchema = useConnectorCatalogStore(state => state.fetchSchema);
 
   const webhookCapabilitiesByType = useMemo(() => {
     const map: Record<string, WebhookCapabilities> = {};
@@ -632,21 +632,28 @@ export function SyncFlowForm({
     }
   }, [suggestReconcile, watchBackfillScheduleEnabled, setValue, getValues]);
 
-  // transferQueries schema (GraphQL/PostHog-style connectors)
+  // transferQueries schema (GraphQL/PostHog-style connectors).
+  // Stale-while-revalidate: show the persisted cache immediately, but always
+  // refetch — the cache lives in localStorage, so schema changes (e.g.
+  // transferQueries.required flipping) would otherwise never reach the form.
   useEffect(() => {
     if (!selectedConnectorType) {
       setTransferQueriesSchema(null);
       return;
     }
-    const cachedSchema = schemas[selectedConnectorType];
-    if (cachedSchema?.transferQueries) {
-      setTransferQueriesSchema(cachedSchema.transferQueries);
-    } else {
-      fetchSchema(selectedConnectorType).then(schema => {
-        setTransferQueriesSchema(schema?.transferQueries ?? null);
-      });
+    const cachedSchema =
+      useConnectorCatalogStore.getState().schemas[selectedConnectorType];
+    if (cachedSchema) {
+      setTransferQueriesSchema(cachedSchema.transferQueries ?? null);
     }
-  }, [selectedConnectorType, schemas, fetchSchema]);
+    fetchSchema(selectedConnectorType, true).then(schema => {
+      if (schema) {
+        setTransferQueriesSchema(schema.transferQueries ?? null);
+      } else if (!cachedSchema) {
+        setTransferQueriesSchema(null);
+      }
+    });
+  }, [selectedConnectorType, fetchSchema]);
 
   // Multi-database servers (non-CDC destinations): list databases to pick one.
   useEffect(() => {
