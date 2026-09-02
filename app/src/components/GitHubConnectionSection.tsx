@@ -255,9 +255,9 @@ export default function GitHubConnectionSection() {
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           A workspace has exactly ONE repository — its content root. Apps live
-          under <code>apps/</code>; consoles, skills and dbt content will join
-          as sibling folders. Without a connected repo, the workspace is stored
-          in Mako Cloud.
+          under <code>apps/</code>; consoles, skills and dbt content join as
+          sibling folders. Connect a GitHub repository first. Mako keeps
+          workspace content in that repo.
         </Typography>
         {repos.length > 1 && (
           <Alert severity="warning" sx={{ mb: 2 }}>
@@ -269,7 +269,8 @@ export default function GitHubConnectionSection() {
 
         {repos.length === 0 && !statusLoading && (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-            No repository connected — apps are stored in Mako Cloud.
+            No repository connected. Connect one before creating apps, consoles,
+            or dbt projects.
           </Typography>
         )}
 
@@ -342,7 +343,7 @@ export default function GitHubConnectionSection() {
             GitHub accounts
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Accounts the Mako GitHub App is installed on — repositories are
+            Accounts the Mako AI GitHub App is installed on — repositories are
             picked from these.
           </Typography>
           <Stack spacing={0.5} sx={{ mt: 1 }}>
