@@ -27,6 +27,7 @@ import ResourceTree, {
 import ExplorerShell from "./ExplorerShell";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { connectorIconUrl } from "../lib/connector-icon";
+import { closeSourceConnectionTabsFor } from "../lib/source-connection-tabs";
 
 interface SourceConnectionRow {
   _id: string;
@@ -119,9 +120,13 @@ function SourceConnectionExplorer() {
 
   const handleDeleteConfirm = async () => {
     if (!currentWorkspace || !selectedItem) return;
-    const res = await deleteSource(currentWorkspace.id, selectedItem._id);
+    const sourceId = selectedItem._id;
+    const res = await deleteSource(currentWorkspace.id, sourceId);
     if (!res.success) {
       console.error("Failed to delete data source:", res.error);
+    } else {
+      // Tabs outlive the row: without this the editor stays on a 404.
+      closeSourceConnectionTabsFor(sourceId);
     }
     setDeleteDialogOpen(false);
     setSelectedItem(null);
