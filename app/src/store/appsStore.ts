@@ -19,6 +19,27 @@ import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
 
+/**
+ * After connect/disconnect the derived git index in Mongo has changed.
+ * Explorers keep their last tree until something refetches — a full reload
+ * used to be the only way to see an empty workspace after unlink.
+ */
+function refreshGitDerivedExplorers(
+  workspaceId: string,
+  fetchApps: (id: string) => void,
+): void {
+  void fetchApps(workspaceId);
+  void import("./consoleTreeStore").then(({ useConsoleTreeStore }) => {
+    void useConsoleTreeStore.getState().fetchTree(workspaceId);
+  });
+  void import("./notebookTreeStore").then(({ useNotebookTreeStore }) => {
+    void useNotebookTreeStore.getState().fetchTree(workspaceId);
+  });
+  void import("./flowStore").then(({ useFlowStore }) => {
+    void useFlowStore.getState().fetchFlows(workspaceId);
+  });
+}
+
 export interface AppMeta {
   id: string;
   /** Folder name under `apps/` in the workspace repo — the app's real
@@ -711,7 +732,7 @@ export const useAppsStore = create<AppsStore>()(
             }
           });
           // An import can make apps appear instantly; refetch either way.
-          void get().fetchApps(workspaceId);
+          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
           return { ok: true, adoption: body.adoption };
         } catch (e) {
           return { ok: false, error: message(e, "Failed to connect repo") };
@@ -733,6 +754,7 @@ export const useAppsStore = create<AppsStore>()(
           });
           // canCreate may still be true via cloud storage — let the probe say.
           void get().probeEnabled(workspaceId);
+          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to disconnect repo");
