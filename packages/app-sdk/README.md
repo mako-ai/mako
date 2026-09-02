@@ -19,7 +19,24 @@ const { data, loading, error } = useQuery("latest_sales");
 // Analytical SQL over every binding (DuckDB-WASM in the browser; table
 // names are binding names).
 const totals = useDuckDB("select country, sum(revenue) r from latest_sales group by 1");
+
+// Rematerialize on demand: re-runs the binding's query on the warehouse,
+// then every hook reading it re-renders with the new rows. The old rows
+// stay on screen while `refreshing` is true.
+const { refresh, refreshing } = useQuery("latest_sales");
+<button onClick={() => refresh().catch(e => alert(e.message))} disabled={refreshing}>
+  Refresh
+</button>
 ```
+
+`useDuckDB(...).refresh()` refreshes every binding; `refreshBinding(name)` /
+`refreshBindings()` do the same outside a component. A refresh POSTs to
+`__data/<name>/refresh`, the data URL's sibling, so whoever serves the app's
+data (Mako, the sandbox dev server, the Vite plugin below) rebuilds it with
+its own authorization: a signed-in member can always refresh; a public share
+only when its owner enabled live queries, and at most once every few minutes
+per binding. A refused refresh rejects with `status` (403, 429 + `retryAfterMs`)
+or 502 with the query's error.
 
 `useLocation` / `useSearchParams` / `navigate` keep filter state in the URL;
 `useTheme` follows the OS preference. Theme tokens (`--background`,
@@ -39,7 +56,8 @@ export default defineConfig({ plugins: [react(), makoData()] });
 `makoData()` answers `__data/index.json` (the app's `bindings/*.sql`) and
 `__data/<name>.parquet` during `vite dev` by streaming each binding's
 materialized artifact from the Mako API — a binding that was never
-materialized is built on first request. Results are cached under
+materialized is built on first request, and `POST __data/<name>/refresh`
+(the SDK's `refresh()`) rebuilds one on demand. Results are cached under
 `node_modules/.mako-data/` for five minutes (`?refresh` bypasses; a stale
 copy is served if the API is unreachable). It is `apply: "serve"` only —
 production builds never load it.

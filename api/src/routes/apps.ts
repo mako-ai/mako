@@ -132,6 +132,7 @@ import {
   materializeAppBinding,
   readBindings,
 } from "../apps/bindings.service";
+import { refreshBindingHttp } from "../apps/binding-refresh";
 import {
   AppEnvValidationError,
   deleteAppEnvVar,
@@ -2548,6 +2549,37 @@ appsRoutes.openapi(
 
 appsRoutes.get("/:id/live", serveLive);
 appsRoutes.get("/:id/live/*", serveLive);
+
+/**
+ * The published app's `POST __data/<name>/refresh` — the SDK's `refresh()`,
+ * for a member viewing the app signed in (see binding-refresh.ts). Read
+ * access is enough, as it is for a dashboard's refresh: the query that runs
+ * is the owner's published SQL under the owner's connection, never the
+ * viewer's. Rebuilds the binding AT the published commit, since that is the
+ * artifact this viewer is reading.
+ */
+appsRoutes.post("/:id/live/__data/:name/refresh", async c => {
+  try {
+    const loaded = await loadProject(c, { write: false });
+    if ("errorResponse" in loaded) return loaded.errorResponse;
+    const sha = loaded.project.publishedSha;
+    if (!sha) {
+      return c.json(
+        { success: false, error: "This app has not been published yet" },
+        404,
+      );
+    }
+    const { status, body, headers } = await refreshBindingHttp({
+      project: loaded.project,
+      name: c.req.param("name"),
+      actorId: loaded.userId ?? "api-key",
+      at: sha,
+    });
+    return c.json(body, status, headers);
+  } catch (error) {
+    return handleError(c, error);
+  }
+});
 
 // Sharing — the SAME primitive dashboards and consoles use, all three
 // surfaces of it: per-user collaborators (viewer/editor), general access
