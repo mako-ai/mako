@@ -3260,4 +3260,14 @@ policies, filter compilation), `api/src/apps/filtered-parquet.service.ts`
 `preview.service.ts` (`u`/`e` claims), routes `apps.ts` / `apps-preview.ts`
 / `public-share.ts`, SDK `useViewer()` + `MAKO_VIEWER_AS` (2.3.0). Tests:
 `viewers.service.test.ts`, `filtered-parquet.service.test.ts` (a quote in
-the email must neither break nor widen the filter), `preview.service.test.ts`.
+the email must neither break nor widen the filter), `preview.service.test.ts`,
+and `deployment.viewers.test.ts` — the whole chain on the real-git +
+in-memory-Mongo harness: a committed `mako.json` with roles, a stored
+artifact, and `serveDeploymentFile` answering viewer.json / index.json /
+parquet bytes per viewer, refusing the anonymous request, and leaving an app
+without `viewers` exactly as it was.
+
+First consumer: RealAdvisor's `fr-sales-dashboard` (team leads listed by
+email, `default: bdr`; every rep-keyed binding carries the rep's Close
+emails and a `row_filter_bdr`; the app pins a `bdr` to their own board via
+`useViewer()`).

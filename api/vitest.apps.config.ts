@@ -48,6 +48,7 @@ export default defineConfig({
       "src/apps/deploy-on-push.test.ts",
       "src/apps/viewers.service.test.ts",
       "src/apps/filtered-parquet.service.test.ts",
+      "src/apps/deployment.viewers.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       // These two were written as vitest suites but listed in no vitest
       // config, so neither runner could execute them: tsx dies on them
