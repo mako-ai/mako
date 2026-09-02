@@ -98,7 +98,7 @@ export interface ResourceTreeSection {
   /**
    * When true, skip rendering the section header row entirely. Useful for
    * explorers that have only one implicit section (e.g. Databases, Flows,
-   * Connectors) and don't want a visible group label.
+   * Sources) and don't want a visible group label.
    */
   hideSectionHeader?: boolean;
 }

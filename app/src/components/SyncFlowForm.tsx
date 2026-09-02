@@ -745,7 +745,7 @@ export function SyncFlowForm({
         const sources = await fetchConnectors(currentWorkspace.id);
         setConnectors(sources || []);
       } catch {
-        setError("Failed to load connectors");
+        setError("Failed to load source connections");
       } finally {
         setIsLoadingConnectors(false);
       }
@@ -1411,13 +1411,13 @@ export function SyncFlowForm({
                   <Controller
                     name="dataSourceId"
                     control={control}
-                    rules={{ required: "Data source is required" }}
+                    rules={{ required: "Source connection is required" }}
                     render={({ field }) => (
                       <FormControl fullWidth error={!!errors.dataSourceId}>
-                        <InputLabel>Data Source</InputLabel>
+                        <InputLabel>Source connection</InputLabel>
                         <Select
                           {...field}
-                          label="Data Source"
+                          label="Source connection"
                           startAdornment={
                             <DataIcon sx={{ mr: 1, color: "action.active" }} />
                           }
@@ -1459,7 +1459,7 @@ export function SyncFlowForm({
                     <Typography variant="caption" color="text.secondary">
                       Syncing from a database query instead?{" "}
                       <Button size="small" onClick={onSwitchToDbSync}>
-                        Use a database source
+                        Use a database connection
                       </Button>
                     </Typography>
                   )}
@@ -2384,7 +2384,7 @@ export function SyncFlowForm({
                   <Tooltip
                     title={
                       !watchDataSourceId
-                        ? "Select a data source first"
+                        ? "Select a source connection first"
                         : connectorSupportsWebhook
                           ? ""
                           : "This connector does not provide webhooks — use a schedule"

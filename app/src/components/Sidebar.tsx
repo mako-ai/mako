@@ -17,7 +17,7 @@ import { useAuth } from "../contexts/auth-context";
 import { startTransition, useEffect, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
-import { useConnectorStore } from "../store/connectorStore";
+import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
@@ -140,7 +140,7 @@ export function SidebarUserMenu({
 
       // Clear all store data from memory before logout
       useConnectorCatalogStore.getState().clearTypes();
-      useConnectorStore.getState().clearDrafts();
+      useSourceConnectionStore.getState().clearDrafts();
       useConsoleStore.getState().clearAllConsoles();
 
       // Full store resets

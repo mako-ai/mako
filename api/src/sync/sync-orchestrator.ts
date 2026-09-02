@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import { syncConnectorRegistry } from "./connector-registry";
-import { databaseDataSourceManager } from "./database-data-source-manager";
+import { sourceConnectionManager } from "./database-data-source-manager";
 import { getDestinationManager } from "./destination-manager";
 import {
   databaseConnectionService,
@@ -44,7 +44,7 @@ const orchestratorLogger = loggers.sync("orchestrator");
 async function resolveEntitySchemaSafe(params: {
   entity: string;
   dataSourceId?: string;
-  dataSource?: { id?: string } | null;
+  sourceConnection?: { id?: string } | null;
   connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
   context: string;
 }): Promise<ConnectorEntitySchema | null> {
@@ -52,12 +52,14 @@ async function resolveEntitySchemaSafe(params: {
     let connector = params.connector;
     if (!connector) {
       const ds =
-        params.dataSource ||
+        params.sourceConnection ||
         (params.dataSourceId
-          ? await databaseDataSourceManager.getDataSource(params.dataSourceId)
+          ? await sourceConnectionManager.getSourceConnection(
+              params.dataSourceId,
+            )
           : null);
       if (!ds) return null;
-      connector = await syncConnectorRegistry.getConnector(ds as any);
+      connector = await syncConnectorRegistry.getConnectorFor(ds as any);
     }
     const schema = connector?.resolveSchema
       ? ((await connector.resolveSchema(
@@ -335,43 +337,49 @@ export async function performSyncChunk(
 
   try {
     // Get the data source
-    const dataSource =
-      await databaseDataSourceManager.getDataSource(dataSourceId);
-    if (!dataSource) {
+    const sourceConnection =
+      await sourceConnectionManager.getSourceConnection(dataSourceId);
+    if (!sourceConnection) {
       throw new Error(`Data source '${dataSourceId}' not found`);
     }
 
-    if (!dataSource.active) {
-      throw new Error(`Data source '${dataSource.name}' is not active`);
+    if (!sourceConnection.active) {
+      throw new Error(`Data source '${sourceConnection.name}' is not active`);
     }
 
-    // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+    // Inject transfer queries into sourceConnection for GraphQL/PostHog connectors
     // The registry maps connection -> config when creating the connector
     if (queries && queries.length > 0) {
-      dataSource.connection = {
-        ...dataSource.connection,
+      sourceConnection.connection = {
+        ...sourceConnection.connection,
         queries,
       };
     }
 
     // Get connector from registry
-    const connector = await syncConnectorRegistry.getConnector(dataSource);
+    const connector =
+      await syncConnectorRegistry.getConnectorFor(sourceConnection);
     if (!connector) {
       throw new Error(
-        `Failed to create connector for type: ${dataSource.type}`,
+        `Failed to create connector for type: ${sourceConnection.type}`,
       );
     }
 
     // Check if connector supports resumable fetching
     if (!connector.supportsResumableFetching()) {
       throw new Error(
-        `Connector ${dataSource.type} does not support resumable fetching`,
+        `Connector ${sourceConnection.type} does not support resumable fetching`,
       );
     }
 
     // ========== SQL/BigQuery destination path ==========
     if (options.tableDestination?.connectionId) {
-      return performSyncChunkSql(options, dataSource, connector, syncMode);
+      return performSyncChunkSql(
+        options,
+        sourceConnection,
+        connector,
+        syncMode,
+      );
     }
 
     // ========== Legacy MongoDB destination path (unchanged) ==========
@@ -405,7 +413,7 @@ export async function performSyncChunk(
     const normalizedEntityName = entity.includes(":")
       ? entity.split(":")[0]
       : entity;
-    const collectionName = `${dataSource.name}_${normalizedEntityName}`;
+    const collectionName = `${sourceConnection.name}_${normalizedEntityName}`;
     const stagingCollectionName = `${collectionName}_staging`;
     const useStaging = syncMode === "full";
 
@@ -433,7 +441,7 @@ export async function performSyncChunk(
     if (syncMode === "incremental" && !state) {
       const lastRecord = await db
         .collection(collectionName)
-        .find({ _dataSourceId: dataSource.id })
+        .find({ _dataSourceId: sourceConnection.id })
         .sort({ _syncedAt: -1 })
         .limit(1)
         .toArray();
@@ -449,8 +457,9 @@ export async function performSyncChunk(
 
     const progressReporter = new ProgressReporter(entity, undefined, logger);
 
-    const maxRetries = dataSource.settings?.max_retries || 3;
-    const rateLimitDelay = dataSource.settings?.rate_limit_delay_ms || 200;
+    const maxRetries = sourceConnection.settings?.max_retries || 3;
+    const rateLimitDelay =
+      sourceConnection.settings?.rate_limit_delay_ms || 200;
     const fetchState = await executeWithRetry(
       () =>
         connector.fetchEntityChunk({
@@ -468,8 +477,8 @@ export async function performSyncChunk(
 
             const processedRecords = batch.map(record => ({
               ...record,
-              _dataSourceId: dataSource.id,
-              _dataSourceName: dataSource.name,
+              _dataSourceId: sourceConnection.id,
+              _dataSourceName: sourceConnection.name,
               _syncedAt: new Date(),
             }));
 
@@ -479,7 +488,7 @@ export async function performSyncChunk(
                 replaceOne: {
                   filter: {
                     id: record.id,
-                    _dataSourceId: dataSource.id,
+                    _dataSourceId: sourceConnection.id,
                   },
                   replacement: record,
                   upsert: true,
@@ -569,7 +578,7 @@ export async function performSyncChunk(
  */
 async function performSyncChunkSql(
   options: SyncChunkOptions,
-  dataSource: any,
+  sourceConnection: any,
   connector: any,
   syncMode: string,
 ): Promise<SyncChunkResult> {
@@ -626,7 +635,7 @@ async function performSyncChunkSql(
           destinationDatabaseName: options.destinationDatabaseName,
           tableDestination: entityTableDest,
         },
-        dataSource.name,
+        sourceConnection.name,
       );
   if (writer) {
     (writer as any).config.deleteMode = options.deleteMode;
@@ -825,8 +834,8 @@ async function performSyncChunkSql(
     await writeRows(rowsToWrite, rowsToWrite.length);
   };
 
-  const maxRetries = dataSource.settings?.max_retries || 3;
-  const rateLimitDelay = dataSource.settings?.rate_limit_delay_ms || 200;
+  const maxRetries = sourceConnection.settings?.max_retries || 3;
+  const rateLimitDelay = sourceConnection.settings?.rate_limit_delay_ms || 200;
   const fetchState: FetchState = await executeWithRetry<FetchState>(
     () =>
       connector.fetchEntityChunk({
@@ -851,8 +860,8 @@ async function performSyncChunkSql(
           const processedRecords = batch.map((record: any) => {
             const normalized = {
               ...normalizePayloadKeys(record),
-              _dataSourceId: dataSource.id,
-              _dataSourceName: dataSource.name,
+              _dataSourceId: sourceConnection.id,
+              _dataSourceName: sourceConnection.name,
               _syncedAt: new Date(),
             };
             if (!entitySchema) return normalized;
@@ -901,9 +910,9 @@ async function performSyncChunkSql(
                 _id: new Types.ObjectId(options.flowId),
                 deleteMode: options.deleteMode,
                 dataSourceId:
-                  typeof dataSource.id === "string" &&
-                  Types.ObjectId.isValid(dataSource.id)
-                    ? new Types.ObjectId(dataSource.id)
+                  typeof sourceConnection.id === "string" &&
+                  Types.ObjectId.isValid(sourceConnection.id)
+                    ? new Types.ObjectId(sourceConnection.id)
                     : undefined,
               } as any,
               entitySchema: entitySchema ?? undefined,
@@ -1489,12 +1498,12 @@ export async function performStagingMerge(
 
   if (!cdcAdapter.mergeFromStaging) return { written: 0 };
 
-  const dataSource = await databaseDataSourceManager.getDataSource(
+  const sourceConnection = await sourceConnectionManager.getSourceConnection(
     options.dataSourceId,
   );
   const entitySchema = await resolveEntitySchemaSafe({
     entity,
-    dataSource,
+    sourceConnection,
     context: "performStagingMerge",
   });
   const cdcLayout = buildCdcEntityLayout({
@@ -1516,10 +1525,10 @@ export async function performStagingMerge(
       _id: new Types.ObjectId(flowId),
       deleteMode: options.deleteMode,
       dataSourceId:
-        dataSource &&
-        typeof dataSource.id === "string" &&
-        Types.ObjectId.isValid(dataSource.id)
-          ? new Types.ObjectId(dataSource.id)
+        sourceConnection &&
+        typeof sourceConnection.id === "string" &&
+        Types.ObjectId.isValid(sourceConnection.id)
+          ? new Types.ObjectId(sourceConnection.id)
           : undefined,
     } as any,
     flowId,
@@ -1583,7 +1592,7 @@ export async function performSync(
 
   try {
     // Validate configuration
-    const validation = databaseDataSourceManager.validateConfig();
+    const validation = sourceConnectionManager.validateConfig();
     if (!validation.valid) {
       const errorMsg =
         "Configuration validation failed: " + validation.errors.join(", ");
@@ -1592,25 +1601,25 @@ export async function performSync(
     }
 
     // Get the data source
-    const dataSource =
-      await databaseDataSourceManager.getDataSource(dataSourceId);
-    if (!dataSource) {
+    const sourceConnection =
+      await sourceConnectionManager.getSourceConnection(dataSourceId);
+    if (!sourceConnection) {
       const errorMsg = `Data source '${dataSourceId}' not found`;
       logger?.log("error", errorMsg);
       throw new Error(errorMsg);
     }
 
-    if (!dataSource.active) {
-      const errorMsg = `Data source '${dataSource.name}' is not active`;
+    if (!sourceConnection.active) {
+      const errorMsg = `Data source '${sourceConnection.name}' is not active`;
       logger?.log("error", errorMsg);
       throw new Error(errorMsg);
     }
 
-    // Inject transfer queries into dataSource for GraphQL/PostHog connectors
+    // Inject transfer queries into sourceConnection for GraphQL/PostHog connectors
     // The registry maps connection -> config when creating the connector
     if (queries && queries.length > 0) {
-      dataSource.connection = {
-        ...dataSource.connection,
+      sourceConnection.connection = {
+        ...sourceConnection.connection,
         queries,
       };
     }
@@ -1625,33 +1634,38 @@ export async function performSync(
     }
 
     // Get connector from registry
-    const connector = await syncConnectorRegistry.getConnector(dataSource);
+    const connector =
+      await syncConnectorRegistry.getConnectorFor(sourceConnection);
     if (!connector) {
-      const errorMsg = `Failed to create connector for type: ${dataSource.type}`;
+      const errorMsg = `Failed to create connector for type: ${sourceConnection.type}`;
       logger?.log("error", errorMsg);
       throw new Error(errorMsg);
     }
 
     // Test connection first with retry logic
-    const maxRetries = dataSource.settings?.max_retries || 3;
-    const rateLimitDelay = dataSource.settings?.rate_limit_delay_ms || 200;
+    const maxRetries = sourceConnection.settings?.max_retries || 3;
+    const rateLimitDelay =
+      sourceConnection.settings?.rate_limit_delay_ms || 200;
     const connectionTest = await executeWithRetry(
       () => connector.testConnection(),
       maxRetries,
       logger,
       step, // Pass step parameter for Inngest sleep when available
-      `test-connection-${dataSource.type}`,
+      `test-connection-${sourceConnection.type}`,
       rateLimitDelay,
     );
     if (!connectionTest.success) {
-      const errorMsg = `Failed to connect to ${dataSource.type}: ${connectionTest.message}`;
+      const errorMsg = `Failed to connect to ${sourceConnection.type}: ${connectionTest.message}`;
       logger?.log("error", errorMsg, { details: connectionTest.details });
       throw new Error(errorMsg);
     }
 
-    logger?.log("info", `Successfully connected to ${dataSource.type}`);
+    logger?.log("info", `Successfully connected to ${sourceConnection.type}`);
     logger?.log("info", `Starting ${syncMode} sync...`);
-    logger?.log("info", `Source: ${dataSource.name} (${dataSource.type})`);
+    logger?.log(
+      "info",
+      `Source: ${sourceConnection.name} (${sourceConnection.type})`,
+    );
     logger?.log("info", `Destination: ${destinationDb.name}`);
 
     const startTime = Date.now();
@@ -1694,7 +1708,7 @@ export async function performSync(
         e => !availableEntities.includes(e),
       );
       if (invalidEntities.length > 0) {
-        const errorMsg = `Invalid entities for ${dataSource.type} connector: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`;
+        const errorMsg = `Invalid entities for ${sourceConnection.type} connector: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`;
         logger?.log("error", errorMsg);
         throw new Error(errorMsg);
       }
@@ -1715,7 +1729,7 @@ export async function performSync(
       const normalizedEntityNameForWrite = entityName.includes(":")
         ? entityName.split(":")[0]
         : entityName;
-      const collectionName = `${dataSource.name}_${normalizedEntityNameForWrite}`;
+      const collectionName = `${sourceConnection.name}_${normalizedEntityNameForWrite}`;
       const stagingCollectionName = `${collectionName}_staging`;
       const useStaging = syncMode === "full";
 
@@ -1749,18 +1763,21 @@ export async function performSync(
           "debug",
           `Looking for last sync date in collection: ${collectionName}`,
         );
-        logger?.log("debug", `Using dataSourceId filter: ${dataSource.id}`);
+        logger?.log(
+          "debug",
+          `Using dataSourceId filter: ${sourceConnection.id}`,
+        );
 
         const lastRecord = await db
           .collection(collectionName)
-          .find({ _dataSourceId: dataSource.id })
+          .find({ _dataSourceId: sourceConnection.id })
           .sort({ _syncedAt: -1 })
           .limit(1)
           .toArray();
 
         logger?.log(
           "debug",
-          `Found ${lastRecord.length} records with _dataSourceId: ${dataSource.id}`,
+          `Found ${lastRecord.length} records with _dataSourceId: ${sourceConnection.id}`,
         );
 
         if (lastRecord.length > 0) {
@@ -1780,7 +1797,7 @@ export async function performSync(
         } else {
           logger?.log(
             "warn",
-            `No previous sync records found for ${entityName} with dataSourceId: ${dataSource.id}`,
+            `No previous sync records found for ${entityName} with dataSourceId: ${sourceConnection.id}`,
           );
         }
       }
@@ -1793,8 +1810,9 @@ export async function performSync(
       );
 
       // Fetch data from connector with retry logic
-      const maxRetries = dataSource.settings?.max_retries || 3;
-      const rateLimitDelay = dataSource.settings?.rate_limit_delay_ms || 200;
+      const maxRetries = sourceConnection.settings?.max_retries || 3;
+      const rateLimitDelay =
+        sourceConnection.settings?.rate_limit_delay_ms || 200;
       await executeWithRetry(
         () =>
           connector.fetchEntity({
@@ -1811,8 +1829,8 @@ export async function performSync(
               // Add metadata to records
               const processedRecords = batch.map(record => ({
                 ...record,
-                _dataSourceId: dataSource.id,
-                _dataSourceName: dataSource.name,
+                _dataSourceId: sourceConnection.id,
+                _dataSourceName: sourceConnection.name,
                 _syncedAt: new Date(),
               }));
 
@@ -1821,7 +1839,7 @@ export async function performSync(
                 replaceOne: {
                   filter: {
                     id: record.id,
-                    _dataSourceId: dataSource.id,
+                    _dataSourceId: sourceConnection.id,
                   },
                   replacement: record,
                   upsert: true,

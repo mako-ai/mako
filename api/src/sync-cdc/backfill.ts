@@ -23,7 +23,7 @@ import {
 } from "./adapters/registry";
 import { cdcLiveTableName, cdcStageTableName } from "./normalization";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { getCdcEventStore } from "./event-store";
 import { cdcSyncStateService } from "./sync-state";
 import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystatus";
@@ -881,10 +881,12 @@ export class CdcBackfillService {
     let keyColumns: string[] | undefined;
     if (flow.dataSourceId) {
       try {
-        const ds = await databaseDataSourceManager.getDataSource(
+        const ds = await sourceConnectionManager.getSourceConnection(
           String(flow.dataSourceId),
         );
-        const conn = ds ? await syncConnectorRegistry.getConnector(ds) : null;
+        const conn = ds
+          ? await syncConnectorRegistry.getConnectorFor(ds)
+          : null;
         const schema = conn ? await conn.resolveSchema(entity) : null;
         keyColumns = schema?.keyColumns;
       } catch {

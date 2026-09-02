@@ -1,6 +1,6 @@
 import { Types } from "mongoose";
 import {
-  Connector as DataSource,
+  SourceConnection,
   DatabaseConnection,
   Flow,
   SavedConsole,
@@ -63,8 +63,10 @@ export async function resolveResourceDisplayName(params: {
       sourceName =
         sourceDb?.name || flow.databaseSource.connectionId.toString();
     } else if (flow.dataSourceId) {
-      const dataSource = await DataSource.findById(flow.dataSourceId);
-      sourceName = dataSource?.name || flow.dataSourceId.toString();
+      const sourceConnection = await SourceConnection.findById(
+        flow.dataSourceId,
+      );
+      sourceName = sourceConnection?.name || flow.dataSourceId.toString();
     } else {
       sourceName = "Unknown Source";
     }
@@ -162,7 +164,9 @@ export async function fanOutTerminalRunNotifications(
       ruleId,
     });
 
-    const existing = await NotificationDelivery.findOne({ idempotencyKey }).lean();
+    const existing = await NotificationDelivery.findOne({
+      idempotencyKey,
+    }).lean();
     if (existing) {
       continue;
     }
@@ -336,7 +340,9 @@ async function deliverWebhook(
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Webhook HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
+    throw new Error(
+      `Webhook HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ""}`,
+    );
   }
 }
 
@@ -374,7 +380,9 @@ async function deliverSlack(
   });
   if (!response.ok) {
     const t = await response.text().catch(() => "");
-    throw new Error(`Slack webhook HTTP ${response.status}${t ? `: ${t.slice(0, 200)}` : ""}`);
+    throw new Error(
+      `Slack webhook HTTP ${response.status}${t ? `: ${t.slice(0, 200)}` : ""}`,
+    );
   }
 }
 
@@ -400,7 +408,9 @@ export function encryptNotificationChannel(
 }
 
 /** Strip secrets for API responses */
-export function sanitizeRuleForClient(rule: INotificationRule): Record<string, unknown> {
+export function sanitizeRuleForClient(
+  rule: INotificationRule,
+): Record<string, unknown> {
   const base = {
     id: rule._id.toString(),
     workspaceId: rule.workspaceId.toString(),

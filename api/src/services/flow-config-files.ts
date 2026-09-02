@@ -62,9 +62,9 @@ export interface FlowFile {
   source: /**
    * A source connection (a credential configured with a connector). On
    * disk this is `source.connection_id`; `connector_id` is the older key
-   * and is still read. The field keeps its historical name in the API.
+   * and is still read.
    */
-  | { type: "connector"; connectorId: string }
+  | { type: "connector"; connectionId: string }
     | {
         type: "database";
         connectionId?: string;
@@ -200,7 +200,7 @@ export function serializeFlowFile(flow: FlowFile): string {
         })
       : omitEmpty({
           type: "connector",
-          connection_id: flow.source.connectorId,
+          connection_id: flow.source.connectionId,
         });
 
   const table = flow.destination.table;
@@ -351,7 +351,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
           type: "connector",
           // `connection_id` is the key; `connector_id` is what files written
           // before the vocabulary settled carry, and they must keep parsing.
-          connectorId:
+          connectionId:
             str(srcDoc.connection_id) ?? str(srcDoc.connector_id) ?? "",
         };
 
@@ -460,7 +460,7 @@ export function flowToFile(flow: IFlow): FlowFile {
         }
       : {
           type: "connector",
-          connectorId: flow.dataSourceId?.toString() ?? "",
+          connectionId: flow.dataSourceId?.toString() ?? "",
         };
 
   const t = flow.tableDestination;

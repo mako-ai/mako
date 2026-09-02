@@ -20,6 +20,8 @@ import {
 } from "../dbt-runtime/shell";
 import { useDbtStore } from "../store/dbtStore";
 import { useMcpStore } from "../store/mcpStore";
+import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import { closeSourceConnectionTabsFor } from "../lib/source-connection-tabs";
 import {
   focusDashboardDataSourceTab,
   focusDashboardTab,
@@ -143,16 +145,32 @@ export function UrlSync() {
       const connectorId = connectorMatch[1];
       setLeftPane("connectors");
 
-      // A connector tab keeps its id in `content`; the name is fetched by
-      // ConnectorTab, so the title is a placeholder until it loads.
-      focusOrOpenTab(
-        { kind: "connectors", where: t => t.content === connectorId },
-        () => ({
-          title: "Connector",
-          content: connectorId,
-          kind: "connectors",
-        }),
-      );
+      // Opening a tab before we know the row exists left a 404 editor on
+      // screen, and persist restored the same dead id on every reload — the
+      // page looked stuck. Apps already refuse a dead /apps/:slug; do the
+      // same here. fetchOne 404s (or a cache miss after delete) is "gone".
+      void useSourceConnectionEntitiesStore
+        .getState()
+        .fetchOne(currentWorkspace.id, connectorId)
+        .then(entity => {
+          if (!entity) {
+            closeSourceConnectionTabsFor(connectorId);
+            window.history.replaceState(null, "", "/");
+            setDeadLinkNotice(
+              "That source connection link doesn't resolve anymore — it may have been deleted.",
+            );
+            return;
+          }
+          // A source-connection tab keeps its id in `content`.
+          focusOrOpenTab(
+            { kind: "connectors", where: t => t.content === connectorId },
+            () => ({
+              title: entity.name || "Source connection",
+              content: connectorId,
+              kind: "connectors",
+            }),
+          );
+        });
     } else if (flowMatch) {
       // /f/:flowId
       const flowId = flowMatch[1];

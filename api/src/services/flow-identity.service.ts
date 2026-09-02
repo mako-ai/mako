@@ -18,7 +18,7 @@
 import { Types } from "mongoose";
 
 import {
-  Connector as DataSource,
+  SourceConnection,
   DatabaseConnection,
   Flow,
   type IFlow,
@@ -47,8 +47,10 @@ export async function deriveFlowDisplayName(
       sourceName =
         sourceDb?.name || flow.databaseSource.connectionId.toString();
     } else if (flow.dataSourceId) {
-      const dataSource = await DataSource.findById(flow.dataSourceId);
-      sourceName = dataSource?.name || flow.dataSourceId.toString();
+      const sourceConnection = await SourceConnection.findById(
+        flow.dataSourceId,
+      );
+      sourceName = sourceConnection?.name || flow.dataSourceId.toString();
     } else {
       sourceName = "Unknown Source";
     }

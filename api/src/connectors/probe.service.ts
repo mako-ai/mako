@@ -40,12 +40,12 @@ import {
   slugFromType,
 } from "./workspace/SandboxedConnector";
 import { recordConnectionCheck } from "./workspace/reconcile.service";
-import { Connector as DataSource } from "../database/workspace-schema";
+import { SourceConnection } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
-  databaseDataSourceManager,
-  type DataSourceConfig,
+  sourceConnectionManager,
+  type SourceConnectionConfig,
 } from "../sync/database-data-source-manager";
 
 const logger = loggers.connector();
@@ -142,10 +142,10 @@ export interface ProbeResult {
  */
 export async function runConnectionCheck(input: {
   workspaceId: string;
-  dataSource: DataSourceConfig;
+  sourceConnection: SourceConnectionConfig;
   connector: BaseConnector;
 }): Promise<ConnectionTestResult> {
-  const { workspaceId, dataSource, connector } = input;
+  const { workspaceId, sourceConnection, connector } = input;
 
   // Pin the check to the code this instance will run, before running it, so
   // a concurrent push cannot make the result refer to a different revision.
@@ -156,22 +156,22 @@ export async function runConnectionCheck(input: {
 
   const result = await connector.testConnection();
 
-  if (isWorkspaceConnectorType(dataSource.type)) {
+  if (isWorkspaceConnectorType(sourceConnection.type)) {
     if (!workspaceSourceSha) {
       throw new Error(
-        `Workspace connector ${dataSource.type} resolved to an unexpected implementation`,
+        `Workspace connector ${sourceConnection.type} resolved to an unexpected implementation`,
       );
     }
     await recordConnectionCheck({
       workspaceId,
-      slug: slugFromType(dataSource.type),
+      slug: slugFromType(sourceConnection.type),
       sourceSha: workspaceSourceSha,
       success: result.success === true,
       message: result.message,
     }).catch(error =>
       logger.warn("Could not record a workspace connector check", {
         workspaceId,
-        type: dataSource.type,
+        type: sourceConnection.type,
         error,
       }),
     );
@@ -318,7 +318,7 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   // The id is the caller's; the workspace is the one the caller was
   // authorized for. A probe by id alone would let a member of one workspace
   // exercise another workspace's credential against a live platform.
-  const owned = await DataSource.findOne(
+  const owned = await SourceConnection.findOne(
     { _id: new Types.ObjectId(connectionId), workspaceId },
     { _id: 1 },
   ).lean();
@@ -329,31 +329,32 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
     );
   }
 
-  const dataSource =
-    await databaseDataSourceManager.getDataSource(connectionId);
-  if (!dataSource) {
+  const sourceConnection =
+    await sourceConnectionManager.getSourceConnection(connectionId);
+  if (!sourceConnection) {
     throw new ProbeError("not_found", "Connection not found");
   }
-  const secrets = secretValuesOf(dataSource.connection);
+  const secrets = secretValuesOf(sourceConnection.connection);
 
   const run = async (): Promise<ProbeResult> => {
-    const connector = await syncConnectorRegistry.getConnector(dataSource);
+    const connector =
+      await syncConnectorRegistry.getConnectorFor(sourceConnection);
     if (!connector) {
       throw new ProbeError(
         "connector_unavailable",
-        `No connector implementation is available for type "${dataSource.type}".`,
+        `No connector implementation is available for type "${sourceConnection.type}".`,
       );
     }
 
     const identity = {
-      id: dataSource.id,
-      name: dataSource.name,
-      connector: dataSource.type,
+      id: sourceConnection.id,
+      name: sourceConnection.name,
+      connector: sourceConnection.type,
     };
 
     const check = await runConnectionCheck({
       workspaceId,
-      dataSource,
+      sourceConnection,
       connector,
     });
 
@@ -373,7 +374,7 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
     if (declared.length > 0 && !declared.includes(entity)) {
       throw new ProbeError(
         "unknown_entity",
-        `The connection "${dataSource.name}" (${dataSource.type}) has no entity "${entity}". ` +
+        `The connection "${sourceConnection.name}" (${sourceConnection.type}) has no entity "${entity}". ` +
           `It offers: ${declared.join(", ")}.`,
       );
     }

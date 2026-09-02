@@ -65,7 +65,7 @@ This architecture was right for v1 (zero infra, instant preview, no build step) 
 
 ### What we must not lose (our USP vs. "just use Claude Code locally")
 
-1. **Data source access with smart schema tools.** Apps have first-class, credential-free access to every workspace connection, with the schema discovery tools (`sql_list_tables`, `sql_inspect_table`, ...) that make the agent good at data work. Credentials never leave our backend.
+1. **Connection access with smart schema tools.** Apps have first-class, credential-free access to every workspace connection, with the schema discovery tools (`sql_list_tables`, `sql_inspect_table`, ...) that make the agent good at data work. Credentials never leave our backend.
 2. **Instant deploy and hosting.** An app is live and shareable seconds after the agent writes it. No Vercel account, no CI setup, no DNS.
 
 Both properties must survive — and both must extend to users editing from outside Mako.
@@ -1038,7 +1038,7 @@ behind the provider seam — Mako still executing on the user's behalf, just
 pointed at their laptop.
 
 The real shape is simpler. The user has **the workspace repo** checked out. A
-`mako` executable supplies what only Mako can: data-source proxies,
+`mako` executable supplies what only Mako can: connection proxies,
 authentication, and the API surface. The user — or Claude Code — then runs
 `vite dev`, `npm test`, anything, **directly, as themselves**. Mako is not in
 the execution path, there is no sandbox abstraction, and **the user never has

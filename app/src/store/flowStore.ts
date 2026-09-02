@@ -1466,7 +1466,7 @@ export const useFlowStore = create<FlowStore>()(
 
         try {
           const response = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/connectors", {
+            await api.GET("/api/workspaces/{workspaceId}/connections/sources", {
               params: { path: { workspaceId } },
             }),
           ) as {

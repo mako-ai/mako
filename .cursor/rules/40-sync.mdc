@@ -13,11 +13,11 @@ description: Flows, chunked sync architecture, and Inngest usage
 
 ## Connector vs Flow Responsibilities
 
-- **Connectors** store only credentials and connection settings (endpoint, API key, auth headers).
+- **Connections** store only credentials and connection settings (endpoint, API key, auth headers). A **connector** is the code that uses them.
 - **Flows** define what data to sync:
   - `entityFilter`: which entities to sync (for connectors with fixed entities like Stripe, Close)
   - `queries`: GraphQL/PostHog query definitions (for query-based connectors)
-- For GraphQL/PostHog connectors, queries are injected into the connector at sync time via `dataSource.connection.queries`.
+- For GraphQL/PostHog connectors, queries are injected into the connector at sync time via `sourceConnection.connection.queries`.
 
 Rules:
 

@@ -23,7 +23,7 @@ import {
 import { isEntityEnabledForFlow } from "./entity-selection";
 import { cdcSyncStateService } from "./sync-state";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
 
 const log = loggers.sync("cdc.consumer");
@@ -79,10 +79,12 @@ export class CdcConsumerService {
     let connectorSchema: ConnectorEntitySchema | null = null;
     if (flow.dataSourceId) {
       try {
-        const ds = await databaseDataSourceManager.getDataSource(
+        const ds = await sourceConnectionManager.getSourceConnection(
           String(flow.dataSourceId),
         );
-        const conn = ds ? await syncConnectorRegistry.getConnector(ds) : null;
+        const conn = ds
+          ? await syncConnectorRegistry.getConnectorFor(ds)
+          : null;
         if (conn) {
           connectorSchema = await conn.resolveSchema(params.entity);
         }

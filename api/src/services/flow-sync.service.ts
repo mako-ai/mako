@@ -133,11 +133,11 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     // `dataSourceId` is required on the schema, so a connector file without
     // one cannot produce a valid row. Refuse the file rather than write half
     // a flow — the row that exists is more trustworthy than a bad edit.
-    if (!file.source.connectorId) {
+    if (!file.source.connectionId) {
       return "connector source has no connection_id";
     }
     doc.sourceType = "connector";
-    doc.dataSourceId = new Types.ObjectId(file.source.connectorId);
+    doc.dataSourceId = new Types.ObjectId(file.source.connectionId);
   }
 
   // Required on the schema, same as `dataSourceId` above: refuse rather than
