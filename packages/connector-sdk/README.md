@@ -52,10 +52,11 @@ entry: connector.ts # optional; this is the default
 Push `connectors/<slug>/` to your workspace repo's default branch and Mako
 indexes it: it runs `spec`, captures the credential form, and offers the
 connector in the picker. Test it first with `npx @makoai/cli connector test
-connectors/<slug>`. Once it is configured in Mako (a credential entered in
-the UI), `npx @makoai/cli connector probe <name> --entity <entity>` runs it
-live against the platform — the check plus one bounded page, written
-nowhere — and the same probe is the `probe_connector` MCP tool and
+connectors/<slug>`. A connector is code; a *connection* is a credential a
+workspace configures with it. Once a connection exists (a credential entered
+in the UI), `npx @makoai/cli connection probe <name> --entity <entity>` runs
+it live against the platform — the check plus one bounded page, written
+nowhere — and the same probe is the `probe_connection` MCP tool and
 `POST /connectors/:id/probe`, so a flow is not the only thing that can ever
 drive it.
 

@@ -11547,7 +11547,7 @@
         "tags": [
           "Connectors"
         ],
-        "summary": "Probe a connector live: check its credential and read one page of an entity",
+        "summary": "Probe a source connection live: check its credential and read one page of an entity",
         "security": [
           {
             "cookieAuth": []

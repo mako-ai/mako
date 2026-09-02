@@ -8,7 +8,7 @@ import {
   PROBE_DEFAULT_LIMIT,
   PROBE_MAX_LIMIT,
   ProbeError,
-  probeConnector,
+  probeConnection,
   runConnectionCheck,
 } from "../connectors/probe.service";
 import { connectorTypeExists } from "../connectors/workspace/catalog";
@@ -645,10 +645,11 @@ const ProbeBody = {
 
 /**
  * The live probe: the check above plus one bounded page of an entity, read
- * from the platform behind the connector and written nowhere. Same service
- * as the `probe_connector` MCP tool and `mako connector probe`, so the three
- * surfaces cannot drift on what "bounded", "read-only" and "no credential
- * in the result" mean.
+ * from the platform behind the connection and written nowhere. Same service
+ * as the `probe_connection` MCP tool and `mako connection probe`, so the
+ * three surfaces cannot drift on what "bounded", "read-only" and "no
+ * credential in the result" mean. (This router is mounted at `/connectors`
+ * for historical reasons; the rows it manages are source CONNECTIONS.)
  */
 dataSourceRoutes.openapi(
   createRoute({
@@ -656,7 +657,7 @@ dataSourceRoutes.openapi(
     path: "/{id}/probe",
     tags: ["Connectors"],
     summary:
-      "Probe a connector live: check its credential and read one page of an entity",
+      "Probe a source connection live: check its credential and read one page of an entity",
     security: AUTH_SECURITY,
     request: { params: SourceIdParam, body: ProbeBody },
     responses: { ...OPEN_RESPONSES },
@@ -693,9 +694,9 @@ dataSourceRoutes.openapi(
     }
 
     try {
-      const data = await probeConnector({
+      const data = await probeConnection({
         workspaceId,
-        connectorId: id,
+        connectionId: id,
         entity: body.entity,
         limit: body.limit,
         fields: body.fields,
@@ -709,9 +710,9 @@ dataSourceRoutes.openapi(
           error.status,
         );
       }
-      logger.error("Connector probe failed", {
+      logger.error("Connection probe failed", {
         workspaceId,
-        connectorId: id,
+        connectionId: id,
         error: error instanceof Error ? error.message : String(error),
       });
       return c.json(

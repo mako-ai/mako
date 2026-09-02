@@ -252,7 +252,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // reclassification. Use list_connectors / inspect_connector for connectors.
   create_data_source: exclude(
     "client-only",
-    "Creates a dashboard-local DuckDB data source in the browser — NOT a workspace connector. Connector discovery is list_connectors / inspect_connector.",
+    "Creates a dashboard-local DuckDB data source in the browser — NOT a workspace connection. Connections are list_connections / inspect_connection; connector types are list_connectors.",
   ),
   dashboard_restore_version: exclude(
     "deferred",
@@ -293,19 +293,20 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   list_data_sources: exclude(
     "client-only",
-    "Lists in-browser DuckDB materializations — NOT workspace connectors. For those, list_connectors.",
+    "Lists in-browser DuckDB materializations — NOT workspace connections. For those, list_connections; for connector types, list_connectors.",
   ),
 
-  // ── Connector discovery (RFC: agent-authored flows) ────────────────────
-  // A flow definition references its connector by id and names entities; an
-  // agent can invent neither. Reads only, and neither returns a credential.
+  // ── Connectors (code) and connections (credentials) ───────────────────
+  // A flow definition references connections by id and names entities; an
+  // agent can invent neither. Reads only, and none returns a credential.
   list_connectors: bridge(),
   inspect_connector: bridge(),
-  // The live probe: runs the connector against its platform (credential
-  // check + one bounded page of an entity), writes nothing. It reads
-  // external data, so it needs query access like sql_execute_query does,
-  // and it reaches outside the workspace, hence openWorldHint.
-  probe_connector: bridge({ requiresQueryAccess: true, openWorldHint: true }),
+  inspect_connection: bridge(),
+  // The live probe: runs a source connection against its platform
+  // (credential check + one bounded page of an entity), writes nothing. It
+  // reads external data, so it needs query access like sql_execute_query
+  // does, and it reaches outside the workspace, hence openWorldHint.
+  probe_connection: bridge({ requiresQueryAccess: true, openWorldHint: true }),
   // The pre-push check for flow files. Reads only — it says what a push
   // WOULD do to running streams and performs none of it — so it is bridged
   // next to the discovery pair it completes: discover ids, write the file,

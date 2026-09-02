@@ -1689,7 +1689,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Probe a connector live: check its credential and read one page of an entity */
+        /** Probe a source connection live: check its credential and read one page of an entity */
         post: operations["post_api_workspaces_workspaceId_connectors_id_probe"];
         delete?: never;
         options?: never;

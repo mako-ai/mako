@@ -53,9 +53,20 @@ const DEFAULT_INCREMENTAL_CAPABILITIES: IncrementalCapabilities = {
 class ConnectorRegistry {
   private connectors: Map<string, ConnectorRegistryMetadata> = new Map();
   private initialized = false;
+  private initializing: Promise<void>;
 
   constructor() {
-    void this.initializeConnectors();
+    this.initializing = this.initializeConnectors();
+  }
+
+  /**
+   * Resolves once the directory scan has finished. The constructor starts it
+   * without waiting, which is right for the hot paths — but a caller that
+   * lists the catalog (`getAllMetadata`) right after boot would otherwise
+   * see an empty registry and report a workspace with no connectors.
+   */
+  async ready(): Promise<void> {
+    await this.initializing;
   }
 
   /**
@@ -262,7 +273,8 @@ class ConnectorRegistry {
   async reinitialize() {
     this.connectors.clear();
     this.initialized = false;
-    await this.initializeConnectors();
+    this.initializing = this.initializeConnectors();
+    await this.initializing;
   }
 }
 

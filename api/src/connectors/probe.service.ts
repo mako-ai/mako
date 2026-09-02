@@ -1,13 +1,15 @@
 /**
- * A live probe of one connector: does the credential work, and what does one
+ * A live probe of one connection: does the credential work, and what does one
  * page of an entity look like, straight from the platform behind it.
  *
- * A connector is defined once — `check` + entities + `read` — and until now
- * the only thing that ever drove it was a flow. That makes "does my new Vercel
- * key actually work?" a question answered by creating a flow, waiting for a
- * run, and reading the destination table. The probe asks the connector
+ * Vocabulary: a CONNECTOR is code (`stripe`, `ws:vercel-ai-gateway`) and a
+ * CONNECTION is a credential a workspace configured with it. A connector is
+ * defined once — `check` + entities + `read` — and until now the only thing
+ * that ever drove a connection was a flow. That makes "does my new Vercel key
+ * actually work?" a question answered by creating a flow, waiting for a run,
+ * and reading the destination table. The probe drives the connection
  * directly instead, through the same `BaseConnector` contract the sync engine
- * drives, so what it shows is exactly what a flow would land: same code, same
+ * uses, so what it shows is exactly what a flow would land: same code, same
  * credential, same pagination — one bounded page, written nowhere.
  *
  * Three rules, and every surface (MCP tool, REST route, CLI) inherits them
@@ -93,7 +95,8 @@ export class ProbeError extends Error {
 
 export interface ProbeInput {
   workspaceId: string;
-  connectorId: string;
+  /** The configured source connection (a `connectors` row), from list_connections. */
+  connectionId: string;
   /** Entity to read one page of. Omit to check the credential only. */
   entity?: string;
   /** Records to return, 1..PROBE_MAX_LIMIT. Default PROBE_DEFAULT_LIMIT. */
@@ -107,7 +110,7 @@ export interface ProbeInput {
 }
 
 export interface ProbeResult {
-  connector: { id: string; name: string; type: string };
+  connection: { id: string; name: string; connector: string };
   check: ConnectionTestResult;
   /** Present when an entity was probed and the check passed. */
   entity?: {
@@ -298,17 +301,17 @@ function normalizeFields(fields: string[] | undefined): string[] | undefined {
  * the deadline; anything else the connector throws is passed through with
  * its secrets scrubbed.
  */
-export async function probeConnector(input: ProbeInput): Promise<ProbeResult> {
+export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   const started = Date.now();
-  const { workspaceId, connectorId } = input;
+  const { workspaceId, connectionId } = input;
   const limit = normalizeLimit(input.limit);
   const fields = normalizeFields(input.fields);
   const timeoutMs = input.timeoutMs ?? PROBE_TIMEOUT_MS;
 
-  if (!Types.ObjectId.isValid(connectorId)) {
+  if (!Types.ObjectId.isValid(connectionId)) {
     throw new ProbeError(
       "invalid_input",
-      `Invalid connectorId: ${connectorId}`,
+      `Invalid connectionId: ${connectionId}`,
     );
   }
 
@@ -316,19 +319,20 @@ export async function probeConnector(input: ProbeInput): Promise<ProbeResult> {
   // authorized for. A probe by id alone would let a member of one workspace
   // exercise another workspace's credential against a live platform.
   const owned = await DataSource.findOne(
-    { _id: new Types.ObjectId(connectorId), workspaceId },
+    { _id: new Types.ObjectId(connectionId), workspaceId },
     { _id: 1 },
   ).lean();
   if (!owned) {
     throw new ProbeError(
       "not_found",
-      "Connector not found in this workspace. Call list_connectors for valid ids.",
+      'Connection not found in this workspace. Call list_connections({ kind: "source" }) for valid ids.',
     );
   }
 
-  const dataSource = await databaseDataSourceManager.getDataSource(connectorId);
+  const dataSource =
+    await databaseDataSourceManager.getDataSource(connectionId);
   if (!dataSource) {
-    throw new ProbeError("not_found", "Connector not found");
+    throw new ProbeError("not_found", "Connection not found");
   }
   const secrets = secretValuesOf(dataSource.connection);
 
@@ -344,7 +348,7 @@ export async function probeConnector(input: ProbeInput): Promise<ProbeResult> {
     const identity = {
       id: dataSource.id,
       name: dataSource.name,
-      type: dataSource.type,
+      connector: dataSource.type,
     };
 
     const check = await runConnectionCheck({
@@ -355,7 +359,7 @@ export async function probeConnector(input: ProbeInput): Promise<ProbeResult> {
 
     if (!input.entity || !check.success) {
       return {
-        connector: identity,
+        connection: identity,
         check,
         durationMs: Date.now() - started,
       };
@@ -369,7 +373,7 @@ export async function probeConnector(input: ProbeInput): Promise<ProbeResult> {
     if (declared.length > 0 && !declared.includes(entity)) {
       throw new ProbeError(
         "unknown_entity",
-        `The connector "${dataSource.name}" has no entity "${entity}". ` +
+        `The connection "${dataSource.name}" (${dataSource.type}) has no entity "${entity}". ` +
           `It offers: ${declared.join(", ")}.`,
       );
     }
@@ -396,7 +400,7 @@ export async function probeConnector(input: ProbeInput): Promise<ProbeResult> {
     const schema = await connector.resolveSchema(entity).catch(error => {
       logger.warn("Probe could not resolve the entity schema", {
         workspaceId,
-        connectorId,
+        connectionId,
         entity,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -404,7 +408,7 @@ export async function probeConnector(input: ProbeInput): Promise<ProbeResult> {
     });
 
     return {
-      connector: identity,
+      connection: identity,
       check,
       entity: {
         name: entity,

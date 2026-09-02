@@ -1,14 +1,11 @@
 /**
- * `mako connector test <path>` — the conformance gate — and
- * `mako connector probe <id|name>` — the live probe of a configured one.
+ * `mako connector test <path>` — the conformance gate.
  *
- * `test` runs a connector's CODE from a folder on this machine, with a
- * credential in a local file. `probe` runs a connector Mako has CONFIGURED,
- * with the credential Mako holds, against the real platform: the credential
- * check plus one bounded page of an entity, written nowhere. It speaks MCP
- * (`probe_connector`), like `status` and `publish`, so the login token is
- * enough and the rules — bounded, read-only, secrets scrubbed — are the
- * server's, not this file's.
+ * A CONNECTOR is code: the folder under `connectors/<slug>/` that knows how
+ * to check a credential and read entities. This command runs that code from
+ * this machine, with a credential in a local file, against its own contract.
+ * To run a connection Mako has CONFIGURED with a connector — the credential
+ * Mako holds, live against the platform — see `mako connection probe`.
  *
  * A connector is only as good as the promise that it will still work when the
  * engine drives it, so this runs the same four commands the engine runs, in
@@ -29,30 +26,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { callMcpTool } from "./status.js";
 
 const HELP = `mako connector test <path> [--config <file>] [--entity <name>]
-mako connector probe <id|name> [--entity <name>] [--limit <n>] [--fields a,b] [--since <iso>]
-
-test — run a connector's code, from this machine, against its own contract:
 
   <path>            a connector folder (containing connector.yaml), or a connector file
   --config <file>   JSON credentials to run check, discover and read against
   --entity <name>   test only this entity (default: all of them)
   --json            machine-readable result
 
-  Without --config only the offline checks run: spec, its config schema, and
-  the connector's shape. That is what CI can do without a secret.
+Without --config only the offline checks run: spec, its config schema, and the
+connector's shape. That is what CI can do without a secret.
 
-probe — run a connector Mako has configured, with the credential Mako holds,
-live against its platform. Nothing is written anywhere:
-
-  <id|name>         the connector, by id or by its name in Mako
-  --entity <name>   read one page of this entity (omit: check the credential only)
-  --limit <n>       records to show (default 20, max 200)
-  --fields a,b      keep only these fields of each record
-  --since <iso>     records changed since this instant, where the connector can
-  --json            the full result as JSON`;
+To run a connection Mako has configured, live against its platform:
+  mako connection probe <id|name> [--entity <name>]`;
 
 const ok = text => `  ok    ${text}`;
 const bad = text => `  FAIL  ${text}`;
@@ -174,7 +160,6 @@ function declaredTypes(property) {
 
 export async function connector(ctx, positional, flags, io) {
   const sub = positional[0];
-  if (sub === "probe") return probe(ctx, positional, flags, io);
   if (sub !== "test") {
     io.log(HELP);
     return sub ? 2 : 0;
@@ -453,168 +438,4 @@ export async function connector(ctx, positional, flags, io) {
     );
   }
   return problems.length === 0 ? 0 : 1;
-}
-
-// ---------------------------------------------------------------------------
-// probe
-// ---------------------------------------------------------------------------
-
-const OBJECT_ID = /^[0-9a-f]{24}$/i;
-
-/** A connector id from an id or a name, via list_connectors. */
-async function resolveConnectorId(ctx, target) {
-  if (OBJECT_ID.test(target)) return { id: target };
-  const out = await callMcpTool(ctx, "list_connectors", {});
-  if (out?.error) throw new Error(out.error);
-  const connectors = out?.connectors ?? [];
-  const wanted = target.toLowerCase();
-  const matches = connectors.filter(
-    c => String(c.name).toLowerCase() === wanted,
-  );
-  if (matches.length === 1) return { id: matches[0].id, name: matches[0].name };
-  if (matches.length > 1) {
-    throw new Error(
-      `${matches.length} connectors are named "${target}"; pass the id instead: ${matches
-        .map(c => c.id)
-        .join(", ")}`,
-    );
-  }
-  const known = connectors
-    .map(c => `  ${c.id}  ${c.name}  (${c.type})`)
-    .join("\n");
-  throw new Error(
-    `no connector named "${target}" in this workspace.${known ? `\n\nConfigured connectors:\n${known}` : ""}`,
-  );
-}
-
-function cell(value) {
-  if (value === null || value === undefined) return "";
-  const text =
-    typeof value === "object" ? JSON.stringify(value) : String(value);
-  return text.length > 24 ? `${text.slice(0, 21)}…` : text;
-}
-
-/** A small aligned table of the records' first columns. */
-function renderRecords(records, fields) {
-  if (records.length === 0) return ["  (no records)"];
-  const columns =
-    fields ??
-    [
-      ...new Set(
-        records.flatMap(r =>
-          r && typeof r === "object" ? Object.keys(r) : [],
-        ),
-      ),
-    ].slice(0, 6);
-  const rows = records.map(r => columns.map(c => cell(r?.[c])));
-  const widths = columns.map((c, i) =>
-    Math.max(c.length, ...rows.map(r => r[i].length)),
-  );
-  const line = cells =>
-    `  ${cells.map((v, i) => v.padEnd(widths[i])).join("  ")}`;
-  return [line(columns), ...rows.map(line)];
-}
-
-async function probe(ctx, positional, flags, io) {
-  const target = positional[1];
-  if (!target) {
-    io.log(HELP);
-    return 2;
-  }
-
-  const args = {};
-  if (flags.entity) args.entity = String(flags.entity);
-  if (flags.limit !== undefined) {
-    const limit = Number(flags.limit);
-    if (!Number.isInteger(limit) || limit < 1) {
-      io.log(`--limit must be a positive integer, got "${flags.limit}"`);
-      return 2;
-    }
-    args.limit = limit;
-  }
-  if (flags.fields) {
-    args.fields = String(flags.fields)
-      .split(",")
-      .map(f => f.trim())
-      .filter(Boolean);
-  }
-  if (flags.since) {
-    const since = new Date(String(flags.since));
-    if (Number.isNaN(since.getTime())) {
-      io.log(`--since must be an ISO 8601 instant, got "${flags.since}"`);
-      return 2;
-    }
-    args.since = since.toISOString();
-  }
-
-  let resolved;
-  try {
-    resolved = await resolveConnectorId(ctx, target);
-  } catch (error) {
-    io.log(String(error.message ?? error));
-    return 1;
-  }
-
-  const started = Date.now();
-  const out = await callMcpTool(ctx, "probe_connector", {
-    connectorId: resolved.id,
-    ...args,
-  });
-
-  if (flags.json) {
-    io.log(JSON.stringify(out, null, 2));
-    return out?.error ? 1 : out?.check?.success === false ? 1 : 0;
-  }
-
-  if (out?.error) {
-    io.log(`probe failed: ${out.error}`);
-    return 1;
-  }
-
-  const label = `${out.connector?.name ?? resolved.name ?? resolved.id} (${out.connector?.type ?? "?"})`;
-  const lines = [];
-  if (out.check?.success) {
-    lines.push(ok(`check: connected — ${label}`));
-  } else {
-    lines.push(bad(`check: ${out.check?.message ?? "failed"} — ${label}`));
-    io.log(lines.join("\n"));
-    return 1;
-  }
-
-  const entity = out.entity;
-  if (entity) {
-    const more = entity.hasMore
-      ? ", more pages on the platform"
-      : ", no further pages";
-    const cut = entity.truncated
-      ? ` (page held ${entity.received}, showing ${entity.count})`
-      : "";
-    lines.push(ok(`${entity.name}: ${entity.count} record(s)${cut}${more}`));
-    if (entity.schema && Object.keys(entity.schema).length > 0) {
-      const declared = Object.entries(entity.schema)
-        .slice(0, 12)
-        .map(([name, type]) => `${name}:${type}`)
-        .join("  ");
-      lines.push(
-        `        schema  ${declared}${Object.keys(entity.schema).length > 12 ? "  …" : ""}`,
-      );
-    }
-    lines.push("");
-    lines.push(...renderRecords(entity.records ?? [], args.fields));
-    for (const log of entity.logs ?? []) {
-      lines.push(`  ${log.level.padEnd(5)} ${log.message}`);
-    }
-  } else if (args.entity) {
-    lines.push(skip(`${args.entity}: not read, because the check failed`));
-  }
-
-  lines.push("");
-  lines.push(
-    `Read live from the platform in ${((out.durationMs ?? Date.now() - started) / 1000).toFixed(1)}s; nothing was written.` +
-      (entity
-        ? ""
-        : " Pass --entity <name> to read one page (inspect_connector lists the names)."),
-  );
-  io.log(lines.join("\n"));
-  return 0;
 }

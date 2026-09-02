@@ -43,7 +43,7 @@ vi.mock("../connectors/probe.service", async importOriginal => {
     await importOriginal<typeof import("../connectors/probe.service")>();
   return {
     ...actual,
-    probeConnector: vi.fn(async (input: unknown) => {
+    probeConnection: vi.fn(async (input: unknown) => {
       state.calls.push(input);
       if (state.next instanceof Error) throw state.next;
       return state.next;
@@ -85,7 +85,11 @@ function probe(body?: unknown, raw?: string): Promise<Response> {
 beforeEach(() => {
   state.calls = [];
   state.next = {
-    connector: { id: CONNECTOR, name: "Vercel", type: "ws:vercel-ai-gateway" },
+    connection: {
+      id: CONNECTOR,
+      name: "Vercel",
+      connector: "ws:vercel-ai-gateway",
+    },
     check: { success: true, message: "Connection successful" },
     durationMs: 2,
   };
@@ -106,7 +110,7 @@ describe("the edge", () => {
     expect(state.calls).toEqual([
       {
         workspaceId: WS,
-        connectorId: CONNECTOR,
+        connectionId: CONNECTOR,
         entity: "daily-usage",
         limit: 3,
         fields: ["day"],
@@ -121,7 +125,7 @@ describe("the edge", () => {
     expect(state.calls).toEqual([
       {
         workspaceId: WS,
-        connectorId: CONNECTOR,
+        connectionId: CONNECTOR,
         entity: undefined,
         limit: undefined,
         fields: undefined,
@@ -139,13 +143,13 @@ describe("the edge", () => {
   it("maps a ProbeError to its status and keeps its code", async () => {
     state.next = new ProbeError(
       "not_found",
-      "Connector not found in this workspace.",
+      "Connection not found in this workspace.",
     );
     const res = await probe();
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({
       success: false,
-      error: "Connector not found in this workspace.",
+      error: "Connection not found in this workspace.",
       code: "not_found",
     });
 

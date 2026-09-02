@@ -11,7 +11,7 @@
  *               result carries: the vendor's check message, a record, an
  *               error thrown by the connector.
  *
- * Plus the tenancy rule every connector route has: an id from another
+ * Plus the tenancy rule every connection route has: an id from another
  * workspace is "not found", never "here is their data".
  *
  * Real Mongo (mongodb-memory-server) for the ownership check; the connector
@@ -80,7 +80,7 @@ import { Connector } from "../database/workspace-schema";
 import {
   PROBE_MAX_LIMIT,
   ProbeError,
-  probeConnector,
+  probeConnection,
   redactSecrets,
   secretValuesOf,
 } from "./probe.service";
@@ -198,10 +198,10 @@ beforeEach(async () => {
   state.dataSourceType = "stripe";
 });
 
-const probe = (input: Partial<Parameters<typeof probeConnector>[0]> = {}) =>
-  probeConnector({
+const probe = (input: Partial<Parameters<typeof probeConnection>[0]> = {}) =>
+  probeConnection({
     workspaceId: WS.toString(),
-    connectorId: mine.toString(),
+    connectionId: mine.toString(),
     ...input,
   });
 
@@ -217,14 +217,14 @@ async function failure(promise: Promise<unknown>): Promise<ProbeError> {
 
 describe("tenancy", () => {
   it("a connector from another workspace is not found, not probed", async () => {
-    const error = await failure(probe({ connectorId: theirs.toString() }));
+    const error = await failure(probe({ connectionId: theirs.toString() }));
     expect(error.code).toBe("not_found");
     expect(error.status).toBe(404);
     expect(fake.calls).toEqual([]);
   });
 
   it("a malformed id is a caller mistake, not a crash", async () => {
-    const error = await failure(probe({ connectorId: "vercel" }));
+    const error = await failure(probe({ connectionId: "vercel" }));
     expect(error.code).toBe("invalid_input");
     expect(error.status).toBe(400);
   });
@@ -238,10 +238,10 @@ describe("check", () => {
       message: "Connection successful",
     });
     expect(result.entity).toBeUndefined();
-    expect(result.connector).toEqual({
+    expect(result.connection).toEqual({
       id: mine.toString(),
       name: "Vercel AI Gateway Usage",
-      type: "stripe",
+      connector: "stripe",
     });
     expect(fake.calls).toEqual([]);
   });

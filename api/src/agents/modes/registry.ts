@@ -61,13 +61,15 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // default working set, since the in-product flow surface is the form, not
   // the file.
   check_flow_files: "flows",
-  // Connector discovery and the live probe. The in-product flow surface is
-  // the form, which lists connectors itself, so these stay out of the default
-  // working set; the probe is what an agent loads when asked "does this new
-  // connector work?" or "what does that platform's data look like?".
+  // Connectors (code) and connections (credentials): the catalog, the
+  // inspection of one connection, and the live probe. The in-product flow
+  // surface is the form, which lists them itself, so these stay out of the
+  // default working set; the probe is what an agent loads when asked "does
+  // this new connection work?" or "what does that platform's data look like?".
   list_connectors: "connectors",
   inspect_connector: "connectors",
-  probe_connector: "connectors",
+  inspect_connection: "connectors",
+  probe_connection: "connectors",
   // Deprecated single-field alias of set_multiple_fields (which updates one
   // or many fields). Its FIELD_PATHS enum makes it one of the heaviest
   // schemas in the catalog, so it stays out of the flow working set.

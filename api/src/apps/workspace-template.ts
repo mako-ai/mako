@@ -112,7 +112,10 @@ You are an ordinary developer in an ordinary checkout.
 - **Data**: the \`mako\` MCP server is the only way to the warehouse.
   \`list_connections\` → \`list_tables\` / \`inspect_table\` →
   \`sql_execute_query\` (read-only). Validate every query there BEFORE it
-  goes into a binding.
+  goes into a binding. A *connection* is a configured credential — kind
+  \`database\` (queryable) or \`source\` (a Stripe/Close/… key that flows
+  read and \`probe_connection\` reads live); a *connector* is the code
+  behind it (\`list_connectors\`).
 - **Skills**: call \`get_relevant_skills({ query })\` before writing app code.
   The SDK API (\`useQuery\`, \`useDuckDB\`), binding front matter, chart and
   dialect guidance live there — not in this file. \`load_skill("apps")\` is
