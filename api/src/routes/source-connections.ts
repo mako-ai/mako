@@ -9,7 +9,11 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { decryptEncrypted, encryptString } from "../services/crypto.service";
+import {
+  decryptEncrypted,
+  encryptString,
+  isEncryptedValue,
+} from "../services/crypto.service";
 import { SourceConnection } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
@@ -221,7 +225,30 @@ function applySecretPlaceholders(
  * Credentials are write-only. Same contract as `GET /databases/:id`: secret
  * fields become {@link SECRET_KEPT}, everything else (account ids, URLs)
  * stays so the edit form can round-trip.
+ *
+ * Fail CLOSED when the connector schema is missing: any value already in
+ * AES `iv:hex` form is ciphertext, whatever its field is named (`headers`
+ * on GraphQL/REST is the one that slips past the database-connection
+ * secret-key regex).
  */
+function redactCiphertextLeaves(value: unknown): unknown {
+  if (typeof value === "string") {
+    return isEncryptedValue(value) ? SECRET_KEPT : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => redactCiphertextLeaves(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [
+        key,
+        redactCiphertextLeaves(nested),
+      ]),
+    );
+  }
+  return value;
+}
+
 function redactSourceConfig(
   config: unknown,
   schema: { fields: ConnectorFieldSchema[] } | null,
@@ -231,17 +258,26 @@ function redactSourceConfig(
   }
   const redacted = redactConnectionSecrets(config as Record<string, unknown>);
   if (schema?.fields) applySecretPlaceholders(redacted, schema.fields);
-  return redacted;
+  return redactCiphertextLeaves(redacted) as Record<string, unknown>;
 }
 
 async function publicSourceConnection(
   doc: Record<string, unknown>,
   workspaceId: string,
 ): Promise<Record<string, unknown>> {
-  const schema = await syncConnectorRegistry.getConfigSchemaForType(
-    String(doc.type ?? ""),
-    workspaceId,
-  );
+  let schema: { fields: ConnectorFieldSchema[] } | null = null;
+  try {
+    schema = await syncConnectorRegistry.getConfigSchemaForType(
+      String(doc.type ?? ""),
+      workspaceId,
+    );
+  } catch (error) {
+    logger.warn("Could not load connector schema while redacting config", {
+      type: doc.type,
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   return {
     ...doc,
     config: redactSourceConfig(doc.config, schema),

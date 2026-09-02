@@ -63,6 +63,14 @@ import { sourceConnectionRoutes } from "./source-connections";
 import { Connector } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 import { SECRET_KEPT } from "../utils/connection-secrets";
+import { syncConnectorRegistry } from "../sync/connector-registry";
+
+const defaultSchema = {
+  fields: [
+    { name: "api_key", type: "password", encrypted: true },
+    { name: "account", type: "string" },
+  ],
+};
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -103,6 +111,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await Connector.deleteMany({});
+  vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
+    defaultSchema,
+  );
 });
 
 async function seed() {
@@ -207,5 +218,58 @@ describe("source-connection reads never return a credential", () => {
     const stored = await Connector.findById(body.data._id).lean();
     expect((stored as { createdBy: string }).createdBy).toBe("u1");
     expect((stored as { createdBy: string }).createdBy).not.toBe("system");
+  });
+
+  it("GET still withholds ciphertext when the connector schema is missing", async () => {
+    // GraphQL/REST store auth headers in a field named `headers`. That name
+    // does not match the database-connection secret-key regex, so redaction
+    // that only walks the schema (or only those names) fails open if the
+    // schema cannot be loaded — a deleted workspace connector, a registry
+    // blip. Ciphertext is still a credential.
+    vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
+      null,
+    );
+    const ciphertext = encryptString(SECRET);
+    const row = await Connector.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "Hasura",
+      type: "graphql",
+      config: { headers: ciphertext, endpoint: "https://api.example.com" },
+      isActive: true,
+      createdBy: "u1",
+      settings: {
+        sync_batch_size: 100,
+        rate_limit_delay_ms: 200,
+        max_retries: 3,
+        timeout_ms: 30000,
+        timezone: "UTC",
+      },
+    });
+
+    const res = await req("GET", `/${row._id.toString()}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { config: Record<string, unknown> };
+    };
+    expect(body.data.config.endpoint).toBe("https://api.example.com");
+    expect(body.data.config.headers).toBe(SECRET_KEPT);
+    expect(JSON.stringify(body)).not.toContain(ciphertext);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("GET still answers 200 when schema lookup throws", async () => {
+    vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockRejectedValue(
+      new Error("registry down"),
+    );
+    const { id, ciphertext } = await seed();
+    const res = await req("GET", `/${id}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { config: Record<string, unknown> };
+    };
+    expect(body.data.config.api_key).toBe(SECRET_KEPT);
+    expect(JSON.stringify(body)).not.toContain(ciphertext);
   });
 });
