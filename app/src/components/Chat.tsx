@@ -18,15 +18,7 @@ import {
   Collapse,
   Tooltip,
 } from "@mui/material";
-import {
-  ChevronDown,
-  Copy,
-  Check,
-  History,
-  Menu as MenuIcon,
-  Plus,
-  X,
-} from "lucide-react";
+import { ChevronDown, Copy, Check, History, Plus, X } from "lucide-react";
 import { useTheme as useMuiTheme } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
 import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
@@ -1116,10 +1108,11 @@ const Chat: React.FC<ChatProps> = ({
 
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
-    // On mobile the editor lives behind the "Editor" tab — surface it so
+    // On mobile the console lives behind the View tab — surface it so
     // tapping a console reference in chat ("view SQL") shows the query.
     if (isMobileRef.current) {
-      useUIStore.getState().setMobileTab("editor");
+      useUIStore.getState().setMobileConsolePane("query");
+      useUIStore.getState().setMobileTab("view");
     }
     const existingTab = store.tabs[consoleId];
     if (existingTab) {
@@ -1277,17 +1270,9 @@ const Chat: React.FC<ChatProps> = ({
               gap: 1,
             }}
           >
-            {isMobile ? (
-              <Tooltip title="Open explorer">
-                <IconButton
-                  aria-label="Open explorer"
-                  onClick={() => useUIStore.getState().openMobileDrawer()}
-                  sx={MOBILE_FLOAT_BTN_SX}
-                >
-                  <MenuIcon size={20} />
-                </IconButton>
-              </Tooltip>
-            ) : (
+            {/* On mobile the explorer is the Browse tab, so the header's
+                left side is empty: floating actions on the right only. */}
+            {!isMobile && (
               <Typography
                 variant="h6"
                 sx={{

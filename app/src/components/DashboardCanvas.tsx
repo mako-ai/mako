@@ -55,6 +55,7 @@ import EntityLoadErrorState, {
   EntityLoadingState,
 } from "./EntityLoadErrorState";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import { useIsMobile } from "../hooks/useIsMobile";
 import WidgetInspector from "./dashboard/WidgetInspector";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
@@ -114,6 +115,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   } = useDashboardEditSession({ dashboardId, workspaceId });
 
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
+
+  // Phones are for reading dashboards, not laying them out: the grid is
+  // responsive but the widget inspector, drag handles and code editor are
+  // not. Force view mode and hide the edit toggle below the breakpoint.
+  const isMobile = useIsMobile();
+  useEffect(() => {
+    if (isMobile && isEditMode) handleEditModeToggle("view");
+  }, [isMobile, isEditMode, handleEditModeToggle]);
 
   const dashboardLoadError = useDashboardStore(state =>
     dashboardId ? state.openDashboardErrors[dashboardId] : undefined,
@@ -319,7 +328,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           minHeight: 44,
         }}
       >
-        {!isReadOnly && (
+        {!isReadOnly && !isMobile && (
           <ToggleButtonGroup
             value={isEditMode ? "edit" : "view"}
             exclusive

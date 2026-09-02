@@ -34,13 +34,19 @@ interface ActiveEditorContent {
 
 /**
  * Which full-screen pane is shown on mobile (< md). Desktop ignores this and
- * keeps its 4-column flex shell. "explore" is surfaced via the explorer Drawer
- * rather than a dedicated content pane (see `setMobileTab`).
+ * keeps its 4-column flex shell. The bottom nav is FIXED — Browse · View ·
+ * Ask, the same left-to-right order as the desktop panes (explorer, editor,
+ * chat) — so what a tab means never depends on what is open. Per-kind
+ * switches (a console's query/results, an app's preview/terminal) live inside
+ * the View pane, beside the window pill, not in the nav.
  */
-export type MobileTab = "ask" | "editor" | "results" | "explore";
+export type MobileTab = "browse" | "view" | "ask";
 
-/** Mobile overlay drawer state. Only the explorer drawer exists today. */
-export type MobileDrawer = "none" | "explorer";
+/** Which half of a console tab the mobile View pane shows. */
+export type MobileConsolePane = "query" | "results";
+
+/** Which half of an app tab in dev mode the mobile View pane shows. */
+export type MobileAppPane = "preview" | "terminal";
 
 interface UIState {
   // Navigation
@@ -54,7 +60,8 @@ interface UIState {
   // Mobile (< md) navigation — ephemeral, never persisted. Desktop layout is
   // driven by leftPaneOpen/rightPaneOpen; mobile is driven by mobileTab.
   mobileTab: MobileTab;
-  mobileDrawer: MobileDrawer;
+  mobileConsolePane: MobileConsolePane;
+  mobileAppPane: MobileAppPane;
 
   // Loading indicators (keyed by operation name)
   loading: Record<string, boolean>;
@@ -83,8 +90,8 @@ interface UIActions {
 
   // Mobile navigation
   setMobileTab: (tab: MobileTab) => void;
-  openMobileDrawer: () => void;
-  closeMobileDrawer: () => void;
+  setMobileConsolePane: (pane: MobileConsolePane) => void;
+  setMobileAppPane: (pane: MobileAppPane) => void;
 
   // Loading state
   setLoading: (key: string, value: boolean) => void;
@@ -110,7 +117,8 @@ const initialState: UIState = {
   leftPaneWidthPx: null,
   rightPaneWidthPx: null,
   mobileTab: "ask",
-  mobileDrawer: "none",
+  mobileConsolePane: "query",
+  mobileAppPane: "preview",
   loading: {},
   activeEditorContent: undefined,
   currentWorkspaceId: null,
@@ -174,27 +182,21 @@ export const useUIStore = create<UIStore>()(
           }
         }),
 
-      // Mobile navigation. Selecting "explore" opens the explorer Drawer as an
-      // overlay rather than swapping the underlying content pane, so closing
-      // the drawer returns to the previous ask/editor/results view.
+      // Mobile navigation — plain setters; the nav is fixed and nothing here
+      // is persisted (see partialize), so a reload lands on Ask.
       setMobileTab: tab =>
         set(state => {
-          if (tab === "explore") {
-            state.mobileDrawer = "explorer";
-          } else {
-            state.mobileTab = tab;
-            state.mobileDrawer = "none";
-          }
+          state.mobileTab = tab;
         }),
 
-      openMobileDrawer: () =>
+      setMobileConsolePane: pane =>
         set(state => {
-          state.mobileDrawer = "explorer";
+          state.mobileConsolePane = pane;
         }),
 
-      closeMobileDrawer: () =>
+      setMobileAppPane: pane =>
         set(state => {
-          state.mobileDrawer = "none";
+          state.mobileAppPane = pane;
         }),
 
       // Loading state

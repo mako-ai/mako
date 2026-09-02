@@ -142,7 +142,7 @@ const preloadDashboardsExplorer = () => {
 
 /**
  * Avatar button + dropdown (workspace switcher + sign out). Shared between the
- * desktop rail and the mobile AppBar / explorer drawer so logout and workspace
+ * desktop rail and the mobile Browse pane header so logout and workspace
  * switching behave identically everywhere.
  */
 export function SidebarUserMenu({
@@ -363,7 +363,7 @@ function Sidebar() {
   };
 
   // On mobile the 52px rail is hidden; navigation moves to the BottomNavigation
-  // and explorer Drawer rendered by App.tsx (which reuse the helpers above).
+  // and Browse pane rendered by App.tsx (which reuse the helpers above).
   if (isMobile) return null;
 
   return (

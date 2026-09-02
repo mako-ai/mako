@@ -39,14 +39,19 @@ import {
   ListItemIcon,
   ListItemText,
   Divider,
+  ToggleButton,
+  ToggleButtonGroup,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import {
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
-  Menu as MenuIcon,
   ChevronDown as ChevronDownIcon,
+  SquareTerminal as QueryPaneIcon,
+  Table as ResultsPaneIcon,
+  AppWindow as PreviewPaneIcon,
+  TerminalSquare as TerminalPaneIcon,
   Plus as PlusIcon,
   X as CloseTabIcon,
 } from "lucide-react";
@@ -70,6 +75,7 @@ import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
 import NotebookRenderer from "./NotebookRenderer";
 import AppWorkspace from "./AppWorkspace";
+import { useAppsStore } from "../store/appsStore";
 import AppFileEditor from "./AppFileEditor";
 import AppDiffTab from "./AppDiffTab";
 import ConsoleDiffTab from "./ConsoleDiffTab";
@@ -335,7 +341,7 @@ const MOBILE_FLOAT_BTN_SX = {
 const MOBILE_WINDOW_PILL_SX = {
   flex: 1,
   minWidth: 0,
-  maxWidth: 260,
+  maxWidth: 320,
   height: 38,
   px: 1.5,
   textTransform: "none",
@@ -347,6 +353,28 @@ const MOBILE_WINDOW_PILL_SX = {
   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
   backdropFilter: "blur(8px)",
   "&:hover": { bgcolor: "action.hover" },
+} as const;
+
+// Icon-only pane switch that sits beside the window pill on mobile (query /
+// results for a console, preview / terminal for an app in dev mode). Same
+// height and pill shape as its neighbours so the header stays one row.
+const MOBILE_PANE_TOGGLE_SX = {
+  height: 38,
+  flexShrink: 0,
+  borderRadius: 999,
+  overflow: "hidden",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  "& .MuiToggleButtonGroup-grouped": {
+    border: 0,
+    borderRadius: 0,
+    minWidth: 40,
+    px: 0,
+    color: "text.secondary",
+    "&.Mui-selected": { color: "text.primary" },
+  },
 } as const;
 
 function Editor({
@@ -691,13 +719,29 @@ function Editor({
     state => state.setActiveEditorContent,
   );
 
-  // Mobile (< md): the editor and results live behind separate bottom-nav tabs
-  // instead of the desktop vertical split. `mobileResultsView` decides which of
-  // the two a console tab shows.
+  // Mobile (< md): a console tab shows EITHER its editor or its results, and
+  // an app tab in dev mode EITHER its preview or its terminal — switched by
+  // the icon toggle beside the window pill, never by the (fixed) bottom nav.
   const isMobile = useIsMobile();
-  const mobileTab = useUIStore(state => state.mobileTab);
-  const setMobileTab = useUIStore(state => state.setMobileTab);
-  const mobileResultsView = isMobile && mobileTab === "results";
+  const mobileConsolePane = useUIStore(state => state.mobileConsolePane);
+  const setMobileConsolePane = useUIStore(state => state.setMobileConsolePane);
+  const mobileAppPane = useUIStore(state => state.mobileAppPane);
+  const setMobileAppPane = useUIStore(state => state.setMobileAppPane);
+  const mobileResultsView = isMobile && mobileConsolePane === "results";
+  // Which toggle (if any) the active tab gets. Apps only have two panes while
+  // a dev session is open; a merely viewed app is just its published build.
+  const activeMobileKind = activeConsoleId
+    ? (tabs[activeConsoleId]?.kind ?? "console")
+    : null;
+  const activeMobileAppId =
+    activeMobileKind === "app" && activeConsoleId
+      ? (tabs[activeConsoleId]?.metadata?.appId as string | undefined)
+      : undefined;
+  const activeMobileAppEditing = useAppsStore(state =>
+    activeMobileAppId
+      ? (state.editingByApp[activeMobileAppId] ?? false)
+      : false,
+  );
 
   // Tabs whose editing surfaces are not usable on a phone; we show a dismissible
   // notice instead of the cramped desktop UI.
@@ -1183,10 +1227,10 @@ function Editor({
             capApplied: result.pageInfo?.capApplied ?? false,
           },
         }));
-        // On mobile, jump to the Results pane so the answer is visible without
-        // the user having to switch tabs manually.
+        // On mobile, flip the console to its results pane so the answer is
+        // visible without the user having to switch manually.
         if (isMobile) {
-          setMobileTab("results");
+          setMobileConsolePane("results");
         }
         // Keep the Runs panel fresh when it's open (fire-and-forget).
         if (currentWorkspace && tabBottomPanel[tabId] === "runs") {
@@ -2186,7 +2230,8 @@ function Editor({
           }}
         >
           {/* Tab bar (desktop) / Claude-style floating window switcher
-              (mobile): round hamburger + center window pill + new-console. */}
+              (mobile): window pill + per-kind pane toggle + new-console. The
+              explorer is the Browse tab, so there is no hamburger here. */}
           {isMobile ? (
             <Box
               sx={{
@@ -2199,15 +2244,6 @@ function Editor({
                 minHeight: 52,
               }}
             >
-              <Tooltip title="Open explorer">
-                <IconButton
-                  aria-label="Open explorer"
-                  onClick={() => useUIStore.getState().openMobileDrawer()}
-                  sx={MOBILE_FLOAT_BTN_SX}
-                >
-                  <MenuIcon size={20} />
-                </IconButton>
-              </Tooltip>
               <Button
                 aria-label="Switch window"
                 onClick={e => setWindowMenuAnchor(e.currentTarget)}
@@ -2226,6 +2262,43 @@ function Editor({
                     "Console"}
                 </Box>
               </Button>
+              {activeMobileKind === "console" ? (
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={mobileConsolePane}
+                  onChange={(_event, value) => {
+                    if (value) setMobileConsolePane(value);
+                  }}
+                  aria-label="Console pane"
+                  sx={MOBILE_PANE_TOGGLE_SX}
+                >
+                  <ToggleButton value="query" aria-label="Query">
+                    <QueryPaneIcon size={19} strokeWidth={1.5} />
+                  </ToggleButton>
+                  <ToggleButton value="results" aria-label="Results">
+                    <ResultsPaneIcon size={19} strokeWidth={1.5} />
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              ) : activeMobileKind === "app" && activeMobileAppEditing ? (
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={mobileAppPane}
+                  onChange={(_event, value) => {
+                    if (value) setMobileAppPane(value);
+                  }}
+                  aria-label="App pane"
+                  sx={MOBILE_PANE_TOGGLE_SX}
+                >
+                  <ToggleButton value="preview" aria-label="Preview">
+                    <PreviewPaneIcon size={19} strokeWidth={1.5} />
+                  </ToggleButton>
+                  <ToggleButton value="terminal" aria-label="Terminal">
+                    <TerminalPaneIcon size={19} strokeWidth={1.5} />
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              ) : null}
               <Tooltip title="New console">
                 <IconButton
                   aria-label="New console"
@@ -2470,6 +2543,9 @@ function Editor({
           {(() => {
             const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
             if (!activeTab) return null;
+            // On a phone the window pill already carries the title; a second
+            // row repeating it is the space the editor needs.
+            if (isMobile) return null;
             const rendersOwnBreadcrumbs =
               activeTab.kind === "table-data" ||
               activeTab.kind === "dashboard-data-source" ||
@@ -3013,27 +3089,6 @@ function Editor({
             flexDirection: "column",
           }}
         >
-          {isMobile && (
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                minHeight: 52,
-                px: 1,
-                py: 0.75,
-              }}
-            >
-              <Tooltip title="Open explorer">
-                <IconButton
-                  aria-label="Open explorer"
-                  onClick={() => useUIStore.getState().openMobileDrawer()}
-                  sx={MOBILE_FLOAT_BTN_SX}
-                >
-                  <MenuIcon size={20} />
-                </IconButton>
-              </Tooltip>
-            </Box>
-          )}
           <Box
             sx={{
               flexGrow: 1,
