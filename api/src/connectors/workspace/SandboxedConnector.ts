@@ -109,6 +109,7 @@ export class SandboxedConnector extends BaseConnector {
    */
   private async ready(): Promise<{
     dir: string;
+    entry: string;
     ctx: ReturnType<typeof syncBoxContext>;
   }> {
     const definition = await this.definition();
@@ -127,7 +128,7 @@ export class SandboxedConnector extends BaseConnector {
         files,
       });
     }
-    return { dir: this.materializedDir, ctx };
+    return { dir: this.materializedDir, entry: definition.entry, ctx };
   }
 
   private config(): Record<string, unknown> {
@@ -136,11 +137,12 @@ export class SandboxedConnector extends BaseConnector {
 
   async testConnection(): Promise<ConnectionTestResult> {
     try {
-      const { dir, ctx } = await this.ready();
+      const { dir, entry, ctx } = await this.ready();
       const result = await runConnectorCommand({
         ctx,
         connectorDir: dir,
         command: "check",
+        entry,
         config: this.config(),
       });
       const failure = failureMessage(result);
@@ -198,11 +200,12 @@ export class SandboxedConnector extends BaseConnector {
 
   private async catalog(): Promise<ProtocolMessage | null> {
     if (this.catalogCache) return this.catalogCache;
-    const { dir, ctx } = await this.ready();
+    const { dir, entry, ctx } = await this.ready();
     const result = await runConnectorCommand({
       ctx,
       connectorDir: dir,
       command: "discover",
+      entry,
       config: this.config(),
     });
     const failure = failureMessage(result);
@@ -230,7 +233,20 @@ export class SandboxedConnector extends BaseConnector {
    * stop need a different adapter, and they are not this iteration.
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
-    const { dir, ctx } = await this.ready();
+    const { dir, entry, ctx } = await this.ready();
+
+    // An entity the connector does not declare is a failure, not an empty
+    // sync. The runner's stream selection silently drops an unknown name, so
+    // a flow whose `entityFilter` points at an entity a later push renamed or
+    // removed would otherwise report a successful sync of zero rows forever.
+    const declared = this.getAvailableEntities();
+    if (declared.length > 0 && !declared.includes(options.entity)) {
+      throw new Error(
+        `The connector "${this.slug}" has no entity "${options.entity}". ` +
+          `It offers: ${declared.join(", ")}.`,
+      );
+    }
+
     const maxIterations = options.maxIterations ?? 10;
     const previous = options.state;
 
@@ -238,6 +254,7 @@ export class SandboxedConnector extends BaseConnector {
       ctx,
       connectorDir: dir,
       command: "read",
+      entry,
       config: this.config(),
       catalog: {
         streams: [

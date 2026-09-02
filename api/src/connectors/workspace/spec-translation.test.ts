@@ -106,10 +106,24 @@ test("enums, numbers, booleans and multiline text each get their control", () =>
   assert.equal(byName.pem.type, "textarea");
 });
 
-test("a missing spec yields no fields rather than an invented one", () => {
-  assert.deepEqual(connectionSpecificationToForm(undefined).fields, []);
+/**
+ * An empty field list is not a safe answer to an unreadable spec: it is what
+ * `applySchemaEncryption` reads as "nothing here is a secret", and the API key
+ * then goes to Mongo in plaintext. So the refusal is loud.
+ */
+test("an unreadable spec throws rather than yielding no fields", () => {
+  assert.throws(
+    () => connectionSpecificationToForm(undefined),
+    /connectionSpecification/,
+  );
+  assert.throws(
+    () => connectionSpecificationToForm({ type: "object" }),
+    /properties/,
+  );
+  // A connector that genuinely declares no config is a different thing, and
+  // an empty form is the right answer to it.
   assert.deepEqual(
-    connectionSpecificationToForm({ type: "object" }).fields,
+    connectionSpecificationToForm({ type: "object", properties: {} }).fields,
     [],
   );
 });

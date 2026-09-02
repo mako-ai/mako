@@ -27,12 +27,24 @@ const logger = loggers.connector();
 /** Where connectors live in a workspace repo. */
 export const CONNECTORS_DIR = "connectors";
 
-/** The files Mako will copy into the box. Anything else in the folder is ignored. */
+/** The entry file a connector.yaml without an `entry:` means. */
+export const DEFAULT_ENTRY = "connector.ts";
+
+/**
+ * How much of a connector folder Mako will load into the API process.
+ *
+ * Enforced from `git ls-tree`'s sizes, BEFORE any blob is read: the cap only
+ * protects the heap if it is applied while the bytes are still on disk.
+ * Summing as they arrive — which is what this used to do — has already
+ * materialized the whole folder by the time it throws.
+ */
 const MAX_FOLDER_BYTES = 2 * 1024 * 1024;
 
 export interface LoadedConnector {
   slug: string;
   runtime: string;
+  /** The file `connector.yaml` names, defaulted for rows written before it was indexed. */
+  entry: string;
   sha: string;
   sourceSha: string;
   spec?: Record<string, unknown>;
@@ -65,6 +77,7 @@ export async function loadConnectorDefinition(
   return {
     slug: row.slug,
     runtime: row.runtime,
+    entry: row.entry || DEFAULT_ENTRY,
     sha: row.sha,
     sourceSha: row.sourceSha,
     spec: row.spec as Record<string, unknown> | undefined,
@@ -83,6 +96,7 @@ export async function listConnectorDefinitions(
   return rows.map(row => ({
     slug: row.slug,
     runtime: row.runtime,
+    entry: row.entry || DEFAULT_ENTRY,
     sha: row.sha,
     sourceSha: row.sourceSha,
     spec: row.spec as Record<string, unknown> | undefined,
@@ -109,28 +123,39 @@ export async function readConnectorFolder(
   }
   const prefix = `${CONNECTORS_DIR}/${slug}/`;
   const entries = await listTree(repoDir, commit);
-  const paths = entries
-    .map(entry => entry.path)
-    .filter(entryPath => entryPath.startsWith(prefix));
+  const wanted = entries.filter(entry => entry.path.startsWith(prefix));
 
-  if (paths.length === 0) {
+  if (wanted.length === 0) {
     throw new Error(`No files under ${prefix} at ${commit.slice(0, 8)}`);
   }
 
-  const blobs = await readBlobsBatch(repoDir, commit, paths);
+  const total = folderBytes(wanted);
+  if (total > MAX_FOLDER_BYTES) {
+    throw new Error(oversizedMessage(prefix, total));
+  }
+
+  const blobs = await readBlobsBatch(
+    repoDir,
+    commit,
+    wanted.map(entry => entry.path),
+  );
   const files = new Map<string, Uint8Array>();
-  let total = 0;
   for (const [entryPath, buffer] of blobs) {
-    total += buffer.byteLength;
-    if (total > MAX_FOLDER_BYTES) {
-      throw new Error(
-        `The connector folder ${prefix} is larger than ${MAX_FOLDER_BYTES} bytes. ` +
-          `A connector is code, not data; keep fixtures small.`,
-      );
-    }
     files.set(entryPath.slice(prefix.length), new Uint8Array(buffer));
   }
   return files;
+}
+
+/** Bytes a set of tree entries would occupy, from git's own sizes. */
+function folderBytes(entries: Array<{ size: number }>): number {
+  return entries.reduce((sum, entry) => sum + (entry.size ?? 0), 0);
+}
+
+function oversizedMessage(prefix: string, bytes: number): string {
+  return (
+    `The connector folder ${prefix} is ${bytes} bytes, over the ${MAX_FOLDER_BYTES} byte limit. ` +
+    `A connector is code, not data; keep fixtures small.`
+  );
 }
 
 /** List the connector slugs present on main, with the commit they were read at. */
@@ -138,36 +163,59 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
   commit: string | null;
   slugs: string[];
   filesBySlug: Map<string, Map<string, Uint8Array>>;
+  /** Slugs left unread because they exceed the cap, with the refusal to show. */
+  oversized: Map<string, string>;
 }> {
+  const empty = {
+    commit: null,
+    slugs: [],
+    filesBySlug: new Map<string, Map<string, Uint8Array>>(),
+    oversized: new Map<string, string>(),
+  };
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
-    return { commit: null, slugs: [], filesBySlug: new Map() };
-  }
+  if (!(await repoExists(repoDir))) return empty;
 
   const commit = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!commit) return { commit: null, slugs: [], filesBySlug: new Map() };
+  if (!commit) return empty;
 
   const entries = await listTree(repoDir, commit);
-  const wanted = entries
-    .map(entry => entry.path)
-    .filter(entryPath => entryPath.startsWith(`${CONNECTORS_DIR}/`));
-
-  const bySlug = new Map<string, string[]>();
-  for (const entryPath of wanted) {
-    const [, slug, ...rest] = entryPath.split("/");
+  const bySlug = new Map<string, Array<{ path: string; size: number }>>();
+  for (const entry of entries) {
+    if (!entry.path.startsWith(`${CONNECTORS_DIR}/`)) continue;
+    const [, slug, ...rest] = entry.path.split("/");
     // `connectors/README.md` is documentation, not a connector; a folder needs
     // at least one file inside it to be one.
     if (!slug || rest.length === 0) continue;
     const list = bySlug.get(slug) ?? [];
-    list.push(entryPath);
+    list.push({ path: entry.path, size: entry.size });
     bySlug.set(slug, list);
   }
 
-  const blobs = await readBlobsBatch(repoDir, commit, wanted);
+  // This runs on EVERY push, for every folder under connectors/. One large
+  // file committed there — a fixture dump, a stray node_modules — would
+  // otherwise be read into the API process's heap each time. Oversized slugs
+  // are reported rather than read, so the push still lands and the author
+  // gets told which folder is too big.
+  const oversized = new Map<string, string>();
+  const readable: string[] = [];
+  for (const [slug, files] of bySlug) {
+    const bytes = folderBytes(files);
+    if (bytes > MAX_FOLDER_BYTES) {
+      oversized.set(
+        slug,
+        oversizedMessage(`${CONNECTORS_DIR}/${slug}/`, bytes),
+      );
+      continue;
+    }
+    readable.push(...files.map(file => file.path));
+  }
+
+  const blobs = await readBlobsBatch(repoDir, commit, readable);
   const filesBySlug = new Map<string, Map<string, Uint8Array>>();
-  for (const [slug, paths] of bySlug) {
+  for (const [slug, entriesForSlug] of bySlug) {
+    if (oversized.has(slug)) continue;
     const files = new Map<string, Uint8Array>();
-    for (const entryPath of paths) {
+    for (const { path: entryPath } of entriesForSlug) {
       const buffer = blobs.get(entryPath);
       if (!buffer) continue;
       files.set(
@@ -178,7 +226,12 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
     filesBySlug.set(slug, files);
   }
 
-  return { commit, slugs: [...bySlug.keys()].sort(), filesBySlug };
+  return {
+    commit,
+    slugs: [...bySlug.keys()].sort(),
+    filesBySlug,
+    oversized,
+  };
 }
 
 /**
@@ -232,9 +285,23 @@ async function readSdkFiles(): Promise<Map<string, Uint8Array>> {
   return files;
 }
 
+/**
+ * Where the SDK's files are in THIS deployment.
+ *
+ * The built image has no `packages/` at all — it ships `api/dist` and nothing
+ * else of the monorepo — so the source-tree paths below only ever hit in
+ * development. `pnpm api:build` copies the package to `dist/connector-sdk`
+ * for exactly that reason, the same trick `apps/app-sdk-package.ts` uses, and
+ * that copy is the candidate production resolves.
+ */
 async function findSdkRoot(): Promise<string> {
   const candidates = [
+    // Built tree: api/dist/connectors/workspace -> api/dist/connector-sdk
+    path.resolve(__dirname, "../../connector-sdk"),
+    // Source tree: api/src/connectors/workspace -> packages/connector-sdk
     path.resolve(__dirname, "../../../../packages/connector-sdk"),
+    path.resolve(process.cwd(), "dist/connector-sdk"),
+    path.resolve(process.cwd(), "api/dist/connector-sdk"),
     path.resolve(process.cwd(), "../packages/connector-sdk"),
     path.resolve(process.cwd(), "packages/connector-sdk"),
     path.resolve(process.cwd(), "node_modules/@makoai/connector-sdk"),

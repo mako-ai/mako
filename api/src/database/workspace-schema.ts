@@ -4365,6 +4365,12 @@ export interface IConnectorDefinition extends Document {
   workspaceId: mongoose.Types.ObjectId;
   slug: string;
   runtime: string;
+  /**
+   * The file to run, from `connector.yaml`. Indexed here because every
+   * command after the push — check, discover, read — has to run the same file
+   * the push ran, and only this row remembers which one that was.
+   */
+  entry: string;
   /** The commit this folder was read at, so a stale row is recognisable. */
   sha: string;
   /** Blob sha of connector.yaml plus the entry file: the idempotence check. */
@@ -4375,6 +4381,12 @@ export interface IConnectorDefinition extends Document {
   entities: string[];
   hasIcon: boolean;
   lastCheckedAt?: Date;
+  /**
+   * Why the last real connection test failed. Distinct from `blockedReason`
+   * on purpose: a bad credential is not a broken connector, and conflating
+   * them would grey out a connector in the picker that only needs a new key.
+   */
+  lastCheckError?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4388,6 +4400,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     },
     slug: { type: String, required: true, trim: true },
     runtime: { type: String, required: true, default: "node" },
+    entry: { type: String, required: true, default: "connector.ts" },
     sha: { type: String, required: true },
     sourceSha: { type: String, required: true },
     spec: { type: Schema.Types.Mixed },
@@ -4401,6 +4414,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     entities: { type: [String], default: [] },
     hasIcon: { type: Boolean, default: false },
     lastCheckedAt: { type: Date },
+    lastCheckError: { type: String, maxlength: 4000 },
   },
   { collection: "connectordefinitions", timestamps: true },
 );

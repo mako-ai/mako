@@ -235,10 +235,12 @@ export async function runConnectorCommand(input: {
 
     const result = await provider.exec(ctx, command_, {
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      // The connector sees no Mako environment at all. The provider already
-      // allowlists, but a connector has no business reading even what an app
-      // may read, so nothing is added here on purpose.
-      env: {},
+      // Nothing is ADDED to the environment on purpose: a connector has no
+      // business reading even what an app may read. What it does see is the
+      // provider's own fixed allowlist (PATH, HOME, LANG, TERM and a couple
+      // of non-interactive flags) — `env` is spread over that base, so this
+      // omission is the whole of the story and the isolation is the
+      // provider's, not this call's.
     });
 
     let raw = "";

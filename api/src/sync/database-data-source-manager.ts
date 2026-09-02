@@ -2,6 +2,7 @@ import { Db, ObjectId } from "mongodb";
 import { decryptEncrypted } from "../services/crypto.service";
 import * as dotenv from "dotenv";
 import { syncConnectorRegistry } from "./connector-registry";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
 
@@ -26,6 +27,12 @@ export interface DataSourceConfig {
   name: string;
   description?: string;
   type: string;
+  /**
+   * The owning workspace. Optional only because rows predating multi-tenancy
+   * may not have one; a `ws:` connector cannot be resolved without it, since
+   * its code, its spec and its secret fields are all per-workspace.
+   */
+  workspaceId?: string;
   active: boolean;
   connection: any;
   settings: {
@@ -88,14 +95,19 @@ class DatabaseDataSourceManager {
     connectorType: string,
     workspaceId?: string,
   ): Promise<ConnectorSchema | null> {
-    // A workspace connector's schema belongs to ONE workspace: two of them
-    // can each define a connector of the same name with different fields, so
-    // the cache key has to carry the workspace or one tenant's schema would
-    // decide which of another tenant's fields are secret.
-    const cacheKey = workspaceId
-      ? `${workspaceId}:${connectorType}`
-      : connectorType;
-    const cachedSchema = this.schemaCache.get(cacheKey);
+    // A BUILT-IN connector's schema is a static method on a class that is
+    // fixed for the life of the process, so caching it is free. A workspace
+    // connector's is not: it is re-derived from the spec on every push, and
+    // this process has no way to hear about a push. Caching it would mean
+    // that after an author renames or adds a secret field, a long-lived
+    // instance keeps decrypting by the field list it saw first — handing the
+    // connector ciphertext, or trying to decrypt a value that was never
+    // encrypted. The read behind it is one indexed Mongo lookup, which is not
+    // worth being wrong about which fields are secrets.
+    const workspaceConnector = isWorkspaceConnectorType(connectorType);
+    const cachedSchema = workspaceConnector
+      ? undefined
+      : this.schemaCache.get(connectorType);
     if (cachedSchema) {
       return cachedSchema;
     }
@@ -105,7 +117,9 @@ class DatabaseDataSourceManager {
       workspaceId,
     );
     if (schema && schema.fields) {
-      this.schemaCache.set(cacheKey, schema as ConnectorSchema);
+      if (!workspaceConnector) {
+        this.schemaCache.set(connectorType, schema as ConnectorSchema);
+      }
       return schema as ConnectorSchema;
     }
     logger.warn("No schema found for connector type", { connectorType });
@@ -135,6 +149,9 @@ class DatabaseDataSourceManager {
         name: source.name,
         description: source.description,
         type: source.type,
+        workspaceId: source.workspaceId
+          ? String(source.workspaceId)
+          : undefined,
         active: source.isActive,
         connection: await this.decryptConfig(
           source.config,
@@ -177,6 +194,7 @@ class DatabaseDataSourceManager {
       name: source.name,
       description: source.description,
       type: source.type,
+      workspaceId: source.workspaceId ? String(source.workspaceId) : undefined,
       active: source.isActive,
       connection: await this.decryptConfig(
         source.config,
@@ -209,6 +227,9 @@ class DatabaseDataSourceManager {
         name: source.name,
         description: source.description,
         type: source.type,
+        workspaceId: source.workspaceId
+          ? String(source.workspaceId)
+          : undefined,
         active: source.isActive,
         connection: await this.decryptConfig(
           source.config,

@@ -26,6 +26,26 @@ interface ConnectorRegistryEntry {
 }
 
 /**
+ * The manager's shape -> the shape every connector is constructed from.
+ *
+ * `DataSourceConfig` calls the credential `connection`; a connector reads it
+ * as `config`. One function does the mapping for both the built-in and the
+ * workspace branch on purpose: when they each did it themselves, the
+ * workspace branch handed the raw row straight to `SandboxedConnector`, which
+ * then found no `config` and no `workspaceId` and could not run at all.
+ */
+function toConnectorDataSource(dataSource: DataSourceConfig): IConnector {
+  return {
+    _id: dataSource.id,
+    name: dataSource.name,
+    type: dataSource.type,
+    config: dataSource.connection,
+    settings: dataSource.settings,
+    workspaceId: dataSource.workspaceId,
+  } as unknown as IConnector;
+}
+
+/**
  * Connector registry for the sync script
  * Dynamically loads connectors based on connector type
  */
@@ -180,8 +200,14 @@ class SyncConnectorRegistry {
     dataSource: DataSourceConfig,
   ): Promise<BaseConnector | null> {
     if (isWorkspaceConnectorType(dataSource.type)) {
+      if (!dataSource.workspaceId) {
+        throw new Error(
+          `Resolving the connector for "${dataSource.type}" needs a workspaceId on the data source; ` +
+            `a workspace connector cannot be resolved globally.`,
+        );
+      }
       const connector = new SandboxedConnector(
-        dataSource as unknown as IConnector,
+        toConnectorDataSource(dataSource),
       );
       // Load the index row before handing the connector out. This path is
       // async and its callers go on to ask `getAvailableEntities()`, which is
@@ -256,16 +282,7 @@ class SyncConnectorRegistry {
       }
     }
 
-    // Transform the data source to match what the connector expects
-    const connectorDataSource = {
-      _id: dataSource.id,
-      name: dataSource.name,
-      type: dataSource.type,
-      config: dataSource.connection,
-      settings: dataSource.settings,
-    };
-
-    return new entry.connectorClass(connectorDataSource);
+    return new entry.connectorClass(toConnectorDataSource(dataSource));
   }
 
   /**

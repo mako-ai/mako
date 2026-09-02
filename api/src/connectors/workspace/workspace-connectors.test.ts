@@ -25,7 +25,13 @@ import {
   repoDirFor,
   repoExists,
 } from "../../apps/repository.service";
-import { syncConnectorsFromRepo } from "./reconcile.service";
+import {
+  recordConnectionCheck,
+  syncConnectorsFromRepo,
+} from "./reconcile.service";
+import { syncConnectorRegistry } from "../../sync/connector-registry";
+import { connectionSpecificationToForm } from "./spec-translation";
+import { validateSpec } from "./connector-file";
 import {
   connectorTypeExists,
   listWorkspaceConnectors,
@@ -294,6 +300,138 @@ describe("running a workspace connector", () => {
     expect(seen[11].id).toBe("row-12");
     expect(state.totalProcessed).toBe(12);
   }, 120_000);
+
+  it("fails loudly for an entity the connector does not have", async () => {
+    const connector = new SandboxedConnector(
+      dataSourceFor("ws:acme", { apiKey: "secret" }),
+    );
+    await connector.loadDefinition();
+
+    // The runner filters an unknown stream out silently, so without a guard
+    // this would be a successful sync of zero rows — the failure mode a flow
+    // whose entityFilter names a renamed entity hits, and never notices.
+    await expect(
+      connector.fetchEntityChunk({
+        entity: "gadgets",
+        onBatch: async () => undefined,
+      }),
+    ).rejects.toThrow(/no entity "gadgets"/);
+  }, 120_000);
+});
+
+describe("the registry, which is how every caller reaches a connector", () => {
+  beforeEach(async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    await syncConnectorsFromRepo(WS);
+  });
+
+  /**
+   * Nothing reaches a workspace connector by constructing one: the routes,
+   * the orchestrator and the Inngest functions all go through the registry
+   * with a `DataSourceConfig`, whose credential is `connection` and not
+   * `config`. Testing only the class is how a registry that passed the raw
+   * row — no config, no workspaceId — looked fine.
+   */
+  it("builds a working connector from a DataSourceConfig", async () => {
+    const connector = await syncConnectorRegistry.getConnector({
+      id: new Types.ObjectId().toString(),
+      name: "Acme",
+      type: "ws:acme",
+      workspaceId: WS,
+      active: true,
+      connection: { apiKey: "secret" },
+      settings: {},
+    });
+
+    expect(connector).not.toBeNull();
+    // The entity list is warm: the registry awaited the definition before
+    // handing the connector out, and callers ask synchronously.
+    expect(connector!.getAvailableEntities()).toEqual(["widgets"]);
+    // And the credential actually arrived — a connector built with an empty
+    // config would fail this check with "401: bad key".
+    await expect(connector!.testConnection()).resolves.toMatchObject({
+      success: true,
+    });
+  }, 120_000);
+
+  it("refuses to resolve a workspace connector without a workspace", async () => {
+    await expect(
+      syncConnectorRegistry.getConnector({
+        id: new Types.ObjectId().toString(),
+        name: "Acme",
+        type: "ws:acme",
+        active: true,
+        connection: { apiKey: "secret" },
+        settings: {},
+      }),
+    ).rejects.toThrow(/workspaceId/);
+  }, 120_000);
+});
+
+describe("a connector whose entry file is not connector.ts", () => {
+  it("runs the file connector.yaml names, not just at push time", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\nentry: src/index.ts\n",
+      "connectors/acme/src/index.ts": CONNECTOR_TS,
+    });
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.created).toBe(1);
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    }).lean();
+    expect(row?.status).toBe("indexed");
+    expect(row?.entry).toBe("src/index.ts");
+
+    // `spec` succeeded at push time regardless; what regressed before was
+    // every command after it, which fell back to connector.ts and failed
+    // with "No connector at .../connector.ts".
+    const connector = new SandboxedConnector(
+      dataSourceFor("ws:acme", { apiKey: "secret" }),
+    );
+    await expect(connector.testConnection()).resolves.toMatchObject({
+      success: true,
+    });
+    expect(await connector.resolveSchema("widgets")).toMatchObject({
+      entity: "widgets",
+    });
+  }, 120_000);
+});
+
+describe("a spec that does not say what its fields are", () => {
+  /**
+   * The failure this guards against is silent: an empty field list means
+   * `applySchemaEncryption` marks nothing secret and the API key is written
+   * to Mongo in plaintext. Both ends refuse — the push, and the form.
+   */
+  it("is blocked at push time rather than indexed with no fields", () => {
+    const missing = validateSpec({
+      connectionSpecification: { type: "object" },
+    });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toContain("plaintext");
+
+    // A connector that genuinely needs no credential is still fine.
+    expect(
+      validateSpec({ connectionSpecification: { properties: {} } }),
+    ).toEqual({ ok: true });
+  });
+
+  it("throws rather than returning an empty credential form", () => {
+    expect(() => connectionSpecificationToForm({ type: "object" })).toThrow(
+      /properties/,
+    );
+    expect(() => connectionSpecificationToForm(undefined)).toThrow(
+      /connectionSpecification/,
+    );
+    expect(connectionSpecificationToForm({ properties: {} })).toEqual({
+      fields: [],
+    });
+  });
 });
 
 describe("a connector that cannot run", () => {
@@ -350,6 +488,96 @@ describe("a connector that cannot run", () => {
       slug: "acme",
     }).lean();
     expect(acme?.status).toBe("indexed");
+  }, 120_000);
+});
+
+describe("recording a real connection test", () => {
+  beforeEach(async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    await syncConnectorsFromRepo(WS);
+  });
+
+  const rowNow = () =>
+    ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }).lean();
+
+  it("is the only thing that can make a connector verified", async () => {
+    expect((await rowNow())?.status).toBe("indexed");
+
+    await recordConnectionCheck({
+      workspaceId: WS,
+      slug: "acme",
+      success: true,
+    });
+
+    const row = await rowNow();
+    expect(row?.status).toBe("verified");
+    expect(row?.lastCheckedAt).toBeInstanceOf(Date);
+  }, 120_000);
+
+  it("demotes a verified connector when its credential stops working", async () => {
+    await recordConnectionCheck({
+      workspaceId: WS,
+      slug: "acme",
+      success: true,
+    });
+    await recordConnectionCheck({
+      workspaceId: WS,
+      slug: "acme",
+      success: false,
+      message: "401: this key was revoked",
+    });
+
+    const row = await rowNow();
+    // Still offerable — the connector runs, the key does not — but no longer
+    // claiming a verification that does not hold.
+    expect(row?.status).toBe("indexed");
+    expect(row?.lastCheckError).toContain("revoked");
+    expect(row?.blockedReason).toBeUndefined();
+  }, 120_000);
+
+  it("cannot talk a blocked connector back up", async () => {
+    await ConnectorDefinition.updateOne(
+      { workspaceId: WS, slug: "acme" },
+      { $set: { status: "blocked", blockedReason: "spec failed" } },
+    );
+
+    await recordConnectionCheck({
+      workspaceId: WS,
+      slug: "acme",
+      success: true,
+    });
+
+    expect((await rowNow())?.status).toBe("blocked");
+  }, 120_000);
+});
+
+describe("a connector folder too large to be code", () => {
+  it("is blocked from its size alone, without being read into the API", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+      // Over the 2MB cap on its own.
+      "connectors/hoarder/connector.yaml": "runtime: node\n",
+      "connectors/hoarder/connector.ts": CONNECTOR_TS,
+      "connectors/hoarder/dump.json": "x".repeat(3 * 1024 * 1024),
+    });
+
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.blocked).toBe(1);
+
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "hoarder",
+    }).lean();
+    expect(row?.status).toBe("blocked");
+    expect(row?.blockedReason).toContain("byte limit");
+
+    // The connector pushed alongside it still lands: one oversized folder is
+    // not a reason to fail the commit.
+    expect(result.created).toBe(1);
   }, 120_000);
 });
 

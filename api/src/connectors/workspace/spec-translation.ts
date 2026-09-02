@@ -67,9 +67,31 @@ const titleCase = (name: string): string =>
 export function connectionSpecificationToForm(
   connectionSpecification: JsonSchema | undefined,
 ): FormSchema {
-  const properties = connectionSpecification?.properties;
-  if (!properties || typeof properties !== "object") {
-    return { fields: [] };
+  if (!connectionSpecification || typeof connectionSpecification !== "object") {
+    throw new Error(
+      "The connector's spec has no `connectionSpecification`, so its secret " +
+        "fields cannot be identified. Refusing to build a credential form " +
+        "that would store every value in plaintext.",
+    );
+  }
+  const properties = connectionSpecification.properties;
+  // `properties: {}` is legitimate — a connector that needs no credential —
+  // and yields an empty form with nothing to encrypt. A MISSING or unreadable
+  // `properties` is not: it is indistinguishable from a spec whose fields
+  // failed to parse, and answering it with an empty field list is what stores
+  // an API key unencrypted.
+  if (properties === undefined || properties === null) {
+    throw new Error(
+      "The connector's `connectionSpecification` has no `properties`. " +
+        "Declare `config: { required, properties }` in defineConnector; an " +
+        "absent field list cannot be told apart from an unreadable one.",
+    );
+  }
+  if (typeof properties !== "object" || Array.isArray(properties)) {
+    throw new Error(
+      "`connectionSpecification.properties` must be an object mapping field " +
+        "names to their JSON Schema.",
+    );
   }
   const required = new Set<string>(
     Array.isArray(connectionSpecification?.required)

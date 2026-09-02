@@ -3,7 +3,11 @@ import { decryptEncrypted, encryptString } from "../services/crypto.service";
 import { Connector as DataSource } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import {
+  isWorkspaceConnectorType,
+  slugFromType,
+} from "../connectors/workspace/SandboxedConnector";
+import { recordConnectionCheck } from "../connectors/workspace/reconcile.service";
 import { connectorTypeExists } from "../connectors/workspace/catalog";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -537,9 +541,29 @@ dataSourceRoutes.openapi(
   }),
   async c => {
     try {
-      const _workspaceId = c.req.param("workspaceId");
+      const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      // TODO: Add authentication and permission check
+      if (!workspaceId) {
+        return c.json(
+          { success: false, error: "Workspace ID is required" },
+          400,
+        );
+      }
+
+      // The id in the URL is the caller's; the workspace in the URL is the
+      // one the middleware authorized. Testing a connector by id alone would
+      // let a member of one workspace exercise another's credential — and,
+      // now that the outcome is recorded, write to another's index row.
+      const ownershipCheck = await DataSource.findOne(
+        { _id: id, workspaceId },
+        { _id: 1 },
+      ).lean();
+      if (!ownershipCheck) {
+        return c.json(
+          { success: false, error: "Connector not found in this workspace" },
+          404,
+        );
+      }
 
       // Use manager to load decrypted configuration before testing
       const ds = await databaseDataSourceManager.getDataSource(id);
@@ -561,6 +585,26 @@ dataSourceRoutes.openapi(
       }
 
       const result = await connector.testConnection();
+
+      // The only path that may write `verified`: a push proves a connector
+      // starts, and nothing else, so this is the one place with a real
+      // credential and a real answer about it. A failure records the reason
+      // rather than the status, so a connector stays offerable in the picker
+      // while whoever entered the key fixes it.
+      if (isWorkspaceConnectorType(ds.type)) {
+        await recordConnectionCheck({
+          workspaceId,
+          slug: slugFromType(ds.type),
+          success: result.success === true,
+          message: result.message,
+        }).catch(error =>
+          logger.warn("Could not record a workspace connector check", {
+            workspaceId,
+            type: ds.type,
+            error,
+          }),
+        );
+      }
 
       return c.json({
         success: true,

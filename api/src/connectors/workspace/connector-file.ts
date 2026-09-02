@@ -155,13 +155,23 @@ export function validateSpec(
   }
   const properties = (connectionSpecification as Record<string, unknown>)
     .properties;
+  // `properties` must be PRESENT, even if empty. It is the list
+  // `applySchemaEncryption` encrypts by, so an absent one means no field is
+  // known to be a secret and every value posted for this connector would be
+  // stored in plaintext. `{}` is fine — a connector that needs no credential
+  // has nothing to protect — but a missing key is a spec that did not say.
   if (
-    properties !== undefined &&
-    (typeof properties !== "object" || properties === null)
+    properties === undefined ||
+    properties === null ||
+    typeof properties !== "object" ||
+    Array.isArray(properties)
   ) {
     return {
       ok: false,
-      reason: "`connectionSpecification.properties` must be an object.",
+      reason:
+        "`connectionSpecification.properties` must be an object (use `{}` for a " +
+        "connector that needs no credential). Without it no field can be " +
+        "marked secret, and the credential would be stored in plaintext.",
     };
   }
   return { ok: true };

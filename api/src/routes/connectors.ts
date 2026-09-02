@@ -1,8 +1,12 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import fs from "fs";
 import path from "path";
+import { Types } from "mongoose";
 
 import { connectorRegistry } from "../connectors/registry";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { workspaceService } from "../services/workspace.service";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import {
   listWorkspaceConnectors,
@@ -17,9 +21,57 @@ import {
 
 /**
  * Connector catalog endpoints. Intentionally public (no authentication) — they
- * expose only static metadata and config-field schemas for available connectors.
+ * expose only static metadata and config-field schemas for the BUILT-IN
+ * connectors, which are the same for every tenant.
+ *
+ * A workspace's own connectors are not that. Their slugs, entity names,
+ * credential field names and `blockedReason` (which carries the workspace's
+ * own stderr) belong to one tenant, so they are served only to a caller who
+ * has authenticated AND is a member — see `memberWorkspaceId`.
  */
 export const connectorRoutes = createRouter();
+
+/**
+ * The workspace whose own connectors this caller may see, or null.
+ *
+ * `x-workspace-id` is a header, which means it is whatever the caller typed.
+ * On an authenticated router the auth middleware settles that; here there is
+ * none, so the check is done explicitly: authenticate the request the same
+ * way every other route does, then require membership. A caller who fails
+ * either gets the built-in catalog — the routes stay genuinely public — but
+ * never another tenant's connectors.
+ */
+async function memberWorkspaceId(c: Context): Promise<string | null> {
+  const requested = c.req.header("x-workspace-id");
+  if (!requested || !Types.ObjectId.isValid(requested)) return null;
+
+  // The middleware answers with a 401/redirect for an anonymous caller. That
+  // response is deliberately discarded: this route is public, so "not signed
+  // in" means "built-ins only", not "unauthorized".
+  let authenticated = false;
+  try {
+    await unifiedAuthMiddleware(c, async () => {
+      authenticated = true;
+    });
+  } catch {
+    return null;
+  }
+  if (!authenticated) return null;
+
+  // An API key is scoped to one workspace; a session is scoped to whichever
+  // workspaces the user is a member of.
+  const workspace = c.get("workspace") as {
+    _id: { toString(): string };
+  } | null;
+  if (workspace) {
+    return workspace._id.toString() === requested ? requested : null;
+  }
+  const user = c.get("user") as { id: string } | undefined;
+  if (!user) return null;
+  return (await workspaceService.hasAccess(requested, user.id))
+    ? requested
+    : null;
+}
 
 const WebhookCapabilitiesSchema = z.object({
   supported: z.boolean(),
@@ -139,11 +191,11 @@ connectorRoutes.openapi(
         ...entry.metadata,
       }));
 
-      // A workspace's own connectors are appended when the caller identifies
-      // one. The route is public and unauthenticated, so an absent or unknown
-      // workspace simply yields the built-in list rather than an error: this
-      // must never become a way to enumerate another tenant's connectors.
-      const workspaceId = c.req.header("x-workspace-id");
+      // A workspace's own connectors are appended only for a member of that
+      // workspace. Anyone else — anonymous, or signed in elsewhere — gets the
+      // built-in list rather than an error, so the route stays public without
+      // becoming a way to enumerate another tenant's connectors.
+      const workspaceId = await memberWorkspaceId(c);
       const own = workspaceId
         ? await listWorkspaceConnectors(workspaceId).catch(() => [])
         : [];
@@ -203,15 +255,13 @@ connectorRoutes.openapi(
     // is derived from the `spec` captured when it was pushed, so this stays a
     // single Mongo read and never boots a sandbox.
     if (isWorkspaceConnectorType(type)) {
-      const workspaceId = c.req.header("x-workspace-id");
+      // Field names, titles and descriptions of a tenant's credential form:
+      // members only. A non-member gets the same 404 as a type that does not
+      // exist, so the route cannot be used to probe which workspaces have a
+      // connector by a given name.
+      const workspaceId = await memberWorkspaceId(c);
       if (!workspaceId) {
-        return c.json(
-          {
-            success: false,
-            error: "A workspace connector needs a workspace context",
-          },
-          404,
-        );
+        return c.json({ success: false, error: "Connector not found" }, 404);
       }
       try {
         const form = await workspaceConnectorForm(workspaceId, type);

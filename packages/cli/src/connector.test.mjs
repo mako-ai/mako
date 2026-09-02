@@ -111,3 +111,38 @@ test("a folder without connector.yaml is refused, since Mako would never find it
   assert.equal(code, 1);
   assert.match(output, /no connector\.yaml/);
 });
+
+test("a folder whose connector.yaml names another entry is tested at that entry", async () => {
+  // The server runs the file `entry:` names. A gate that only ever looked at
+  // connector.ts would refuse a layout production indexes happily.
+  const dir = scratch({ "connector.yaml": "runtime: node\nentry: src/index.ts\n" });
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(
+    path.join(dir, "src/index.ts"),
+    fs.readFileSync(GOOD, "utf8").replace('"../index.js"', JSON.stringify(SDK)),
+  );
+
+  const { code, output } = await runTest(dir);
+  assert.equal(code, 0, output);
+  assert.match(output, /spec: fixture/);
+});
+
+test("a spec without declared config properties fails, as the push would", async () => {
+  const dir = scratch({
+    "connector.yaml": "runtime: node\n",
+    "connector.ts": `
+      import { defineConnector } from ${JSON.stringify(SDK)};
+      const base = defineConnector({
+        name: "silent", version: "1.0.0",
+        entities: { rows: { schema: { id: "string" }, async *read() { yield { records: [] }; } } },
+      });
+      // A spec that forgot to describe its config at all: the shape that made
+      // Mako store credentials unencrypted.
+      export default { ...base, spec: () => ({ connectionSpecification: { type: "object" } }) };
+    `,
+  });
+
+  const { code, output } = await runTest(dir);
+  assert.equal(code, 1);
+  assert.match(output, /config: \{ properties \}/);
+});

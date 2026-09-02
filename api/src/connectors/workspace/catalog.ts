@@ -28,6 +28,8 @@ export interface WorkspaceConnectorSummary {
   usable: boolean;
   status: "indexed" | "verified" | "blocked";
   blockedReason?: string;
+  /** Why the last connection test failed. A bad key, not a broken connector. */
+  lastCheckError?: string;
   hasIcon: boolean;
   source: "workspace";
 }
@@ -53,6 +55,7 @@ export async function listWorkspaceConnectors(
       usable: row.status !== "blocked",
       status: row.status,
       blockedReason: row.blockedReason,
+      lastCheckError: row.lastCheckError,
       hasIcon: row.hasIcon === true,
       source: "workspace" as const,
     };

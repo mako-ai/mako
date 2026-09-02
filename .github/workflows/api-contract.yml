@@ -37,7 +37,16 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          # 22, not 20, because of ONE suite: the workspace-connector specs
+          # execute a real connector, and a connector is TypeScript imported
+          # without a build step. Node strips types from a `.ts` import from
+          # 22.6 (with a flag) and 22.18 (without one); on 20 it cannot, and
+          # every one of those specs fails with `Unknown file extension
+          # ".ts"`. The sandbox that runs connectors in production is on 22 for
+          # the same reason, so this is CI matching the runtime rather than a
+          # preference. The API image itself is still node:20-slim — it never
+          # imports a connector, it ships the code to a box that does.
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies

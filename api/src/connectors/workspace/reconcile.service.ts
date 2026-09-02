@@ -74,7 +74,7 @@ async function reconcile(
   workspaceId: string,
   _actorUserId?: string,
 ): Promise<ConnectorSyncResult> {
-  const { commit, slugs, filesBySlug } =
+  const { commit, slugs, filesBySlug, oversized } =
     await listConnectorFoldersAtMain(workspaceId);
   if (!commit) return { ...EMPTY };
 
@@ -93,6 +93,24 @@ async function reconcile(
 
   for (const slug of slugs) {
     const files = filesBySlug.get(slug) ?? new Map<string, Uint8Array>();
+
+    // Too big to read, so its contents were never loaded. Block it with the
+    // size in the message: the folder plainly exists, and "not found" for
+    // something the author can see in the repo explains nothing.
+    const tooBig = oversized.get(slug);
+    if (tooBig) {
+      seen.add(slug);
+      await block(
+        workspaceId,
+        slug,
+        commit,
+        commit,
+        tooBig,
+        rowBySlug.get(slug),
+      );
+      result.blocked++;
+      continue;
+    }
 
     if (!isValidSlug(slug)) {
       result.skipped.push({
@@ -148,8 +166,12 @@ async function reconcile(
     if (row && row.sourceSha === sourceSha && row.status !== "blocked") {
       // Unchanged content: keep the row, and with it a `verified` status that
       // a real connection test earned. Re-running spec here would demote it.
-      if (row.sha !== commit) {
+      // `entry` is still backfilled: a row indexed before it was stored
+      // defaults to connector.ts, and a connector whose yaml names another
+      // file would otherwise keep running the wrong one forever.
+      if (row.sha !== commit || row.entry !== parsed.value.entry) {
         row.sha = commit;
+        row.entry = parsed.value.entry;
         await row.save();
       }
       result.unchanged++;
@@ -173,11 +195,14 @@ async function reconcile(
       if (row) {
         row.set({
           runtime: parsed.value.runtime,
+          entry: parsed.value.entry,
           sha: commit,
           sourceSha,
           spec: spec.spec,
           status: "indexed",
           blockedReason: undefined,
+          // New code, so the last check proved nothing about what runs now.
+          lastCheckError: undefined,
           entities,
           hasIcon: files.has("icon.svg"),
         });
@@ -188,6 +213,7 @@ async function reconcile(
           workspaceId,
           slug,
           runtime: parsed.value.runtime,
+          entry: parsed.value.entry,
           sha: commit,
           sourceSha,
           spec: spec.spec,
@@ -319,16 +345,23 @@ export async function recordConnectionCheck(input: {
 }): Promise<void> {
   const { workspaceId, slug, success, message } = input;
   await ConnectorDefinition.updateOne(
-    { workspaceId, slug },
+    // A blocked connector is blocked by its code, which a credential cannot
+    // fix; it must not be talked back up to `verified` by a check that could
+    // not have run against it in the first place.
+    { workspaceId, slug, status: { $ne: "blocked" } },
     success
       ? {
           $set: { status: "verified", lastCheckedAt: new Date() },
-          $unset: { blockedReason: "" },
+          $unset: { lastCheckError: "" },
         }
       : {
+          // Demoted, not blocked: the connector still runs, this credential
+          // does not. It stays offerable so the key can be corrected, and it
+          // stops claiming a verification that no longer holds.
           $set: {
+            status: "indexed",
             lastCheckedAt: new Date(),
-            blockedReason: message ?? "Connection test failed",
+            lastCheckError: message ?? "Connection test failed",
           },
         },
   );

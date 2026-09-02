@@ -62,9 +62,20 @@ function runCommand(runner, connectorFile, command, options = {}) {
     const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    // A spawn that never starts (ENOENT on the runner, EACCES, EAGAIN) emits
+    // `error` and no `close`. Without this the promise never settles and the
+    // command hangs forever with nothing on screen.
+    child.on("error", error => {
+      if (settled) return;
+      settled = true;
+      resolve({ code: 1, messages: [], malformed: [], stderr: String(error.message ?? error) });
+    });
     child.stdout.on("data", chunk => (stdout += chunk));
     child.stderr.on("data", chunk => (stderr += chunk));
     child.on("close", code => {
+      if (settled) return;
+      settled = true;
       const messages = [];
       const malformed = [];
       for (const line of stdout.split("\n")) {
@@ -79,6 +90,28 @@ function runCommand(runner, connectorFile, command, options = {}) {
       resolve({ code, messages, malformed, stderr });
     });
   });
+}
+
+/**
+ * `entry:` out of connector.yaml, without a YAML parser.
+ *
+ * The CLI has no dependencies on purpose — it is spawned by npx on machines
+ * Mako knows nothing about — and connector.yaml is a flat mapping of three
+ * possible keys. A scan for the one key that decides which file runs is
+ * enough, and it fails safe: anything it cannot read means connector.ts, the
+ * same default the server applies.
+ */
+function entryFromManifest(manifestPath) {
+  const DEFAULT_ENTRY = "connector.ts";
+  try {
+    for (const line of fs.readFileSync(manifestPath, "utf8").split("\n")) {
+      const match = /^entry:\s*["']?([^"'#\s]+)["']?\s*(#.*)?$/.exec(line.trim());
+      if (match) return match[1];
+    }
+  } catch {
+    // An unreadable manifest is reported by the caller, not here.
+  }
+  return DEFAULT_ENTRY;
 }
 
 const first = (messages, type) => messages.find(m => m.type === type);
@@ -114,16 +147,24 @@ export async function connector(ctx, positional, flags, io) {
   const target = positional[1] ?? ".";
   const resolved = path.resolve(target);
   const isDir = fs.existsSync(resolved) && fs.statSync(resolved).isDirectory();
-  const connectorFile = isDir ? path.join(resolved, "connector.ts") : resolved;
+  const manifest = path.join(resolved, "connector.yaml");
 
-  if (!fs.existsSync(connectorFile)) {
-    io.log(`No connector at ${connectorFile}`);
-    return 1;
-  }
-  if (isDir && !fs.existsSync(path.join(resolved, "connector.yaml"))) {
+  if (isDir && !fs.existsSync(manifest)) {
     io.log(
       `${resolved} has no connector.yaml. Mako will not discover this folder without one:\n\n  runtime: node\n`,
     );
+    return 1;
+  }
+
+  // The same file Mako will run. Hardcoding connector.ts here would refuse a
+  // folder the reconciler indexes perfectly well, which is the worst kind of
+  // conformance gate: one that disagrees with production.
+  const connectorFile = isDir
+    ? path.join(resolved, entryFromManifest(manifest))
+    : resolved;
+
+  if (!fs.existsSync(connectorFile)) {
+    io.log(`No connector at ${connectorFile}`);
     return 1;
   }
 
@@ -156,9 +197,21 @@ export async function connector(ctx, positional, flags, io) {
 
   const connectionSpecification = spec.connectionSpecification;
   const properties = connectionSpecification?.properties ?? {};
+  // The server blocks a spec whose `properties` is absent, because an absent
+  // field list is indistinguishable from an unreadable one and would store
+  // every credential in plaintext. Say the same thing here, or the gate
+  // passes a connector the push will refuse.
+  const declaresFields =
+    Boolean(connectionSpecification) &&
+    connectionSpecification.properties !== undefined &&
+    connectionSpecification.properties !== null &&
+    typeof connectionSpecification.properties === "object" &&
+    !Array.isArray(connectionSpecification.properties);
   record(
-    Boolean(connectionSpecification),
-    "spec: declares connectionSpecification, so a credential form can be rendered",
+    declaresFields,
+    declaresFields
+      ? "spec: declares connectionSpecification.properties, so a credential form can be rendered"
+      : "spec: needs `config: { properties }` in defineConnector — without it Mako blocks the connector, because no field could be marked secret",
   );
   const secrets = Object.entries(properties).filter(
     ([, property]) => property?.airbyte_secret === true,
