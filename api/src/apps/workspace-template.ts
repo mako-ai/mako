@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 10;
+export const WORKSPACE_TEMPLATE_VERSION = 11;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -112,7 +112,10 @@ You are an ordinary developer in an ordinary checkout.
 - **Data**: the \`mako\` MCP server is the only way to the warehouse.
   \`list_connections\` → \`list_tables\` / \`inspect_table\` →
   \`sql_execute_query\` (read-only). Validate every query there BEFORE it
-  goes into a binding.
+  goes into a binding. A *connection* is a configured credential — kind
+  \`database\` (queryable) or \`source\` (a Stripe/Close/… key that flows
+  read and \`probe_connection\` reads live); a *connector* is the code
+  behind it (\`list_connectors\`).
 - **Skills**: call \`get_relevant_skills({ query })\` before writing app code.
   The SDK API (\`useQuery\`, \`useDuckDB\`), binding front matter, chart and
   dialect guidance live there — not in this file. \`load_skill("apps")\` is

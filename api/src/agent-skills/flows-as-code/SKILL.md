@@ -13,7 +13,9 @@ entities:
   - partitionField
   - check_flow_files
   - list_connectors
-  - inspect_connector
+  - list_connections
+  - inspect_connection
+  - probe_connection
   - cdc flow
   - webhook flow
   - scheduled flow
@@ -36,21 +38,31 @@ checkout of that repo, over MCP. For the in-product flow form, load `flows`.
   stream is torn down, the new one starts from zero with a new webhook URL.
   `name:` inside the file is the display name and is free to change.
 - **Never in a file** (the format has no key for them; the sync never writes
-  them from a file): credentials — connectors and connections are referenced
-  by ObjectId only; the webhook `secret` and `endpoint` (URL identity, minted
+  them from a file): credentials — connections are referenced by ObjectId
+  only (a *connector* is code, e.g. `stripe`; a *connection* is a credential
+  configured with it, and that is what a flow names); the webhook `secret` and `endpoint` (URL identity, minted
   in Mongo on first create from `workspaceId` + flow `_id`, never the slug);
   run state — cursors, `lastRunAt`, checkpoints, counters.
 
 ## The loop: discover → write → check → push → verify
 
-1. **Discover the ids.** Ids cannot be guessed and a connector NAME where an
-   id belongs (`connector_id: close`) is refused.
-   - `list_connectors` → `source.connector_id`
-   - `inspect_connector` → the entities it offers (an entity it does not
-     offer yields a flow that runs and syncs nothing), whether incremental is
-     valid, config field names (never values)
-   - `list_connections` → `destination.connection_id` (BigQuery / Postgres
-     connection); the same id goes in `destination.table.connection_id`
+1. **Discover the ids.** Ids cannot be guessed and a NAME where an id
+   belongs (`connection_id: close`) is refused.
+   - `list_connections` → every configured credential, with `kind`: a
+     `source` connection (Stripe key, Close account, …) → `source.connection_id`;
+     a `database` connection (BigQuery / Postgres) → `destination.connection_id`,
+     and the same id in `destination.table.connection_id`
+   - `inspect_connection` → for a source: the entities it offers (an entity
+     it does not offer yields a flow that runs and syncs nothing), whether
+     incremental is valid, config field names (never values)
+   - `list_connectors` / `inspect_connector` → the catalog of connector
+     CODE (`stripe`, `ws:vercel-ai-gateway`), with the connections configured
+     with each — for "is X connected here?" and "what would X need?"
+   - `probe_connection` → run the source connection LIVE before committing
+     a flow: the credential check, and with `entity` one bounded page of real
+     records (`limit` ≤ 200, `fields` to narrow), written nowhere. Use it to
+     confirm a new connection works and to see the fields an entity really
+     carries — that is where `partitionField` and `clusterFields` come from.
 2. **Write `flows/<slug>.yml`.** Copy a neighbouring file for the same
    connector type when one exists — its entity list and `partitionField`
    choices are production-tested. Strip any `_id:` lines inside
@@ -84,9 +96,9 @@ name: ch_close → bigquery_write
 type: webhook                 # CDC = type: webhook + backfill_schedule. type: scheduled = polling on schedule.cron
 source:
   type: connector
-  connector_id: <ObjectId from list_connectors>
+  connection_id: <ObjectId of a kind: source connection from list_connections>
 destination:
-  connection_id: <ObjectId from list_connections>
+  connection_id: <ObjectId of a kind: database connection from list_connections>
   table:
     connection_id: <same ObjectId>
     schema: ch_close_crm      # BigQuery dataset — REQUIRED for BigQuery; created on first write if create_if_not_exists
@@ -124,10 +136,11 @@ pagination:
   keyset_direction: asc
 ```
 
-- Required: `name`; `type` ∈ {scheduled, webhook}; `source.connector_id`
-  (connector source) or `source.connection_id` + `database` + `query`
-  (database source); `destination.connection_id`. A missing id is refused
-  and the current row is kept.
+- Required: `name`; `type` ∈ {scheduled, webhook}; `source.connection_id`
+  (a source connection, under `type: connector`; older files say
+  `connector_id`, which still parses) or `source.connection_id` +
+  `database` + `query` (database source); `destination.connection_id`. A
+  missing id is refused and the current row is kept.
 - Database-source flows add `incremental: { tracking_column, tracking_type:
   timestamp|numeric }` and `pagination: { mode: offset|keyset, keyset_column
   }`; queries use `{{limit}}`, `{{offset}}`, `{{last_sync_value}}`,
@@ -164,13 +177,14 @@ Verify: there is no flow-status tool over MCP yet — open the Flows page:
 - An empty or missing `flows/` directory means "this workspace has not
   adopted flows as code" and touches nothing. It is not "delete everything".
 
-## Creating the connector (the step the file cannot do)
+## Creating the connection (the step the file cannot do)
 
-A flow file references a connector that must already exist. **No MCP or CLI
-tool creates one**; `POST /api/workspaces/{id}/sources` behind a signed-in
-session is the only construction site, and it takes the API key. So: ask the
-user to create the connector in Mako (Sources → Add), `list_connectors` for
-its id, then write the file. Never write an API key into a repo file.
+A flow file references a source connection that must already exist. **No
+MCP or CLI tool creates one**; `POST /api/workspaces/{id}/connectors` behind
+a signed-in session is the only construction site, and it takes the API key.
+So: ask the user to configure the connection in Mako (Sources → Add),
+`list_connections({ kind: "source" })` for its id, `probe_connection` to
+see it work, then write the file. Never write an API key into a repo file.
 
 ## Gotchas that have bitten
 

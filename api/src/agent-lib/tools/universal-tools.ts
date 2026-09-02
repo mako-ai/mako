@@ -9,7 +9,10 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import {
+  Connector as SourceConnection,
+  DatabaseConnection,
+} from "../../database/workspace-schema";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
 import {
@@ -25,8 +28,6 @@ import {
   ALL_SUPPORTED_TYPES,
   getSqlDialectOrNull,
 } from "./shared/sql-dialects";
-
-const emptySchema = z.object({});
 
 /**
  * Summarize one connection document for list_connections. Exported for tests.
@@ -116,21 +117,76 @@ export function summarizeConnectionForListing(db: {
   };
 }
 
-async function listAllConnectionsImpl(workspaceId: string) {
+export type ConnectionKind = "database" | "source";
+
+/**
+ * Every connection in the workspace, of both kinds.
+ *
+ * A CONNECTION is a credential configured with a CONNECTOR (the code). A
+ * `database` connection (BigQuery, Postgres, MongoDB, …) is what the sql_* /
+ * mongo_* tools query and what a flow writes to; a `source` connection (a
+ * Stripe key, a Vercel key, …) is what a flow reads from and what
+ * probe_connection reads live. Both carry `kind` and `connector` so an agent
+ * never has to guess which tool a given id belongs to.
+ *
+ * Source rows are read through a projection that never loads `config`: the
+ * model decrypts it on read via a getter, so loading it is leaking it.
+ */
+export async function listAllConnectionsImpl(
+  workspaceId: string,
+  kind: ConnectionKind | "all" = "all",
+) {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
+  const wsId = new Types.ObjectId(workspaceId);
 
-  const databases = await DatabaseConnection.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    type: { $in: Array.from(ALL_SUPPORTED_TYPES) },
-  }).sort({ name: 1 });
+  const databases =
+    kind === "source"
+      ? []
+      : (
+          await DatabaseConnection.find({
+            workspaceId: wsId,
+            type: { $in: Array.from(ALL_SUPPORTED_TYPES) },
+          }).sort({ name: 1 })
+        ).map(db => ({
+          ...summarizeConnectionForListing(
+            db as unknown as Parameters<
+              typeof summarizeConnectionForListing
+            >[0],
+          ),
+          kind: "database" as const,
+          connector: (db as { type: string }).type,
+          queryable: true,
+        }));
 
-  return databases.map(db =>
-    summarizeConnectionForListing(
-      db as unknown as Parameters<typeof summarizeConnectionForListing>[0],
-    ),
-  );
+  const sources =
+    kind === "database"
+      ? []
+      : (
+          (await SourceConnection.find({ workspaceId: wsId })
+            .select("_id name type description isActive")
+            .sort({ name: 1 })
+            .lean()) as Array<{
+            _id: { toString(): string };
+            name?: string;
+            type?: string;
+            description?: string;
+            isActive?: boolean;
+          }>
+        ).map(row => ({
+          id: row._id.toString(),
+          name: row.name ?? "",
+          type: row.type ?? "",
+          kind: "source" as const,
+          connector: row.type ?? "",
+          description: row.description ?? "",
+          displayName: `${row.name ?? ""} (source: ${row.type ?? "?"} — sync or probe_connection, not SQL)`,
+          active: row.isActive !== false,
+          queryable: false,
+        }));
+
+  return [...databases, ...sources];
 }
 
 /**
@@ -203,12 +259,19 @@ export const createUniversalTools = (
 
     // Cross-database connection discovery (server-side)
     list_connections: tool({
-      description:
-        "List all database connections in this workspace (MongoDB, PostgreSQL, MySQL, Redshift, BigQuery, ClickHouse, SQLite, Cloudflare D1, MSSQL). Use this to discover available databases before running queries.",
-      inputSchema: emptySchema,
-      execute: async () => {
+      description: [
+        "List the CONNECTIONS configured in this workspace — every credential, of both kinds. `kind: database` (MongoDB, PostgreSQL, MySQL, Redshift, BigQuery, ClickHouse, SQLite, Cloudflare D1, MSSQL) is what list_tables / inspect_table / sql_execute_query work on and what a flow writes to. `kind: source` (a Stripe key, a Close account, a workspace connector's key, …) is what a flow reads from and what probe_connection reads live; it cannot be queried with SQL.",
+        "Each row carries `kind` and `connector` (the code it was configured with, e.g. `bigquery`, `stripe`, `ws:vercel-ai-gateway`). Filter with `kind`; default is both. list_connectors is the catalog of what CAN be configured.",
+      ].join("\n"),
+      inputSchema: z.object({
+        kind: z
+          .enum(["database", "source", "all"])
+          .optional()
+          .describe("Which connections to list (default: all)."),
+      }),
+      execute: async ({ kind }: { kind?: ConnectionKind | "all" }) => {
         try {
-          return await listAllConnectionsImpl(workspaceId);
+          return await listAllConnectionsImpl(workspaceId, kind ?? "all");
         } catch (error) {
           return {
             success: false,

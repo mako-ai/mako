@@ -25,7 +25,9 @@ function scratch(files) {
 
 async function runTest(target, flags = {}) {
   const lines = [];
-  const code = await connector({}, ["test", target], flags, { log: line => lines.push(line) });
+  const code = await connector({}, ["test", target], flags, {
+    log: line => lines.push(line),
+  });
   return { code, output: lines.join("\n") };
 }
 
@@ -34,7 +36,9 @@ test("a good connector passes offline, and fully with a credential", async () =>
   assert.equal(offline.code, 0);
   assert.match(offline.output, /Offline checks passed/);
 
-  const dir = scratch({ "config.json": JSON.stringify({ apiKey: "good-key" }) });
+  const dir = scratch({
+    "config.json": JSON.stringify({ apiKey: "good-key" }),
+  });
   const full = await runTest(GOOD, { config: path.join(dir, "config.json") });
   assert.equal(full.code, 0, full.output);
   assert.match(full.output, /check: connected/);
@@ -77,7 +81,9 @@ test("a state that does not advance fails, because the sync would loop forever",
       });
     `,
   });
-  const { code, output } = await runTest(dir, { config: path.join(dir, "config.json") });
+  const { code, output } = await runTest(dir, {
+    config: path.join(dir, "config.json"),
+  });
   assert.equal(code, 1);
   assert.match(output, /state does not advance/);
 });
@@ -100,7 +106,9 @@ test("a declared type the records contradict fails", async () => {
       });
     `,
   });
-  const { code, output } = await runTest(dir, { config: path.join(dir, "config.json") });
+  const { code, output } = await runTest(dir, {
+    config: path.join(dir, "config.json"),
+  });
   assert.equal(code, 1);
   assert.match(output, /count declared string but emitted integer/);
 });
@@ -115,7 +123,9 @@ test("a folder without connector.yaml is refused, since Mako would never find it
 test("a folder whose connector.yaml names another entry is tested at that entry", async () => {
   // The server runs the file `entry:` names. A gate that only ever looked at
   // connector.ts would refuse a layout production indexes happily.
-  const dir = scratch({ "connector.yaml": "runtime: node\nentry: src/index.ts\n" });
+  const dir = scratch({
+    "connector.yaml": "runtime: node\nentry: src/index.ts\n",
+  });
   fs.mkdirSync(path.join(dir, "src"));
   fs.writeFileSync(
     path.join(dir, "src/index.ts"),

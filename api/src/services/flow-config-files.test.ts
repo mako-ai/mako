@@ -296,3 +296,33 @@ assert.equal(parseFlowFile("name: no type here"), null);
 assert.equal(parseFlowFile("type: scheduled"), null); // no name
 
 console.log("flow-config-files tests passed");
+
+// ---- vocabulary: a connector is code, a connection is a credential --------
+// On disk the source of a connector-backed flow is `source.connection_id`.
+// Files written before that key settled carry `connector_id`; they must keep
+// parsing (a workspace repo is not rewritten by a rename), and a file that
+// somehow carries both must prefer the current key.
+{
+  const legacy = parseFlowFile(
+    "name: legacy\ntype: scheduled\nsource:\n  type: connector\n  connector_id: 6a2bd881b6f8c41ea17e9bc7\ndestination:\n  connection_id: 69c2719490eb18199aafa882\n",
+  );
+  assert.ok(legacy && "file" in legacy ? legacy.file : legacy);
+  const legacyFile = (legacy as { file?: unknown }).file ?? legacy;
+  assert.equal(
+    (legacyFile as { source: { connectorId: string } }).source.connectorId,
+    "6a2bd881b6f8c41ea17e9bc7",
+  );
+
+  const current = parseFlowFile(
+    "name: current\ntype: scheduled\nsource:\n  type: connector\n  connection_id: 6a2bd881b6f8c41ea17e9bc7\n  connector_id: 000000000000000000000000\ndestination:\n  connection_id: 69c2719490eb18199aafa882\n",
+  );
+  const currentFile = (current as { file?: unknown }).file ?? current;
+  assert.equal(
+    (currentFile as { source: { connectorId: string } }).source.connectorId,
+    "6a2bd881b6f8c41ea17e9bc7",
+  );
+
+  const emitted = serializeFlowFile(currentFile as never);
+  assert.match(emitted, /connection_id: 6a2bd881b6f8c41ea17e9bc7/);
+  assert.doesNotMatch(emitted, /connector_id/);
+}

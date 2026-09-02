@@ -87,7 +87,7 @@ function flowYaml(name: string, entities?: string[]): string {
     "type: scheduled",
     "source:",
     "  type: connector",
-    `  connector_id: ${CONNECTOR.toString()}`,
+    `  connection_id: ${CONNECTOR.toString()}`,
     "destination:",
     `  connection_id: ${DEST.toString()}`,
     "sync:",
@@ -330,7 +330,9 @@ describe("the three validation layers", () => {
     });
     expect(result.ok).toBe(false);
     expect(
-      result.problems.some(p => p.reason.includes("does not name a connector")),
+      result.problems.some(p =>
+        p.reason.includes("does not name a source connection"),
+      ),
     ).toBe(true);
   });
 

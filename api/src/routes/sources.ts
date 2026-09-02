@@ -3,12 +3,14 @@ import { decryptEncrypted, encryptString } from "../services/crypto.service";
 import { Connector as DataSource } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import {
-  SandboxedConnector,
-  isWorkspaceConnectorType,
-  slugFromType,
-} from "../connectors/workspace/SandboxedConnector";
-import { recordConnectionCheck } from "../connectors/workspace/reconcile.service";
+  PROBE_DEFAULT_LIMIT,
+  PROBE_MAX_LIMIT,
+  ProbeError,
+  probeConnection,
+  runConnectionCheck,
+} from "../connectors/probe.service";
 import { connectorTypeExists } from "../connectors/workspace/catalog";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -585,43 +587,134 @@ dataSourceRoutes.openapi(
         );
       }
 
-      const workspaceSourceSha =
-        connector instanceof SandboxedConnector
-          ? await connector.sourceShaForConnectionCheck()
-          : undefined;
-      const result = await connector.testConnection();
-
-      // The only path that may write `verified`: a push proves a connector
-      // starts, and nothing else, so this is the one place with a real
-      // credential and a real answer about it. A failure records the reason
-      // rather than the status, so a connector stays offerable in the picker
-      // while whoever entered the key fixes it.
-      if (isWorkspaceConnectorType(ds.type)) {
-        if (!workspaceSourceSha) {
-          throw new Error(
-            `Workspace connector ${ds.type} resolved to an unexpected implementation`,
-          );
-        }
-        await recordConnectionCheck({
-          workspaceId,
-          slug: slugFromType(ds.type),
-          sourceSha: workspaceSourceSha,
-          success: result.success === true,
-          message: result.message,
-        }).catch(error =>
-          logger.warn("Could not record a workspace connector check", {
-            workspaceId,
-            type: ds.type,
-            error,
-          }),
-        );
-      }
+      // Runs the check and, for a workspace connector, records it: a real
+      // credential and a real answer is the only evidence that may move a
+      // workspace connector to `verified`. Shared with the probe, which is
+      // this check plus a read.
+      const result = await runConnectionCheck({
+        workspaceId,
+        dataSource: ds,
+        connector,
+      });
 
       return c.json({
         success: true,
         data: result,
       });
     } catch (error) {
+      return c.json(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+        500,
+      );
+    }
+  },
+);
+
+const ProbeBody = {
+  required: false,
+  content: {
+    "application/json": {
+      schema: z.object({
+        entity: z.string().optional().openapi({
+          description:
+            "Entity to read one page of. Omit to check the credential only.",
+        }),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(PROBE_MAX_LIMIT)
+          .optional()
+          .openapi({
+            description: `Maximum records to return (default ${PROBE_DEFAULT_LIMIT}).`,
+          }),
+        fields: z.array(z.string()).optional().openapi({
+          description: "Keep only these top-level fields of each record.",
+        }),
+        since: z.string().optional().openapi({
+          description:
+            "ISO 8601 instant: records changed since then, where the connector supports it.",
+        }),
+      }),
+    },
+  },
+};
+
+/**
+ * The live probe: the check above plus one bounded page of an entity, read
+ * from the platform behind the connection and written nowhere. Same service
+ * as the `probe_connection` MCP tool and `mako connection probe`, so the
+ * three surfaces cannot drift on what "bounded", "read-only" and "no
+ * credential in the result" mean. (This router is mounted at `/connectors`
+ * for historical reasons; the rows it manages are source CONNECTIONS.)
+ */
+dataSourceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/probe",
+    tags: ["Connectors"],
+    summary:
+      "Probe a source connection live: check its credential and read one page of an entity",
+    security: AUTH_SECURITY,
+    request: { params: SourceIdParam, body: ProbeBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    if (!workspaceId) {
+      return c.json({ success: false, error: "Workspace ID is required" }, 400);
+    }
+
+    let body: {
+      entity?: string;
+      limit?: number;
+      fields?: string[];
+      since?: string;
+    } = {};
+    try {
+      const raw = await c.req.text();
+      body = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      return c.json({ success: false, error: "Body must be JSON" }, 400);
+    }
+
+    let since: Date | undefined;
+    if (body.since !== undefined) {
+      since = new Date(body.since);
+      if (Number.isNaN(since.getTime())) {
+        return c.json(
+          { success: false, error: `since is not a valid ISO 8601 instant` },
+          400,
+        );
+      }
+    }
+
+    try {
+      const data = await probeConnection({
+        workspaceId,
+        connectionId: id,
+        entity: body.entity,
+        limit: body.limit,
+        fields: body.fields,
+        since,
+      });
+      return c.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof ProbeError) {
+        return c.json(
+          { success: false, error: error.message, code: error.code },
+          error.status,
+        );
+      }
+      logger.error("Connection probe failed", {
+        workspaceId,
+        connectionId: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return c.json(
         {
           success: false,

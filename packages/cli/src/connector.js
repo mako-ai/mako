@@ -1,6 +1,12 @@
 /**
  * `mako connector test <path>` — the conformance gate.
  *
+ * A CONNECTOR is code: the folder under `connectors/<slug>/` that knows how
+ * to check a credential and read entities. This command runs that code from
+ * this machine, with a credential in a local file, against its own contract.
+ * To run a connection Mako has CONFIGURED with a connector — the credential
+ * Mako holds, live against the platform — see `mako connection probe`.
+ *
  * A connector is only as good as the promise that it will still work when the
  * engine drives it, so this runs the same four commands the engine runs, in
  * the same order, and checks the things that silently break a sync rather than
@@ -29,7 +35,10 @@ const HELP = `mako connector test <path> [--config <file>] [--entity <name>]
   --json            machine-readable result
 
 Without --config only the offline checks run: spec, its config schema, and the
-connector's shape. That is what CI can do without a secret.`;
+connector's shape. That is what CI can do without a secret.
+
+To run a connection Mako has configured, live against its platform:
+  mako connection probe <id|name> [--entity <name>]`;
 
 const ok = text => `  ok    ${text}`;
 const bad = text => `  FAIL  ${text}`;
@@ -59,7 +68,9 @@ function runCommand(runner, connectorFile, command, options = {}) {
     args.push(`--${key}`, String(value));
   }
   return new Promise(resolve => {
-    const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -69,7 +80,12 @@ function runCommand(runner, connectorFile, command, options = {}) {
     child.on("error", error => {
       if (settled) return;
       settled = true;
-      resolve({ code: 1, messages: [], malformed: [], stderr: String(error.message ?? error) });
+      resolve({
+        code: 1,
+        messages: [],
+        malformed: [],
+        stderr: String(error.message ?? error),
+      });
     });
     child.stdout.on("data", chunk => (stdout += chunk));
     child.stderr.on("data", chunk => (stderr += chunk));
@@ -105,7 +121,9 @@ function entryFromManifest(manifestPath) {
   const DEFAULT_ENTRY = "connector.ts";
   try {
     for (const line of fs.readFileSync(manifestPath, "utf8").split("\n")) {
-      const match = /^entry:\s*["']?([^"'#\s]+)["']?\s*(#.*)?$/.exec(line.trim());
+      const match = /^entry:\s*["']?([^"'#\s]+)["']?\s*(#.*)?$/.exec(
+        line.trim(),
+      );
       if (match) return match[1];
     }
   } catch {
@@ -117,7 +135,9 @@ function entryFromManifest(manifestPath) {
 const first = (messages, type) => messages.find(m => m.type === type);
 
 const traceError = messages => {
-  const trace = messages.find(m => m.type === "TRACE" && m.trace?.type === "ERROR");
+  const trace = messages.find(
+    m => m.type === "TRACE" && m.trace?.type === "ERROR",
+  );
   return trace?.trace?.error?.message;
 };
 
@@ -125,7 +145,8 @@ const traceError = messages => {
 function observedType(value) {
   if (value === null || value === undefined) return null;
   if (Array.isArray(value)) return "array";
-  if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+  if (typeof value === "number")
+    return Number.isInteger(value) ? "integer" : "number";
   if (typeof value === "boolean") return "boolean";
   if (typeof value === "object") return "object";
   return "string";
@@ -188,12 +209,18 @@ export async function connector(ctx, positional, flags, io) {
   const specRun = await runCommand(runner, connectorFile, "spec");
   const spec = first(specRun.messages, "SPEC")?.spec;
   if (specRun.code !== 0 || !spec) {
-    record(false, `spec: ${traceError(specRun.messages) ?? specRun.stderr.trim() ?? "no SPEC emitted"}`);
+    record(
+      false,
+      `spec: ${traceError(specRun.messages) ?? specRun.stderr.trim() ?? "no SPEC emitted"}`,
+    );
     io.log(lines.join("\n"));
     return 1;
   }
   record(true, `spec: ${spec.mako?.name ?? "?"} v${spec.mako?.version ?? "?"}`);
-  record(specRun.malformed.length === 0, `spec: stdout carried only protocol messages`);
+  record(
+    specRun.malformed.length === 0,
+    `spec: stdout carried only protocol messages`,
+  );
 
   const connectionSpecification = spec.connectionSpecification;
   const properties = connectionSpecification?.properties ?? {};
@@ -219,7 +246,9 @@ export async function connector(ctx, positional, flags, io) {
   const secretLooking = Object.keys(properties).filter(name =>
     /key|token|secret|password|credential/i.test(name),
   );
-  const unmarked = secretLooking.filter(name => properties[name]?.airbyte_secret !== true);
+  const unmarked = secretLooking.filter(
+    name => properties[name]?.airbyte_secret !== true,
+  );
   record(
     unmarked.length === 0,
     unmarked.length === 0
@@ -239,8 +268,13 @@ export async function connector(ctx, positional, flags, io) {
   }
 
   // ---- check -----------------------------------------------------------
-  const checkRun = await runCommand(runner, connectorFile, "check", { config: configPath });
-  const status = first(checkRun.messages, "CONNECTION_STATUS")?.connectionStatus;
+  const checkRun = await runCommand(runner, connectorFile, "check", {
+    config: configPath,
+  });
+  const status = first(
+    checkRun.messages,
+    "CONNECTION_STATUS",
+  )?.connectionStatus;
   record(
     status?.status === "SUCCEEDED",
     status?.status === "SUCCEEDED"
@@ -254,11 +288,16 @@ export async function connector(ctx, positional, flags, io) {
   }
 
   // ---- discover --------------------------------------------------------
-  const discoverRun = await runCommand(runner, connectorFile, "discover", { config: configPath });
-  const streams = first(discoverRun.messages, "CATALOG")?.catalog?.streams ?? [];
+  const discoverRun = await runCommand(runner, connectorFile, "discover", {
+    config: configPath,
+  });
+  const streams =
+    first(discoverRun.messages, "CATALOG")?.catalog?.streams ?? [];
   record(streams.length > 0, `discover: ${streams.length} stream(s)`);
 
-  const wanted = flags.entity ? streams.filter(s => s.name === String(flags.entity)) : streams;
+  const wanted = flags.entity
+    ? streams.filter(s => s.name === String(flags.entity))
+    : streams;
   if (flags.entity && wanted.length === 0) {
     record(false, `discover: no stream named "${flags.entity}"`);
   }
@@ -279,7 +318,9 @@ export async function connector(ctx, positional, flags, io) {
     );
     fs.writeFileSync(
       catalogPath,
-      JSON.stringify({ streams: [{ stream: { name: stream.name }, sync_mode: "full_refresh" }] }),
+      JSON.stringify({
+        streams: [{ stream: { name: stream.name }, sync_mode: "full_refresh" }],
+      }),
     );
 
     const firstChunk = await runCommand(runner, connectorFile, "read", {
@@ -288,7 +329,9 @@ export async function connector(ctx, positional, flags, io) {
       "max-iterations": 1,
     });
     const records = firstChunk.messages.filter(m => m.type === "RECORD");
-    const state = firstChunk.messages.filter(m => m.type === "STATE").at(-1)?.state;
+    const state = firstChunk.messages
+      .filter(m => m.type === "STATE")
+      .at(-1)?.state;
 
     record(
       firstChunk.code === 0,
@@ -316,7 +359,9 @@ export async function connector(ctx, positional, flags, io) {
         if (types.length === 0) continue;
         const seen = observedType(value);
         if (seen && !types.includes(seen)) {
-          mismatches.push(`${field} declared ${types.join("|")} but emitted ${seen}`);
+          mismatches.push(
+            `${field} declared ${types.join("|")} but emitted ${seen}`,
+          );
         }
       }
       record(
@@ -326,7 +371,9 @@ export async function connector(ctx, positional, flags, io) {
           : `${stream.name}: ${mismatches.join("; ")}`,
       );
 
-      const undeclared = Object.keys(sample).filter(field => !(field in declared));
+      const undeclared = Object.keys(sample).filter(
+        field => !(field in declared),
+      );
       if (undeclared.length > 0) {
         lines.push(
           skip(
@@ -346,9 +393,13 @@ export async function connector(ctx, positional, flags, io) {
         state: statePath,
         "max-iterations": 1,
       });
-      const secondRecords = secondChunk.messages.filter(m => m.type === "RECORD");
+      const secondRecords = secondChunk.messages.filter(
+        m => m.type === "RECORD",
+      );
       const firstIds = new Set(records.map(m => JSON.stringify(m.record.data)));
-      const repeated = secondRecords.filter(m => firstIds.has(JSON.stringify(m.record.data)));
+      const repeated = secondRecords.filter(m =>
+        firstIds.has(JSON.stringify(m.record.data)),
+      );
       record(
         repeated.length === 0 && secondRecords.length > 0,
         repeated.length > 0
@@ -358,7 +409,11 @@ export async function connector(ctx, positional, flags, io) {
             : `${stream.name}: resumes cleanly (${secondRecords.length} further record(s), none repeated)`,
       );
     } else {
-      lines.push(skip(`${stream.name}: fits in one chunk, so resumption was not exercised`));
+      lines.push(
+        skip(
+          `${stream.name}: fits in one chunk, so resumption was not exercised`,
+        ),
+      );
     }
 
     if (records.length > 0 && !flags.json) {

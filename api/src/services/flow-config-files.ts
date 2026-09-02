@@ -59,8 +59,12 @@ export interface FlowFileSchedule {
 export interface FlowFile {
   name: string;
   type: "scheduled" | "webhook";
-  source:
-    | { type: "connector"; connectorId: string }
+  source: /**
+   * A source connection (a credential configured with a connector). On
+   * disk this is `source.connection_id`; `connector_id` is the older key
+   * and is still read. The field keeps its historical name in the API.
+   */
+  | { type: "connector"; connectorId: string }
     | {
         type: "database";
         connectionId?: string;
@@ -194,7 +198,10 @@ export function serializeFlowFile(flow: FlowFile): string {
           database: flow.source.database,
           query: flow.source.query,
         })
-      : omitEmpty({ type: "connector", connector_id: flow.source.connectorId });
+      : omitEmpty({
+          type: "connector",
+          connection_id: flow.source.connectorId,
+        });
 
   const table = flow.destination.table;
   doc.destination = omitEmpty({
@@ -340,7 +347,13 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
           database: str(srcDoc.database),
           query: str(srcDoc.query),
         }
-      : { type: "connector", connectorId: str(srcDoc.connector_id) ?? "" };
+      : {
+          type: "connector",
+          // `connection_id` is the key; `connector_id` is what files written
+          // before the vocabulary settled carry, and they must keep parsing.
+          connectorId:
+            str(srcDoc.connection_id) ?? str(srcDoc.connector_id) ?? "",
+        };
 
   const destDoc = (doc.destination ?? {}) as Record<string, unknown>;
   const tableDoc = destDoc.table as Record<string, unknown> | undefined;

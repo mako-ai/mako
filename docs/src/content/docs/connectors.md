@@ -9,6 +9,10 @@ Connectors and data sync are experimental features under active development. The
 
 Connectors pull data from external services and sync it into your connected databases. This lets you query third-party data with SQL alongside your own data.
 
+:::note[Vocabulary]
+A **connector** is code: the thing that knows how to check a credential and read entities — Mako's built-ins below, or one your workspace ships under `connectors/<slug>/`. A **connection** is a credential your workspace configured with a connector. Connections come in two kinds: a *database* connection (BigQuery, Postgres, MongoDB, …) that Mako queries and that flows write to, and a *source* connection (a Stripe key, a Close account, …) that flows read from. The agent tools follow the same words: `list_connectors` is the catalog of code, `list_connections` is what is configured, of both kinds.
+:::
+
 ## Available Connectors
 
 | Connector     | Source          | Entities                                                                         |
@@ -30,6 +34,22 @@ Connectors pull data from external services and sync it into your connected data
 2. **Map** — Choose a destination database and table naming convention
 3. **Sync** — Connectors fetch data in chunks with cursor-based pagination
 4. **Resume** — If a sync fails, it resumes from the last saved cursor (idempotent upserts)
+
+## Probing a Connection Live
+
+A connector is defined once — check, entities, read — and a flow is only one of the things that can drive a connection made with it. The **live probe** runs a configured source connection, with the credential Mako holds, directly against its platform: the credential check, then one bounded page of an entity, written nowhere. Use it to confirm a new key works, to see the real shape of an entity before writing a flow, or to look at a platform's data before a flow lands it in the warehouse.
+
+Three surfaces, one implementation, so they cannot drift on what "bounded", "read-only" and "no credential in the result" mean:
+
+| Surface | How |
+| --- | --- |
+| MCP (any agent, or the in-product agent) | `probe_connection({ connectionId, entity?, limit?, fields?, since? })` — ids from `list_connections`, entity names from `inspect_connection` |
+| CLI | `mako connection probe <id\|name> [--entity <name>] [--limit <n>] [--fields a,b] [--since <iso>] [--json]` |
+| REST | `POST /api/workspaces/:wid/connectors/:id/probe` with the same body fields (the router keeps its historical `/connectors` path; the rows it manages are source connections) |
+
+The result carries the check outcome, then `entity.records`, `entity.schema` (declared field types), `entity.hasMore` (further pages exist on the platform), `entity.truncated` (the page held more than `limit`) and the connector's own log lines. Limits: at most `limit` records (default 20, max 200) from a single API page, and a 90-second budget for the whole probe — a connection whose connector is [workspace-authored](/guides/building-connectors/) runs in a sandbox, so its first probe can take tens of seconds. Every string value of the connection's config is scrubbed from the result, including from a vendor error that would echo the key back.
+
+Nothing is written: no destination table, no sync cursor. The one side effect is the same one **Test connection** has — a workspace connector's last-check mark, which is what moves it to *verified*.
 
 ## Building Custom Connectors
 

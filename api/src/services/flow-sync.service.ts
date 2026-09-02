@@ -133,7 +133,9 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     // `dataSourceId` is required on the schema, so a connector file without
     // one cannot produce a valid row. Refuse the file rather than write half
     // a flow — the row that exists is more trustworthy than a bad edit.
-    if (!file.source.connectorId) return "connector source has no connector_id";
+    if (!file.source.connectorId) {
+      return "connector source has no connection_id";
+    }
     doc.sourceType = "connector";
     doc.dataSourceId = new Types.ObjectId(file.source.connectorId);
   }
@@ -425,8 +427,7 @@ export async function syncFlowsFromRepo(
 
     const isNew = !row;
     const doc =
-      row ??
-      new Flow({ workspaceId, slug, createdBy: actorUserId ?? "sync" });
+      row ?? new Flow({ workspaceId, slug, createdBy: actorUserId ?? "sync" });
     // `applyDefinition` refuses with a reason, but it can also THROW: an id
     // that is not an ObjectId (`connector_id: close` — a name where an id
     // belongs, the likeliest agent mistake) fails inside `new ObjectId()`.
