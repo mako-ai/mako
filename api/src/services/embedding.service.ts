@@ -1,5 +1,9 @@
 import { embed, embedMany } from "ai";
-import { getEmbeddingModel } from "../agent-lib/ai-gateway";
+import {
+  gatewayAttributionOptions,
+  getEmbeddingModel,
+  type GatewayAttribution,
+} from "../agent-lib/ai-gateway";
 import { loggers } from "../logging";
 import { databaseConnectionService } from "./database-connection.service";
 
@@ -21,12 +25,39 @@ export function getEmbeddingModelName(): string | null {
   return isEmbeddingAvailable() ? EMBEDDING_MODEL_LABEL : null;
 }
 
-export async function embedText(text: string): Promise<number[] | null> {
+/**
+ * Who the embedding is for, for Vercel spend attribution. Embeddings are
+ * cheap but numerous (they were the whole of the gateway's untagged traffic),
+ * and an untagged request is one nobody can explain later. Callers pass the
+ * workspace (and user, when a person triggered it); the type is always
+ * `embedding`.
+ */
+export type EmbeddingAttribution = Omit<GatewayAttribution, "invocationType">;
+
+// `Record<string, any>` for the same reason `buildProviderOptions` returns
+// it: the SDK's provider-options type is a JSON record, and the typed
+// gateway options object (optional fields, `undefined`) is not assignable.
+function embeddingProviderOptions(
+  attribution?: EmbeddingAttribution,
+): Record<string, any> {
+  return {
+    gateway: gatewayAttributionOptions({
+      ...attribution,
+      invocationType: "embedding",
+    }),
+  };
+}
+
+export async function embedText(
+  text: string,
+  attribution?: EmbeddingAttribution,
+): Promise<number[] | null> {
   if (!isEmbeddingAvailable()) return null;
 
   const { embedding } = await embed({
     model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
     value: text,
+    providerOptions: embeddingProviderOptions(attribution),
     experimental_telemetry: {
       isEnabled: true,
       functionId: "embed-text",
@@ -38,6 +69,7 @@ export async function embedText(text: string): Promise<number[] | null> {
 
 export async function embedTexts(
   texts: string[],
+  attribution?: EmbeddingAttribution,
 ): Promise<(number[] | null)[]> {
   if (!isEmbeddingAvailable() || texts.length === 0) {
     return texts.map(() => null);
@@ -46,6 +78,7 @@ export async function embedTexts(
   const { embeddings } = await embedMany({
     model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
     values: texts,
+    providerOptions: embeddingProviderOptions(attribution),
     experimental_telemetry: {
       isEnabled: true,
       functionId: "embed-texts",

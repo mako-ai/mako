@@ -221,7 +221,7 @@ export async function searchConsoles(
 
   if (canVector) {
     try {
-      const embedding = await embedText(query);
+      const embedding = await embedText(query, { workspaceId });
       if (embedding) {
         const currentModel = getEmbeddingModelName();
         const vectorResults = await vectorSearch(embedding, workspaceId, limit);

@@ -250,10 +250,11 @@ function indexEntities(skill: WorkspaceSkillFile): string[] {
 
 async function embeddingFor(
   loadWhen: string,
+  workspaceId: string,
 ): Promise<{ embedding?: number[]; model?: string }> {
   if (!isEmbeddingAvailable()) return {};
   try {
-    const embedding = await embedText(loadWhen);
+    const embedding = await embedText(loadWhen, { workspaceId });
     if (!embedding) return {};
     return { embedding, model: getEmbeddingModelName() ?? undefined };
   } catch (error) {
@@ -305,7 +306,10 @@ export async function syncSkillsIndexFromRepo(
     const entities = indexEntities(file);
     const row = rowByName.get(file.name);
     if (!row) {
-      const { embedding, model } = await embeddingFor(file.loadWhen);
+      const { embedding, model } = await embeddingFor(
+        file.loadWhen,
+        workspaceId,
+      );
       await Skill.create({
         workspaceId: wsObjectId,
         name: file.name,
@@ -334,7 +338,10 @@ export async function syncSkillsIndexFromRepo(
       row.previousUpdatedAt = row.updatedAt;
     }
     if (row.loadWhen !== file.loadWhen) {
-      const { embedding, model } = await embeddingFor(file.loadWhen);
+      const { embedding, model } = await embeddingFor(
+        file.loadWhen,
+        workspaceId,
+      );
       if (embedding) {
         row.loadWhenEmbedding = embedding;
         row.embeddingModel = model;

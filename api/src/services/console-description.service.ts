@@ -197,7 +197,10 @@ export async function generateDescriptionAndEmbedding(
 
   if (description && isEmbeddingAvailable()) {
     try {
-      embedding = await embedText(description);
+      embedding = await embedText(description, {
+        workspaceId: trackingCtx?.workspaceId,
+        userId: trackingCtx?.userId,
+      });
       embeddingModel = getEmbeddingModelName();
     } catch (err) {
       logger.error("Console embedding generation failed", { error: err });

@@ -597,7 +597,9 @@ export async function deriveConsoleDescription(
   };
   if (isEmbeddingAvailable() && description) {
     try {
-      const embedding = await embedText(description);
+      const embedding = await embedText(description, {
+        workspaceId: row.workspaceId.toString(),
+      });
       if (embedding) {
         set.descriptionEmbedding = embedding;
         set.embeddingModel = currentModel;
