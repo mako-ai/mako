@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 11;
+export const WORKSPACE_TEMPLATE_VERSION = 12;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -153,12 +153,21 @@ instead of data. An app whose
 -- connection: <connection id from list_connections>
 -- materialization: parquet        # or: live
 -- schedule: 0 6 * * *             # cron, for parquet
+-- roles: team_lead, bdr           # optional: viewer roles that may read it
+-- row_filter_bdr: rep_email = {{ viewer.email }}   # optional: rows one role gets
 SELECT …
 \`\`\`
 
 \`useQuery("<name>")\` in the app reads it. Materialize on demand with the
 \`app_materialize\` tool (safe from a checkout: it builds from the committed
 binding, keyed by content) or let the dev server do it on first load.
+
+Per-role views: declare \`viewers\` in \`mako.json\` (roles → member emails +
+claims, ordered, optional \`default\`); \`roles\` / \`row_filter_<role>\` on a
+binding then narrow what each role receives — enforced server-side, and
+\`useViewer()\` tells the UI which role is looking. \`MAKO_VIEWER_AS=<email>\`
+in \`.env\` previews the app as that viewer during \`npm run dev\`. See
+\`packages/app-sdk/README.md\`.
 
 ## Shipping
 

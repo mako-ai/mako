@@ -29,10 +29,22 @@ import {
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import {
   bindingArtifactKey,
-  bindingArtifactKeyByName,
   materializeAppBinding,
   readBindingsTolerant,
 } from "./bindings.service";
+import {
+  bindingVisibleTo,
+  compileRowFilter,
+  loadViewersConfig,
+  resolveViewer,
+  type ResolvedViewer,
+  type ViewerIdentity,
+  type ViewersConfig,
+} from "./viewers.service";
+import {
+  filterArtifactToTempFile,
+  streamTempParquet,
+} from "./filtered-parquet.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
@@ -500,15 +512,26 @@ export async function deployBuild(
   }
 }
 
+function jsonResponse(body: unknown, status: number, cache: string): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": cache },
+  });
+}
+
 /**
  * Serve one file of a published app: a build asset, or a materialized data
  * binding at `__data/<name>.parquet`.
  *
  * The only difference between the signed-in viewer and an anonymous share is
- * WHO is allowed to call it; what gets served is identical. Keeping that in
- * one place is what stops the two drifting into serving different things —
- * which is exactly how the viewer ended up returning index.html for every
- * asset while the share route did not.
+ * WHO is allowed to call it; what gets served is identical — UNLESS the app
+ * declares viewer roles (viewers.service, apps.md §27), in which case the
+ * document, the binding list and every parquet are shaped by the viewer's
+ * role, and a request with no viewer (an anonymous share, a token minted
+ * before viewers existed) is refused. Keeping all of that in one place is
+ * what stops the routes drifting into serving different things — which is
+ * exactly how the viewer once ended up returning index.html for every asset
+ * while the share route did not.
  */
 export async function serveDeploymentFile(input: {
   projectId: string;
@@ -516,46 +539,121 @@ export async function serveDeploymentFile(input: {
   assetPath: string;
   /** Anonymous shares must not be cached by anything in between. */
   private?: boolean;
+  /**
+   * Who is asking. `null`/absent = nobody known (anonymous share, legacy
+   * token). Only consulted when the app's mako.json declares `viewers`.
+   */
+  viewer?: ViewerIdentity | null;
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
   const cache = input.private ? "private, no-cache" : "no-cache";
-
-  // The staged-binding list the SDK's useDuckDB registers tables from. The
-  // dev server writes this file next to its staged parquet; published serving
-  // derives it from the repo's bindings so published apps get tables too.
-  if (assetPath === "__data/index.json") {
-    const project = await AppProject.findById(projectId);
-    // AT the deployed commit — see readSource's `at`. Tolerant, like the
-    // per-binding data path: a malformed neighbour must not 500 the table
-    // index that every healthy binding's registration depends on.
-    const names = project
-      ? (await readBindingsTolerant(project, "", sha)).bindings.map(b => b.name)
-      : [];
-    return new Response(JSON.stringify(names), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "Cache-Control": cache },
-    });
-  }
+  const dataCache = input.private ? "private, no-store" : "no-store";
 
   const dataMatch = assetPath.match(
     /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
   );
-  if (dataMatch) {
-    // Resolve by name through the binding's DEFINITION, exactly as the
-    // preview route does — artifacts are keyed
-    // `apps/bindings/<connectionId>/<definitionHash>.parquet`. The old
-    // `apps/<projectId>/<name>.parquet` key here was a scheme nothing
-    // writes: published apps could never see their data (§13.19).
+  const isDocument = assetPath === "" || assetPath === "index.html";
+  const isData = assetPath.startsWith("__data/");
+
+  // Role resolution costs a git read of mako.json at the deployed commit, so
+  // it happens for the document and the data — never per JS/CSS chunk.
+  let viewer: ResolvedViewer | null = null;
+  if (isDocument || isData) {
     const project = await AppProject.findById(projectId);
-    const key = project
-      ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
-      : null;
-    if (!key) return null;
-    const store = await artifactStoreForRead(key);
-    if (!store) return null;
-    return await serveParquetArtifact(store, key, {
-      cacheControl: input.private ? "private, no-store" : "no-store",
-    });
+    if (!project) return null;
+    let config: ViewersConfig | null;
+    try {
+      config = await loadViewersConfig(project, "", sha);
+    } catch (error) {
+      logger.warn("Published app has an invalid viewers config; refusing", {
+        projectId,
+        sha,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return jsonResponse(
+        {
+          success: false,
+          error:
+            "This app's mako.json declares viewer roles but the block is invalid. " +
+            (error instanceof Error ? error.message : String(error)),
+        },
+        403,
+        dataCache,
+      );
+    }
+    if (config) {
+      viewer = input.viewer ? resolveViewer(config, input.viewer) : null;
+      if (!viewer) {
+        return jsonResponse(
+          {
+            success: false,
+            error: input.viewer
+              ? `This app defines viewer roles and none includes ${input.viewer.email}. Ask the app's owner to add you to a role in its mako.json.`
+              : "This app defines viewer roles and cannot be viewed without signing in.",
+          },
+          403,
+          dataCache,
+        );
+      }
+    }
+
+    // Who the app is talking to — the SDK's useViewer(). For an app without
+    // roles this is still the signed-in email (or nothing, on a share).
+    if (assetPath === "__data/viewer.json") {
+      return jsonResponse(
+        viewer
+          ? { email: viewer.email, role: viewer.role, claims: viewer.claims }
+          : { email: input.viewer?.email ?? null, role: null, claims: {} },
+        200,
+        dataCache,
+      );
+    }
+
+    // The staged-binding list the SDK's useDuckDB registers tables from.
+    // The dev server writes this file next to its staged parquet; published
+    // serving derives it from the repo's bindings so published apps get
+    // tables too — only the ones the viewer's role may read.
+    if (assetPath === "__data/index.json") {
+      // AT the deployed commit — see readSource's `at`.
+      const { bindings } = await readBindingsTolerant(project, "", sha);
+      const names = bindings
+        .filter(b => !viewer || bindingVisibleTo(b.policy, viewer.role))
+        .map(b => b.name);
+      return jsonResponse(names, 200, cache);
+    }
+
+    if (dataMatch) {
+      // Resolve by name through the binding's DEFINITION, exactly as the
+      // preview route does — artifacts are keyed
+      // `apps/bindings/<connectionId>/<definitionHash>.parquet`. The old
+      // `apps/<projectId>/<name>.parquet` key here was a scheme nothing
+      // writes: published apps could never see their data (§13.19).
+      const binding = (
+        await readBindingsTolerant(project, "", sha)
+      ).bindings.find(
+        b => b.name === dataMatch[1],
+      );
+      if (!binding) return null;
+      if (viewer && !bindingVisibleTo(binding.policy, viewer.role)) return null;
+      const key = bindingArtifactKey(binding);
+      const store = await artifactStoreForRead(key);
+      if (!store) return null;
+      const predicate = viewer
+        ? binding.policy.rowFilters[viewer.role]
+        : undefined;
+      if (viewer && predicate !== undefined) {
+        // Filtered rows are computed here and streamed — never a redirect
+        // to the bucket, which holds only the unfiltered object.
+        const filter = compileRowFilter(predicate, viewer);
+        const file = await filterArtifactToTempFile(store, key, filter);
+        if (!file) return null;
+        return streamTempParquet(file, { cacheControl: dataCache });
+      }
+      return await serveParquetArtifact(store, key, {
+        cacheControl: dataCache,
+      });
+    }
+    if (isData) return null;
   }
 
   const asset = await readDeploymentAsset(projectId, sha, assetPath);

@@ -45,6 +45,46 @@ or 502 with the query's error.
 Data arrives from `__data/<name>.parquet`, relative to the page — the same
 path in Mako's sandbox, in a published app, and on a laptop.
 
+### Viewer roles
+
+An app can show different views by role — team leads see everything, a rep
+sees their own rows — and Mako enforces it before the data reaches the
+browser. Declare the roles in `mako.json`:
+
+```json
+"viewers": {
+  "default": "bdr",
+  "roles": {
+    "team_lead": { "members": { "lead@acme.com": {} } },
+    "bdr":       { "members": { "sam@acme.com": { "rep": "Sam Ple" } } }
+  }
+}
+```
+
+Roles are tried in declaration order; the first one listing the viewer's
+email wins, else `default`, else the viewer is refused. Then scope each
+binding in its front matter:
+
+```sql
+-- roles: team_lead, bdr                                 (who may read it; omit = everyone)
+-- row_filter_bdr: sales_rep_email = {{ viewer.email }}  (rows a role gets; omit = all rows)
+```
+
+`{{ viewer.<claim> }}` is bound as a parameter, never spliced into SQL;
+`email` and `role` are always available, plus the member's own claims.
+In the app:
+
+```tsx
+import { useViewer } from "@makoai/app-sdk";
+
+const { viewer, loading } = useViewer();
+// viewer.role is "team_lead" | "bdr" | … — or null when the app declares no roles.
+```
+
+Who may *open* the app is still the app's access setting in Mako; the
+`viewers` block only narrows what an admitted viewer sees. An app with a
+`viewers` block cannot be shared anonymously.
+
 ## In `vite.config.ts`
 
 ```ts
@@ -61,6 +101,11 @@ materialized is built on first request, and `POST __data/<name>/refresh`
 `node_modules/.mako-data/` for five minutes (`?refresh` bypasses; a stale
 copy is served if the API is unreachable). It is `apply: "serve"` only —
 production builds never load it.
+
+It also answers `__data/viewer.json` (the developer's own role), and
+`MAKO_VIEWER_AS=<email>` — in the environment or the repo's `.env` — previews
+the app as that viewer: role, binding list and row filters exactly as Mako
+would serve them.
 
 Credentials, in order: `MAKO_API_URL` / `MAKO_API_KEY` in the environment,
 then in the repo-root `.env`. The workspace id comes from

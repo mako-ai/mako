@@ -48,6 +48,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **App lifecycle: view / edit / publish (§13)**                                                           | Found by this RFC's own author: _"even though I built this, I don't understand the UX"_. The cause is not labelling — **there is no publish, no deploy and no viewer**: `publishedSha` is never written by anything, there is no public-share route, the built bundle is served behind a 30-MINUTE in-memory token, and even browsing an app calls `ensureWorktree`. Apps v2 is an IDE with two developer preview modes. **Correction to an earlier claim in this session:** data is much further along — bindings already materialize into the shared artifact store (GCS when deployed) at `apps-v2/<projectId>/<name>.parquet`, so warehouse→parquet→bucket is DONE and durable; only the serving path is tied to the ephemeral preview token. Target: three states, one primary action each — Published (no sandbox at all; primary = Edit), Editing (branch + dev session; primary = Publish), Never published. Publish = merge → build from main → IMMUTABLE addressable artifact → repoint, which makes rollback a repoint. Open: an ACL'd data path for published apps (§4.7 capability tokens — the genuinely hard part), scheduled refresh, failed-build-on-main, rollback UX, concurrent editors, static-only boundary. Detail: §13.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | User + analysis (2026-08-21)                                                                                 |
 | **What `mako` runs locally (OPEN)**                                                                      | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Raised 2026-08-19                                                                                            |
 | **Sequencing: cheap half first; `mako agent` deferred indefinitely**                                     | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@makoai/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | User (2026-08-19)                                                                                            |
+| Viewer roles inside an app (DECIDED, built) | **Mongo decides who may open; the repo decides what an admitted viewer sees.** `mako.json` `viewers` (roles → member emails + claims, ordered, optional default), binding front matter `roles:` / `row_filter_<role>:` with `{{ viewer.<claim> }}` bound as parameters; enforced per viewer in `serveDeploymentFile` (filtered parquet streamed server-side via DuckDB, never the bucket redirect); the `pub.` grant carries the viewer; no viewer on a role-scoped app → 403. Repo config narrows, never grants. Detail: §27. | User (2026-09-02) |
 
 ---
 
@@ -3141,3 +3142,122 @@ Two limits are now about the prompt, not a schema: descriptions cap at 300
 characters (they are index lines), and the 200-skill cap stays as the point
 past which an index alone stops routing well. Unbound workspaces have no
 skills — the posture every other kind already had.
+## 27. Viewer roles: the repo narrows what an admitted viewer sees (2026-09-02)
+
+**The ask.** A sales dashboard where team leads see every rep and a BDR sees
+only their own board — enforced, not a UI default. Until now a published app
+could not know who was looking: the SDK had no identity hook, the in-product
+iframe is sandboxed without `allow-same-origin` (no cookies), the `pub.`
+grant carried `{workspace, project, sha, exp}` and no subject, and
+`serveDeploymentFile` streamed one content-addressed parquet to everyone —
+"the only difference between the signed-in viewer and an anonymous share is
+WHO is allowed to call it; what gets served is identical." Since §18 the
+bytes do not even pass through the API: the route 302s to a signed bucket
+URL for the shared, unfiltered object. Any filtering an app did in the
+browser was decoration; the whole file was already in the viewer's DuckDB.
+
+**Two layers, deliberately separate.**
+
+- *Who may open the app* stays Mongo's decision (`utils/resource-acl.ts`,
+  `access`/`sharedWith`) and §13.6's rule stands: authorization must not be
+  editable by anyone who can push.
+- *What an admitted viewer sees inside* — which bindings, which rows, a
+  `role` the UI branches on — is the **repo's** decision, read at the
+  published commit like the bindings themselves. Repo config can only
+  **narrow**, never grant: a viewer the ACL refuses never reaches this code,
+  and a viewer it admits but no role claims is refused too (fail closed).
+  Builders can read everything anyway (§11.5, the builder tier), so letting
+  them author the narrowing is no privilege they lack.
+
+**Roles as code — `mako.json`:**
+
+```json
+"viewers": {
+  "default": "bdr",
+  "roles": {
+    "team_lead": { "members": { "lead@acme.com": {} } },
+    "bdr":       { "members": { "sam@acme.com": { "rep": "Sam Ple" } } }
+  }
+}
+```
+
+Roles are tried in declaration order; the first listing the viewer's email
+(lowercased) wins, else `default`, else refused. A member's object is extra
+**claims**; `email` and `role` are always present. Role names are lowercase
+identifiers because they become front-matter key suffixes, and front-matter
+keys are lowercased on parse. A present-but-malformed block refuses the
+whole app with the validation message — the fix is a commit, so the
+message is for the builder.
+
+**Policies on bindings — front matter, the cheapest backward-compatible
+extension point (unknown keys were already ignored):**
+
+```sql
+-- roles: team_lead, bdr                                 -- who may read it at all; omit = every role
+-- row_filter_bdr: sales_rep_email = {{ viewer.email }}  -- rows for one role; omit = all rows
+```
+
+`{{ viewer.<claim> }}` compiles to a positional `$n` parameter; the value is
+bound, never spliced. A placeholder naming a claim the viewer lacks compiles
+to `FALSE`: schema, no rows — never everything. The predicate text is
+builder-authored, lives next to the binding's SQL, and runs only against the
+already-materialized parquet, so the checks on it are about shape (one
+expression, no `;`/`--`/`/* */`), not about untrusted input.
+
+**Enforcement is on the byte path, per viewer, in `serveDeploymentFile`** —
+the one function all three published routes converge on:
+
+1. For the document and anything under `__data/` (never per JS chunk), load
+   `mako.json` at `sha`; no `viewers` → today's behaviour, unchanged.
+2. `__data/viewer.json` → `{email, role, claims}` — what `useViewer()` reads.
+3. `__data/index.json` → only the bindings the role may read.
+4. `__data/<name>.parquet` → 404 when the role may not read it; when the
+   role has a `row_filter`, pull the artifact server-side, filter it in an
+   in-memory DuckDB (`@duckdb/node-api`, prepared statement, bound params),
+   `COPY … (FORMAT PARQUET, COMPRESSION SNAPPY)` and **stream** it —
+   never the §18 redirect, because the bucket only holds the unfiltered
+   object. Roles without a filter keep the redirect.
+5. No viewer (anonymous share, a token minted before this) on a role-scoped
+   app → 403. Public share of such an app is therefore refused by the
+   serving layer; hiding the toggle in ShareDialog is a follow-up.
+
+**Identity reaches the cookie-free route through the grant.** The `pub.`
+token gains `u` (user id) and `e` (email), minted from the session in
+`POST /apps/{id}/view-token`; `resolvePublishedGrant` hands them back as
+`grant.viewer`, and `apps-preview.ts` forwards them. A tampered `e` fails
+the HMAC like any other byte. `/live/*` passes the session user directly.
+Nothing new is stored: the token is still stateless and multi-instance safe.
+
+**Builders keep the whole artifact.** `GET /apps/{id}/bindings/{name}/artifact`
+is unchanged for the developer, the agent tools and the sandbox dev server.
+`?as=<email>` on it, and on the new `GET /apps/{id}/viewer`, resolves that
+person's role at the actor's view of the repo and serves what they would
+get — the laptop `vite dev` plugin exposes this as `MAKO_VIEWER_AS`, cache
+keyed per viewer.
+
+**Not chosen, and why.** *Per-role artifacts at materialization time* need
+the same identity plumbing and multiply warehouse cost by the number of
+roles; per-user filters (the BDR case) make that combinatorial. It remains
+the right optimization for a small closed role set on a large artifact, and
+it can be layered behind the same resolution later. *Roles in Mongo or a
+member-groups UI* is a bigger platform feature and moves the narrowing
+away from the code that defines the columns it filters on. *Client-side
+filtering* is not enforcement.
+
+**Costs and follow-ups.** One DuckDB pass per request per filtered binding,
+and `useDuckDB` registers every binding on first use — so a page load of a
+role-scoped app filters each scoped binding once. There is no cache in this
+cut: nothing in front caches `__data` (everything is `no-store`, the worker
+proxies), so a `(artifact, policy-hash)`-keyed temp-file cache is a
+contained follow-up once the cost shows up. API keys act as their creator
+(`unified-auth.middleware.ts`), so a key inherits its creator's role —
+document, don't fight. Membership deletion still leaves `mako.json` entries
+behind; harmless, since the ACL refuses them first.
+
+Code: `api/src/apps/viewers.service.ts` (pure: config, resolution,
+policies, filter compilation), `api/src/apps/filtered-parquet.service.ts`
+(DuckDB pass + streaming), `deployment.service.ts` (`viewer` input),
+`preview.service.ts` (`u`/`e` claims), routes `apps.ts` / `apps-preview.ts`
+/ `public-share.ts`, SDK `useViewer()` + `MAKO_VIEWER_AS` (2.3.0). Tests:
+`viewers.service.test.ts`, `filtered-parquet.service.test.ts` (a quote in
+the email must neither break nor widen the filter), `preview.service.test.ts`.
