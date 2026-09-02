@@ -8,15 +8,15 @@
  * every agent turn reads, not per-session content (branch-policy.ts rule 2).
  */
 import { authorForUser } from "./workspace-consoles.service";
-import { requireWorkspaceRepo } from "./workspace-repo-required";
-import { getWorkspaceRepo } from "../services/workspace-repos.service";
+import {
+  boundRepoDirIfExists,
+  requireWorkspaceRepo,
+} from "./workspace-repo-required";
 import { freshenBeforeMainWrite, queueMirrorPush } from "./cloud-repo.service";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
   readBlob,
-  repoDirFor,
-  repoExists,
 } from "./repository.service";
 
 export const PROMPT_PATH = "PROMPT.md";
@@ -26,9 +26,8 @@ async function readRepoTextFile(
   workspaceId: string,
   relPath: string,
 ): Promise<string | null> {
-  if (!(await getWorkspaceRepo(workspaceId))) return null;
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return null;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
   try {
     const blob = await readBlob(
       repoDir,

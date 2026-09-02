@@ -26,6 +26,7 @@ import {
 import {
   adoptWorkspaceNotebooks,
   checkpointNotebook,
+  notebookHistory,
   removeNotebookFile,
   syncNotebooksFromRepo,
 } from "./notebook-git.service";
@@ -113,6 +114,16 @@ describe("checkpoint", () => {
       skippedReason: "no_repository",
     });
     expect(await fileAt("notebooks/orphan.deepnote")).toBeNull();
+  });
+
+  it("does not list leftover local git history when no GitHub repo is bound", async () => {
+    const id = await seedNotebook("History leak", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    const index = await NotebookIndex.findOne({ notebookId: id });
+    expect(index?.path).toBeTruthy();
+    expect(await notebookHistory(index!)).not.toEqual([]);
+    await unbindTestWorkspaceRepo(WS);
+    expect(await notebookHistory(index!)).toEqual([]);
   });
 
   it("commits a stripped single-notebook .deepnote at the access-scoped path", async () => {

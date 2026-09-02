@@ -70,10 +70,12 @@ import {
 import { ensureBoxAgent, forgetBoxAgent } from "./box-agent";
 import {
   APPS_MAX_FILE_BYTES,
+  RepoRequiredError,
   appsGitOriginBase,
   appsSessionsRoot,
 } from "./config";
 import { requireWorkspaceRepo } from "./workspace-repo-required";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { assertSafeRelPath, EMPTY_TREE, runGit, ZERO_OID } from "./git";
 import {
   DEFAULT_BRANCH,
@@ -117,6 +119,9 @@ async function repoFor(project: IAppProject): Promise<string> {
 
 /** §10 monorepo: the ONE bare repo per workspace (clone-on-miss). */
 export async function repoForWorkspace(workspaceId: string): Promise<string> {
+  if (!(await getWorkspaceRepo(workspaceId))) {
+    throw new RepoRequiredError();
+  }
   await ensureLocalRepo(workspaceId);
   return repoDirFor(workspaceId);
 }

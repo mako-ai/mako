@@ -54,14 +54,16 @@ import {
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
 import {
-  ensureWorkspaceRepo,
   freshenBeforeMainWrite,
   mirrorPushNow,
   queueMirrorPush,
   resolveMirrorTarget,
 } from "./cloud-repo.service";
 import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
-import { requireWorkspaceRepo } from "./workspace-repo-required";
+import {
+  requireWorkspaceRepo,
+  boundRepoDirIfExists,
+} from "./workspace-repo-required";
 import {
   CONSOLES_README,
   CONSOLES_README_PATH,
@@ -83,8 +85,6 @@ import {
   listTree,
   log as repoLog,
   readBlob,
-  repoDirFor,
-  repoExists,
   resolveCommit,
   type BlobMutation,
   type ChangedFile,
@@ -338,7 +338,7 @@ function filesFor(
 
 /** The workspace bare repo, restored from its mirror or initialized. */
 export async function ensureConsolesRepo(workspaceId: string): Promise<string> {
-  return ensureWorkspaceRepo(workspaceId);
+  return requireWorkspaceRepo(workspaceId);
 }
 
 async function readAt(
@@ -707,8 +707,8 @@ async function syncNow(
   workspaceId: string,
   userId?: string,
 ): Promise<ConsoleSyncStats | null> {
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return null;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
   if (!(await consolesAdopted(repoDir))) return null;
   const head = await resolveCommit(repoDir, MAIN);
   if (!head) return null;
@@ -1366,8 +1366,8 @@ export async function consoleHistory(
   limit = 50,
 ): Promise<CommitInfo[]> {
   if (!row.path) return [];
-  const repoDir = repoDirFor(row.workspaceId.toString());
-  if (!(await repoExists(repoDir))) return [];
+  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
+  if (repoDir == null) return [];
   if (!(await resolveCommit(repoDir, MAIN))) return [];
   return repoLog(repoDir, MAIN, limit, row.path);
 }
@@ -1377,7 +1377,8 @@ export async function consoleCommitChanges(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
   sha: string,
 ): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
-  const repoDir = repoDirFor(row.workspaceId.toString());
+  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
+  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
@@ -1392,7 +1393,8 @@ export async function consoleFileVersions(
   sha: string,
   relPath: string,
 ): Promise<{ before: string | null; after: string | null; binary: boolean }> {
-  const repoDir = repoDirFor(row.workspaceId.toString());
+  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
+  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
@@ -1424,7 +1426,8 @@ export async function restoreConsoleTo(
   actorUserId: string,
 ): Promise<{ commitOid: string; unchanged: boolean }> {
   if (!row.path) throw new Error("This console has no file in the repo yet");
-  const repoDir = repoDirFor(row.workspaceId.toString());
+  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
+  if (repoDir == null) throw new RepoRequiredError();
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   let at = row.path;
@@ -1516,8 +1519,8 @@ export async function savedConsoleStateFromRepo(
   if (!row.path) return null;
   const location = parseConsoleRepoPath(row.path);
   if (!location) return null;
-  const repoDir = repoDirFor(row.workspaceId.toString());
-  if (!(await repoExists(repoDir))) return null;
+  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
+  if (repoDir == null) return null;
   const contents = await readAt(repoDir, row.path);
   if (contents === null) return null;
   const parsed = parseConsoleFile(contents, location.language);

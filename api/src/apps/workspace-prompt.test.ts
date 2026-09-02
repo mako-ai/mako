@@ -22,7 +22,10 @@ import {
   readWorkspacePromptFile,
   readWorkspaceSelfDirectiveFile,
 } from "./workspace-prompt";
-import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -87,5 +90,12 @@ describe("workspace prompt in git", () => {
     expect(await readWorkspacePromptFile(WS)).toBeNull();
     const [head] = await repoLog(repoDirFor(WS), MAIN, 1);
     expect(head.subject).toBe(`self-directive: update ${SELF_DIRECTIVE_PATH}`);
+  });
+
+  it("does not serve leftover PROMPT.md when no GitHub repo is bound", async () => {
+    await initRepo(repoDirFor(WS), { "PROMPT.md": "loop2-local-git\n" });
+    expect(await readWorkspacePromptFile(WS)).toBe("loop2-local-git\n");
+    await unbindTestWorkspaceRepo(WS);
+    expect(await readWorkspacePromptFile(WS)).toBeNull();
   });
 });

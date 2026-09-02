@@ -127,6 +127,17 @@ describe("project lifecycle", () => {
 
     await deleteProject(project);
   });
+
+  it("does not serve leftover local git history when no GitHub repo is bound", async () => {
+    const project = await makeProject();
+    expect(await projectHistory(scopeOf(project))).not.toEqual([]);
+    await unbindTestWorkspaceRepo(WS);
+    await expect(projectHistory(scopeOf(project))).rejects.toBeInstanceOf(
+      RepoRequiredError,
+    );
+    await bindTestWorkspaceRepo(WS);
+    await deleteProject(project);
+  });
 });
 
 describe("the working copy", () => {

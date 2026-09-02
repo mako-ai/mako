@@ -23,12 +23,11 @@ import {
 } from "../services/embedding.service";
 import { extractEntities } from "../agent-lib/entity-extraction";
 import { loggers } from "../logging";
+import { freshenBeforeMainWrite, queueMirrorPush } from "./cloud-repo.service";
 import {
-  ensureWorkspaceRepo,
-  freshenBeforeMainWrite,
-  queueMirrorPush,
-} from "./cloud-repo.service";
-import { requireWorkspaceRepo } from "./workspace-repo-required";
+  requireWorkspaceRepo,
+  boundRepoDirIfExists,
+} from "./workspace-repo-required";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -36,7 +35,6 @@ import {
   listTree,
   readBlob,
   repoDirFor,
-  repoExists,
   resolveCommit,
   type GitAuthor,
 } from "./repository.service";
@@ -82,8 +80,8 @@ export async function skillsAdopted(repoDir: string): Promise<boolean> {
 export async function listSkillFilesFromRepo(
   workspaceId: string,
 ): Promise<WorkspaceSkillFile[]> {
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return [];
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return [];
   if (!(await resolveCommit(repoDir, MAIN))) return [];
   const paths = await globTree(repoDir, MAIN, SKILL_FILE_GLOB, 1000);
   const out: WorkspaceSkillFile[] = [];
@@ -276,8 +274,8 @@ export async function syncSkillsIndexFromRepo(
   workspaceId: string,
   userId?: string,
 ): Promise<void> {
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return;
   if (!(await skillsAdopted(repoDir))) return;
 
   let files = await listSkillFilesFromRepo(workspaceId);
@@ -376,7 +374,7 @@ export async function adoptWorkspaceSkills(workspaceId: string): Promise<{
       "name" | "loadWhen" | "body" | "declaredEntities" | "suppressed"
     >
   >;
-  const repoDir = await ensureWorkspaceRepo(workspaceId);
+  const repoDir = await requireWorkspaceRepo(workspaceId);
   const alreadyAdopted = await skillsAdopted(repoDir);
   const writes: Record<string, string> = {};
   for (const row of rows) {

@@ -12,6 +12,7 @@
 import { RepoRequiredError } from "./config";
 import { ensureWorkspaceRepo } from "./cloud-repo.service";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
+import { repoDirFor, repoExists } from "./repository.service";
 
 /**
  * Ensure the workspace has a local git repo and return its directory.
@@ -24,4 +25,17 @@ export async function requireWorkspaceRepo(
     throw new RepoRequiredError();
   }
   return ensureWorkspaceRepo(workspaceId);
+}
+
+/**
+ * Local bare-repo directory only when a GitHub repo is bound.
+ * Leftover Cloud Storage git without a binding is not a definition store
+ * (issue #956) — history, prompt, and checkpoints must not read it.
+ */
+export async function boundRepoDirIfExists(
+  workspaceId: string,
+): Promise<string | null> {
+  if (!(await getWorkspaceRepo(workspaceId))) return null;
+  const repoDir = repoDirFor(workspaceId);
+  return (await repoExists(repoDir)) ? repoDir : null;
 }
