@@ -22,9 +22,12 @@ import {
 } from "./flow-config-files";
 import type { IFlow } from "../database/workspace-schema";
 
-const connectorId = new Types.ObjectId();
-const destId = new Types.ObjectId();
-const tableConnId = new Types.ObjectId();
+// Fixed hex — `new Types.ObjectId()` embeds a timestamp, and around
+// 2026-09-02 those ids contain `987`, which this file uses as a trap for
+// `runCount`. A substring assertion then fails the whole API contract job.
+const connectorId = new Types.ObjectId("6a2bd881b6f8c41ea17e9bc7");
+const destId = new Types.ObjectId("69c2719490eb18199aafa882");
+const tableConnId = new Types.ObjectId("69c2719490eb18199aafa883");
 
 /** A flow with EVERY runtime trap populated with a traceable value. */
 function flowWithTraps(): IFlow {
