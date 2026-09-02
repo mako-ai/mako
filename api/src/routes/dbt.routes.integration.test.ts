@@ -88,6 +88,7 @@ import os from "node:os";
 import path from "node:path";
 import { dbtRoutes } from "./dbt.routes";
 import { seedDbtGitTree } from "../dbt/test-support/git-tree";
+import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import {
@@ -175,6 +176,7 @@ beforeEach(async () => {
   ]);
   // Fresh bare workspace repo per test: file writes are commits now.
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await bindTestWorkspaceRepo(WS);
   await seedDbtGitTree(WS, { "dbt_project.yml": "name: analytics\n" });
   await DatabaseConnection.collection.insertOne({
     _id: new Types.ObjectId(CONN),
