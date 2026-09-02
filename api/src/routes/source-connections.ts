@@ -29,6 +29,11 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  SECRET_KEPT,
+  redactConnectionSecrets,
+  restoreKeptSecrets,
+} from "../utils/connection-secrets";
 
 const logger = loggers.connector();
 
@@ -182,6 +187,67 @@ export function applySchemaEncryption(
   return clone;
 }
 
+function applySecretPlaceholders(
+  target: Record<string, unknown>,
+  fields: ConnectorFieldSchema[],
+): void {
+  for (const field of fields) {
+    const val = target[field.name];
+    if (field.type === "object_array" && Array.isArray(val)) {
+      const itemFields = field.itemFields;
+      if (itemFields && itemFields.length > 0) {
+        target[field.name] = val.map(item => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) {
+            return item;
+          }
+          const copy = { ...(item as Record<string, unknown>) };
+          applySecretPlaceholders(copy, itemFields);
+          return copy;
+        });
+      }
+      continue;
+    }
+    if (
+      (field.encrypted === true || field.type === "password") &&
+      typeof val === "string" &&
+      val
+    ) {
+      target[field.name] = SECRET_KEPT;
+    }
+  }
+}
+
+/**
+ * Credentials are write-only. Same contract as `GET /databases/:id`: secret
+ * fields become {@link SECRET_KEPT}, everything else (account ids, URLs)
+ * stays so the edit form can round-trip.
+ */
+function redactSourceConfig(
+  config: unknown,
+  schema: { fields: ConnectorFieldSchema[] } | null,
+): Record<string, unknown> {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return {};
+  }
+  const redacted = redactConnectionSecrets(config as Record<string, unknown>);
+  if (schema?.fields) applySecretPlaceholders(redacted, schema.fields);
+  return redacted;
+}
+
+async function publicSourceConnection(
+  doc: Record<string, unknown>,
+  workspaceId: string,
+): Promise<Record<string, unknown>> {
+  const schema = await syncConnectorRegistry.getConfigSchemaForType(
+    String(doc.type ?? ""),
+    workspaceId,
+  );
+  return {
+    ...doc,
+    config: redactSourceConfig(doc.config, schema),
+  };
+}
+
 sourceConnectionRoutes.openapi(
   createRoute({
     method: "get",
@@ -212,7 +278,12 @@ sourceConnectionRoutes.openapi(
         .sort({ createdAt: -1 })
         .lean();
 
-      return c.json({ success: true, data: sourceConnections });
+      const data = await Promise.all(
+        sourceConnections.map(row =>
+          publicSourceConnection(row as Record<string, unknown>, _workspaceId),
+        ),
+      );
+      return c.json({ success: true, data });
     } catch (error) {
       return c.json(
         {
@@ -258,7 +329,13 @@ sourceConnectionRoutes.openapi(
         );
       }
 
-      return c.json({ success: true, data: sourceConnection });
+      return c.json({
+        success: true,
+        data: await publicSourceConnection(
+          sourceConnection as Record<string, unknown>,
+          _workspaceId,
+        ),
+      });
     } catch (error) {
       return c.json(
         {
@@ -354,7 +431,10 @@ sourceConnectionRoutes.openapi(
       return c.json(
         {
           success: true,
-          data: sourceConnection.toObject(),
+          data: await publicSourceConnection(
+            sourceConnection.toObject() as Record<string, unknown>,
+            workspaceId,
+          ),
           message: "Connector created successfully",
         },
         201,
@@ -438,16 +518,25 @@ sourceConnectionRoutes.openapi(
 
       // Handle config updates - only update changed fields
       if (body.config !== undefined) {
-        const currentConfig = currentValues.config || {};
+        const currentConfig = (currentValues.config || {}) as Record<
+          string,
+          unknown
+        >;
         let configChanged = false;
 
-        // Create a new config object starting with current values
+        // Create a new config object starting with current values.
+        // Echoed {@link SECRET_KEPT} sentinels become the stored secret again
+        // so editing a non-secret field cannot wipe or re-encrypt the key.
+        const incoming = restoreKeptSecrets(
+          body.config as Record<string, unknown>,
+          currentConfig,
+        );
         const newConfig = { ...currentConfig };
 
         // Only update fields that are different
-        for (const key in body.config) {
-          if (body.config[key] !== currentConfig[key]) {
-            newConfig[key] = body.config[key];
+        for (const key in incoming) {
+          if (incoming[key] !== currentConfig[key]) {
+            newConfig[key] = incoming[key];
             configChanged = true;
           }
         }
@@ -510,7 +599,10 @@ sourceConnectionRoutes.openapi(
 
       return c.json({
         success: true,
-        data: sourceConnection.toObject(),
+        data: await publicSourceConnection(
+          sourceConnection.toObject() as Record<string, unknown>,
+          workspaceId,
+        ),
         message: hasChanges
           ? "Connector updated successfully"
           : "No changes detected",
@@ -843,7 +935,10 @@ sourceConnectionRoutes.openapi(
 
       return c.json({
         success: true,
-        data: sourceConnection.toObject(),
+        data: await publicSourceConnection(
+          sourceConnection.toObject() as Record<string, unknown>,
+          workspaceId,
+        ),
         message: `Connector ${
           body.enabled ? "enabled" : "disabled"
         } successfully`,

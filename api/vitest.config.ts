@@ -19,6 +19,7 @@ export default defineConfig({
       "src/routes/dbt.routes.integration.test.ts",
       "src/routes/connector-reveal-secret.test.ts",
       "src/routes/source-connection-ids.test.ts",
+      "src/routes/source-connection-secrets.test.ts",
       "src/routes/connector-probe.test.ts",
       "src/routes/connector-catalog-tenancy.test.ts",
       "src/agent-lib/tools/dbt-*.test.ts",
