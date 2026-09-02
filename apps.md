@@ -3017,3 +3017,43 @@ on.
   pins because they only fail on old code for the trivial reason that the
   route did not exist yet. #912 now enforces the first half of this
   mechanically.
+
+## 26. Previews read the connected repo, never write it (2026-09-02)
+
+The pr-950 preview showed every console and dashboard of the RealAdvisor
+workspace and an Apps rail that said "No apps yet". Nothing was broken; the
+asymmetry was §17 doing exactly what it said. Dashboards are Mongo documents
+and the preview DB is a copy of production. Consoles are a hybrid — git is
+the file, `SavedConsole` is the derived index, and the index still carries
+the query text, so the list and the body both serve from the copied rows
+(the repo→index sync never touches a repo without the `consoles/README.md`
+marker, and the preview's starter repo had none). Apps have no such index:
+the list IS `apps/<slug>/mako.json` on main, `AppProject` is only an overlay
+joined by slug, and a preview never cloned the connected repo because §17
+gated the whole connected tier behind `APPS_REQUIRE_CONNECTED_REPO` (prod)
+or `APPS_CONNECTED_REPO_PUSH=allow` (a per-machine dev opt-in). One gate for
+two different things: cloning a customer's repo, and pushing into it.
+
+Now there are two gates. `connectedTierEnabled()` answers "may this
+environment READ the connected repo" — `ensureLocalRepo` clones on a cache
+miss, `fetchFromCloud` fast-forwards before reads and writes, adoption may
+IMPORT. `connectedRepoPushEnabled()` answers "may commits made here be
+PUSHED there" — `queueMirrorPush`, `mirrorPushNow`, and adoption's SEED. Prod
+and the push opt-in enable both. The new `APPS_CONNECTED_REPO_READ=allow`
+enables reads alone, and that is what the preview deploy sets: the preview
+restores every workspace repo from GitHub (the GitHub App credentials it
+already carries mint the installation token), so apps, consoles, skills,
+`PROMPT.md`, dbt, flows and `.deepnote` notebooks all appear as in
+production, and every path that would push logs a debug line and returns.
+
+What a preview commit means under this tier: it lands on the instance's
+local main, `fetchFromCloud` leaves a merely-ahead local branch alone, and it
+dies with the tmpfs — the same "throwaway by design" §17 promised, now on
+top of real content instead of an empty starter repo. Should GitHub move
+while a preview holds local commits, the diverged-branch rule applies
+unchanged: the mirror wins, the local tip is parked under
+`refs/mako/diverged/*` (which, with pushes refused, is where it stays).
+`assertMirrorReachable` (the flows export) checks the push gate, since an
+export that cannot push is the silent no-op it exists to catch. The variable
+is on the never-sync list next to its push sibling: whether a machine clones
+customer repositories is that machine's decision.

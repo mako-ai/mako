@@ -12,11 +12,16 @@
  * mirror is reset to it with its commits parked under `refs/mako/diverged/*`
  * (`fetchFromCloud`).
  *
- * The connected tier only engages on production (APPS_REQUIRE_CONNECTED_REPO)
- * or under the explicit APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and
- * dev run on prod-cloned databases that carry REAL customer bindings, and a
- * test commit must never land in a customer repo — gated environments treat
- * the binding as inert metadata and keep local-only bare repos.
+ * The connected tier engages on production (APPS_REQUIRE_CONNECTED_REPO) or
+ * under the explicit APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and dev
+ * run on prod-cloned databases that carry REAL customer bindings, and a test
+ * commit must never land in a customer repo — gated environments treat the
+ * binding as inert metadata and keep local-only bare repos. In between sits
+ * the READ-ONLY tier (APPS_CONNECTED_REPO_READ=allow, what PR previews run):
+ * the connected repo is cloned on a cache miss and fetched before reads and
+ * writes, so the preview shows the workspace exactly as production does, but
+ * `pushMirror` never runs — commits made there stay in the instance's local
+ * repo and die with it (§26).
  *
  * The local bare repo remains the working store the API reads from; the
  * mirror is the durable replica. Mirror pushes run after commits/merges
@@ -28,7 +33,11 @@ import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit } from "./git";
-import { appsConnectedRepoPushEnv, appsRequireConnectedRepo } from "./config";
+import {
+  appsConnectedRepoPushEnv,
+  appsConnectedRepoReadEnv,
+  appsRequireConnectedRepo,
+} from "./config";
 import {
   DEFAULT_BRANCH,
   initRepo,
@@ -51,12 +60,34 @@ function remoteUrl(owner: string, repo: string): string {
 }
 
 /**
- * Whether connected customer repos participate as mirrors in THIS
- * environment. Prod (APPS_REQUIRE_CONNECTED_REPO=true), plus an explicit
- * dev opt-in — see the module doc for why previews must stay out.
+ * Whether connected customer repos are READ in THIS environment: cloned on a
+ * cache miss (`ensureLocalRepo`) and fetched before reads and writes
+ * (`fetchFromCloud`). True wherever pushes are enabled, and under the
+ * read-only opt-in previews run with — see the module doc.
  */
 export function connectedTierEnabled(): boolean {
+  return connectedRepoPushEnabled() || appsConnectedRepoReadEnv() === "allow";
+}
+
+/**
+ * Whether commits made here are PUSHED to the connected repo. Prod
+ * (APPS_REQUIRE_CONNECTED_REPO=true), plus the explicit dev opt-in. A
+ * read-only environment restores and follows the repo but never writes to
+ * it: a preview commit must not land in a customer's GitHub repository.
+ */
+export function connectedRepoPushEnabled(): boolean {
   return appsRequireConnectedRepo() || appsConnectedRepoPushEnv() === "allow";
+}
+
+/** True in the read-only tier: reads engage, pushes are refused. */
+function mirrorPushesRefusedHere(workspaceId: string): boolean {
+  if (connectedRepoPushEnabled()) return false;
+  if (connectedTierEnabled()) {
+    logger.debug("Apps mirror push skipped: connected repo is read-only here", {
+      workspaceId,
+    });
+  }
+  return true;
 }
 
 export type MirrorTarget = {
@@ -251,7 +282,7 @@ async function pushMirror(
  * seen.
  */
 export function queueMirrorPush(workspaceId: string): void {
-  if (!connectedTierEnabled()) return;
+  if (mirrorPushesRefusedHere(workspaceId)) return;
   void schedulePush(workspaceId).catch(error => {
     logger.warn("Apps mirror push failed", {
       workspaceId,
@@ -267,7 +298,7 @@ export function queueMirrorPush(workspaceId: string): void {
  * guaranteed to start after the caller's commit.
  */
 export async function mirrorPushNow(workspaceId: string): Promise<void> {
-  if (!connectedTierEnabled()) return;
+  if (mirrorPushesRefusedHere(workspaceId)) return;
   await schedulePush(workspaceId);
 }
 
@@ -607,8 +638,9 @@ export type ConnectedRepoAdoption =
  *  - both have content → refuse. Choosing whose history wins is not ours to
  *    guess; the caller rolls the binding back.
  *
- * Where the connected tier is gated off (previews/dev on prod-cloned DBs) the
- * binding is stored as inert metadata: "deferred".
+ * Where the connected tier is gated off (dev on prod-cloned DBs) the binding
+ * is stored as inert metadata: "deferred". The read-only tier (previews) can
+ * IMPORT — that is a clone — but never SEED, which is a push: "deferred" too.
  */
 export async function adoptConnectedRepo(
   workspaceId: string,
@@ -653,6 +685,13 @@ export async function adoptConnectedRepo(
     return "imported";
   }
   if (hasHistory) {
+    if (!connectedRepoPushEnabled()) {
+      logger.info(
+        "Apps workspace history NOT seeded into its connected repo: pushes are refused here",
+        { workspaceId, repo: label },
+      );
+      return "deferred";
+    }
     await mirrorPushNow(workspaceId);
     logger.info("Apps workspace history seeded into its connected repo", {
       workspaceId,

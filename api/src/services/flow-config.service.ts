@@ -21,7 +21,7 @@
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import {
-  connectedTierEnabled,
+  connectedRepoPushEnabled,
   ensureLocalRepo,
   freshenBeforeMainWrite,
   resolveMirrorTarget,
@@ -177,11 +177,11 @@ export async function deleteFlowFile(
 export async function assertMirrorReachable(
   workspaceId: string,
 ): Promise<{ ok: true; mainOid: string } | { ok: false; reason: string }> {
-  if (!connectedTierEnabled()) {
+  if (!connectedRepoPushEnabled()) {
     return {
       ok: false,
       reason:
-        "connected-repo tier is disabled here (set APPS_CONNECTED_REPO_PUSH=allow); " +
+        "connected-repo pushes are disabled here (set APPS_CONNECTED_REPO_PUSH=allow); " +
         "an export would commit locally and push nothing",
     };
   }

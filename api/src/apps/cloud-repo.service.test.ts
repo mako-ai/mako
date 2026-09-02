@@ -63,8 +63,10 @@ import {
 import {
   adoptConnectedRepo,
   ensureCommitLocally,
+  ensureLocalRepo,
   fetchFromCloud,
   mirrorPushNow,
+  queueMirrorPush,
   resolveMirrorTarget,
   freshenForServe,
 } from "./cloud-repo.service";
@@ -94,6 +96,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.APPS_CONNECTED_REPO_PUSH;
+  delete process.env.APPS_CONNECTED_REPO_READ;
 });
 
 async function makeBareRemote(owner: string, repo: string): Promise<string> {
@@ -470,5 +473,97 @@ describe("freshenForServe", () => {
     state.binding = null; // no connected repo — nothing to freshen from
     await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
     await expect(freshenForServe(workspaceId, 0)).resolves.toBeUndefined();
+  });
+});
+
+describe("read-only connected tier (APPS_CONNECTED_REPO_READ=allow, previews §26)", () => {
+  beforeEach(() => {
+    delete process.env.APPS_CONNECTED_REPO_PUSH;
+    process.env.APPS_CONNECTED_REPO_READ = "allow";
+  });
+
+  it("resolves the binding as the mirror", async () => {
+    state.binding = { owner: "acme", repo: "site" };
+    const target = await resolveMirrorTarget(workspaceId);
+    expect(target).toMatchObject({ kind: "connected", owner: "acme" });
+  });
+
+  it("restores a missing local repo by cloning the connected repo", async () => {
+    const remoteDir = path.join(remotesRoot, "acme", "restore-ro.git");
+    await fs.mkdir(path.dirname(remoteDir), { recursive: true });
+    await initRepo(remoteDir, { "apps/prod-app/mako.json": "{}" });
+    state.binding = { owner: "acme", repo: "restore-ro" };
+    expect(await repoExists(repoDirFor(workspaceId))).toBe(false);
+
+    await ensureLocalRepo(workspaceId);
+
+    expect(await repoExists(repoDirFor(workspaceId))).toBe(true);
+    const entries = await listTree(repoDirFor(workspaceId), DEFAULT_BRANCH);
+    expect(entries.map(e => e.path)).toContain("apps/prod-app/mako.json");
+    expect(await headOf(repoDirFor(workspaceId))).toBe(await headOf(remoteDir));
+  });
+
+  it("follows the connected repo on fetch but never pushes local commits", async () => {
+    const remoteDir = path.join(remotesRoot, "acme", "follow-ro.git");
+    await fs.mkdir(path.dirname(remoteDir), { recursive: true });
+    await initRepo(remoteDir, { "README.md": "prod" });
+    state.binding = { owner: "acme", repo: "follow-ro" };
+    await ensureLocalRepo(workspaceId);
+    const remoteHead = await headOf(remoteDir);
+
+    // A preview commit: stays local, both push entry points are no-ops.
+    const local = await commitFiles(
+      repoDirFor(workspaceId),
+      { "apps/preview-only/mako.json": "{}" },
+      "made on a preview",
+    );
+    await mirrorPushNow(workspaceId);
+    queueMirrorPush(workspaceId);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(await headOf(remoteDir)).toBe(remoteHead);
+    expect(await headOf(repoDirFor(workspaceId))).toBe(local);
+
+    // A merely-ahead local branch is left alone by a fetch…
+    await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
+    expect(await headOf(repoDirFor(workspaceId))).toBe(local);
+
+    // …and the remote moving ahead of a clean local branch fast-forwards it.
+    await updateRefCas(
+      repoDirFor(workspaceId),
+      `refs/heads/${DEFAULT_BRANCH}`,
+      remoteHead as string,
+      local,
+    );
+    const theirs = await commitFiles(
+      remoteDir,
+      { "apps/from-github/mako.json": "{}" },
+      "pushed to GitHub",
+    );
+    await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
+    expect(await headOf(repoDirFor(workspaceId))).toBe(theirs);
+  });
+
+  it("adoption imports (a clone) but defers seeding (a push)", async () => {
+    const remoteDir = path.join(remotesRoot, "acme", "import-ro.git");
+    await fs.mkdir(path.dirname(remoteDir), { recursive: true });
+    await initRepo(remoteDir, { "apps/imported/mako.json": "{}" });
+    state.binding = { owner: "acme", repo: "import-ro" };
+    expect(await adoptConnectedRepo(workspaceId, state.binding)).toBe(
+      "imported",
+    );
+    expect(
+      (await listTree(repoDirFor(workspaceId), DEFAULT_BRANCH)).map(
+        e => e.path,
+      ),
+    ).toContain("apps/imported/mako.json");
+
+    const seedWorkspace = freshWorkspaceId();
+    const emptyRemote = await makeBareRemote("acme", "seed-ro");
+    state.binding = { owner: "acme", repo: "seed-ro" };
+    await initRepo(repoDirFor(seedWorkspace), { "apps/a/mako.json": "{}" });
+    expect(await adoptConnectedRepo(seedWorkspace, state.binding)).toBe(
+      "deferred",
+    );
+    expect(await headOf(emptyRemote)).toBeNull();
   });
 });
