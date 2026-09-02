@@ -30,6 +30,10 @@ import {
   IconButton,
   Tooltip,
   Typography,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
   styled,
   useTheme,
 } from "@mui/material";
@@ -41,6 +45,8 @@ import {
   RefreshCw as RefreshIcon,
   Square as StopIcon,
   TerminalSquare as TerminalIcon,
+  MoreHorizontal as MoreIcon,
+  Upload as PublishIcon,
 } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -1222,6 +1228,11 @@ export default function AppWorkspace({
   const stopDev = useAppsStore(s => s.stopDev);
 
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
+  // Phone overflow menu: publish, open, reload, history — everything the
+  // one-row toolbar has no room for beside the dev toggle.
+  const [mobileMenuAnchor, setMobileMenuAnchor] = useState<null | HTMLElement>(
+    null,
+  );
   // Bumping this remounts the preview iframe — a plain page refresh.
   const [previewNonce, setPreviewNonce] = useState(0);
 
@@ -1321,10 +1332,182 @@ export default function AppWorkspace({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Toolbar */}
+      {/* Phone toolbar — ONE row: status chips, the dev toggle, overflow.
+          The title is in the window pill; Publish, Open, Reload and History
+          live in the ⋯ menu. The desktop toolbar below is hidden by CSS so
+          desktop behaviour stays byte-identical. */}
+      {isMobile && (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            px: 1,
+            py: 0.75,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+          }}
+        >
+          <Box
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              gap: 0.75,
+              overflow: "hidden",
+            }}
+          >
+            {devRunning && (
+              <Chip
+                label="live · HMR"
+                size="small"
+                color="success"
+                variant="outlined"
+              />
+            )}
+            <Chip
+              label={
+                publishedSha
+                  ? `published · ${publishedSha.slice(0, 7)}`
+                  : "not published"
+              }
+              size="small"
+              color={publishedSha ? "default" : "warning"}
+              variant="outlined"
+              onClick={
+                publishedSha && liveUrl
+                  ? () => window.open(liveUrl, "_blank", "noopener")
+                  : undefined
+              }
+            />
+          </Box>
+          <Tooltip title={devRunning ? "Stop dev" : "Start dev"}>
+            <span>
+              <IconButton
+                aria-label={devRunning ? "Stop dev" : "Start dev"}
+                disabled={preview?.building}
+                onClick={() => {
+                  if (devRunning) {
+                    void stopDev(workspaceId, appId);
+                  } else {
+                    setEditing(workspaceId, appId, true);
+                    void startDevPreview(workspaceId, appId);
+                  }
+                }}
+                sx={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 1,
+                  color: "#fff",
+                  bgcolor: devRunning ? "error.main" : "primary.main",
+                  "&:hover": {
+                    bgcolor: devRunning ? "error.dark" : "primary.dark",
+                  },
+                  "&.Mui-disabled": {
+                    bgcolor: "action.disabledBackground",
+                    color: "action.disabled",
+                  },
+                }}
+              >
+                {preview?.building ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : devRunning ? (
+                  <StopIcon size={16} fill="currentColor" />
+                ) : (
+                  <PlayIcon size={18} />
+                )}
+              </IconButton>
+            </span>
+          </Tooltip>
+          <IconButton
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={mobileMenuAnchor ? "true" : undefined}
+            onClick={e => setMobileMenuAnchor(e.currentTarget)}
+            sx={{
+              width: 40,
+              height: 40,
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+            }}
+          >
+            <MoreIcon size={20} strokeWidth={1.75} />
+          </IconButton>
+          <Menu
+            anchorEl={mobileMenuAnchor}
+            open={Boolean(mobileMenuAnchor)}
+            onClose={() => setMobileMenuAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+          >
+            <MenuItem
+              disabled={preview?.building}
+              onClick={() => {
+                setMobileMenuAnchor(null);
+                void publishApp(workspaceId, appId);
+              }}
+            >
+              <ListItemIcon>
+                <PublishIcon size={18} strokeWidth={1.75} />
+              </ListItemIcon>
+              <ListItemText
+                primary={preview?.building ? "Working…" : "Publish"}
+                secondary={
+                  activeChatBranch
+                    ? `Merge ${activeChatBranch.name} into main and deploy`
+                    : "Build from main and deploy"
+                }
+              />
+            </MenuItem>
+            <MenuItem
+              disabled={!(editing ? preview?.url : liveUrl)}
+              onClick={() => {
+                setMobileMenuAnchor(null);
+                const url = editing ? preview?.url : liveUrl;
+                if (url) window.open(url, "_blank", "noopener");
+              }}
+            >
+              <ListItemIcon>
+                <ExternalLinkIcon size={18} strokeWidth={1.75} />
+              </ListItemIcon>
+              <ListItemText primary="Open in browser" />
+            </MenuItem>
+            <MenuItem
+              disabled={!(editing ? preview?.url : viewUrl)}
+              onClick={() => {
+                setMobileMenuAnchor(null);
+                setPreviewNonce(n => n + 1);
+              }}
+            >
+              <ListItemIcon>
+                <RefreshIcon size={18} strokeWidth={1.75} />
+              </ListItemIcon>
+              <ListItemText primary="Reload preview" />
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                const anchor = mobileMenuAnchor;
+                setMobileMenuAnchor(null);
+                if (anchor) {
+                  setHistoryAnchor(anchor);
+                  void fetchHistory(workspaceId, appId);
+                }
+              }}
+            >
+              <ListItemIcon>
+                <HistoryIcon size={18} strokeWidth={1.75} />
+              </ListItemIcon>
+              <ListItemText primary={`History (${status?.branch ?? "main"})`} />
+            </MenuItem>
+          </Menu>
+        </Box>
+      )}
+
+      {/* Toolbar (desktop) */}
       <Box
         sx={{
-          display: "flex",
+          display: isMobile ? "none" : "flex",
           alignItems: "center",
           gap: 1,
           px: 1,
@@ -1334,12 +1517,9 @@ export default function AppWorkspace({
           flexWrap: "wrap",
         }}
       >
-        {/* The window pill already carries the title on a phone. */}
-        {!isMobile && (
-          <Typography variant="subtitle2" noWrap sx={{ maxWidth: 240 }}>
-            {app?.title ?? "App"}
-          </Typography>
-        )}
+        <Typography variant="subtitle2" noWrap sx={{ maxWidth: 240 }}>
+          {app?.title ?? "App"}
+        </Typography>
         {devRunning && (
           <Chip
             label="live · HMR"
@@ -1439,19 +1619,17 @@ export default function AppWorkspace({
             </Button>
           </span>
         </Tooltip>
-        {!isMobile && (
-          <Tooltip title={`History (${status?.branch ?? "main"})`}>
-            <IconButton
-              size="small"
-              onClick={e => {
-                setHistoryAnchor(e.currentTarget);
-                void fetchHistory(workspaceId, appId);
-              }}
-            >
-              <HistoryIcon size={16} />
-            </IconButton>
-          </Tooltip>
-        )}
+        <Tooltip title={`History (${status?.branch ?? "main"})`}>
+          <IconButton
+            size="small"
+            onClick={e => {
+              setHistoryAnchor(e.currentTarget);
+              void fetchHistory(workspaceId, appId);
+            }}
+          >
+            <HistoryIcon size={16} />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Open the preview in a new tab">
           <span>
             <IconButton
