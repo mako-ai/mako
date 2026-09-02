@@ -292,7 +292,7 @@ interface AppsStore {
     ok: boolean;
     error?: string;
     /** §13.17 connect-time reconciliation outcome. */
-    adoption?: "imported" | "seeded" | "fresh" | "deferred";
+    adoption?: "imported" | "seeded" | "reconnected" | "fresh" | "deferred";
   }>;
   disconnectRepo: (
     workspaceId: string,
@@ -689,7 +689,12 @@ export const useAppsStore = create<AppsStore>()(
             }),
           ) as {
             repo?: AppRepoBinding;
-            adoption?: "imported" | "seeded" | "fresh" | "deferred";
+            adoption?:
+              | "imported"
+              | "seeded"
+              | "reconnected"
+              | "fresh"
+              | "deferred";
           };
           set(s => {
             s.canCreate = true;

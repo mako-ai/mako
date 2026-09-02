@@ -136,6 +136,17 @@ describe("write-through", () => {
     await deleteDbtJobFile(project, job.slug);
     expect(await fileAt(jobFilePath(job.slug!))).toBeNull();
   });
+
+  it("commitDbtJobFile leaves the row unstamped when nothing was written", async () => {
+    // No repo → no file → the row must not claim a sha the push-sync would
+    // then treat as "already level".
+    await fs.rm(repoDirFor(WS.toString()), { recursive: true, force: true });
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly");
+    await commitDbtJobFile(project, job);
+    const fresh = await DbtJob.findById(job._id);
+    expect(fresh?.sourceBlobSha).toBeFalsy();
+  });
 });
 
 describe("sync from repo", () => {

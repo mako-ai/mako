@@ -63,6 +63,7 @@ import {
 } from "../../dbt/dbt-working-tree.service";
 import { resolveDbtRules } from "../../dbt/dbt-rules.service";
 import {
+  commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
   reserveJobSlug,
@@ -647,6 +648,9 @@ export const createDbtServerTools = (
             defaultEnvironment: environmentName,
             createdBy: "agent",
           });
+          // Environments/settings live in dbt/environments.yml (apps.md §23)
+          // from the first commit — not only after the first edit.
+          await commitDbtEnvironmentsFile(project, actingUserId);
 
           const scaffold = buildStarterScaffold(name);
           await commitDbtFiles(

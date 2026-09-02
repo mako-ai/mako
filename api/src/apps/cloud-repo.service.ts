@@ -587,9 +587,45 @@ export async function assertTreeAtMirrorMain(
   }
 }
 
+/**
+ * Whether the remote's default branch and the local one descend from a common
+ * commit. Fetching the remote tip into the local object store is harmless (a
+ * fetch never moves a local ref) and is what the reconcile step needs anyway.
+ * A remote with content but no default branch, or an unreachable remote,
+ * answers "no": the caller then refuses, which is the safe side.
+ */
+async function sharesHistoryWith(
+  repoDir: string,
+  url: string,
+  token: string | undefined,
+): Promise<boolean> {
+  try {
+    await runGit([
+      "-C",
+      repoDir,
+      ...authArgs(token),
+      "fetch",
+      "--quiet",
+      url,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    ]);
+    await runGit([
+      "-C",
+      repoDir,
+      "merge-base",
+      "FETCH_HEAD",
+      `refs/heads/${DEFAULT_BRANCH}`,
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export type ConnectedRepoAdoption =
   | "imported"
   | "seeded"
+  | "reconnected"
   | "fresh"
   | "deferred";
 
@@ -604,8 +640,15 @@ export type ConnectedRepoAdoption =
  *  - workspace has content, repo is empty → SEED: the workspace history is
  *    pushed into the repo; it is the mirror from here on.
  *  - both empty → nothing to reconcile; the first commit seeds the repo.
- *  - both have content → refuse. Choosing whose history wins is not ours to
- *    guess; the caller rolls the binding back.
+ *  - both have content and share history → RECONNECT: this is the
+ *    disconnect-then-connect-again case (the repo WAS this workspace's
+ *    mirror; unlinking never touches the local repo, so both sides hold the
+ *    same commits). The two tips are reconciled the way every later fetch
+ *    reconciles them (`fetchFromCloud`: remote ahead → fast-forward, local
+ *    ahead → push, diverged → the mirror wins with the local tip parked
+ *    under refs/mako/diverged/*, nothing dropped), then pushed.
+ *  - both have content and NO common ancestor → refuse. Choosing whose
+ *    history wins is not ours to guess; the caller rolls the binding back.
  *
  * Where the connected tier is gated off (previews/dev on prod-cloned DBs) the
  * binding is stored as inert metadata: "deferred".
@@ -636,11 +679,25 @@ export async function adoptConnectedRepo(
   const remoteEmpty = lsRemote.stdout.trim() === "";
 
   if (!remoteEmpty && hasHistory) {
-    throw new Error(
-      `${label} already has content and this workspace already has apps. ` +
-        "Connect an empty repository (the workspace's history will be pushed into it), " +
-        "or import a non-empty repository into a workspace that has no apps yet.",
-    );
+    if (!(await sharesHistoryWith(repoDir, url, token))) {
+      throw new Error(
+        `${label} already has content unrelated to this workspace's history, and this workspace already has apps. ` +
+          "Reconnect the repository this workspace was previously connected to, " +
+          "connect an empty repository (the workspace's history will be pushed into it), " +
+          "or import a non-empty repository into a workspace that has no apps yet.",
+      );
+    }
+    // RECONNECT: same lineage on both sides. Reconcile main exactly as a
+    // webhook fetch would, then push so the mirror carries whatever the
+    // local side has that it lacks (local-ahead commits, refs/mako/*, a
+    // parked diverged tip).
+    await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
+    await mirrorPushNow(workspaceId);
+    logger.info("Apps workspace reconnected to a repo sharing its history", {
+      workspaceId,
+      repo: label,
+    });
+    return "reconnected";
   }
   if (!remoteEmpty) {
     // IMPORT: drop the (history-less) local slot and adopt the repo's history.
