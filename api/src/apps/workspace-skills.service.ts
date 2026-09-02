@@ -312,6 +312,7 @@ export async function syncSkillsIndexFromRepo(
         loadWhen: file.loadWhen,
         body: file.body,
         entities,
+        declaredEntities: file.entities,
         loadWhenEmbedding: embedding,
         embeddingModel: model,
         scopeType: "workspace",
@@ -325,7 +326,8 @@ export async function syncSkillsIndexFromRepo(
       row.loadWhen === file.loadWhen &&
       row.body === file.body &&
       row.suppressed === file.suppressed &&
-      sameEntities(row.entities ?? [], entities);
+      sameEntities(row.entities ?? [], entities) &&
+      sameEntities(row.declaredEntities ?? [], file.entities);
     if (unchanged) continue;
     if (row.body !== file.body) {
       row.previousBody = row.body;
@@ -341,6 +343,7 @@ export async function syncSkillsIndexFromRepo(
     row.loadWhen = file.loadWhen;
     row.body = file.body;
     row.entities = entities;
+    row.declaredEntities = file.entities;
     row.suppressed = file.suppressed;
     await row.save();
   }
@@ -369,9 +372,12 @@ export async function adoptWorkspaceSkills(workspaceId: string): Promise<{
   const rows = (await Skill.find({
     workspaceId: new Types.ObjectId(workspaceId),
   })
-    .select("name loadWhen body entities suppressed")
+    .select("name loadWhen body declaredEntities suppressed")
     .lean()) as Array<
-    Pick<ISkill, "name" | "loadWhen" | "body" | "entities" | "suppressed">
+    Pick<
+      ISkill,
+      "name" | "loadWhen" | "body" | "declaredEntities" | "suppressed"
+    >
   >;
   const repoDir = await ensureWorkspaceRepo(workspaceId);
   const alreadyAdopted = await skillsAdopted(repoDir);
@@ -386,10 +392,12 @@ export async function adoptWorkspaceSkills(workspaceId: string): Promise<{
     }
     const path = skillFilePath(row.name);
     if ((await readRepoFile(repoDir, path)) !== null) continue;
+    // The file carries what the author declared, never the derived
+    // retrieval index (`entities` = declared ∪ extracted body tokens).
     writes[path] = serializeSkillFile({
       name: row.name,
       loadWhen: row.loadWhen,
-      entities: row.entities ?? [],
+      entities: row.declaredEntities ?? [],
       suppressed: !!row.suppressed,
       body: row.body,
     });

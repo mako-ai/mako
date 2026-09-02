@@ -204,7 +204,8 @@ export async function saveSkill(
   const body = input.body.trim();
 
   const extracted = extractEntities(`${loadWhen}\n${body}`);
-  const entities = unionEntities(input.entities, extracted);
+  const declaredEntities = unionEntities(input.entities, []);
+  const entities = unionEntities(declaredEntities, extracted);
 
   // Compute embedding over loadWhen ONLY. Body content is too long and noisy
   // for the embedding to represent usefully; entity overlap carries body-
@@ -237,14 +238,18 @@ export async function saveSkill(
     const loadAdoptable = async () =>
       (
         (await Skill.find({ workspaceId: new Types.ObjectId(workspaceId) })
-          .select("name loadWhen body entities suppressed")
+          .select("name loadWhen body declaredEntities suppressed")
           .lean()) as Array<
-          Pick<ISkill, "name" | "loadWhen" | "body" | "entities" | "suppressed">
+          Pick<
+            ISkill,
+            "name" | "loadWhen" | "body" | "declaredEntities" | "suppressed"
+          >
         >
       ).map(s => ({
         name: s.name,
         loadWhen: s.loadWhen,
-        entities: s.entities ?? [],
+        // Adoption writes the declared list, never the derived index.
+        entities: s.declaredEntities ?? [],
         suppressed: !!s.suppressed,
         body: s.body,
       }));
@@ -255,7 +260,7 @@ export async function saveSkill(
         loadWhen,
         // The file carries the author-DECLARED entities; the Mongo row below
         // carries the declared ∪ extracted union the retrieval uses.
-        entities: unionEntities(input.entities, []),
+        entities: declaredEntities,
         suppressed: pendingApproval || !!existing?.suppressed,
         body,
       },
@@ -276,6 +281,7 @@ export async function saveSkill(
       loadWhen,
       body,
       entities,
+      declaredEntities,
       loadWhenEmbedding: embedding ?? undefined,
       embeddingModel: model ?? undefined,
       scopeType: "workspace",
@@ -300,6 +306,7 @@ export async function saveSkill(
   existing.loadWhen = loadWhen;
   existing.body = body;
   existing.entities = entities;
+  existing.declaredEntities = declaredEntities;
   if (embedding) {
     existing.loadWhenEmbedding = embedding;
     existing.embeddingModel = model ?? undefined;
