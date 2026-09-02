@@ -40,6 +40,7 @@ import {
 } from "../apps/repository.service";
 import { EMPTY_TREE } from "../apps/git";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { getNotebookStore } from "./store";
 import {
   isNotebookRepoPath,
@@ -58,6 +59,10 @@ const CHECKPOINT_DEBOUNCE_MS = 30_000;
 const CHECKPOINT_MAX_WAIT_MS = 5 * 60_000;
 
 async function repoDirIfExists(workspaceId: string): Promise<string | null> {
+  // Leftover local git without a GitHub binding is not a repository
+  // (issue #956). Checkpoints skip with no_repository instead of writing
+  // into Cloud Storage.
+  if (!(await getWorkspaceRepo(workspaceId))) return null;
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
   return (await repoExists(repoDir)) ? repoDir : null;

@@ -91,6 +91,18 @@ export function SkillsSection() {
     void fetchSkills();
   }, [fetchSkills]);
 
+  useEffect(() => {
+    const onIndexChanged = (event: Event) => {
+      const id = (event as CustomEvent<{ workspaceId?: string }>).detail
+        ?.workspaceId;
+      if (id && id === workspaceId) void fetchSkills();
+    };
+    window.addEventListener("mako-git-index-changed", onIndexChanged);
+    return () => {
+      window.removeEventListener("mako-git-index-changed", onIndexChanged);
+    };
+  }, [fetchSkills, workspaceId]);
+
   const handleToggleSuppress = async (skill: SkillSummary) => {
     if (!workspaceId) return;
     const nextSuppressed = !skill.suppressed;

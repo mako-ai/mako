@@ -9,6 +9,7 @@
  */
 import { authorForUser } from "./workspace-consoles.service";
 import { requireWorkspaceRepo } from "./workspace-repo-required";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { freshenBeforeMainWrite, queueMirrorPush } from "./cloud-repo.service";
 import {
   DEFAULT_BRANCH,
@@ -25,6 +26,7 @@ async function readRepoTextFile(
   workspaceId: string,
   relPath: string,
 ): Promise<string | null> {
+  if (!(await getWorkspaceRepo(workspaceId))) return null;
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) return null;
   try {

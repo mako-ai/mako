@@ -41,6 +41,11 @@ function refreshGitDerivedExplorers(
   void import("./dbtStore").then(({ useDbtStore }) => {
     void useDbtStore.getState().fetchProjects(workspaceId);
   });
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("mako-git-index-changed", { detail: { workspaceId } }),
+    );
+  }
 }
 
 export interface AppMeta {

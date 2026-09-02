@@ -29,6 +29,10 @@ import {
   removeNotebookFile,
   syncNotebooksFromRepo,
 } from "./notebook-git.service";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "../apps/bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -60,6 +64,7 @@ beforeEach(async () => {
     force: true,
   });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function seedNotebook(name: string, access: "private" | "workspace") {
@@ -99,6 +104,17 @@ async function fileAt(rel: string): Promise<string | null> {
 }
 
 describe("checkpoint", () => {
+  it("skips leftover local git when no GitHub repo is bound", async () => {
+    await unbindTestWorkspaceRepo(WS);
+    const id = await seedNotebook("Orphan", "workspace");
+    const result = await checkpointNotebook(WS, id, "u1");
+    expect(result).toEqual({
+      committed: false,
+      skippedReason: "no_repository",
+    });
+    expect(await fileAt("notebooks/orphan.deepnote")).toBeNull();
+  });
+
   it("commits a stripped single-notebook .deepnote at the access-scoped path", async () => {
     const id = await seedNotebook("Revenue walk", "workspace");
     const result = await checkpointNotebook(WS, id, "u1");
