@@ -16,6 +16,8 @@ import {
 } from "@mui/material";
 import { Search as SearchIcon, X as ClearIcon } from "lucide-react";
 import VSScrollArea from "./VSScrollArea";
+import MobileExplorerBack from "./MobileExplorerBack";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 export interface ExplorerShellProps {
   title: string;
@@ -94,6 +96,7 @@ export default function ExplorerShell({
   skeleton,
   children,
 }: ExplorerShellProps) {
+  const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [rawQuery, setRawQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -130,7 +133,9 @@ export default function ExplorerShell({
         sx={{
           px: 1,
           py: 0.25,
-          minHeight: 37,
+          // Taller on the phone: the row carries the back button and is a
+          // touch target, not a rail heading.
+          minHeight: isMobile ? 48 : 37,
           borderBottom: 1,
           borderColor: "divider",
           display: "flex",
@@ -138,6 +143,7 @@ export default function ExplorerShell({
           gap: 0.5,
         }}
       >
+        <MobileExplorerBack />
         {searchOpen ? (
           <InputBase
             autoFocus

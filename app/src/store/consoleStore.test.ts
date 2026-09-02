@@ -337,3 +337,42 @@ describe("consoleStore focusOrOpenTab — the one open-or-focus primitive", () =
     expect(again).toBe(id);
   });
 });
+
+describe("consoleStore tabFocusSeq — every focus request counts", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+    useConsoleStore.setState({ tabFocusSeq: 0 });
+  });
+
+  it("bumps on open, on a focus of another tab, and on a re-focus of the active tab", () => {
+    const store = useConsoleStore.getState();
+    const a = store.openTab({ title: "A", content: "", kind: "console" });
+    expect(useConsoleStore.getState().tabFocusSeq).toBe(1);
+    const b = store.openTab({ title: "B", content: "", kind: "console" });
+    expect(useConsoleStore.getState().tabFocusSeq).toBe(2);
+
+    store.setActiveTab(a);
+    expect(useConsoleStore.getState().activeTabId).toBe(a);
+    expect(useConsoleStore.getState().tabFocusSeq).toBe(3);
+
+    // The mobile shell relies on this: tapping the tree node that is already
+    // selected leaves activeTabId alone but must still register as a focus.
+    store.setActiveTab(a);
+    expect(useConsoleStore.getState().activeTabId).toBe(a);
+    expect(useConsoleStore.getState().tabFocusSeq).toBe(4);
+
+    // focusOrOpenTab on an existing match goes through the same counter.
+    store.focusOrOpenTab({ kind: "console", where: t => t.id === b });
+    expect(useConsoleStore.getState().activeTabId).toBe(b);
+    expect(useConsoleStore.getState().tabFocusSeq).toBe(5);
+  });
+
+  it("does not count clearing the selection", () => {
+    const store = useConsoleStore.getState();
+    store.openTab({ title: "A", content: "", kind: "console" });
+    const before = useConsoleStore.getState().tabFocusSeq;
+    store.setActiveTab(null);
+    expect(useConsoleStore.getState().activeTabId).toBeNull();
+    expect(useConsoleStore.getState().tabFocusSeq).toBe(before);
+  });
+});

@@ -37,6 +37,13 @@ interface ConsoleState {
   /** Order in which tabs are displayed in the tab bar. Source of truth for the UI. */
   tabOrder: string[];
   activeTabId: string | null;
+  /**
+   * Bumped on every focus request (`setActiveTab`/`openTab`), including one
+   * for the tab that is already active. `activeTabId` alone cannot tell a
+   * re-tap on the selected tree node from nothing happening — the mobile
+   * shell needs that to switch to View either way.
+   */
+  tabFocusSeq: number;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
 }
@@ -382,6 +389,7 @@ const initialState: ConsoleState = {
   tabs: {},
   tabOrder: [],
   activeTabId: null,
+  tabFocusSeq: 0,
   loading: {},
   error: {},
 };
@@ -689,6 +697,7 @@ export const useConsoleStore = create<ConsoleStore>()(
             state.tabOrder.push(id);
           }
           state.activeTabId = id;
+          state.tabFocusSeq += 1;
         });
 
         return id;
@@ -751,6 +760,9 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       setActiveTab: id =>
         set(state => {
+          // A focus on the already-active tab still counts as a focus request
+          // (see tabFocusSeq); clearing the selection does not.
+          if (id !== null) state.tabFocusSeq += 1;
           if (state.activeTabId === id) return;
           state.activeTabId = id;
         }),

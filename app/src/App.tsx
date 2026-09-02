@@ -150,6 +150,7 @@ function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const activeTabId = useConsoleStore(state => state.activeTabId);
+  const tabFocusSeq = useConsoleStore(state => state.tabFocusSeq);
   const requestReveal = useExplorerRevealStore(state => state.requestReveal);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const openLeftPane = useUIStore(state => state.openLeftPane);
@@ -166,15 +167,17 @@ function MainApp() {
   const setMobileTab = useUIStore(state => state.setMobileTab);
 
   // On mobile, tapping a tree node in Browse opens/focuses a tab. Surface it
-  // in View so the result of the tap is visible. Gated on Browse being the
-  // active tab so chat-driven tab opens (e.g. the agent creating a console)
-  // don't yank the user out of Ask mid-conversation.
+  // in View so the result of the tap is visible. Keyed on the focus counter,
+  // not the active id: re-tapping the node that is already selected changes
+  // nothing about the active tab but must still open View. Gated on Browse
+  // being the active tab so chat-driven tab opens (e.g. the agent creating a
+  // console) don't yank the user out of Ask mid-conversation.
   useEffect(() => {
     if (!isMobile) return;
-    if (!activeTabId) return;
+    if (!useConsoleStore.getState().activeTabId) return;
     if (useUIStore.getState().mobileTab !== "browse") return;
     setMobileTab("view");
-  }, [activeTabId, isMobile, setMobileTab]);
+  }, [tabFocusSeq, isMobile, setMobileTab]);
 
   // Recents (the Browse tab's list): every activation of a durable, reopenable
   // tab is recorded locally. Recorded on every device, read on phones.

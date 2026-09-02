@@ -31,6 +31,7 @@ import {
   selectRevealFor,
 } from "../store/explorerRevealStore";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import MobileExplorerBack from "./MobileExplorerBack";
 
 interface FlowTreeNode extends ResourceTreeNode {
   itemType: "flow" | "scheduled-query";
@@ -262,9 +263,12 @@ export function FlowsExplorer() {
             alignItems: "center",
           }}
         >
+          <MobileExplorerBack />
           <Typography
             variant="h6"
             sx={{
+              flex: 1,
+              minWidth: 0,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",

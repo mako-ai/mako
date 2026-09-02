@@ -4,8 +4,9 @@
  * Two levels. HOME is what the desktop rail never had: search (the command
  * palette), a Recent list across every kind, and a grid of the explorers.
  * EXPLORER is one explorer's panel — the same component the desktop left
- * pane renders — under a back button. Tapping a node there opens a tab,
- * and App.tsx switches to View.
+ * pane renders; its own toolbar carries the back button on the phone (see
+ * MobileExplorerBack). Tapping a node there opens a tab, and App.tsx switches
+ * to View.
  */
 import { startTransition, useCallback } from "react";
 import {
@@ -16,7 +17,6 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  ChevronLeft as BackIcon,
   ChevronRight as OpenIcon,
   Search as SearchIcon,
   Settings as SettingsIcon,
@@ -25,7 +25,7 @@ import { SidebarUserMenu } from "./Sidebar";
 import { topNavigationItems, type NavigationView } from "../lib/explorer-nav";
 import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useUIStore, selectActiveExplorer } from "../store/uiStore";
+import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useCommandPaletteStore } from "../store/commandPaletteStore";
 import {
@@ -39,9 +39,6 @@ import { tabKindEntityLabel } from "../lib/entity-labels";
 import { focusDashboardTab } from "../dashboard-runtime/shell";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import { focusAppsTab } from "../apps-runtime/shell";
-
-const EXPLORER_LABELS: Partial<Record<NavigationView, string>> =
-  Object.fromEntries(topNavigationItems.map(i => [i.view, i.label]));
 
 function Identity() {
   const { user } = useAuth();
@@ -164,7 +161,6 @@ export default function MobileBrowse({
   const workspaceId = currentWorkspace?.id;
   const browseView = useUIStore(state => state.mobileBrowseView);
   const setBrowseView = useUIStore(state => state.setMobileBrowseView);
-  const activeExplorer = useUIStore(selectActiveExplorer);
   const setLeftPane = useUIStore(state => state.setLeftPane);
   const openLeftPane = useUIStore(state => state.openLeftPane);
   const setMobileConsolePane = useUIStore(state => state.setMobileConsolePane);
@@ -217,34 +213,12 @@ export default function MobileBrowse({
     [workspaceId, setMobileConsolePane, removeRecent],
   );
 
+  // The explorer draws its own toolbar (title, actions, search) and, on the
+  // phone, leads it with the back-to-Browse chevron (MobileExplorerBack) —
+  // one bar, not a "‹ Apps" bar stacked over "APPS + ⟳ 🔍".
   if (browseView === "explorer") {
-    const label =
-      (activeExplorer && EXPLORER_LABELS[activeExplorer as NavigationView]) ??
-      (activeExplorer === "settings" ? "Settings" : "Explore");
     return (
       <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 0.5,
-            px: 0.5,
-            minHeight: 52,
-            borderBottom: 1,
-            borderColor: "divider",
-          }}
-        >
-          <IconButton
-            aria-label="Back to Browse"
-            onClick={() => setBrowseView("home")}
-            sx={{ width: 44, height: 44 }}
-          >
-            <BackIcon size={22} strokeWidth={1.5} />
-          </IconButton>
-          <Typography variant="subtitle1" sx={{ fontWeight: 600 }} noWrap>
-            {label}
-          </Typography>
-        </Box>
         <Box sx={{ flex: 1, minHeight: 0, overflow: "hidden" }}>{explorer}</Box>
       </Box>
     );

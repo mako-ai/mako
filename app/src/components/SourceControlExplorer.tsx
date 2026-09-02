@@ -68,6 +68,7 @@ import {
 import { SECTION_LABELS } from "../pages/settings/sections";
 import { focusAppsFileTab, focusRepoDiffTab } from "../apps-runtime/shell";
 import VSScrollArea from "./VSScrollArea";
+import MobileExplorerBack from "./MobileExplorerBack";
 import { basename, dirname } from "../utils/path";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -489,6 +490,7 @@ export default function SourceControlExplorer() {
             pb: 0.5,
           }}
         >
+          <MobileExplorerBack />
           <Typography
             variant="caption"
             sx={{ fontWeight: 700, letterSpacing: 0.4, fontSize: "0.72rem" }}
