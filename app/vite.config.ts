@@ -49,6 +49,10 @@ export default defineConfig(({ mode }) => {
     css: { postcss: { plugins: [] } },
     server: {
       port: 5173,
+      // Default `localhost` resolves to ::1 on this stack, so 127.0.0.1:5173
+      // is refused. Listen on 0.0.0.0 so IPv4 clients (curl, some browsers,
+      // the Cloud Agent port list) can reach the app.
+      host: true,
       allowedHosts: true,
       // Opt-in polling watcher. fsevents does not deliver file changes to a
       // Vite launched from certain detached shells (observed: agent-driven
