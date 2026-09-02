@@ -188,4 +188,24 @@ describe("source-connection reads never return a credential", () => {
         .account,
     ).toBe("acct_456");
   });
+
+  it("POST records the authenticated user as createdBy, not 'system'", async () => {
+    const res = await req("POST", "", {
+      name: "Stripe",
+      type: "stripe",
+      config: { api_key: SECRET, account: "acct_123" },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { _id: string; config: Record<string, unknown> };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.config.api_key).toBe(SECRET_KEPT);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+
+    const stored = await Connector.findById(body.data._id).lean();
+    expect((stored as { createdBy: string }).createdBy).toBe("u1");
+    expect((stored as { createdBy: string }).createdBy).not.toBe("system");
+  });
 });

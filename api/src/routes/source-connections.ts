@@ -361,8 +361,10 @@ sourceConnectionRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId");
-      // TODO: Add authentication
-      // const user = await getUserFromRequest(c);
+      const user = c.get("user");
+      if (!user?.id) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
       const body = await c.req.json();
 
       // Validate required fields
@@ -422,7 +424,7 @@ sourceConnectionRoutes.openapi(
           timezone: body.settings?.timezone || "UTC",
         },
         targetDatabases: body.targetDatabases || [],
-        createdBy: "system", // TODO: Use actual user ID
+        createdBy: user.id,
         isActive: body.isActive !== false,
       });
 
