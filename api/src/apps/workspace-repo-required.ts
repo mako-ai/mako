@@ -1,43 +1,27 @@
 /**
- * Local git is required for every migrated content write (issue #956).
+ * A connected GitHub repo is required for every migrated content write
+ * (issue #956). Local git without a binding was the Cloud Storage skip:
+ * createProject used to init a bare repo, after which consoles/dbt/prompt
+ * passed this gate even though the workspace never linked GitHub.
  *
- * `APPS_REQUIRE_CONNECTED_REPO` means a connected GitHub *mirror* is
- * required (prod). That is a different question from "does this workspace
- * have a git repo at all?". Mixing them is how Mongo became a silent
- * fallback in dev and preview.
- *
- * A bound GitHub repo that has not been cloned yet (empty remote, first
- * write) is initialized here so the first commit can seed the mirror.
- * A workspace with neither a local repo nor a binding is refused.
+ * A bound repo that has not been cloned yet (empty remote, first write) is
+ * initialized by `ensureWorkspaceRepo` so the first commit can seed the
+ * mirror. A workspace with no binding is refused — leftover local git does
+ * not count.
  */
 import { RepoRequiredError } from "./config";
-import { ensureLocalRepo, ensureWorkspaceRepo } from "./cloud-repo.service";
-import {
-  DEFAULT_BRANCH,
-  repoDirFor,
-  repoExists,
-  resolveCommit,
-} from "./repository.service";
+import { ensureWorkspaceRepo } from "./cloud-repo.service";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 
 /**
  * Ensure the workspace has a local git repo and return its directory.
- * Throws {@link RepoRequiredError} (412) when it does not and cannot.
+ * Throws {@link RepoRequiredError} (412) when no GitHub repo is bound.
  */
 export async function requireWorkspaceRepo(
   workspaceId: string,
 ): Promise<string> {
-  if (await getWorkspaceRepo(workspaceId)) {
-    return ensureWorkspaceRepo(workspaceId);
+  if (!(await getWorkspaceRepo(workspaceId))) {
+    throw new RepoRequiredError();
   }
-  await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  if (
-    (await repoExists(repoDir)) &&
-    (await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`))
-  ) {
-    return repoDir;
-  }
-  if (await repoExists(repoDir)) return repoDir;
-  throw new RepoRequiredError();
+  return ensureWorkspaceRepo(workspaceId);
 }

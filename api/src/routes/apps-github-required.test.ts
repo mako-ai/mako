@@ -37,4 +37,18 @@ assert.ok(
   "apps handleError must map RepoRequiredError to 412",
 );
 
+const gate = readFileSync(
+  join(__dirname, "../apps/workspace-repo-required.ts"),
+  "utf8",
+);
+assert.ok(
+  /if\s*\(!\(await getWorkspaceRepo\(workspaceId\)\)\)/.test(gate),
+  "requireWorkspaceRepo must refuse when no GitHub binding exists — leftover local git is not a skip",
+);
+assert.equal(
+  gate.includes("ensureLocalRepo"),
+  false,
+  "requireWorkspaceRepo must not fall through to a local-only repo",
+);
+
 console.log("apps github-required tests passed");

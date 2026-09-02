@@ -72,6 +72,10 @@ import {
   readBlob,
   repoDirFor,
 } from "../../apps/repository.service";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "../../apps/bind-test-workspace-repo";
 import { DBT_ENVIRONMENTS_PATH } from "../../dbt/dbt-config-files";
 
 let mongo: MongoMemoryServer;
@@ -161,6 +165,7 @@ beforeEach(async () => {
   ]);
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 describe("dbt_delete_job", () => {
@@ -273,8 +278,8 @@ describe("dbt_run_model — per-user environment resolution", () => {
     ).toHaveLength(1);
   });
 
-  it("multi-user workspace: a missing git repo does not fall back to shared dev", async () => {
-    await fs.rm(repoDirFor(WS), { recursive: true, force: true });
+  it("multi-user workspace: a missing GitHub binding does not fall back to shared dev", async () => {
+    await unbindTestWorkspaceRepo(WS);
     const projectId = await seedProject();
 
     const result = await runModel({ projectId, model: "stg_orders" });

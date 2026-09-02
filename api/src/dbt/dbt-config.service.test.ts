@@ -29,6 +29,10 @@ import {
   reserveJobSlug,
   syncDbtConfigFromRepo,
 } from "./dbt-config.service";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "../apps/bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -55,6 +59,7 @@ beforeEach(async () => {
   await Promise.all([DbtProject.deleteMany({}), DbtJob.deleteMany({})]);
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS.toString()), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS.toString());
 });
 
 async function seedProject() {
@@ -137,10 +142,9 @@ describe("write-through", () => {
     expect(await fileAt(jobFilePath(job.slug!))).toBeNull();
   });
 
-  it("commitDbtJobFile throws when there is no repo and does not stamp the row", async () => {
-    // No repo → 412. The row must not claim a sha the push-sync would
-    // then treat as "already level".
-    await fs.rm(repoDirFor(WS.toString()), { recursive: true, force: true });
+  it("commitDbtJobFile throws when there is no GitHub repo bound and does not stamp the row", async () => {
+    // No binding → 412, even if a leftover local git directory exists.
+    await unbindTestWorkspaceRepo(WS.toString());
     const project = await seedProject();
     const job = await seedJob(project, "Nightly");
     await expect(commitDbtJobFile(project, job)).rejects.toMatchObject({

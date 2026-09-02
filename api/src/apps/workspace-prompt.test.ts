@@ -22,6 +22,7 @@ import {
   readWorkspacePromptFile,
   readWorkspaceSelfDirectiveFile,
 } from "./workspace-prompt";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -45,6 +46,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await bindTestWorkspaceRepo(WS);
 });
 
 describe("workspace prompt in git", () => {

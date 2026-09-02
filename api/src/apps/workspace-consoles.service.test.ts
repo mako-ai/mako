@@ -45,6 +45,7 @@ import {
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
 import { ConsoleManager } from "../utils/console-manager";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -76,6 +77,7 @@ beforeEach(async () => {
   await EntityVersion.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function fileAt(rel: string): Promise<string | null> {

@@ -43,6 +43,10 @@ import { getSandboxProvider } from "./sandbox/provider";
 import { repoDirFor, resolveCommit, initRepo } from "./repository.service";
 import { RepoRequiredError } from "./config";
 import { seededTemplateFiles } from "./workspace-template";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
 let mongo: MongoMemoryServer;
@@ -87,6 +91,7 @@ beforeEach(async () => {
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS), seededTemplateFiles());
+  await bindTestWorkspaceRepo(WS);
 });
 
 /** Lose the machine. Not every provider can, and a test must not pretend. */
@@ -103,8 +108,8 @@ async function makeProject(title = "Test App") {
 }
 
 describe("project lifecycle", () => {
-  it("refuses to create an app when the workspace has no git repo", async () => {
-    await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  it("refuses to create an app when the workspace has no GitHub repo bound", async () => {
+    await unbindTestWorkspaceRepo(WS);
     await expect(makeProject()).rejects.toBeInstanceOf(RepoRequiredError);
   });
 
