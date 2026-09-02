@@ -32,8 +32,8 @@ const tableConnId = new Types.ObjectId("69c2719490eb18199aafa883");
 /** A flow with EVERY runtime trap populated with a traceable value. */
 function flowWithTraps(): IFlow {
   return {
-    _id: new Types.ObjectId(),
-    workspaceId: new Types.ObjectId(),
+    _id: new Types.ObjectId("00aabbccddeeff0011223347"),
+    workspaceId: new Types.ObjectId("00aabbccddeeff0011223348"),
     type: "webhook",
     name: "Stripe → Warehouse",
     slug: "stripe-warehouse",
@@ -138,8 +138,14 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
     "backfill_state",
   ];
   for (const needle of forbidden) {
+    // Short digits ("987", "1234") also appear inside time-prefixed ObjectIds
+    // (`6a9877…` in Sep 2026). Treat a numeric trap as a YAML scalar, not a
+    // substring of a hex id.
+    const found = /^\d+$/.test(needle)
+      ? new RegExp(`(^|[\\s:])${needle}(?![0-9a-fA-F])`, "m").test(yamlText)
+      : yamlText.includes(needle);
     assert.ok(
-      !yamlText.includes(needle),
+      !found,
       `serialized file must not contain ${needle}:\n${yamlText}`,
     );
   }
