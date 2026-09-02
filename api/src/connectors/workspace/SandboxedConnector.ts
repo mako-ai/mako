@@ -75,6 +75,7 @@ function mapLogLevel(
 export class SandboxedConnector extends BaseConnector {
   private loaded: LoadedConnector | null = null;
   private materializedDir: string | null = null;
+  private runtimeId: string | null = null;
   private catalogCache: ProtocolMessage | null = null;
 
   private get slug(): string {
@@ -109,13 +110,14 @@ export class SandboxedConnector extends BaseConnector {
    */
   private async ready(): Promise<{
     dir: string;
+    runtimeId: string;
     entry: string;
     ctx: ReturnType<typeof syncBoxContext>;
   }> {
     const definition = await this.definition();
     const ctx = syncBoxContext(this.workspaceId);
-    if (!this.materializedDir) {
-      await ensureConnectorRuntime(ctx);
+    if (!this.materializedDir || !this.runtimeId) {
+      const runtimeId = await ensureConnectorRuntime(ctx);
       const files = await readConnectorFolder(
         this.workspaceId,
         definition.slug,
@@ -123,12 +125,19 @@ export class SandboxedConnector extends BaseConnector {
       );
       this.materializedDir = await materializeConnector({
         ctx,
+        runtimeId,
         slug: definition.slug,
         sourceSha: definition.sourceSha,
         files,
       });
+      this.runtimeId = runtimeId;
     }
-    return { dir: this.materializedDir, entry: definition.entry, ctx };
+    return {
+      dir: this.materializedDir,
+      runtimeId: this.runtimeId,
+      entry: definition.entry,
+      ctx,
+    };
   }
 
   private config(): Record<string, unknown> {
@@ -137,9 +146,10 @@ export class SandboxedConnector extends BaseConnector {
 
   async testConnection(): Promise<ConnectionTestResult> {
     try {
-      const { dir, entry, ctx } = await this.ready();
+      const { dir, runtimeId, entry, ctx } = await this.ready();
       const result = await runConnectorCommand({
         ctx,
+        runtimeId,
         connectorDir: dir,
         command: "check",
         entry,
@@ -198,11 +208,23 @@ export class SandboxedConnector extends BaseConnector {
     await this.definition();
   }
 
+  /**
+   * Pin a connection check to the code this instance will run.
+   *
+   * Calling this before `testConnection` warms the same cached definition that
+   * `ready` consumes, so a concurrent push cannot make the test and the status
+   * update refer to different source revisions.
+   */
+  async sourceShaForConnectionCheck(): Promise<string> {
+    return (await this.definition()).sourceSha;
+  }
+
   private async catalog(): Promise<ProtocolMessage | null> {
     if (this.catalogCache) return this.catalogCache;
-    const { dir, entry, ctx } = await this.ready();
+    const { dir, runtimeId, entry, ctx } = await this.ready();
     const result = await runConnectorCommand({
       ctx,
+      runtimeId,
       connectorDir: dir,
       command: "discover",
       entry,
@@ -233,7 +255,7 @@ export class SandboxedConnector extends BaseConnector {
    * stop need a different adapter, and they are not this iteration.
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
-    const { dir, entry, ctx } = await this.ready();
+    const { dir, runtimeId, entry, ctx } = await this.ready();
 
     // An entity the connector does not declare is a failure, not an empty
     // sync. The runner's stream selection silently drops an unknown name, so
@@ -252,6 +274,7 @@ export class SandboxedConnector extends BaseConnector {
 
     const result = await runConnectorCommand({
       ctx,
+      runtimeId,
       connectorDir: dir,
       command: "read",
       entry,

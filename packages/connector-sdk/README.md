@@ -29,7 +29,11 @@ export default defineConnector({
       schema: { id: "string", name: "string", updated_at: "timestamp" },
       async *read(ctx, state) {
         for await (const page of ctx.paginate(/* ... */)) {
-          yield { records: page.items, state: { cursor: page.next } };
+          yield {
+            records: page.records,
+            state: { cursor: page.cursor },
+            hasMore: page.hasMore,
+          };
         }
       },
     },
@@ -66,3 +70,8 @@ runs it has to strip types: unflagged from 22.18, and from 22.6 with
 older the runner refuses with a message saying so rather than failing as an
 unknown file extension. Mako's own sandbox satisfies this; a laptop running
 `mako connector test` needs it too.
+
+Every batch returned by `read` includes `hasMore`. This lets Mako distinguish
+the final page from a stream paused exactly at its chunk limit. The pagination
+helper calculates it; manual pagination should set it from the vendor's next
+cursor or equivalent response field.

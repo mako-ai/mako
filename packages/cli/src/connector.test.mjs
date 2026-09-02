@@ -49,7 +49,7 @@ test("an unmarked secret fails, because it would be stored in plaintext", async 
       export default defineConnector({
         name: "leaky", version: "1.0.0",
         config: { required: ["api_token"], properties: { api_token: { type: "string" } } },
-        entities: { rows: { schema: { id: "string" }, async *read() { yield { records: [] }; } } },
+        entities: { rows: { schema: { id: "string" }, async *read() { yield { records: [], hasMore: false }; } } },
       });
     `,
   });
@@ -71,7 +71,7 @@ test("a state that does not advance fails, because the sync would loop forever",
         entities: {
           rows: {
             schema: { id: "string" },
-            async *read() { while (true) yield { records: [{ id: "same" }], state: { page: 1 } }; },
+            async *read() { while (true) yield { records: [{ id: "same" }], state: { page: 1 }, hasMore: true }; },
           },
         },
       });
@@ -94,7 +94,7 @@ test("a declared type the records contradict fails", async () => {
         entities: {
           rows: {
             schema: { id: "string", count: "string" },
-            async *read() { yield { records: [{ id: "a", count: 7 }] }; },
+            async *read() { yield { records: [{ id: "a", count: 7 }], hasMore: false }; },
           },
         },
       });
@@ -134,7 +134,7 @@ test("a spec without declared config properties fails, as the push would", async
       import { defineConnector } from ${JSON.stringify(SDK)};
       const base = defineConnector({
         name: "silent", version: "1.0.0",
-        entities: { rows: { schema: { id: "string" }, async *read() { yield { records: [] }; } } },
+        entities: { rows: { schema: { id: "string" }, async *read() { yield { records: [], hasMore: false }; } } },
       });
       // A spec that forgot to describe its config at all: the shape that made
       // Mako store credentials unencrypted.

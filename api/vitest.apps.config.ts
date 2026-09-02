@@ -41,6 +41,7 @@ export default defineConfig({
       // Workspace connectors: real git, real Mongo, and a real child process
       // per protocol command via the local sandbox provider.
       "src/connectors/workspace/workspace-connectors.test.ts",
+      "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
     ],

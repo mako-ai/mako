@@ -54,7 +54,11 @@ export interface Context<Config = Record<string, unknown>> {
   state: Record<string, unknown>;
   entity?: string;
   http: Http;
-  paginate(options: PaginateOptions): AsyncGenerator<{ records: unknown[]; cursor: unknown }>;
+  paginate(options: PaginateOptions): AsyncGenerator<{
+    records: unknown[];
+    cursor: unknown;
+    hasMore: boolean;
+  }>;
   log(message: unknown): void;
   createHttp(options: HttpOptions): Http;
 }
@@ -63,6 +67,8 @@ export interface ReadBatch {
   records: unknown[];
   /** The position to resume from AFTER these records. Omit to keep the current state. */
   state?: Record<string, unknown>;
+  /** Whether another batch exists after this one. Required for exact chunk boundaries. */
+  hasMore: boolean;
 }
 
 export interface EntityDefinition<Config = Record<string, unknown>> {
@@ -109,7 +115,11 @@ export function defineConnector<Config = Record<string, unknown>>(
 ): Connector;
 
 export function createHttp(options?: HttpOptions & { log?: (message: string) => void }): Http;
-export function paginate(options: PaginateOptions): AsyncGenerator<{ records: unknown[]; cursor: unknown }>;
+export function paginate(options: PaginateOptions): AsyncGenerator<{
+  records: unknown[];
+  cursor: unknown;
+  hasMore: boolean;
+}>;
 export function pick(object: unknown, path?: string): unknown;
 export function schemaToJsonSchema(schema?: EntitySchema): Record<string, unknown>;
 export function fieldToJsonSchema(field: FieldType): Record<string, unknown>;

@@ -4,6 +4,7 @@ import { Connector as DataSource } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
+  SandboxedConnector,
   isWorkspaceConnectorType,
   slugFromType,
 } from "../connectors/workspace/SandboxedConnector";
@@ -584,6 +585,10 @@ dataSourceRoutes.openapi(
         );
       }
 
+      const workspaceSourceSha =
+        connector instanceof SandboxedConnector
+          ? await connector.sourceShaForConnectionCheck()
+          : undefined;
       const result = await connector.testConnection();
 
       // The only path that may write `verified`: a push proves a connector
@@ -592,9 +597,15 @@ dataSourceRoutes.openapi(
       // rather than the status, so a connector stays offerable in the picker
       // while whoever entered the key fixes it.
       if (isWorkspaceConnectorType(ds.type)) {
+        if (!workspaceSourceSha) {
+          throw new Error(
+            `Workspace connector ${ds.type} resolved to an unexpected implementation`,
+          );
+        }
         await recordConnectionCheck({
           workspaceId,
           slug: slugFromType(ds.type),
+          sourceSha: workspaceSourceSha,
           success: result.success === true,
           message: result.message,
         }).catch(error =>

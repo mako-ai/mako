@@ -14,9 +14,10 @@
  * 2. A CREDENTIAL LIVES ONLY AS LONG AS THE COMMAND. It is written to a
  *    per-run directory and deleted in a `finally`, because an E2B box that
  *    pauses snapshots its disk.
- * 3. NOTHING BUT THE PROTOCOL COMES BACK. stdout is redirected to a file and
- *    parsed as JSON Lines; `exec` caps output, so a chatty connector would
- *    otherwise truncate its own records.
+ * 3. NOTHING BUT A BOUNDED PROTOCOL COMES BACK. stdout is redirected to a file
+ *    because `exec`'s output cap would truncate legitimate records. A bounded
+ *    snapshot is made before that file crosses into the API process, so tenant
+ *    code still cannot turn a large batch into an API heap exhaustion.
  */
 import path from "node:path";
 import {
@@ -46,6 +47,10 @@ export type ConnectorCommand = "spec" | "check" | "discover" | "read";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** A protocol chunk may be large, but it may never be unbounded. */
+export const MAX_CONNECTOR_PROTOCOL_BYTES = 32 * 1024 * 1024;
+export const MAX_CONNECTOR_PROTOCOL_MESSAGES = 50_000;
+
 /**
  * The sync box's affinity key.
  *
@@ -60,23 +65,31 @@ export function syncBoxContext(workspaceId: string): SandboxExecContext {
 /** Where a connector's copied folder lives, keyed so a new sha is a new dir. */
 export function connectorDir(
   ctx: SandboxExecContext,
+  runtimeId: string,
   slug: string,
   sourceSha: string,
 ): string {
-  const scratch = getSandboxProvider().scratch(ctx);
   return path.posix.join(
-    scratch,
-    "connector-runtime",
+    runtimeRoot(ctx, runtimeId),
     "connectors",
     `${slug}@${sourceSha}`,
   );
 }
 
-/** Where the SDK is placed so Node resolves `@makoai/connector-sdk` upward. */
-function runtimeRoot(ctx: SandboxExecContext): string {
+/**
+ * A content-addressed runtime root.
+ *
+ * A rolling API deployment can have two SDK versions using one workspace box
+ * concurrently. Giving each SDK its own root prevents either process from
+ * replacing files underneath the other, while connector imports still resolve
+ * through the root's node_modules directory.
+ */
+function runtimeRoot(ctx: SandboxExecContext, runtimeId: string): string {
   return path.posix.join(
     getSandboxProvider().scratch(ctx),
     "connector-runtime",
+    "versions",
+    runtimeId,
   );
 }
 
@@ -92,13 +105,14 @@ const shellQuote = (value: string): string =>
  */
 export async function materializeConnector(input: {
   ctx: SandboxExecContext;
+  runtimeId: string;
   slug: string;
   sourceSha: string;
   files: Map<string, Uint8Array>;
 }): Promise<string> {
-  const { ctx, slug, sourceSha, files } = input;
+  const { ctx, runtimeId, slug, sourceSha, files } = input;
   const provider = getSandboxProvider();
-  const dir = connectorDir(ctx, slug, sourceSha);
+  const dir = connectorDir(ctx, runtimeId, slug, sourceSha);
 
   const marker = path.posix.join(dir, ".materialized");
   const check = await provider.exec(
@@ -126,24 +140,19 @@ export async function materializeConnector(input: {
   return dir;
 }
 
-/** Is the SDK present in the box's runtime root? */
+/** Is this exact SDK present and completely materialized in the box? */
 export async function hasConnectorRuntime(
   ctx: SandboxExecContext,
+  runtimeId: string,
 ): Promise<boolean> {
   const provider = getSandboxProvider();
-  const entry = path.posix.join(
-    runtimeRoot(ctx),
-    "node_modules",
-    "@makoai",
-    "connector-sdk",
-    "package.json",
-  );
+  const marker = path.posix.join(runtimeRoot(ctx, runtimeId), ".materialized");
+  // The box is tenant-controlled, so do not read even this marker into the API
+  // process. `exec` bounds output and only returns the comparison result.
   const result = await provider.exec(
     ctx,
-    `test -f ${shellQuote(entry)} && echo yes || echo no`,
-    {
-      timeoutMs: 30_000,
-    },
+    `test -f ${shellQuote(marker)} && grep -Fqx ${shellQuote(runtimeId)} ${shellQuote(marker)} && echo yes || echo no`,
+    { timeoutMs: 30_000 },
   );
   return result.stdout.trim() === "yes";
 }
@@ -151,11 +160,13 @@ export async function hasConnectorRuntime(
 /** Install the SDK into the box's runtime root from a set of files. */
 export async function installConnectorRuntime(
   ctx: SandboxExecContext,
+  runtimeId: string,
   files: Map<string, Uint8Array>,
 ): Promise<void> {
   const provider = getSandboxProvider();
+  const root = runtimeRoot(ctx, runtimeId);
   const base = path.posix.join(
-    runtimeRoot(ctx),
+    root,
     "node_modules",
     "@makoai",
     "connector-sdk",
@@ -163,6 +174,13 @@ export async function installConnectorRuntime(
   for (const [relative, bytes] of files) {
     await provider.writeFile(ctx, path.posix.join(base, relative), bytes);
   }
+  // Written last: a killed or failed upload is retried rather than mistaken for
+  // a complete runtime on the next invocation.
+  await provider.writeFile(
+    ctx,
+    path.posix.join(root, ".materialized"),
+    new TextEncoder().encode(runtimeId),
+  );
 }
 
 /**
@@ -174,6 +192,7 @@ export async function installConnectorRuntime(
  */
 export async function runConnectorCommand(input: {
   ctx: SandboxExecContext;
+  runtimeId: string;
   connectorDir: string;
   command: ConnectorCommand;
   config?: Record<string, unknown>;
@@ -192,6 +211,7 @@ export async function runConnectorCommand(input: {
     runId,
   );
   const outputPath = path.posix.join(runDir, "out.jsonl");
+  const boundedOutputPath = path.posix.join(runDir, "out.bounded.jsonl");
   const encoder = new TextEncoder();
 
   const args = [
@@ -224,7 +244,7 @@ export async function runConnectorCommand(input: {
     }
 
     const bin = path.posix.join(
-      runtimeRoot(ctx),
+      runtimeRoot(ctx, input.runtimeId),
       "node_modules",
       "@makoai",
       "connector-sdk",
@@ -243,20 +263,52 @@ export async function runConnectorCommand(input: {
       // provider's, not this call's.
     });
 
-    let raw = "";
-    try {
-      raw = new TextDecoder().decode(await provider.readFile(ctx, outputPath));
-    } catch {
-      // A command that died before creating its output file is a failure with
-      // stderr as the only evidence; that is more useful than a read error.
-      raw = "";
+    // Never read the connector's own file directly. `head` creates an immutable
+    // snapshot of at most limit + 1 bytes inside the sandbox, even if malicious
+    // connector code left a child process appending to stdout after it exited.
+    const snapshot = await provider.exec(
+      ctx,
+      `if test -f ${shellQuote(outputPath)}; then head -c ${MAX_CONNECTOR_PROTOCOL_BYTES + 1} ${shellQuote(outputPath)} > ${shellQuote(boundedOutputPath)} && wc -c < ${shellQuote(boundedOutputPath)}; else echo missing; fi`,
+      { timeoutMs: 30_000 },
+    );
+    const sizeText = snapshot.stdout.trim();
+    if (sizeText !== "missing") {
+      const outputBytes = Number(sizeText);
+      if (!Number.isSafeInteger(outputBytes) || outputBytes < 0) {
+        throw new Error("Could not determine the connector protocol size.");
+      }
+      if (outputBytes > MAX_CONNECTOR_PROTOCOL_BYTES) {
+        throw new Error(
+          `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_BYTES} byte limit. Reduce the page or batch size.`,
+        );
+      }
     }
+
+    // A command that died before creating its output file is a failure with
+    // stderr as the only evidence; that is more useful than a read error.
+    const raw =
+      sizeText === "missing"
+        ? ""
+        : new TextDecoder().decode(
+            await provider.readFile(ctx, boundedOutputPath),
+          );
 
     const messages: ProtocolMessage[] = [];
     const malformed: string[] = [];
-    for (const line of raw.split("\n")) {
+    let cursor = 0;
+    let protocolLines = 0;
+    while (cursor < raw.length) {
+      const newline = raw.indexOf("\n", cursor);
+      const line = raw.slice(cursor, newline < 0 ? raw.length : newline);
+      cursor = newline < 0 ? raw.length : newline + 1;
       const trimmed = line.trim();
       if (!trimmed) continue;
+      protocolLines++;
+      if (protocolLines > MAX_CONNECTOR_PROTOCOL_MESSAGES) {
+        throw new Error(
+          `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_MESSAGES} message limit. Reduce the page or batch size.`,
+        );
+      }
       try {
         const parsed = JSON.parse(trimmed);
         if (

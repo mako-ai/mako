@@ -54,18 +54,37 @@ const EMPTY: ConnectorSyncResult = {
   skipped: [],
 };
 
-/** Coalesce concurrent pushes: a burst of them must not boot several boxes. */
+/** Coalesce concurrent pushes without losing the newest tree in the burst. */
 const inFlight = new Map<string, Promise<ConnectorSyncResult>>();
+const rerunRequested = new Set<string>();
 
 export function syncConnectorsFromRepo(
   workspaceId: string,
   actorUserId?: string,
 ): Promise<ConnectorSyncResult> {
   const existing = inFlight.get(workspaceId);
-  if (existing) return existing;
-  const run = reconcile(workspaceId, actorUserId).finally(() =>
-    inFlight.delete(workspaceId),
-  );
+  if (existing) {
+    // The active pass may already have resolved main. Remember this push and
+    // read main again after it completes instead of acknowledging stale work.
+    rerunRequested.add(workspaceId);
+    return existing;
+  }
+  const work = (async () => {
+    for (;;) {
+      try {
+        const result = await reconcile(workspaceId, actorUserId);
+        if (!rerunRequested.delete(workspaceId)) return result;
+      } catch (error) {
+        // A failed old pass must not consume a newer push. Retry when one is
+        // pending; otherwise preserve the original failure for the caller.
+        if (!rerunRequested.delete(workspaceId)) throw error;
+      }
+    }
+  })();
+  const run = work.finally(() => {
+    rerunRequested.delete(workspaceId);
+    inFlight.delete(workspaceId);
+  });
   inFlight.set(workspaceId, run);
   return run;
 }
@@ -80,13 +99,6 @@ async function reconcile(
 
   const rows = await ConnectorDefinition.find({ workspaceId });
   const rowBySlug = new Map(rows.map(row => [row.slug, row]));
-
-  // An empty `connectors/` is never a reason to delete an index. A tree that
-  // reads as empty because a git command failed looks exactly like a workspace
-  // that deleted every connector, and one of those is recoverable.
-  if (slugs.length === 0) {
-    return { ...EMPTY, unchanged: rows.length };
-  }
 
   const result: ConnectorSyncResult = { ...EMPTY, skipped: [] };
   const seen = new Set<string>();
@@ -283,11 +295,18 @@ async function runSpec(
   { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string }
 > {
   const ctx = syncBoxContext(workspaceId);
-  await ensureConnectorRuntime(ctx);
-  const dir = await materializeConnector({ ctx, slug, sourceSha, files });
+  const runtimeId = await ensureConnectorRuntime(ctx);
+  const dir = await materializeConnector({
+    ctx,
+    runtimeId,
+    slug,
+    sourceSha,
+    files,
+  });
 
   const result = await runConnectorCommand({
     ctx,
+    runtimeId,
     connectorDir: dir,
     command: "spec",
     entry,
@@ -340,15 +359,17 @@ async function block(
 export async function recordConnectionCheck(input: {
   workspaceId: string;
   slug: string;
+  /** The indexed source revision the connector instance actually ran. */
+  sourceSha: string;
   success: boolean;
   message?: string;
-}): Promise<void> {
-  const { workspaceId, slug, success, message } = input;
-  await ConnectorDefinition.updateOne(
+}): Promise<boolean> {
+  const { workspaceId, slug, sourceSha, success, message } = input;
+  const result = await ConnectorDefinition.updateOne(
     // A blocked connector is blocked by its code, which a credential cannot
     // fix; it must not be talked back up to `verified` by a check that could
     // not have run against it in the first place.
-    { workspaceId, slug, status: { $ne: "blocked" } },
+    { workspaceId, slug, sourceSha, status: { $ne: "blocked" } },
     success
       ? {
           $set: { status: "verified", lastCheckedAt: new Date() },
@@ -365,4 +386,5 @@ export async function recordConnectionCheck(input: {
           },
         },
   );
+  return result.matchedCount === 1;
 }

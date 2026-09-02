@@ -35,7 +35,11 @@ export default defineConnector({
         while (offset < PEOPLE.length) {
           const records = PEOPLE.slice(offset, offset + pageSize);
           offset += records.length;
-          yield { records, state: { offset } };
+          yield {
+            records,
+            state: { offset },
+            hasMore: offset < PEOPLE.length,
+          };
         }
       },
     },

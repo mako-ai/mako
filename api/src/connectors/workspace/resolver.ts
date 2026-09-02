@@ -6,6 +6,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import {
   ConnectorDefinition,
   type IConnectorDefinition,
@@ -243,16 +244,34 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
  */
 export async function ensureConnectorRuntime(
   ctx: SandboxExecContext,
-): Promise<void> {
-  if (await hasConnectorRuntime(ctx)) return;
+): Promise<string> {
   const files = await readSdkFiles();
-  await installConnectorRuntime(ctx, files);
+  const runtimeId = sdkRuntimeId(files);
+  if (await hasConnectorRuntime(ctx, runtimeId)) return runtimeId;
+  await installConnectorRuntime(ctx, runtimeId, files);
   logger.info("Installed the connector SDK into a sync box", {
     files: files.size,
+    runtimeId,
   });
+  return runtimeId;
 }
 
 let sdkFilesCache: Map<string, Uint8Array> | null = null;
+let sdkRuntimeIdCache: string | null = null;
+
+/** Identity of every shipped SDK byte, used as the sandbox runtime directory. */
+function sdkRuntimeId(files: Map<string, Uint8Array>): string {
+  if (sdkRuntimeIdCache) return sdkRuntimeIdCache;
+  const hash = createHash("sha256");
+  for (const name of [...files.keys()].sort()) {
+    hash.update(name);
+    hash.update("\0");
+    hash.update(files.get(name) as Uint8Array);
+    hash.update("\0");
+  }
+  sdkRuntimeIdCache = hash.digest("hex");
+  return sdkRuntimeIdCache;
+}
 
 /** The SDK's shipped files, read from this repository's own package. */
 async function readSdkFiles(): Promise<Map<string, Uint8Array>> {

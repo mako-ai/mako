@@ -38,6 +38,8 @@ import {
   workspaceConnectorForm,
 } from "./catalog";
 import { SandboxedConnector } from "./SandboxedConnector";
+import { getSandboxProvider } from "../../apps/sandbox/provider";
+import { syncBoxContext } from "./sync-box";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -105,7 +107,11 @@ export default defineConnector({
         while (offset < ROWS.length) {
           const records = ROWS.slice(offset, offset + 5);
           offset += records.length;
-          yield { records, state: { offset } };
+          yield {
+            records,
+            state: { offset },
+            hasMore: offset < ROWS.length,
+          };
         }
       },
     },
@@ -503,12 +509,19 @@ describe("recording a real connection test", () => {
   const rowNow = () =>
     ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }).lean();
 
+  const sourceShaNow = async (): Promise<string> => {
+    const row = await rowNow();
+    if (!row) throw new Error("expected the acme connector to be indexed");
+    return row.sourceSha;
+  };
+
   it("is the only thing that can make a connector verified", async () => {
     expect((await rowNow())?.status).toBe("indexed");
 
     await recordConnectionCheck({
       workspaceId: WS,
       slug: "acme",
+      sourceSha: await sourceShaNow(),
       success: true,
     });
 
@@ -521,11 +534,13 @@ describe("recording a real connection test", () => {
     await recordConnectionCheck({
       workspaceId: WS,
       slug: "acme",
+      sourceSha: await sourceShaNow(),
       success: true,
     });
     await recordConnectionCheck({
       workspaceId: WS,
       slug: "acme",
+      sourceSha: await sourceShaNow(),
       success: false,
       message: "401: this key was revoked",
     });
@@ -547,10 +562,30 @@ describe("recording a real connection test", () => {
     await recordConnectionCheck({
       workspaceId: WS,
       slug: "acme",
+      sourceSha: await sourceShaNow(),
       success: true,
     });
 
     expect((await rowNow())?.status).toBe("blocked");
+  }, 120_000);
+
+  it("does not apply a check result to code pushed during the check", async () => {
+    const testedSourceSha = await sourceShaNow();
+    await ConnectorDefinition.updateOne(
+      { workspaceId: WS, slug: "acme" },
+      { $set: { sourceSha: "1".repeat(40), status: "indexed" } },
+    );
+
+    const recorded = await recordConnectionCheck({
+      workspaceId: WS,
+      slug: "acme",
+      sourceSha: testedSourceSha,
+      success: true,
+    });
+
+    expect(recorded).toBe(false);
+    expect((await rowNow())?.status).toBe("indexed");
+    expect((await rowNow())?.lastCheckedAt).toBeUndefined();
   }, 120_000);
 });
 
@@ -619,6 +654,55 @@ describe("reconciling repeatedly", () => {
     expect((row?.spec as any)?.mako?.version).toBe("1.3.0");
   }, 120_000);
 
+  it("runs again when a newer push arrives during an active reconcile", async () => {
+    const started = path.join(tmpRoot, "connector-reconcile-started");
+    await fs.rm(started, { force: true });
+    const slowConnector = CONNECTOR_TS.replace(
+      'import { defineConnector } from "@makoai/connector-sdk";',
+      `import { defineConnector } from "@makoai/connector-sdk";
+import fs from "node:fs";
+fs.writeFileSync(${JSON.stringify(started)}, "started");
+await new Promise(resolve => setTimeout(resolve, 1000));`,
+    );
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": slowConnector,
+    });
+
+    const first = syncConnectorsFromRepo(WS);
+    const deadline = Date.now() + 10_000;
+    let reconcileStarted = false;
+    while (!reconcileStarted) {
+      try {
+        await fs.access(started);
+        reconcileStarted = true;
+      } catch {
+        if (Date.now() >= deadline) {
+          throw new Error("the first reconcile never started its connector");
+        }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+
+    await push(
+      {
+        "connectors/acme/connector.ts": CONNECTOR_TS.replace(
+          'version: "1.2.0"',
+          'version: "2.0.0"',
+        ),
+      },
+      "replace connector while reconciliation is running",
+    );
+    const second = syncConnectorsFromRepo(WS);
+    await Promise.all([first, second]);
+
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    }).lean();
+    expect((row?.spec as any)?.mako?.version).toBe("2.0.0");
+  }, 120_000);
+
   it("drops the index row when the folder is deleted", async () => {
     await push({
       "connectors/acme/connector.yaml": "runtime: node\n",
@@ -642,17 +726,6 @@ describe("reconciling repeatedly", () => {
       },
     );
 
-    // An empty connectors/ is not a mass deletion signal, but a deletion
-    // alongside another connector is: push a second one so the tree is not
-    // empty and the removal is unambiguous.
-    await push({
-      "connectors/other/connector.yaml": "runtime: node\n",
-      "connectors/other/connector.ts": CONNECTOR_TS.replace(
-        'name: "acme"',
-        'name: "other"',
-      ),
-    });
-
     const result = await syncConnectorsFromRepo(WS);
     expect(result.removed).toBe(1);
     expect(
@@ -660,7 +733,7 @@ describe("reconciling repeatedly", () => {
     ).toBeNull();
   }, 120_000);
 
-  it("never deletes the index just because the tree read empty", async () => {
+  it("does not delete the index when no repository can be resolved", async () => {
     await push({
       "connectors/acme/connector.yaml": "runtime: node\n",
       "connectors/acme/connector.ts": CONNECTOR_TS,
@@ -681,5 +754,60 @@ describe("reconciling repeatedly", () => {
     expect(
       await ConnectorDefinition.findOne({ workspaceId: empty, slug: "ghost" }),
     ).not.toBeNull();
+  }, 120_000);
+});
+
+describe("the SDK installed in a persistent sync box", () => {
+  it("repairs an incomplete cached runtime before executing it", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    await syncConnectorsFromRepo(WS);
+
+    const ctx = syncBoxContext(WS);
+    const versions = path.join(
+      getSandboxProvider().scratch(ctx),
+      "connector-runtime",
+      "versions",
+    );
+    let runtimeId: string | undefined;
+    for (const candidate of await fs.readdir(versions)) {
+      try {
+        const marker = await fs.readFile(
+          path.join(versions, candidate, ".materialized"),
+          "utf8",
+        );
+        if (marker === candidate) {
+          runtimeId = candidate;
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (!runtimeId)
+      throw new Error("expected a materialized connector runtime");
+
+    const runtimeRoot = path.join(versions, runtimeId);
+    await fs.writeFile(
+      path.join(
+        runtimeRoot,
+        "node_modules",
+        "@makoai",
+        "connector-sdk",
+        "src",
+        "run.js",
+      ),
+      "throw new Error('stale connector runtime');\n",
+    );
+    await fs.rm(path.join(runtimeRoot, ".materialized"));
+
+    const connector = new SandboxedConnector(
+      dataSourceFor("ws:acme", { apiKey: "secret" }),
+    );
+    await expect(connector.testConnection()).resolves.toMatchObject({
+      success: true,
+    });
   }, 120_000);
 });

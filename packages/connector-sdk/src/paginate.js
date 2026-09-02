@@ -21,10 +21,10 @@ export function pick(object, path) {
 }
 
 /**
- * @yields {{ records: unknown[], cursor: unknown }} one page at a time, with
- * the cursor to resume AFTER that page. Yielding the resume point with the
- * page is what makes a chunk boundary safe: the caller can stop at any page
- * and come back exactly there.
+ * @yields {{ records: unknown[], cursor: unknown, hasMore: boolean }} one page
+ * at a time, with the cursor to resume AFTER that page. Yielding both the
+ * resume point and whether another page exists makes an exact chunk boundary
+ * distinguishable from a paused stream.
  */
 export async function* paginate({
   fetchPage,
@@ -42,6 +42,13 @@ export async function* paginate({
   let offset = typeof startCursor === "number" ? startCursor : 0;
   let pages = 0;
   const seenCursors = new Set();
+  if (
+    (style === "cursor" || style === "link") &&
+    startCursor != null &&
+    startCursor !== ""
+  ) {
+    seenCursors.add(String(startCursor));
+  }
 
   while (pages < maxPages) {
     const response = await fetchPage({ cursor, page, offset, pageSize });
@@ -57,14 +64,11 @@ export async function* paginate({
     else if (style === "offset") next = list.length < pageSize ? undefined : offset + list.length;
     else throw new Error(`Unknown pagination style "${style}"`);
 
-    pages += 1;
-    yield { records: list, cursor: next };
-
-    if (next == null || next === "" || next === false) return;
+    let hasMore = next != null && next !== "" && next !== false;
     // An API that returns the cursor it was given is a real failure mode, and
     // without this check the connector fetches the same page until the chunk
     // budget runs out — forever, in a scheduled flow.
-    if (style === "cursor" || style === "link") {
+    if (hasMore && (style === "cursor" || style === "link")) {
       const key = String(next);
       if (seenCursors.has(key)) {
         throw new Error(
@@ -74,7 +78,14 @@ export async function* paginate({
       }
       seenCursors.add(key);
     }
-    if (list.length === 0 && (style === "cursor" || style === "link")) return;
+    if (list.length === 0 && (style === "cursor" || style === "link")) {
+      hasMore = false;
+    }
+
+    pages += 1;
+    yield { records: list, cursor: next, hasMore };
+
+    if (!hasMore) return;
 
     cursor = next;
     if (style === "page") page = next;

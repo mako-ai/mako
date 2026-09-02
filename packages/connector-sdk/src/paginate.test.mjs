@@ -30,6 +30,7 @@ test("cursor pagination stops when the API stops sending a cursor", async () => 
     pages.map(p => p.records),
     [[1, 2], [3]],
   );
+  assert.deepEqual(pages.map(p => p.hasMore), [true, false]);
 });
 
 test("a repeated cursor throws instead of looping forever", async () => {
@@ -55,7 +56,9 @@ test("page style stops on a short page", async () => {
   );
   assert.equal(pages.length, 2);
   assert.equal(pages[0].cursor, 2);
+  assert.equal(pages[0].hasMore, true);
   assert.equal(pages[1].cursor, undefined);
+  assert.equal(pages[1].hasMore, false);
 });
 
 test("offset style advances by what it actually received", async () => {
@@ -67,4 +70,5 @@ test("offset style advances by what it actually received", async () => {
     }),
   );
   assert.deepEqual(pages.map(p => p.cursor), [2, undefined]);
+  assert.deepEqual(pages.map(p => p.hasMore), [true, false]);
 });

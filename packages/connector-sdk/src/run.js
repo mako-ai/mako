@@ -146,7 +146,17 @@ export async function run(argv = process.argv.slice(2)) {
         for (const record of batch.records ?? []) emitRecord(name, record);
         if (batch.state !== undefined) latest = batch.state;
         iterations++;
+        if (batch.hasMore === false) {
+          exhausted = true;
+          break;
+        }
         if (iterations >= maxIterations) {
+          if (batch.hasMore !== true) {
+            throw new Error(
+              `Entity "${name}" reached a chunk boundary without saying whether another page exists. ` +
+                "Yield hasMore: true or false with every read batch (ctx.paginate provides it).",
+            );
+          }
           // Stop mid-stream but leave the position exactly where the last
           // completed page ended: the next chunk resumes there, and no row
           // is read twice or skipped.

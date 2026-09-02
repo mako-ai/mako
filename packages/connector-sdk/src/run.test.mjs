@@ -88,6 +88,20 @@ test("an unbounded read emits every record and ends with hasMore false", async (
   assert.equal(state.state.mako.hasMore, false);
 });
 
+test("a stream ending exactly at the chunk limit reports exhaustion", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key" });
+  const messages = await protocol([
+    "read",
+    "--config",
+    config,
+    "--max-iterations",
+    "3",
+  ]);
+  assert.equal(messages.filter(m => m.type === "RECORD").length, 25);
+  assert.equal(messages.at(-1).state.mako.hasMore, false);
+});
+
 test("a chunk stops at the budget and its state resumes exactly where it stopped", async () => {
   const dir = tmp();
   const config = writeJson(dir, "config.json", { apiKey: "good-key" });
