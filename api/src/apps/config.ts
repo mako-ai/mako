@@ -53,15 +53,22 @@ export function appsConnectedRepoPushEnv(): string | undefined {
 }
 
 /**
- * Production: a workspace must connect its own GitHub repository before
+ * Production: a workspace must connect its own GitHub *mirror* before
  * anything is saved to git — there is no Mako-hosted tier (apps.md §17).
- * Unset (dev, previews, tests) = local bare repos, nothing durable.
+ *
+ * This flag is NOT "git is required". Local git is always required for
+ * migrated content; see `requireWorkspaceRepo`. Mixing the two questions
+ * is how Mongo became a silent fallback in every non-prod environment.
  */
 export function appsRequireConnectedRepo(): boolean {
   return appsEnv("REQUIRE_CONNECTED_REPO") === "true";
 }
 
-/** Thrown by write paths when the gate above is on and no repo is bound. */
+/**
+ * Thrown when a write needs a workspace git repo and none exists.
+ * HTTP 412. Distinct from "GitHub mirror not connected" at the product
+ * layer — the user-facing fix is still Settings → GitHub.
+ */
 export class RepoRequiredError extends Error {
   readonly status = 412;
   readonly code = "github_required";

@@ -7,10 +7,15 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import {
   connectWorkspaceRepo,
   disconnectWorkspaceRepo,
+  findWorkspaceIdsByRepoBinding,
   isValidRepoSegment,
   listWorkspaceRepos,
 } from "./workspace-repos.service";
-import { GitHubInstallation, Workspace } from "../database/workspace-schema";
+import {
+  Flow,
+  GitHubInstallation,
+  Workspace,
+} from "../database/workspace-schema";
 
 let mongo: MongoMemoryServer;
 let workspaceId: string;
@@ -211,5 +216,66 @@ describe("connect / list / disconnect", () => {
       linkedBy: "u1",
     });
     expect(binding.installationId).toBe(999);
+  });
+});
+
+describe("git is the only store (issue #956)", () => {
+  it("fans out webhook routing to every workspace bound to the same repo", async () => {
+    const other = await Workspace.create({
+      name: "Other",
+      slug: `other-${Date.now()}`,
+      createdBy: "u1",
+      settings: {},
+      billing: {},
+    });
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    await connectWorkspaceRepo({
+      workspaceId: other._id.toString(),
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    const ids = await findWorkspaceIdsByRepoBinding(
+      "mako-ai",
+      "test-workspace",
+    );
+    expect(ids.sort()).toEqual([workspaceId, other._id.toString()].sort());
+  });
+
+  it("disconnect purges derived flow index rows", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    await Flow.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      type: "scheduled",
+      slug: "gone",
+      name: "Gone",
+      sourceType: "database",
+      databaseSource: {
+        connectionId: new Types.ObjectId(),
+        database: "demo",
+        query: "select 1",
+      },
+      destinationDatabaseId: new Types.ObjectId(),
+      syncMode: "full",
+      schedule: { enabled: false },
+      createdBy: "u1",
+    });
+    expect(await Flow.countDocuments({ workspaceId })).toBe(1);
+    await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
+    expect(await Flow.countDocuments({ workspaceId })).toBe(0);
+    expect(await listWorkspaceRepos(workspaceId)).toHaveLength(0);
   });
 });

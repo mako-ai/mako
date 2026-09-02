@@ -19,6 +19,7 @@ import {
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
+  initRepo,
   log,
   readBlob,
   repoDirFor,
@@ -60,6 +61,7 @@ const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 beforeEach(async () => {
   await Skill.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
 });
 
 async function fileAt(rel: string): Promise<string | null> {
@@ -186,8 +188,6 @@ describe("sync from repo", () => {
       suppressed: false,
       useCount: 0,
     });
-    const { initRepo } = await import("./repository.service");
-    await initRepo(repoDirFor(WS), { "README.md": "x\n" });
     await syncSkillsIndexFromRepo(WS);
     expect(await Skill.findOne({ name: "mongo_only" })).not.toBeNull();
   });

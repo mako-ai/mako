@@ -937,12 +937,13 @@ export async function toggleSkillSuppressed(
   if (!doc) return false;
   // Suppression is frontmatter, so it commits like any other skill edit; a
   // skill not adopted into git yet flips only its Mongo row (no-op there).
-  await commitSkillSuppressed(
+  const committed = await commitSkillSuppressed(
     workspaceId,
     doc.name,
     suppressed,
     await skillCommitAuthor(actorId),
   );
+  if (!committed) return false;
   const res = await Skill.updateOne({ _id: doc._id }, { $set: { suppressed } });
   return res.matchedCount > 0;
 }
@@ -958,11 +959,12 @@ export async function deleteSkillById(
     workspaceId: new Types.ObjectId(workspaceId),
   }).select("name");
   if (!doc) return false;
-  await commitSkillDelete(
+  const committed = await commitSkillDelete(
     workspaceId,
     doc.name,
     await skillCommitAuthor(actorId),
   );
+  if (!committed) return false;
   const res = await Skill.deleteOne({ _id: doc._id });
   return res.deletedCount > 0;
 }

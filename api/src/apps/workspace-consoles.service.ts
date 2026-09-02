@@ -61,6 +61,7 @@ import {
   resolveMirrorTarget,
 } from "./cloud-repo.service";
 import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
+import { requireWorkspaceRepo } from "./workspace-repo-required";
 import {
   CONSOLES_README,
   CONSOLES_README_PATH,
@@ -379,14 +380,13 @@ export async function commitConsoleBatch(input: {
   /** Skip adoption — used by adoption itself. */
   skipAdoption?: boolean;
 }): Promise<ConsoleCommitResult> {
-  // Production: the workspace's own repo is the only durable store (§17).
+  const repoDir = await requireWorkspaceRepo(input.workspaceId);
   if (
     appsRequireConnectedRepo() &&
     !(await resolveMirrorTarget(input.workspaceId))
   ) {
     throw new RepoRequiredError();
   }
-  const repoDir = await ensureConsolesRepo(input.workspaceId);
   // Commit onto the mirror's main, not a stale cached tip (consoles pin to
   // the default branch — see branch-policy.ts).
   await freshenBeforeMainWrite(input.workspaceId);

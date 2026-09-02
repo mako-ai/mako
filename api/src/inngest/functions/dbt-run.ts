@@ -589,32 +589,31 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           DBT_AUTO_DISABLE_AFTER_FAILURES > 0 &&
           failures >= DBT_AUTO_DISABLE_AFTER_FAILURES
         ) {
-          await DbtJob.updateOne(
-            { _id: updatedJob._id },
-            {
-              $set: {
-                enabled: false,
-                "scheduledRun.lastError": `Auto-disabled after ${failures} consecutive failures. Last error: ${errorMessage ?? "unknown"}`,
-              },
-              $unset: { "scheduledRun.nextAt": "" },
-            },
-          );
-          logger.warn("Auto-disabled dbt job after repeated failures", {
-            jobId: updatedJob._id.toString(),
-            consecutiveFailures: failures,
-          });
-          // enabled is authored state in dbt/jobs/<slug>.yml — flip the
-          // file too or the next push-sync would re-enable the job.
           try {
             const { commitDbtJobFile } = await import(
               "../../dbt/dbt-config.service"
             );
+            updatedJob.enabled = false;
             await commitDbtJobFile(
               { workspaceId: updatedJob.workspaceId },
               updatedJob,
               undefined,
               `dbt: auto-disable job "${updatedJob.name}" after ${failures} failures`,
             );
+            await DbtJob.updateOne(
+              { _id: updatedJob._id },
+              {
+                $set: {
+                  enabled: false,
+                  "scheduledRun.lastError": `Auto-disabled after ${failures} consecutive failures. Last error: ${errorMessage ?? "unknown"}`,
+                },
+                $unset: { "scheduledRun.nextAt": "" },
+              },
+            );
+            logger.warn("Auto-disabled dbt job after repeated failures", {
+              jobId: updatedJob._id.toString(),
+              consecutiveFailures: failures,
+            });
           } catch (error) {
             logger.warn("Auto-disable file write-through failed", { error });
           }

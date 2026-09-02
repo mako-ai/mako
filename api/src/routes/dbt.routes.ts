@@ -11,6 +11,7 @@ import { workspaceResourceLoader } from "./lib/load-resource";
 import { Readable } from "stream";
 import { Types } from "mongoose";
 import { z } from "zod";
+import { RepoRequiredError } from "../apps/config";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -154,6 +155,12 @@ function serverError(
   error: unknown,
   fallback: string,
 ) {
+  if (error instanceof RepoRequiredError) {
+    return c.json(
+      { success: false, code: error.code, error: error.message },
+      error.status as 412,
+    );
+  }
   if (error instanceof DbtProtectedEnvironmentError) {
     return c.json({ success: false, error: error.message }, 400);
   }
@@ -373,7 +380,7 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
         "This workspace already has a dbt project (dbt/ in the workspace repo)",
       );
     }
-    const project = await DbtProject.create({
+    const project = new DbtProject({
       workspaceId: new Types.ObjectId(workspaceId),
       name: body.name,
       dbtVersion: body.dbtVersion ?? "1.9",
@@ -384,9 +391,9 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
       defaultEnvironment: body.defaultEnvironment,
       createdBy: userId,
     });
-    // Environments/settings live in dbt/environments.yml (apps.md §23) from
-    // the first commit — not only after the first edit.
+    // Git first (issue #956): the file is the record, the row follows.
     await commitDbtEnvironmentsFile(project, userId);
+    await project.save();
 
     // Scaffold straight into the workspace repo: dbt/ appears as one commit
     // on the creator's session branch. A pre-existing dbt/dbt_project.yml
@@ -492,9 +499,8 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
       );
       if (personalError) return badRequest(c, personalError);
     }
-    await project.save();
-    // Environments/settings live in dbt/environments.yml (apps.md §23).
     await commitDbtEnvironmentsFile(project, getUserId(c));
+    await project.save();
     publishDbtEvent(c, {
       type: "dbt.project.updated",
       projectId: project._id.toString(),
@@ -877,7 +883,7 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     const validationError = validateJobBody(project, parsed.data);
     if (validationError) return badRequest(c, validationError);
 
-    const job = await DbtJob.create({
+    const job = new DbtJob({
       workspaceId: project.workspaceId,
       projectId: project._id,
       slug: await reserveJobSlug(project._id, parsed.data.name),
@@ -889,9 +895,10 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
       deferToProduction: parsed.data.deferToProduction,
       createdBy: getUserId(c),
     });
-    await applyJobScheduleChange(job);
-    // The definition is a file: dbt/jobs/<slug>.yml (apps.md §23).
+    // Git first: the file is the record, the derived row follows.
     await commitDbtJobFile(project, job, getUserId(c));
+    await job.save();
+    await applyJobScheduleChange(job);
     const fresh = await DbtJob.findById(job._id).lean();
     publishDbtEvent(c, {
       type: "dbt.job.updated",
@@ -947,9 +954,9 @@ dbtRoutes.patch(
       job.schedule = merged.schedule ?? undefined;
       job.enabled = merged.enabled;
       job.deferToProduction = merged.deferToProduction;
+      await commitDbtJobFile(project, job, getUserId(c));
       await job.save();
       await applyJobScheduleChange(job);
-      await commitDbtJobFile(project, job, getUserId(c));
       const fresh = await DbtJob.findById(job._id).lean();
       publishDbtEvent(c, {
         type: "dbt.job.updated",
@@ -981,8 +988,8 @@ dbtRoutes.delete(
       if (!doomed) {
         return c.json({ success: false, error: "Job not found" }, 404);
       }
-      await DbtJob.deleteOne({ _id: doomed._id });
       await deleteDbtJobFile(project, doomed.slug, getUserId(c));
+      await DbtJob.deleteOne({ _id: doomed._id });
       publishDbtEvent(c, {
         type: "dbt.job.updated",
         projectId: project._id.toString(),

@@ -16,8 +16,11 @@ import {
 } from "./repository.service";
 import {
   PROMPT_PATH,
+  SELF_DIRECTIVE_PATH,
   commitWorkspacePrompt,
+  commitWorkspaceSelfDirective,
   readWorkspacePromptFile,
+  readWorkspaceSelfDirectiveFile,
 } from "./workspace-prompt";
 
 let mongo: MongoMemoryServer;
@@ -73,5 +76,14 @@ describe("workspace prompt in git", () => {
     await initRepo(repoDirFor(WS), { "README.md": "x\n" });
     await commitWorkspacePrompt(WS, "no newline");
     expect(await readWorkspacePromptFile(WS)).toBe("no newline\n");
+  });
+
+  it("self-directive lives in SELF_DIRECTIVE.md, not PROMPT.md", async () => {
+    await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+    await commitWorkspaceSelfDirective(WS, "Never drop prod\n");
+    expect(await readWorkspaceSelfDirectiveFile(WS)).toBe("Never drop prod\n");
+    expect(await readWorkspacePromptFile(WS)).toBeNull();
+    const [head] = await repoLog(repoDirFor(WS), MAIN, 1);
+    expect(head.subject).toBe(`self-directive: update ${SELF_DIRECTIVE_PATH}`);
   });
 });

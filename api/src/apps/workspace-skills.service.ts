@@ -27,9 +27,8 @@ import {
   ensureWorkspaceRepo,
   freshenBeforeMainWrite,
   queueMirrorPush,
-  resolveMirrorTarget,
 } from "./cloud-repo.service";
-import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
+import { requireWorkspaceRepo } from "./workspace-repo-required";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -108,11 +107,9 @@ export async function listSkillFilesFromRepo(
   return out;
 }
 
-/** Production gate (apps.md §17): no connected repo, no durable skill save. */
+/** No local git repo, no durable skill mutation (issue #956). */
 async function assertDurableWritable(workspaceId: string): Promise<void> {
-  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
-    throw new RepoRequiredError();
-  }
+  await requireWorkspaceRepo(workspaceId);
 }
 
 /**
@@ -131,7 +128,7 @@ export async function commitSkillSave(
   } = {},
 ): Promise<void> {
   await assertDurableWritable(workspaceId);
-  const repoDir = await ensureWorkspaceRepo(workspaceId, options.author);
+  const repoDir = await requireWorkspaceRepo(workspaceId);
   // Commit onto the mirror's main, not a stale cached tip.
   await freshenBeforeMainWrite(workspaceId);
   const writes: Record<string, string> = {};
@@ -181,8 +178,8 @@ export async function commitSkillDelete(
   author?: GitAuthor,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(name)) return false;
+  await requireWorkspaceRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return false;
   await freshenBeforeMainWrite(workspaceId);
   const deletes = await skillFolderPaths(repoDir, name);
   if (deletes.length === 0) return false;
@@ -207,8 +204,8 @@ export async function commitSkillSuppressed(
   author?: GitAuthor,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(name)) return false;
+  await requireWorkspaceRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return false;
   await freshenBeforeMainWrite(workspaceId);
   const path = skillFilePath(name);
   const raw = await readRepoFile(repoDir, path);

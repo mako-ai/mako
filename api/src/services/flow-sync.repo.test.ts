@@ -16,7 +16,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -25,6 +33,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 vi.mock("./workspace-repos.service", () => ({
   getWorkspaceRepo: vi.fn(async () => null),
   findWorkspaceIdByRepoBinding: vi.fn(async () => null),
+  findWorkspaceIdsByRepoBinding: vi.fn(async () => []),
 }));
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
@@ -118,7 +127,10 @@ describe("a NEW flow file creates a row", () => {
 
     expect(result.created).toBe(1);
     expect(result.invalid).toEqual([]);
-    const row = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     expect(row).not.toBeNull();
     expect(row!.createdBy).toBe("user-42");
     expect(row!.type).toBe("webhook");
@@ -139,7 +151,10 @@ describe("a NEW flow file creates a row", () => {
     const result = await syncFlowsFromRepo(WS);
 
     expect(result.created).toBe(1);
-    const row = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     // Same author the dbt job sync uses for the same situation.
     expect(row?.createdBy).toBe("sync");
   });
@@ -168,7 +183,9 @@ describe("one bad file is that file's problem", () => {
     expect(result.invalid).toEqual(["a-bad-one"]);
     expect(result.created).toBe(1);
     expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
-    expect(await Flow.findOne({ workspaceId: WS, slug: "z-good-one" })).not.toBeNull();
+    expect(
+      await Flow.findOne({ workspaceId: WS, slug: "z-good-one" }),
+    ).not.toBeNull();
   });
 
   it("a connector NAME where an id belongs is refused, not thrown", async () => {
@@ -199,24 +216,34 @@ describe("one bad file is that file's problem", () => {
       "flows/other.yml": flowYaml("Other"),
     });
     await syncFlowsFromRepo(WS, "user-42");
-    const before = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const before = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
 
     await push({ "flows/close-to-bigquery.yml": "name: [broken\n" });
     const result = await syncFlowsFromRepo(WS, "user-42");
 
     expect(result.invalid).toEqual(["close-to-bigquery"]);
     expect(result.deferred).toEqual([]);
-    const after = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const after = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     expect(after).not.toBeNull();
     expect(after!.name).toBe(before!.name);
     expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);
+    expect(after!.definitionInvalid?.reason).toMatch(/unparseable/i);
     expect(await Flow.countDocuments({ workspaceId: WS })).toBe(2);
   });
 
   it("a failed save on an EXISTING row keeps that row as it was", async () => {
     await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
     await syncFlowsFromRepo(WS, "user-42");
-    const before = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const before = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
 
     await push({
       "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
@@ -227,7 +254,10 @@ describe("one bad file is that file's problem", () => {
     const result = await syncFlowsFromRepo(WS, "user-42");
 
     expect(result.invalid).toEqual(["close-to-bigquery"]);
-    const after = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const after = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     expect(after!.name).toBe(before!.name);
     expect(after!.writeMode).toBe(before!.writeMode);
     expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);

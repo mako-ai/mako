@@ -25,6 +25,7 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
+  initRepo,
   listTree,
   log,
   readBlob,
@@ -74,6 +75,7 @@ beforeEach(async () => {
   await ConsoleFolder.deleteMany({});
   await EntityVersion.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
 });
 
 async function fileAt(rel: string): Promise<string | null> {
@@ -445,8 +447,6 @@ describe("sync from repo", () => {
       path: "consoles/legacy.sql",
       sourceBlobSha: "x",
     });
-    const { initRepo } = await import("./repository.service");
-    await initRepo(repoDirFor(WS), { "README.md": "x\n" });
     expect(await syncConsolesIndexFromRepo(WS, USER)).toBeNull();
     expect(
       (await SavedConsole.findOne({ name: "legacy" }))?.is_deleted,

@@ -121,7 +121,6 @@ export interface IWorkspace extends Document {
     maxDatabases: number;
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
-    customPrompt?: string;
     disabledModelIds?: string[];
     /**
      * Max concurrent scheduled/manual dashboard artifact refreshes for this
@@ -130,7 +129,6 @@ export interface IWorkspace extends Document {
     dashboardRefreshConcurrency?: number;
   };
   billing: IWorkspaceBilling;
-  selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
   /**
    * Connected GitHub repos — workspace-level infrastructure, not an apps
@@ -938,9 +936,19 @@ export interface IFlow extends Document {
   /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
-   * file itself.
+   * file itself. Derived cache — git is the store.
    */
   sourceBlobSha?: string;
+  /**
+   * Set when `flows/<slug>.yml` at main does not parse or cannot be applied.
+   * Runtime must not run this definition and must never write the row back
+   * over the file.
+   */
+  definitionInvalid?: {
+    reason: string;
+    at: Date;
+    path?: string;
+  };
 
   // Source configuration — either a source connection or a database connection
   sourceType: "connector" | "database";
@@ -1278,28 +1286,6 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         enum: ["free", "pro", "enterprise"],
         default: "free",
       },
-      customPrompt: {
-        type: String,
-        default: `# Custom Prompt Configuration
-
-This is your custom prompt that will be combined with the system prompt to provide additional context about your data and business relationships.
-
-## Business Context
-Add information about your business domain, terminology, and key concepts here.
-
-## Data Relationships
-Describe important relationships between your collections and how they connect.
-
-## Common Queries
-Document frequently requested queries or analysis patterns.
-
-## Custom Instructions
-Add any specific instructions for how the AI should interpret your data or respond to certain types of questions.
-
----
-
-*This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
-      },
       disabledModelIds: [{ type: String }],
       dashboardRefreshConcurrency: {
         type: Number,
@@ -1334,11 +1320,6 @@ Add any specific instructions for how the AI should interpret your data or respo
       lastReportedOverageCents: { type: Number, default: 0 },
       pendingReportedOverageCents: { type: Number, default: null },
       pendingMeterEventIdempotencyKey: { type: String, default: null },
-    },
-    selfDirective: {
-      type: String,
-      default: "",
-      maxlength: 10000,
     },
     workspaceRepos: {
       type: [
@@ -2300,6 +2281,11 @@ const FlowSchema = new Schema<IFlow>(
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
+    },
+    definitionInvalid: {
+      reason: { type: String },
+      at: { type: Date },
+      path: { type: String },
     },
     // Source type discriminator - defaults to "connector" for backward compatibility
     sourceType: {
@@ -4538,6 +4524,15 @@ export interface IDbtProject extends Document {
    * the state artifact for --defer / state:modified+ (Slim CI, later phase).
    */
   lastProdManifestKey?: string;
+  /**
+   * Set when `dbt/environments.yml` at main does not parse. The derived
+   * environments array is left as last-good; the file is never overwritten
+   * from Mongo.
+   */
+  environmentsInvalid?: {
+    reason: string;
+    at: Date;
+  };
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -4572,6 +4567,10 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     defaultEnvironment: { type: String, default: "dev" },
     prodEnvironment: { type: String },
     lastProdManifestKey: { type: String },
+    environmentsInvalid: {
+      reason: { type: String },
+      at: { type: Date },
+    },
     createdBy: { type: String, required: true },
   },
   { collection: "dbt_projects", timestamps: true },
@@ -4697,8 +4696,13 @@ export interface IDbtJob extends Document {
   name: string;
   /** Filename identity in dbt/jobs/<slug>.yml (apps.md §23). */
   slug?: string;
-  /** Blob sha of the job file this row mirrors (sync levelling). */
   sourceBlobSha?: string;
+  /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
+  definitionInvalid?: {
+    reason: string;
+    at: Date;
+    path?: string;
+  };
   /** Environment name from the project's environments list. */
   environment: string;
   /** Validated against the dbt command allowlist (api/src/dbt/commands.ts). */
@@ -4740,6 +4744,11 @@ const DbtJobSchema = new Schema<IDbtJob>(
     name: { type: String, required: true, trim: true },
     slug: { type: String },
     sourceBlobSha: { type: String },
+    definitionInvalid: {
+      reason: { type: String },
+      at: { type: Date },
+      path: { type: String },
+    },
     environment: { type: String, required: true },
     commands: { type: [String], default: [] },
     schedule: {

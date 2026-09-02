@@ -19,6 +19,7 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
+import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
@@ -119,16 +120,8 @@ async function commitConfig(
   message: string,
   author?: GitAuthor,
 ): Promise<boolean> {
-  // Freshened by repoDirIfExists: config-as-code commits land on main, so
-  // they are judged against the mirror's main rather than this instance's
-  // cache (#916, moved up to the choke point so the reads get it too —
-  // freshenBeforeMainWrite is un-throttled, so doing it in both places would
-  // cost two sequential fetches per write).
-  const repoDir = await repoDirIfExists(workspaceId);
-  // No repo (pre-§17 workspace): Mongo remains the only home — nothing to
-  // write through. RealAdvisor and every §17-era workspace has one. Callers
-  // get `false` so they never record a file that was not written.
-  if (!repoDir) return false;
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
@@ -168,12 +161,18 @@ export async function commitDbtJobFile(
     messageOverride ?? `dbt: job "${job.name}" (${job.slug})`,
     actorUserId ? await authorForUser(actorUserId) : undefined,
   );
-  // Stamp the row AFTER the file exists. Stamping first meant a failed or
-  // skipped commit (no repo) left the row claiming a sha for a file that was
-  // never written, and the push-sync short-circuits on a matching sha — so
-  // the row could never be repaired from the file.
+  // Stamp AFTER the file exists. Stamping first meant a failed commit left
+  // the row claiming a sha for a file that was never written, and the
+  // push-sync short-circuits on a matching sha. For a not-yet-persisted
+  // document (`new DbtJob`), the caller saves after this returns.
   if (written && job.sourceBlobSha !== sha) {
-    await DbtJob.updateOne({ _id: job._id }, { $set: { sourceBlobSha: sha } });
+    job.sourceBlobSha = sha;
+    if (!job.isNew) {
+      await DbtJob.updateOne(
+        { _id: job._id },
+        { $set: { sourceBlobSha: sha } },
+      );
+    }
   }
 }
 
@@ -236,7 +235,7 @@ async function syncDbtConfigNow(
   _actorUserId?: string,
 ): Promise<void> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return;
+  if (repoDir == null) return;
   const project = await DbtProject.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
   });
@@ -259,9 +258,15 @@ async function syncDbtConfigNow(
         ? null
         : parseEnvironmentsFile(blob.contents);
       if (!parsed) {
-        logger.warn("dbt environments.yml is invalid; keeping current config", {
-          workspaceId,
-        });
+        logger.warn(
+          "dbt environments.yml is invalid; not overwriting from Mongo",
+          { workspaceId },
+        );
+        project.environmentsInvalid = {
+          reason: "unparseable environments.yml",
+          at: new Date(),
+        };
+        if (project.isModified()) await project.save();
       } else {
         project.environments = parsed.environments.map(env => ({
           name: env.name,
@@ -274,6 +279,10 @@ async function syncDbtConfigNow(
         project.defaultEnvironment = parsed.defaultEnvironment;
         project.prodEnvironment = parsed.prodEnvironment;
         if (parsed.dbtVersion) project.dbtVersion = parsed.dbtVersion;
+        if (project.environmentsInvalid) {
+          project.environmentsInvalid = undefined;
+          project.markModified("environmentsInvalid");
+        }
         if (project.isModified()) await project.save();
       }
     } catch (error) {
@@ -294,10 +303,19 @@ async function syncDbtConfigNow(
     if (row && row.sourceBlobSha === sha) continue; // level already
     const parsed = parseJobFile(contents);
     if (!parsed) {
-      logger.warn("dbt job file is invalid; keeping current row", {
+      logger.warn("dbt job file is invalid; not overwriting from Mongo", {
         workspaceId,
         path,
       });
+      if (row) {
+        row.definitionInvalid = {
+          reason: "unparseable job file",
+          at: new Date(),
+          path,
+        };
+        row.enabled = false;
+        await row.save();
+      }
       continue;
     }
     try {
@@ -340,6 +358,10 @@ async function syncDbtConfigNow(
     doc.enabled = parsed.enabled;
     doc.deferToProduction = parsed.deferToProduction;
     doc.sourceBlobSha = sha;
+    if (doc.definitionInvalid) {
+      doc.definitionInvalid = undefined;
+      doc.markModified("definitionInvalid");
+    }
     await doc.save();
     if (scheduleChanged) await applyJobScheduleChange(doc);
     logger.info("dbt job synced from repo", { workspaceId, slug });
@@ -369,7 +391,7 @@ export async function adoptDbtConfig(workspaceId: string): Promise<{
   written: number;
 }> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return { jobs: 0, written: 0 };
+  if (repoDir == null) return { jobs: 0, written: 0 };
   const project = await DbtProject.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
   });

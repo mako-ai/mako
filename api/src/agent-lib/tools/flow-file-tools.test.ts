@@ -42,6 +42,7 @@ const state = vi.hoisted(() => ({
 vi.mock("../../services/workspace-repos.service", () => ({
   getWorkspaceRepo: vi.fn(async () => null),
   findWorkspaceIdByRepoBinding: vi.fn(async () => null),
+  findWorkspaceIdsByRepoBinding: vi.fn(async () => []),
 }));
 // A read-only tool must send no events. Observed rather than assumed.
 vi.mock("../../inngest/client", () => ({

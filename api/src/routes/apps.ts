@@ -80,6 +80,7 @@ import {
   writeFile,
   repoForWorkspace,
   scopeOf,
+  syncRepoBackedResources,
 } from "../apps/worktree.service";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
@@ -274,12 +275,15 @@ async function loadProject(
   return { project, userId };
 }
 
-function toProjectJson(p: IAppProject) {
+function toProjectJson(
+  p: IAppProject,
+  manifest?: { title: string; description?: string },
+) {
   return {
     id: p._id.toString(),
     slug: p.slug,
-    title: p.title,
-    description: p.description,
+    title: manifest?.title ?? p.slug ?? "",
+    description: manifest?.description,
     access: p.access,
     owner_id: p.owner_id,
     defaultBranch: p.defaultBranch,
@@ -288,6 +292,18 @@ function toProjectJson(p: IAppProject) {
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
+}
+
+async function manifestForProject(
+  workspaceId: string,
+  slug: string | undefined,
+): Promise<{ title: string; description?: string } | undefined> {
+  if (!slug) return undefined;
+  const folders = await listAppFolders(workspaceId);
+  const folder = folders.find(f => f.slug === slug);
+  return folder
+    ? { title: folder.title, description: folder.description }
+    : undefined;
 }
 
 function handleError(c: AuthenticatedContext, error: unknown) {
@@ -581,8 +597,12 @@ appsRoutes.openapi(
           workspaceId,
           binding.owner,
           binding.repo,
+          { purge: false },
         ).catch(() => undefined);
         throw error;
+      }
+      if (adoption !== "deferred") {
+        syncRepoBackedResources(workspaceId);
       }
       return c.json({ success: true as const, repo: binding, adoption }, 200);
     } catch (error) {
@@ -757,7 +777,10 @@ appsRoutes.openapi(
         userId,
       });
       return c.json(
-        { success: true as const, app: toProjectJson(project) },
+        {
+          success: true as const,
+          app: toProjectJson(project, { title, description }),
+        },
         200,
       );
     } catch (error) {
@@ -780,8 +803,15 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      const manifest = await manifestForProject(
+        loaded.project.workspaceId.toString(),
+        loaded.project.slug,
+      );
       return c.json(
-        { success: true as const, app: toProjectJson(loaded.project) },
+        {
+          success: true as const,
+          app: toProjectJson(loaded.project, manifest),
+        },
         200,
       );
     } catch (error) {

@@ -91,9 +91,15 @@ export async function checkpointNotebook(
   workspaceId: string,
   notebookId: string,
   actorUserId?: string,
-): Promise<{ committed: boolean }> {
+): Promise<{ committed: boolean; skippedReason?: "no_repository" }> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return { committed: false };
+  if (repoDir == null) {
+    logger.warn("Notebook checkpoint not committed — connect a repository", {
+      workspaceId,
+      notebookId,
+    });
+    return { committed: false, skippedReason: "no_repository" };
+  }
   const [doc, index] = await Promise.all([
     getNotebookStore().get(workspaceId, notebookId),
     NotebookIndex.findOne({
@@ -140,7 +146,13 @@ export async function removeNotebookFile(
 ): Promise<void> {
   if (!index.path) return;
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return;
+  if (repoDir == null) {
+    logger.warn("Notebook file not deleted from git — connect a repository", {
+      workspaceId,
+      path: index.path,
+    });
+    return;
+  }
   await commitBlobsOnBranch(
     repoDir,
     DEFAULT_BRANCH,
@@ -248,7 +260,7 @@ async function syncNotebooksNow(
   actorUserId?: string,
 ): Promise<void> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return;
+  if (repoDir == null) return;
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) return;
   const paths = (await listTree(repoDir, head))
@@ -337,7 +349,7 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
   written: number;
 }> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return { notebooks: 0, written: 0 };
+  if (repoDir == null) return { notebooks: 0, written: 0 };
   const store = getNotebookStore();
   const indexes = await NotebookIndex.find({
     workspaceId: new Types.ObjectId(workspaceId),

@@ -14,6 +14,7 @@ import {
   revokeMcpConnection,
 } from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
+import { readWorkspaceSelfDirectiveFile } from "../apps/workspace-prompt";
 import {
   clampDashboardRefreshConcurrency,
   DASHBOARD_REFRESH_CONCURRENCY_MAX,
@@ -597,9 +598,7 @@ workspaceRoutes.openapi(
             updatedAt: authenticatedWorkspace.updatedAt,
             settings: authenticatedWorkspace.settings,
             selfDirective:
-              typeof authenticatedWorkspace.selfDirective === "string"
-                ? authenticatedWorkspace.selfDirective
-                : "",
+              (await readWorkspaceSelfDirectiveFile(workspaceId)) ?? "",
           },
         });
       }
@@ -628,9 +627,7 @@ workspaceRoutes.openapi(
           updatedAt: workspace.updatedAt,
           settings: workspace.settings,
           selfDirective:
-            typeof workspace.selfDirective === "string"
-              ? workspace.selfDirective
-              : "",
+            (await readWorkspaceSelfDirectiveFile(workspaceId)) ?? "",
         },
       });
     } catch (error) {

@@ -5,9 +5,9 @@
  * authoritative: a push that changes `flows/<slug>.yml` changes the flow.
  *
  * Structure mirrors `dbt/dbt-config.service.ts#syncDbtConfigNow` deliberately
- * — same tree read, same `sourceBlobSha` short-circuit, same "invalid file
- * keeps the current row" tolerance. Two things differ, and both make this
- * more dangerous than the dbt version:
+ * — same tree read, same `sourceBlobSha` short-circuit. Invalid files are
+ * marked on the row and never replaced by Mongo: a broken YAML must not be
+ * "healed" from the derived cache.
  *
  *  1. A flow is a RUNNING STREAM. 31 of 31 production flows are CDC, so a
  *     definition change has to reconcile something live rather than change
@@ -32,6 +32,7 @@ import { loggers } from "../logging";
 import {
   DEFAULT_BRANCH,
   listTree,
+  readBlob,
   readBlobsBatch,
   repoDirFor,
   repoExists,
@@ -98,6 +99,77 @@ export function mintedWebhookEndpoint(args: {
   // Belt and braces: never overwrite one that somehow already exists.
   if (args.existingEndpoint) return null;
   return generateWebhookEndpoint(args.workspaceId, args.flowId);
+}
+
+async function markFlowInvalid(
+  doc: IFlow,
+  reason: string,
+  path: string,
+): Promise<void> {
+  doc.definitionInvalid = { reason, at: new Date(), path };
+  if (doc.schedule) doc.schedule.enabled = false;
+  if (doc.backfillSchedule) doc.backfillSchedule.enabled = false;
+  await doc.save();
+}
+
+/**
+ * SHA-check the derived cache against `flows/<slug>.yml` at main.
+ * Resyncs the row when the blob moved; never writes Mongo over an invalid file.
+ */
+export async function ensureFlowDerivedCache(flow: {
+  _id: { toString(): string };
+  workspaceId: { toString(): string };
+  slug?: string;
+  sourceBlobSha?: string;
+  definitionInvalid?: { reason: string } | null;
+}): Promise<"ok" | "invalid" | "missing" | "resynced"> {
+  if (!flow.slug) return "ok";
+  const workspaceId = flow.workspaceId.toString();
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) {
+    return flow.definitionInvalid ? "invalid" : "ok";
+  }
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!head) return flow.definitionInvalid ? "invalid" : "ok";
+  const path = `flows/${flow.slug}.yml`;
+  let contents: string;
+  try {
+    const blob = await readBlob(repoDir, head, path);
+    if (blob.isBinary) {
+      const row = await Flow.findById(flow._id);
+      if (row) await markFlowInvalid(row, "binary flow file", path);
+      return "invalid";
+    }
+    contents = blob.contents;
+  } catch {
+    const row = await Flow.findById(flow._id);
+    if (row) await markFlowInvalid(row, "flow file missing at main", path);
+    return "missing";
+  }
+  const sha = blobOid(contents);
+  if (flow.sourceBlobSha === sha && !flow.definitionInvalid) return "ok";
+  const parsed = parseFlowFile(contents);
+  const row = await Flow.findById(flow._id);
+  if (!row) return "missing";
+  if (!parsed) {
+    await markFlowInvalid(row, "unparseable flow file", path);
+    return "invalid";
+  }
+  let refusal: string | null;
+  try {
+    refusal = applyDefinition(row, parsed);
+  } catch (error) {
+    refusal = error instanceof Error ? error.message : String(error);
+  }
+  if (refusal) {
+    await markFlowInvalid(row, refusal, path);
+    return "invalid";
+  }
+  row.definitionInvalid = undefined;
+  row.sourceBlobSha = sha;
+  await row.save();
+  return "resynced";
 }
 
 export interface FlowSyncResult {
@@ -415,12 +487,13 @@ export async function syncFlowsFromRepo(
 
     const parsed = parsedForDesired;
     if (!parsed) {
-      // Keep the current row: a file that does not parse is far more likely
-      // to be a bad edit than an instruction to change a running stream.
-      logger.warn("Flow file is invalid; keeping current row", {
+      logger.warn("Flow file is invalid; not overwriting from Mongo", {
         workspaceId,
         path,
       });
+      if (row) {
+        await markFlowInvalid(row, "unparseable flow file", path);
+      }
       result.invalid.push(slug);
       continue;
     }
@@ -440,11 +513,14 @@ export async function syncFlowsFromRepo(
       refusal = error instanceof Error ? error.message : String(error);
     }
     if (refusal) {
-      logger.warn("Flow file cannot be applied; keeping current row", {
+      logger.warn("Flow file cannot be applied; not overwriting from Mongo", {
         workspaceId,
         path,
         reason: refusal,
       });
+      if (row) {
+        await markFlowInvalid(row, refusal, path);
+      }
       result.invalid.push(slug);
       continue;
     }
@@ -465,6 +541,7 @@ export async function syncFlowsFromRepo(
       } as IFlow["webhookConfig"];
     }
     (doc as IFlow).sourceBlobSha = sha;
+    (doc as IFlow).definitionInvalid = undefined;
     // One file's failure is that file's problem. `save()` can still throw for
     // a file that parsed and applied — a value outside a schema enum, an id
     // that is not an ObjectId — and letting that escape would skip every file

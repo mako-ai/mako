@@ -1,6 +1,4 @@
-import * as fs from "fs";
 import { sortTreeNodes } from "./folder-tree";
-import * as path from "path";
 import { Types } from "mongoose";
 import {
   SavedConsole,
@@ -44,54 +42,7 @@ export interface ConsoleFile {
 }
 
 export class ConsoleManager {
-  private consolesDir: string;
-
-  constructor() {
-    // Allow overriding via environment variable
-    const envDir = process.env.CONSOLES_DIR;
-
-    const cwdDir = path.join(process.cwd(), "consoles");
-
-    // Secondary candidate – parent directory (useful when the server is started from a sub-folder like /api)
-    const parentDir = path.join(process.cwd(), "..", "consoles");
-
-    // Determine which directory actually exists AND contains at least one entry
-    let resolvedDir: string | undefined = undefined;
-
-    const candidates = [envDir, parentDir, cwdDir].filter(Boolean) as string[];
-
-    for (const dir of candidates) {
-      if (fs.existsSync(dir)) {
-        try {
-          // Treat directory as valid only if it has files / sub-directories
-          const items = fs.readdirSync(dir);
-          if (items.length > 0) {
-            resolvedDir = dir;
-            break;
-          }
-        } catch {
-          // Ignore permission errors etc.
-        }
-      }
-    }
-
-    // Fallback to first existing directory (even if empty) or cwdDir
-    if (!resolvedDir) {
-      for (const dir of candidates) {
-        if (fs.existsSync(dir)) {
-          resolvedDir = dir;
-          break;
-        }
-      }
-    }
-
-    this.consolesDir = resolvedDir || cwdDir;
-
-    // Log only in development environment
-    if (process.env.NODE_ENV !== "production") {
-      logger.info("Consoles directory resolved", { path: this.consolesDir });
-    }
-  }
+  constructor() {}
 
   /**
    * Determine the effective access level for a console.
@@ -269,7 +220,7 @@ export class ConsoleManager {
     } catch (error) {
       if (error instanceof RepoRequiredError) throw error;
       logger.error("Error listing consoles from database", { error });
-      return this.listConsolesFromFilesystem();
+      throw error;
     }
   }
 
@@ -509,13 +460,11 @@ export class ConsoleManager {
         }
       }
 
-      // Fallback to filesystem
-      return this.getConsoleFromFilesystem(consolePath);
+      throw new Error(`Console not found: ${consolePath}`);
     } catch (error) {
       if (error instanceof RepoRequiredError) throw error;
       logger.error("Error getting console from database", { error });
-      // Fallback to filesystem
-      return this.getConsoleFromFilesystem(consolePath);
+      throw error;
     }
   }
 
@@ -1293,9 +1242,7 @@ export class ConsoleManager {
         }
       }
 
-      // Fallback to filesystem
-      const fullPath = path.join(this.consolesDir, `${consolePath}.js`);
-      return fs.existsSync(fullPath);
+      return false;
     } catch (error) {
       if (error instanceof RepoRequiredError) throw error;
       logger.error("Error checking console existence", { error });
@@ -1476,92 +1423,6 @@ export class ConsoleManager {
     }
 
     return currentParentId;
-  }
-
-  // --- Filesystem fallback methods ---
-
-  /**
-   * Get all consoles in a tree structure from filesystem (fallback)
-   */
-  private listConsolesFromFilesystem(): ConsoleFile[] {
-    const results = this.scanDirectory("");
-    return results;
-  }
-
-  /**
-   * Get console content from filesystem (fallback)
-   */
-  private getConsoleFromFilesystem(consolePath: string): string {
-    const fullPath = path.join(this.consolesDir, `${consolePath}.js`);
-
-    if (!fs.existsSync(fullPath)) {
-      throw new Error(`Console file not found: ${consolePath}`);
-    }
-
-    return fs.readFileSync(fullPath, "utf8");
-  }
-
-  /**
-   * Save console to filesystem (for backward compatibility)
-   */
-  private saveConsoleToFilesystem(consolePath: string, content: string): void {
-    const fullPath = path.join(this.consolesDir, `${consolePath}.js`);
-    const dir = path.dirname(fullPath);
-
-    // Ensure directory exists
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    fs.writeFileSync(fullPath, content, "utf8");
-  }
-
-  /**
-   * Recursively scan directory for console files (filesystem fallback)
-   */
-  private scanDirectory(relativePath: string): ConsoleFile[] {
-    const fullPath = path.join(this.consolesDir, relativePath);
-
-    if (!fs.existsSync(fullPath)) {
-      logger.warn("Directory not found", { path: fullPath });
-      return [];
-    }
-
-    const items = fs.readdirSync(fullPath);
-    const result: ConsoleFile[] = [];
-
-    for (const item of items) {
-      const itemPath = path.join(fullPath, item);
-      const relativeItemPath = path.join(relativePath, item);
-      const stat = fs.statSync(itemPath);
-
-      if (stat.isDirectory()) {
-        const children = this.scanDirectory(relativeItemPath);
-        result.push({
-          path: relativeItemPath,
-          name: item,
-          content: "", // Directories don't have direct content in this model
-          isDirectory: true,
-          children,
-        });
-      } else if (item.endsWith(".js")) {
-        const content = fs.readFileSync(itemPath, "utf8");
-        const nameWithoutExt = item.replace(".js", "");
-        result.push({
-          path: relativeItemPath.replace(".js", ""), // Store path without .js extension
-          name: nameWithoutExt,
-          content,
-          isDirectory: false,
-        });
-      }
-    }
-
-    return result.sort((a, b) => {
-      // Directories first, then files
-      if (a.isDirectory && !b.isDirectory) return -1;
-      if (!a.isDirectory && b.isDirectory) return 1;
-      return a.name.localeCompare(b.name);
-    });
   }
 
   /**

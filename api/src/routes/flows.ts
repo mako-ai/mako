@@ -33,6 +33,7 @@ import {
 } from "../services/destination-writer.service";
 import { teardownFlow } from "../sync-cdc/flow-reconcile";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
+import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import { resolveMirrorTarget } from "../apps/cloud-repo.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { syncMachineService } from "../sync-cdc/sync-state";
@@ -79,21 +80,8 @@ const logger = loggers.inngest("flow");
  * the opposite of the position consoles were in when they hit this.
  */
 /**
- * Write the definition to its file, and REFUSE to report success if it did
- * not land.
- *
- * `commitFlowFile` is deliberately tolerant — a failed mirror must not fail a
- * user's mutation — and that was right while the file was a projection of the
- * row. Block 3 made the file authoritative, and the tolerance then produces a
- * silent, undetectable divergence: the row moves, the file does not, and
- * `sourceBlobSha` still matches the OLD file, so the next sync sees "unchanged"
- * and skips it. The row and the file disagree, permanently, and the system
- * believes they agree.
- *
- * The row is left as saved rather than rolled back: Mongo still drives the
- * running flow, so reverting it would stop a stream the user asked to change.
- * What changes is that the caller is TOLD, instead of being shown a 200 for a
- * definition that never reached its home.
+ * Write the definition to its file first, then the caller persists the
+ * derived index. A failed commit fails the request — git is the store.
  */
 async function commitFlowFileOrFail(
   c: AuthenticatedContext,
@@ -101,7 +89,11 @@ async function commitFlowFileOrFail(
   actorUserId?: string,
 ): Promise<Response | null> {
   const result = await commitFlowFile(flow, actorUserId);
-  if (result.ok) return null;
+  if (result.ok) {
+    if (result.sourceBlobSha) flow.sourceBlobSha = result.sourceBlobSha;
+    flow.definitionInvalid = undefined;
+    return null;
+  }
   logger.error("Flow definition did not reach the workspace repo", {
     workspaceId: flow.workspaceId.toString(),
     slug: flow.slug,
@@ -112,7 +104,7 @@ async function commitFlowFileOrFail(
       success: false,
       code: "definition_not_committed",
       error:
-        "The flow was saved but its definition could not be written to the workspace repo, so the repo and the running flow now disagree. Retry the change; if it keeps failing, check the GitHub connection.",
+        "The flow definition could not be written to the workspace repo, so nothing was saved. Retry the change; if it keeps failing, check the GitHub connection.",
       detail: result.error,
     },
     502,
@@ -120,8 +112,10 @@ async function commitFlowFileOrFail(
 }
 
 async function assertFlowRepo(workspaceId: string): Promise<void> {
-  if (!appsRequireConnectedRepo()) return;
-  if (!(await resolveMirrorTarget(workspaceId))) throw new RepoRequiredError();
+  await requireWorkspaceRepo(workspaceId);
+  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
+    throw new RepoRequiredError();
+  }
 }
 
 /** 412 with the actionable message, as consoles and the prompt already do. */
@@ -1111,13 +1105,11 @@ flowRoutes.openapi(
         );
       }
 
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
       if (
@@ -1575,13 +1567,11 @@ flowRoutes.openapi(
         flow.conflictConfig.strategy = "update";
       }
 
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       // Populate references for response based on source type
       if (flow.sourceType !== "database" && flow.dataSourceId) {
@@ -1656,11 +1646,8 @@ flowRoutes.openapi(
       // repo reconciler (sync-cdc/flow-reconcile.ts). Two copies of a
       // five-collection teardown would drift, and the halves that drifted
       // would be the ones nobody deletes.
-      await teardownFlow(flow);
-      // Only this direction writes the file: a deletion made HERE is Mongo →
-      // git. When the reconciler tears down, the file is already gone from
-      // the tree and committing again would fight the push that caused it.
       await deleteFlowFile(flow, c.get("user")?.id);
+      await teardownFlow(flow);
 
       return c.json({
         success: true,
@@ -1737,13 +1724,11 @@ flowRoutes.openapi(
       } else {
         flow.schedule.enabled = !flow.schedule.enabled;
       }
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       return c.json({
         success: true,
@@ -2001,13 +1986,11 @@ flowRoutes.openapi(
           lastReason: "Switched to cdc engine",
         };
       }
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       return c.json({
         success: true,
@@ -2115,13 +2098,11 @@ flowRoutes.openapi(
         timezone,
         lastRunAt: flow.backfillSchedule?.lastRunAt,
       };
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       return c.json({
         success: true,
@@ -3162,13 +3143,11 @@ flowRoutes.openapi(
       if (created.signingSecret) {
         webhookConfig.secret = created.signingSecret;
       }
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       if (!created.signingSecret) {
         // Some providers create the endpoint but omit the signing secret from

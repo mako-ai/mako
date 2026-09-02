@@ -137,13 +137,16 @@ describe("write-through", () => {
     expect(await fileAt(jobFilePath(job.slug!))).toBeNull();
   });
 
-  it("commitDbtJobFile leaves the row unstamped when nothing was written", async () => {
-    // No repo → no file → the row must not claim a sha the push-sync would
+  it("commitDbtJobFile throws when there is no repo and does not stamp the row", async () => {
+    // No repo → 412. The row must not claim a sha the push-sync would
     // then treat as "already level".
     await fs.rm(repoDirFor(WS.toString()), { recursive: true, force: true });
     const project = await seedProject();
     const job = await seedJob(project, "Nightly");
-    await commitDbtJobFile(project, job);
+    await expect(commitDbtJobFile(project, job)).rejects.toMatchObject({
+      name: "RepoRequiredError",
+      status: 412,
+    });
     const fresh = await DbtJob.findById(job._id);
     expect(fresh?.sourceBlobSha).toBeFalsy();
   });
@@ -232,6 +235,29 @@ describe("sync from repo", () => {
     expect(fresh?.environments.find(e => e.name === "dev")?.targetSchema).toBe(
       "dbt_dev_v2",
     );
+  });
+
+  it("invalid job YAML is marked, not overwritten from Mongo", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly prod build");
+    await commitDbtJobFile(project, job);
+    const before = await DbtJob.findById(job._id);
+    const commands = [...(before?.commands ?? [])];
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath(job.slug!)]: "this: is: not: valid: yaml: [",
+        },
+      },
+      { message: "typo" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const after = await DbtJob.findById(job._id);
+    expect(after?.definitionInvalid?.reason).toMatch(/unparseable/i);
+    expect(after?.enabled).toBe(false);
+    expect(after?.commands).toEqual(commands);
   });
 });
 
