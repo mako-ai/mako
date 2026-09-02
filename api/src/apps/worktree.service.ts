@@ -838,7 +838,9 @@ export async function createProject(input: {
   }
   // Durable tier (§13.17): the connected repo. When one is bound, the
   // durable push is REQUIRED — on serverless hosts the local repo is an
-  // ephemeral cache. Hosts without a binding (dev, previews) stay local-only.
+  // ephemeral cache. Hosts without a binding (dev) stay local-only, and the
+  // read-only tier (previews, §26) resolves the mirror but `mirrorPushNow`
+  // is a no-op there: the app exists on that instance and nowhere else.
   try {
     if (mirror) {
       await mirrorPushNow(input.workspaceId);

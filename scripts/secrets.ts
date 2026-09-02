@@ -55,6 +55,9 @@ const LOCAL_ONLY = new Set([
   // dev DBs are prod clones carrying real customer bindings, so a synced
   // "allow" would arm mirror pushes on every machine that pulls .env.
   "APPS_CONNECTED_REPO_PUSH",
+  // Same reasoning for the read-only variant: whether a machine clones
+  // customer repos at all is that machine's decision, not a shared value.
+  "APPS_CONNECTED_REPO_READ",
   // A named tunnel is one machine's identity; its credentials live in that
   // machine's ~/.cloudflared and the hostname is useless anywhere else.
   "APPS_TUNNEL_NAME",

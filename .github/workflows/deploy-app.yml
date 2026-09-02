@@ -192,9 +192,16 @@ jobs:
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       APPS_SANDBOX_PROVIDER: e2b
       APPS_E2B_TEMPLATE: mako-apps
-      # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
-      # All previews share the staging DB, so they share the "staging" prefix:
-      # same workspace -> same repo regardless of which PR created it.
+      # Apps connected repos, READ-ONLY (apps.md §26). The preview DB is a
+      # copy of production, so it carries every workspace's real GitHub repo
+      # binding. Reading that repo (clone on a cache miss, fetch before reads
+      # and writes) is what makes apps, consoles, skills, dbt, flows and
+      # notebooks show up on a preview exactly as in production — the API
+      # derives all of them from the repo, not from Mongo. Pushing is left
+      # OFF (no APPS_CONNECTED_REPO_PUSH, no APPS_REQUIRE_CONNECTED_REPO):
+      # a commit made on a preview stays in that instance's local repo and
+      # must never land in a customer's repository.
+      APPS_CONNECTED_REPO_READ: allow
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -614,6 +621,7 @@ jobs:
             --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
+            --set-env-vars APPS_CONNECTED_REPO_READ=${APPS_CONNECTED_REPO_READ} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \

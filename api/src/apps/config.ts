@@ -53,6 +53,19 @@ export function appsConnectedRepoPushEnv(): string | undefined {
 }
 
 /**
+ * Opt-in for READING customer-connected repos without ever pushing to them:
+ * the local bare repo is restored from the connected repo on a cache miss and
+ * fetched from it before reads and writes, so apps, consoles, skills, dbt,
+ * flows and notebooks show exactly as in production — but every commit made
+ * here stays local. PR previews run this way (apps.md §26): they hold the
+ * production bindings, and a preview commit must never land in a customer's
+ * repository. Implied by the push opt-in and by production.
+ */
+export function appsConnectedRepoReadEnv(): string | undefined {
+  return appsEnv("CONNECTED_REPO_READ");
+}
+
+/**
  * Production: a workspace must connect its own GitHub repository before
  * anything is saved to git — there is no Mako-hosted tier (apps.md §17).
  * Unset (dev, previews, tests) = local bare repos, nothing durable.

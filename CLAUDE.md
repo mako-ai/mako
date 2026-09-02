@@ -128,6 +128,10 @@ The cloud environment starts with no `.env`. Bootstrap:
    Secret Manager, but `APPS_CONNECTED_REPO_PUSH` is opt-in per machine —
    without it, mirror pushes to customer repos are refused (safe default for
    a fresh environment); set it deliberately where pushes belong.
+   `APPS_CONNECTED_REPO_READ=allow` is the read-only middle: workspace repos
+   are cloned and fetched from the connected GitHub repo (so apps, consoles,
+   skills, dbt, flows and notebooks appear as in production) but never
+   pushed — what PR previews run (`apps.md` §26).
 3. Sandboxes cannot reach the environment's localhost:8080, so `pnpm dev`
    needs the cloudflared tunnel (`scripts/sandbox-tunnel.sh`); without a named
    tunnel it supervises an ephemeral trycloudflare URL. Terminals work without
