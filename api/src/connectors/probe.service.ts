@@ -433,7 +433,18 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       error.message = redactSecrets(error.message, secrets);
       throw error;
     }
-    const message = error instanceof Error ? error.message : String(error);
+    let message = error instanceof Error ? error.message : String(error);
+    // A vendor's 4xx body is the actionable part ("Unsupported field",
+    // "Invalid cursor", ...); axios only puts the status code in `message`.
+    const responseBody = (error as { response?: { data?: unknown } })?.response
+      ?.data;
+    if (responseBody !== undefined) {
+      const serialized =
+        typeof responseBody === "string"
+          ? responseBody
+          : JSON.stringify(responseBody);
+      message = `${message} — ${serialized.slice(0, 2_000)}`;
+    }
     throw new Error(redactSecrets(message, secrets));
   }
 }
