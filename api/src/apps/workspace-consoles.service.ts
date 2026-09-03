@@ -17,8 +17,10 @@
  * 3. READ. GET/list serves the files at `main` (`consoles/`,
  *    `users/<id>/consoles/`). Mongo is joined only for ACL, runtime, SHA,
  *    and embeddings. A file with no row still appears; a row with no file
- *    is not a live definition. No GitHub binding → empty list, never 412.
- *    Leftover local git without a binding is not a read surface.
+ *    is not a live definition. Reads never reconcile Mongo or publish
+ *    realtime events — push/webhook sync owns that mutation. No GitHub
+ *    binding → empty list, never 412. Leftover local git without a binding
+ *    is not a read surface.
  * 4. DERIVATION. Description + embedding are derived from the file and
  *    stamped with `descriptionSourceSha`; `deriveConsoleDescription` runs
  *    only while that differs from `sourceBlobSha`, behind a debounced
@@ -405,6 +407,10 @@ const consoleDefCache = new Map<
   string,
   { sha: string; defs: ConsoleDefinitionAtMain[] }
 >();
+const consoleDefLoads = new Map<
+  string,
+  { sha: string; promise: Promise<ConsoleDefinitionAtMain[]> }
+>();
 
 function isBinaryBuffer(buf: Buffer): boolean {
   return buf.includes(0);
@@ -425,6 +431,33 @@ export async function listConsoleDefinitionsAtMain(
   const cached = consoleDefCache.get(workspaceId);
   if (cached && cached.sha === sha) return cached.defs;
 
+  // A fresh Cloud Run replica can receive a whole workspace's explorer
+  // requests before the first tree read fills the cache. Share that cold
+  // load: parsing every console blob once per request is CPU-bound and can
+  // exhaust the service before autoscaling catches up.
+  const pending = consoleDefLoads.get(workspaceId);
+  if (pending && pending.sha === sha) return pending.promise;
+
+  const promise = loadConsoleDefinitions(repoDir, sha);
+  consoleDefLoads.set(workspaceId, { sha, promise });
+  try {
+    const defs = await promise;
+    // Do not let an older load that finished late replace a newer sha.
+    if (consoleDefLoads.get(workspaceId)?.promise === promise) {
+      consoleDefCache.set(workspaceId, { sha, defs });
+    }
+    return defs;
+  } finally {
+    if (consoleDefLoads.get(workspaceId)?.promise === promise) {
+      consoleDefLoads.delete(workspaceId);
+    }
+  }
+}
+
+async function loadConsoleDefinitions(
+  repoDir: string,
+  sha: string,
+): Promise<ConsoleDefinitionAtMain[]> {
   const entries = (await listTree(repoDir, sha)).filter(e =>
     parseConsoleRepoPath(e.path),
   );
@@ -463,7 +496,6 @@ export async function listConsoleDefinitionsAtMain(
     });
   }
 
-  consoleDefCache.set(workspaceId, { sha, defs });
   return defs;
 }
 
@@ -479,7 +511,6 @@ async function savedIndexRows(workspaceId: string): Promise<ISavedConsole[]> {
   return SavedConsole.find({
     workspaceId: new Types.ObjectId(workspaceId),
     isSaved: true,
-    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
   });
 }
 
@@ -502,50 +533,23 @@ function joinLiveConsoles(
   });
 }
 
-function consoleIndexDrift(
-  defs: ConsoleDefinitionAtMain[],
-  rows: ISavedConsole[],
-): boolean {
-  const defByPath = new Map(defs.map(d => [d.path, d]));
-  for (const def of defs) {
-    const row = rows.find(r => r.path === def.path);
-    if (!row || row.sourceBlobSha !== def.oid) return true;
-  }
-  for (const row of rows) {
-    if (row.path && !defByPath.has(row.path)) return true;
-  }
-  return false;
-}
-
-/**
- * SHA-check the derived row against the blob at main; resync the workspace
- * index on mismatch. Never writes Mongo over an unreadable file.
- */
-export async function ensureConsoleDerivedCache(
-  workspaceId: string,
-): Promise<"ok" | "resynced" | "unbound"> {
-  const repoDir = await boundRepoDirIfExists(workspaceId);
-  if (repoDir == null) return "unbound";
-  const defs = await listConsoleDefinitionsAtMain(workspaceId);
-  const rows = await savedIndexRows(workspaceId);
-  if (!consoleIndexDrift(defs, rows)) return "ok";
-  await syncConsolesIndexFromRepo(workspaceId);
-  return "resynced";
-}
-
 /**
  * Live saved consoles: files at main, overlaying the Mongo index.
  *
  * Unbound workspace → `[]` (leftover Mongo rows and leftover local git do
  * not populate the list). Git-only files appear; Mongo-only rows do not.
+ * This is deliberately a pure read: reconciliation belongs to the push and
+ * webhook paths, never a request that can be fanned out by realtime clients.
  */
 export async function loadLiveConsoles(
   workspaceId: string,
 ): Promise<LiveConsole[]> {
-  const status = await ensureConsoleDerivedCache(workspaceId);
-  if (status === "unbound") return [];
-  const defs = await listConsoleDefinitionsAtMain(workspaceId);
-  const rows = await savedIndexRows(workspaceId);
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return [];
+  const [defs, rows] = await Promise.all([
+    listConsoleDefinitionsAtMain(workspaceId),
+    savedIndexRows(workspaceId),
+  ]);
   return joinLiveConsoles(workspaceId, defs, rows);
 }
 
@@ -570,9 +574,6 @@ export async function loadLiveConsoleById(
   if (row?.path) {
     const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
     if (!def) return null;
-    if (row.sourceBlobSha !== def.oid) {
-      await syncConsolesIndexFromRepo(workspaceId);
-    }
     return { live: { ...def, row, id: row._id } };
   }
 
@@ -1109,10 +1110,13 @@ async function syncNow(
   for (const row of rows) {
     if (seenRows.has(row._id.toString())) continue;
     if (!row.path || byPath.has(row.path) || row.is_deleted) continue;
-    await SavedConsole.updateOne(
-      { _id: row._id },
+    const deleted = await SavedConsole.updateOne(
+      { _id: row._id, is_deleted: { $ne: true } },
       { $set: { is_deleted: true, deletedAt: new Date() } },
     );
+    // Duplicate push deliveries or concurrent instances may reconcile the
+    // same commit. Only the process that changed the row may broadcast it.
+    if (deleted.modifiedCount === 0) continue;
     stats.deleted++;
     publishRealtimeEvent(workspaceId, {
       type: "console.deleted",
