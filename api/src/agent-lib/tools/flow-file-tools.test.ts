@@ -37,13 +37,6 @@ const state = vi.hoisted(() => ({
   sent: [] as Array<{ name: string; data: unknown }>,
 }));
 
-// No mirror: `ensureLocalRepo` must not reach for a remote, and the local
-// bare repo below is authoritative.
-vi.mock("../../services/workspace-repos.service", () => ({
-  getWorkspaceRepo: vi.fn(async () => null),
-  findWorkspaceIdByRepoBinding: vi.fn(async () => null),
-  findWorkspaceIdsByRepoBinding: vi.fn(async () => []),
-}));
 // A read-only tool must send no events. Observed rather than assumed.
 vi.mock("../../inngest/client", () => ({
   inngest: {
@@ -60,6 +53,7 @@ import {
   Flow,
 } from "../../database/workspace-schema";
 import { initRepo, repoDirFor } from "../../apps/repository.service";
+import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import { checkFlowFiles, createFlowFileTools } from "./flow-file-tools";
 import { buildMakoMcpToolset } from "../../mcp/mako-mcp-server";
 import {
@@ -182,6 +176,7 @@ async function seedRepo(files: Record<string, string>) {
     "README.md": "x\n",
     ...files,
   });
+  await bindTestWorkspaceRepo(WS.toString());
 }
 
 describe("partial input never reports a phantom teardown", () => {
