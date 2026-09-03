@@ -51,10 +51,18 @@ assert.ok(
   /if\s*\(!\(await getWorkspaceRepo\(workspaceId\)\)\)/.test(gate),
   "requireWorkspaceRepo must refuse when no GitHub binding exists — leftover local git is not a skip",
 );
+const requireWorkspaceRepoBody =
+  /export async function requireWorkspaceRepo[\s\S]*?\n}/.exec(gate)?.[0] ?? "";
 assert.equal(
-  gate.includes("ensureLocalRepo"),
+  requireWorkspaceRepoBody.includes("ensureLocalRepo"),
   false,
   "requireWorkspaceRepo must not fall through to a local-only repo",
+);
+assert.ok(
+  /export async function boundRepoDirIfExists[\s\S]*?getWorkspaceRepo[\s\S]*?ensureLocalRepo/.test(
+    gate,
+  ),
+  "bound read helpers must restore a cold serverless repo cache",
 );
 
 console.log("apps github-required tests passed");

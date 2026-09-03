@@ -10,7 +10,7 @@
  * not count.
  */
 import { RepoRequiredError } from "./config";
-import { ensureWorkspaceRepo } from "./cloud-repo.service";
+import { ensureLocalRepo, ensureWorkspaceRepo } from "./cloud-repo.service";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { repoDirFor, repoExists } from "./repository.service";
 
@@ -36,6 +36,7 @@ export async function boundRepoDirIfExists(
   workspaceId: string,
 ): Promise<string | null> {
   if (!(await getWorkspaceRepo(workspaceId))) return null;
+  await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
   return (await repoExists(repoDir)) ? repoDir : null;
 }

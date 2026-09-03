@@ -54,7 +54,9 @@ beforeEach(async () => {
 
 describe("workspace prompt in git", () => {
   it("reads null with no repo or no file; round-trips a commit", async () => {
+    await unbindTestWorkspaceRepo(WS);
     expect(await readWorkspacePromptFile(WS)).toBeNull();
+    await bindTestWorkspaceRepo(WS);
     await initRepo(repoDirFor(WS), { "README.md": "x\n" });
     expect(await readWorkspacePromptFile(WS)).toBeNull();
 

@@ -5,8 +5,8 @@
  * GitHub auth are mocked at the module boundary. What must hold:
  *
  *  - a workspace binding is the mirror, but only where the
- *    connected tier is enabled (prod / explicit opt-in) — previews and dev on
- *    prod-cloned DBs must treat customer bindings as inert
+ *    connected tier is enabled (prod / explicit opt-in) for WRITES; previews
+ *    and dev may restore the local cache from it but must never push
  *  - connect-time adoption: seed an empty repo, import a non-empty repo into
  *    an empty workspace, reconnect a repo that shares the workspace's
  *    history (unlink never touches the local repo, so a re-link finds both
@@ -71,6 +71,7 @@ import {
   resolveMirrorTarget,
   freshenForServe,
 } from "./cloud-repo.service";
+import { boundRepoDirIfExists } from "./workspace-repo-required";
 
 let tmpRoot: string;
 let remotesRoot: string;
@@ -170,6 +171,44 @@ describe("resolveMirrorTarget", () => {
     state.binding = { owner: "acme", repo: "site" };
     const target = await resolveMirrorTarget(workspaceId);
     expect(target).toBeNull();
+  });
+});
+
+describe("read-only mirror access", () => {
+  it("restores a cold preview cache without enabling pushes", async () => {
+    delete process.env.APPS_CONNECTED_REPO_PUSH;
+    const remoteDir = path.join(remotesRoot, "acme", "preview.git");
+    await fs.mkdir(path.dirname(remoteDir), { recursive: true });
+    await initRepo(remoteDir, {
+      "apps/site/mako.json": "{}",
+      "consoles/report.sql": "select 1",
+      "dbt/dbt_project.yml": "name: preview",
+    });
+    state.binding = { owner: "acme", repo: "preview" };
+
+    const restoredRepoDir = await boundRepoDirIfExists(workspaceId);
+
+    expect(restoredRepoDir).toBe(repoDirFor(workspaceId));
+    expect(await repoExists(repoDirFor(workspaceId))).toBe(true);
+    expect(
+      (await listTree(repoDirFor(workspaceId), DEFAULT_BRANCH)).map(
+        entry => entry.path,
+      ),
+    ).toEqual([
+      "apps/site/mako.json",
+      "consoles/report.sql",
+      "dbt/dbt_project.yml",
+    ]);
+
+    await commitFiles(
+      repoDirFor(workspaceId),
+      { "preview-only.txt": "must stay local" },
+      "preview-only change",
+    );
+    await mirrorPushNow(workspaceId);
+    expect(
+      (await listTree(remoteDir, DEFAULT_BRANCH)).map(entry => entry.path),
+    ).not.toContain("preview-only.txt");
   });
 });
 
