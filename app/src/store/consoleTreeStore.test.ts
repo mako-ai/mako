@@ -111,6 +111,26 @@ describe("consoleTreeStore fetchTree", () => {
     expect(state.error[WID]).toBe("boom");
     expect(state.loading[WID]).toBeUndefined();
   });
+
+  it("coalesces concurrent refreshes for the same workspace", async () => {
+    let release!: (value: ReturnType<typeof ok>) => void;
+    http.GET.mockReturnValueOnce(
+      new Promise(resolve => {
+        release = resolve;
+      }),
+    );
+
+    const first = useConsoleTreeStore.getState().fetchTree(WID);
+    const second = useConsoleTreeStore.getState().fetchTree(WID);
+    const third = useConsoleTreeStore.getState().fetchTree(WID);
+
+    expect(http.GET).toHaveBeenCalledTimes(1);
+    release(ok({ success: true, myConsoles: [file("a", "alpha")] }));
+    await Promise.all([first, second, third]);
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
+      "alpha",
+    ]);
+  });
 });
 
 describe("consoleTreeStore renameItem", () => {

@@ -40,6 +40,7 @@ import {
   consoleFileVersions,
   consoleHistory,
   deriveConsoleDescription,
+  listConsoleDefinitionsAtMain,
   projectSavedConsole,
   restoreConsoleTo,
   syncConsolesIndexFromRepo,
@@ -792,6 +793,40 @@ describe("GET/list from git", () => {
     const hit = listed.find(c => c.name === "from-laptop");
     expect(hit).toBeTruthy();
     expect(hit?.content).toContain("SELECT 42");
+  });
+
+  it("never reconciles or soft-deletes Mongo as a side effect of listing", async () => {
+    const saved = await manager.saveConsole(
+      "removed-elsewhere",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    expect(saved.path).toBeTruthy();
+    await externalCommit({}, [saved.path as string]);
+
+    expect(await manager.listConsoles(WS, USER)).toEqual([]);
+    const row = await SavedConsole.findById(saved._id);
+    expect(row?.is_deleted).not.toBe(true);
+  });
+
+  it("shares one cold git definition load across concurrent list requests", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await externalCommit({
+      "consoles/cold-load.sql": "SELECT 42\n",
+    });
+
+    const [first, second, third] = await Promise.all([
+      listConsoleDefinitionsAtMain(WS),
+      listConsoleDefinitionsAtMain(WS),
+      listConsoleDefinitionsAtMain(WS),
+    ]);
+    expect(first).toBe(second);
+    expect(second).toBe(third);
   });
 
   it("does not list a Mongo row that has no git file", async () => {
