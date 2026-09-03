@@ -8,7 +8,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -320,6 +328,80 @@ describe("write-through", () => {
     });
     expect(again.unchanged).toBe(true);
     expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(before);
+  });
+});
+
+describe("sync hardening", () => {
+  it("one file that fails to reconcile does not skip the files after it or the deletion pass", async () => {
+    const a = await manager.saveConsole(
+      "Finance/aaa",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const b = await manager.saveConsole(
+      "Finance/bbb",
+      "SELECT 2",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const doomed = await manager.saveConsole(
+      "Finance/ccc",
+      "SELECT 3",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const edit = (n: number) =>
+      serializeConsoleFile({
+        name: "x",
+        language: "sql",
+        code: `SELECT ${n} -- laptop`,
+      });
+    await externalCommit(
+      {
+        "consoles/Finance/aaa.sql": edit(10),
+        "consoles/Finance/bbb.sql": edit(20),
+      },
+      ["consoles/Finance/ccc.sql"],
+    );
+    // The first row write throws (a value the schema cannot cast, a race,
+    // any Mongo error); it used to escape the loop.
+    const original = SavedConsole.updateOne.bind(SavedConsole);
+    let failed = false;
+    const spy = vi.spyOn(SavedConsole, "updateOne").mockImplementation(((
+      ...args: Parameters<typeof original>
+    ) => {
+      const filter = args[0] as { _id?: unknown };
+      if (!failed && String(filter?._id) === String(a._id)) {
+        failed = true;
+        throw new Error("simulated cast failure");
+      }
+      return original(...args);
+    }) as typeof SavedConsole.updateOne);
+    try {
+      const stats = await syncConsolesIndexFromRepo(WS, USER);
+      expect(stats.deleted).toBe(1);
+      expect(failed).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await SavedConsole.findById(a._id))?.code).toBe("SELECT 1");
+    expect((await SavedConsole.findById(b._id))?.code).toBe(
+      "SELECT 20 -- laptop",
+    );
+    expect((await SavedConsole.findById(doomed._id))?.is_deleted).toBe(true);
   });
 });
 

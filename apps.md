@@ -3021,3 +3021,73 @@ on.
   pins because they only fail on old code for the trivial reason that the
   route did not exist yet. #912 now enforces the first half of this
   mechanically.
+
+## 26. The overlay audit: four kinds, six bug classes (2026-09-03)
+
+PR #975 put dbt jobs on the GET/list overlay and, browser-tested against
+hostile files on main, found six ways the shape breaks. The other three
+kinds (flows, skills, consoles) were then audited for the same six, and
+every one of them had most of the list. What was fixed, per class:
+
+1. **Read-path resync stamps the sha, push-sync then skips the side effect.**
+   dbt: `ensureJobDerivedCache` now calls `applyJobScheduleChange` when the
+   file changed schedule/enabled. Flows and skills stamp too, but their
+   push-sync side effects (CDC reconcile, endpoint mint on create,
+   re-embed) either run from the row's current definition regardless of the
+   skip or apply to new rows only, so no change there. Consoles have no
+   read-path resync since the storm fix (#971); their file-derived folder
+   placement and schedule wait for the push — documented, not changed.
+2. **"Valid" must mean the same thing in the list and in push-sync, and one
+   bad file must never abort the loop.** dbt: `jobApplyFailure` now also
+   parses the cron and computes its next date (a `99 99 99 99 99` cron and a
+   `Nope/Zone` timezone used to throw inside the loop after creating the
+   row). Flows: `flowFileApplyFailure` runs in the sync loop too, and
+   `markFlowInvalid` is a targeted `updateOne` instead of a `save()` that a
+   legacy row could fail. Skills: the loop is guarded per file; a file that
+   stops parsing keeps its row (marked) instead of being deleted as
+   "removed", and files past the index cap are no longer deleted either.
+   Consoles: the loop is guarded per file so the deletion pass and realtime
+   events always run.
+3. **Git-only ids.** dbt push-sync now creates rows with `derivedJobId`, as
+   flows/skills/consoles already did. Flow slug reservation consults the
+   files at main, so a name that slugifies onto a git-only file no longer
+   overwrites it under a second id.
+4. **Invalid git-only stubs must be whole.** dbt: name/commands/enabled
+   filled, unrunnable. Flows: `name`/`syncMode`/`createdAt`/`updatedAt`
+   filled — one half-defined item used to fail the client's persisted-list
+   validation and cold-start every reload. Skills: null dates added.
+5. **Mongoose materialises an unset nested path as `{}`.** Every
+   `if (row.definitionInvalid)` in flows, skills and dbt read healthy rows as
+   invalid: every list resynced every row, every flow run re-parsed its file,
+   and an unbound workspace's flow runs were refused outright. Presence is
+   now `typeof definitionInvalid?.reason === "string"` everywhere, clearing
+   is `$unset` (assigning `undefined` and saving persists `{}`), and a file
+   reverted to identical content clears its marker in push-sync.
+6. **Silent UI failures.** dbt job view and flow editor render the run/save
+   failure and an invalid-file warning; the skills settings surface the
+   server's reason on toggle/delete.
+
+Execution follows the file, not the row: the console execute route, the
+scheduled-query executor and the agent's console loader run the code at
+main when the console is live there (`liveConsoleCode`), and job/flow
+runs resolve through the overlay — a file that only lives in git is a 409
+with the reason, a row whose file was deleted is not runnable. Saving a
+git-only console by its derived id now ACL-checks against the file's path
+scope, keeps its language, and replaces the file instead of writing a
+`.sql` beside a `.js`. dbt environments follow `dbt/environments.yml` on
+project GET/list, the way jobs follow `dbt/jobs/*.yml`.
+
+**Decided, not changed — schedulers on unbound workspaces.** When a
+workspace has no GitHub binding (or a file is deleted and the push has not
+been reconciled), the list is empty but Inngest keeps running the Mongo
+rows: dbt's due-job poll, the flow scheduler, the CDC consumer, and
+scheduled consoles all select rows without consulting the binding. Gating
+them on the overlay would be a behaviour change for every workspace that
+never connected a repo, and the audit found only one such flow row in
+production. Left as is; the fix for a deleted definition is the push-sync
+that removes the row, which the loop guards above now make reliable.
+
+**Not in this block (D, E, F of the hand-off prompt):** the three
+documented notebook v1 gaps (§24), the skills triage branch on the
+workspace repo, and connectors-as-code. Each is content or a decision, not
+an overlay bug.

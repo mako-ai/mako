@@ -35,6 +35,7 @@ import {
   type ISavedConsole,
 } from "../../database/workspace-schema";
 import { ConsoleManager } from "../../utils/console-manager";
+import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { workspaceService } from "../../services/workspace.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import {
@@ -181,6 +182,10 @@ export function createServerConsoleTools({
         error: `Console with ID ${consoleId} not found. Use list_open_consoles or search_consoles to see available consoles.`,
       };
     }
+    // Git is the definition: the agent edits and runs the file at main, not
+    // the row's last pushed copy.
+    const liveCode = await liveConsoleCode(workspaceId, consoleId);
+    if (liveCode) doc.code = liveCode.code;
     return { doc };
   };
 

@@ -70,6 +70,7 @@ import {
   loadLiveJobs,
   liveJobToPlain,
   reserveJobSlug,
+  resolveLiveJobRow,
 } from "../../dbt/dbt-config.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
@@ -1001,11 +1002,9 @@ export const createDbtServerTools = (
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
-          const job = await DbtJob.findOne({
-            _id: new Types.ObjectId(jobId),
-            projectId: project._id,
-          });
-          if (!job) return { success: false, error: "Job not found" };
+          const resolved = await resolveLiveJobRow(project, jobId);
+          if (!resolved.ok) return { success: false, error: resolved.error };
+          const job = resolved.row;
           const run = await triggerDbtJobRun({
             workspaceId,
             job,
@@ -1353,11 +1352,9 @@ export const createDbtServerTools = (
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
-          const job = await DbtJob.findOne({
-            _id: new Types.ObjectId(jobId),
-            projectId: project._id,
-          });
-          if (!job) return { success: false, error: "Job not found" };
+          const resolved = await resolveLiveJobRow(project, jobId);
+          if (!resolved.ok) return { success: false, error: resolved.error };
+          const job = resolved.row;
 
           const merged = {
             environment: updates.environment ?? job.environment,
@@ -1415,11 +1412,9 @@ export const createDbtServerTools = (
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
-          const job = await DbtJob.findOne({
-            _id: new Types.ObjectId(jobId),
-            projectId: project._id,
-          });
-          if (!job) return { success: false, error: "Job not found" };
+          const resolved = await resolveLiveJobRow(project, jobId);
+          if (!resolved.ok) return { success: false, error: resolved.error };
+          const job = resolved.row;
           const name = job.name;
           await deleteDbtJobFile(project, job.slug, actingUserId);
           await DbtJob.deleteOne({ _id: job._id, projectId: project._id });

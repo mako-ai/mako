@@ -150,6 +150,102 @@ describe("write-through", () => {
   });
 });
 
+describe("sync hardening (one bad file, markers, reverts)", () => {
+  it("a file that stops parsing keeps its row (marked), and one bad file never aborts the rest", async () => {
+    await commitSkillSave(WS, skill("keeps_row"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    const before = await Skill.findOne({ name: "keeps_row" });
+    expect(before).not.toBeNull();
+    await Skill.updateOne({ _id: before!._id }, { $set: { useCount: 7 } });
+
+    // aaa_ sorts first: a body past the schema cap used to throw out of the
+    // loop (ValidationError on create) and skip everything after it.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("aaa_too_long")]: serializeSkillFile(
+            skill("aaa_too_long", "x".repeat(20_001)),
+          ),
+          [skillFilePath("keeps_row")]: "not a skill file at all\n",
+          [skillFilePath("zzz_fine")]: serializeSkillFile(skill("zzz_fine")),
+        },
+      },
+      { message: "hostile batch" },
+    );
+    await expect(
+      syncSkillsIndexFromRepo(WS, "user-1"),
+    ).resolves.toBeUndefined();
+
+    expect(await Skill.findOne({ name: "aaa_too_long" })).toBeNull();
+    expect(await Skill.findOne({ name: "zzz_fine" })).not.toBeNull();
+    const kept = await Skill.findOne({ name: "keeps_row" });
+    expect(kept?.useCount).toBe(7);
+    expect(kept?.body).toBe("Do the thing.");
+    expect(typeof kept?.definitionInvalid?.reason).toBe("string");
+
+    // The list carries the reason (not `{}`), and does not rewrite it.
+    const live = await loadLiveSkills(WS);
+    const plain = liveSkillToPlain(
+      live.find(item => item.def.name === "keeps_row")!,
+      WS,
+    );
+    expect(
+      (plain.definitionInvalid as { reason?: string } | undefined)?.reason,
+    ).toBe(kept?.definitionInvalid?.reason);
+    const at = (await Skill.findOne({ name: "keeps_row" }))?.definitionInvalid
+      ?.at;
+    await loadLiveSkills(WS);
+    expect(
+      (await Skill.findOne({ name: "keeps_row" }))?.definitionInvalid?.at,
+    ).toEqual(at);
+  });
+
+  it("an unset marker is not 'invalid', and reverting to identical content clears a real one", async () => {
+    await commitSkillSave(WS, skill("revertable"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    const good = await fileAt(skillFilePath("revertable"));
+    const row = await Skill.findOne({ name: "revertable" });
+    // Mongoose materialises the unset nested path as `{}` on a hydrated
+    // doc; that must not read as a marker anywhere.
+    expect(row?.definitionInvalid?.reason).toBeUndefined();
+    let plain = liveSkillToPlain(
+      (await loadLiveSkills(WS)).find(item => item.def.name === "revertable")!,
+      WS,
+    );
+    expect(plain.definitionInvalid).toBeUndefined();
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { [skillFilePath("revertable")]: "broken\n" } },
+      { message: "break" },
+    );
+    await loadLiveSkills(WS);
+    expect(
+      typeof (await Skill.findOne({ name: "revertable" }))?.definitionInvalid
+        ?.reason,
+    ).toBe("string");
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { [skillFilePath("revertable")]: good! } },
+      { message: "revert" },
+    );
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    expect(
+      (await Skill.findOne({ name: "revertable" }))?.definitionInvalid?.reason,
+    ).toBeUndefined();
+    plain = liveSkillToPlain(
+      (await loadLiveSkills(WS)).find(item => item.def.name === "revertable")!,
+      WS,
+    );
+    expect(plain.definitionInvalid).toBeUndefined();
+  });
+});
+
 describe("sync from repo", () => {
   it("an external skill edit reaches the index; removal deletes the row", async () => {
     await commitSkillSave(WS, skill("synced"));

@@ -40,6 +40,14 @@ import {
 
 const logger = loggers.app();
 
+/**
+ * Agent-facing reads (index injection, search, load) must not serve a skill
+ * whose file at main is broken or gone: the row is kept as last-good for the
+ * admin surface only. The marker's presence is its `reason` — Mongoose
+ * materialises an unset nested path as `{}`, so never test the object.
+ */
+const NOT_INVALID = { "definitionInvalid.reason": { $exists: false } } as const;
+
 const MAX_NAME_LENGTH = 80;
 const MAX_LOAD_WHEN_LENGTH = 500;
 const MAX_BODY_LENGTH = 20000;
@@ -335,8 +343,12 @@ export async function saveSkill(
       body,
     }),
   );
-  existing.definitionInvalid = undefined;
   await existing.save();
+  // Assigning undefined to a nested path persists `{}`; unset the marker.
+  await Skill.updateOne(
+    { _id: existing._id },
+    { $unset: { definitionInvalid: 1 } },
+  );
 
   return {
     success: true,
@@ -413,6 +425,7 @@ export async function loadSkill(
     {
       workspaceId: new Types.ObjectId(workspaceId),
       name: name.trim(),
+      ...NOT_INVALID,
     },
     { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
     { new: true },
@@ -515,6 +528,7 @@ async function textSearchSkills(
         $text: { $search: query },
         workspaceId: new Types.ObjectId(workspaceId),
         suppressed: { $ne: true },
+        ...NOT_INVALID,
       },
       { score: { $meta: "textScore" } },
     )
@@ -545,6 +559,7 @@ export async function searchSkills(
   const all = await Skill.find({
     workspaceId: new Types.ObjectId(workspaceId),
     suppressed: { $ne: true },
+    ...NOT_INVALID,
   })
     .select("+loadWhenEmbedding")
     .lean();
@@ -629,6 +644,7 @@ export async function retrieveRelevantSkills(
   const indexDocs = await Skill.find({
     workspaceId: wsObjectId,
     suppressed: { $ne: true },
+    ...NOT_INVALID,
   })
     .select("name loadWhen suppressed useCount entities")
     // NOT sorted by useCount: the counter measures auto-injection exposure,

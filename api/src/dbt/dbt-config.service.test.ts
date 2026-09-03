@@ -20,17 +20,21 @@ import {
   DBT_ENVIRONMENTS_PATH,
   jobFilePath,
   parseJobFile,
+  serializeEnvironmentsFile,
   serializeJobFile,
 } from "./dbt-config-files";
 import {
   adoptDbtConfig,
+  commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
   derivedJobId,
+  ensureEnvironmentsDerivedCache,
   loadLiveJobById,
   loadLiveJobs,
   liveJobToPlain,
   reserveJobSlug,
+  resolveLiveJobRow,
   syncDbtConfigFromRepo,
 } from "./dbt-config.service";
 import {
@@ -363,6 +367,107 @@ describe("GET/list from git", () => {
     expect(
       (await DbtJob.findById(job._id))?.definitionInvalid?.reason,
     ).toBeUndefined();
+  });
+});
+
+describe("environments follow dbt/environments.yml; jobs resolve through the overlay", () => {
+  it("a project GET after an external environments edit shows the file, marks a broken one, and clears on revert", async () => {
+    const project = await seedProject();
+    await commitDbtEnvironmentsFile(project);
+    const good = await fileAt(DBT_ENVIRONMENTS_PATH);
+    expect(good).toContain("default_environment: dev");
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [DBT_ENVIRONMENTS_PATH]: serializeEnvironmentsFile({
+            defaultEnvironment: "staging",
+            environments: [
+              {
+                name: "staging",
+                connectionId: CONN.toString(),
+                targetSchema: "dbt_staging",
+                threads: 2,
+              },
+            ],
+          }),
+        },
+      },
+      { message: "laptop: staging only" },
+    );
+    await ensureEnvironmentsDerivedCache(project);
+    expect(project.defaultEnvironment).toBe("staging");
+    expect(project.environments.map(env => env.name)).toEqual(["staging"]);
+    const stored = await DbtProject.findById(project._id);
+    expect(stored?.environments.map(env => env.name)).toEqual(["staging"]);
+    expect(stored?.environmentsInvalid?.reason).toBeUndefined();
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [DBT_ENVIRONMENTS_PATH]: "environments: [broken" } },
+      { message: "break environments" },
+    );
+    await ensureEnvironmentsDerivedCache(project);
+    expect(project.environmentsInvalid?.reason).toBe(
+      "unparseable environments.yml",
+    );
+    // Last-good kept.
+    expect(project.environments.map(env => env.name)).toEqual(["staging"]);
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [DBT_ENVIRONMENTS_PATH]: good! } },
+      { message: "revert" },
+    );
+    await ensureEnvironmentsDerivedCache(project);
+    expect(project.environmentsInvalid?.reason).toBeUndefined();
+    expect(project.defaultEnvironment).toBe("dev");
+    expect(
+      (await DbtProject.findById(project._id))?.environmentsInvalid?.reason,
+    ).toBeUndefined();
+  });
+
+  it("resolves a git-only job as 409, a synced one as ok, a deleted file as 404", async () => {
+    const project = await seedProject();
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath("only-git")]: serializeJobFile({
+            name: "Only git",
+            environment: "prod",
+            commands: ["build"],
+            schedule: null,
+            enabled: true,
+            deferToProduction: false,
+          }),
+        },
+      },
+      { message: "git-only job" },
+    );
+    const id = (await loadLiveJobs(project))[0]!.id.toString();
+    const gitOnly = await resolveLiveJobRow(project, id);
+    expect(gitOnly.ok).toBe(false);
+    if (!gitOnly.ok) expect(gitOnly.status).toBe(409);
+
+    await syncDbtConfigFromRepo(WS.toString());
+    const synced = await resolveLiveJobRow(project, id);
+    expect(synced.ok).toBe(true);
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { deletes: [jobFilePath("only-git")] },
+      { message: "delete job file" },
+    );
+    const gone = await resolveLiveJobRow(project, id);
+    expect(gone.ok).toBe(false);
+    if (!gone.ok) expect(gone.status).toBe(404);
   });
 });
 

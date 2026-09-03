@@ -35,9 +35,11 @@ import { teardownFlow } from "../sync-cdc/flow-reconcile";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
 import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
+  listFlowDefinitionsAtMain,
   loadLiveFlowById,
   loadLiveFlows,
   liveFlowToPlain,
+  resolveLiveFlowRow,
 } from "../services/flow-sync.service";
 import { resolveMirrorTarget } from "../apps/cloud-repo.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
@@ -96,7 +98,13 @@ async function commitFlowFileOrFail(
   const result = await commitFlowFile(flow, actorUserId);
   if (result.ok) {
     if (result.sourceBlobSha) flow.sourceBlobSha = result.sourceBlobSha;
-    flow.definitionInvalid = undefined;
+    // Assigning undefined to a nested path and saving persists `{}`, which
+    // the overlay used to read as "invalid". Unset the marker instead; a
+    // not-yet-saved flow has no row to unset, which is fine.
+    await Flow.updateOne(
+      { _id: flow._id },
+      { $unset: { definitionInvalid: 1 } },
+    );
     return null;
   }
   logger.error("Flow definition did not reach the workspace repo", {
@@ -1160,7 +1168,14 @@ flowRoutes.openapi(
           ? body.name.trim().slice(0, 200)
           : await deriveFlowDisplayName(flowData as unknown as IFlow);
       flowData.name = requestedName;
-      flowData.slug = await reserveFlowSlug(workspaceId, requestedName);
+      // Files at main without a row yet are part of the identity space too.
+      flowData.slug = await reserveFlowSlug(
+        workspaceId,
+        requestedName,
+        new Set(
+          (await listFlowDefinitionsAtMain(workspaceId)).map(def => def.slug),
+        ),
+      );
 
       const flow = new Flow(flowData);
 
@@ -1857,10 +1872,16 @@ flowRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const flowId = c.req.param("flowId");
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
+      // Resolve through the git overlay: a flow whose file was deleted on
+      // main is not runnable, and one that exists only in git says so.
+      const resolved = await resolveLiveFlowRow(String(workspaceId), flowId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
+      }
+      const flow = await Flow.findById(resolved.row._id)
         .populate("dataSourceId")
         .populate("destinationDatabaseId");
 

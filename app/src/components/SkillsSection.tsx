@@ -128,14 +128,21 @@ export function SkillsSection() {
           body: JSON.stringify({ suppressed: nextSuppressed }),
         },
       );
-      if (!res.ok) throw new Error("Request failed");
-    } catch {
-      // Rollback on error
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(data?.error || `Request failed (${res.status})`);
+      }
+    } catch (err) {
+      // Rollback on error — and say why, or a 412 "connect GitHub first"
+      // looks like a switch that will not stay put.
       setSkills(prev =>
         prev.map(s =>
           s.id === skill.id ? { ...s, suppressed: skill.suppressed } : s,
         ),
       );
+      setError(err instanceof Error ? err.message : "Failed to update skill");
     }
   };
 
@@ -156,7 +163,12 @@ export function SkillsSection() {
         `/api/workspaces/${workspaceId}/skills/${skill.id}`,
         { method: "DELETE" },
       );
-      if (!res.ok) throw new Error("Request failed");
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(data?.error || `Request failed (${res.status})`);
+      }
       setSkills(prev => prev.filter(s => s.id !== skill.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete skill");

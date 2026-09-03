@@ -117,6 +117,18 @@ const flowSchema = z.object({
   createdBy: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /**
+   * Set when `flows/<slug>.yml` at main does not parse or apply. The rest
+   * of the item is the last valid version (or a stub for a git-only file).
+   */
+  definitionInvalid: z
+    .object({
+      reason: z.string(),
+      at: z.string().optional(),
+      path: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
   // Database-to-database sync fields
   sourceType: z.enum(["connector", "database"]).optional(),
   databaseSource: z

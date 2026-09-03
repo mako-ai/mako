@@ -109,15 +109,64 @@ export function mintedWebhookEndpoint(args: {
   return generateWebhookEndpoint(args.workspaceId, args.flowId);
 }
 
+/**
+ * Mongoose materialises an unset nested path as `{}` on a hydrated doc, so
+ * the marker's presence is its `reason`, never the object's truthiness —
+ * `if (row.definitionInvalid)` read every healthy flow as invalid, which is
+ * how a bound workspace's runs came to re-parse their file on every fire and
+ * an unbound one's runs were refused outright.
+ */
+export function isFlowMarkedInvalid(row: {
+  definitionInvalid?: { reason?: string } | null;
+}): boolean {
+  return typeof row.definitionInvalid?.reason === "string";
+}
+
+/** The row's marker when it is a real one (see isFlowMarkedInvalid). */
+function rowInvalidMarker(
+  row: IFlow | null,
+): IFlow["definitionInvalid"] | undefined {
+  return row && isFlowMarkedInvalid(row) ? row.definitionInvalid : undefined;
+}
+
+/** Assigning `undefined` to a nested path persists `{}`; unset it instead. */
+async function clearFlowInvalid(id: Types.ObjectId): Promise<void> {
+  await Flow.updateOne({ _id: id }, { $unset: { definitionInvalid: 1 } });
+}
+
+/**
+ * Stamp the marker (and pause the schedules) with a targeted update, never
+ * a `save()`: a legacy row that no longer passes the schema would throw out
+ * of the push-sync loop and skip every file after it. Idempotent, so a list
+ * call does not rewrite the marker on every read.
+ */
 async function markFlowInvalid(
   doc: IFlow,
   reason: string,
   path: string,
 ): Promise<void> {
-  doc.definitionInvalid = { reason, at: new Date(), path };
-  if (doc.schedule) doc.schedule.enabled = false;
-  if (doc.backfillSchedule) doc.backfillSchedule.enabled = false;
-  await doc.save();
+  if (
+    doc.definitionInvalid?.reason === reason &&
+    doc.definitionInvalid?.path === path
+  ) {
+    return;
+  }
+  const definitionInvalid = { reason, at: new Date(), path };
+  const set: Record<string, unknown> = { definitionInvalid };
+  if (doc.schedule) set["schedule.enabled"] = false;
+  if (doc.backfillSchedule) set["backfillSchedule.enabled"] = false;
+  try {
+    await Flow.updateOne({ _id: doc._id }, { $set: set });
+    doc.definitionInvalid = definitionInvalid;
+    if (doc.schedule) doc.schedule.enabled = false;
+    if (doc.backfillSchedule) doc.backfillSchedule.enabled = false;
+  } catch (error) {
+    logger.warn("Failed to mark flow invalid", {
+      flowId: doc._id.toString(),
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**
@@ -191,7 +240,7 @@ function flowIndexDrift(defs: FlowDefinitionAtMain[], rows: IFlow[]): boolean {
     const row = bySlug.get(def.slug);
     if (!row) continue;
     if (row.sourceBlobSha !== def.oid) return true;
-    if (row.definitionInvalid && def.parsed) return true;
+    if (isFlowMarkedInvalid(row) && def.parsed) return true;
   }
   return false;
 }
@@ -273,7 +322,7 @@ export async function loadLiveFlowById(
     const defs = await listFlowDefinitionsAtMain(workspaceId);
     const def = defs.find(item => item.slug === row.slug);
     if (!def) return null;
-    if (row.sourceBlobSha !== def.oid || row.definitionInvalid) {
+    if (row.sourceBlobSha !== def.oid || isFlowMarkedInvalid(row)) {
       await ensureFlowDerivedCache(row);
     }
     return { def, row, id: row._id };
@@ -301,6 +350,14 @@ export function liveFlowToPlain(
         createdBy: "git",
         runCount: 0,
         sourceType: "connector",
+        // Whole shape for a file with no row yet: the client's schema
+        // requires these, and one half-defined item used to fail the whole
+        // persisted flow list's validation (every reload cold-started).
+        name: live.def.slug,
+        syncMode: "full",
+        enabled: false,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
       };
   base._id = live.id;
   base.slug = live.def.slug;
@@ -311,7 +368,7 @@ export function liveFlowToPlain(
       ? live.row.createdBy
       : "git";
   if (!parsed) {
-    base.definitionInvalid = live.row?.definitionInvalid ?? {
+    base.definitionInvalid = rowInvalidMarker(live.row) ?? {
       reason: "unparseable flow file",
       at: new Date(),
       path: live.def.path,
@@ -325,7 +382,7 @@ export function liveFlowToPlain(
     createdBy,
   });
   if (applyFailure) {
-    base.definitionInvalid = live.row?.definitionInvalid ?? {
+    base.definitionInvalid = rowInvalidMarker(live.row) ?? {
       reason: applyFailure,
       at: new Date(),
       path: live.def.path,
@@ -356,10 +413,10 @@ export async function ensureFlowDerivedCache(flow: {
   const workspaceId = flow.workspaceId.toString();
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null) {
-    return flow.definitionInvalid ? "invalid" : "ok";
+    return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
   }
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!head) return flow.definitionInvalid ? "invalid" : "ok";
+  if (!head) return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
   const path = `flows/${flow.slug}.yml`;
   let contents: string;
   try {
@@ -376,7 +433,8 @@ export async function ensureFlowDerivedCache(flow: {
     return "missing";
   }
   const sha = blobOid(contents);
-  if (flow.sourceBlobSha === sha && !flow.definitionInvalid) return "ok";
+  const wasMarked = isFlowMarkedInvalid(flow);
+  if (flow.sourceBlobSha === sha && !wasMarked) return "ok";
   const parsed = parseFlowFile(contents);
   const row = await Flow.findById(flow._id);
   if (!row) return "missing";
@@ -394,7 +452,6 @@ export async function ensureFlowDerivedCache(flow: {
     await markFlowInvalid(row, refusal, path);
     return "invalid";
   }
-  row.definitionInvalid = undefined;
   row.sourceBlobSha = sha;
   try {
     await row.save();
@@ -407,7 +464,35 @@ export async function ensureFlowDerivedCache(flow: {
     if (fresh) await markFlowInvalid(fresh, reason, path);
     return "invalid";
   }
+  if (wasMarked) await clearFlowInvalid(row._id);
   return "resynced";
+}
+
+export type LiveFlowRowResolution =
+  | { ok: true; live: LiveFlow; row: IFlow }
+  | { ok: false; status: 404 | 409; error: string };
+
+/**
+ * Resolve a flow id for a mutation or a run: the file must be live at main
+ * AND the index row must exist. A file that only lives in git (the push has
+ * not been reconciled yet) is a 409 with the reason, not a bare 404 — the
+ * list just showed the flow. A row whose file was deleted is not live and
+ * resolves to nothing, so it can no longer be run from the UI.
+ */
+export async function resolveLiveFlowRow(
+  workspaceId: string,
+  flowId: string,
+): Promise<LiveFlowRowResolution> {
+  const live = await loadLiveFlowById(workspaceId, flowId);
+  if (!live) return { ok: false, status: 404, error: "Flow not found" };
+  if (!live.row) {
+    return {
+      ok: false,
+      status: 409,
+      error: `Flow "${live.def.slug}" exists only in git so far (${live.def.path}); it becomes runnable and editable once the push is synced.`,
+    };
+  }
+  return { ok: true, live, row: live.row };
 }
 
 export interface FlowSyncResult {
@@ -741,7 +826,10 @@ export async function syncFlowsFromRepo(
       });
     }
 
-    if (row && row.sourceBlobSha === sha) {
+    // Level already — unless the row is still flagged from an earlier bad
+    // version and the file was reverted to this exact content, in which
+    // case the marker must clear.
+    if (row && row.sourceBlobSha === sha && !isFlowMarkedInvalid(row)) {
       result.unchanged++;
       continue;
     }
@@ -759,7 +847,27 @@ export async function syncFlowsFromRepo(
       continue;
     }
 
+    // Same "applies" predicate GET/list uses: a file the list flags must
+    // never be indexed here, and one the list shows as valid must not be
+    // what throws below.
+    const applyFailure = flowFileApplyFailure(parsed, {
+      workspaceId,
+      slug,
+      createdBy: row?.createdBy || actorUserId || "sync",
+    });
+    if (applyFailure) {
+      logger.warn("Flow file does not apply; not overwriting from Mongo", {
+        workspaceId,
+        path,
+        reason: applyFailure,
+      });
+      if (row) await markFlowInvalid(row, applyFailure, path);
+      result.invalid.push(slug);
+      continue;
+    }
+
     const isNew = !row;
+    const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
     const doc =
       row ??
       new Flow({
@@ -808,7 +916,6 @@ export async function syncFlowsFromRepo(
       } as IFlow["webhookConfig"];
     }
     (doc as IFlow).sourceBlobSha = sha;
-    (doc as IFlow).definitionInvalid = undefined;
     // One file's failure is that file's problem. `save()` can still throw for
     // a file that parsed and applied — a value outside a schema enum, an id
     // that is not an ObjectId — and letting that escape would skip every file
@@ -827,6 +934,7 @@ export async function syncFlowsFromRepo(
       result.invalid.push(slug);
       continue;
     }
+    if (wasInvalid) await clearFlowInvalid((doc as IFlow)._id);
     if (isNew) {
       result.created++;
       // A row created in this pass has no id until now, so its desired entry

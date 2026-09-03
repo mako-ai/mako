@@ -51,9 +51,12 @@ import {
 } from "../apps/bind-test-workspace-repo";
 import {
   derivedFlowId,
+  ensureFlowDerivedCache,
+  isFlowMarkedInvalid,
   liveFlowToPlain,
   loadLiveFlowById,
   loadLiveFlows,
+  resolveLiveFlowRow,
   syncFlowsFromRepo,
 } from "./flow-sync.service";
 
@@ -124,6 +127,86 @@ beforeEach(async () => {
   await Flow.deleteMany({});
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
+});
+
+describe("markers, reverts, and resolution", () => {
+  it("an unset marker is not 'invalid': an unbound workspace's run is not refused", async () => {
+    await push({ "flows/marker.yml": flowYaml("Marker") });
+    await syncFlowsFromRepo(WS, "user-42");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "marker" });
+    expect(row).not.toBeNull();
+    // Mongoose materialises the unset nested path as `{}` on a hydrated
+    // doc; `if (row.definitionInvalid)` used to read that as invalid.
+    expect(isFlowMarkedInvalid(row!)).toBe(false);
+    const plain = liveFlowToPlain(
+      (await loadLiveFlows(WS)).find(item => item.def.slug === "marker")!,
+      WS,
+    );
+    expect(plain.definitionInvalid).toBeUndefined();
+    await unbindTestWorkspaceRepo(WS);
+    expect(await ensureFlowDerivedCache(row!)).toBe("ok");
+  });
+
+  it("a broken file is marked once; reverting to identical content clears it in push-sync", async () => {
+    const good = flowYaml("Revertable");
+    await push({ "flows/revertable.yml": good });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({ "flows/revertable.yml": "name: [broken" });
+    await loadLiveFlows(WS);
+    const marked = await Flow.findOne({ workspaceId: WS, slug: "revertable" });
+    expect(marked?.definitionInvalid?.reason).toBe("unparseable flow file");
+    const at = marked?.definitionInvalid?.at;
+    await loadLiveFlows(WS);
+    expect(
+      (await Flow.findOne({ workspaceId: WS, slug: "revertable" }))
+        ?.definitionInvalid?.at,
+    ).toEqual(at);
+    await push({ "flows/revertable.yml": good });
+    const result = await syncFlowsFromRepo(WS, "user-42");
+    expect(result.invalid).toEqual([]);
+    expect(
+      (await Flow.findOne({ workspaceId: WS, slug: "revertable" }))
+        ?.definitionInvalid?.reason,
+    ).toBeUndefined();
+  });
+
+  it("resolves a git-only flow as 409, a synced one as ok, a deleted file as 404; the stub is whole", async () => {
+    await push({ "flows/only-git.yml": flowYaml("Only git") });
+    const live = await loadLiveFlows(WS);
+    const id = live.find(item => item.def.slug === "only-git")!.id.toString();
+    const gitOnly = await resolveLiveFlowRow(WS, id);
+    expect(gitOnly.ok).toBe(false);
+    if (!gitOnly.ok) expect(gitOnly.status).toBe(409);
+
+    await syncFlowsFromRepo(WS, "user-42");
+    const synced = await resolveLiveFlowRow(WS, id);
+    expect(synced.ok).toBe(true);
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { deletes: ["flows/only-git.yml"] },
+      { message: "laptop delete" },
+    );
+    const gone = await resolveLiveFlowRow(WS, id);
+    expect(gone.ok).toBe(false);
+    if (!gone.ok) expect(gone.status).toBe(404);
+
+    await push({ "flows/broken-stub.yml": "name: [broken" });
+    const stub = liveFlowToPlain(
+      (await loadLiveFlows(WS)).find(item => item.def.slug === "broken-stub")!,
+      WS,
+    );
+    expect(stub).toMatchObject({
+      name: "broken-stub",
+      syncMode: "full",
+      enabled: false,
+    });
+    expect(stub.createdAt).toBeInstanceOf(Date);
+    expect(
+      (stub.definitionInvalid as { reason?: string } | undefined)?.reason,
+    ).toBe("unparseable flow file");
+  });
 });
 
 describe("a NEW flow file creates a row", () => {

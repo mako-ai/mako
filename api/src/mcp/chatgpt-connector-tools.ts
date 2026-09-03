@@ -352,6 +352,8 @@ async function fetchSkillDoc(
   const workspaceSkill = await Skill.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
     name,
+    // A skill whose file at main is broken or gone is not servable.
+    "definitionInvalid.reason": { $exists: false },
   })
     .select("name loadWhen body")
     .lean();

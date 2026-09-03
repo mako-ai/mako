@@ -64,6 +64,10 @@ export function FlowEditor({
   const flowsError = useFlowStore(s =>
     currentWorkspace ? s.error[currentWorkspace.id] : null,
   );
+  // runFlow records its failure in the store and swallows it; nothing in
+  // this view rendered that field once the flow resolved, so "Run Now" on a
+  // flow the API rejects looked like nothing happened.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
   const currentFlow = currentFlowId
@@ -131,7 +135,14 @@ export function FlowEditor({
 
   const handleRunNow = async () => {
     if (currentWorkspace?.id && currentFlowId) {
-      await runFlow(currentWorkspace.id, currentFlowId);
+      setActionError(null);
+      const workspaceId = currentWorkspace.id;
+      useFlowStore.setState(state => {
+        state.error[workspaceId] = null;
+      });
+      await runFlow(workspaceId, currentFlowId);
+      const failure = useFlowStore.getState().error[workspaceId];
+      if (failure) setActionError(failure);
     }
   };
 
@@ -154,19 +165,51 @@ export function FlowEditor({
   const renderInfoView = () => {
     if (!currentFlowId) return null;
 
+    const invalid = currentFlow?.definitionInvalid;
+    const notices = (
+      <>
+        {invalid && (
+          <Alert severity="warning" sx={{ m: 2, mb: 0 }}>
+            The flow file in git is invalid ({invalid.reason}).
+            {invalid.path ? (
+              <>
+                {" "}
+                Fix <code>{invalid.path}</code> on main;
+              </>
+            ) : null}{" "}
+            until then this shows the last valid version and its schedules are
+            paused.
+          </Alert>
+        )}
+        {actionError && (
+          <Alert
+            severity="error"
+            onClose={() => setActionError(null)}
+            sx={{ m: 2, mb: 0 }}
+          >
+            {actionError}
+          </Alert>
+        )}
+      </>
+    );
+
     if (!isCdcFlow) {
       return (
-        <FlowLogs
-          flowId={currentFlowId}
-          onRunNow={handleRunNow}
-          onEdit={handleEditClick}
-        />
+        <>
+          {notices}
+          <FlowLogs
+            flowId={currentFlowId}
+            onRunNow={handleRunNow}
+            onEdit={handleEditClick}
+          />
+        </>
       );
     }
     if (!currentWorkspace) return null;
     const showRunsTab = hasScheduleTrigger;
     return (
       <>
+        {notices}
         {backfillNotice && (
           <Alert
             severity="success"
