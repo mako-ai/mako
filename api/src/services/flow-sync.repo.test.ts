@@ -351,6 +351,69 @@ describe("GET/list from git", () => {
     expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
   });
 
+  it("does not throw when a file at main parses but fails schema save", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
+        "write_mode: append_dedup",
+        "write_mode: not_a_real_mode",
+      ),
+    });
+
+    // GET/list must not 500 the explorer because one file is unsavable.
+    // syncFlowsFromRepo already swallows this; ensureFlowDerivedCache did not.
+    await expect(loadLiveFlows(WS)).resolves.toHaveLength(1);
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
+    expect(row?.name).toBe("Close → BigQuery");
+    expect(row?.writeMode).toBe("append_dedup");
+    expect(row?.definitionInvalid?.reason).toMatch(
+      /writeMode|write_mode|enum/i,
+    );
+  });
+
+  it("does not serve a schema-invalid file as a live definition", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
+        "write_mode: append_dedup",
+        "write_mode: not_a_real_mode",
+      ),
+    });
+
+    const listed = await loadLiveFlows(WS);
+    const plain = liveFlowToPlain(listed[0], WS);
+    // Git is the store, but a file the reactor cannot save must not be
+    // applied over the last-good row or look valid in GET/list.
+    expect(plain.definitionInvalid).toBeTruthy();
+    expect(plain.name).toBe("Close → BigQuery");
+    expect(plain.writeMode).toBe("append_dedup");
+  });
+
+  it("does not 500 GET/list when one file's connector_id is not an ObjectId", async () => {
+    await push({
+      "flows/a-by-name.yml": flowYaml("By name").replace(
+        `connector_id: ${CONNECTOR}`,
+        "connector_id: close",
+      ),
+      "flows/z-good-one.yml": flowYaml("Good"),
+    });
+
+    await expect(loadLiveFlows(WS)).resolves.toHaveLength(2);
+    const plains = (await loadLiveFlows(WS)).map(item =>
+      liveFlowToPlain(item, WS),
+    );
+    const bad = plains.find(item => item.slug === "a-by-name");
+    const good = plains.find(item => item.slug === "z-good-one");
+    expect(bad?.definitionInvalid).toBeTruthy();
+    expect(good?.name).toBe("Good");
+    expect(good?.definitionInvalid).toBeUndefined();
+  });
+
   it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
     await push({ "flows/leftover.yml": flowYaml("Leftover") });
     await syncFlowsFromRepo(WS, "user-42");

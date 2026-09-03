@@ -285,8 +285,8 @@ export async function loadLiveFlowById(
 
 /**
  * Git definition overlaid on the Mongo runtime row (or a stub when the
- * file has no row). Never copies a Mongo-only definition into the
- * response: the body comes from the file when it parses.
+ * file has no row). The body comes from the file when it parses AND
+ * applies; a file the reactor would refuse must not look valid in GET.
  */
 export function liveFlowToPlain(
   live: LiveFlow,
@@ -305,18 +305,37 @@ export function liveFlowToPlain(
   base._id = live.id;
   base.slug = live.def.slug;
   base.workspaceId = live.row?.workspaceId ?? new Types.ObjectId(workspaceId);
-  if (live.def.parsed) {
-    applyDefinition(base as unknown as IFlow, live.def.parsed);
-    base.sourceBlobSha = live.def.oid;
-    delete base.definitionInvalid;
-  } else {
+  const parsed = live.def.parsed;
+  const createdBy =
+    typeof live.row?.createdBy === "string" && live.row.createdBy
+      ? live.row.createdBy
+      : "git";
+  if (!parsed) {
     base.definitionInvalid = live.row?.definitionInvalid ?? {
       reason: "unparseable flow file",
       at: new Date(),
       path: live.def.path,
     };
     base.sourceBlobSha = live.def.oid;
+    return base;
   }
+  const applyFailure = flowFileApplyFailure(parsed, {
+    workspaceId,
+    slug: live.def.slug,
+    createdBy,
+  });
+  if (applyFailure) {
+    base.definitionInvalid = live.row?.definitionInvalid ?? {
+      reason: applyFailure,
+      at: new Date(),
+      path: live.def.path,
+    };
+    base.sourceBlobSha = live.def.oid;
+    return base;
+  }
+  applyDefinition(base as unknown as IFlow, parsed);
+  base.sourceBlobSha = live.def.oid;
+  delete base.definitionInvalid;
   return base;
 }
 
@@ -377,7 +396,17 @@ export async function ensureFlowDerivedCache(flow: {
   }
   row.definitionInvalid = undefined;
   row.sourceBlobSha = sha;
-  await row.save();
+  try {
+    await row.save();
+  } catch (error) {
+    // applyDefinition already mutated `row`. Saving that document again
+    // (via markFlowInvalid) would re-raise the same ValidationError and
+    // 500 GET/list. Reload the persisted row, then stamp invalid.
+    const reason = error instanceof Error ? error.message : String(error);
+    const fresh = await Flow.findById(flow._id);
+    if (fresh) await markFlowInvalid(fresh, reason, path);
+    return "invalid";
+  }
   return "resynced";
 }
 
@@ -508,6 +537,17 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
   return null;
 }
 
+/** Why a parsed file cannot become a row — refusal or schema, same as save(). */
+function flowFileApplyFailure(
+  file: FlowFile,
+  args: { workspaceId: string; slug: string; createdBy: string },
+): string | null {
+  const hydrated = hydrateFlowRow(file, args);
+  if (hydrated.refusal) return hydrated.refusal;
+  if (hydrated.schemaErrors.length === 0) return null;
+  return hydrated.schemaErrors.map(e => `${e.path}: ${e.message}`).join("; ");
+}
+
 /** What a file would produce if it were written onto a fresh row. */
 export interface HydratedFlowRow {
   /** Set when `applyDefinition` refuses the file outright. */
@@ -546,7 +586,12 @@ export function hydrateFlowRow(
     createdBy: args.createdBy,
   }) as unknown as IFlow;
 
-  const refusal = applyDefinition(doc, file);
+  let refusal: string | null;
+  try {
+    refusal = applyDefinition(doc, file);
+  } catch (error) {
+    refusal = error instanceof Error ? error.message : String(error);
+  }
   if (refusal) return { refusal, schemaErrors: [] };
 
   // validateSync() runs the schema's own validators in-process and touches no
