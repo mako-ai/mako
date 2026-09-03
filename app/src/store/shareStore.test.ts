@@ -6,11 +6,10 @@ import {
   type ShareResourceType,
 } from "./shareStore";
 
-/** Deep-link pattern that must hydrate each shareable resource's URL. */
-const TAB_PATTERN_FOR_RESOURCE: Record<ShareResourceType, RegExp> = {
+/** Deep-link pattern for resources that open inside the Mako shell. */
+const TAB_PATTERN_FOR_RESOURCE: Partial<Record<ShareResourceType, RegExp>> = {
   dashboard: TAB_DEEP_LINK_PATTERNS.dashboard,
   console: TAB_DEEP_LINK_PATTERNS.console,
-  app: TAB_DEEP_LINK_PATTERNS.app,
 };
 
 describe("buildWorkspaceResourceUrl", () => {
@@ -27,8 +26,17 @@ describe("buildWorkspaceResourceUrl", () => {
     "produces a hydratable deep link for %s",
     resourceType => {
       const url = new URL(buildWorkspaceResourceUrl(resourceType, "abc-123"));
-      const match = url.pathname.match(TAB_PATTERN_FOR_RESOURCE[resourceType]);
+      const pattern = TAB_PATTERN_FOR_RESOURCE[resourceType];
+      expect(pattern).toBeDefined();
+      if (!pattern) throw new Error(`Missing pattern for ${resourceType}`);
+      const match = url.pathname.match(pattern);
       expect(match?.[1]).toBe("abc-123");
     },
   );
+
+  it("builds a fullscreen published-app URL for workspace members", () => {
+    expect(buildWorkspaceResourceUrl("app", "app-123", "workspace-456")).toBe(
+      `${window.location.origin}/api/workspaces/workspace-456/apps/app-123/live/`,
+    );
+  });
 });

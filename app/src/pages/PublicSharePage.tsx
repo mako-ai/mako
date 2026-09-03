@@ -22,13 +22,26 @@ import PublicDashboardViewer, {
  */
 
 interface ShareMeta {
-  type: "dashboard";
+  type: "dashboard" | "app";
   title: string;
   passwordRequired: boolean;
   unlocked: boolean;
 }
 
-type ShareContent = PublicDashboardContent;
+interface PublicAppContent {
+  kind: "app";
+  title: string;
+  published: boolean;
+  entry: string;
+}
+
+type ShareContent = PublicDashboardContent | PublicAppContent;
+
+function isPublicAppContent(
+  content: ShareContent,
+): content is PublicAppContent {
+  return "kind" in content && content.kind === "app";
+}
 
 export default function PublicSharePage() {
   const { token = "" } = useParams<{ token: string }>();
@@ -80,6 +93,15 @@ export default function PublicSharePage() {
       }
     })();
   }, [token, loadContent]);
+
+  // A git-backed app is already a complete built deployment. Navigate to its
+  // token-gated entrypoint instead of framing it so the app owns the whole
+  // browser viewport and password cookies accompany its module assets.
+  useEffect(() => {
+    if (content && isPublicAppContent(content) && content.published) {
+      window.location.replace(content.entry);
+    }
+  }, [content]);
 
   const handleUnlock = async () => {
     setUnlocking(true);
@@ -210,13 +232,50 @@ export default function PublicSharePage() {
     );
   }
 
+  if (isPublicAppContent(content)) {
+    if (!content.published) {
+      return (
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            height: "100vh",
+            gap: 1,
+          }}
+        >
+          <Typography variant="h6">
+            This app has not been published yet
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Ask the owner to publish it before sharing the link.
+          </Typography>
+        </Box>
+      );
+    }
+
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100vh",
+        }}
+      >
+        <CircularProgress />
+      </Box>
+    );
+  }
+
   return (
     <PublicDashboardViewer
       token={token}
       content={content}
       reloadContent={async () => {
         const next = await loadContent();
-        if (next) {
+        if (next && !isPublicAppContent(next)) {
           setContent(next);
           return next;
         }

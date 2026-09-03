@@ -39,6 +39,7 @@ import {
   Play as PlayIcon,
   Plus as PlusIcon,
   RefreshCw as RefreshIcon,
+  Share2 as ShareIcon,
   Square as StopIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
@@ -46,6 +47,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsStore } from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
@@ -55,6 +57,8 @@ import { setIframeDragGuard } from "../lib/iframe-drag-guard";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useUIStore } from "../store/uiStore";
 import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
+import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import ShareDialog from "./ShareDialog";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -1091,7 +1095,9 @@ export default function AppWorkspace({
   appId: string;
 }) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
 
   const app = useAppsStore(s => s.apps.find(a => a.id === appId));
   const status = useAppsStore(s => s.statusByApp[appId]);
@@ -1222,6 +1228,7 @@ export default function AppWorkspace({
   const stopDev = useAppsStore(s => s.stopDev);
 
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   // Bumping this remounts the preview iframe — a plain page refresh.
   const [previewNonce, setPreviewNonce] = useState(0);
 
@@ -1439,6 +1446,36 @@ export default function AppWorkspace({
             </Button>
           </span>
         </Tooltip>
+        <Tooltip
+          title={
+            app?.publishedSha
+              ? "Share the fullscreen published app"
+              : "Publish the app before sharing it"
+          }
+        >
+          <span>
+            {isMobile ? (
+              <IconButton
+                size="small"
+                aria-label="Share app"
+                disabled={!app?.publishedSha}
+                onClick={() => setShareOpen(true)}
+              >
+                <ShareIcon size={16} />
+              </IconButton>
+            ) : (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ShareIcon size={15} />}
+                disabled={!app?.publishedSha}
+                onClick={() => setShareOpen(true)}
+              >
+                Share
+              </Button>
+            )}
+          </span>
+        </Tooltip>
         {!isMobile && (
           <Tooltip title={`History (${status?.branch ?? "main"})`}>
             <IconButton
@@ -1621,6 +1658,35 @@ export default function AppWorkspace({
         branch={status?.branch ?? "main"}
         publishedSha={app?.publishedSha}
       />
+      {app && (
+        <ShareDialog
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          resourceType="app"
+          resourceId={app.id}
+          resourceName={app.title}
+          ownerId={app.owner_id}
+          access={app.access ?? "workspace"}
+          workspaceRole={app.workspaceRole ?? "viewer"}
+          publicShare={app.publicShare}
+          canManage={
+            !app.owner_id || app.owner_id === user?.id || isWorkspaceAdmin
+          }
+          onSharingChanged={changes => {
+            useAppsStore.setState(state => {
+              const currentApp = state.apps.find(item => item.id === app.id);
+              if (!currentApp) return;
+              if (changes.access) currentApp.access = changes.access;
+              if (changes.workspaceRole) {
+                currentApp.workspaceRole = changes.workspaceRole;
+              }
+              if (changes.publicShare) {
+                currentApp.publicShare = changes.publicShare;
+              }
+            });
+          }}
+        />
+      )}
     </Box>
   );
 }

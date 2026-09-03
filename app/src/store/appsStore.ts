@@ -18,6 +18,7 @@ import { focusAppsTab, reconcileAppsTabs } from "../apps-runtime/shell";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
+import type { PublicShareInfo } from "./shareStore";
 
 /**
  * After connect/disconnect the derived git index in Mongo has changed.
@@ -70,6 +71,8 @@ export interface AppMeta {
   owner_id?: string;
   /** What workspace members may do with a workspace-access app. */
   workspaceRole?: "viewer" | "editor";
+  /** Safe public-link metadata; password material never leaves the API. */
+  publicShare?: PublicShareInfo;
 }
 
 export interface AppFileEntry {

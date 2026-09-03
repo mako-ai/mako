@@ -82,6 +82,8 @@ const SUPPORTS_PUBLIC: Record<ShareResourceType, boolean> = {
   app: true,
 };
 
+type AppLinkScope = "workspace" | "public-password" | "public";
+
 // Stable fallback so the Zustand selector never returns a fresh `[]` per call
 // (a new reference each render makes useSyncExternalStore loop forever and
 // blocks the initial commit — blank page with no error).
@@ -278,9 +280,19 @@ export default function ShareDialog({
   const [showPassword, setShowPassword] = useState(false);
   const [editingLink, setEditingLink] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
+  const [requestedAppScope, setRequestedAppScope] =
+    useState<AppLinkScope | null>(null);
 
   const supportsPublic = SUPPORTS_PUBLIC[resourceType];
   const label = RESOURCE_LABEL[resourceType];
+  const currentAppScope: AppLinkScope | null = publicShare.enabled
+    ? publicShare.hasPassword
+      ? "public-password"
+      : "public"
+    : access === "workspace"
+      ? "workspace"
+      : null;
+  const selectedAppScope = requestedAppScope ?? currentAppScope;
 
   useEffect(() => {
     if (!open) return;
@@ -292,6 +304,7 @@ export default function ShareDialog({
     setShowPassword(false);
     setEditingLink(false);
     setLinkDraft("");
+    setRequestedAppScope(null);
     setAccess(accessProp ?? "private");
     setWorkspaceRole(workspaceRoleProp ?? "viewer");
     setPublicShare(publicShareProp ?? { enabled: false });
@@ -382,19 +395,103 @@ export default function ShareDialog({
     }
   };
 
+  const handleAppScopeChange = async (nextScope: AppLinkScope) => {
+    if (!workspaceId || !resourceId) return;
+
+    if (nextScope === "public-password" && !publicShare.hasPassword) {
+      setRequestedAppScope(nextScope);
+      setPassword("");
+      return;
+    }
+
+    setRequestedAppScope(null);
+    if (nextScope === "workspace") {
+      await run(async () => {
+        const settingsResult = await updateSharingSettings(
+          resourceType,
+          workspaceId,
+          resourceId,
+          { access: "workspace" },
+        );
+        if (!settingsResult.ok) return settingsResult;
+        if (settingsResult.settings) {
+          setAccess(settingsResult.settings.access);
+          setWorkspaceRole(settingsResult.settings.workspaceRole);
+          onSharingChanged?.({
+            access: settingsResult.settings.access,
+            workspaceRole: settingsResult.settings.workspaceRole,
+          });
+        }
+
+        if (!publicShare.enabled) return { ok: true };
+        const publicResult = await disablePublicShare(
+          resourceType,
+          workspaceId,
+          resourceId,
+        );
+        if (publicResult.ok) {
+          const disabledShare = { enabled: false } as const;
+          setPublicShare(disabledShare);
+          onSharingChanged?.({ publicShare: disabledShare });
+        }
+        return publicResult;
+      });
+      return;
+    }
+
+    await run(async () => {
+      let nextPublicShare = publicShare;
+      if (!nextPublicShare.enabled) {
+        const enableResult = await enablePublicShare(
+          resourceType,
+          workspaceId,
+          resourceId,
+        );
+        if (!enableResult.ok || !enableResult.publicShare) {
+          return enableResult;
+        }
+        nextPublicShare = enableResult.publicShare;
+      }
+
+      if (nextScope === "public" && nextPublicShare.hasPassword) {
+        const updateResult = await updatePublicShare(
+          resourceType,
+          workspaceId,
+          resourceId,
+          { password: null },
+        );
+        if (!updateResult.ok || !updateResult.publicShare) {
+          return updateResult;
+        }
+        nextPublicShare = updateResult.publicShare;
+      }
+
+      setPublicShare(nextPublicShare);
+      setRevealedPassword(null);
+      setShowPassword(false);
+      onSharingChanged?.({ publicShare: nextPublicShare });
+      return { ok: true };
+    });
+  };
+
   const handleSetPassword = async () => {
     if (!workspaceId || !resourceId || !password) return;
     await run(async () => {
-      const result = await updatePublicShare(
-        resourceType,
-        workspaceId,
-        resourceId,
-        { password },
-      );
+      const result = publicShare.enabled
+        ? await updatePublicShare(resourceType, workspaceId, resourceId, {
+            password,
+          })
+        : await enablePublicShare(
+            resourceType,
+            workspaceId,
+            resourceId,
+            password,
+          );
       if (result.ok && result.publicShare) {
         setPublicShare(result.publicShare);
         setRevealedPassword(password);
         setPassword("");
+        setRequestedAppScope(null);
         onSharingChanged?.({ publicShare: result.publicShare });
       }
       return result;
@@ -520,11 +617,15 @@ export default function ShareDialog({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Workspace-internal link for logged-in collaborators. The desktop shell
-  // has no address bar, so this button is the only way to get the URL there.
+  // The primary app link always opens the published app fullscreen. Public
+  // scopes use the anonymous token; workspace-only uses the authenticated
+  // deployment route (whose auth gate returns signed-out people after login).
   const handleCopyInternalLink = async () => {
     if (!resourceId) return;
-    const url = buildWorkspaceResourceUrl(resourceType, resourceId);
+    const url =
+      resourceType === "app" && publicShare.enabled && publicShare.token
+        ? buildPublicShareUrl(publicShare.token, currentWorkspace?.name)
+        : buildWorkspaceResourceUrl(resourceType, resourceId, workspaceId);
     if (!(await copyTextToClipboard(url))) {
       setError("Failed to copy link");
       return;
@@ -713,111 +814,240 @@ export default function ShareDialog({
           })}
         </Box>
 
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          General access
-        </Typography>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-          <IconCircle tint={access === "workspace" ? "primary" : "neutral"}>
-            {access === "workspace" ? (
-              <Building2 size={18} />
-            ) : (
-              <Lock size={18} />
-            )}
-          </IconCircle>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            {canManage ? (
-              <Select
-                size="small"
-                variant="standard"
-                disableUnderline
-                value={access}
-                disabled={busy}
-                onChange={e =>
-                  void persistSettings({
-                    access: e.target.value as ShareAccess,
-                  })
-                }
-                sx={{
-                  fontSize: 14,
-                  fontWeight: 500,
-                  "& .MuiSelect-select": { py: 0, pr: 3 },
-                }}
-              >
-                <MenuItem value="private">Restricted</MenuItem>
-                <MenuItem value="workspace">Workspace</MenuItem>
-              </Select>
-            ) : (
-              <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                {access === "private" ? "Restricted" : "Workspace"}
-              </Typography>
-            )}
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block" }}
-            >
-              {access === "private"
-                ? "Only people with access can open it"
-                : workspaceRole === "editor"
-                  ? "Everyone in the workspace can edit"
-                  : "Everyone in the workspace can view"}
-            </Typography>
-          </Box>
-          {access === "workspace" && (
-            <Select
-              size="small"
-              variant="standard"
-              disableUnderline
-              value={workspaceRole}
-              disabled={!canManage || busy}
-              onChange={e =>
-                void persistSettings({
-                  workspaceRole: e.target.value as ShareRole,
-                })
-              }
-              sx={{
-                fontSize: 14,
-                color: "text.secondary",
-                "& .MuiSelect-select": { py: 0.25, pr: 3 },
-              }}
-            >
-              <MenuItem value="viewer">Viewer</MenuItem>
-              <MenuItem value="editor">Editor</MenuItem>
-            </Select>
-          )}
-        </Box>
-
-        {supportsPublic && (
+        {resourceType === "app" ? (
           <>
-            <Box
-              sx={{ display: "flex", alignItems: "center", gap: 1.5, mt: 2 }}
-            >
-              <IconCircle tint={publicShare.enabled ? "success" : "neutral"}>
-                <Globe size={18} />
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Link access
+            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+              <IconCircle
+                tint={
+                  selectedAppScope === "workspace"
+                    ? "primary"
+                    : selectedAppScope
+                      ? "success"
+                      : "neutral"
+                }
+              >
+                {selectedAppScope === "workspace" ? (
+                  <Building2 size={18} />
+                ) : selectedAppScope === "public-password" ? (
+                  <Lock size={18} />
+                ) : selectedAppScope === "public" ? (
+                  <Globe size={18} />
+                ) : (
+                  <Lock size={18} />
+                )}
               </IconCircle>
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                  Public link
-                </Typography>
+                {canManage ? (
+                  <Select
+                    size="small"
+                    variant="standard"
+                    disableUnderline
+                    value={selectedAppScope ?? ""}
+                    disabled={busy}
+                    onChange={e =>
+                      void handleAppScopeChange(e.target.value as AppLinkScope)
+                    }
+                    sx={{
+                      fontSize: 14,
+                      fontWeight: 500,
+                      "& .MuiSelect-select": { py: 0, pr: 3 },
+                    }}
+                  >
+                    {!selectedAppScope && (
+                      <MenuItem value="" disabled>
+                        Choose link access
+                      </MenuItem>
+                    )}
+                    <MenuItem value="workspace">
+                      Workspace members only
+                    </MenuItem>
+                    <MenuItem value="public-password">
+                      Public with password
+                    </MenuItem>
+                    <MenuItem value="public">Public without password</MenuItem>
+                  </Select>
+                ) : (
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    {!selectedAppScope
+                      ? "Only invited people"
+                      : selectedAppScope === "workspace"
+                        ? "Workspace members only"
+                        : selectedAppScope === "public-password"
+                          ? "Public with password"
+                          : "Public without password"}
+                  </Typography>
+                )}
                 <Typography
                   variant="caption"
                   color="text.secondary"
                   sx={{ display: "block" }}
                 >
-                  {publicShare.enabled
-                    ? publicShare.hasPassword
-                      ? "Anyone with the link and password can view a snapshot"
-                      : "Anyone with the link can view a snapshot"
-                    : "Off — not accessible outside the workspace"}
+                  {!selectedAppScope
+                    ? "Choose a sharing scope to create a fullscreen link for others"
+                    : selectedAppScope === "workspace"
+                      ? "Anyone in this workspace can open the fullscreen app after signing in"
+                      : selectedAppScope === "public-password"
+                        ? "Anyone with the link and password can open the fullscreen app"
+                        : "Anyone with the link can open the fullscreen app"}
                 </Typography>
               </Box>
-              <Switch
-                size="small"
-                checked={publicShare.enabled}
-                disabled={!canManage || busy}
-                onChange={e => void handlePublicToggle(e.target.checked)}
-              />
             </Box>
+            {requestedAppScope === "public-password" &&
+              !publicShare.enabled &&
+              canManage && (
+                <TextField
+                  size="small"
+                  fullWidth
+                  autoFocus
+                  type="password"
+                  placeholder="Choose a password"
+                  value={password}
+                  disabled={busy}
+                  onChange={e => setPassword(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && password && !busy) {
+                      e.preventDefault();
+                      void handleSetPassword();
+                    }
+                  }}
+                  sx={{ mt: 1, ml: 6.5, width: "calc(100% - 52px)" }}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Lock size={14} />
+                      </InputAdornment>
+                    ),
+                    endAdornment: password ? (
+                      <InputAdornment position="end">
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disableElevation
+                          disabled={busy}
+                          onClick={() => void handleSetPassword()}
+                        >
+                          Protect link
+                        </Button>
+                      </InputAdornment>
+                    ) : undefined,
+                  }}
+                />
+              )}
+          </>
+        ) : (
+          <>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              General access
+            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+              <IconCircle tint={access === "workspace" ? "primary" : "neutral"}>
+                {access === "workspace" ? (
+                  <Building2 size={18} />
+                ) : (
+                  <Lock size={18} />
+                )}
+              </IconCircle>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                {canManage ? (
+                  <Select
+                    size="small"
+                    variant="standard"
+                    disableUnderline
+                    value={access}
+                    disabled={busy}
+                    onChange={e =>
+                      void persistSettings({
+                        access: e.target.value as ShareAccess,
+                      })
+                    }
+                    sx={{
+                      fontSize: 14,
+                      fontWeight: 500,
+                      "& .MuiSelect-select": { py: 0, pr: 3 },
+                    }}
+                  >
+                    <MenuItem value="private">Restricted</MenuItem>
+                    <MenuItem value="workspace">Workspace</MenuItem>
+                  </Select>
+                ) : (
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    {access === "private" ? "Restricted" : "Workspace"}
+                  </Typography>
+                )}
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block" }}
+                >
+                  {access === "private"
+                    ? "Only people with access can open it"
+                    : workspaceRole === "editor"
+                      ? "Everyone in the workspace can edit"
+                      : "Everyone in the workspace can view"}
+                </Typography>
+              </Box>
+              {access === "workspace" && (
+                <Select
+                  size="small"
+                  variant="standard"
+                  disableUnderline
+                  value={workspaceRole}
+                  disabled={!canManage || busy}
+                  onChange={e =>
+                    void persistSettings({
+                      workspaceRole: e.target.value as ShareRole,
+                    })
+                  }
+                  sx={{
+                    fontSize: 14,
+                    color: "text.secondary",
+                    "& .MuiSelect-select": { py: 0.25, pr: 3 },
+                  }}
+                >
+                  <MenuItem value="viewer">Viewer</MenuItem>
+                  <MenuItem value="editor">Editor</MenuItem>
+                </Select>
+              )}
+            </Box>
+          </>
+        )}
+
+        {supportsPublic && (
+          <>
+            {resourceType !== "app" && (
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1.5, mt: 2 }}
+              >
+                <IconCircle tint={publicShare.enabled ? "success" : "neutral"}>
+                  <Globe size={18} />
+                </IconCircle>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    Public link
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ display: "block" }}
+                  >
+                    {publicShare.enabled
+                      ? publicShare.hasPassword
+                        ? "Anyone with the link and password can view a snapshot"
+                        : "Anyone with the link can view a snapshot"
+                      : "Off — not accessible outside the workspace"}
+                  </Typography>
+                </Box>
+                <Switch
+                  size="small"
+                  checked={publicShare.enabled}
+                  disabled={!canManage || busy}
+                  onChange={e => void handlePublicToggle(e.target.checked)}
+                />
+              </Box>
+            )}
 
             {publicShare.enabled && (
               <Box
@@ -1006,7 +1236,8 @@ export default function ShareDialog({
                         Remove
                       </Button>
                     </Box>
-                  ) : (
+                  ) : resourceType !== "app" ||
+                    requestedAppScope === "public-password" ? (
                     <TextField
                       size="small"
                       fullWidth
@@ -1048,7 +1279,7 @@ export default function ShareDialog({
                         ) : undefined,
                       }}
                     />
-                  ))}
+                  ) : null)}
 
                 {resourceType === "app" && canManage && (
                   <Box
@@ -1088,17 +1319,37 @@ export default function ShareDialog({
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5, justifyContent: "space-between" }}>
-        <Tooltip title="Copy a link for people with access — they must be signed in to open it">
+        <Tooltip
+          title={
+            resourceType === "app"
+              ? requestedAppScope === "public-password"
+                ? "Choose a password to create the protected link"
+                : !currentAppScope
+                  ? "Choose a sharing scope before copying the app link"
+                  : publicShare.enabled
+                    ? "Copy the public fullscreen app link"
+                    : "Copy the fullscreen app link — workspace sign-in is required"
+              : "Copy a link for people with access — they must be signed in to open it"
+          }
+        >
           <span>
             <Button
               variant="outlined"
               startIcon={
                 internalCopied ? <Check size={16} /> : <LinkIcon size={16} />
               }
-              disabled={!resourceId}
+              disabled={
+                !resourceId ||
+                requestedAppScope !== null ||
+                (resourceType === "app" && !currentAppScope)
+              }
               onClick={() => void handleCopyInternalLink()}
             >
-              {internalCopied ? "Copied" : "Copy link"}
+              {internalCopied
+                ? "Copied"
+                : resourceType === "app"
+                  ? "Copy app link"
+                  : "Copy link"}
             </Button>
           </span>
         </Tooltip>
