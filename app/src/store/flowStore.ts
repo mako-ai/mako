@@ -1,7 +1,12 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { api, unwrapBody, toErrorMessage as normalizeError } from "../api";
+import {
+  api,
+  unwrapBody,
+  ApiError,
+  toErrorMessage as normalizeError,
+} from "../api";
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
 
@@ -642,7 +647,17 @@ export const useFlowStore = create<FlowStore>()(
           } else {
             throw new Error(response.error || "Failed to fetch flows");
           }
-        } catch (error: any) {
+        } catch (error: unknown) {
+          // Writes 412 without GitHub; GET/list is an empty explorer
+          // (disconnect or never linked). A sticky error left the sidebar
+          // populated after unlink until a full reload.
+          if (error instanceof ApiError && error.status === 412) {
+            set(state => {
+              state.flows[workspaceId] = [];
+              state.error[workspaceId] = null;
+            });
+            return [];
+          }
           set(state => {
             state.error[workspaceId] = normalizeError(error);
           });

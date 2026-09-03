@@ -28,13 +28,6 @@ import {
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
-// No connected GitHub repo: the mirror helpers become no-ops and the
-// reconciler has nothing destructive to verify against (no removals here).
-vi.mock("./workspace-repos.service", () => ({
-  getWorkspaceRepo: vi.fn(async () => null),
-  findWorkspaceIdByRepoBinding: vi.fn(async () => null),
-  findWorkspaceIdsByRepoBinding: vi.fn(async () => []),
-}));
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
@@ -45,11 +38,24 @@ vi.mock("../inngest/client", () => ({
 import { Flow } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  blobOid,
   commitBlobsOnBranch,
   initRepo,
+  readBlob,
   repoDirFor,
+  resolveCommit,
 } from "../apps/repository.service";
-import { syncFlowsFromRepo } from "./flow-sync.service";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "../apps/bind-test-workspace-repo";
+import {
+  derivedFlowId,
+  liveFlowToPlain,
+  loadLiveFlowById,
+  loadLiveFlows,
+  syncFlowsFromRepo,
+} from "./flow-sync.service";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -117,6 +123,7 @@ beforeEach(async () => {
   WS = new Types.ObjectId().toString();
   await Flow.deleteMany({});
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 describe("a NEW flow file creates a row", () => {
@@ -134,6 +141,9 @@ describe("a NEW flow file creates a row", () => {
     expect(row).not.toBeNull();
     expect(row!.createdBy).toBe("user-42");
     expect(row!.type).toBe("webhook");
+    expect(row!._id.toString()).toBe(
+      derivedFlowId(WS, "close-to-bigquery").toString(),
+    );
     expect(row!.syncEngine).toBe("cdc");
     expect(row!.backfillSchedule?.enabled).toBe(true);
     expect(row!.backfillSchedule?.cron).toBe("0 3 * * *");
@@ -261,5 +271,110 @@ describe("one bad file is that file's problem", () => {
     expect(after!.name).toBe(before!.name);
     expect(after!.writeMode).toBe(before!.writeMode);
     expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);
+  });
+});
+
+describe("GET/list from git", () => {
+  it("serves the file at main when the Mongo row has no definition body", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
+    expect(row).not.toBeNull();
+    await Flow.updateOne(
+      { _id: row!._id },
+      { $set: { name: "", queries: [] } },
+    );
+    const stale = await Flow.findById(row!._id);
+    expect(stale?.name).toBe("");
+
+    const listed = await loadLiveFlows(WS);
+    expect(listed).toHaveLength(1);
+    const plain = liveFlowToPlain(listed[0], WS);
+    expect(plain.name).toBe("Close → BigQuery");
+    expect(plain.syncEngine).toBe("cdc");
+
+    const got = await loadLiveFlowById(WS, row!._id.toString());
+    expect(got).not.toBeNull();
+    expect(liveFlowToPlain(got!, WS).name).toBe("Close → BigQuery");
+  });
+
+  it("resyncs a stale sourceBlobSha from the blob at main", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await Flow.updateOne(
+      { workspaceId: WS, slug: "close-to-bigquery" },
+      { $set: { name: "stale-mongo", sourceBlobSha: "deadbeef" } },
+    );
+
+    const listed = await loadLiveFlows(WS);
+    expect(liveFlowToPlain(listed[0], WS).name).toBe("Close → BigQuery");
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
+    expect(row?.name).toBe("Close → BigQuery");
+    expect(row?.sourceBlobSha).not.toBe("deadbeef");
+  });
+
+  it("lists a git file that has no Mongo row", async () => {
+    await push({ "flows/from-laptop.yml": flowYaml("From laptop") });
+    const listed = await loadLiveFlows(WS);
+    expect(listed.map(item => item.def.slug)).toEqual(["from-laptop"]);
+    expect(listed[0].row).toBeNull();
+    expect(listed[0].id.toString()).toBe(
+      derivedFlowId(WS, "from-laptop").toString(),
+    );
+    expect(liveFlowToPlain(listed[0], WS).name).toBe("From laptop");
+    const got = await loadLiveFlowById(WS, listed[0].id.toString());
+    expect(got?.def.slug).toBe("from-laptop");
+  });
+
+  it("does not list a Mongo row that has no git file", async () => {
+    await Flow.create({
+      workspaceId: WS,
+      slug: "mongo-only",
+      name: "should-not-appear",
+      type: "webhook",
+      sourceType: "connector",
+      dataSourceId: CONNECTOR,
+      destinationDatabaseId: DEST,
+      syncEngine: "cdc",
+      createdBy: "user-42",
+    });
+    const listed = await loadLiveFlows(WS);
+    expect(listed.map(item => item.def.slug)).not.toContain("mongo-only");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "mongo-only" });
+    expect(row).not.toBeNull();
+    expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
+  });
+
+  it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
+    await push({ "flows/leftover.yml": flowYaml("Leftover") });
+    await syncFlowsFromRepo(WS, "user-42");
+    expect((await loadLiveFlows(WS)).map(item => item.def.slug)).toEqual([
+      "leftover",
+    ]);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "leftover" });
+    expect(row).not.toBeNull();
+
+    await unbindTestWorkspaceRepo(WS);
+    expect(await loadLiveFlows(WS)).toEqual([]);
+    expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
+    expect(await Flow.findById(row!._id)).not.toBeNull();
+    const leftoverHead = await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    expect(leftoverHead).toBeTruthy();
+    const leftoverFile = await readBlob(
+      repoDirFor(WS),
+      leftoverHead as string,
+      "flows/leftover.yml",
+    );
+    expect(leftoverFile.contents).toContain("name: Leftover");
+    expect(row!.sourceBlobSha).toBe(blobOid(leftoverFile.contents));
   });
 });

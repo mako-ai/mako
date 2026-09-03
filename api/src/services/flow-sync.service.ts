@@ -9,6 +9,11 @@
  * marked on the row and never replaced by Mongo: a broken YAML must not be
  * "healed" from the derived cache.
  *
+ * GET/list serves the files at main and overlays Mongo for slug, runtime,
+ * SHA, cursors, webhook, and sync state (issue #956, same contract as
+ * consoles). Leftover local git without a GitHub binding is not a read
+ * surface — `boundRepoDirIfExists` / `getWorkspaceRepo` gate every walk.
+ *
  *  1. A flow is a RUNNING STREAM. 31 of 31 production flows are CDC, so a
  *     definition change has to reconcile something live rather than change
  *     what the next run does. That reconciliation is deliberately NOT here —
@@ -26,6 +31,7 @@
  * rename. The file format already excludes all of them; this module must not
  * reintroduce them by writing whole nested objects.
  */
+import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 
 import { loggers } from "../logging";
@@ -43,6 +49,8 @@ import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
 } from "../apps/cloud-repo.service";
+import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
+import { getWorkspaceRepo } from "./workspace-repos.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
@@ -113,8 +121,210 @@ async function markFlowInvalid(
 }
 
 /**
+ * Stable id for a flow that exists as `flows/<slug>.yml` but has no index
+ * row yet (same contract as `derivedConsoleId` / `derivedAppId`).
+ */
+export function derivedFlowId(
+  workspaceId: string,
+  slug: string,
+): Types.ObjectId {
+  const digest = createHash("sha1")
+    .update(`flows:${workspaceId}:${slug}`)
+    .digest("hex");
+  return new Types.ObjectId(digest.slice(0, 24));
+}
+
+export interface FlowDefinitionAtMain {
+  path: string;
+  slug: string;
+  oid: string;
+  contents: string;
+  parsed: FlowFile | null;
+}
+
+export interface LiveFlow {
+  def: FlowDefinitionAtMain;
+  row: IFlow | null;
+  id: Types.ObjectId;
+}
+
+function rowAsPlain(row: IFlow): Record<string, unknown> {
+  const maybeToObject = row as IFlow & {
+    toObject?: () => Record<string, unknown>;
+  };
+  if (typeof maybeToObject.toObject === "function") {
+    return maybeToObject.toObject();
+  }
+  return { ...(row as unknown as Record<string, unknown>) };
+}
+
+/**
+ * Authored flow files at `main`. Empty when no GitHub repo is bound —
+ * leftover local git is not a definition store (issue #956). Never throws
+ * `RepoRequiredError`; a missing binding is an empty list, not 412.
+ */
+export async function listFlowDefinitionsAtMain(
+  workspaceId: string,
+): Promise<FlowDefinitionAtMain[]> {
+  const { files } = await readFlowFilesAtMain(workspaceId, { freshen: false });
+  const defs: FlowDefinitionAtMain[] = [];
+  for (const { path, contents } of files) {
+    const slug = slugFromFlowFilePath(path);
+    if (!slug) continue;
+    defs.push({
+      path,
+      slug,
+      oid: blobOid(contents),
+      contents,
+      parsed: parseFlowFile(contents),
+    });
+  }
+  return defs;
+}
+
+function flowIndexDrift(defs: FlowDefinitionAtMain[], rows: IFlow[]): boolean {
+  const bySlug = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (row.slug) bySlug.set(row.slug, row);
+  }
+  for (const def of defs) {
+    const row = bySlug.get(def.slug);
+    if (!row) continue;
+    if (row.sourceBlobSha !== def.oid) return true;
+    if (row.definitionInvalid && def.parsed) return true;
+  }
+  return false;
+}
+
+/**
+ * SHA-check derived rows against blobs at main; resync matching rows on
+ * mismatch. Does not create, delete, or CDC-reconcile — GET/list must not
+ * tear down streams. Git-only files stay git-only until push-sync.
+ */
+export async function ensureFlowsDerivedCache(
+  workspaceId: string,
+): Promise<"ok" | "resynced" | "unbound"> {
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return "unbound";
+  const defs = await listFlowDefinitionsAtMain(workspaceId);
+  const rows = await Flow.find({ workspaceId });
+  if (!flowIndexDrift(defs, rows)) return "ok";
+  const bySlug = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (row.slug) bySlug.set(row.slug, row);
+  }
+  for (const def of defs) {
+    const row = bySlug.get(def.slug);
+    if (row) await ensureFlowDerivedCache(row);
+  }
+  return "resynced";
+}
+
+function joinLiveFlows(
+  workspaceId: string,
+  defs: FlowDefinitionAtMain[],
+  rows: IFlow[],
+): LiveFlow[] {
+  const bySlug = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (row.slug) bySlug.set(row.slug, row);
+  }
+  return defs.map(def => {
+    const row = bySlug.get(def.slug) ?? null;
+    return {
+      def,
+      row,
+      id: row?._id ?? derivedFlowId(workspaceId, def.slug),
+    };
+  });
+}
+
+/**
+ * Live flows: files at main, overlaying the Mongo index.
+ *
+ * Unbound workspace → `[]` (leftover Mongo rows and leftover local git do
+ * not populate the list). Git-only files appear; Mongo-only rows do not.
+ */
+export async function loadLiveFlows(workspaceId: string): Promise<LiveFlow[]> {
+  const status = await ensureFlowsDerivedCache(workspaceId);
+  if (status === "unbound") return [];
+  const defs = await listFlowDefinitionsAtMain(workspaceId);
+  const rows = await Flow.find({ workspaceId });
+  return joinLiveFlows(workspaceId, defs, rows);
+}
+
+/**
+ * Resolve a flow id for GET. Live only when `flows/<slug>.yml` exists at
+ * main. Unbound or Mongo-only → `null` (404).
+ */
+export async function loadLiveFlowById(
+  workspaceId: string,
+  flowId: string,
+): Promise<LiveFlow | null> {
+  if (!Types.ObjectId.isValid(flowId)) return null;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
+
+  const row = await Flow.findOne({
+    _id: new Types.ObjectId(flowId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (row?.slug) {
+    const defs = await listFlowDefinitionsAtMain(workspaceId);
+    const def = defs.find(item => item.slug === row.slug);
+    if (!def) return null;
+    if (row.sourceBlobSha !== def.oid || row.definitionInvalid) {
+      await ensureFlowDerivedCache(row);
+    }
+    return { def, row, id: row._id };
+  }
+
+  const live = await loadLiveFlows(workspaceId);
+  return live.find(item => item.id.toString() === flowId) ?? null;
+}
+
+/**
+ * Git definition overlaid on the Mongo runtime row (or a stub when the
+ * file has no row). Never copies a Mongo-only definition into the
+ * response: the body comes from the file when it parses.
+ */
+export function liveFlowToPlain(
+  live: LiveFlow,
+  workspaceId: string,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = live.row
+    ? rowAsPlain(live.row)
+    : {
+        _id: live.id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        slug: live.def.slug,
+        createdBy: "git",
+        runCount: 0,
+        sourceType: "connector",
+      };
+  base._id = live.id;
+  base.slug = live.def.slug;
+  base.workspaceId = live.row?.workspaceId ?? new Types.ObjectId(workspaceId);
+  if (live.def.parsed) {
+    applyDefinition(base as unknown as IFlow, live.def.parsed);
+    base.sourceBlobSha = live.def.oid;
+    delete base.definitionInvalid;
+  } else {
+    base.definitionInvalid = live.row?.definitionInvalid ?? {
+      reason: "unparseable flow file",
+      at: new Date(),
+      path: live.def.path,
+    };
+    base.sourceBlobSha = live.def.oid;
+  }
+  return base;
+}
+
+/**
  * SHA-check the derived cache against `flows/<slug>.yml` at main.
  * Resyncs the row when the blob moved; never writes Mongo over an invalid file.
+ * Leftover local git without a GitHub binding is ignored — runtime keeps
+ * the SHA-checked Mongo cache (issue #956).
  */
 export async function ensureFlowDerivedCache(flow: {
   _id: { toString(): string };
@@ -125,9 +335,8 @@ export async function ensureFlowDerivedCache(flow: {
 }): Promise<"ok" | "invalid" | "missing" | "resynced"> {
   if (!flow.slug) return "ok";
   const workspaceId = flow.workspaceId.toString();
-  await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) {
     return flow.definitionInvalid ? "invalid" : "ok";
   }
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
@@ -382,6 +591,10 @@ export interface FlowFilesAtMain {
  * writes nothing and is not allowed to reset a shared local repo as a side
  * effect of a read, so it takes the cache as it finds it and reports the
  * commit it read.
+ *
+ * A GitHub binding is required. Leftover Cloud Storage git without a
+ * binding is not a definition store (issue #956) — GET/list and the
+ * checker both return empty rather than walking it.
  */
 export async function readFlowFilesAtMain(
   workspaceId: string,
@@ -389,10 +602,13 @@ export async function readFlowFilesAtMain(
 ): Promise<FlowFilesAtMain> {
   const none: FlowFilesAtMain = { commit: null, files: [] };
 
-  await ensureLocalRepo(workspaceId);
+  if (!(await getWorkspaceRepo(workspaceId))) return none;
+  if (options.freshen) {
+    await ensureLocalRepo(workspaceId);
+    await freshenBeforeMainWrite(workspaceId);
+  }
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) return none;
-  if (options.freshen) await freshenBeforeMainWrite(workspaceId);
 
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) return none;
@@ -500,7 +716,13 @@ export async function syncFlowsFromRepo(
 
     const isNew = !row;
     const doc =
-      row ?? new Flow({ workspaceId, slug, createdBy: actorUserId ?? "sync" });
+      row ??
+      new Flow({
+        _id: derivedFlowId(workspaceId, slug),
+        workspaceId,
+        slug,
+        createdBy: actorUserId ?? "sync",
+      });
     // `applyDefinition` refuses with a reason, but it can also THROW: an id
     // that is not an ObjectId (`connector_id: close` — a name where an id
     // belongs, the likeliest agent mistake) fails inside `new ObjectId()`.

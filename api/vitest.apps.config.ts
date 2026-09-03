@@ -34,6 +34,9 @@ export default defineConfig({
       // Real git + mongo: the pre-push flow-file check reads the workspace
       // repo at main and plans against live rows.
       "src/agent-lib/tools/flow-file-tools.test.ts",
+      // GET/list from git at main; leftover local git without a binding
+      // must not populate the list (issue #956).
+      "src/services/flow-sync.repo.test.ts",
       // The live connector probe: its service (bounded, read-only, secrets
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",
