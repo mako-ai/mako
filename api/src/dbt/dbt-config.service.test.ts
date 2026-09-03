@@ -26,6 +26,9 @@ import {
   adoptDbtConfig,
   commitDbtJobFile,
   deleteDbtJobFile,
+  loadLiveJobById,
+  loadLiveJobs,
+  liveJobToPlain,
   reserveJobSlug,
   syncDbtConfigFromRepo,
 } from "./dbt-config.service";
@@ -153,6 +156,88 @@ describe("write-through", () => {
     });
     const fresh = await DbtJob.findById(job._id);
     expect(fresh?.sourceBlobSha).toBeFalsy();
+  });
+});
+
+describe("GET/list from git", () => {
+  it("returns empty for unbound leftover git and Mongo", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Mongo only");
+    await commitDbtJobFile(project, job);
+    await unbindTestWorkspaceRepo(WS.toString());
+    expect(await loadLiveJobs(project)).toEqual([]);
+  });
+
+  it("includes git-only jobs and omits Mongo-only rows", async () => {
+    const project = await seedProject();
+    await seedJob(project, "Mongo only");
+    const contents = serializeJobFile({
+      name: "Git only",
+      environment: "prod",
+      commands: ["build"],
+      schedule: null,
+      enabled: true,
+      deferToProduction: false,
+    });
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath("git-only")]: contents } },
+      { message: "git-only job" },
+    );
+    const live = await loadLiveJobs(project);
+    expect(live.map(job => job.def.slug)).toEqual(["git-only"]);
+    expect(live[0]?.row).toBeNull();
+    expect(liveJobToPlain(live[0]!, project)).toMatchObject({
+      name: "Git only",
+    });
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+  });
+
+  it("resyncs a stale existing row without creating or scheduling", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly");
+    await commitDbtJobFile(project, job);
+    const edited = serializeJobFile({
+      name: "Renamed in git",
+      environment: "prod",
+      commands: ["test"],
+      schedule: null,
+      enabled: false,
+      deferToProduction: false,
+    });
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: edited } },
+      { message: "edit job" },
+    );
+    const live = await loadLiveJobs(project);
+    expect(liveJobToPlain(live[0]!, project).name).toBe("Renamed in git");
+    const fresh = await DbtJob.findById(job._id);
+    expect(fresh?.commands).toEqual(["test"]);
+    expect(fresh?.scheduledRun?.nextAt).toBeUndefined();
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+  });
+
+  it("keeps last-good fields but never presents invalid YAML as live", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly");
+    await commitDbtJobFile(project, job);
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: "name: [broken" } },
+      { message: "break yaml" },
+    );
+    const live = await loadLiveJobs(project);
+    const plain = liveJobToPlain(live[0]!, project);
+    expect(plain.definitionInvalid).toBeTruthy();
+    expect(plain.name).toBe("Nightly");
+    expect((await DbtJob.findById(job._id))?.commands).toEqual([
+      "build --select realadvisor",
+    ]);
+    expect(await loadLiveJobById(project, job._id.toString())).not.toBeNull();
   });
 });
 

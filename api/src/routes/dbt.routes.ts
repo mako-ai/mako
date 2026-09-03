@@ -49,6 +49,9 @@ import {
   commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  loadLiveJobById,
+  loadLiveJobs,
+  liveJobToPlain,
   reserveJobSlug,
 } from "../dbt/dbt-config.service";
 import {
@@ -861,14 +864,33 @@ dbtRoutes.get("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     if (!project) {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
-    const jobs = await DbtJob.find({ projectId: project._id })
-      .sort({ createdAt: 1 })
-      .lean();
+    const jobs = (await loadLiveJobs(project)).map(job =>
+      liveJobToPlain(job, project),
+    );
     return c.json({ success: true, jobs });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt jobs");
   }
 });
+
+dbtRoutes.get(
+  "/projects/:projectId/jobs/:jobId",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const live = await loadLiveJobById(project, c.req.param("jobId"));
+      if (!live) {
+        return c.json({ success: false, error: "Job not found" }, 404);
+      }
+      return c.json({ success: true, job: liveJobToPlain(live, project) });
+    } catch (error) {
+      return serverError(c, error, "Failed to get dbt job");
+    }
+  },
+);
 
 dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
   try {
@@ -922,11 +944,9 @@ dbtRoutes.patch(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const job = await DbtJob.findOne({
-        _id: new Types.ObjectId(jobId),
-        projectId: project._id,
-      });
-      if (!job) {
+      const live = await loadLiveJobById(project, jobId);
+      const job = live?.row;
+      if (!live || !job) {
         return c.json({ success: false, error: "Job not found" }, 404);
       }
       const parsed = jobSchema.partial().safeParse(await c.req.json());
@@ -981,11 +1001,9 @@ dbtRoutes.delete(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const doomed = await DbtJob.findOne({
-        _id: new Types.ObjectId(jobId),
-        projectId: project._id,
-      }).select("slug");
-      if (!doomed) {
+      const live = await loadLiveJobById(project, jobId);
+      const doomed = live?.row;
+      if (!live || !doomed) {
         return c.json({ success: false, error: "Job not found" }, 404);
       }
       await deleteDbtJobFile(project, doomed.slug, getUserId(c));

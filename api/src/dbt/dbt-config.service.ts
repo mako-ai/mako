@@ -10,6 +10,7 @@
  * rule 2), and the push-reaction reconciles external edits, re-registering
  * schedules the way a push to apps/ deploys.
  */
+import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 import {
   DbtJob,
@@ -19,7 +20,11 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
-import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
+import {
+  boundRepoDirIfExists,
+  requireWorkspaceRepo,
+} from "../apps/workspace-repo-required";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
@@ -30,6 +35,7 @@ import {
   repoDirFor,
   blobOid,
   commitBlobsOnBranch,
+  globTree,
   listTree,
   readBlobsBatch,
   readBlob,
@@ -52,6 +58,235 @@ import { parseDbtCommands } from "./commands";
 import { applyJobScheduleChange } from "./dbt-run.service";
 
 const logger = loggers.api("dbt-config");
+const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
+
+export interface JobDefinitionAtMain {
+  path: string;
+  slug: string;
+  oid: string;
+  parsed: DbtJobFile | null;
+}
+
+export interface LiveJob {
+  def: JobDefinitionAtMain;
+  row: IDbtJob | null;
+  id: Types.ObjectId;
+}
+
+export function derivedJobId(
+  workspaceId: string,
+  slug: string,
+): Types.ObjectId {
+  const digest = createHash("sha1")
+    .update(`dbt-job:${workspaceId}:${slug}`)
+    .digest("hex");
+  return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/** Authored job files at main; unbound workspaces deliberately read empty. */
+export async function listJobDefinitionsAtMain(
+  workspaceId: string,
+): Promise<JobDefinitionAtMain[]> {
+  if (!(await getWorkspaceRepo(workspaceId))) return [];
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return [];
+  const paths = await globTree(repoDir, MAIN, "dbt/jobs/*.yml", 1000);
+  const definitions: JobDefinitionAtMain[] = [];
+  for (const path of paths.sort()) {
+    const slug = slugFromJobFilePath(path);
+    if (!slug) continue;
+    try {
+      const blob = await readBlob(repoDir, MAIN, path);
+      definitions.push({
+        path,
+        slug,
+        oid: blob.isBinary
+          ? blobOid(Buffer.from(blob.contents, "base64"))
+          : blobOid(blob.contents),
+        parsed: blob.isBinary ? null : parseJobFile(blob.contents),
+      });
+    } catch (error) {
+      logger.warn("Unreadable dbt job file at main", {
+        workspaceId,
+        path,
+        error,
+      });
+      definitions.push({ path, slug, oid: "unreadable", parsed: null });
+    }
+  }
+  return definitions;
+}
+
+function jobApplyFailure(
+  project: IDbtProject,
+  file: DbtJobFile,
+): string | null {
+  try {
+    parseDbtCommands(file.commands);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (!project.environments.some(env => env.name === file.environment)) {
+    return `unknown environment: ${file.environment}`;
+  }
+  return null;
+}
+
+async function markJobInvalid(
+  row: IDbtJob,
+  reason: string,
+  path: string,
+): Promise<void> {
+  try {
+    await DbtJob.updateOne(
+      { _id: row._id },
+      { $set: { definitionInvalid: { reason, at: new Date(), path } } },
+    );
+  } catch (error) {
+    logger.warn("Failed to mark dbt job invalid", {
+      jobId: row._id.toString(),
+      error,
+    });
+  }
+}
+
+/** SHA-resync existing scheduler rows only; never creates or registers schedules. */
+export async function ensureJobDerivedCache(
+  project: IDbtProject,
+  def: JobDefinitionAtMain,
+  row: IDbtJob,
+): Promise<void> {
+  if (!def.parsed) {
+    await markJobInvalid(row, "unparseable job file", def.path);
+    return;
+  }
+  const failure = jobApplyFailure(project, def.parsed);
+  if (failure) {
+    await markJobInvalid(row, failure, def.path);
+    return;
+  }
+  if (row.sourceBlobSha === def.oid && !row.definitionInvalid) return;
+  const file = def.parsed;
+  const unset: Record<string, 1> = { definitionInvalid: 1 };
+  if (!file.schedule) unset.schedule = 1;
+  await DbtJob.updateOne(
+    { _id: row._id },
+    {
+      $set: {
+        name: file.name,
+        environment: file.environment,
+        commands: file.commands,
+        ...(file.schedule ? { schedule: file.schedule } : {}),
+        enabled: file.enabled,
+        deferToProduction: file.deferToProduction,
+        sourceBlobSha: def.oid,
+      },
+      $unset: unset,
+    },
+  );
+  Object.assign(row, {
+    name: file.name,
+    environment: file.environment,
+    commands: file.commands,
+    schedule: file.schedule ?? undefined,
+    enabled: file.enabled,
+    deferToProduction: file.deferToProduction,
+    sourceBlobSha: def.oid,
+    definitionInvalid: undefined,
+  });
+}
+
+function joinLiveJobs(
+  project: IDbtProject,
+  defs: JobDefinitionAtMain[],
+  rows: IDbtJob[],
+): LiveJob[] {
+  const bySlug = new Map(rows.map(row => [row.slug, row]));
+  return defs.map(def => ({
+    def,
+    row: bySlug.get(def.slug) ?? null,
+    id:
+      bySlug.get(def.slug)?._id ??
+      derivedJobId(project.workspaceId.toString(), def.slug),
+  }));
+}
+
+export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
+  const workspaceId = project.workspaceId.toString();
+  if ((await boundRepoDirIfExists(workspaceId)) == null) return [];
+  const defs = await listJobDefinitionsAtMain(workspaceId);
+  const rows = await DbtJob.find({ projectId: project._id });
+  const bySlug = new Map(rows.map(row => [row.slug, row]));
+  for (const def of defs) {
+    const row = bySlug.get(def.slug);
+    if (!row) continue;
+    try {
+      await ensureJobDerivedCache(project, def, row);
+    } catch (error) {
+      logger.warn("ensureJobDerivedCache failed", {
+        workspaceId,
+        path: def.path,
+        error,
+      });
+    }
+  }
+  return joinLiveJobs(project, defs, rows);
+}
+
+export async function loadLiveJobById(
+  project: IDbtProject,
+  jobId: string,
+): Promise<LiveJob | null> {
+  if (!Types.ObjectId.isValid(jobId)) return null;
+  const live = await loadLiveJobs(project);
+  return live.find(job => job.id.toString() === jobId) ?? null;
+}
+
+function rowAsPlain(row: IDbtJob): Record<string, unknown> {
+  return typeof row.toObject === "function"
+    ? (row.toObject() as Record<string, unknown>)
+    : { ...(row as unknown as Record<string, unknown>) };
+}
+
+export function liveJobToPlain(
+  live: LiveJob,
+  project: IDbtProject,
+): Record<string, unknown> {
+  const base = live.row
+    ? rowAsPlain(live.row)
+    : {
+        _id: live.id,
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        slug: live.def.slug,
+        createdBy: "git",
+      };
+  base._id = live.id;
+  base.slug = live.def.slug;
+  base.sourceBlobSha = live.def.oid;
+  const file = live.def.parsed;
+  const failure = file
+    ? jobApplyFailure(project, file)
+    : "unparseable job file";
+  if (!file || failure) {
+    base.definitionInvalid = live.row?.definitionInvalid ?? {
+      reason: failure ?? "invalid job file",
+      at: new Date(),
+      path: live.def.path,
+    };
+    return base;
+  }
+  Object.assign(base, {
+    name: file.name,
+    environment: file.environment,
+    commands: file.commands,
+    schedule: file.schedule ?? undefined,
+    enabled: file.enabled,
+    deferToProduction: file.deferToProduction,
+  });
+  delete base.definitionInvalid;
+  return base;
+}
 
 function jobToFile(job: IDbtJob): DbtJobFile {
   return {
