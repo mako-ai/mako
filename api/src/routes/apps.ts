@@ -1271,6 +1271,9 @@ appsRoutes.openapi(
         out.push({
           name: b.name,
           connectionId: b.connectionId,
+          language: "sql" as const,
+          materialization: b.materialization,
+          code: b.code,
           schedule: b.schedule ?? null,
           lastMaterializedAt: state?.lastMaterializedAt ?? null,
           rowCount: state?.lastRowCount ?? null,

@@ -23,7 +23,15 @@ import {
   describeStreamError,
 } from "../agent-lib/stream-error";
 import { repairStringifiedToolInputs } from "../agent-lib/tool-input-repair";
-import { propagateAttributes } from "@langfuse/tracing";
+import {
+  propagateAttributes,
+  updateActiveObservation,
+} from "@langfuse/tracing";
+import {
+  sanitizeToolFailureMessage,
+  toolFailureFromOutput,
+  toolFailureFromThrown,
+} from "../agent-lib/tool-failure";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
 import { withThinkingSelfHeal } from "../agent-lib/thinking-self-heal";
 import { withContextOverflowSelfHeal } from "../agent-lib/context-overflow-self-heal";
@@ -229,6 +237,84 @@ agentRoutes.openapi(
   async c => {
     const agents = getAllAgentMeta();
     return c.json({ agents });
+  },
+);
+
+/**
+ * Browser-executed tools have no server-side execution span. Report their
+ * domain failures explicitly so production's JSON sink forwards them to
+ * Google Cloud Logging with chat/workspace correlation.
+ */
+agentRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/client-tool-failure",
+    tags: ["Agent"],
+    summary: "Report a browser-executed agent tool failure",
+    security: AUTH_SECURITY,
+    request: {
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              workspaceId: z.string(),
+              chatId: z.string().max(128),
+              toolName: z.string().min(1).max(128),
+              toolCallId: z.string().min(1).max(256),
+              error: z.string().min(1).max(2_000),
+              code: z.string().max(128).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const report = c.req.valid("json");
+    const workspace = c.get("workspace");
+    const user = c.get("user");
+
+    if (!ObjectId.isValid(report.workspaceId)) {
+      return c.json({ error: "Invalid workspaceId" }, 400);
+    }
+    if (workspace) {
+      if (workspace._id.toString() !== report.workspaceId) {
+        return c.json(
+          { error: "API key not authorized for this workspace" },
+          403,
+        );
+      }
+    } else if (user) {
+      const hasAccess = await workspaceService.hasAccess(
+        report.workspaceId,
+        user.id,
+      );
+      if (!hasAccess) {
+        return c.json({ error: "Access denied to workspace" }, 403);
+      }
+    } else {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+
+    enrichContextWithWorkspace(report.workspaceId);
+    const toolErrorMessage = sanitizeToolFailureMessage(report.error);
+    logger.error("Client agent tool failed", {
+      workspaceId: report.workspaceId,
+      chatId: report.chatId,
+      toolName: report.toolName,
+      toolCallId: report.toolCallId,
+      toolErrorMessage,
+      toolErrorCode: report.code,
+      toolExecution: "browser",
+      error: {
+        name: "ToolExecutionError",
+        message: toolErrorMessage,
+        ...(report.code ? { code: report.code } : {}),
+      },
+    });
+    return c.json({ success: true as const }, 200);
   },
 );
 
@@ -1064,6 +1150,37 @@ agentRoutes.openapi(
             // which otherwise fail schema validation and dead-end the tool
             // call. See agent-lib/tool-input-repair.ts.
             experimental_repairToolCall: repairStringifiedToolInputs,
+            experimental_onToolCallFinish(event) {
+              const failure = event.success
+                ? toolFailureFromOutput(event.output)
+                : toolFailureFromThrown(event.error);
+              if (!failure) return;
+
+              // A resolved `{ success: false }` is successful JavaScript to
+              // the AI SDK. Correct the active tool span so Langfuse filters
+              // reflect the domain result too.
+              updateActiveObservation(
+                { level: "ERROR", statusMessage: failure.message },
+                { asType: "tool" },
+              );
+              logger.error("Agent tool call failed", {
+                workspaceId,
+                chatId,
+                agentId: resolvedAgentId,
+                modelId: resolvedModelId,
+                toolName: event.toolCall.toolName,
+                toolCallId: event.toolCall.toolCallId,
+                toolErrorMessage: failure.message,
+                toolErrorCode: failure.code,
+                durationMs: event.durationMs,
+                toolExecution: "server",
+                error: {
+                  name: "ToolExecutionError",
+                  message: failure.message,
+                  ...(failure.code ? { code: failure.code } : {}),
+                },
+              });
+            },
             providerOptions,
             abortSignal: turnSignal,
             experimental_telemetry: {

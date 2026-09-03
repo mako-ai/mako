@@ -90,6 +90,7 @@ import {
   useClientToolRegistry,
   type AddToolOutputFn,
 } from "./chat/hooks/useClientToolRegistry";
+import { reportClientToolFailure } from "../agent-runtime/client-tool-failure-reporter";
 import {
   useClientToolDispatch,
   type DispatchableToolCall,
@@ -587,8 +588,19 @@ const Chat: React.FC<ChatProps> = ({
     });
   }, [selectedModelId]);
 
-  // Give the registry (created before useChat) the live addToolOutput.
-  addToolOutputRef.current = addToolOutput;
+  // Give the registry (created before useChat) the live addToolOutput. Client
+  // tools execute outside the API process, so report domain failures before
+  // settling them or Cloud Logging cannot see them.
+  addToolOutputRef.current = payload => {
+    reportClientToolFailure({
+      workspaceId: workspaceIdRef.current,
+      chatId: chatIdRef.current,
+      toolName: payload.tool,
+      toolCallId: payload.toolCallId,
+      output: payload.output,
+    });
+    return addToolOutput(payload);
+  };
   clearErrorRef.current = clearError;
 
   // Single-flight + liveness-gated resume manager, tab-wake reattach, and the

@@ -1504,7 +1504,8 @@ export async function worktreeStatus(
   const live =
     (await getSandboxProvider()
       .hasSession(ctx)
-      .catch(() => false)) && (await boxHasRepo(ctx).catch(() => false));
+      .catch(() => false)) &&
+    (await boxHasValidCheckout(ctx).catch(() => false));
 
   if (!live) {
     const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);
