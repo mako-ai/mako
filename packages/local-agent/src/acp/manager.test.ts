@@ -172,6 +172,52 @@ describe("AcpSessionManager with mock agent", () => {
     await manager.closeSession(without.id);
   });
 
+  it("retires a session whose Mako MCP token expired instead of prompting", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("{}", { status: 200 })) as typeof fetch;
+    try {
+      const expired = new Date(Date.now() - 1000).toISOString();
+      const session = await manager.createSession({
+        providerId: "claude",
+        cwd: process.cwd(),
+        title: "mcp-expired",
+        attachMakoMcp: true,
+        mcpUrl: "https://app.mako.ai/api/mcp",
+        mcpAuthorization: "Bearer mcpat_test",
+        mcpServerName: "mako-workspace",
+        mcpTokenExpiresAt: expired,
+      });
+      assert.equal(session.makoMcpTokenExpiresAt, expired);
+      await assert.rejects(
+        () => manager.prompt(session.id, "hello"),
+        /Send again to reconnect/,
+      );
+      assert.equal(
+        manager.listSessions().some(s => s.id === session.id),
+        false,
+      );
+
+      const fresh = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const live = await manager.createSession({
+        providerId: "claude",
+        cwd: process.cwd(),
+        title: "mcp-live",
+        attachMakoMcp: true,
+        mcpUrl: "https://app.mako.ai/api/mcp",
+        mcpAuthorization: "Bearer mcpat_test",
+        mcpServerName: "mako-workspace",
+        mcpTokenExpiresAt: fresh,
+      });
+      assert.equal(live.makoMcpTokenExpiresAt, fresh);
+      const result = await manager.prompt(live.id, "hello");
+      assert.equal(typeof result.stopReason, "string");
+      await manager.closeSession(live.id);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("rejects session/new when mcpUrl host is not a Mako API", async () => {
     await assert.rejects(
       () =>

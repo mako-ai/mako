@@ -128,6 +128,8 @@ export const acpClient = {
     mcpServerName?: string;
     makoAgentSessionId?: string;
     makoWorkspaceId?: string;
+    /** ISO expiry of the MCP Bearer so Local Agent retires stale sessions. */
+    mcpTokenExpiresAt?: string;
     /** Lean workspace guidance for Claude systemPrompt.append (not full skills). */
     systemPromptAppend?: string;
     /** Preferred Claude/Codex model (`fable`, `sonnet`, …). */
