@@ -14,7 +14,12 @@
  *    row whose blob reappears elsewhere is a rename (id, telemetry, shares,
  *    embedding survive); a vanished path soft-deletes its row. Never touches
  *    a repo that has not adopted (`consoles/README.md` absent).
- * 3. DERIVATION. Description + embedding are derived from the file and
+ * 3. READ. GET/list serves the files at `main` (`consoles/`,
+ *    `users/<id>/consoles/`). Mongo is joined only for ACL, runtime, SHA,
+ *    and embeddings. A file with no row still appears; a row with no file
+ *    is not a live definition. No GitHub binding → empty list, never 412.
+ *    Leftover local git without a binding is not a read surface.
+ * 4. DERIVATION. Description + embedding are derived from the file and
  *    stamped with `descriptionSourceSha`; `deriveConsoleDescription` runs
  *    only while that differs from `sourceBlobSha`, behind a debounced
  *    Inngest function. Search itself does not change — it keeps reading the
@@ -27,6 +32,7 @@
  * Must not import worktree.service (it imports this module for the push
  * hook) — everything needed is in repository.service / cloud-repo.service.
  */
+import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
 import { User } from "../database/schema";
@@ -76,6 +82,8 @@ import {
   serializeConsoleFile,
   type ConsoleFileState,
   type ConsoleLanguage,
+  type ConsoleRepoLocation,
+  type ParsedConsoleFile,
 } from "./console-files";
 import {
   DEFAULT_BRANCH,
@@ -85,6 +93,7 @@ import {
   listTree,
   log as repoLog,
   readBlob,
+  readBlobsBatch,
   resolveCommit,
   type BlobMutation,
   type ChangedFile,
@@ -356,6 +365,220 @@ async function readAt(
 /** Whether this repo's consoles folder has been adopted (module doc). */
 export async function consolesAdopted(repoDir: string): Promise<boolean> {
   return (await readAt(repoDir, CONSOLES_README_PATH)) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// GET/list — git is the definition, Mongo is the overlay
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable id for a console that exists as a file but has no index row yet
+ * (same contract as `derivedAppId`: the id is a function of identity, so a
+ * later sync that creates the row does not mint a second one).
+ */
+export function derivedConsoleId(
+  workspaceId: string,
+  path: string,
+): Types.ObjectId {
+  const digest = createHash("sha1")
+    .update(`consoles:${workspaceId}:${path}`)
+    .digest("hex");
+  return new Types.ObjectId(digest.slice(0, 24));
+}
+
+export interface ConsoleDefinitionAtMain {
+  path: string;
+  oid: string;
+  location: ConsoleRepoLocation;
+  parsed: ParsedConsoleFile;
+  chartSpec?: Record<string, unknown>;
+}
+
+export interface LiveConsole extends ConsoleDefinitionAtMain {
+  /** Derived index row when one exists (ACL, lastRun, embeddings, id). */
+  row: ISavedConsole | null;
+  /** Row `_id`, or a derived id when the file has no row yet. */
+  id: Types.ObjectId;
+}
+
+const consoleDefCache = new Map<
+  string,
+  { sha: string; defs: ConsoleDefinitionAtMain[] }
+>();
+
+function isBinaryBuffer(buf: Buffer): boolean {
+  return buf.includes(0);
+}
+
+/**
+ * Authored console files at `main`. Empty when no GitHub repo is bound —
+ * leftover local git is not a definition store (issue #956). Never throws
+ * `RepoRequiredError`; a missing binding is an empty list, not 412.
+ */
+export async function listConsoleDefinitionsAtMain(
+  workspaceId: string,
+): Promise<ConsoleDefinitionAtMain[]> {
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return [];
+  const sha = await resolveCommit(repoDir, MAIN);
+  if (!sha) return [];
+  const cached = consoleDefCache.get(workspaceId);
+  if (cached && cached.sha === sha) return cached.defs;
+
+  const entries = (await listTree(repoDir, sha)).filter(e =>
+    parseConsoleRepoPath(e.path),
+  );
+  const sidecarPaths = entries.map(e => {
+    try {
+      return chartSidecarPath(e.path);
+    } catch {
+      return null;
+    }
+  });
+  const toRead = [
+    ...entries.map(e => e.path),
+    ...sidecarPaths.filter((p): p is string => Boolean(p)),
+  ];
+  const blobs = await readBlobsBatch(repoDir, sha, toRead);
+
+  const defs: ConsoleDefinitionAtMain[] = [];
+  for (const entry of entries) {
+    const location = parseConsoleRepoPath(entry.path);
+    if (!location) continue;
+    const buf = blobs.get(entry.path);
+    if (!buf || isBinaryBuffer(buf)) continue;
+    const parsed = parseConsoleFile(buf.toString("utf8"), location.language);
+    const sidecarPath = chartSidecarPath(entry.path);
+    const sidecarBuf = blobs.get(sidecarPath);
+    const chartSpec =
+      sidecarBuf && !isBinaryBuffer(sidecarBuf)
+        ? parseChartSpec(sidecarBuf.toString("utf8"))
+        : undefined;
+    defs.push({
+      path: entry.path,
+      oid: entry.oid,
+      location,
+      parsed,
+      chartSpec,
+    });
+  }
+
+  consoleDefCache.set(workspaceId, { sha, defs });
+  return defs;
+}
+
+export async function readConsoleDefinitionAtMain(
+  workspaceId: string,
+  path: string,
+): Promise<ConsoleDefinitionAtMain | null> {
+  const defs = await listConsoleDefinitionsAtMain(workspaceId);
+  return defs.find(d => d.path === path) ?? null;
+}
+
+async function savedIndexRows(workspaceId: string): Promise<ISavedConsole[]> {
+  return SavedConsole.find({
+    workspaceId: new Types.ObjectId(workspaceId),
+    isSaved: true,
+    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
+  });
+}
+
+function joinLiveConsoles(
+  workspaceId: string,
+  defs: ConsoleDefinitionAtMain[],
+  rows: ISavedConsole[],
+): LiveConsole[] {
+  const byPath = new Map<string, ISavedConsole>();
+  for (const row of rows) {
+    if (row.path) byPath.set(row.path, row);
+  }
+  return defs.map(def => {
+    const row = byPath.get(def.path) ?? null;
+    return {
+      ...def,
+      row,
+      id: row?._id ?? derivedConsoleId(workspaceId, def.path),
+    };
+  });
+}
+
+function consoleIndexDrift(
+  defs: ConsoleDefinitionAtMain[],
+  rows: ISavedConsole[],
+): boolean {
+  const defByPath = new Map(defs.map(d => [d.path, d]));
+  for (const def of defs) {
+    const row = rows.find(r => r.path === def.path);
+    if (!row || row.sourceBlobSha !== def.oid) return true;
+  }
+  for (const row of rows) {
+    if (row.path && !defByPath.has(row.path)) return true;
+  }
+  return false;
+}
+
+/**
+ * SHA-check the derived row against the blob at main; resync the workspace
+ * index on mismatch. Never writes Mongo over an unreadable file.
+ */
+export async function ensureConsoleDerivedCache(
+  workspaceId: string,
+): Promise<"ok" | "resynced" | "unbound"> {
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return "unbound";
+  const defs = await listConsoleDefinitionsAtMain(workspaceId);
+  const rows = await savedIndexRows(workspaceId);
+  if (!consoleIndexDrift(defs, rows)) return "ok";
+  await syncConsolesIndexFromRepo(workspaceId);
+  return "resynced";
+}
+
+/**
+ * Live saved consoles: files at main, overlaying the Mongo index.
+ *
+ * Unbound workspace → `[]` (leftover Mongo rows and leftover local git do
+ * not populate the list). Git-only files appear; Mongo-only rows do not.
+ */
+export async function loadLiveConsoles(
+  workspaceId: string,
+): Promise<LiveConsole[]> {
+  const status = await ensureConsoleDerivedCache(workspaceId);
+  if (status === "unbound") return [];
+  const defs = await listConsoleDefinitionsAtMain(workspaceId);
+  const rows = await savedIndexRows(workspaceId);
+  return joinLiveConsoles(workspaceId, defs, rows);
+}
+
+/**
+ * Resolve a console id for GET. Drafts stay on the Mongo working copy;
+ * saved consoles are live only when the file exists at main.
+ */
+export async function loadLiveConsoleById(
+  workspaceId: string,
+  consoleId: string,
+): Promise<{ draft: ISavedConsole } | { live: LiveConsole } | null> {
+  if (!Types.ObjectId.isValid(consoleId)) return null;
+  const row = await SavedConsole.findOne({
+    _id: new Types.ObjectId(consoleId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (row && row.isSaved === false) return { draft: row };
+
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
+
+  if (row?.path) {
+    const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
+    if (!def) return null;
+    if (row.sourceBlobSha !== def.oid) {
+      await syncConsolesIndexFromRepo(workspaceId);
+    }
+    return { live: { ...def, row, id: row._id } };
+  }
+
+  const live = await loadLiveConsoles(workspaceId);
+  const match = live.find(item => item.id.toString() === consoleId);
+  return match ? { live: match } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -778,7 +1001,8 @@ async function syncNow(
     }
 
     const contents = await readAt(repoDir, entry.path);
-    if (contents === null) continue; // binary or unreadable: not a console
+    // Unreadable files are not healed from Mongo. Skip; GET/list omits them.
+    if (contents === null) continue;
     const parsed = parseConsoleFile(contents, location.language);
     const chartSpec = sidecar
       ? parseChartSpec((await readAt(repoDir, sidecar.path)) ?? "")
@@ -848,17 +1072,37 @@ async function syncNow(
       continue;
     }
 
-    const created = await SavedConsole.create({
-      workspaceId: ws,
-      createdBy: actor,
-      executionCount: 0,
-      version: 1,
-      draftRevision: 1,
-      ...set,
-    });
-    stats.created++;
-    seenRows.add(created._id.toString());
-    touched.push(created);
+    try {
+      const created = await SavedConsole.create({
+        _id: derivedConsoleId(workspaceId, entry.path),
+        workspaceId: ws,
+        createdBy: actor,
+        executionCount: 0,
+        version: 1,
+        draftRevision: 1,
+        ...set,
+      });
+      stats.created++;
+      seenRows.add(created._id.toString());
+      touched.push(created);
+    } catch {
+      // Unique-id race with a concurrent list/sync: keep the winner so a
+      // git-only file that already appeared under the derived id does not
+      // mint a second row.
+      const winner =
+        (await SavedConsole.findById(
+          derivedConsoleId(workspaceId, entry.path),
+        )) ??
+        (await SavedConsole.findOne({
+          workspaceId: ws,
+          path: entry.path,
+          isSaved: true,
+        }));
+      if (!winner) throw new Error("Could not persist the console index row");
+      stats.created++;
+      seenRows.add(winner._id.toString());
+      touched.push(winner);
+    }
   }
 
   // Deletions: adopted repo, path gone, blob not claimed by a rename.

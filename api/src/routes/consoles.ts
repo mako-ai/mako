@@ -82,6 +82,47 @@ function repoRequired(c: Context, error: RepoRequiredError) {
   );
 }
 
+/** GET/list without a GitHub binding is an empty explorer, not 412. */
+function emptyConsoleTree() {
+  return {
+    success: true as const,
+    myConsoles: [] as never[],
+    sharedWithWorkspace: [] as never[],
+    tree: [] as never[],
+  };
+}
+
+async function connectionSummary(
+  connectionId: unknown,
+  workspaceId: string,
+): Promise<{ id: unknown; name: unknown; type: unknown } | null> {
+  if (!connectionId) return null;
+  const id =
+    typeof connectionId === "object" &&
+    connectionId !== null &&
+    "_id" in connectionId
+      ? (connectionId as { _id: Types.ObjectId })._id
+      : connectionId;
+  if (!Types.ObjectId.isValid(String(id))) return null;
+  const populated =
+    typeof connectionId === "object" &&
+    connectionId !== null &&
+    "name" in connectionId
+      ? (connectionId as { _id: Types.ObjectId; name?: string; type?: string })
+      : null;
+  if (populated?.name) {
+    return { id: populated._id, name: populated.name, type: populated.type };
+  }
+  const doc = await DatabaseConnection.findOne({
+    _id: new Types.ObjectId(String(id)),
+    workspaceId: new Types.ObjectId(workspaceId),
+  })
+    .select("name type")
+    .lean();
+  if (!doc) return null;
+  return { id: doc._id, name: doc.name, type: doc.type };
+}
+
 // IMPORTANT: this MUST stay byte-for-byte compatible with the client hash so
 // the server-computed baseline equals what the client would compute for the
 // same snapshot. Mirror of `hashContent` in `app/src/utils/hash.ts` and
@@ -255,7 +296,9 @@ consoleRoutes.openapi(
       );
       return c.json({ success: true, tree });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json(emptyConsoleTree(), 200);
+      }
       logger.error("Error listing consoles", { error });
       return c.json(
         {
@@ -388,7 +431,9 @@ consoleRoutes.openapi(
         lastRun: fullConsole?.lastRun,
       });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
       logger.error("Error fetching console content", {
         consoleId: c.req.query("id"),
         error,
@@ -2689,54 +2734,64 @@ consoleRoutes.openapi(
     try {
       // Access was verified by the router middleware; only the id is needed.
       const access = { workspaceId: c.req.param("workspaceId") as string };
-
-      // Get all consoles for the workspace
-      const consoles = await SavedConsole.find({
-        workspaceId: new Types.ObjectId(access.workspaceId),
-      })
-        .select(
-          "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount lastExternalUsedAt externalUseCount lastExternalSource access owner_id createdBy",
-        )
-        .populate("connectionId", "name type")
-        .sort({ updatedAt: -1 });
-
       const user = c.get("user");
-      const userId = user?.id;
 
-      // Filter by visibility when we have a user
-      const visibleConsoles = userId
-        ? consoles.filter(doc => ConsoleManager.canRead(doc, userId))
-        : consoles;
+      const consoles = await consoleManager.listConsolesFlat(
+        access.workspaceId,
+        user?.id,
+      );
+
+      const connectionIds = [
+        ...new Set(
+          consoles
+            .map(doc => doc.connectionId?.toString())
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const connections =
+        connectionIds.length === 0
+          ? []
+          : await DatabaseConnection.find({
+              _id: { $in: connectionIds.map(id => new Types.ObjectId(id)) },
+              workspaceId: new Types.ObjectId(access.workspaceId),
+            })
+              .select("name type")
+              .lean();
+      const connectionById = new Map(
+        connections.map(doc => [doc._id.toString(), doc]),
+      );
 
       return c.json({
         success: true,
-        consoles: visibleConsoles.map(console => ({
-          id: console._id,
-          name: console.name,
-          description: console.description,
-          language: console.language,
-          connection: console.connectionId
-            ? {
-                id: console.connectionId._id,
-                name: (console.connectionId as any).name,
-                type: (console.connectionId as any).type,
-              }
-            : null,
-          databaseName: console.databaseName,
-          createdAt: console.createdAt,
-          updatedAt: console.updatedAt,
-          lastExecutedAt: console.lastExecutedAt,
-          executionCount: console.executionCount,
-          lastExternalUsedAt: console.lastExternalUsedAt ?? null,
-          externalUseCount: console.externalUseCount ?? 0,
-          lastExternalSource: console.lastExternalSource ?? null,
-          access: ConsoleManager.resolveAccess(console),
-          owner_id: console.owner_id || console.createdBy,
-        })),
-        total: visibleConsoles.length,
+        consoles: consoles.map(console => {
+          const connId = console.connectionId?.toString();
+          const conn = connId ? connectionById.get(connId) : undefined;
+          return {
+            id: console._id,
+            name: console.name,
+            description: console.description,
+            language: console.language,
+            connection: conn
+              ? { id: conn._id, name: conn.name, type: conn.type }
+              : null,
+            databaseName: console.databaseName,
+            createdAt: console.createdAt,
+            updatedAt: console.updatedAt,
+            lastExecutedAt: console.lastExecutedAt,
+            executionCount: console.executionCount,
+            lastExternalUsedAt: console.lastExternalUsedAt ?? null,
+            externalUseCount: console.externalUseCount ?? 0,
+            lastExternalSource: console.lastExternalSource ?? null,
+            access: ConsoleManager.resolveAccess(console),
+            owner_id: console.owner_id || console.createdBy,
+          };
+        }),
+        total: consoles.length,
       });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true, consoles: [], total: 0 }, 200);
+      }
       logger.error("Error listing consoles", { error });
       return c.json(
         {
@@ -2879,19 +2934,24 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Invalid console ID" }, 400);
       }
 
-      // Find the console
-      const savedConsole = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(access.workspaceId),
-      }).populate("connectionId", "name type");
+      const consoleData = await consoleManager.getConsoleWithMetadata(
+        consoleId,
+        access.workspaceId,
+      );
 
+      if (!consoleData) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const savedConsole = consoleData._raw ?? null;
       if (!savedConsole) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
 
       const user = c.get("user");
-      const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
-      const ownerId = savedConsole.owner_id || savedConsole.createdBy;
+      const resolvedAccess =
+        consoleData.access || ConsoleManager.resolveAccess(savedConsole);
+      const ownerId = consoleData.owner_id || savedConsole.createdBy;
 
       if (
         user?.id &&
@@ -2930,23 +2990,22 @@ consoleRoutes.openapi(
         );
       }
 
+      const connection = await connectionSummary(
+        consoleData.connectionId ?? savedConsole.connectionId,
+        access.workspaceId,
+      );
+
       return c.json({
         success: true,
         console: {
-          id: savedConsole._id,
-          name: savedConsole.name,
-          description: savedConsole.description,
-          code: savedConsole.code,
-          language: savedConsole.language,
-          mongoOptions: savedConsole.mongoOptions,
-          connection: savedConsole.connectionId
-            ? {
-                id: savedConsole.connectionId._id,
-                name: (savedConsole.connectionId as any).name,
-                type: (savedConsole.connectionId as any).type,
-              }
-            : null,
-          databaseName: savedConsole.databaseName,
+          id: consoleData.id ?? savedConsole._id,
+          name: consoleData.name ?? savedConsole.name,
+          description: consoleData.description ?? savedConsole.description,
+          code: consoleData.content,
+          language: consoleData.language ?? savedConsole.language,
+          mongoOptions: consoleData.mongoOptions ?? savedConsole.mongoOptions,
+          connection,
+          databaseName: consoleData.databaseName ?? savedConsole.databaseName,
           createdAt: savedConsole.createdAt,
           updatedAt: savedConsole.updatedAt,
           lastExecutedAt: savedConsole.lastExecutedAt,
@@ -2961,7 +3020,9 @@ consoleRoutes.openapi(
         },
       });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
       logger.error("Error getting console details", { error });
       return c.json(
         {

@@ -14,9 +14,14 @@ import {
   commitConsoleMoves,
   commitConsoleRemoval,
   commitConsoleState,
+  descriptionIsAuthored,
+  loadLiveConsoleById,
+  loadLiveConsoles,
+  type LiveConsole,
 } from "../apps/workspace-consoles.service";
 import { chartSidecarPath } from "../apps/console-files";
 import { RepoRequiredError } from "../apps/config";
+import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 
 const logger = getLogger(["api", "consoles"]);
 
@@ -39,6 +44,101 @@ export interface ConsoleFile {
   access?: ConsoleAccessLevel;
   owner_id?: string;
   createdAt?: Date;
+}
+
+function folderIdForLive(
+  live: LiveConsole,
+  folders: IConsoleFolder[],
+): Types.ObjectId | undefined {
+  if (live.row?.folderId) return live.row.folderId;
+  const segments = live.location.folderSegments;
+  if (segments.length === 0) return undefined;
+  let parentId: string | undefined;
+  let found: IConsoleFolder | undefined;
+  for (const name of segments) {
+    found = folders.find(folder => {
+      const sameName = folder.name === name;
+      const parent = folder.parentId?.toString();
+      return sameName && (parentId ? parent === parentId : !parent);
+    });
+    if (!found) return undefined;
+    parentId = found._id.toString();
+  }
+  return found?._id;
+}
+
+/**
+ * Git definition + Mongo overlay, shaped like a SavedConsole so the existing
+ * tree/ACL helpers stay unchanged. `code` and front-matter always come from
+ * the file; a missing Mongo body does not hide the console.
+ */
+function liveConsoleToRow(
+  live: LiveConsole,
+  folderId: Types.ObjectId | undefined,
+): ISavedConsole {
+  const loc = live.location;
+  const access: ConsoleAccessLevel =
+    loc.scope === "private" ? "private" : "workspace";
+  const ownerId =
+    loc.ownerId || live.row?.owner_id || live.row?.createdBy || "git";
+  const connectionId =
+    live.parsed.meta.connectionId &&
+    Types.ObjectId.isValid(live.parsed.meta.connectionId)
+      ? new Types.ObjectId(live.parsed.meta.connectionId)
+      : live.row?.connectionId;
+  const authored = live.parsed.meta.description;
+  const generated =
+    live.row && !descriptionIsAuthored(live.row)
+      ? live.row.description
+      : undefined;
+  return {
+    _id: live.id,
+    name: loc.name,
+    code: live.parsed.code,
+    language: loc.language,
+    path: live.path,
+    sourceBlobSha: live.oid,
+    folderId,
+    connectionId,
+    databaseName: live.parsed.meta.databaseName ?? live.row?.databaseName,
+    databaseId: live.parsed.meta.databaseId ?? live.row?.databaseId,
+    description: authored ?? generated,
+    chartSpec: live.chartSpec ?? live.row?.chartSpec,
+    resultsViewMode:
+      live.parsed.meta.resultsViewMode ?? live.row?.resultsViewMode,
+    mongoOptions: live.parsed.meta.mongoOptions ?? live.row?.mongoOptions,
+    isPrivate: access === "private",
+    isSaved: true,
+    access,
+    owner_id: live.row?.owner_id || ownerId,
+    createdBy: live.row?.createdBy || ownerId,
+    sharedWith: live.row?.sharedWith,
+    workspaceRole: live.row?.workspaceRole,
+    lastExecutedAt: live.row?.lastExecutedAt,
+    executionCount: live.row?.executionCount ?? 0,
+    createdAt: live.row?.createdAt,
+    updatedAt: live.row?.updatedAt,
+  } as ISavedConsole;
+}
+
+function metadataFromRow(savedConsole: ISavedConsole, consolePath: string) {
+  return {
+    content: savedConsole.code,
+    connectionId: savedConsole.connectionId?.toString(),
+    databaseName: savedConsole.databaseName,
+    databaseId: savedConsole.databaseId,
+    language: savedConsole.language,
+    id: savedConsole._id.toString(),
+    name: savedConsole.name,
+    path: consolePath,
+    isSaved: savedConsole.isSaved,
+    chartSpec: savedConsole.chartSpec,
+    resultsViewMode: savedConsole.resultsViewMode,
+    description: savedConsole.description,
+    mongoOptions: savedConsole.mongoOptions,
+    owner_id: savedConsole.owner_id || savedConsole.createdBy,
+    _raw: savedConsole,
+  };
 }
 
 export class ConsoleManager {
@@ -190,27 +290,27 @@ export class ConsoleManager {
   }
 
   /**
-   * Get all consoles in a tree structure from database.
-   * Only returns explicitly saved consoles (isSaved: true), not drafts.
+   * Saved-console tree from git at main. Mongo is overlay (ACL, lastRun).
+   * No GitHub binding → empty list, even if leftover Mongo or local git
+   * exists. Drafts never appear here.
    */
   async listConsoles(
     workspaceId: string,
     userId?: string,
   ): Promise<ConsoleFile[]> {
     try {
-      const [folders, consoles] = await Promise.all([
+      const bound = await boundRepoDirIfExists(workspaceId);
+      if (bound == null) return [];
+
+      const [folders, live] = await Promise.all([
         ConsoleFolder.find({
           workspaceId: new Types.ObjectId(workspaceId),
         }).sort({ name: 1 }),
-        SavedConsole.find({
-          workspaceId: new Types.ObjectId(workspaceId),
-          isSaved: true,
-          $or: [
-            { is_deleted: { $ne: true } },
-            { is_deleted: { $exists: false } },
-          ],
-        }).sort({ name: 1 }),
+        loadLiveConsoles(workspaceId),
       ]);
+      const consoles = live.map(item =>
+        liveConsoleToRow(item, folderIdForLive(item, folders)),
+      );
 
       const visibleConsoles = userId
         ? consoles.filter(c => ConsoleManager.canRead(c, userId))
@@ -219,9 +319,45 @@ export class ConsoleManager {
       return this.buildTree(folders, visibleConsoles);
     } catch (error) {
       if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error listing consoles from database", { error });
+      logger.error("Error listing consoles from git", { error });
       throw error;
     }
+  }
+
+  /**
+   * Flat list for API clients: live saved consoles from git, plus Mongo
+   * drafts when a repo is bound. Unbound → empty.
+   */
+  async listConsolesFlat(
+    workspaceId: string,
+    userId?: string,
+  ): Promise<ISavedConsole[]> {
+    const bound = await boundRepoDirIfExists(workspaceId);
+    if (bound == null) return [];
+    const [folders, live, drafts] = await Promise.all([
+      ConsoleFolder.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+      }),
+      loadLiveConsoles(workspaceId),
+      SavedConsole.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        isSaved: { $ne: true },
+        $or: [
+          { is_deleted: { $ne: true } },
+          { is_deleted: { $exists: false } },
+        ],
+      }).sort({ updatedAt: -1 }),
+    ]);
+    const saved = live.map(item =>
+      liveConsoleToRow(item, folderIdForLive(item, folders)),
+    );
+    const all = [...saved, ...drafts];
+    const visible = userId
+      ? all.filter(doc => ConsoleManager.canRead(doc, userId))
+      : all;
+    return visible.sort(
+      (a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0),
+    );
   }
 
   /**
@@ -320,19 +456,20 @@ export class ConsoleManager {
     sharedWithWorkspace: ConsoleFile[];
   }> {
     try {
-      const [folders, consoles] = await Promise.all([
+      const bound = await boundRepoDirIfExists(workspaceId);
+      if (bound == null) {
+        return { myConsoles: [], sharedWithWorkspace: [] };
+      }
+
+      const [folders, live] = await Promise.all([
         ConsoleFolder.find({
           workspaceId: new Types.ObjectId(workspaceId),
         }).sort({ name: 1 }),
-        SavedConsole.find({
-          workspaceId: new Types.ObjectId(workspaceId),
-          isSaved: true,
-          $or: [
-            { is_deleted: { $ne: true } },
-            { is_deleted: { $exists: false } },
-          ],
-        }).sort({ name: 1 }),
+        loadLiveConsoles(workspaceId),
       ]);
+      const consoles = live.map(item =>
+        liveConsoleToRow(item, folderIdForLive(item, folders)),
+      );
 
       const folderById = new Map<string, IConsoleFolder>();
       for (const f of folders) {
@@ -411,65 +548,41 @@ export class ConsoleManager {
   }
 
   /**
-   * Get content of a specific console from database
+   * Console body. Saved consoles read the file at main; drafts stay on the
+   * Mongo working copy. A saved row with no git file is not found.
    */
   async getConsole(consolePath: string, workspaceId?: string): Promise<string> {
     try {
-      // Try to get from database first (by path or ID)
-      if (workspaceId) {
-        let savedConsole;
-
-        // Check if consolePath is an ObjectId
-        if (Types.ObjectId.isValid(consolePath)) {
-          savedConsole = await SavedConsole.findOne({
-            _id: new Types.ObjectId(consolePath),
-            workspaceId: new Types.ObjectId(workspaceId),
-          });
-        } else {
-          // Try to find by path
-          const parts = consolePath.split("/");
-          const consoleName = parts[parts.length - 1];
-
-          if (parts.length > 1) {
-            // Console is in a folder - need to find the folder first
-            const folderParts = parts.slice(0, -1);
-            const folderId = await this.findFolderByPath(
-              folderParts,
-              workspaceId,
-            );
-
-            savedConsole = await SavedConsole.findOne({
-              name: consoleName,
-              workspaceId: new Types.ObjectId(workspaceId),
-              folderId: folderId
-                ? new Types.ObjectId(folderId)
-                : { $exists: false },
-            });
-          } else {
-            // Console is at root level
-            savedConsole = await SavedConsole.findOne({
-              name: consoleName,
-              workspaceId: new Types.ObjectId(workspaceId),
-              folderId: { $exists: false },
-            });
-          }
-        }
-
-        if (savedConsole) {
-          return savedConsole.code;
-        }
+      if (!workspaceId) {
+        throw new Error(`Console not found: ${consolePath}`);
       }
-
+      if (Types.ObjectId.isValid(consolePath)) {
+        const found = await loadLiveConsoleById(workspaceId, consolePath);
+        if (found && "draft" in found) return found.draft.code;
+        if (found && "live" in found) return found.live.parsed.code;
+        throw new Error(`Console not found: ${consolePath}`);
+      }
+      const live = await loadLiveConsoles(workspaceId);
+      const name = consolePath.split("/").pop();
+      const match = live.find(
+        item =>
+          item.location.name === name &&
+          (item.location.folderSegments.join("/")
+            ? `${item.location.folderSegments.join("/")}/${item.location.name}`
+            : item.location.name) === consolePath,
+      );
+      if (match) return match.parsed.code;
       throw new Error(`Console not found: ${consolePath}`);
     } catch (error) {
       if (error instanceof RepoRequiredError) throw error;
-      logger.error("Error getting console from database", { error });
+      logger.error("Error getting console from git", { error });
       throw error;
     }
   }
 
   /**
-   * Get full console data from database by ID only
+   * GET a console by id. Drafts are the Mongo working copy; saved consoles
+   * are live only when the file exists at main.
    */
   async getConsoleWithMetadata(
     consoleId: string,
@@ -486,24 +599,23 @@ export class ConsoleManager {
     isSaved?: boolean;
     chartSpec?: Record<string, unknown>;
     resultsViewMode?: "table" | "json" | "chart";
+    description?: string;
+    mongoOptions?: ISavedConsole["mongoOptions"];
     access?: ConsoleAccessLevel;
     owner_id?: string;
     _raw?: ISavedConsole;
   } | null> {
     try {
-      // Only accept valid ObjectIds
       if (!Types.ObjectId.isValid(consoleId)) {
         logger.error("Invalid console ID", { consoleId });
         return null;
       }
 
-      const savedConsole = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const found = await loadLiveConsoleById(workspaceId, consoleId);
+      if (!found) return null;
 
-      if (savedConsole) {
-        // Build path from name and folder
+      if ("draft" in found) {
+        const savedConsole = found.draft;
         let consolePath = savedConsole.name;
         if (savedConsole.folderId) {
           const folderPath = await this.getFolderPathById(
@@ -514,29 +626,28 @@ export class ConsoleManager {
             consolePath = `${folderPath}/${savedConsole.name}`;
           }
         }
-
         const effectiveAccess =
           await this.resolveAccessWithInheritance(savedConsole);
-
         return {
-          content: savedConsole.code,
-          connectionId: savedConsole.connectionId?.toString(),
-          databaseName: savedConsole.databaseName,
-          databaseId: savedConsole.databaseId,
-          language: savedConsole.language,
-          id: savedConsole._id.toString(),
-          name: savedConsole.name,
-          path: consolePath,
-          isSaved: savedConsole.isSaved,
-          chartSpec: savedConsole.chartSpec,
-          resultsViewMode: savedConsole.resultsViewMode,
+          ...metadataFromRow(savedConsole, consolePath),
           access: effectiveAccess,
-          owner_id: savedConsole.owner_id || savedConsole.createdBy,
-          _raw: savedConsole,
         };
       }
 
-      return null;
+      const live = found.live;
+      const folders = await ConsoleFolder.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      const row = liveConsoleToRow(live, folderIdForLive(live, folders));
+      const displayPath = live.location.folderSegments.length
+        ? `${live.location.folderSegments.join("/")}/${live.location.name}`
+        : live.location.name;
+      const effectiveAccess = await this.resolveAccessWithInheritance(row);
+      return {
+        ...metadataFromRow(row, displayPath),
+        access: effectiveAccess,
+        _raw: live.row ?? row,
+      };
     } catch (error) {
       if (error instanceof RepoRequiredError) throw error;
       logger.error("Error getting console with metadata", { error });

@@ -75,6 +75,22 @@ describe("consoleTreeStore fetchTree", () => {
     );
   });
 
+  it("treats HTTP 412 as an empty tree so disconnect clears the explorer", async () => {
+    seed([file("a", "stale")], [file("b", "also-stale")]);
+    http.GET.mockResolvedValueOnce({
+      data: { success: false, error: "GitHub repository required" },
+      error: { error: "GitHub repository required" },
+      response: { ok: false, status: 412, statusText: "Precondition Failed" },
+    });
+
+    await useConsoleTreeStore.getState().fetchTree(WID);
+
+    const state = useConsoleTreeStore.getState();
+    expect(names(state.myItems[WID])).toEqual([]);
+    expect(state.workspaceItems[WID]).toEqual([]);
+    expect(state.error[WID]).toBeNull();
+  });
+
   it("falls back to the legacy `tree` field for the my section", async () => {
     http.GET.mockResolvedValueOnce(
       ok({ success: true, tree: [file("a", "x")] }),
