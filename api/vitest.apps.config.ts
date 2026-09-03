@@ -18,6 +18,7 @@ export default defineConfig({
       "src/apps/worktree.service.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
+      "src/migrations/2026-09-02-110000_workspace_self_directive_to_git.test.ts",
       "src/services/skills.service.test.ts",
       "src/notebooks/notebook-git.service.test.ts",
       "src/apps/bindings.service.test.ts",
