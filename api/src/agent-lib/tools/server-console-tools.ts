@@ -59,6 +59,28 @@ import { pollRunStatus } from "./check-query-status-poll";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
+const consoleModificationQueues = new Map<string, Promise<void>>();
+
+async function serializeConsoleModification<T>(
+  consoleId: string,
+  modify: () => Promise<T>,
+): Promise<T> {
+  const previous =
+    consoleModificationQueues.get(consoleId) ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(modify);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  consoleModificationQueues.set(consoleId, tail);
+  try {
+    return await result;
+  } finally {
+    if (consoleModificationQueues.get(consoleId) === tail) {
+      consoleModificationQueues.delete(consoleId);
+    }
+  }
+}
 
 const RUN_PREVIEW_MAX_ROWS = 50;
 
@@ -239,142 +261,148 @@ export function createServerConsoleTools({
 
     modify_console: tool({
       description:
-        "Modify a console's content by ID (applied server-side to the authoritative draft; open windows update live). Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. ACCESS NOTE: If the console is read-only (workspace console you don't own and you're not an admin), modification will be rejected — create a copy with create_console instead.",
+        "Modify a console's content by ID (applied server-side to the authoritative draft; open windows update live). Actions: 'replace' (full content), 'patch' (specific lines - preferred for one small edit, requires startLine/endLine), 'insert' (at position), 'append' (to end). Make one atomic call per console per step: combine multiple edits into a single replace instead of emitting parallel patches. IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. ACCESS NOTE: If the console is read-only (workspace console you don't own and you're not an admin), modification will be rejected — create a copy with create_console instead.",
       inputSchema: modifyConsoleSchema,
-      execute: async input => {
-        try {
-          const { action, content, consoleId, title } = input;
+      execute: async input =>
+        serializeConsoleModification(input.consoleId, async () => {
+          try {
+            const { action, content, consoleId, title } = input;
 
-          // Some tool-calling models serialize numeric/nullable fields as
-          // strings; coerce so those calls aren't rejected.
-          const coerceOptionalNumber = (raw: unknown): number | undefined => {
-            if (raw === undefined || raw === null) return undefined;
-            if (typeof raw === "number") {
-              return Number.isFinite(raw) ? raw : undefined;
-            }
-            if (typeof raw === "string") {
-              const trimmed = raw.trim();
-              if (trimmed === "" || trimmed.toLowerCase() === "null") {
-                return undefined;
+            // Some tool-calling models serialize numeric/nullable fields as
+            // strings; coerce so those calls aren't rejected.
+            const coerceOptionalNumber = (raw: unknown): number | undefined => {
+              if (raw === undefined || raw === null) return undefined;
+              if (typeof raw === "number") {
+                return Number.isFinite(raw) ? raw : undefined;
               }
-              const parsed = Number(trimmed);
-              return Number.isFinite(parsed) ? parsed : undefined;
+              if (typeof raw === "string") {
+                const trimmed = raw.trim();
+                if (trimmed === "" || trimmed.toLowerCase() === "null") {
+                  return undefined;
+                }
+                const parsed = Number(trimmed);
+                return Number.isFinite(parsed) ? parsed : undefined;
+              }
+              return undefined;
+            };
+            const position = coerceOptionalNumber(input.position);
+            const startLine = coerceOptionalNumber(input.startLine);
+            const endLine = coerceOptionalNumber(input.endLine);
+
+            if (action === "insert" && position === undefined) {
+              return {
+                success: false,
+                error: "Position is required for insert action",
+              };
             }
-            return undefined;
-          };
-          const position = coerceOptionalNumber(input.position);
-          const startLine = coerceOptionalNumber(input.startLine);
-          const endLine = coerceOptionalNumber(input.endLine);
-
-          if (action === "insert" && position === undefined) {
-            return {
-              success: false,
-              error: "Position is required for insert action",
-            };
-          }
-          if (action === "patch" && (!startLine || !endLine)) {
-            return {
-              success: false,
-              error:
-                "startLine and endLine are required for patch action. Use read_console first to see line numbers.",
-            };
-          }
-
-          const modification: ConsoleModification = {
-            action,
-            content,
-            position:
-              position !== undefined
-                ? { line: position, column: 1 }
-                : undefined,
-            startLine,
-            endLine,
-          };
-
-          // Revision-checked write with one retry: the agent is normally a
-          // sequential writer, so a miss means a user typed concurrently —
-          // re-read once and re-apply; a second miss surfaces to the model.
-          for (let attempt = 0; attempt < 2; attempt++) {
-            const loaded = await loadConsole(consoleId);
-            if (isLoadError(loaded)) return { success: false, ...loaded };
-            const { doc } = loaded;
-
-            if (!(await canWrite(doc))) {
+            if (action === "patch" && (!startLine || !endLine)) {
               return {
                 success: false,
                 error:
-                  "This console is shared as read-only. Use create_console to create a copy with the desired changes instead.",
+                  "startLine and endLine are required for patch action. Use read_console first to see line numbers.",
               };
             }
 
-            const currentContent = doc.code || "";
-            const newContent = applyModification(currentContent, modification);
-            const diff = buildModificationDiff(currentContent, modification);
-            const currentRevision = doc.draftRevision ?? 1;
-
-            const setFields: Record<string, unknown> = {
-              code: newContent,
-              updatedAt: new Date(),
-              // Mark agent origin so a reconnecting client surfaces this as a
-              // reviewable diff even if it missed the realtime poke.
-              lastDraftOrigin: "agent",
-              // Set the next revision explicitly (instead of $inc) so the bump
-              // is null-safe. Legacy consoles have no draftRevision field; the
-              // Mongoose schema default reports it as 1, but `$inc` on the
-              // absent DB field also yields 1 — colliding with the value the
-              // client already holds, so revisions-sync saw "no change" and the
-              // first agent edit/rename never reached the open tab. currentRevision
-              // is the schema-defaulted value (1 for legacy), so +1 always
-              // exceeds what the client has.
-              draftRevision: currentRevision + 1,
+            const modification: ConsoleModification = {
+              action,
+              content,
+              position:
+                position !== undefined
+                  ? { line: position, column: 1 }
+                  : undefined,
+              startLine,
+              endLine,
             };
-            if (title) setFields.name = leafConsoleName(title) || title;
 
-            const updated = await SavedConsole.findOneAndUpdate(
-              {
-                _id: doc._id,
-                workspaceId: new Types.ObjectId(workspaceId),
-                draftRevision:
-                  currentRevision === 1 ? { $in: [1, null] } : currentRevision,
-              },
-              { $set: setFields },
-              { new: true },
-            );
+            // Revision-checked write with one retry: the agent is normally a
+            // sequential writer, so a miss means a user typed concurrently —
+            // re-read once and re-apply; a second miss surfaces to the model.
+            for (let attempt = 0; attempt < 2; attempt++) {
+              const loaded = await loadConsole(consoleId);
+              if (isLoadError(loaded)) return { success: false, ...loaded };
+              const { doc } = loaded;
 
-            if (!updated) {
-              logger.debug("modify_console revision race, retrying", {
+              if (!(await canWrite(doc))) {
+                return {
+                  success: false,
+                  error:
+                    "This console is shared as read-only. Use create_console to create a copy with the desired changes instead.",
+                };
+              }
+
+              const currentContent = doc.code || "";
+              const newContent = applyModification(
+                currentContent,
+                modification,
+              );
+              const diff = buildModificationDiff(currentContent, modification);
+              const currentRevision = doc.draftRevision ?? 1;
+
+              const setFields: Record<string, unknown> = {
+                code: newContent,
+                updatedAt: new Date(),
+                // Mark agent origin so a reconnecting client surfaces this as a
+                // reviewable diff even if it missed the realtime poke.
+                lastDraftOrigin: "agent",
+                // Set the next revision explicitly (instead of $inc) so the bump
+                // is null-safe. Legacy consoles have no draftRevision field; the
+                // Mongoose schema default reports it as 1, but `$inc` on the
+                // absent DB field also yields 1 — colliding with the value the
+                // client already holds, so revisions-sync saw "no change" and the
+                // first agent edit/rename never reached the open tab. currentRevision
+                // is the schema-defaulted value (1 for legacy), so +1 always
+                // exceeds what the client has.
+                draftRevision: currentRevision + 1,
+              };
+              if (title) setFields.name = leafConsoleName(title) || title;
+
+              const updated = await SavedConsole.findOneAndUpdate(
+                {
+                  _id: doc._id,
+                  workspaceId: new Types.ObjectId(workspaceId),
+                  draftRevision:
+                    currentRevision === 1
+                      ? { $in: [1, null] }
+                      : currentRevision,
+                },
+                { $set: setFields },
+                { new: true },
+              );
+
+              if (!updated) {
+                logger.debug("modify_console revision race, retrying", {
+                  consoleId,
+                  attempt,
+                });
+                continue;
+              }
+
+              publishUpdated(updated);
+              return {
+                success: true,
                 consoleId,
-                attempt,
-              });
-              continue;
+                title: title ?? updated.name,
+                diff,
+                draftRevision: updated.draftRevision ?? 1,
+                message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
+              };
             }
 
-            publishUpdated(updated);
             return {
-              success: true,
-              consoleId,
-              title: title ?? updated.name,
-              diff,
-              draftRevision: updated.draftRevision ?? 1,
-              message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
+              success: false,
+              error:
+                "Console changed concurrently while applying the modification (someone is editing it). Use read_console to get the latest content and retry.",
+            };
+          } catch (error) {
+            return {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Failed to modify console",
             };
           }
-
-          return {
-            success: false,
-            error:
-              "Console changed concurrently while applying the modification (someone is editing it). Use read_console to get the latest content and retry.",
-          };
-        } catch (error) {
-          return {
-            success: false,
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to modify console",
-          };
-        }
-      },
+        }),
     }),
 
     create_console: tool({
