@@ -377,7 +377,17 @@ export async function ensureFlowDerivedCache(flow: {
   }
   row.definitionInvalid = undefined;
   row.sourceBlobSha = sha;
-  await row.save();
+  try {
+    await row.save();
+  } catch (error) {
+    // applyDefinition already mutated `row`. Saving that document again
+    // (via markFlowInvalid) would re-raise the same ValidationError and
+    // 500 GET/list. Reload the persisted row, then stamp invalid.
+    const reason = error instanceof Error ? error.message : String(error);
+    const fresh = await Flow.findById(flow._id);
+    if (fresh) await markFlowInvalid(fresh, reason, path);
+    return "invalid";
+  }
   return "resynced";
 }
 

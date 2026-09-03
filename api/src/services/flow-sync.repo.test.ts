@@ -351,6 +351,30 @@ describe("GET/list from git", () => {
     expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
   });
 
+  it("does not throw when a file at main parses but fails schema save", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
+        "write_mode: append_dedup",
+        "write_mode: not_a_real_mode",
+      ),
+    });
+
+    // GET/list must not 500 the explorer because one file is unsavable.
+    // syncFlowsFromRepo already swallows this; ensureFlowDerivedCache did not.
+    await expect(loadLiveFlows(WS)).resolves.toHaveLength(1);
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
+    expect(row?.name).toBe("Close → BigQuery");
+    expect(row?.writeMode).toBe("append_dedup");
+    expect(row?.definitionInvalid?.reason).toMatch(
+      /writeMode|write_mode|enum/i,
+    );
+  });
+
   it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
     await push({ "flows/leftover.yml": flowYaml("Leftover") });
     await syncFlowsFromRepo(WS, "user-42");
