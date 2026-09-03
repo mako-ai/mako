@@ -586,7 +586,12 @@ export function hydrateFlowRow(
     createdBy: args.createdBy,
   }) as unknown as IFlow;
 
-  const refusal = applyDefinition(doc, file);
+  let refusal: string | null;
+  try {
+    refusal = applyDefinition(doc, file);
+  } catch (error) {
+    refusal = error instanceof Error ? error.message : String(error);
+  }
   if (refusal) return { refusal, schemaErrors: [] };
 
   // validateSync() runs the schema's own validators in-process and touches no

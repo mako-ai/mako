@@ -394,6 +394,26 @@ describe("GET/list from git", () => {
     expect(plain.writeMode).toBe("append_dedup");
   });
 
+  it("does not 500 GET/list when one file's connector_id is not an ObjectId", async () => {
+    await push({
+      "flows/a-by-name.yml": flowYaml("By name").replace(
+        `connector_id: ${CONNECTOR}`,
+        "connector_id: close",
+      ),
+      "flows/z-good-one.yml": flowYaml("Good"),
+    });
+
+    await expect(loadLiveFlows(WS)).resolves.toHaveLength(2);
+    const plains = (await loadLiveFlows(WS)).map(item =>
+      liveFlowToPlain(item, WS),
+    );
+    const bad = plains.find(item => item.slug === "a-by-name");
+    const good = plains.find(item => item.slug === "z-good-one");
+    expect(bad?.definitionInvalid).toBeTruthy();
+    expect(good?.name).toBe("Good");
+    expect(good?.definitionInvalid).toBeUndefined();
+  });
+
   it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
     await push({ "flows/leftover.yml": flowYaml("Leftover") });
     await syncFlowsFromRepo(WS, "user-42");
