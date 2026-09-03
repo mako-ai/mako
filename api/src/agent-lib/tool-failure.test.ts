@@ -23,3 +23,4 @@ assert.equal(
   sanitizeToolFailureMessage("failed with Bearer abcdefghijklmnop"),
   "failed with Bearer ***REDACTED***",
 );
+assert.equal(sanitizeToolFailureMessage("x".repeat(2_500)).length, 2_000);
