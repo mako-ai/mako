@@ -36,7 +36,7 @@ import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
 import { deployAppsForPush } from "../apps/deploy-on-push";
 import { ensureLocalRepo, fetchFromCloud } from "../apps/cloud-repo.service";
-import { findWorkspaceIdByRepoBinding } from "../services/workspace-repos.service";
+import { findWorkspaceIdsByRepoBinding } from "../services/workspace-repos.service";
 import { syncRepoBackedResources } from "../apps/worktree.service";
 import { repoDirFor } from "../apps/repository.service";
 
@@ -139,36 +139,26 @@ async function handleAppsPush(input: {
   if (!after) return;
   // The customer's own repo is the durable mirror (§13.17); the push is
   // matched through the workspace's binding.
-  const workspaceId = await findWorkspaceIdByRepoBinding(owner, repo);
-  if (!workspaceId) return;
+  const workspaceIds = await findWorkspaceIdsByRepoBinding(owner, repo);
+  if (workspaceIds.length === 0) return;
   if (branch !== (defaultBranch || "main")) return;
 
-  // The bare repo is a cache; the commit arrived at GitHub, so pull it in
-  // before trying to build it — and on a fresh serverless instance the cache
-  // may not exist at all yet.
-  await ensureLocalRepo(workspaceId);
-  await fetchFromCloud(workspaceId, branch);
-  // Everything the repo is authoritative for — consoles, skills, dbt jobs and
-  // environments, notebooks — reconciled from the tree we just fetched. This
-  // used to be a local copy of that list holding consoles and skills only, so
-  // a dbt job or notebook edited on GitHub reached Mongo only if someone later
-  // pushed through Mako. It is now the same call the git endpoint makes
-  // (worktree.service.notifyRepoPushed), which is what keeps the two routes
-  // from drifting apart again. Ordering matters: the fetch above must land
-  // first, because dbt's sync deletes jobs absent from the tree it reads.
-  syncRepoBackedResources(workspaceId);
-  // Builds run as Inngest work (apps-deploy) — this only decides what changed.
-  const requested = await deployAppsForPush({
-    workspaceId,
-    repoDir: repoDirFor(workspaceId),
-    before,
-    after,
-  });
-  if (requested.length > 0) {
-    logger.info("Requested app deploys from a push to main", {
+  for (const workspaceId of workspaceIds) {
+    await ensureLocalRepo(workspaceId);
+    await fetchFromCloud(workspaceId, branch);
+    syncRepoBackedResources(workspaceId);
+    const requested = await deployAppsForPush({
       workspaceId,
-      apps: requested,
+      repoDir: repoDirFor(workspaceId),
+      before,
+      after,
     });
+    if (requested.length > 0) {
+      logger.info("Requested app deploys from a push to main", {
+        workspaceId,
+        apps: requested,
+      });
+    }
   }
 }
 

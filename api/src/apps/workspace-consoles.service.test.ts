@@ -25,6 +25,7 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
+  initRepo,
   listTree,
   log,
   readBlob,
@@ -44,6 +45,10 @@ import {
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
 import { ConsoleManager } from "../utils/console-manager";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -74,6 +79,8 @@ beforeEach(async () => {
   await ConsoleFolder.deleteMany({});
   await EntityVersion.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function fileAt(rel: string): Promise<string | null> {
@@ -445,8 +452,6 @@ describe("sync from repo", () => {
       path: "consoles/legacy.sql",
       sourceBlobSha: "x",
     });
-    const { initRepo } = await import("./repository.service");
-    await initRepo(repoDirFor(WS), { "README.md": "x\n" });
     expect(await syncConsolesIndexFromRepo(WS, USER)).toBeNull();
     expect(
       (await SavedConsole.findOne({ name: "legacy" }))?.is_deleted,
@@ -725,6 +730,23 @@ describe("history — the apps surface for a console", () => {
     expect(subjects[0]).toMatch(/^Restore "create: h" \(/);
     expect(subjects).toHaveLength(3);
     expect(await fileAt("consoles/h.sql")).toContain("SELECT 1");
+  });
+
+  it("does not list leftover local git history when no GitHub repo is bound", async () => {
+    const saved = await manager.saveConsole(
+      "orphan-hist",
+      "SELECT leftover",
+      WS,
+      USER,
+      "68471be56e70c184bbc6cceb",
+      "db",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const row = (await SavedConsole.findById(saved._id))!;
+    expect(await consoleHistory(row)).not.toEqual([]);
+    await unbindTestWorkspaceRepo(WS);
+    expect(await consoleHistory(row)).toEqual([]);
   });
 });
 

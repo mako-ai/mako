@@ -15,6 +15,9 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
+import { initRepo, repoDirFor } from "./repository.service";
+import { seededTemplateFiles } from "./workspace-template";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { scopeOf } from "./worktree.service";
 
 let mongo: MongoMemoryServer;
@@ -35,6 +38,8 @@ beforeAll(async () => {
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
+  await bindTestWorkspaceRepo(WS);
 }, 120_000);
 
 afterAll(async () => {
@@ -827,6 +832,7 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     await initRepo(repoDirFor(ws2), {
       "apps/pubfix/mako.json": JSON.stringify({ title: "Pub Fix" }),
     });
+    await bindTestWorkspaceRepo(ws2);
 
     const synth = await synthesizeProjectFromFolder(ws2, "pubfix");
     expect(synth).not.toBeNull();

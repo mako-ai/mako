@@ -16,9 +16,16 @@ import {
 } from "./repository.service";
 import {
   PROMPT_PATH,
+  SELF_DIRECTIVE_PATH,
   commitWorkspacePrompt,
+  commitWorkspaceSelfDirective,
   readWorkspacePromptFile,
+  readWorkspaceSelfDirectiveFile,
 } from "./workspace-prompt";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -42,6 +49,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await bindTestWorkspaceRepo(WS);
 });
 
 describe("workspace prompt in git", () => {
@@ -73,5 +81,21 @@ describe("workspace prompt in git", () => {
     await initRepo(repoDirFor(WS), { "README.md": "x\n" });
     await commitWorkspacePrompt(WS, "no newline");
     expect(await readWorkspacePromptFile(WS)).toBe("no newline\n");
+  });
+
+  it("self-directive lives in SELF_DIRECTIVE.md, not PROMPT.md", async () => {
+    await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+    await commitWorkspaceSelfDirective(WS, "Never drop prod\n");
+    expect(await readWorkspaceSelfDirectiveFile(WS)).toBe("Never drop prod\n");
+    expect(await readWorkspacePromptFile(WS)).toBeNull();
+    const [head] = await repoLog(repoDirFor(WS), MAIN, 1);
+    expect(head.subject).toBe(`self-directive: update ${SELF_DIRECTIVE_PATH}`);
+  });
+
+  it("does not serve leftover PROMPT.md when no GitHub repo is bound", async () => {
+    await initRepo(repoDirFor(WS), { "PROMPT.md": "loop2-local-git\n" });
+    expect(await readWorkspacePromptFile(WS)).toBe("loop2-local-git\n");
+    await unbindTestWorkspaceRepo(WS);
+    expect(await readWorkspacePromptFile(WS)).toBeNull();
   });
 });

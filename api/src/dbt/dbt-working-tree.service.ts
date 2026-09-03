@@ -113,7 +113,7 @@ export async function listWorkingFiles(
   userId: string,
 ): Promise<WorkingFileMeta[]> {
   const repoDir = await repoDirIfExists(project);
-  if (!repoDir) return [];
+  if (repoDir == null) return [];
   const branch = await resolveBranchOrDefault(
     repoDir,
     await getCheckoutBranch(project, userId),
@@ -136,7 +136,7 @@ export async function readWorkingFile(
 ): Promise<WorkingFile | null> {
   assertSafeDbtPath(path);
   const repoDir = await repoDirIfExists(project);
-  if (!repoDir) return null;
+  if (repoDir == null) return null;
   const branch = await resolveBranchOrDefault(
     repoDir,
     await getCheckoutBranch(project, userId),
@@ -281,7 +281,7 @@ export async function loadWorkingTreeContents(
   opts: { userId?: string; branch?: string } = {},
 ): Promise<Array<{ path: string; content: string }>> {
   const repoDir = await repoDirIfExists(project);
-  if (!repoDir) return [];
+  if (repoDir == null) return [];
   const wanted =
     opts.branch ??
     (opts.userId

@@ -35,6 +35,7 @@ import {
 } from "../../database/workspace-schema";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { workspaceService } from "../../services/workspace.service";
+import { RepoRequiredError } from "../../apps/config";
 import {
   ensurePersonalDbtEnvironment,
   findPersonalEnvironment,
@@ -633,7 +634,7 @@ export const createDbtServerTools = (
             };
           }
 
-          const project = await DbtProject.create({
+          const project = new DbtProject({
             workspaceId: new Types.ObjectId(workspaceId),
             name,
             dbtVersion: dbtVersion ?? "1.9",
@@ -648,9 +649,8 @@ export const createDbtServerTools = (
             defaultEnvironment: environmentName,
             createdBy: "agent",
           });
-          // Environments/settings live in dbt/environments.yml (apps.md §23)
-          // from the first commit — not only after the first edit.
           await commitDbtEnvironmentsFile(project, actingUserId);
+          await project.save();
 
           const scaffold = buildStarterScaffold(name);
           await commitDbtFiles(
@@ -883,8 +883,11 @@ export const createDbtServerTools = (
           //  - MULTIPLE players: auto-provision the caller's PERSONAL
           //    environment on first build so teammates never build over each
           //    other's schemas.
-          // An explicit `environment` or a saved per-user choice always wins;
-          // best-effort — a provisioning failure falls back to the default.
+          // An explicit `environment` or a saved per-user choice always wins.
+          // Transient provision failures (display-name lookup, etc.) fall
+          // back to the shared default so a flaky lookup does not block the
+          // run. A missing git repo must not: falling back would let
+          // teammates overwrite each other's schemas (#956).
           let autoProvisionedEnv: string | undefined;
           if (
             !environment &&
@@ -907,8 +910,9 @@ export const createDbtServerTools = (
                   publishProjectUpdated(projectId);
                 }
               }
-            } catch {
-              /* fall back to the resolved default environment */
+            } catch (error) {
+              if (error instanceof RepoRequiredError) throw error;
+              /* transient provision failure: fall back to the resolved default */
             }
           }
           const wantsDefer =
@@ -1285,7 +1289,7 @@ export const createDbtServerTools = (
           if (validationError) {
             return { success: false, error: validationError };
           }
-          const job = await DbtJob.create({
+          const job = new DbtJob({
             workspaceId: project.workspaceId,
             projectId: project._id,
             slug: await reserveJobSlug(project._id, name),
@@ -1297,8 +1301,9 @@ export const createDbtServerTools = (
             deferToProduction,
             createdBy: "agent",
           });
-          await applyJobScheduleChange(job);
           await commitDbtJobFile(project, job, actingUserId);
+          await job.save();
+          await applyJobScheduleChange(job);
           publishJobUpdated(projectId);
           return {
             success: true,
@@ -1367,9 +1372,9 @@ export const createDbtServerTools = (
           if (updates.deferToProduction !== undefined) {
             job.deferToProduction = updates.deferToProduction;
           }
+          await commitDbtJobFile(project, job, actingUserId);
           await job.save();
           await applyJobScheduleChange(job);
-          await commitDbtJobFile(project, job, actingUserId);
           publishJobUpdated(projectId);
           return {
             success: true,
@@ -1408,8 +1413,8 @@ export const createDbtServerTools = (
           });
           if (!job) return { success: false, error: "Job not found" };
           const name = job.name;
-          await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           await deleteDbtJobFile(project, job.slug, actingUserId);
+          await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };
         } catch (error) {

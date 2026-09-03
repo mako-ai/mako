@@ -34,6 +34,7 @@ const state = vi.hoisted(() => ({
 vi.mock("../services/workspace-repos.service", () => ({
   getWorkspaceRepo: vi.fn(async () => state.binding),
   findWorkspaceIdByRepoBinding: vi.fn(async () => null),
+  findWorkspaceIdsByRepoBinding: vi.fn(async () => []),
 }));
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,

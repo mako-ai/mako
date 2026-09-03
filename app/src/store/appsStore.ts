@@ -19,6 +19,35 @@ import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
 
+/**
+ * After connect/disconnect the derived git index in Mongo has changed.
+ * Explorers keep their last tree until something refetches — a full reload
+ * used to be the only way to see an empty workspace after unlink.
+ */
+function refreshGitDerivedExplorers(
+  workspaceId: string,
+  fetchApps: (id: string) => void,
+): void {
+  void fetchApps(workspaceId);
+  void import("./consoleTreeStore").then(({ useConsoleTreeStore }) => {
+    void useConsoleTreeStore.getState().fetchTree(workspaceId);
+  });
+  void import("./notebookTreeStore").then(({ useNotebookTreeStore }) => {
+    void useNotebookTreeStore.getState().fetchTree(workspaceId);
+  });
+  void import("./flowStore").then(({ useFlowStore }) => {
+    void useFlowStore.getState().fetchFlows(workspaceId);
+  });
+  void import("./dbtStore").then(({ useDbtStore }) => {
+    void useDbtStore.getState().fetchProjects(workspaceId);
+  });
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("mako-git-index-changed", { detail: { workspaceId } }),
+    );
+  }
+}
+
 export interface AppMeta {
   id: string;
   /** Folder name under `apps/` in the workspace repo — the app's real
@@ -585,7 +614,7 @@ export const useAppsStore = create<AppsStore>()(
           };
           set(s => {
             s.repos = body.repos ?? [];
-            s.canCreate = s.canCreate || (body.repos ?? []).length > 0;
+            s.canCreate = (body.repos ?? []).length > 0;
           });
           return {
             installations: body.installations ?? [],
@@ -711,7 +740,7 @@ export const useAppsStore = create<AppsStore>()(
             }
           });
           // An import can make apps appear instantly; refetch either way.
-          void get().fetchApps(workspaceId);
+          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
           return { ok: true, adoption: body.adoption };
         } catch (e) {
           return { ok: false, error: message(e, "Failed to connect repo") };
@@ -731,8 +760,9 @@ export const useAppsStore = create<AppsStore>()(
               r => !(r.owner === owner && r.repo === repo),
             );
           });
-          // canCreate may still be true via cloud storage — let the probe say.
+          // canCreate follows the probe — no GitHub binding means no creates.
           void get().probeEnabled(workspaceId);
+          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to disconnect repo");
@@ -782,6 +812,21 @@ export const useAppsStore = create<AppsStore>()(
           // deleted app cannot leave a working-looking workspace view behind.
           reconcileAppsTabs(new Set(apps.map(a => a.id)));
         } catch (e) {
+          // GET /apps is 412 without a GitHub binding. That is an empty
+          // explorer (disconnect, never linked), not a load failure. Keeping
+          // the previous list and persisted cache left the sidebar populated
+          // after unlink.
+          const githubRequired = e instanceof ApiError && e.status === 412;
+          if (githubRequired) {
+            set(s => {
+              s.apps = [];
+              delete s.appsCacheByWorkspace[workspaceId];
+              s.appsLoading = false;
+              s.error = null;
+            });
+            reconcileAppsTabs(new Set());
+            return;
+          }
           set(s => {
             s.appsLoading = false;
             // A 404 here means the flag is off — not an error worth surfacing.

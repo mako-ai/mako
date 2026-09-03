@@ -36,6 +36,7 @@ import {
   worktreeStatus,
   workspaceScope,
 } from "./worktree.service";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -80,6 +81,7 @@ async function seedRepo(): Promise<string> {
 beforeEach(async () => {
   await AppWorktree.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await bindTestWorkspaceRepo(WS);
 });
 
 describe("ensureWorkspaceWorktree", () => {

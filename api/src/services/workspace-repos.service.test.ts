@@ -7,10 +7,19 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import {
   connectWorkspaceRepo,
   disconnectWorkspaceRepo,
+  findWorkspaceIdsByRepoBinding,
   isValidRepoSegment,
   listWorkspaceRepos,
+  WorkspaceRepoNotBoundError,
 } from "./workspace-repos.service";
-import { GitHubInstallation, Workspace } from "../database/workspace-schema";
+import {
+  ConsoleFolder,
+  DbtProject,
+  Flow,
+  GitHubInstallation,
+  SavedConsole,
+  Workspace,
+} from "../database/workspace-schema";
 
 let mongo: MongoMemoryServer;
 let workspaceId: string;
@@ -211,5 +220,168 @@ describe("connect / list / disconnect", () => {
       linkedBy: "u1",
     });
     expect(binding.installationId).toBe(999);
+  });
+});
+
+describe("git is the only store (issue #956)", () => {
+  it("fans out webhook routing to every workspace bound to the same repo", async () => {
+    const other = await Workspace.create({
+      name: "Other",
+      slug: `other-${Date.now()}`,
+      createdBy: "u1",
+      settings: {},
+      billing: {},
+    });
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    await connectWorkspaceRepo({
+      workspaceId: other._id.toString(),
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    const ids = await findWorkspaceIdsByRepoBinding(
+      "mako-ai",
+      "test-workspace",
+    );
+    expect(ids.sort()).toEqual([workspaceId, other._id.toString()].sort());
+  });
+
+  it("a mismatched unlink does not purge derived content or drop the binding", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    await Flow.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      type: "scheduled",
+      slug: "keep",
+      name: "Keep",
+      sourceType: "database",
+      databaseSource: {
+        connectionId: new Types.ObjectId(),
+        database: "demo",
+        query: "select 1",
+      },
+      destinationDatabaseId: new Types.ObjectId(),
+      syncMode: "full",
+      schedule: { enabled: false },
+      createdBy: "u1",
+    });
+    await expect(
+      disconnectWorkspaceRepo(workspaceId, "mako-ai", "typo-workspace"),
+    ).rejects.toBeInstanceOf(WorkspaceRepoNotBoundError);
+    expect(await Flow.countDocuments({ workspaceId })).toBe(1);
+    const repos = await listWorkspaceRepos(workspaceId);
+    expect(repos).toHaveLength(1);
+    expect(repos[0].owner).toBe("mako-ai");
+    expect(repos[0].repo).toBe("test-workspace");
+  });
+
+  it("disconnect purges derived flow index rows", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    await Flow.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      type: "scheduled",
+      slug: "gone",
+      name: "Gone",
+      sourceType: "database",
+      databaseSource: {
+        connectionId: new Types.ObjectId(),
+        database: "demo",
+        query: "select 1",
+      },
+      destinationDatabaseId: new Types.ObjectId(),
+      syncMode: "full",
+      schedule: { enabled: false },
+      createdBy: "u1",
+    });
+    expect(await Flow.countDocuments({ workspaceId })).toBe(1);
+    await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
+    expect(await Flow.countDocuments({ workspaceId })).toBe(0);
+    expect(await listWorkspaceRepos(workspaceId)).toHaveLength(0);
+  });
+
+  it("disconnect purges every console row and folder, not only saved files", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    const ws = new Types.ObjectId(workspaceId);
+    await ConsoleFolder.create({
+      workspaceId: ws,
+      name: "scratch",
+      isPrivate: false,
+      access: "workspace",
+    });
+    await SavedConsole.create({
+      workspaceId: ws,
+      name: "draft.sql",
+      code: "select 1",
+      language: "sql",
+      isSaved: false,
+      createdBy: "u1",
+      owner_id: "u1",
+      access: "private",
+      isPrivate: true,
+    });
+    await SavedConsole.create({
+      workspaceId: ws,
+      name: "saved.sql",
+      code: "select 2",
+      language: "sql",
+      isSaved: true,
+      createdBy: "u1",
+      owner_id: "u1",
+      access: "workspace",
+      isPrivate: false,
+    });
+    await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
+    expect(await SavedConsole.countDocuments({ workspaceId: ws })).toBe(0);
+    expect(await ConsoleFolder.countDocuments({ workspaceId: ws })).toBe(0);
+  });
+
+  it("disconnect deletes dbt project rows, not just their environments", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    const ws = new Types.ObjectId(workspaceId);
+    await DbtProject.create({
+      workspaceId: ws,
+      name: "ghost",
+      createdBy: "u1",
+      environments: [
+        {
+          name: "dev",
+          connectionId: new Types.ObjectId(),
+          targetSchema: "analytics",
+        },
+      ],
+    });
+    expect(await DbtProject.countDocuments({ workspaceId: ws })).toBe(1);
+    await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
+    expect(await DbtProject.countDocuments({ workspaceId: ws })).toBe(0);
   });
 });

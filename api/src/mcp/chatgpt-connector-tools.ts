@@ -37,6 +37,7 @@ import {
   repoExists,
 } from "../apps/repository.service";
 import { searchSkills } from "../services/skills.service";
+import { listAppFolders } from "../apps/worktree.service";
 import { loggers } from "../logging";
 import type { BridgeableTool, MakoMcpContext } from "./mako-mcp-server";
 
@@ -96,24 +97,23 @@ async function searchWorkspaceApps(
   workspaceId: string,
   query: string,
 ): Promise<SearchResultDoc[]> {
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const apps = await AppProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    $or: [
-      { title: { $regex: escaped, $options: "i" } },
-      { description: { $regex: escaped, $options: "i" } },
-    ],
-  })
-    .select("title description slug updatedAt")
-    .sort({ updatedAt: -1 })
-    .limit(RESULTS_PER_KIND)
-    .lean();
-  return apps.map(app => ({
-    id: `app:${app._id.toString()}`,
-    title: `App: ${app.title}`,
-    text: app.description || "Mako data app.",
-    url: resourceUrl("app", app.slug || app._id.toString()),
-  }));
+  const folders = await listAppFolders(workspaceId);
+  const q = query.trim().toLowerCase();
+  return folders
+    .filter(
+      f =>
+        !q ||
+        f.slug.toLowerCase().includes(q) ||
+        f.title.toLowerCase().includes(q) ||
+        (f.description ?? "").toLowerCase().includes(q),
+    )
+    .slice(0, RESULTS_PER_KIND)
+    .map(f => ({
+      id: `app:${f.slug}`,
+      title: `App: ${f.title}`,
+      text: f.description || "Mako data app.",
+      url: resourceUrl("app", f.slug),
+    }));
 }
 
 async function searchAllSkills(
@@ -289,21 +289,37 @@ async function fetchAppDoc(
   workspaceId: string,
   id: string,
 ): Promise<FetchedDoc | null> {
+  const folders = await listAppFolders(workspaceId);
+  const folder =
+    folders.find(f => f.slug === id) ??
+    folders.find(f => `app:${f.slug}` === `app:${id}`);
+  if (!folder) {
+    // Legacy fetch ids were Mongo ObjectIds.
+    if (Types.ObjectId.isValid(id)) {
+      const app = await AppProject.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+        .select("slug")
+        .lean();
+      if (app?.slug) {
+        return fetchAppDoc(workspaceId, app.slug);
+      }
+    }
+    return null;
+  }
   const app = await AppProject.findOne({
-    _id: requireObjectId("app", id),
     workspaceId: new Types.ObjectId(workspaceId),
+    slug: folder.slug,
   })
-    .select("title description slug defaultBranch publishedSha")
+    .select("defaultBranch publishedSha")
     .lean();
-  if (!app) return null;
-  // The project's files live in the workspace git repo, not in Mongo; list
-  // them from the default branch so the doc reflects what is actually there.
   let files: string[] = [];
   try {
     const repoDir = repoDirFor(workspaceId);
-    if (app.slug && (await repoExists(repoDir))) {
-      const prefix = `apps/${app.slug}/`;
-      files = (await listTree(repoDir, app.defaultBranch || DEFAULT_BRANCH))
+    if (await repoExists(repoDir)) {
+      const prefix = `apps/${folder.slug}/`;
+      files = (await listTree(repoDir, app?.defaultBranch || DEFAULT_BRANCH))
         .filter(entry => entry.path.startsWith(prefix))
         .map(entry => `- ${entry.path.slice(prefix.length)}`);
     }
@@ -311,9 +327,9 @@ async function fetchAppDoc(
     // Repo unreadable — metadata alone is still a useful doc.
   }
   const text = [
-    app.description || "",
-    `Git-backed app project (folder apps/${app.slug ?? "?"} on branch ${app.defaultBranch || DEFAULT_BRANCH}).`,
-    app.publishedSha
+    folder.description || "",
+    `Git-backed app project (folder apps/${folder.slug} on branch ${app?.defaultBranch || DEFAULT_BRANCH}).`,
+    app?.publishedSha
       ? `Published at commit ${app.publishedSha}.`
       : "Not published yet.",
     files.length ? `## Files\n${files.join("\n")}` : "",
@@ -321,11 +337,11 @@ async function fetchAppDoc(
     .filter(Boolean)
     .join("\n\n");
   return {
-    id: `app:${id}`,
-    title: app.title,
-    text: truncate(text),
-    url: resourceUrl("app", app.slug || id),
-    metadata: { kind: "app", fileCount: files.length },
+    id: `app:${folder.slug}`,
+    title: `App: ${folder.title}`,
+    text,
+    url: resourceUrl("app", folder.slug),
+    metadata: { kind: "app", slug: folder.slug },
   };
 }
 

@@ -16,6 +16,7 @@ import { RepoRequiredError } from "../apps/config";
 import {
   commitWorkspacePrompt,
   readWorkspacePromptFile,
+  readWorkspaceSelfDirectiveFile,
 } from "../apps/workspace-prompt";
 
 const logger = loggers.workspace();
@@ -143,12 +144,9 @@ customPromptRoutes.openapi(
       // the Mongo field is the pre-migration fallback for repo-less
       // workspaces.
       const content =
-        (await readWorkspacePromptFile(workspaceId)) ??
-        (workspace.settings.customPrompt || DEFAULT_CUSTOM_PROMPT);
+        (await readWorkspacePromptFile(workspaceId)) ?? DEFAULT_CUSTOM_PROMPT;
       const selfDirective =
-        typeof workspace.selfDirective === "string"
-          ? workspace.selfDirective
-          : "";
+        (await readWorkspaceSelfDirectiveFile(workspaceId)) ?? "";
 
       return c.json(
         {

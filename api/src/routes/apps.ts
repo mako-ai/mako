@@ -45,6 +45,7 @@ import {
   connectWorkspaceRepo,
   disconnectWorkspaceRepo,
   listWorkspaceRepos,
+  WorkspaceRepoNotBoundError,
 } from "../services/workspace-repos.service";
 import {
   ensureProjectRow,
@@ -80,12 +81,13 @@ import {
   writeFile,
   repoForWorkspace,
   scopeOf,
+  syncRepoBackedResources,
 } from "../apps/worktree.service";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
   APPS_EXEC_MAX_TIMEOUT_MS,
   previewStagingDir,
-  appsRequireConnectedRepo,
+  RepoRequiredError,
 } from "../apps/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
@@ -274,12 +276,15 @@ async function loadProject(
   return { project, userId };
 }
 
-function toProjectJson(p: IAppProject) {
+function toProjectJson(
+  p: IAppProject,
+  manifest?: { title: string; description?: string },
+) {
   return {
     id: p._id.toString(),
     slug: p.slug,
-    title: p.title,
-    description: p.description,
+    title: manifest?.title ?? p.slug ?? "",
+    description: manifest?.description,
     access: p.access,
     owner_id: p.owner_id,
     defaultBranch: p.defaultBranch,
@@ -290,9 +295,30 @@ function toProjectJson(p: IAppProject) {
   };
 }
 
+async function manifestForProject(
+  workspaceId: string,
+  slug: string | undefined,
+): Promise<{ title: string; description?: string } | undefined> {
+  if (!slug) return undefined;
+  const folders = await listAppFolders(workspaceId);
+  const folder = folders.find(f => f.slug === slug);
+  return folder
+    ? { title: folder.title, description: folder.description }
+    : undefined;
+}
+
 function handleError(c: AuthenticatedContext, error: unknown) {
   if (error instanceof WorktreeConflictError) {
     return c.json({ success: false, error: error.message }, 409);
+  }
+  if (error instanceof RepoRequiredError) {
+    return c.json(
+      { success: false, code: error.code, error: error.message },
+      error.status as 412,
+    );
+  }
+  if (error instanceof WorkspaceRepoNotBoundError) {
+    return c.json({ success: false, error: error.message }, 404);
   }
   logger.error("Apps route error", { error });
   return c.json(
@@ -330,9 +356,7 @@ appsRoutes.openapi(
       {
         success: true as const,
         linked: repos.length > 0,
-        // Production requires the workspace's own repo (apps.md §17); dev
-        // and previews work local-only.
-        canCreate: repos.length > 0 || !appsRequireConnectedRepo(),
+        canCreate: repos.length > 0,
         repos: repos.map(r => ({
           owner: r.owner,
           repo: r.repo,
@@ -581,8 +605,12 @@ appsRoutes.openapi(
           workspaceId,
           binding.owner,
           binding.repo,
+          { purge: false },
         ).catch(() => undefined);
         throw error;
+      }
+      if (adoption !== "deferred") {
+        syncRepoBackedResources(workspaceId);
       }
       return c.json({ success: true as const, repo: binding, adoption }, 200);
     } catch (error) {
@@ -701,6 +729,10 @@ appsRoutes.openapi(
 
       return c.json({ success: true as const, apps }, 200);
     } catch (error) {
+      // No GitHub binding: the explorer is empty. Writes still 412.
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
       return handleError(c, error);
     }
   },
@@ -735,11 +767,11 @@ appsRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description } = c.req.valid("json");
       const userId = actingUserId(c);
-      // Apps live in the workspace's own GitHub repo (apps.md §17): in
-      // production, creating one without a connected repo is refused with an
-      // actionable message. Dev and previews keep local-only repos.
+      // Apps live in the workspace's own GitHub repo (apps.md §17). Creating
+      // one without a connected repo is refused — there is no local-only
+      // Cloud Storage skip (issue #956).
       const repos = await listWorkspaceRepos(workspaceId);
-      if (repos.length === 0 && appsRequireConnectedRepo()) {
+      if (repos.length === 0) {
         return c.json(
           {
             success: false,
@@ -757,7 +789,10 @@ appsRoutes.openapi(
         userId,
       });
       return c.json(
-        { success: true as const, app: toProjectJson(project) },
+        {
+          success: true as const,
+          app: toProjectJson(project, { title, description }),
+        },
         200,
       );
     } catch (error) {
@@ -780,8 +815,15 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      const manifest = await manifestForProject(
+        loaded.project.workspaceId.toString(),
+        loaded.project.slug,
+      );
       return c.json(
-        { success: true as const, app: toProjectJson(loaded.project) },
+        {
+          success: true as const,
+          app: toProjectJson(loaded.project, manifest),
+        },
         200,
       );
     } catch (error) {

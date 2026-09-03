@@ -25,6 +25,9 @@ import {
   readBindings,
 } from "./bindings.service";
 import { createProject, ensureWorktree, writeFile } from "./worktree.service";
+import { initRepo, repoDirFor } from "./repository.service";
+import { seededTemplateFiles } from "./workspace-template";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
 let mongo: MongoMemoryServer;
@@ -65,6 +68,8 @@ beforeEach(async () => {
   await mongoose.connection.collection("app_worktrees").deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function projectWithBindings(files: Record<string, string>) {

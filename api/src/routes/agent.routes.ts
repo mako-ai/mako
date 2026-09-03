@@ -4,7 +4,10 @@
  * Uses agent registry for multi-agent support
  */
 
-import { readWorkspacePromptFile } from "../apps/workspace-prompt";
+import {
+  readWorkspacePromptFile,
+  readWorkspaceSelfDirectiveFile,
+} from "../apps/workspace-prompt";
 import { Types } from "mongoose";
 import { createRoute, z } from "@hono/zod-openapi";
 import { ObjectId } from "mongodb";
@@ -518,17 +521,9 @@ agentRoutes.openapi(
     let workspaceCustomPrompt = "";
     let selfDirective = "";
     try {
-      const workspace = await Workspace.findById(workspaceId).select({
-        settings: 1,
-        selfDirective: 1,
-      });
-      // PROMPT.md in the workspace repo wins; the Mongo field is the
-      // pre-migration fallback (apps.md §21).
       workspaceCustomPrompt =
-        (await readWorkspacePromptFile(workspaceId)) ??
-        workspace?.settings?.customPrompt ??
-        "";
-      selfDirective = workspace?.selfDirective || "";
+        (await readWorkspacePromptFile(workspaceId)) ?? "";
+      selfDirective = (await readWorkspaceSelfDirectiveFile(workspaceId)) ?? "";
     } catch (err) {
       logger.warn("Failed to load workspace custom prompt", { error: err });
     }

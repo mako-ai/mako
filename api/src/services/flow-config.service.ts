@@ -1,28 +1,21 @@
 /**
- * Flow definitions mirrored into the workspace repo (RFC #904).
+ * Flow definitions in the workspace repo (RFC #904 / issue #956).
  *
- * **This is the git-ward half only.** Every in-product mutation writes its
- * `flows/<slug>.yml` through here. The other direction — a push making the
- * FILE authoritative — landed with block 3 and lives elsewhere:
- * `flow-sync.service.ts` maps a file back onto a row, and
- * `sync-cdc/flow-reconcile.ts` reconciles the running stream behind a
- * fail-closed guard. Both are reached from `syncRepoBackedResources`.
+ * Git is the only definition store. Mongo holds a SHA-checked derived cache
+ * plus runtime (cursors, webhook secret, sync state). This module is the
+ * git-ward half: every in-product mutation commits `flows/<slug>.yml`
+ * first. A failed commit fails the request; there is no Mongo-only success.
  *
- * So this file is no longer "Mongo → git only" in the sense block 2 meant.
- * What remains true is narrower and still load-bearing: nothing here reads a
- * file, and the tolerance below (a failed mirror never fails a user's
- * mutation) is deliberately NOT shared by the read path, where a refused
- * write is a refusal rather than a warning.
- *
- * Structure mirrors `dbt/dbt-config.service.ts` deliberately: same commit
- * primitives, same "no repo, no write-through" tolerance, same
- * `sourceBlobSha` short-circuit so an unchanged definition makes no commit.
+ * The other direction — a push making the FILE authoritative — lives in
+ * `flow-sync.service.ts`. Runtime reads the derived row after comparing
+ * `sourceBlobSha` to the blob at main.
  */
+import { RepoRequiredError } from "../apps/config";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
+import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
   connectedTierEnabled,
-  ensureLocalRepo,
   freshenBeforeMainWrite,
   resolveMirrorTarget,
   mirrorPushNow,
@@ -32,8 +25,6 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
-  repoDirFor,
-  repoExists,
   resolveCommit,
   type GitAuthor,
 } from "../apps/repository.service";
@@ -46,36 +37,14 @@ import {
 
 const logger = loggers.api("flow-config");
 
-/**
- * The workspace repo, at a tip that agrees with the mirror.
- *
- * Freshening lives at this choke point rather than beside the commit, for the
- * same reason it does in dbt-config.service: `ensureLocalRepo` returns early
- * once the directory exists and never refreshes it, and any caller that READS
- * the tree to decide what to write has already made its decision by the time
- * a commit-time freshen runs. Kept identical to the dbt module deliberately —
- * these two are the same shape and drifted apart once already (#916).
- */
-async function repoDirIfExists(workspaceId: string): Promise<string | null> {
-  await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return null;
-  await freshenBeforeMainWrite(workspaceId);
-  return repoDir;
-}
-
 async function commitConfig(
   workspaceId: string,
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
   author?: GitAuthor,
 ): Promise<void> {
-  // Freshened by repoDirIfExists (#916, moved up to the choke point).
-  const repoDir = await repoDirIfExists(workspaceId);
-  // No repo: Mongo remains the only home. Block 3 makes a repo required at
-  // the route boundary; while this is export-only, a workspace without one
-  // simply gets no files.
-  if (!repoDir) return;
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
@@ -83,51 +52,44 @@ async function commitConfig(
   if (!result.unchanged) queueMirrorPush(workspaceId);
 }
 
-/** Write-through: the flow's file mirrors the row's definition fields. */
+/** Write-through: the file is committed first; the caller then updates the index. */
 export interface FlowFileWriteResult {
   ok: boolean;
   /** True when a commit was actually made (an unchanged definition is a no-op). */
   changed: boolean;
+  /** Blob sha of the committed (or unchanged) definition. */
+  sourceBlobSha?: string;
   error?: string;
 }
 
+/**
+ * Commit `flows/<slug>.yml` from the in-memory definition.
+ * Does not touch Mongo — the caller stamps `sourceBlobSha` and saves after.
+ */
 export async function commitFlowFile(
   flow: IFlow,
   actorUserId?: string,
   messageOverride?: string,
 ): Promise<FlowFileWriteResult> {
-  // Pre-backfill rows have neither; the migration stamps both. Skipping on
-  // an empty NAME as well as an empty slug keeps serialize/parse symmetric:
-  // `parseFlowFile` rejects a file with no name, so writing one would
-  // produce a file the reader refuses — harmless while Mongo is
-  // authoritative, a real hazard once block 3 makes files authoritative.
-  // (Caught by running the projection against production rows before their
-  // backfill had deployed.)
   if (!flow.slug || !flow.name?.trim()) {
     return { ok: true, changed: false };
   }
+  const contents = serializeFlowFile(flowToFile(flow));
+  const sha = blobOid(contents);
+  if (flow.sourceBlobSha === sha) {
+    return { ok: true, changed: false, sourceBlobSha: sha };
+  }
   try {
-    const contents = serializeFlowFile(flowToFile(flow));
-    const sha = blobOid(contents);
-    // Unchanged definition: no commit, no push, no churn.
-    if (flow.sourceBlobSha === sha) return { ok: true, changed: false };
     await commitConfig(
       flow.workspaceId.toString(),
       { writes: { [flowFilePath(flow.slug)]: contents } },
       messageOverride ?? `flow: "${flow.name ?? flow.slug}" (${flow.slug})`,
       actorUserId ? await authorForUser(actorUserId) : undefined,
     );
-    await Flow.updateOne({ _id: flow._id }, { $set: { sourceBlobSha: sha } });
-    return { ok: true, changed: true };
+    return { ok: true, changed: true, sourceBlobSha: sha };
   } catch (error) {
-    // Export-only: a failed mirror must never fail the user's mutation.
-    // Mongo is authoritative and the next write (or the backfill CLI)
-    // re-syncs the file.
+    if (error instanceof RepoRequiredError) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    // The user's mutation still succeeds — Mongo is authoritative — but the
-    // failure is RETURNED as well as logged. Swallowing it silently is how
-    // 21 of 31 production flows failed to export while the CLI reported
-    // success.
     logger.warn("Flow config write-through failed", {
       workspaceId: flow.workspaceId.toString(),
       slug: flow.slug,
@@ -137,32 +99,20 @@ export async function commitFlowFile(
   }
 }
 
-/** Remove a deleted flow's file. */
+/** Remove a deleted flow's file. Throws {@link RepoRequiredError} without a repo. */
 export async function deleteFlowFile(
   flow: Pick<IFlow, "workspaceId" | "slug" | "name">,
   actorUserId?: string,
 ): Promise<void> {
   if (!flow.slug) return;
-  try {
-    await commitConfig(
-      flow.workspaceId.toString(),
-      { deletes: [flowFilePath(flow.slug)] },
-      `flow: delete "${flow.name ?? flow.slug}" (${flow.slug})`,
-      actorUserId ? await authorForUser(actorUserId) : undefined,
-    );
-  } catch (error) {
-    logger.warn("Flow config delete write-through failed", {
-      workspaceId: flow.workspaceId.toString(),
-      slug: flow.slug,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+  await commitConfig(
+    flow.workspaceId.toString(),
+    { deletes: [flowFilePath(flow.slug)] },
+    `flow: delete "${flow.name ?? flow.slug}" (${flow.slug})`,
+    actorUserId ? await authorForUser(actorUserId) : undefined,
+  );
 }
 
-/**
- * Mirror every flow in a workspace. Used by the one-time export and
- * available to an operator when a repo was connected after the fact.
- */
 /**
  * Refuse to write when this process cannot reach the workspace's mirror.
  *
@@ -192,21 +142,32 @@ export async function assertMirrorReachable(
       reason: `no connected repo resolves for workspace ${workspaceId}`,
     };
   }
-  const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) {
-    return { ok: false, reason: "no local repo after ensureLocalRepo" };
+  try {
+    const repoDir = await requireWorkspaceRepo(workspaceId);
+    await freshenBeforeMainWrite(workspaceId);
+    const mainOid = await resolveCommit(
+      repoDir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    if (!mainOid) {
+      return {
+        ok: false,
+        reason: `local ${DEFAULT_BRANCH} is missing after freshen — the local repo is not a clone of ${target.owner}/${target.repo}`,
+      };
+    }
+    return { ok: true, mainOid };
+  } catch (error) {
+    if (error instanceof RepoRequiredError) {
+      return { ok: false, reason: "no local repo after ensureLocalRepo" };
+    }
+    throw error;
   }
-  // repoDirIfExists has freshened, so main must now BE the mirror's main.
-  const mainOid = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!mainOid) {
-    return {
-      ok: false,
-      reason: `local ${DEFAULT_BRANCH} is missing after freshen — the local repo is not a clone of ${target.owner}/${target.repo}`,
-    };
-  }
-  return { ok: true, mainOid };
 }
 
+/**
+ * One-shot operator export. Not a product write path — git is already the
+ * store; this exists to recover a workspace whose files were never written.
+ */
 export async function exportWorkspaceFlows(
   workspaceId: string,
   actorUserId?: string,
@@ -216,8 +177,6 @@ export async function exportWorkspaceFlows(
   failed: Array<{ slug: string; error: string }>;
   commitMade: boolean;
 }> {
-  // Refuse to run at all when the mirror is unreachable from here, rather
-  // than committing into a local-only repo and reporting success.
   const reachable = await assertMirrorReachable(workspaceId);
   if (!reachable.ok) {
     return {
@@ -228,8 +187,6 @@ export async function exportWorkspaceFlows(
     };
   }
 
-  // `.lean()` matters: a live document's DocumentArrays are circular and
-  // overflow the YAML dumper (see `plain()` in flow-config-files).
   const flows = await Flow.find({ workspaceId }).sort({ _id: 1 }).lean();
 
   const writes: Record<string, string> = {};
@@ -254,8 +211,6 @@ export async function exportWorkspaceFlows(
     }
   }
 
-  // One commit for the whole backfill rather than one per flow: a readable
-  // history, and a single push to await.
   let commitMade = false;
   if (Object.keys(writes).length > 0) {
     try {
@@ -269,9 +224,6 @@ export async function exportWorkspaceFlows(
       for (const { id, sha } of shaBySlug.values()) {
         await Flow.updateOne({ _id: id }, { $set: { sourceBlobSha: sha } });
       }
-      // `queueMirrorPush` is fire-and-forget; a CLI that exits immediately
-      // kills the push in flight, which is how a "successful" export landed
-      // nothing on GitHub. Await the flush.
       await mirrorPushNow(workspaceId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

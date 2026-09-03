@@ -10,12 +10,24 @@
  * migration has run everywhere.)
  */
 import { Types } from "mongoose";
+import fs from "node:fs/promises";
 import {
+  AppProject,
+  ConsoleFolder,
+  DbtJob,
+  DbtProject,
+  EntityVersion,
+  Flow,
   GitHubInstallation,
+  NotebookFolder,
+  NotebookIndex,
+  SavedConsole,
+  Skill,
   Workspace,
   type IWorkspaceRepoBinding,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { repoDirFor } from "../apps/repository.service";
 
 const logger = loggers.api("workspace-repos");
 
@@ -120,13 +132,31 @@ export async function connectWorkspaceRepo(
   return binding;
 }
 
+/** Thrown when unlink names a repo the workspace is not bound to. HTTP 404. */
+export class WorkspaceRepoNotBoundError extends Error {
+  readonly status = 404 as const;
+  constructor(owner: string, repo: string) {
+    super(`Workspace is not connected to ${owner}/${repo}`);
+    this.name = "WorkspaceRepoNotBoundError";
+  }
+}
+
 export async function disconnectWorkspaceRepo(
   workspaceId: string,
   owner: string,
   repo: string,
+  opts: { purge?: boolean } = {},
 ): Promise<void> {
   const existing = await listWorkspaceRepos(workspaceId);
   const next = existing.filter(r => !(r.owner === owner && r.repo === repo));
+  // A typo must not look like success: do not purge, and do not rewrite
+  // workspaceRepos / appsRepo, until we know this binding is the one leaving.
+  if (next.length === existing.length) {
+    throw new WorkspaceRepoNotBoundError(owner, repo);
+  }
+  if (opts.purge !== false) {
+    await purgeMigratedContentIndex(workspaceId);
+  }
   await Workspace.updateOne(
     { _id: new Types.ObjectId(workspaceId) },
     { $set: { workspaceRepos: next }, $unset: { appsRepo: "" } },
@@ -135,22 +165,62 @@ export async function disconnectWorkspaceRepo(
 }
 
 /**
- * The workspace bound to `owner/repo`, if any — webhook → workspace routing
- * for pushes to CONNECTED repos (mako-cloud repos encode the workspace id in
- * their name instead; see workspaceIdFromCloudRepo).
+ * Drop the derived index and the local git cache so a disconnected workspace
+ * is empty of migrated content. Reconnect rebuilds from git.
  */
-export async function findWorkspaceIdByRepoBinding(
+export async function purgeMigratedContentIndex(
+  workspaceId: string,
+): Promise<void> {
+  const id = new Types.ObjectId(workspaceId);
+  await Promise.all([
+    Flow.deleteMany({ workspaceId: id }),
+    SavedConsole.deleteMany({ workspaceId: id }),
+    ConsoleFolder.deleteMany({ workspaceId: id }),
+    EntityVersion.deleteMany({ workspaceId: id, entityType: "console" }),
+    Skill.deleteMany({ workspaceId: id }),
+    AppProject.deleteMany({ workspaceId: id }),
+    NotebookIndex.deleteMany({ workspaceId: id }),
+    NotebookFolder.deleteMany({ workspaceId: id }),
+    DbtJob.deleteMany({ workspaceId: id }),
+    DbtProject.deleteMany({ workspaceId: id }),
+  ]);
+  await Workspace.updateOne(
+    { _id: id },
+    { $unset: { "settings.customPrompt": "", selfDirective: "" } },
+  );
+  await fs.rm(repoDirFor(workspaceId), { recursive: true, force: true });
+  logger.info("Purged migrated content index after repo disconnect", {
+    workspaceId,
+  });
+}
+
+/**
+ * Every workspace bound to `owner/repo` — webhook routing fans out so two
+ * workspaces can share one git store.
+ */
+export async function findWorkspaceIdsByRepoBinding(
   owner: string,
   repo: string,
-): Promise<string | null> {
-  const ws = await Workspace.findOne({
+): Promise<string[]> {
+  const wss = await Workspace.find({
     $or: [
       { workspaceRepos: { $elemMatch: { owner, repo } } },
-      // Pre-migration fallback: the old single apps binding.
       { "appsRepo.owner": owner, "appsRepo.repo": repo },
     ],
   })
     .select("_id")
     .lean();
-  return ws ? String(ws._id) : null;
+  return wss.map(ws => String(ws._id));
+}
+
+/**
+ * The first workspace bound to `owner/repo`, if any. Prefer
+ * {@link findWorkspaceIdsByRepoBinding} for webhook routing.
+ */
+export async function findWorkspaceIdByRepoBinding(
+  owner: string,
+  repo: string,
+): Promise<string | null> {
+  const ids = await findWorkspaceIdsByRepoBinding(owner, repo);
+  return ids[0] ?? null;
 }

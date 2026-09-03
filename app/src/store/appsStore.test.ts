@@ -26,24 +26,38 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: string[] = [];
 
-vi.mock("../api", () => ({
-  api: {
-    GET: vi.fn(async (path: string) => {
-      calls.push(path);
-      return { data: { success: true, files: [], branches: [], status: {} } };
-    }),
-    POST: vi.fn(async () => ({ data: { success: true } })),
-  },
-  unwrapBody: (r: { data?: unknown }) => (r?.data ?? {}) as never,
-  ApiError: class extends Error {},
-  toErrorMessage: (e: unknown) => String(e),
-}));
+vi.mock("../api", () => {
+  class ApiError extends Error {
+    status: number;
+    constructor(message: string, status = 500) {
+      super(message);
+      this.name = "ApiError";
+      this.status = status;
+    }
+  }
+  return {
+    api: {
+      GET: vi.fn(async (path: string) => {
+        calls.push(path);
+        return {
+          data: { success: true, files: [], branches: [], status: {} },
+        };
+      }),
+      POST: vi.fn(async () => ({ data: { success: true } })),
+    },
+    unwrapBody: vi.fn((r: { data?: unknown }) => (r?.data ?? {}) as never),
+    ApiError,
+    toErrorMessage: (e: unknown) => String(e),
+  };
+});
 vi.mock("../apps-runtime/shell", () => ({
   focusAppsTab: vi.fn(),
   focusAppsFileTab: vi.fn(),
   reconcileAppsTabs: vi.fn(),
 }));
 
+import { ApiError, unwrapBody } from "../api";
+import { reconcileAppsTabs } from "../apps-runtime/shell";
 import { useAppsStore } from "./appsStore";
 import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
@@ -79,7 +93,20 @@ function openAppTab(appId: string): string {
 
 beforeEach(() => {
   calls.length = 0;
-  useAppsStore.setState({ filesByApp: {}, branchesByApp: {}, staleApps: {} });
+  vi.mocked(unwrapBody).mockReset();
+  vi.mocked(unwrapBody).mockImplementation(
+    (r: { data?: unknown }) => (r?.data ?? {}) as never,
+  );
+  vi.mocked(reconcileAppsTabs).mockClear();
+  useAppsStore.setState({
+    filesByApp: {},
+    branchesByApp: {},
+    staleApps: {},
+    apps: [],
+    appsCacheByWorkspace: {},
+    appsLoading: false,
+    error: null,
+  });
   useConsoleStore.setState({ tabs: {}, tabOrder: [], activeTabId: null });
   useUIStore.setState({ currentWorkspaceId: WS } as never);
 });
@@ -149,5 +176,29 @@ describe("staleness is drained, not left to rot", () => {
     expect(stale["app0"]).toBeUndefined();
     expect(stale["app1"]).toBe(true);
     expect(stale["app2"]).toBe(true);
+  });
+});
+
+describe("fetchApps after unlink", () => {
+  it("clears apps and the persisted cache when GET /apps is 412", async () => {
+    const stale = { id: "stale", slug: "stale", title: "Stale" };
+    useAppsStore.setState({
+      apps: [stale],
+      appsCacheByWorkspace: { [WS]: [stale] },
+      appsLoading: false,
+      error: null,
+    });
+    vi.mocked(unwrapBody).mockImplementationOnce(() => {
+      throw new ApiError("Connect a GitHub repository first", 412);
+    });
+
+    await useAppsStore.getState().fetchApps(WS);
+
+    const s = useAppsStore.getState();
+    expect(s.apps).toEqual([]);
+    expect(s.appsCacheByWorkspace[WS]).toBeUndefined();
+    expect(s.error).toBeNull();
+    expect(s.appsLoading).toBe(false);
+    expect(reconcileAppsTabs).toHaveBeenCalledWith(new Set());
   });
 });

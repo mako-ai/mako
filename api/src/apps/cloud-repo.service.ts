@@ -34,6 +34,7 @@ import {
   initRepo,
   repoDirFor,
   repoExists,
+  resolveCommit,
   type GitAuthor,
 } from "./repository.service";
 import { initialWorkspaceFiles } from "./workspace-template";
@@ -732,7 +733,16 @@ export async function ensureWorkspaceRepo(
 ): Promise<string> {
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
+  const hasMain =
+    (await repoExists(repoDir)) &&
+    Boolean(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`));
+  if (!hasMain) {
+    // `git clone --mirror` of an empty GitHub repo still creates a bare
+    // directory with no refs. The first write needs `main` so it can seed
+    // the mirror (issue #956).
+    if (await repoExists(repoDir)) {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
     await initRepo(repoDir, initialWorkspaceFiles(workspaceId), {
       message: "Initialize workspace repository",
       author,

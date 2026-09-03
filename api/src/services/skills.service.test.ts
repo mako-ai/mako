@@ -17,6 +17,7 @@ import {
   DEFAULT_BRANCH,
 } from "../apps/repository.service";
 import { retrieveRelevantSkills, saveSkill } from "./skills.service";
+import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -43,6 +44,7 @@ beforeEach(async () => {
   await Skill.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 const input = (name: string) => ({

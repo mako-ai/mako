@@ -38,6 +38,7 @@ import {
   hasScheduleTrigger,
   hasWebhookTrigger,
 } from "../../services/flow-triggers.service";
+import { ensureFlowDerivedCache } from "../../services/flow-sync.service";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -564,7 +565,18 @@ export const flowFunction = inngest.createFunction(
         if (!found) {
           throw new Error(`Flow ${flowId} not found`);
         }
-        return found.toObject() as IFlow;
+        const freshness = await ensureFlowDerivedCache(found);
+        if (freshness === "invalid" || freshness === "missing") {
+          throw new Error(
+            `Flow ${flowId} definition is invalid at main; refusing to run`,
+          );
+        }
+        const fresh =
+          freshness === "resynced" ? await Flow.findById(flowId) : found;
+        if (!fresh) {
+          throw new Error(`Flow ${flowId} not found`);
+        }
+        return fresh.toObject() as IFlow;
       })) as IFlow;
       flowRef = flow; // Store for error handler
 

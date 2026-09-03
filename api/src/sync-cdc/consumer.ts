@@ -25,6 +25,7 @@ import { cdcSyncStateService } from "./sync-state";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
+import { ensureFlowDerivedCache } from "../services/flow-sync.service";
 
 const log = loggers.sync("cdc.consumer");
 
@@ -35,7 +36,18 @@ export class CdcConsumerService {
     entity: string;
     maxEvents?: number;
   }) {
-    const flow = await Flow.findById(params.flowId).lean();
+    const loaded = await Flow.findById(params.flowId).lean();
+    if (!loaded) {
+      throw new Error("Flow not found");
+    }
+    const freshness = await ensureFlowDerivedCache(loaded);
+    if (freshness === "invalid" || freshness === "missing") {
+      return { skipped: true, reason: "definition_invalid" as const };
+    }
+    const flow =
+      freshness === "resynced"
+        ? await Flow.findById(params.flowId).lean()
+        : loaded;
     if (!flow) {
       throw new Error("Flow not found");
     }

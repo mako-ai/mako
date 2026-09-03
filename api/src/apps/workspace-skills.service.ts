@@ -23,13 +23,11 @@ import {
 } from "../services/embedding.service";
 import { extractEntities } from "../agent-lib/entity-extraction";
 import { loggers } from "../logging";
+import { freshenBeforeMainWrite, queueMirrorPush } from "./cloud-repo.service";
 import {
-  ensureWorkspaceRepo,
-  freshenBeforeMainWrite,
-  queueMirrorPush,
-  resolveMirrorTarget,
-} from "./cloud-repo.service";
-import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
+  requireWorkspaceRepo,
+  boundRepoDirIfExists,
+} from "./workspace-repo-required";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -37,7 +35,6 @@ import {
   listTree,
   readBlob,
   repoDirFor,
-  repoExists,
   resolveCommit,
   type GitAuthor,
 } from "./repository.service";
@@ -83,8 +80,8 @@ export async function skillsAdopted(repoDir: string): Promise<boolean> {
 export async function listSkillFilesFromRepo(
   workspaceId: string,
 ): Promise<WorkspaceSkillFile[]> {
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return [];
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return [];
   if (!(await resolveCommit(repoDir, MAIN))) return [];
   const paths = await globTree(repoDir, MAIN, SKILL_FILE_GLOB, 1000);
   const out: WorkspaceSkillFile[] = [];
@@ -108,11 +105,9 @@ export async function listSkillFilesFromRepo(
   return out;
 }
 
-/** Production gate (apps.md §17): no connected repo, no durable skill save. */
+/** No local git repo, no durable skill mutation (issue #956). */
 async function assertDurableWritable(workspaceId: string): Promise<void> {
-  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
-    throw new RepoRequiredError();
-  }
+  await requireWorkspaceRepo(workspaceId);
 }
 
 /**
@@ -131,7 +126,7 @@ export async function commitSkillSave(
   } = {},
 ): Promise<void> {
   await assertDurableWritable(workspaceId);
-  const repoDir = await ensureWorkspaceRepo(workspaceId, options.author);
+  const repoDir = await requireWorkspaceRepo(workspaceId);
   // Commit onto the mirror's main, not a stale cached tip.
   await freshenBeforeMainWrite(workspaceId);
   const writes: Record<string, string> = {};
@@ -181,8 +176,8 @@ export async function commitSkillDelete(
   author?: GitAuthor,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(name)) return false;
+  await requireWorkspaceRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return false;
   await freshenBeforeMainWrite(workspaceId);
   const deletes = await skillFolderPaths(repoDir, name);
   if (deletes.length === 0) return false;
@@ -207,8 +202,8 @@ export async function commitSkillSuppressed(
   author?: GitAuthor,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(name)) return false;
+  await requireWorkspaceRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return false;
   await freshenBeforeMainWrite(workspaceId);
   const path = skillFilePath(name);
   const raw = await readRepoFile(repoDir, path);
@@ -279,8 +274,8 @@ export async function syncSkillsIndexFromRepo(
   workspaceId: string,
   userId?: string,
 ): Promise<void> {
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return;
   if (!(await skillsAdopted(repoDir))) return;
 
   let files = await listSkillFilesFromRepo(workspaceId);
@@ -379,7 +374,7 @@ export async function adoptWorkspaceSkills(workspaceId: string): Promise<{
       "name" | "loadWhen" | "body" | "declaredEntities" | "suppressed"
     >
   >;
-  const repoDir = await ensureWorkspaceRepo(workspaceId);
+  const repoDir = await requireWorkspaceRepo(workspaceId);
   const alreadyAdopted = await skillsAdopted(repoDir);
   const writes: Record<string, string> = {};
   for (const row of rows) {
