@@ -26,6 +26,9 @@ concurrency:
 # stays in the prod project. Project-scoped values live on each deploy job.
 env:
   GCP_REGION: ${{ vars.GCP_REGION }}
+  # Workspace GitHub installation ids are copied into preview databases and
+  # are scoped to this App. Every environment must therefore use one App.
+  EXPECTED_MAKO_GITHUB_APP_ID: "4106865"
 
 permissions:
   contents: read
@@ -239,6 +242,13 @@ jobs:
       MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
       MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
+      - name: Validate canonical GitHub App
+        run: |
+          if [ "${MAKO_GITHUB_APP_ID}" != "${EXPECTED_MAKO_GITHUB_APP_ID}" ]; then
+            echo "::error title=GitHub App mismatch::All environments must use GitHub App ${EXPECTED_MAKO_GITHUB_APP_ID}; this job resolved ${MAKO_GITHUB_APP_ID:-unset}."
+            exit 1
+          fi
+
       - name: Warn if branch Inngest event key is missing
         # NOTE: the `secrets` context is NOT allowed in `if:` conditionals — it
         # makes the whole workflow file invalid (every run fails at 0s with no
@@ -909,6 +919,13 @@ jobs:
       MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
       MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
+      - name: Validate canonical GitHub App
+        run: |
+          if [ "${MAKO_GITHUB_APP_ID}" != "${EXPECTED_MAKO_GITHUB_APP_ID}" ]; then
+            echo "::error title=GitHub App mismatch::All environments must use GitHub App ${EXPECTED_MAKO_GITHUB_APP_ID}; this job resolved ${MAKO_GITHUB_APP_ID:-unset}."
+            exit 1
+          fi
+
       - name: Resolve production deployment target
         env:
           CONFIG: ${{ env.PROD_DEPLOY_CONFIG }}
