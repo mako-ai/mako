@@ -2600,9 +2600,12 @@ prod-vs-preview signal `MAKO_CLOUD_REPO_PREFIX=ws` is replaced by an explicit
 **The rule users see:** connect GitHub, or nothing saves. In production,
 creating an app or saving a console in a workspace without a connected repo
 returns 412 `github_required` with "Connect a GitHub repository first
-(Settings → GitHub)". Dev, tests and previews keep local-only bare repos
-(nothing durable — previews are throwaway by design). The consoles CLI lost
-`--create-repo`; adoption happens on the first save after connecting.
+(Settings → GitHub)". A PR preview restores its empty local cache from the
+connected repo so git-backed apps, consoles, and dbt remain visible, but its
+push gate stays closed: preview commits never write back to the customer's
+repo and remain throwaway. Dev and tests may still use local-only bare repos.
+The consoles CLI lost `--create-repo`; adoption happens on the first save
+after connecting.
 
 Six test repos in `mako-ai-cloud` remain to be deleted by hand (`gh repo
 delete` needs the `delete_repo` scope). Cut through complexity: one tier,

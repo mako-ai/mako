@@ -694,6 +694,7 @@ export default function AppsExplorer() {
           ownerId={shareApp.owner_id}
           access={shareApp.access ?? "workspace"}
           workspaceRole={shareApp.workspaceRole ?? "viewer"}
+          publicShare={shareApp.publicShare}
           canManage={
             !shareApp.owner_id ||
             shareApp.owner_id === userId ||
@@ -706,6 +707,9 @@ export default function AppsExplorer() {
               if (changes.access) app.access = changes.access;
               if (changes.workspaceRole) {
                 app.workspaceRole = changes.workspaceRole;
+              }
+              if (changes.publicShare) {
+                app.publicShare = changes.publicShare;
               }
             });
             // A folder-only app gets its row (and a real id) on first share;

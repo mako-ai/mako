@@ -89,7 +89,10 @@ import {
   previewStagingDir,
   RepoRequiredError,
 } from "../apps/config";
-import { registerPublicShareRoutes } from "./lib/public-share-routes";
+import {
+  registerPublicShareRoutes,
+  serializePublicShare,
+} from "./lib/public-share-routes";
 import {
   registerCollaboratorRoutes,
   registerSharingSettingsRoutes,
@@ -722,6 +725,9 @@ appsRoutes.openapi(
             // else shared with you under "Shared with me", not "My Apps".
             owner_id: state?.owner_id,
             workspaceRole: state?.workspaceRole,
+            // Only safe metadata leaves the API. The password hash and its
+            // encrypted reveal copy never do.
+            publicShare: serializePublicShare(state?.publicShare),
             publishedSha: state?.publishedSha,
             publishedAt: state?.publishedAt,
           };

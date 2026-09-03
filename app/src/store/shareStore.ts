@@ -96,14 +96,21 @@ const RESOURCE_URL_PREFIX: Record<ShareResourceType, string> = {
 };
 
 /**
- * Workspace-internal URL for logged-in collaborators (/a/:id, /d/:id, /c/:id).
- * Built from the resource id rather than read off the address bar so it also
- * works in the desktop shell, which has no address bar to copy from.
+ * Workspace-internal URL for logged-in collaborators. Apps use their
+ * published deployment route so the copied link opens fullscreen without the
+ * Mako shell; other resources still open their normal deep-linked tab.
+ *
+ * Built from ids rather than read off the address bar so it also works in the
+ * desktop shell, which has no address bar to copy from.
  */
 export function buildWorkspaceResourceUrl(
   resourceType: ShareResourceType,
   resourceId: string,
+  workspaceId?: string,
 ): string {
+  if (resourceType === "app" && workspaceId) {
+    return `${window.location.origin}/api/workspaces/${encodeURIComponent(workspaceId)}/apps/${encodeURIComponent(resourceId)}/live/`;
+  }
   return `${window.location.origin}/${RESOURCE_URL_PREFIX[resourceType]}/${resourceId}`;
 }
 

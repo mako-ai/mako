@@ -26,6 +26,9 @@ concurrency:
 # stays in the prod project. Project-scoped values live on each deploy job.
 env:
   GCP_REGION: ${{ vars.GCP_REGION }}
+  # Workspace GitHub installation ids are copied into preview databases and
+  # are scoped to this App. Every environment must therefore use one App.
+  EXPECTED_MAKO_GITHUB_APP_ID: "4106865"
 
 permissions:
   contents: read
@@ -150,6 +153,9 @@ jobs:
       GCP_PROJECT_ID: ${{ vars.GCP_DEV_PROJECT_ID }}
       GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}
       GCS_DASHBOARD_BUCKET: ${{ vars.GCS_DEV_DASHBOARD_BUCKET }}
+      # The cloned DB references immutable deployments published in prod.
+      # Preview writes remain in GCS_DASHBOARD_BUCKET; this source is read-only.
+      APPS_ARTIFACT_SOURCE_BUCKET: ${{ vars.APPS_ARTIFACT_SOURCE_BUCKET }}
       PR_NUMBER: ${{ needs.detect-changes.outputs.pr_number }}
       BASE_URL: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai
       CLIENT_URL: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai
@@ -239,6 +245,17 @@ jobs:
       MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
       MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
+      - name: Validate canonical GitHub App
+        run: |
+          if [ "${MAKO_GITHUB_APP_ID}" != "${EXPECTED_MAKO_GITHUB_APP_ID}" ]; then
+            echo "::error title=GitHub App mismatch::All environments must use GitHub App ${EXPECTED_MAKO_GITHUB_APP_ID}; this job resolved ${MAKO_GITHUB_APP_ID:-unset}."
+            exit 1
+          fi
+          if [ -z "${APPS_ARTIFACT_SOURCE_BUCKET}" ]; then
+            echo "::error title=Published app source missing::APPS_ARTIFACT_SOURCE_BUCKET must point at the canonical published-app bucket."
+            exit 1
+          fi
+
       - name: Warn if branch Inngest event key is missing
         # NOTE: the `secrets` context is NOT allowed in `if:` conditionals — it
         # makes the whole workflow file invalid (every run fails at 0s with no
@@ -594,6 +611,7 @@ jobs:
             --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
             --set-env-vars DATABASE_URL=${{ steps.db-url.outputs.db_url }} \
             --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
+            --set-env-vars APPS_ARTIFACT_SOURCE_BUCKET=${APPS_ARTIFACT_SOURCE_BUCKET} \
             --set-env-vars DISABLE_SCHEDULED_SYNC=true \
             --set-env-vars PRODUCTION_URL=${PRODUCTION_URL} \
             --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
@@ -909,6 +927,13 @@ jobs:
       MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
       MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
+      - name: Validate canonical GitHub App
+        run: |
+          if [ "${MAKO_GITHUB_APP_ID}" != "${EXPECTED_MAKO_GITHUB_APP_ID}" ]; then
+            echo "::error title=GitHub App mismatch::All environments must use GitHub App ${EXPECTED_MAKO_GITHUB_APP_ID}; this job resolved ${MAKO_GITHUB_APP_ID:-unset}."
+            exit 1
+          fi
+
       - name: Resolve production deployment target
         env:
           CONFIG: ${{ env.PROD_DEPLOY_CONFIG }}

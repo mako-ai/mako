@@ -58,9 +58,12 @@ async function seedProject(name: string, workspaceId = WS, rules?: string) {
     defaultEnvironment: "dev",
     createdBy: "tester",
   });
-  if (rules !== undefined) {
-    await seedDbtGitTree(workspaceId, { ".makorules.md": rules });
-  }
+  await seedDbtGitTree(
+    workspaceId,
+    rules === undefined
+      ? { "README.md": "dbt project\n" }
+      : { ".makorules.md": rules },
+  );
   return project._id.toString();
 }
 
