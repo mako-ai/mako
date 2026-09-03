@@ -35,8 +35,8 @@ interface SkillSummary {
   useCount: number;
   lastUsedAt: string | null;
   createdBy: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 
 interface SkillDetail extends SkillSummary {
@@ -75,6 +75,12 @@ export function SkillsSection() {
     setError(null);
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/skills`);
+      // Writes 412 without GitHub; GET/list is an empty explorer (disconnect
+      // or never linked). A sticky error left the panel populated after unlink.
+      if (res.status === 412) {
+        setSkills([]);
+        return;
+      }
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to load skills");

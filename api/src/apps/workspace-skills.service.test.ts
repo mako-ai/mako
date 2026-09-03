@@ -18,6 +18,7 @@ import {
 } from "./skill-files";
 import {
   DEFAULT_BRANCH,
+  blobOid,
   commitBlobsOnBranch,
   initRepo,
   log,
@@ -30,10 +31,17 @@ import {
   commitSkillDelete,
   commitSkillSave,
   commitSkillSuppressed,
+  derivedSkillId,
   listSkillFilesFromRepo,
+  liveSkillToPlain,
+  loadLiveSkillById,
+  loadLiveSkills,
   syncSkillsIndexFromRepo,
 } from "./workspace-skills.service";
-import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -277,5 +285,189 @@ describe("index sync keeps declared and derived apart", () => {
       expect.arrayContaining(["feed", "lead_agents"]),
     );
     expect(row?.entities.length ?? 0).toBeGreaterThan(1);
+  });
+});
+
+describe("GET/list from git", () => {
+  it("serves the file at main when the Mongo row has a stale body", async () => {
+    await commitSkillSave(WS, skill("close_rules", "Do the git thing."));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    const row = await Skill.findOne({ name: "close_rules" });
+    expect(row).not.toBeNull();
+    await Skill.updateOne({ _id: row!._id }, { $set: { body: "" } });
+    const stale = await Skill.findById(row!._id);
+    expect(stale?.body).toBe("");
+
+    const listed = await loadLiveSkills(WS);
+    expect(listed).toHaveLength(1);
+    const plain = liveSkillToPlain(listed[0], WS);
+    expect(plain.body).toBe("Do the git thing.");
+    expect(plain.loadWhen).toBe("when asked about close_rules");
+
+    const got = await loadLiveSkillById(WS, row!._id.toString());
+    expect(got).not.toBeNull();
+    expect(liveSkillToPlain(got!, WS).body).toBe("Do the git thing.");
+  });
+
+  it("resyncs a stale sourceBlobSha from the blob at main", async () => {
+    await commitSkillSave(WS, skill("close_rules"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    await Skill.updateOne(
+      { workspaceId: WS, name: "close_rules" },
+      { $set: { body: "stale-mongo", sourceBlobSha: "deadbeef" } },
+    );
+
+    const listed = await loadLiveSkills(WS);
+    expect(liveSkillToPlain(listed[0], WS).body).toBe("Do the thing.");
+    const row = await Skill.findOne({ workspaceId: WS, name: "close_rules" });
+    expect(row?.body).toBe("Do the thing.");
+    expect(row?.sourceBlobSha).not.toBe("deadbeef");
+  });
+
+  it("lists a git file that has no Mongo row", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("from_laptop")]: serializeSkillFile(
+            skill("from_laptop", "From laptop."),
+          ),
+        },
+      },
+      { message: "laptop skill" },
+    );
+    const listed = await loadLiveSkills(WS);
+    expect(listed.map(item => item.def.name)).toEqual(["from_laptop"]);
+    expect(listed[0].row).toBeNull();
+    expect(listed[0].id.toString()).toBe(
+      derivedSkillId(WS, "from_laptop").toString(),
+    );
+    expect(liveSkillToPlain(listed[0], WS).body).toBe("From laptop.");
+    const got = await loadLiveSkillById(WS, listed[0].id.toString());
+    expect(got?.def.name).toBe("from_laptop");
+  });
+
+  it("does not list a Mongo row that has no git file", async () => {
+    await Skill.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "mongo_only",
+      loadWhen: "should not appear",
+      body: "mongo-only body",
+      entities: [],
+      scopeType: "workspace",
+      createdBy: "user-42",
+      suppressed: false,
+      useCount: 0,
+    });
+    const listed = await loadLiveSkills(WS);
+    expect(listed.map(item => item.def.name)).not.toContain("mongo_only");
+    const row = await Skill.findOne({ workspaceId: WS, name: "mongo_only" });
+    expect(row).not.toBeNull();
+    expect(await loadLiveSkillById(WS, row!._id.toString())).toBeNull();
+  });
+
+  it("does not throw when a file at main parses but fails schema save", async () => {
+    await commitSkillSave(WS, skill("close_rules"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("close_rules")]: serializeSkillFile({
+            ...skill("close_rules", "Renamed body."),
+            loadWhen: "x".repeat(501),
+          }),
+        },
+      },
+      { message: "unsavable trigger" },
+    );
+
+    await expect(loadLiveSkills(WS)).resolves.toHaveLength(1);
+    const row = await Skill.findOne({
+      workspaceId: WS,
+      name: "close_rules",
+    });
+    expect(row?.body).toBe("Do the thing.");
+    expect(row?.loadWhen).toBe("when asked about close_rules");
+    expect(row?.definitionInvalid?.reason).toMatch(/loadWhen|maxlength|500/i);
+  });
+
+  it("does not serve a schema-invalid file as a live definition", async () => {
+    await commitSkillSave(WS, skill("close_rules"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("close_rules")]: serializeSkillFile({
+            ...skill("close_rules", "Renamed body."),
+            loadWhen: "x".repeat(501),
+          }),
+        },
+      },
+      { message: "unsavable trigger" },
+    );
+
+    const listed = await loadLiveSkills(WS);
+    const plain = liveSkillToPlain(listed[0], WS);
+    expect(plain.definitionInvalid).toBeTruthy();
+    expect(plain.body).toBe("Do the thing.");
+    expect(plain.loadWhen).toBe("when asked about close_rules");
+  });
+
+  it("does not 500 GET/list when one file is unparseable", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("a_broken")]: "---\nname: [broken\n",
+          [skillFilePath("z_good")]: serializeSkillFile(
+            skill("z_good", "Good."),
+          ),
+        },
+      },
+      { message: "one broken skill" },
+    );
+
+    await expect(loadLiveSkills(WS)).resolves.toHaveLength(2);
+    const plains = (await loadLiveSkills(WS)).map(item =>
+      liveSkillToPlain(item, WS),
+    );
+    const bad = plains.find(item => item.name === "a_broken");
+    const good = plains.find(item => item.name === "z_good");
+    expect(bad?.definitionInvalid).toBeTruthy();
+    expect(good?.body).toBe("Good.");
+    expect(good?.definitionInvalid).toBeUndefined();
+  });
+
+  it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
+    await commitSkillSave(WS, skill("leftover", "Leftover body."));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    expect((await loadLiveSkills(WS)).map(item => item.def.name)).toEqual([
+      "leftover",
+    ]);
+    const row = await Skill.findOne({ workspaceId: WS, name: "leftover" });
+    expect(row).not.toBeNull();
+
+    await unbindTestWorkspaceRepo(WS);
+    expect(await loadLiveSkills(WS)).toEqual([]);
+    expect(await loadLiveSkillById(WS, row!._id.toString())).toBeNull();
+    expect(await Skill.findById(row!._id)).not.toBeNull();
+    const leftoverHead = await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    expect(leftoverHead).toBeTruthy();
+    const leftoverFile = await readBlob(
+      repoDirFor(WS),
+      leftoverHead as string,
+      skillFilePath("leftover"),
+    );
+    expect(leftoverFile.contents).toContain("Leftover body.");
+    expect(row!.sourceBlobSha).toBe(blobOid(leftoverFile.contents));
   });
 });
