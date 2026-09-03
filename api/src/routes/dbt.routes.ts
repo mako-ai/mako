@@ -49,6 +49,7 @@ import {
   commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  jobScheduleFailure,
   loadLiveJobById,
   loadLiveJobs,
   liveJobToPlain,
@@ -854,6 +855,10 @@ function validateJobBody(
     } catch (error) {
       return error instanceof Error ? error.message : "Invalid schedule";
     }
+    // Same check the git overlay and push-sync apply (catches a timezone
+    // cron-parser only rejects when computing the next run).
+    const scheduleFailure = jobScheduleFailure(body.schedule);
+    if (scheduleFailure) return scheduleFailure;
   }
   return null;
 }
