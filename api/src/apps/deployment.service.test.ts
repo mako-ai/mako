@@ -12,10 +12,32 @@ vi.mock("../services/dashboard-artifact-store.service", () => ({
   getArtifactSourceStore: () => stores.source ?? null,
 }));
 
+vi.mock("./bindings.service", () => ({
+  bindingArtifactKeyByName: vi.fn(
+    async () => "apps/bindings/connection/binding.parquet",
+  ),
+  readBindings: vi.fn(async () => []),
+}));
+
+vi.mock("../database/workspace-schema", () => ({
+  AppProject: {
+    findById: vi.fn(async () => ({ _id: "project" })),
+    updateOne: vi.fn(),
+  },
+}));
+
+vi.mock("../services/artifact-delivery.service", () => ({
+  serveParquetArtifact: vi.fn(
+    async (store, key) =>
+      new Response(`${store === stores.source}:${key}`, { status: 200 }),
+  ),
+}));
+
 import {
   deploymentExists,
   deploymentKey,
   readDeploymentAsset,
+  serveDeploymentFile,
 } from "./deployment.service";
 
 function mockStore(existingKeys: string[]): DashboardArtifactStore {
@@ -66,5 +88,21 @@ describe("published deployment artifact source", () => {
 
     expect(stores.primary.exists).toHaveBeenCalledWith(indexKey);
     expect(stores.source.exists).not.toHaveBeenCalled();
+  });
+
+  it("serves published binding data from the read-only source", async () => {
+    const bindingKey = "apps/bindings/connection/binding.parquet";
+    stores.source = mockStore([bindingKey]);
+
+    const response = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/icp_customers.parquet",
+    });
+
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toBe(`true:${bindingKey}`);
+    expect(stores.primary.exists).toHaveBeenCalledWith(bindingKey);
+    expect(stores.source.exists).toHaveBeenCalledWith(bindingKey);
   });
 });

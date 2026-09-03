@@ -65,26 +65,33 @@ interface StoredDeploymentAsset {
   key: string;
 }
 
+/** The writable store first, then the optional read-only canonical source. */
+async function artifactStoreForRead(
+  key: string,
+): Promise<DashboardArtifactStore | null> {
+  const primary = getDashboardArtifactStore();
+  if (await primary.exists(key)) return primary;
+  const source = getArtifactSourceStore();
+  if (source && (await source.exists(key))) return source;
+  return null;
+}
+
 /** The store and key that actually hold `assetPath`, or null. */
 async function existingDeploymentAsset(
   projectId: string,
   sha: string,
   assetPath: string,
 ): Promise<StoredDeploymentAsset | null> {
-  const primary = getDashboardArtifactStore();
   // Rehearsal environments use a cloned production database but an isolated
   // writable artifact bucket. Their publishedSha therefore names a deployment
   // that may only exist in the canonical source bucket. Reads fall back there;
   // uploads still use `primary`, so a PR preview can never overwrite prod.
-  const source = getArtifactSourceStore();
-  const stores = source ? [primary, source] : [primary];
   for (const key of [
     deploymentKey(projectId, sha, assetPath),
     legacyDeploymentKey(projectId, sha, assetPath),
   ]) {
-    for (const store of stores) {
-      if (await store.exists(key)) return { store, key };
-    }
+    const store = await artifactStoreForRead(key);
+    if (store) return { store, key };
   }
   return null;
 }
@@ -389,7 +396,6 @@ export async function serveDeploymentFile(input: {
     /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
   );
   if (dataMatch) {
-    const store = getDashboardArtifactStore();
     // Resolve by name through the binding's DEFINITION, exactly as the
     // preview route does — artifacts are keyed
     // `apps/bindings/<connectionId>/<definitionHash>.parquet`. The old
@@ -400,6 +406,8 @@ export async function serveDeploymentFile(input: {
       ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
       : null;
     if (!key) return null;
+    const store = await artifactStoreForRead(key);
+    if (!store) return null;
     return await serveParquetArtifact(store, key, {
       cacheControl: input.private ? "private, no-store" : "no-store",
     });
