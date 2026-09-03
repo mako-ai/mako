@@ -45,6 +45,7 @@ import {
   connectWorkspaceRepo,
   disconnectWorkspaceRepo,
   listWorkspaceRepos,
+  WorkspaceRepoNotBoundError,
 } from "../services/workspace-repos.service";
 import {
   ensureProjectRow,
@@ -315,6 +316,9 @@ function handleError(c: AuthenticatedContext, error: unknown) {
       { success: false, code: error.code, error: error.message },
       error.status as 412,
     );
+  }
+  if (error instanceof WorkspaceRepoNotBoundError) {
+    return c.json({ success: false, error: error.message }, 404);
   }
   logger.error("Apps route error", { error });
   return c.json(
@@ -725,6 +729,10 @@ appsRoutes.openapi(
 
       return c.json({ success: true as const, apps }, 200);
     } catch (error) {
+      // No GitHub binding: the explorer is empty. Writes still 412.
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
       return handleError(c, error);
     }
   },

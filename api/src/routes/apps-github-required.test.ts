@@ -37,6 +37,12 @@ assert.ok(
   "apps handleError must map RepoRequiredError to 412",
 );
 
+assert.ok(
+  apps.includes("List Apps projects") &&
+    apps.includes("{ success: true as const, apps: [] }"),
+  "GET /apps must return 200 { apps: [] } when no GitHub repo is bound, not 412",
+);
+
 const gate = readFileSync(
   join(__dirname, "../apps/workspace-repo-required.ts"),
   "utf8",

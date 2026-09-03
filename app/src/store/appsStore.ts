@@ -812,6 +812,21 @@ export const useAppsStore = create<AppsStore>()(
           // deleted app cannot leave a working-looking workspace view behind.
           reconcileAppsTabs(new Set(apps.map(a => a.id)));
         } catch (e) {
+          // GET /apps is 412 without a GitHub binding. That is an empty
+          // explorer (disconnect, never linked), not a load failure. Keeping
+          // the previous list and persisted cache left the sidebar populated
+          // after unlink.
+          const githubRequired = e instanceof ApiError && e.status === 412;
+          if (githubRequired) {
+            set(s => {
+              s.apps = [];
+              delete s.appsCacheByWorkspace[workspaceId];
+              s.appsLoading = false;
+              s.error = null;
+            });
+            reconcileAppsTabs(new Set());
+            return;
+          }
           set(s => {
             s.appsLoading = false;
             // A 404 here means the flag is off — not an error worth surfacing.

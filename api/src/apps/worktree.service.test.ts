@@ -30,6 +30,7 @@ import {
   ensureWorktree,
   execInWorktree,
   listBranches,
+  listAppFolders,
   listFiles,
   mergeBranchToMain,
   projectHistory,
@@ -137,6 +138,13 @@ describe("project lifecycle", () => {
     );
     await bindTestWorkspaceRepo(WS);
     await deleteProject(project);
+  });
+
+  it("lists no app folders when the workspace has no GitHub repo bound", async () => {
+    await makeProject();
+    expect(await listAppFolders(WS)).not.toEqual([]);
+    await unbindTestWorkspaceRepo(WS);
+    expect(await listAppFolders(WS)).toEqual([]);
   });
 });
 

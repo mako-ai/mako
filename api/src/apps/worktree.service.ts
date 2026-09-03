@@ -2251,7 +2251,15 @@ const appFoldersCache = new Map<
 export async function listAppFolders(
   workspaceId: string,
 ): Promise<AppFolder[]> {
-  const repoDir = await repoForWorkspace(workspaceId);
+  let repoDir: string;
+  try {
+    repoDir = await repoForWorkspace(workspaceId);
+  } catch (error) {
+    // A missing GitHub binding is an empty folder list, not a 412. Writes
+    // still go through requireWorkspaceRepo / POST /apps.
+    if (error instanceof RepoRequiredError) return [];
+    throw error;
+  }
   const sha = await resolveCommit(repoDir, DEFAULT_BRANCH);
   if (!sha) return [];
   const cached = appFoldersCache.get(workspaceId);
