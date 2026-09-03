@@ -662,12 +662,12 @@ export function getDashboardArtifactStore(): DashboardArtifactStore {
 }
 
 /**
- * A read-only artifact store to COPY existing artifacts FROM, distinct from
- * the live store written TO. Set APPS_ARTIFACT_SOURCE_BUCKET to a GCS
- * bucket to hydrate a rehearsal environment (e.g. dev, cloned from prod's DB
- * but NOT its artifact store) with prod's parquet — the migration then adopts
- * real data instead of finding nothing local. Unset (prod and normal runs) →
- * null, and callers read from the main store exactly as before.
+ * A read-only artifact store for existing app artifacts, distinct from the
+ * live store written TO. Set APPS_ARTIFACT_SOURCE_BUCKET to a GCS bucket when
+ * a rehearsal environment uses a cloned production database but an isolated
+ * writable artifact store. Published deployment reads may fall back to this
+ * source; writes always stay in the live store. Unset (prod and normal runs)
+ * returns null, and callers use the main store exactly as before.
  */
 export function getArtifactSourceStore(): DashboardArtifactStore | null {
   const bucket = process.env.APPS_ARTIFACT_SOURCE_BUCKET; // pre-rename name

@@ -21,7 +21,11 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import {
+  getArtifactSourceStore,
+  getDashboardArtifactStore,
+  type DashboardArtifactStore,
+} from "../services/dashboard-artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { bindingArtifactKeyByName, readBindings } from "./bindings.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
@@ -56,18 +60,31 @@ export function legacyDeploymentKey(
   return `apps-v2/${projectId}/deployments/${sha}/${assetPath}`;
 }
 
-/** The key that actually holds `assetPath` for this deployment, or null. */
-async function existingDeploymentKey(
+interface StoredDeploymentAsset {
+  store: DashboardArtifactStore;
+  key: string;
+}
+
+/** The store and key that actually hold `assetPath`, or null. */
+async function existingDeploymentAsset(
   projectId: string,
   sha: string,
   assetPath: string,
-): Promise<string | null> {
-  const store = getDashboardArtifactStore();
+): Promise<StoredDeploymentAsset | null> {
+  const primary = getDashboardArtifactStore();
+  // Rehearsal environments use a cloned production database but an isolated
+  // writable artifact bucket. Their publishedSha therefore names a deployment
+  // that may only exist in the canonical source bucket. Reads fall back there;
+  // uploads still use `primary`, so a PR preview can never overwrite prod.
+  const source = getArtifactSourceStore();
+  const stores = source ? [primary, source] : [primary];
   for (const key of [
     deploymentKey(projectId, sha, assetPath),
     legacyDeploymentKey(projectId, sha, assetPath),
   ]) {
-    if (await store.exists(key)) return key;
+    for (const store of stores) {
+      if (await store.exists(key)) return { store, key };
+    }
   }
   return null;
 }
@@ -192,7 +209,7 @@ export async function deploymentExists(
   projectId: string,
   sha: string,
 ): Promise<boolean> {
-  return (await existingDeploymentKey(projectId, sha, "index.html")) !== null;
+  return (await existingDeploymentAsset(projectId, sha, "index.html")) !== null;
 }
 
 export interface DeploymentAsset {
@@ -213,21 +230,20 @@ export async function readDeploymentAsset(
   sha: string,
   assetPath: string,
 ): Promise<DeploymentAsset | null> {
-  const store = getDashboardArtifactStore();
   const clean = assetPath.replace(/^\/+/, "") || "index.html";
 
   const candidates = [clean];
   if (!path.extname(clean)) candidates.push("index.html");
 
   for (const candidate of candidates) {
-    const key = await existingDeploymentKey(projectId, sha, candidate);
-    if (!key) continue;
-    const stream = await store.openReadStream(key);
+    const stored = await existingDeploymentAsset(projectId, sha, candidate);
+    if (!stored) continue;
+    const stream = await stored.store.openReadStream(stored.key);
     if (stream) {
       return {
         stream,
         contentType: contentTypeFor(candidate),
-        size: await store.getSize(key),
+        size: await stored.store.getSize(stored.key),
       };
     }
   }

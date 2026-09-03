@@ -42,6 +42,7 @@ export default defineConfig({
       "src/connectors/probe.service.test.ts",
       "src/agent-lib/tools/connector-tools.test.ts",
       "src/apps/preview.service.test.ts",
+      "src/apps/deployment.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       // These two were written as vitest suites but listed in no vitest
       // config, so neither runner could execute them: tsx dies on them
