@@ -293,7 +293,6 @@ export function SyncFlowForm({
   // guards against. Reset to false whenever a different existing flow loads;
   // always "touched" for brand-new flows (nothing saved to protect there).
   const formTouchedRef = useRef(isNew);
-  const reconcileAutoEnabledRef = useRef(false);
 
   const toggleStep = (stepIndex: number) => {
     // Keep Triggers open while provisioning, and after success until the
@@ -613,24 +612,11 @@ export function SyncFlowForm({
     setValue,
   ]);
 
-  // Auto-suggest (and once soft-enable) periodic reconcile for Incremental
-  // flows whose selected entities are created-anchor or none — polls alone
-  // cannot catch updates / will silent-full-repull those streams.
-  useEffect(() => {
-    if (!suggestReconcile || !formTouchedRef.current) return;
-    if (watchBackfillScheduleEnabled) return;
-    if (reconcileAutoEnabledRef.current) return;
-    reconcileAutoEnabledRef.current = true;
-    setValue("backfillScheduleEnabled", true, { shouldDirty: true });
-    const cron = getValues("backfillScheduleCron");
-    if (!cron) {
-      setValue("backfillScheduleCron", "0 3 * * *", { shouldDirty: true });
-    }
-    const tz = getValues("backfillScheduleTimezone");
-    if (!tz) {
-      setValue("backfillScheduleTimezone", "UTC", { shouldDirty: true });
-    }
-  }, [suggestReconcile, watchBackfillScheduleEnabled, setValue, getValues]);
+  // The periodic full reconcile is opt-in. When Incremental polls cannot see
+  // updates for the selected entities (created-anchor or none), the form
+  // RECOMMENDS it (warning + "Enable daily" button, see step 3) but never
+  // switches it on by itself: a reconcile re-upserts every current record on
+  // a cron, which is a cost and a load on the source the user must choose.
 
   // transferQueries schema (GraphQL/PostHog-style connectors).
   // Stale-while-revalidate: show the persisted cache immediately, but always
