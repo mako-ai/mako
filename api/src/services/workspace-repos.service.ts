@@ -132,17 +132,31 @@ export async function connectWorkspaceRepo(
   return binding;
 }
 
+/** Thrown when unlink names a repo the workspace is not bound to. HTTP 404. */
+export class WorkspaceRepoNotBoundError extends Error {
+  readonly status = 404 as const;
+  constructor(owner: string, repo: string) {
+    super(`Workspace is not connected to ${owner}/${repo}`);
+    this.name = "WorkspaceRepoNotBoundError";
+  }
+}
+
 export async function disconnectWorkspaceRepo(
   workspaceId: string,
   owner: string,
   repo: string,
   opts: { purge?: boolean } = {},
 ): Promise<void> {
+  const existing = await listWorkspaceRepos(workspaceId);
+  const next = existing.filter(r => !(r.owner === owner && r.repo === repo));
+  // A typo must not look like success: do not purge, and do not rewrite
+  // workspaceRepos / appsRepo, until we know this binding is the one leaving.
+  if (next.length === existing.length) {
+    throw new WorkspaceRepoNotBoundError(owner, repo);
+  }
   if (opts.purge !== false) {
     await purgeMigratedContentIndex(workspaceId);
   }
-  const existing = await listWorkspaceRepos(workspaceId);
-  const next = existing.filter(r => !(r.owner === owner && r.repo === repo));
   await Workspace.updateOne(
     { _id: new Types.ObjectId(workspaceId) },
     { $set: { workspaceRepos: next }, $unset: { appsRepo: "" } },

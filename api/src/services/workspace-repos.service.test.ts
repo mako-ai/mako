@@ -10,6 +10,7 @@ import {
   findWorkspaceIdsByRepoBinding,
   isValidRepoSegment,
   listWorkspaceRepos,
+  WorkspaceRepoNotBoundError,
 } from "./workspace-repos.service";
 import {
   ConsoleFolder,
@@ -250,6 +251,40 @@ describe("git is the only store (issue #956)", () => {
       "test-workspace",
     );
     expect(ids.sort()).toEqual([workspaceId, other._id.toString()].sort());
+  });
+
+  it("a mismatched unlink does not purge derived content or drop the binding", async () => {
+    await connectWorkspaceRepo({
+      workspaceId,
+      owner: "mako-ai",
+      repo: "test-workspace",
+      defaultBranch: "main",
+      linkedBy: "u1",
+    });
+    await Flow.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      type: "scheduled",
+      slug: "keep",
+      name: "Keep",
+      sourceType: "database",
+      databaseSource: {
+        connectionId: new Types.ObjectId(),
+        database: "demo",
+        query: "select 1",
+      },
+      destinationDatabaseId: new Types.ObjectId(),
+      syncMode: "full",
+      schedule: { enabled: false },
+      createdBy: "u1",
+    });
+    await expect(
+      disconnectWorkspaceRepo(workspaceId, "mako-ai", "typo-workspace"),
+    ).rejects.toBeInstanceOf(WorkspaceRepoNotBoundError);
+    expect(await Flow.countDocuments({ workspaceId })).toBe(1);
+    const repos = await listWorkspaceRepos(workspaceId);
+    expect(repos).toHaveLength(1);
+    expect(repos[0].owner).toBe("mako-ai");
+    expect(repos[0].repo).toBe("test-workspace");
   });
 
   it("disconnect purges derived flow index rows", async () => {
