@@ -67,6 +67,8 @@ import {
   commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  loadLiveJobs,
+  liveJobToPlain,
   reserveJobSlug,
 } from "../../dbt/dbt-config.service";
 import {
@@ -352,7 +354,7 @@ export const createDbtServerTools = (
           const project = await assertProject(projectId);
           const [files, jobs, rules] = await Promise.all([
             listWorkingFiles(project, actingUserId),
-            DbtJob.find({ projectId: project._id }).lean(),
+            loadLiveJobs(project),
             resolveDbtRules(project, actingUserId),
           ]);
           return {
@@ -377,14 +379,20 @@ export const createDbtServerTools = (
                   },
                 }
               : {}),
-            jobs: jobs.map(job => ({
-              id: job._id.toString(),
-              name: job.name,
-              environment: job.environment,
-              commands: job.commands,
-              schedule: job.schedule ?? null,
-              enabled: job.enabled,
-            })),
+            jobs: jobs.map(live => {
+              const job = liveJobToPlain(live, project);
+              return {
+                id: live.id.toString(),
+                name: job.name,
+                environment: job.environment,
+                commands: job.commands,
+                schedule: job.schedule ?? null,
+                enabled: job.enabled,
+                ...(job.definitionInvalid
+                  ? { definitionInvalid: job.definitionInvalid }
+                  : {}),
+              };
+            }),
           };
         } catch (error) {
           return toolError(error, "Failed to read dbt project tree");

@@ -1055,7 +1055,7 @@ export function DbtExplorer() {
                                 whiteSpace: "nowrap",
                               }}
                             >
-                              {job.name}
+                              {job.name || job.slug || job._id}
                             </Box>
                             <Box
                               component="span"
@@ -1071,6 +1071,26 @@ export function DbtExplorer() {
                               {scheduleSummary(job)}
                             </Box>
                           </Box>
+                          {job.definitionInvalid && (
+                            <Tooltip
+                              title={`Job file is invalid (${job.definitionInvalid.reason}). Fix ${job.definitionInvalid.path} in git.`}
+                            >
+                              <Chip
+                                label="invalid"
+                                size="small"
+                                variant="outlined"
+                                color="warning"
+                                sx={{
+                                  flexShrink: 0,
+                                  height: 18,
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  textTransform: "uppercase",
+                                  "& .MuiChip-label": { px: 0.625 },
+                                }}
+                              />
+                            </Tooltip>
+                          )}
                           {job.environment && (
                             <Tooltip title={`Environment: ${job.environment}`}>
                               <Chip

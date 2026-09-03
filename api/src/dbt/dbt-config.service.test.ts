@@ -26,6 +26,10 @@ import {
   adoptDbtConfig,
   commitDbtJobFile,
   deleteDbtJobFile,
+  derivedJobId,
+  loadLiveJobById,
+  loadLiveJobs,
+  liveJobToPlain,
   reserveJobSlug,
   syncDbtConfigFromRepo,
 } from "./dbt-config.service";
@@ -153,6 +157,212 @@ describe("write-through", () => {
     });
     const fresh = await DbtJob.findById(job._id);
     expect(fresh?.sourceBlobSha).toBeFalsy();
+  });
+});
+
+describe("GET/list from git", () => {
+  it("returns empty for unbound leftover git and Mongo", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Mongo only");
+    await commitDbtJobFile(project, job);
+    await unbindTestWorkspaceRepo(WS.toString());
+    expect(await loadLiveJobs(project)).toEqual([]);
+  });
+
+  it("includes git-only jobs and omits Mongo-only rows", async () => {
+    const project = await seedProject();
+    await seedJob(project, "Mongo only");
+    const contents = serializeJobFile({
+      name: "Git only",
+      environment: "prod",
+      commands: ["build"],
+      schedule: null,
+      enabled: true,
+      deferToProduction: false,
+    });
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath("git-only")]: contents } },
+      { message: "git-only job" },
+    );
+    const live = await loadLiveJobs(project);
+    expect(live.map(job => job.def.slug)).toEqual(["git-only"]);
+    expect(live[0]?.row).toBeNull();
+    expect(liveJobToPlain(live[0]!, project)).toMatchObject({
+      name: "Git only",
+    });
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+  });
+
+  it("resyncs a stale existing row without creating or scheduling", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly");
+    await commitDbtJobFile(project, job);
+    const edited = serializeJobFile({
+      name: "Renamed in git",
+      environment: "prod",
+      commands: ["test"],
+      schedule: null,
+      enabled: false,
+      deferToProduction: false,
+    });
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: edited } },
+      { message: "edit job" },
+    );
+    const live = await loadLiveJobs(project);
+    expect(liveJobToPlain(live[0]!, project).name).toBe("Renamed in git");
+    const fresh = await DbtJob.findById(job._id);
+    expect(fresh?.commands).toEqual(["test"]);
+    expect(fresh?.scheduledRun?.nextAt).toBeUndefined();
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+  });
+
+  it("keeps last-good fields but never presents invalid YAML as live", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly");
+    await commitDbtJobFile(project, job);
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: "name: [broken" } },
+      { message: "break yaml" },
+    );
+    const live = await loadLiveJobs(project);
+    const plain = liveJobToPlain(live[0]!, project);
+    expect(plain.definitionInvalid).toBeTruthy();
+    expect(plain.name).toBe("Nightly");
+    expect((await DbtJob.findById(job._id))?.commands).toEqual([
+      "build --select realadvisor",
+    ]);
+    expect(await loadLiveJobById(project, job._id.toString())).not.toBeNull();
+  });
+
+  it("a cron edited in git and listed before the push is still re-registered", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly"); // 0 6 Europe/Zurich
+    await commitDbtJobFile(project, job);
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath(job.slug!)]: serializeJobFile({
+            name: "Nightly",
+            environment: "prod",
+            commands: ["build --select realadvisor"],
+            schedule: { cron: "0 9 * * *", timezone: "UTC" },
+            enabled: true,
+            deferToProduction: false,
+          }),
+        },
+      },
+      { message: "move nightly to 09:00 UTC" },
+    );
+    // The list stamps the row level with the new blob...
+    await loadLiveJobs(project);
+    const listed = await DbtJob.findById(job._id);
+    expect(listed?.schedule?.cron).toBe("0 9 * * *");
+    expect(listed?.scheduledRun?.nextAt?.getUTCHours()).toBe(9);
+    // ...so push-sync skips it; the registration above must already hold.
+    await syncDbtConfigFromRepo(WS.toString());
+    const synced = await DbtJob.findById(job._id);
+    expect(synced?.scheduledRun?.nextAt?.getUTCHours()).toBe(9);
+  });
+
+  it("a bad cron or timezone is flagged in the list and skipped by push-sync without aborting it", async () => {
+    const project = await seedProject();
+    const file = (schedule: { cron: string; timezone: string }) =>
+      serializeJobFile({
+        name: "Scheduled",
+        environment: "prod",
+        commands: ["build"],
+        schedule,
+        enabled: true,
+        deferToProduction: false,
+      });
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          // Sorted first so an abort would skip everything after it.
+          [jobFilePath("aaa-bad-cron")]: file({
+            cron: "99 99 99 99 99",
+            timezone: "UTC",
+          }),
+          [jobFilePath("bad-timezone")]: file({
+            cron: "0 9 * * *",
+            timezone: "Nope/Zone",
+          }),
+          [jobFilePath("zzz-good")]: file({
+            cron: "0 9 * * *",
+            timezone: "UTC",
+          }),
+        },
+      },
+      { message: "three git-only jobs" },
+    );
+    const live = await loadLiveJobs(project);
+    const plain = Object.fromEntries(
+      live.map(item => [item.def.slug, liveJobToPlain(item, project)]),
+    );
+    expect(plain["aaa-bad-cron"].definitionInvalid).toMatchObject({
+      reason: expect.stringMatching(/^invalid schedule/),
+    });
+    expect(plain["bad-timezone"].definitionInvalid).toMatchObject({
+      reason: expect.stringMatching(/^invalid schedule/),
+    });
+    expect(plain["aaa-bad-cron"].commands).toEqual([]);
+    expect(plain["aaa-bad-cron"].enabled).toBe(false);
+    expect(plain["zzz-good"].definitionInvalid).toBeUndefined();
+
+    await expect(syncDbtConfigFromRepo(WS.toString())).resolves.toBeUndefined();
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+    const good = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "zzz-good",
+    });
+    expect(good?.scheduledRun?.nextAt?.getUTCHours()).toBe(9);
+    // The id the list handed out before the push is the id of the row.
+    expect(good?._id.toString()).toBe(
+      live.find(item => item.def.slug === "zzz-good")!.id.toString(),
+    );
+    expect(good?._id.toString()).toBe(
+      derivedJobId(WS.toString(), "zzz-good").toString(),
+    );
+  });
+
+  it("reverting a broken file to its previous content clears the invalid marker", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly");
+    await commitDbtJobFile(project, job);
+    const good = await fileAt(jobFilePath(job.slug!));
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: "name: [broken" } },
+      { message: "break yaml" },
+    );
+    await loadLiveJobs(project);
+    const at = (await DbtJob.findById(job._id))?.definitionInvalid?.at;
+    expect(at).toBeInstanceOf(Date);
+    // A second list call must not rewrite the marker.
+    await loadLiveJobs(project);
+    expect((await DbtJob.findById(job._id))?.definitionInvalid?.at).toEqual(at);
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: good! } },
+      { message: "revert" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    expect(
+      (await DbtJob.findById(job._id))?.definitionInvalid?.reason,
+    ).toBeUndefined();
   });
 });
 
