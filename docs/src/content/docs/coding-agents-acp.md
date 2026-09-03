@@ -90,6 +90,15 @@ workspace tools** banner — one click remints the token and starts a fresh ACP
 session with `mako-workspace`. You should **not** run `claude mcp` or authorize
 Claude.ai’s separate “Mako” connector.
 
+The minted MCP token is valid for 8 hours and is fixed for the life of the
+local session (the adapter cannot refresh it). Chat tracks the expiry and
+automatically retires a session whose token is about to expire, starting a
+fresh one with a new token on your next message — the transcript carries over.
+If you still see `MCP server "mako-workspace" requires re-authorization (token
+expired)` in a tool result, the session predates this check: switch the model
+away and back, or fully quit and reopen Mako Desktop, then send again. Do not
+run `/mcp` in Claude Code — there is no OAuth flow to re-run for this server.
+
 If Claude already replied that Mako needs auth, click **Enable workspace
 tools**, then send another message (or start a **New chat**). Local Agent also
 probes `/api/mcp` before session start so bad hosts/tokens fail with a clear

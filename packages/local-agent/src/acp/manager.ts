@@ -21,6 +21,10 @@ import { shouldAutoApprovePermission } from "./permissions";
 import { assertAllowedMakoMcpUrl } from "./mako-mcp-url";
 import { probeMakoMcpHttp } from "./mcp-probe";
 import {
+  isMakoMcpTokenExpired,
+  parseMcpTokenExpiresAt,
+} from "./mako-mcp-token-expiry";
+import {
   hasCodexAuthFile,
   probeCodexLoginStatus,
   shouldAutoAuthenticateOnSessionNew,
@@ -1043,6 +1047,9 @@ export class AcpSessionManager {
         makoWorkspaceId: attachMakoMcp
           ? body.makoWorkspaceId?.trim()
           : undefined,
+        makoMcpTokenExpiresAt: attachMakoMcp
+          ? parseMcpTokenExpiresAt(body.mcpTokenExpiresAt)
+          : undefined,
       };
 
       const managed: ManagedSession = {
@@ -1178,6 +1185,20 @@ export class AcpSessionManager {
     if (!session?.active) {
       throw new Error(
         `Unknown or expired ACP session: ${sessionId}. Send again to reconnect.`,
+      );
+    }
+    // The Mako MCP Bearer cannot be refreshed inside a running adapter
+    // session. Prompting past its expiry would make every mako-workspace tool
+    // fail with "requires re-authorization" — retire the session instead so
+    // Chat's reconnect path mints a fresh token and starts a new one.
+    if (isMakoMcpTokenExpired(session.info)) {
+      acpLog.info("ACP session Mako MCP token expired — closing session", {
+        sessionId,
+        expiresAt: session.info.makoMcpTokenExpiresAt,
+      });
+      await this.closeSession(sessionId);
+      throw new Error(
+        `Unknown or expired ACP session: ${sessionId} (Mako workspace token expired). Send again to reconnect.`,
       );
     }
     if (!text.trim() && images.length === 0) {

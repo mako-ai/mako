@@ -14,6 +14,8 @@ export interface MakoMcpAttachCredentials {
   mcpUrl: string;
   mcpAuthorization: string;
   expiresIn: number;
+  /** ISO time the Bearer stops working; null when the API did not say. */
+  expiresAt: string | null;
   mcpServerName: string;
   agentSessionId: string;
 }
@@ -64,10 +66,18 @@ export async function mintMakoMcpAttach(
     throw new Error("Mako MCP access token is missing its agent session");
   }
 
+  const expiresIn =
+    typeof data?.expiresIn === "number" && Number.isFinite(data.expiresIn)
+      ? data.expiresIn
+      : 0;
   return {
     mcpUrl: resolveAbsoluteMcpUrl(),
     mcpAuthorization: authorization,
-    expiresIn: data?.expiresIn ?? 0,
+    expiresIn,
+    expiresAt:
+      expiresIn > 0
+        ? new Date(Date.now() + expiresIn * 1000).toISOString()
+        : null,
     mcpServerName: MAKO_WORKSPACE_MCP_NAME,
     agentSessionId: data.agentSessionId,
   };

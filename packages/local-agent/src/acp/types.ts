@@ -61,6 +61,12 @@ export interface AcpSessionInfo {
   makoAgentSessionId?: string;
   /** Workspace bound to the attached Mako MCP token. */
   makoWorkspaceId?: string;
+  /**
+   * ISO time the attached Mako MCP Bearer stops working. The header is fixed
+   * for the life of the adapter session, so prompt() retires the session once
+   * this passes and Chat mints a fresh token on the next send.
+   */
+  makoMcpTokenExpiresAt?: string;
   /** Current Claude/Codex model id from session configOptions (when known). */
   currentModel?: string | null;
   /** Selectable models advertised by the adapter for this session. */
@@ -183,6 +189,8 @@ export interface CreateAcpSessionRequest {
   makoAgentSessionId?: string;
   /** Workspace bound to the attached MCP token. */
   makoWorkspaceId?: string;
+  /** ISO time the MCP Bearer expires (from the mint response `expiresIn`). */
+  mcpTokenExpiresAt?: string;
   /**
    * MCP server name advertised to the agent (Claude tool prefix mcp__{name}__).
    * Default `mako-workspace` — avoid `mako` which collides with Claude.ai connectors.
