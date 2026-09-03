@@ -375,6 +375,25 @@ describe("GET/list from git", () => {
     );
   });
 
+  it("does not serve a schema-invalid file as a live definition", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
+        "write_mode: append_dedup",
+        "write_mode: not_a_real_mode",
+      ),
+    });
+
+    const listed = await loadLiveFlows(WS);
+    const plain = liveFlowToPlain(listed[0], WS);
+    // Git is the store, but a file the reactor cannot save must not be
+    // applied over the last-good row or look valid in GET/list.
+    expect(plain.definitionInvalid).toBeTruthy();
+    expect(plain.name).toBe("Close → BigQuery");
+    expect(plain.writeMode).toBe("append_dedup");
+  });
+
   it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
     await push({ "flows/leftover.yml": flowYaml("Leftover") });
     await syncFlowsFromRepo(WS, "user-42");
