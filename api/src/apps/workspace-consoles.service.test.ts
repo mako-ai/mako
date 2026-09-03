@@ -44,7 +44,7 @@ import {
   restoreConsoleTo,
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
-import { ConsoleManager } from "../utils/console-manager";
+import { ConsoleManager, type ConsoleFile } from "../utils/console-manager";
 import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
@@ -747,6 +747,96 @@ describe("history — the apps surface for a console", () => {
     expect(await consoleHistory(row)).not.toEqual([]);
     await unbindTestWorkspaceRepo(WS);
     expect(await consoleHistory(row)).toEqual([]);
+  });
+});
+
+function flattenConsoles(nodes: ConsoleFile[]): ConsoleFile[] {
+  const out: ConsoleFile[] = [];
+  for (const node of nodes) {
+    if (node.isDirectory) out.push(...flattenConsoles(node.children ?? []));
+    else out.push(node);
+  }
+  return out;
+}
+
+describe("GET/list from git", () => {
+  it("serves the file at main when the Mongo row has no body", async () => {
+    const saved = await manager.saveConsole(
+      "body-from-git",
+      "SELECT 'git-body'",
+      WS,
+      USER,
+      "68471be56e70c184bbc6cceb",
+      "db",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne({ _id: saved._id }, { $set: { code: "" } });
+    const mongo = await SavedConsole.findById(saved._id);
+    expect(mongo?.code).toBe("");
+
+    const listed = flattenConsoles(await manager.listConsoles(WS, USER));
+    const hit = listed.find(c => c.name === "body-from-git");
+    expect(hit?.content).toContain("SELECT 'git-body'");
+
+    const meta = await manager.getConsoleWithMetadata(saved._id.toString(), WS);
+    expect(meta?.content).toContain("SELECT 'git-body'");
+  });
+
+  it("lists a git file that has no Mongo row", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await externalCommit({
+      "consoles/from-laptop.sql": "SELECT 42 -- laptop\n",
+    });
+    const listed = flattenConsoles(await manager.listConsoles(WS, USER));
+    const hit = listed.find(c => c.name === "from-laptop");
+    expect(hit).toBeTruthy();
+    expect(hit?.content).toContain("SELECT 42");
+  });
+
+  it("does not list a Mongo row that has no git file", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await SavedConsole.create({
+      workspaceId: WS,
+      name: "mongo-only",
+      code: "SELECT 'should-not-appear'",
+      language: "sql",
+      createdBy: USER,
+      owner_id: USER,
+      isSaved: true,
+      access: "workspace",
+      isPrivate: false,
+      executionCount: 0,
+      version: 1,
+      draftRevision: 1,
+    });
+    const listed = flattenConsoles(await manager.listConsoles(WS, USER));
+    expect(listed.map(c => c.name)).not.toContain("mongo-only");
+  });
+
+  it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
+    const saved = await manager.saveConsole(
+      "leftover-list",
+      "SELECT leftover",
+      WS,
+      USER,
+      "68471be56e70c184bbc6cceb",
+      "db",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    expect(
+      flattenConsoles(await manager.listConsoles(WS, USER)).map(c => c.name),
+    ).toContain("leftover-list");
+    expect(await fileAt(saved.path!)).toContain("SELECT leftover");
+
+    await unbindTestWorkspaceRepo(WS);
+    expect(await manager.listConsoles(WS, USER)).toEqual([]);
+    expect(await manager.listConsolesFlat(WS, USER)).toEqual([]);
+    const leftoverPath = saved.path;
+    expect(leftoverPath).toBeTruthy();
+    expect(await fileAt(leftoverPath as string)).toContain("SELECT leftover");
+    expect(await SavedConsole.findById(saved._id)).not.toBeNull();
   });
 });
 
