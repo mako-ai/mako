@@ -37,6 +37,7 @@ interface SkillSummary {
   createdBy: string;
   createdAt: string | null;
   updatedAt: string | null;
+  definitionInvalid?: { reason: string; at: string; path?: string } | null;
 }
 
 interface SkillDetail extends SkillSummary {
@@ -319,6 +320,14 @@ export function SkillsSection() {
                         label="suppressed"
                         size="small"
                         color="warning"
+                        variant="outlined"
+                      />
+                    )}
+                    {skill.definitionInvalid && (
+                      <Chip
+                        label="invalid file"
+                        size="small"
+                        color="error"
                         variant="outlined"
                       />
                     )}

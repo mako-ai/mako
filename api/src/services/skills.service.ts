@@ -905,6 +905,7 @@ export interface AdminSkillSummary {
   createdBy: string;
   createdAt: Date | null;
   updatedAt: Date | null;
+  definitionInvalid?: { reason: string; at: Date; path?: string } | null;
 }
 
 export interface AdminSkillDetail extends AdminSkillSummary {
@@ -933,6 +934,22 @@ function idFromPlain(plain: Record<string, unknown>): string {
   return "";
 }
 
+function invalidFromPlain(
+  value: unknown,
+): AdminSkillSummary["definitionInvalid"] {
+  if (!value || typeof value !== "object") return null;
+  const reason = (value as { reason?: unknown }).reason;
+  if (typeof reason !== "string" || reason.length === 0) return null;
+  const atRaw = (value as { at?: unknown }).at;
+  const at = atRaw instanceof Date ? atRaw : new Date();
+  const path = (value as { path?: unknown }).path;
+  return {
+    reason,
+    at,
+    path: typeof path === "string" ? path : undefined,
+  };
+}
+
 function adminSummaryFromPlain(
   plain: Record<string, unknown>,
   fallbackName: string,
@@ -950,6 +967,7 @@ function adminSummaryFromPlain(
     createdBy: typeof plain.createdBy === "string" ? plain.createdBy : "git",
     createdAt: dateOrNull(plain.createdAt),
     updatedAt: dateOrNull(plain.updatedAt),
+    definitionInvalid: invalidFromPlain(plain.definitionInvalid),
   };
 }
 
@@ -957,13 +975,39 @@ export async function listSkillsForAdmin(
   workspaceId: string,
 ): Promise<AdminSkillSummary[]> {
   const live = await loadLiveSkills(workspaceId);
-  return live
-    .map(item =>
-      adminSummaryFromPlain(liveSkillToPlain(item, workspaceId), item.def.name),
-    )
-    .sort(
-      (a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0),
-    );
+  const summaries: AdminSkillSummary[] = [];
+  for (const item of live) {
+    try {
+      summaries.push(
+        adminSummaryFromPlain(
+          liveSkillToPlain(item, workspaceId),
+          item.def.name,
+        ),
+      );
+    } catch (error) {
+      summaries.push({
+        id: item.id.toString(),
+        name: item.def.name,
+        loadWhen: "",
+        bodyPreview: "",
+        entities: [],
+        suppressed: false,
+        useCount: 0,
+        lastUsedAt: null,
+        createdBy: "git",
+        createdAt: null,
+        updatedAt: null,
+        definitionInvalid: {
+          reason: error instanceof Error ? error.message : String(error),
+          at: new Date(),
+          path: item.def.path,
+        },
+      });
+    }
+  }
+  return summaries.sort(
+    (a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0),
+  );
 }
 
 export async function getSkillForAdmin(

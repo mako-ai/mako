@@ -38,6 +38,7 @@ import {
   loadLiveSkills,
   syncSkillsIndexFromRepo,
 } from "./workspace-skills.service";
+import { listSkillsForAdmin } from "../services/skills.service";
 import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
@@ -469,5 +470,125 @@ describe("GET/list from git", () => {
     );
     expect(leftoverFile.contents).toContain("Leftover body.");
     expect(row!.sourceBlobSha).toBe(blobOid(leftoverFile.contents));
+  });
+
+  it("lists last-good as invalid when the file at main is binary, not vanish", async () => {
+    await commitSkillSave(WS, skill("close_rules"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("close_rules")]:
+            `${serializeSkillFile(skill("close_rules", "Binary overwrite."))}\0`,
+        },
+      },
+      { message: "binary skill" },
+    );
+
+    const listed = await loadLiveSkills(WS);
+    expect(listed).toHaveLength(1);
+    const plain = liveSkillToPlain(listed[0], WS);
+    expect(plain.definitionInvalid).toBeTruthy();
+    expect(plain.body).toBe("Do the thing.");
+  });
+
+  it("does not 500 GET/list when an index row is missing required createdBy", async () => {
+    await commitSkillSave(WS, skill("close_rules"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    await Skill.collection.updateOne(
+      { workspaceId: new Types.ObjectId(WS), name: "close_rules" },
+      { $unset: { createdBy: "" } },
+    );
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("close_rules")]: serializeSkillFile(
+            skill("close_rules", "Edited on a laptop."),
+          ),
+        },
+      },
+      { message: "laptop edit" },
+    );
+
+    await expect(loadLiveSkills(WS)).resolves.toHaveLength(1);
+    const listed = await loadLiveSkills(WS);
+    const plain = liveSkillToPlain(listed[0], WS);
+    expect(plain.body).toBe("Edited on a laptop.");
+  });
+
+  it("does not serve an unsavable file as a valid admin list row", async () => {
+    await commitSkillSave(WS, skill("close_rules"));
+    await syncSkillsIndexFromRepo(WS, "user-1");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("close_rules")]: serializeSkillFile({
+            ...skill("close_rules", "Renamed body."),
+            loadWhen: "x".repeat(501),
+          }),
+        },
+      },
+      { message: "unsavable trigger" },
+    );
+
+    const listed = await listSkillsForAdmin(WS);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.definitionInvalid).toBeTruthy();
+    expect(listed[0]?.loadWhen).toBe("when asked about close_rules");
+  });
+
+  it("does not 500 GET/list when liveSkillToPlain apply throws for one file", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [skillFilePath("a_throw")]: serializeSkillFile(
+            skill("a_throw", "Throw body."),
+          ),
+          [skillFilePath("z_good")]: serializeSkillFile(
+            skill("z_good", "Good."),
+          ),
+        },
+      },
+      { message: "one throwing apply" },
+    );
+
+    const listed = await loadLiveSkills(WS);
+    expect(listed).toHaveLength(2);
+    const plains = listed.map(item => {
+      if (item.def.name !== "a_throw" || !item.def.parsed) {
+        return liveSkillToPlain(item, WS);
+      }
+      const explodingEntities = new Proxy([] as string[], {
+        get(_target, prop) {
+          if (prop === "length" || prop === Symbol.iterator) {
+            throw new Error("apply boom");
+          }
+          return Reflect.get(_target, prop);
+        },
+      });
+      return liveSkillToPlain(
+        {
+          ...item,
+          def: {
+            ...item.def,
+            parsed: { ...item.def.parsed, entities: explodingEntities },
+          },
+        },
+        WS,
+      );
+    });
+    const bad = plains.find(item => item.name === "a_throw");
+    const good = plains.find(item => item.name === "z_good");
+    expect(bad?.definitionInvalid).toBeTruthy();
+    expect(good?.body).toBe("Good.");
+    expect(good?.definitionInvalid).toBeUndefined();
   });
 });

@@ -191,22 +191,43 @@ export async function listSkillDefinitionsAtMain(
       });
       continue;
     }
-    const raw = await readRepoFile(repoDir, path);
-    if (raw === null) {
-      logger.warn("Skipping unreadable skill file", { workspaceId, path });
-      continue;
+    try {
+      const blob = await readBlob(repoDir, MAIN, path);
+      if (blob.isBinary) {
+        logger.warn("Unreadable binary skill file at main", {
+          workspaceId,
+          path,
+        });
+        defs.push({
+          path,
+          name,
+          oid: blobOid(Buffer.from(blob.contents, "base64")),
+          contents: "",
+          parsed: null,
+        });
+        continue;
+      }
+      const parsed = parseSkillFile(name, blob.contents);
+      if (!parsed) {
+        logger.warn("Unparseable skill file at main", { workspaceId, path });
+      }
+      defs.push({
+        path,
+        name,
+        oid: blobOid(blob.contents),
+        contents: blob.contents,
+        parsed,
+      });
+    } catch {
+      logger.warn("Unreadable skill file at main", { workspaceId, path });
+      defs.push({
+        path,
+        name,
+        oid: "unreadable",
+        contents: "",
+        parsed: null,
+      });
     }
-    const parsed = parseSkillFile(name, raw);
-    if (!parsed) {
-      logger.warn("Unparseable skill file at main", { workspaceId, path });
-    }
-    defs.push({
-      path,
-      name,
-      oid: blobOid(raw),
-      contents: raw,
-      parsed,
-    });
   }
   return defs;
 }
@@ -274,8 +295,21 @@ async function markSkillInvalid(
   reason: string,
   path: string,
 ): Promise<void> {
-  doc.definitionInvalid = { reason, at: new Date(), path };
-  await doc.save();
+  // $set only the invalid stamp. Saving the loaded document re-runs the
+  // whole schema (createdBy required, maxlength, …) and 500s GET/list
+  // when the last-good row itself cannot save.
+  try {
+    await Skill.updateOne(
+      { _id: doc._id },
+      { $set: { definitionInvalid: { reason, at: new Date(), path } } },
+    );
+  } catch (error) {
+    logger.warn("Failed to mark skill invalid", {
+      skillId: doc._id.toString(),
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**
@@ -299,7 +333,16 @@ export async function ensureSkillsDerivedCache(
   }
   for (const def of defs) {
     const row = byName.get(def.name);
-    if (row) await ensureSkillDerivedCache(row);
+    if (!row) continue;
+    try {
+      await ensureSkillDerivedCache(row);
+    } catch (error) {
+      logger.warn("ensureSkillDerivedCache failed", {
+        workspaceId,
+        name: def.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return "resynced";
 }
@@ -332,7 +375,16 @@ function joinLiveSkills(
 export async function loadLiveSkills(
   workspaceId: string,
 ): Promise<LiveSkill[]> {
-  const status = await ensureSkillsDerivedCache(workspaceId);
+  let status: "ok" | "resynced" | "unbound";
+  try {
+    status = await ensureSkillsDerivedCache(workspaceId);
+  } catch (error) {
+    logger.warn("ensureSkillsDerivedCache failed", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    status = "ok";
+  }
   if (status === "unbound") return [];
   const defs = await listSkillDefinitionsAtMain(workspaceId);
   const rows = await Skill.find({
@@ -362,7 +414,15 @@ export async function loadLiveSkillById(
     const def = defs.find(item => item.name === row.name);
     if (!def) return null;
     if (row.sourceBlobSha !== def.oid || row.definitionInvalid) {
-      await ensureSkillDerivedCache(row);
+      try {
+        await ensureSkillDerivedCache(row);
+      } catch (error) {
+        logger.warn("ensureSkillDerivedCache failed for GET by id", {
+          workspaceId,
+          skillId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     return { def, row, id: row._id };
   }
@@ -423,7 +483,17 @@ export function liveSkillToPlain(
     base.sourceBlobSha = live.def.oid;
     return base;
   }
-  applySkillDefinition(base as unknown as ISkill, parsed);
+  try {
+    applySkillDefinition(base as unknown as ISkill, parsed);
+  } catch (error) {
+    base.definitionInvalid = live.row?.definitionInvalid ?? {
+      reason: error instanceof Error ? error.message : String(error),
+      at: new Date(),
+      path: live.def.path,
+    };
+    base.sourceBlobSha = live.def.oid;
+    return base;
+  }
   base.sourceBlobSha = live.def.oid;
   delete base.definitionInvalid;
   return base;
@@ -443,6 +513,9 @@ export async function ensureSkillDerivedCache(skill: {
   definitionInvalid?: { reason: string } | null;
 }): Promise<"ok" | "invalid" | "missing" | "resynced"> {
   if (!skill.name) return "ok";
+  if (!SKILL_NAME_RE.test(skill.name)) {
+    return skill.definitionInvalid ? "invalid" : "ok";
+  }
   const workspaceId = skill.workspaceId.toString();
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null) {
