@@ -106,6 +106,9 @@ skillsRoutes.openapi(
       const skills = await listSkillsForAdmin(workspaceId);
       return c.json({ success: true, skills });
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true, skills: [] }, 200);
+      }
       logger.error("Error listing skills", { error });
       return c.json(
         {
@@ -146,7 +149,7 @@ skillsRoutes.openapi(
       return c.json({
         success: true,
         skill: {
-          id: skill._id.toString(),
+          id: skill.id,
           name: skill.name,
           loadWhen: skill.loadWhen,
           body: skill.body,
@@ -159,9 +162,13 @@ skillsRoutes.openapi(
           updatedAt: skill.updatedAt,
           previousBody: skill.previousBody ?? null,
           previousUpdatedAt: skill.previousUpdatedAt ?? null,
+          definitionInvalid: skill.definitionInvalid ?? null,
         },
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: "Skill not found" }, 404);
+      }
       logger.error("Error getting skill", { error });
       return c.json(
         {
@@ -218,7 +225,7 @@ skillsRoutes.openapi(
         entities?: unknown;
       };
       const user = c.get("user");
-      const actorId = user?.id ?? existing.createdBy;
+      const actorId = user?.id ?? existing.createdBy ?? "git";
 
       const nextLoadWhen =
         typeof body.loadWhen === "string" ? body.loadWhen : existing.loadWhen;

@@ -15,9 +15,14 @@ import {
   commitSkillDelete,
   commitSkillSave,
   commitSkillSuppressed,
+  derivedSkillId,
+  loadLiveSkillById,
+  loadLiveSkills,
+  liveSkillToPlain,
 } from "../apps/workspace-skills.service";
+import { serializeSkillFile } from "../apps/skill-files";
+import { blobOid, type GitAuthor } from "../apps/repository.service";
 import { authorForUser } from "../apps/workspace-consoles.service";
-import type { GitAuthor } from "../apps/repository.service";
 import {
   embedText,
   getEmbeddingModelName,
@@ -276,6 +281,7 @@ export async function saveSkill(
 
   if (!existing) {
     const created = await Skill.create({
+      _id: derivedSkillId(workspaceId, name),
       workspaceId: new Types.ObjectId(workspaceId),
       name,
       loadWhen,
@@ -288,6 +294,15 @@ export async function saveSkill(
       createdBy,
       suppressed: pendingApproval,
       useCount: 0,
+      sourceBlobSha: blobOid(
+        serializeSkillFile({
+          name,
+          loadWhen,
+          entities: declaredEntities,
+          suppressed: pendingApproval,
+          body,
+        }),
+      ),
     });
     return {
       success: true,
@@ -311,6 +326,16 @@ export async function saveSkill(
     existing.loadWhenEmbedding = embedding;
     existing.embeddingModel = model ?? undefined;
   }
+  existing.sourceBlobSha = blobOid(
+    serializeSkillFile({
+      name,
+      loadWhen,
+      entities: declaredEntities,
+      suppressed: !!existing.suppressed,
+      body,
+    }),
+  );
+  existing.definitionInvalid = undefined;
   await existing.save();
 
   return {
@@ -878,49 +903,134 @@ export interface AdminSkillSummary {
   useCount: number;
   lastUsedAt: Date | null;
   createdBy: string;
-  createdAt: Date;
-  updatedAt: Date;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+  definitionInvalid?: { reason: string; at: Date; path?: string } | null;
+}
+
+export interface AdminSkillDetail extends AdminSkillSummary {
+  body: string;
+  previousBody: string | null;
+  previousUpdatedAt: Date | null;
+  definitionInvalid?: { reason: string; at: Date; path?: string } | null;
+}
+
+function dateOrNull(value: unknown): Date | null {
+  return value instanceof Date ? value : null;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function idFromPlain(plain: Record<string, unknown>): string {
+  const id = plain._id;
+  if (typeof id === "string") return id;
+  if (id && typeof id === "object" && "toString" in id) {
+    return String(id);
+  }
+  return "";
+}
+
+function invalidFromPlain(
+  value: unknown,
+): AdminSkillSummary["definitionInvalid"] {
+  if (!value || typeof value !== "object") return null;
+  const reason = (value as { reason?: unknown }).reason;
+  if (typeof reason !== "string" || reason.length === 0) return null;
+  const atRaw = (value as { at?: unknown }).at;
+  const at = atRaw instanceof Date ? atRaw : new Date();
+  const path = (value as { path?: unknown }).path;
+  return {
+    reason,
+    at,
+    path: typeof path === "string" ? path : undefined,
+  };
+}
+
+function adminSummaryFromPlain(
+  plain: Record<string, unknown>,
+  fallbackName: string,
+): AdminSkillSummary {
+  const body = typeof plain.body === "string" ? plain.body : "";
+  return {
+    id: idFromPlain(plain),
+    name: typeof plain.name === "string" ? plain.name : fallbackName,
+    loadWhen: typeof plain.loadWhen === "string" ? plain.loadWhen : "",
+    bodyPreview: body.slice(0, 240) + (body.length > 240 ? "…" : ""),
+    entities: stringList(plain.entities),
+    suppressed: !!plain.suppressed,
+    useCount: typeof plain.useCount === "number" ? plain.useCount : 0,
+    lastUsedAt: dateOrNull(plain.lastUsedAt),
+    createdBy: typeof plain.createdBy === "string" ? plain.createdBy : "git",
+    createdAt: dateOrNull(plain.createdAt),
+    updatedAt: dateOrNull(plain.updatedAt),
+    definitionInvalid: invalidFromPlain(plain.definitionInvalid),
+  };
 }
 
 export async function listSkillsForAdmin(
   workspaceId: string,
 ): Promise<AdminSkillSummary[]> {
-  const docs = await Skill.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select(
-      "name loadWhen body entities suppressed useCount lastUsedAt createdBy createdAt updatedAt",
-    )
-    .sort({ updatedAt: -1 })
-    .lean();
-
-  return docs.map(d => {
-    const body = (d.body as string) ?? "";
-    return {
-      id: (d._id as Types.ObjectId).toString(),
-      name: d.name,
-      loadWhen: d.loadWhen,
-      bodyPreview: body.slice(0, 240) + (body.length > 240 ? "…" : ""),
-      entities: (d.entities as string[]) ?? [],
-      suppressed: !!d.suppressed,
-      useCount: d.useCount ?? 0,
-      lastUsedAt: (d.lastUsedAt as Date | undefined) ?? null,
-      createdBy: d.createdBy,
-      createdAt: d.createdAt as Date,
-      updatedAt: d.updatedAt as Date,
-    };
-  });
+  const live = await loadLiveSkills(workspaceId);
+  const summaries: AdminSkillSummary[] = [];
+  for (const item of live) {
+    try {
+      summaries.push(
+        adminSummaryFromPlain(
+          liveSkillToPlain(item, workspaceId),
+          item.def.name,
+        ),
+      );
+    } catch (error) {
+      summaries.push({
+        id: item.id.toString(),
+        name: item.def.name,
+        loadWhen: "",
+        bodyPreview: "",
+        entities: [],
+        suppressed: false,
+        useCount: 0,
+        lastUsedAt: null,
+        createdBy: "git",
+        createdAt: null,
+        updatedAt: null,
+        definitionInvalid: {
+          reason: error instanceof Error ? error.message : String(error),
+          at: new Date(),
+          path: item.def.path,
+        },
+      });
+    }
+  }
+  return summaries.sort(
+    (a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0),
+  );
 }
 
 export async function getSkillForAdmin(
   workspaceId: string,
   id: string,
-): Promise<ISkill | null> {
+): Promise<AdminSkillDetail | null> {
   if (!Types.ObjectId.isValid(id)) return null;
-  return Skill.findOne({
-    _id: new Types.ObjectId(id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const live = await loadLiveSkillById(workspaceId, id);
+  if (!live) return null;
+  const plain = liveSkillToPlain(live, workspaceId);
+  const summary = adminSummaryFromPlain(plain, live.def.name);
+  const invalid = plain.definitionInvalid;
+  return {
+    ...summary,
+    body: typeof plain.body === "string" ? plain.body : "",
+    previousBody:
+      typeof plain.previousBody === "string" ? plain.previousBody : null,
+    previousUpdatedAt: dateOrNull(plain.previousUpdatedAt),
+    definitionInvalid:
+      invalid && typeof invalid === "object"
+        ? (invalid as AdminSkillDetail["definitionInvalid"])
+        : null,
+  };
 }
 
 export async function toggleSkillSuppressed(
@@ -934,16 +1044,18 @@ export async function toggleSkillSuppressed(
     _id: new Types.ObjectId(id),
     workspaceId: new Types.ObjectId(workspaceId),
   }).select("name");
-  if (!doc) return false;
-  // Suppression is frontmatter, so it commits like any other skill edit; a
-  // skill not adopted into git yet flips only its Mongo row (no-op there).
+  const live = doc ? null : await loadLiveSkillById(workspaceId, id);
+  const name = doc?.name ?? live?.def.name;
+  if (!name) return false;
+  // Suppression is frontmatter, so it commits like any other skill edit.
   const committed = await commitSkillSuppressed(
     workspaceId,
-    doc.name,
+    name,
     suppressed,
     await skillCommitAuthor(actorId),
   );
   if (!committed) return false;
+  if (!doc) return true;
   const res = await Skill.updateOne({ _id: doc._id }, { $set: { suppressed } });
   return res.matchedCount > 0;
 }
@@ -958,13 +1070,16 @@ export async function deleteSkillById(
     _id: new Types.ObjectId(id),
     workspaceId: new Types.ObjectId(workspaceId),
   }).select("name");
-  if (!doc) return false;
+  const live = doc ? null : await loadLiveSkillById(workspaceId, id);
+  const name = doc?.name ?? live?.def.name;
+  if (!name) return false;
   const committed = await commitSkillDelete(
     workspaceId,
-    doc.name,
+    name,
     await skillCommitAuthor(actorId),
   );
   if (!committed) return false;
+  if (!doc) return true;
   const res = await Skill.deleteOne({ _id: doc._id });
   return res.deletedCount > 0;
 }

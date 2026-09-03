@@ -4298,6 +4298,21 @@ export interface ISkill extends Document {
   /** Single-slot undo for wrong overwrites. */
   previousBody?: string;
   previousUpdatedAt?: Date;
+  /**
+   * Blob sha of the definition last mirrored from `skills/<name>/SKILL.md`.
+   * Derived cache — git is the store (issue #956).
+   */
+  sourceBlobSha?: string;
+  /**
+   * Set when `skills/<name>/SKILL.md` at main does not parse or cannot be
+   * applied. GET/list must not serve that file as live, and must never write
+   * the row back over the file.
+   */
+  definitionInvalid?: {
+    reason: string;
+    at: Date;
+    path?: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4331,6 +4346,12 @@ const SkillSchema = new Schema<ISkill>(
     lastUsedAt: { type: Date },
     previousBody: { type: String },
     previousUpdatedAt: { type: Date },
+    sourceBlobSha: { type: String },
+    definitionInvalid: {
+      reason: { type: String },
+      at: { type: Date },
+      path: { type: String },
+    },
   },
   { collection: "skills", timestamps: true },
 );
