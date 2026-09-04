@@ -253,7 +253,7 @@ function skillIndexDrift(
     const row = byName.get(def.name);
     if (!row) continue;
     if (row.sourceBlobSha !== def.oid) return true;
-    if (row.definitionInvalid && def.parsed) return true;
+    if (isSkillMarkedInvalid(row) && def.parsed) return true;
   }
   return false;
 }
@@ -290,19 +290,48 @@ function applySkillDefinition(doc: ISkill, file: WorkspaceSkillFile): void {
   doc.suppressed = file.suppressed;
 }
 
+/**
+ * Mongoose materialises an unset nested path as `{}` on a hydrated doc, so
+ * the marker's presence is its `reason`, never the object's truthiness —
+ * `if (row.definitionInvalid)` reads every healthy row as invalid.
+ */
+export function isSkillMarkedInvalid(row: {
+  definitionInvalid?: { reason?: string } | null;
+}): boolean {
+  return typeof row.definitionInvalid?.reason === "string";
+}
+
+/** The row's marker when it is a real one (see isSkillMarkedInvalid). */
+function rowInvalidMarker(
+  row: ISkill | null,
+): ISkill["definitionInvalid"] | undefined {
+  return row && isSkillMarkedInvalid(row) ? row.definitionInvalid : undefined;
+}
+
+/** Assigning `undefined` to a nested path persists `{}`; unset it instead. */
+async function clearSkillInvalid(id: Types.ObjectId): Promise<void> {
+  await Skill.updateOne({ _id: id }, { $unset: { definitionInvalid: 1 } });
+}
+
 async function markSkillInvalid(
   doc: ISkill,
   reason: string,
   path: string,
 ): Promise<void> {
+  // Idempotent: a list call must not rewrite the marker on every read.
+  if (
+    doc.definitionInvalid?.reason === reason &&
+    doc.definitionInvalid?.path === path
+  ) {
+    return;
+  }
   // $set only the invalid stamp. Saving the loaded document re-runs the
   // whole schema (createdBy required, maxlength, …) and 500s GET/list
   // when the last-good row itself cannot save.
   try {
-    await Skill.updateOne(
-      { _id: doc._id },
-      { $set: { definitionInvalid: { reason, at: new Date(), path } } },
-    );
+    const definitionInvalid = { reason, at: new Date(), path };
+    await Skill.updateOne({ _id: doc._id }, { $set: { definitionInvalid } });
+    doc.definitionInvalid = definitionInvalid;
   } catch (error) {
     logger.warn("Failed to mark skill invalid", {
       skillId: doc._id.toString(),
@@ -413,7 +442,7 @@ export async function loadLiveSkillById(
     const defs = await listSkillDefinitionsAtMain(workspaceId);
     const def = defs.find(item => item.name === row.name);
     if (!def) return null;
-    if (row.sourceBlobSha !== def.oid || row.definitionInvalid) {
+    if (row.sourceBlobSha !== def.oid || isSkillMarkedInvalid(row)) {
       try {
         await ensureSkillDerivedCache(row);
       } catch (error) {
@@ -454,13 +483,19 @@ export function liveSkillToPlain(
         createdBy: "git",
         useCount: 0,
         scopeType: "workspace",
+        // Whole shape for a file with no row yet: clients read these.
+        lastUsedAt: null,
+        createdAt: null,
+        updatedAt: null,
+        previousBody: null,
+        previousUpdatedAt: null,
       };
   base._id = live.id;
   base.name = live.def.name;
   base.workspaceId = live.row?.workspaceId ?? new Types.ObjectId(workspaceId);
   const parsed = live.def.parsed;
   if (!parsed) {
-    base.definitionInvalid = live.row?.definitionInvalid ?? {
+    base.definitionInvalid = rowInvalidMarker(live.row) ?? {
       reason: "unparseable skill file",
       at: new Date(),
       path: live.def.path,
@@ -475,7 +510,7 @@ export function liveSkillToPlain(
     applyFailure = error instanceof Error ? error.message : String(error);
   }
   if (applyFailure) {
-    base.definitionInvalid = live.row?.definitionInvalid ?? {
+    base.definitionInvalid = rowInvalidMarker(live.row) ?? {
       reason: applyFailure,
       at: new Date(),
       path: live.def.path,
@@ -486,7 +521,7 @@ export function liveSkillToPlain(
   try {
     applySkillDefinition(base as unknown as ISkill, parsed);
   } catch (error) {
-    base.definitionInvalid = live.row?.definitionInvalid ?? {
+    base.definitionInvalid = rowInvalidMarker(live.row) ?? {
       reason: error instanceof Error ? error.message : String(error),
       at: new Date(),
       path: live.def.path,
@@ -513,16 +548,17 @@ export async function ensureSkillDerivedCache(skill: {
   definitionInvalid?: { reason: string } | null;
 }): Promise<"ok" | "invalid" | "missing" | "resynced"> {
   if (!skill.name) return "ok";
+  const marked = isSkillMarkedInvalid(skill);
   if (!SKILL_NAME_RE.test(skill.name)) {
-    return skill.definitionInvalid ? "invalid" : "ok";
+    return marked ? "invalid" : "ok";
   }
   const workspaceId = skill.workspaceId.toString();
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null) {
-    return skill.definitionInvalid ? "invalid" : "ok";
+    return marked ? "invalid" : "ok";
   }
   const head = await resolveCommit(repoDir, MAIN);
-  if (!head) return skill.definitionInvalid ? "invalid" : "ok";
+  if (!head) return marked ? "invalid" : "ok";
   const path = skillFilePath(skill.name);
   let contents: string;
   try {
@@ -539,7 +575,7 @@ export async function ensureSkillDerivedCache(skill: {
     return "missing";
   }
   const sha = blobOid(contents);
-  if (skill.sourceBlobSha === sha && !skill.definitionInvalid) return "ok";
+  if (skill.sourceBlobSha === sha && !marked) return "ok";
   const parsed = parseSkillFile(skill.name, contents);
   const row = await Skill.findById(skill._id);
   if (!row) return "missing";
@@ -547,6 +583,18 @@ export async function ensureSkillDerivedCache(skill: {
     await markSkillInvalid(row, "unparseable skill file", path);
     return "invalid";
   }
+  // Same predicate the list and push-sync use; a file the save path would
+  // refuse must not be applied here either.
+  const applyFailure = skillFileApplyFailure(parsed);
+  if (applyFailure) {
+    await markSkillInvalid(row, applyFailure, path);
+    return "invalid";
+  }
+  // Stamping the sha declares the row level with the file. When the trigger
+  // text changed but the embedding could not be computed (service available,
+  // call failed), leave the row unstamped so the next read retries instead
+  // of ranking on the old vector forever.
+  let stamp = true;
   try {
     if (row.body !== parsed.body) {
       row.previousBody = row.body;
@@ -557,6 +605,8 @@ export async function ensureSkillDerivedCache(skill: {
       if (embedding) {
         row.loadWhenEmbedding = embedding;
         row.embeddingModel = model;
+      } else if (isEmbeddingAvailable()) {
+        stamp = false;
       }
     }
     applySkillDefinition(row, parsed);
@@ -566,10 +616,10 @@ export async function ensureSkillDerivedCache(skill: {
     if (fresh) await markSkillInvalid(fresh, reason, path);
     return "invalid";
   }
-  row.definitionInvalid = undefined;
-  row.sourceBlobSha = sha;
+  if (stamp) row.sourceBlobSha = sha;
   try {
     await row.save();
+    if (marked) await clearSkillInvalid(row._id);
   } catch (error) {
     // applySkillDefinition already mutated `row`. Saving that document
     // again (via markSkillInvalid) would re-raise the same ValidationError
@@ -720,79 +770,106 @@ export async function syncSkillsIndexFromRepo(
   if (!(await skillsAdopted(repoDir))) return;
 
   const defs = await listSkillDefinitionsAtMain(workspaceId);
-  let parsedDefs = defs.filter(
-    (def): def is SkillDefinitionAtMain & { parsed: WorkspaceSkillFile } =>
-      def.parsed !== null,
-  );
-  if (parsedDefs.length > MAX_SYNCED_SKILLS) {
+  // Every file at main keeps its row. A file that stopped parsing, or one
+  // past the index cap, is NOT "removed": deleting its row would throw away
+  // useCount, the embedding and the undo slot for a typo in front-matter.
+  const fileNames = new Set(defs.map(def => def.name));
+  let indexable = defs;
+  if (indexable.length > MAX_SYNCED_SKILLS) {
     logger.warn(
       "Workspace has more skill files than the index cap; truncating",
       {
         workspaceId,
-        fileCount: parsedDefs.length,
+        fileCount: indexable.length,
         cap: MAX_SYNCED_SKILLS,
       },
     );
-    parsedDefs = parsedDefs.slice(0, MAX_SYNCED_SKILLS);
+    indexable = indexable.slice(0, MAX_SYNCED_SKILLS);
   }
 
   const wsObjectId = new Types.ObjectId(workspaceId);
   const rows = (await Skill.find({ workspaceId: wsObjectId })) as ISkill[];
   const rowByName = new Map(rows.map(r => [r.name, r]));
-  const fileNames = new Set(parsedDefs.map(def => def.name));
 
-  for (const def of parsedDefs) {
+  for (const def of indexable) {
+    const row = rowByName.get(def.name) ?? null;
+    // One bad file must never abort the loop for the files after it, and
+    // never index a definition the save path would refuse: the same
+    // "applies" check GET/list uses, then a guard around the write.
     const file = def.parsed;
-    const entities = indexEntities(file);
-    const row = rowByName.get(file.name);
-    if (!row) {
-      const { embedding, model } = await embeddingFor(file.loadWhen);
-      await Skill.create({
-        _id: derivedSkillId(workspaceId, file.name),
-        workspaceId: wsObjectId,
-        name: file.name,
-        loadWhen: file.loadWhen,
-        body: file.body,
-        entities,
-        declaredEntities: file.entities,
-        loadWhenEmbedding: embedding,
-        embeddingModel: model,
-        scopeType: "workspace",
-        createdBy: userId && userId.length > 0 ? userId : "agent",
-        suppressed: file.suppressed,
-        useCount: 0,
-        sourceBlobSha: def.oid,
+    const failure = file
+      ? skillFileApplyFailure(file)
+      : "unparseable skill file";
+    if (!file || failure) {
+      logger.warn("skill file does not apply; skipped", {
+        workspaceId,
+        path: def.path,
+        reason: failure,
       });
+      if (row) await markSkillInvalid(row, failure ?? "invalid", def.path);
       continue;
     }
-    const unchanged =
-      row.loadWhen === file.loadWhen &&
-      row.body === file.body &&
-      row.suppressed === file.suppressed &&
-      sameEntities(row.entities ?? [], entities) &&
-      sameEntities(row.declaredEntities ?? [], file.entities) &&
-      row.sourceBlobSha === def.oid &&
-      !row.definitionInvalid;
-    if (unchanged) continue;
-    if (row.body !== file.body) {
-      row.previousBody = row.body;
-      row.previousUpdatedAt = row.updatedAt;
-    }
-    if (row.loadWhen !== file.loadWhen) {
-      const { embedding, model } = await embeddingFor(file.loadWhen);
-      if (embedding) {
-        row.loadWhenEmbedding = embedding;
-        row.embeddingModel = model;
+    try {
+      const entities = indexEntities(file);
+      if (!row) {
+        const { embedding, model } = await embeddingFor(file.loadWhen);
+        await Skill.create({
+          _id: derivedSkillId(workspaceId, file.name),
+          workspaceId: wsObjectId,
+          name: file.name,
+          loadWhen: file.loadWhen,
+          body: file.body,
+          entities,
+          declaredEntities: file.entities,
+          loadWhenEmbedding: embedding,
+          embeddingModel: model,
+          scopeType: "workspace",
+          createdBy: userId && userId.length > 0 ? userId : "agent",
+          suppressed: file.suppressed,
+          useCount: 0,
+          sourceBlobSha: def.oid,
+        });
+        continue;
       }
+      const wasInvalid = isSkillMarkedInvalid(row);
+      const unchanged =
+        row.loadWhen === file.loadWhen &&
+        row.body === file.body &&
+        row.suppressed === file.suppressed &&
+        sameEntities(row.entities ?? [], entities) &&
+        sameEntities(row.declaredEntities ?? [], file.entities) &&
+        row.sourceBlobSha === def.oid &&
+        !wasInvalid;
+      if (unchanged) continue;
+      if (row.body !== file.body) {
+        row.previousBody = row.body;
+        row.previousUpdatedAt = row.updatedAt;
+      }
+      if (row.loadWhen !== file.loadWhen) {
+        const { embedding, model } = await embeddingFor(file.loadWhen);
+        if (embedding) {
+          row.loadWhenEmbedding = embedding;
+          row.embeddingModel = model;
+        }
+      }
+      row.loadWhen = file.loadWhen;
+      row.body = file.body;
+      row.entities = entities;
+      row.declaredEntities = file.entities;
+      row.suppressed = file.suppressed;
+      row.sourceBlobSha = def.oid;
+      await row.save();
+      if (wasInvalid) await clearSkillInvalid(row._id);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      logger.warn("skill sync failed for one file; skipped", {
+        workspaceId,
+        path: def.path,
+        error: reason,
+      });
+      const fresh = row ? await Skill.findById(row._id) : null;
+      if (fresh) await markSkillInvalid(fresh, reason, def.path);
     }
-    row.loadWhen = file.loadWhen;
-    row.body = file.body;
-    row.entities = entities;
-    row.declaredEntities = file.entities;
-    row.suppressed = file.suppressed;
-    row.sourceBlobSha = def.oid;
-    row.definitionInvalid = undefined;
-    await row.save();
   }
 
   const stale = rows.filter(r => !fileNames.has(r.name));

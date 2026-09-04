@@ -77,6 +77,7 @@ import {
   unbindTestWorkspaceRepo,
 } from "../../apps/bind-test-workspace-repo";
 import { DBT_ENVIRONMENTS_PATH } from "../../dbt/dbt-config-files";
+import { commitDbtJobFile, reserveJobSlug } from "../../dbt/dbt-config.service";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -121,10 +122,16 @@ async function seedProject(): Promise<string> {
   return project._id.toString();
 }
 
-async function seedJob(projectId: string): Promise<string> {
+/**
+ * A job is live only when `dbt/jobs/<slug>.yml` exists at main (the tools
+ * resolve through the git overlay); seed the row AND commit its file.
+ */
+async function seedJob(projectId: string, opts?: { mongoOnly?: boolean }) {
+  const project = await DbtProject.findById(projectId);
   const job = await DbtJob.create({
     workspaceId: new Types.ObjectId(WS),
     projectId: new Types.ObjectId(projectId),
+    slug: await reserveJobSlug(new Types.ObjectId(projectId), "nightly"),
     name: "nightly",
     environment: "dev",
     commands: ["build"],
@@ -132,6 +139,7 @@ async function seedJob(projectId: string): Promise<string> {
     deferToProduction: false,
     createdBy: "tester",
   });
+  if (!opts?.mongoOnly) await commitDbtJobFile(project!, job);
   return job._id.toString();
 }
 
@@ -179,6 +187,15 @@ describe("dbt_delete_job", () => {
     expect(result.jobId).toBe(jobId);
     expect(result.name).toBe("nightly");
     expect(await DbtJob.countDocuments({})).toBe(0);
+  });
+
+  it("refuses a row whose file is not at main (not a live definition)", async () => {
+    const projectId = await seedProject();
+    const jobId = await seedJob(projectId, { mongoOnly: true });
+    const result = await deleteJob({ projectId, jobId });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/i);
+    expect(await DbtJob.countDocuments({})).toBe(1);
   });
 
   it("returns an error for an unknown job id", async () => {

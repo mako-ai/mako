@@ -46,6 +46,7 @@ import {
 } from "../apps/repository.service";
 import {
   DBT_ENVIRONMENTS_PATH,
+  type DbtEnvironmentsFile,
   jobFilePath,
   parseEnvironmentsFile,
   parseJobFile,
@@ -282,6 +283,17 @@ function joinLiveJobs(
 export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
   const workspaceId = project.workspaceId.toString();
   if ((await boundRepoDirIfExists(workspaceId)) == null) return [];
+  // A job "applies" against the environments the FILE declares, not the
+  // last pushed row — otherwise a job added together with its environment
+  // in one commit reads as invalid until the webhook lands.
+  try {
+    await ensureEnvironmentsDerivedCache(project);
+  } catch (error) {
+    logger.warn("ensureEnvironmentsDerivedCache failed", {
+      workspaceId,
+      error,
+    });
+  }
   const defs = await listJobDefinitionsAtMain(workspaceId);
   const rows = await DbtJob.find({ projectId: project._id });
   const bySlug = new Map(rows.map(row => [row.slug, row]));
@@ -308,6 +320,33 @@ export async function loadLiveJobById(
   if (!Types.ObjectId.isValid(jobId)) return null;
   const live = await loadLiveJobs(project);
   return live.find(job => job.id.toString() === jobId) ?? null;
+}
+
+export type LiveJobRowResolution =
+  | { ok: true; live: LiveJob; row: IDbtJob }
+  | { ok: false; status: 404 | 409; error: string };
+
+/**
+ * Resolve a job id for a mutation or a run: the file must be live at main
+ * AND the scheduler row must exist. A file that only lives in git (the push
+ * has not been reconciled yet) is a 409 with the reason, not a bare 404 —
+ * the list just showed the job. A row whose file was deleted is not live
+ * and resolves to nothing, so it can no longer be triggered.
+ */
+export async function resolveLiveJobRow(
+  project: IDbtProject,
+  jobId: string,
+): Promise<LiveJobRowResolution> {
+  const live = await loadLiveJobById(project, jobId);
+  if (!live) return { ok: false, status: 404, error: "Job not found" };
+  if (!live.row) {
+    return {
+      ok: false,
+      status: 409,
+      error: `Job "${live.def.slug}" exists only in git so far (${live.def.path}); it becomes runnable and editable once the push is synced.`,
+    };
+  }
+  return { ok: true, live, row: live.row };
 }
 
 function rowAsPlain(row: IDbtJob): Record<string, unknown> {
@@ -395,6 +434,84 @@ function environmentsToFile(project: IDbtProject) {
       ownerUserId: env.ownerUserId,
     })),
   };
+}
+
+function isEnvironmentsMarkedInvalid(project: IDbtProject): boolean {
+  return typeof project.environmentsInvalid?.reason === "string";
+}
+
+async function markEnvironmentsInvalid(
+  project: IDbtProject,
+  reason: string,
+): Promise<void> {
+  if (project.environmentsInvalid?.reason === reason) return;
+  const environmentsInvalid = { reason, at: new Date() };
+  await DbtProject.updateOne(
+    { _id: project._id },
+    { $set: { environmentsInvalid } },
+  );
+  project.environmentsInvalid = environmentsInvalid;
+}
+
+/** Project settings follow `dbt/environments.yml`; same mapping for read and push. */
+async function applyEnvironmentsFile(
+  project: IDbtProject,
+  parsed: DbtEnvironmentsFile,
+): Promise<void> {
+  project.environments = parsed.environments.map(env => ({
+    name: env.name,
+    connectionId: new Types.ObjectId(env.connectionId),
+    targetSchema: env.targetSchema,
+    threads: env.threads ?? 4,
+    vars: env.vars,
+    ownerUserId: env.ownerUserId,
+  })) as IDbtProject["environments"];
+  project.defaultEnvironment = parsed.defaultEnvironment;
+  project.prodEnvironment = parsed.prodEnvironment;
+  if (parsed.dbtVersion) project.dbtVersion = parsed.dbtVersion;
+  const clearInvalid = isEnvironmentsMarkedInvalid(project);
+  if (project.isModified()) await project.save();
+  if (clearInvalid) {
+    // Assigning undefined to a nested path persists `{}`; unset it.
+    await DbtProject.updateOne(
+      { _id: project._id },
+      { $unset: { environmentsInvalid: 1 } },
+    );
+    project.environmentsInvalid = undefined;
+  }
+}
+
+/**
+ * `dbt/environments.yml` at main is the read surface for a project's
+ * environments (apps.md §23), the way `dbt/jobs/*.yml` is for jobs. The
+ * project row is resynced in place when the file differs — a project GET
+ * after an external edit shows the file, not the last push. No file at main
+ * (workspace not adopted) leaves the row alone; an unbound workspace too.
+ */
+export async function ensureEnvironmentsDerivedCache(
+  project: IDbtProject,
+): Promise<void> {
+  const workspaceId = project.workspaceId.toString();
+  if (!(await getWorkspaceRepo(workspaceId))) return;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return;
+  let contents: string | null;
+  try {
+    const blob = await readBlob(repoDir, MAIN, DBT_ENVIRONMENTS_PATH);
+    contents = blob.isBinary ? null : blob.contents;
+  } catch {
+    return; // not adopted yet
+  }
+  const parsed = contents == null ? null : parseEnvironmentsFile(contents);
+  if (!parsed) {
+    await markEnvironmentsInvalid(project, "unparseable environments.yml");
+    return;
+  }
+  const level =
+    serializeEnvironmentsFile(environmentsToFile(project)) ===
+    serializeEnvironmentsFile(parsed);
+  if (level && !isEnvironmentsMarkedInvalid(project)) return;
+  await applyEnvironmentsFile(project, parsed);
 }
 
 /**
@@ -577,28 +694,9 @@ async function syncDbtConfigNow(
           "dbt environments.yml is invalid; not overwriting from Mongo",
           { workspaceId },
         );
-        project.environmentsInvalid = {
-          reason: "unparseable environments.yml",
-          at: new Date(),
-        };
-        if (project.isModified()) await project.save();
+        await markEnvironmentsInvalid(project, "unparseable environments.yml");
       } else {
-        project.environments = parsed.environments.map(env => ({
-          name: env.name,
-          connectionId: new Types.ObjectId(env.connectionId),
-          targetSchema: env.targetSchema,
-          threads: env.threads ?? 4,
-          vars: env.vars,
-          ownerUserId: env.ownerUserId,
-        })) as IDbtProject["environments"];
-        project.defaultEnvironment = parsed.defaultEnvironment;
-        project.prodEnvironment = parsed.prodEnvironment;
-        if (parsed.dbtVersion) project.dbtVersion = parsed.dbtVersion;
-        if (project.environmentsInvalid) {
-          project.environmentsInvalid = undefined;
-          project.markModified("environmentsInvalid");
-        }
-        if (project.isModified()) await project.save();
+        await applyEnvironmentsFile(project, parsed);
       }
     } catch (error) {
       logger.warn("dbt environments sync failed", { workspaceId, error });

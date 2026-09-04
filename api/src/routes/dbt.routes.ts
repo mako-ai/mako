@@ -49,11 +49,13 @@ import {
   commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  ensureEnvironmentsDerivedCache,
   jobScheduleFailure,
   loadLiveJobById,
   loadLiveJobs,
   liveJobToPlain,
   reserveJobSlug,
+  resolveLiveJobRow,
 } from "../dbt/dbt-config.service";
 import {
   DBT_PREVIEW_DEFAULT_LIMIT,
@@ -313,11 +315,21 @@ dbtRoutes.get("/projects", async (c: AuthenticatedContext) => {
     if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
       return badRequest(c, "Valid workspace ID is required");
     }
-    const projects = await DbtProject.find({
+    const docs = await DbtProject.find({
       workspaceId: new Types.ObjectId(workspaceId),
-    })
-      .sort({ updatedAt: -1 })
-      .lean();
+    }).sort({ updatedAt: -1 });
+    // Environments follow dbt/environments.yml at main (apps.md §23).
+    for (const doc of docs) {
+      try {
+        await ensureEnvironmentsDerivedCache(doc);
+      } catch (error) {
+        logger.warn("ensureEnvironmentsDerivedCache failed", {
+          projectId: doc._id.toString(),
+          error,
+        });
+      }
+    }
+    const projects = docs.map(doc => doc.toObject());
     const userId = getUserId(c);
     const prefs = await DbtEnvPreference.find({
       projectId: { $in: projects.map(p => p._id) },
@@ -438,6 +450,8 @@ dbtRoutes.get("/projects/:projectId", async (c: AuthenticatedContext) => {
     if (!project) {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
+    // Environments follow dbt/environments.yml at main (apps.md §23).
+    await ensureEnvironmentsDerivedCache(project);
     return c.json({ success: true, project });
   } catch (error) {
     return serverError(c, error, "Failed to fetch dbt project");
@@ -949,11 +963,14 @@ dbtRoutes.patch(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const live = await loadLiveJobById(project, jobId);
-      const job = live?.row;
-      if (!live || !job) {
-        return c.json({ success: false, error: "Job not found" }, 404);
+      const resolved = await resolveLiveJobRow(project, jobId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
       }
+      const job = resolved.row;
       const parsed = jobSchema.partial().safeParse(await c.req.json());
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid job");
@@ -1006,11 +1023,14 @@ dbtRoutes.delete(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const live = await loadLiveJobById(project, jobId);
-      const doomed = live?.row;
-      if (!live || !doomed) {
-        return c.json({ success: false, error: "Job not found" }, 404);
+      const resolved = await resolveLiveJobRow(project, jobId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
       }
+      const doomed = resolved.row;
       await deleteDbtJobFile(project, doomed.slug, getUserId(c));
       await DbtJob.deleteOne({ _id: doomed._id });
       publishDbtEvent(c, {
@@ -1036,13 +1056,14 @@ dbtRoutes.post(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const job = await DbtJob.findOne({
-        _id: new Types.ObjectId(jobId),
-        projectId: project._id,
-      });
-      if (!job) {
-        return c.json({ success: false, error: "Job not found" }, 404);
+      const resolved = await resolveLiveJobRow(project, jobId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
       }
+      const job = resolved.row;
       const run = await triggerDbtJobRun({
         workspaceId: project.workspaceId.toString(),
         job,

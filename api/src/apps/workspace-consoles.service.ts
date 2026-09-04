@@ -557,6 +557,26 @@ export async function loadLiveConsoles(
  * Resolve a console id for GET. Drafts stay on the Mongo working copy;
  * saved consoles are live only when the file exists at main.
  */
+/**
+ * The code to EXECUTE for a console: the file at main when the console is
+ * live there, else null (draft, unbound workspace, file gone). Every runner
+ * — the execute route, the scheduled executor, the agent's load — used to
+ * run `SavedConsole.code`, i.e. the last push, so a query edited in git ran
+ * stale until the webhook landed.
+ */
+export async function liveConsoleCode(
+  workspaceId: string,
+  consoleId: string,
+): Promise<{ code: string; language: ConsoleLanguage; path: string } | null> {
+  const hit = await loadLiveConsoleById(workspaceId, consoleId);
+  if (!hit || !("live" in hit)) return null;
+  return {
+    code: hit.live.parsed.code,
+    language: hit.live.location.language,
+    path: hit.live.path,
+  };
+}
+
 export async function loadLiveConsoleById(
   workspaceId: string,
   consoleId: string,
@@ -974,135 +994,146 @@ async function syncNow(
   }
 
   for (const entry of consoleEntries) {
-    const location = parseConsoleRepoPath(entry.path);
-    if (!location) continue;
-    const sidecar = byPath.get(chartSidecarPath(entry.path));
-    let row = rowByPath.get(entry.path);
+    // One file's failure is that file's problem: a folder-name validation
+    // error or a front-matter value the schema cannot cast must not skip
+    // every file after it, the deletion pass, and the realtime events.
+    try {
+      const location = parseConsoleRepoPath(entry.path);
+      if (!location) continue;
+      const sidecar = byPath.get(chartSidecarPath(entry.path));
+      let row = rowByPath.get(entry.path);
 
-    if (!row) {
-      const candidates = orphanByBlob.get(entry.oid);
-      const moved = candidates?.shift();
-      if (moved) {
-        row = moved;
-        stats.renamed++;
+      if (!row) {
+        const candidates = orphanByBlob.get(entry.oid);
+        const moved = candidates?.shift();
+        if (moved) {
+          row = moved;
+          stats.renamed++;
+        }
       }
-    }
 
-    if (row) {
-      seenRows.add(row._id.toString());
-      const contentSame =
-        row.sourceBlobSha === entry.oid && row.path === entry.path;
-      const chartSame = await sidecarMatches(sidecar, row.chartSpec);
-      if (contentSame && chartSame && !row.is_deleted) {
-        stats.skipped++;
+      if (row) {
+        seenRows.add(row._id.toString());
+        const contentSame =
+          row.sourceBlobSha === entry.oid && row.path === entry.path;
+        const chartSame = await sidecarMatches(sidecar, row.chartSpec);
+        if (contentSame && chartSame && !row.is_deleted) {
+          stats.skipped++;
+          continue;
+        }
+        if (row.is_deleted) stats.restored++;
+        else if (row.path === entry.path) stats.updated++;
+      }
+
+      const contents = await readAt(repoDir, entry.path);
+      // Unreadable files are not healed from Mongo. Skip; GET/list omits them.
+      if (contents === null) continue;
+      const parsed = parseConsoleFile(contents, location.language);
+      const chartSpec = sidecar
+        ? parseChartSpec((await readAt(repoDir, sidecar.path)) ?? "")
+        : undefined;
+      const access: ConsoleAccessLevel =
+        location.scope === "private" ? "private" : "workspace";
+      const ownerId =
+        location.scope === "private" && location.ownerId
+          ? location.ownerId
+          : (row?.owner_id ?? row?.createdBy ?? actor);
+      // A folder that first appears from git belongs to whoever pushed it
+      // (the console's owner), so they can rename or delete it later.
+      const folderId = await ensureFolderChain(
+        location.folderSegments,
+        workspaceId,
+        { access, ownerId },
+      );
+
+      const set: Record<string, unknown> = {
+        path: entry.path,
+        sourceBlobSha: entry.oid,
+        name: location.name,
+        language: location.language,
+        code: parsed.code,
+        folderId: folderId ?? null,
+        access,
+        isPrivate: access === "private",
+        owner_id: ownerId,
+        connectionId:
+          parsed.meta.connectionId &&
+          Types.ObjectId.isValid(parsed.meta.connectionId)
+            ? new Types.ObjectId(parsed.meta.connectionId)
+            : null,
+        databaseName: parsed.meta.databaseName ?? null,
+        databaseId: parsed.meta.databaseId ?? null,
+        resultsViewMode: parsed.meta.resultsViewMode ?? null,
+        mongoOptions: parsed.meta.mongoOptions ?? null,
+        chartSpec: chartSpec ?? null,
+        is_deleted: false,
+        isSaved: true,
+        lastDraftOrigin: "user",
+        updatedAt: new Date(),
+      };
+      if (parsed.meta.description) {
+        set.description = parsed.meta.description;
+        set.descriptionSource = "authored";
+      } else if (row && descriptionIsAuthored(row)) {
+        // The author removed their description: the generated one takes over
+        // on the next derivation.
+        set.description = "";
+        set.descriptionSource = "generated";
+      }
+      const scheduleSet = scheduleFields(parsed.meta.schedule, row);
+      Object.assign(set, scheduleSet.set);
+
+      if (row) {
+        await SavedConsole.updateOne(
+          { _id: row._id },
+          {
+            $set: set,
+            $inc: { version: 1, draftRevision: 1 },
+            $unset: { deletedAt: "", ...scheduleSet.unset },
+          },
+        );
+        const fresh = await SavedConsole.findById(row._id);
+        if (fresh) touched.push(fresh);
         continue;
       }
-      if (row.is_deleted) stats.restored++;
-      else if (row.path === entry.path) stats.updated++;
-    }
 
-    const contents = await readAt(repoDir, entry.path);
-    // Unreadable files are not healed from Mongo. Skip; GET/list omits them.
-    if (contents === null) continue;
-    const parsed = parseConsoleFile(contents, location.language);
-    const chartSpec = sidecar
-      ? parseChartSpec((await readAt(repoDir, sidecar.path)) ?? "")
-      : undefined;
-    const access: ConsoleAccessLevel =
-      location.scope === "private" ? "private" : "workspace";
-    const ownerId =
-      location.scope === "private" && location.ownerId
-        ? location.ownerId
-        : (row?.owner_id ?? row?.createdBy ?? actor);
-    // A folder that first appears from git belongs to whoever pushed it
-    // (the console's owner), so they can rename or delete it later.
-    const folderId = await ensureFolderChain(
-      location.folderSegments,
-      workspaceId,
-      { access, ownerId },
-    );
-
-    const set: Record<string, unknown> = {
-      path: entry.path,
-      sourceBlobSha: entry.oid,
-      name: location.name,
-      language: location.language,
-      code: parsed.code,
-      folderId: folderId ?? null,
-      access,
-      isPrivate: access === "private",
-      owner_id: ownerId,
-      connectionId:
-        parsed.meta.connectionId &&
-        Types.ObjectId.isValid(parsed.meta.connectionId)
-          ? new Types.ObjectId(parsed.meta.connectionId)
-          : null,
-      databaseName: parsed.meta.databaseName ?? null,
-      databaseId: parsed.meta.databaseId ?? null,
-      resultsViewMode: parsed.meta.resultsViewMode ?? null,
-      mongoOptions: parsed.meta.mongoOptions ?? null,
-      chartSpec: chartSpec ?? null,
-      is_deleted: false,
-      isSaved: true,
-      lastDraftOrigin: "user",
-      updatedAt: new Date(),
-    };
-    if (parsed.meta.description) {
-      set.description = parsed.meta.description;
-      set.descriptionSource = "authored";
-    } else if (row && descriptionIsAuthored(row)) {
-      // The author removed their description: the generated one takes over
-      // on the next derivation.
-      set.description = "";
-      set.descriptionSource = "generated";
-    }
-    const scheduleSet = scheduleFields(parsed.meta.schedule, row);
-    Object.assign(set, scheduleSet.set);
-
-    if (row) {
-      await SavedConsole.updateOne(
-        { _id: row._id },
-        {
-          $set: set,
-          $inc: { version: 1, draftRevision: 1 },
-          $unset: { deletedAt: "", ...scheduleSet.unset },
-        },
-      );
-      const fresh = await SavedConsole.findById(row._id);
-      if (fresh) touched.push(fresh);
-      continue;
-    }
-
-    try {
-      const created = await SavedConsole.create({
-        _id: derivedConsoleId(workspaceId, entry.path),
-        workspaceId: ws,
-        createdBy: actor,
-        executionCount: 0,
-        version: 1,
-        draftRevision: 1,
-        ...set,
-      });
-      stats.created++;
-      seenRows.add(created._id.toString());
-      touched.push(created);
-    } catch {
-      // Unique-id race with a concurrent list/sync: keep the winner so a
-      // git-only file that already appeared under the derived id does not
-      // mint a second row.
-      const winner =
-        (await SavedConsole.findById(
-          derivedConsoleId(workspaceId, entry.path),
-        )) ??
-        (await SavedConsole.findOne({
+      try {
+        const created = await SavedConsole.create({
+          _id: derivedConsoleId(workspaceId, entry.path),
           workspaceId: ws,
-          path: entry.path,
-          isSaved: true,
-        }));
-      if (!winner) throw new Error("Could not persist the console index row");
-      stats.created++;
-      seenRows.add(winner._id.toString());
-      touched.push(winner);
+          createdBy: actor,
+          executionCount: 0,
+          version: 1,
+          draftRevision: 1,
+          ...set,
+        });
+        stats.created++;
+        seenRows.add(created._id.toString());
+        touched.push(created);
+      } catch {
+        // Unique-id race with a concurrent list/sync: keep the winner so a
+        // git-only file that already appeared under the derived id does not
+        // mint a second row.
+        const winner =
+          (await SavedConsole.findById(
+            derivedConsoleId(workspaceId, entry.path),
+          )) ??
+          (await SavedConsole.findOne({
+            workspaceId: ws,
+            path: entry.path,
+            isSaved: true,
+          }));
+        if (!winner) throw new Error("Could not persist the console index row");
+        stats.created++;
+        seenRows.add(winner._id.toString());
+        touched.push(winner);
+      }
+    } catch (error) {
+      logger.warn("Console file could not be reconciled; skipped", {
+        workspaceId,
+        path: entry.path,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -1546,6 +1577,12 @@ export async function projectSavedConsole(input: {
   onInsert?: Record<string, unknown>;
   actorUserId: string;
   message: string;
+  /**
+   * The file the save replaces when there is no row yet (a git-only console
+   * saved under its derived id): without it the projection writes a second
+   * file next to the original instead of moving it.
+   */
+  previousPath?: string | null;
 }): Promise<Projection> {
   const base: Record<string, unknown> = input.current
     ? (input.current.toObject() as Record<string, unknown>)
@@ -1566,7 +1603,7 @@ export async function projectSavedConsole(input: {
     if (value !== undefined) desired[key] = value;
   }
   const row = desired as unknown as RowLike;
-  const previousPath = input.current?.path ?? null;
+  const previousPath = input.current?.path ?? input.previousPath ?? null;
   const committed = await commitConsoleState({
     row,
     previousPath,

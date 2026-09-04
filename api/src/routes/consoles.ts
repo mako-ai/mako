@@ -52,6 +52,8 @@ import {
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
+  liveConsoleCode,
+  loadLiveConsoleById,
   projectSavedConsole,
   requestConsoleDescription,
   restoreConsoleTo,
@@ -1210,10 +1212,37 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         _id: new Types.ObjectId(pathOrId),
         workspaceId: new Types.ObjectId(workspaceId),
       });
+      // A console that exists only in git (no row yet) is addressed by its
+      // derived id. It still has an owner (its path scope) and a language
+      // (its extension): the ACL check must run against the file, and the
+      // save must replace THAT file — not write a fresh `.sql` beside a
+      // `.js`, which is what the row-less defaults did.
+      const liveOnly =
+        existingById === null
+          ? await loadLiveConsoleById(workspaceId, pathOrId)
+          : null;
+      const liveFile = liveOnly && "live" in liveOnly ? liveOnly.live : null;
+      const aclSubject: ISavedConsole | null =
+        existingById ??
+        (liveFile
+          ? ({
+              _id: liveFile.id,
+              workspaceId: new Types.ObjectId(workspaceId),
+              access:
+                liveFile.location.scope === "private" ? "private" : "workspace",
+              isPrivate: liveFile.location.scope === "private",
+              owner_id:
+                liveFile.location.ownerId || liveFile.row?.owner_id || "git",
+              createdBy:
+                liveFile.location.ownerId || liveFile.row?.createdBy || "git",
+              sharedWith: liveFile.row?.sharedWith,
+              workspaceRole: liveFile.row?.workspaceRole,
+            } as unknown as ISavedConsole)
+          : null);
       if (
-        existingById &&
+        aclSubject &&
         !ConsoleManager.canWrite(
-          existingById,
+          aclSubject,
           user.id,
           isAdminPut,
           memberPut?.role,
@@ -1375,7 +1404,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         const setOnInsertFields: Record<string, any> = {
           createdBy: user.id,
           owner_id: user.id,
-          language: "sql" as const,
+          language: liveFile?.location.language ?? ("sql" as const),
           executionCount: 0,
           createdAt: now,
         };
@@ -1389,6 +1418,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         const projected = await projectSavedConsole({
           workspaceId,
           current: existingById ?? null,
+          previousPath: liveFile?.path ?? null,
           set: setFields,
           onInsert: setOnInsertFields,
           actorUserId: user.id,
@@ -2248,6 +2278,14 @@ consoleRoutes.openapi(
       ) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
+
+      // Git is the definition: run the file at main, not the row's last
+      // pushed copy (a query edited in git ran stale until the webhook).
+      const liveCode = await liveConsoleCode(
+        access.workspaceId,
+        consoleIdParsed.toString(),
+      );
+      if (liveCode) savedConsole.code = liveCode.code;
 
       // If console has a connection ID, verify it exists and belongs to workspace
       if (savedConsole.connectionId) {

@@ -110,6 +110,12 @@ export function slugifyFlowName(name: string): string {
 export async function reserveFlowSlug(
   workspaceId: Types.ObjectId | string,
   name: string,
+  /**
+   * Slugs already taken by files at main that have no row yet. Mongo rows
+   * alone are not the identity space: a name that slugifies onto a git-only
+   * `flows/<slug>.yml` would otherwise overwrite that file under a second id.
+   */
+  takenAtMain: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const wsId =
     typeof workspaceId === "string"
@@ -118,6 +124,7 @@ export async function reserveFlowSlug(
   return reserveSlug(
     slugifyFlowName(name),
     async candidate =>
+      takenAtMain.has(candidate) ||
       Boolean(await Flow.exists({ workspaceId: wsId, slug: candidate })),
     { label: `flow "${name}"` },
   );
