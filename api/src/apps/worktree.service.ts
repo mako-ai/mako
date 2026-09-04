@@ -102,6 +102,7 @@ import {
   ensureCommitLocally,
   ensureLocalRepo,
   freshenBeforeMainWrite,
+  freshenForServe,
   mirrorPushNow,
   resolveMirrorTarget,
   queueMirrorPush,
@@ -2259,6 +2260,12 @@ export async function listAppFolders(
     if (error instanceof RepoRequiredError) return [];
     throw error;
   }
+  // The repo is the list, and the cloud mirror is the repo: an instance
+  // that did not receive the push must not list from its stale clone. One
+  // throttled fetch (shared by every reader for a few seconds) covers the
+  // routes, the agent tools and the connectors alike; readers that must be
+  // exact on a miss force one via synthesizeProjectFromFolder's fetchOnMiss.
+  await freshenForServe(workspaceId);
   const sha = await resolveCommit(repoDir, DEFAULT_BRANCH);
   if (!sha) return [];
   const cached = appFoldersCache.get(workspaceId);
@@ -2408,8 +2415,21 @@ export async function ensureProjectRow(
 export async function synthesizeProjectFromFolder(
   workspaceId: string,
   slug: string,
+  options: {
+    /**
+     * On a miss, force one mirror fetch and look again (default true). The
+     * read-after-push contract for every app_* tool: a folder pushed a
+     * moment ago to another API instance resolves here on the first call,
+     * without every HIT paying a GitHub round trip.
+     */
+    fetchOnMiss?: boolean;
+  } = {},
 ): Promise<IAppProject | null> {
-  const folder = (await listAppFolders(workspaceId)).find(f => f.slug === slug);
+  let folder = (await listAppFolders(workspaceId)).find(f => f.slug === slug);
+  if (!folder && options.fetchOnMiss !== false) {
+    await freshenForServe(workspaceId, 0);
+    folder = (await listAppFolders(workspaceId)).find(f => f.slug === slug);
+  }
   if (!folder) return null;
   return {
     _id: derivedAppId(workspaceId, slug),

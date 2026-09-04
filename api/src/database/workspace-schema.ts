@@ -5335,6 +5335,19 @@ export interface IAppProject extends Document {
   /** When publishedSha was last repointed (publish or rollback). */
   publishedAt?: Date;
   /**
+   * Why the most recent deploy attempt did not go live — build output or
+   * the binding that could not be prepared. Cleared by the next successful
+   * repoint. This is what app_publish_status / app_build_log report when
+   * the publish sandbox is asleep, so diagnosing a stalled deploy needs
+   * neither a box nor bucket inspection.
+   */
+  lastDeployError?: {
+    sha: string;
+    stage: "bindings" | "build" | "publish";
+    message: string;
+    at: Date;
+  };
+  /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
    * protected. Same primitive dashboards and v1 apps use, so the management
    * routes and the /api/share/:token consumption side are shared verbatim.
@@ -5383,6 +5396,22 @@ const AppProjectSchema = new Schema<IAppProject>(
     },
     publishedSha: { type: String },
     publishedAt: { type: Date },
+    lastDeployError: {
+      type: new Schema(
+        {
+          sha: { type: String, required: true },
+          stage: {
+            type: String,
+            enum: ["bindings", "build", "publish"],
+            required: true,
+          },
+          message: { type: String, required: true },
+          at: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     publicShare: { type: PublicShareSchema, default: undefined },
     env: { type: [AppEnvVarSchema], default: undefined },
   },

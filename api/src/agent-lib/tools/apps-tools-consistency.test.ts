@@ -29,6 +29,7 @@ vi.mock("../../utils/resource-acl", () => ({
 
 vi.mock("../../apps/cloud-repo.service", () => ({
   freshenForServe: vi.fn(async () => state.events.push("freshen")),
+  ensureCommitLocally: vi.fn(),
 }));
 
 vi.mock("../../apps/worktree.service", () => ({
@@ -60,10 +61,14 @@ vi.mock("../../apps/worktree.service", () => ({
   readFile: vi.fn(),
   readSessionFile: vi.fn(),
   scopeOf: vi.fn(),
-  synthesizeProjectFromFolder: vi.fn(async () => {
-    state.events.push("synthesize");
-    return state.project;
-  }),
+  synthesizeProjectFromFolder: vi.fn(
+    async (_ws: string, _slug: string, options?: { fetchOnMiss?: boolean }) => {
+      state.events.push(
+        options?.fetchOnMiss ? "synthesize(fetch-on-miss)" : "synthesize",
+      );
+      return state.project;
+    },
+  ),
   worktreeStatus: vi.fn(),
   writeFile: vi.fn(),
 }));
@@ -121,14 +126,16 @@ beforeEach(() => {
 });
 
 describe("app tool repository consistency", () => {
-  it("freshens the cloud mirror before listing app folders", async () => {
+  it("lists from the repo primitive, which freshens the mirror itself (throttled)", async () => {
     const result = await tools().app_list_apps.execute({});
 
     expect(result.success).toBe(true);
-    expect(state.events).toEqual(["freshen", "list"]);
+    // No per-call force fetch here: listAppFolders owns the throttled
+    // freshen so every reader (routes, tools, connectors) shares one.
+    expect(state.events).toEqual(["list"]);
   });
 
-  it("freshens before resolving a folder-only app and catches up before opening", async () => {
+  it("resolves a folder-only app with fetch-on-miss and catches up before opening", async () => {
     const result = await tools().app_open_app.execute({
       appId: "sales",
       dev: false,
@@ -136,8 +143,7 @@ describe("app tool repository consistency", () => {
 
     expect(result.success).toBe(true);
     expect(state.events).toEqual([
-      "freshen",
-      "synthesize",
+      "synthesize(fetch-on-miss)",
       "catch-up",
       "worktree",
     ]);
@@ -151,8 +157,7 @@ describe("app tool repository consistency", () => {
 
     expect(result.success).toBe(true);
     expect(state.events).toEqual([
-      "freshen",
-      "synthesize",
+      "synthesize(fetch-on-miss)",
       "catch-up",
       "materialize",
     ]);

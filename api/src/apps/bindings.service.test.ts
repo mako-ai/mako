@@ -23,6 +23,7 @@ import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
   readBindings,
+  readBindingsTolerant,
 } from "./bindings.service";
 import { createProject, ensureWorktree, writeFile } from "./worktree.service";
 import { initRepo, repoDirFor } from "./repository.service";
@@ -131,6 +132,16 @@ describe("bindingArtifactKeyByName", () => {
     await expect(
       bindingArtifactKeyByName(project, "broken", USER),
     ).rejects.toThrow(/no connection/);
+    // Publish reads the tolerant form: the healthy binding is prepared and
+    // the stray file is named, so one WIP file cannot pin the whole app.
+    const tolerant = await readBindingsTolerant(project, USER);
+    expect(tolerant.bindings.map(b => b.name)).toEqual(["revenue"]);
+    expect(tolerant.skipped).toEqual([
+      {
+        path: "bindings/broken.sql",
+        error: expect.stringMatching(/"broken" has no connection/),
+      },
+    ]);
   });
 
   it("returns null for a name that is not a binding", async () => {

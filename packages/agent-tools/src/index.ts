@@ -204,12 +204,16 @@ export {
 
 export {
   CAPABILITY_GRANTS,
+  WORKSPACE_ROLE_RANK,
+  hasMinimumWorkspaceRole,
   type AgentCapabilityDefinition,
   type AgentSurface,
   type CapabilityGrant,
   type CapabilityMcpExclusionWhy,
   type CapabilityResultKind,
   type CapabilityRisk,
+  type MinimumWorkspaceRole,
+  type WorkspaceRoleName,
 } from "./capabilities/types";
 
 export {

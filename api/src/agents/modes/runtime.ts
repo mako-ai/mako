@@ -20,6 +20,7 @@ import {
   type CapabilityGrant,
 } from "@mako/agent-tools";
 import type { AgentContext } from "../types";
+import { workspaceService } from "../../services/workspace.service";
 import { unifiedAgentFactory } from "../unified";
 import { buildCurrentScreenContext } from "../unified/prompt";
 import { createModeTools } from "../../agent-lib/tools/mode-tools";
@@ -512,6 +513,21 @@ export function buildUnifiedModeRuntime(params: {
   // Grant enforcement happens here, at execution time — never by removing
   // the tool from the provider working set (that desyncs the prompt
   // inventory and misroutes calls; see enforceCapabilityGrantsAtExecution).
+  // Role-gated capabilities (dbt project/job administration, model
+  // authoring) read the caller's LIVE membership once per runtime, lazily —
+  // only a call to such a tool pays the lookup.
+  let liveRolePromise: Promise<string | undefined | null> | undefined;
+  const liveRole = (): Promise<string | undefined | null> => {
+    liveRolePromise ??= (async () => {
+      if (!context.userId) return null;
+      const member = await workspaceService.getMember(
+        context.workspaceId,
+        context.userId,
+      );
+      return member?.role ?? null;
+    })();
+    return liveRolePromise;
+  };
   const tools: ToolSet = enforceCapabilityGrantsAtExecution(
     {
       ...domainTools,
@@ -520,6 +536,7 @@ export function buildUnifiedModeRuntime(params: {
       ...discoveryTools,
     } as ToolSet,
     () => nativeCapabilityGrants(modeState),
+    liveRole,
   );
 
   const allToolNames = new Set<string>(Object.keys(tools));

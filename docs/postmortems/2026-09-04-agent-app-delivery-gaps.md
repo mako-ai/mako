@@ -156,8 +156,37 @@ Automated coverage must prove that:
 
 ## Follow-up ownership
 
-The P0 items and P1 capability discovery are implemented on the platform
-reliability branch associated with this post-mortem. The remaining P1
-observability/startup work and P2 CLI parity should be tracked independently
-so the atomic correctness fixes can ship without waiting for broader CLI and
-operation-status design.
+The P0 items and P1 capability discovery shipped in #978. Its review found
+five regressions or gaps in that remediation, closed in the follow-up PR
+together with P1 publish observability:
+
+- **Deleted folder loop.** Because auto-deploy now persists a row, deleting an
+  app folder by push kept the app "discovered": the build failed on a missing
+  cwd, Inngest retried, and the hourly reconcile re-enqueued it forever. The
+  deploy worker now checks the folder at the exact sha (after verifying the
+  commit is present — a stale mirror must never read as "deleted") and
+  unpublishes instead of building.
+- **One malformed binding pinned the whole app.** Publish read bindings
+  all-or-nothing, so a stray `bindings/draft (copy).sql` blocked every publish
+  and rollback. Readiness now uses the same tolerance as serving: healthy
+  bindings are prepared, malformed files are reported as `skipped`.
+- **Sandbox boot on failure.** The binding gate appended its error to the
+  build log by shelling into the publish sandbox — booting a box on the
+  repoint path that needs none, on every retry. Failures are now recorded on
+  the project row (`lastDeployError`: sha, stage, message) and cleared on the
+  next successful repoint; `app_publish_status` and `app_build_log` return it
+  without a sandbox. The gate also runs before the build, not after it.
+- **A GitHub fetch per tool call.** `freshenForServe(ws, 0)` bypassed the
+  throttle, so every `app_*` call on a folder-only app and every Inngest deploy
+  step fetched the mirror. `listAppFolders` now owns one throttled freshen for
+  every reader, folder resolution forces a fetch only on a miss, and the deploy
+  worker uses the sha-aware `ensureCommitLocally` (a no-op when the commit is
+  present).
+- **Role floor enforced only in MCP listing.** `minimumWorkspaceRole` was
+  read by the MCP tools/list loop alone, so a viewer could still create dbt
+  projects and jobs from in-product chat. The floor is now one registry rule
+  (`hasMinimumWorkspaceRole`) applied by `authorizeAgentCapability`, by the
+  in-product execution wrapper (live membership, looked up lazily), by MCP
+  CallTool, and by the OAuth consent page.
+
+P1 durable dev startup and P2 CLI parity remain tracked independently.
