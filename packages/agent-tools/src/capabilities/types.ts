@@ -60,8 +60,13 @@ export interface AgentCapabilityDefinition<
   domain: Domain;
   pack: Pack;
   risk: CapabilityRisk;
-  /** Minimum live workspace role required for this capability. */
-  minimumWorkspaceRole?: "member" | "admin";
+  /**
+   * Minimum live workspace role required for this capability. Enforced at
+   * execution on every surface (authorizeAgentCapability /
+   * enforceCapabilityGrantsAtExecution), and used by MCP listing to hide the
+   * tool with a reason.
+   */
+  minimumWorkspaceRole?: MinimumWorkspaceRole;
   requiredGrant?: CapabilityGrant;
   inputConditionalGrants?: readonly CapabilityInputConditionalGrant[];
   surfaces: readonly AgentSurface[];
@@ -98,3 +103,27 @@ export const PRODUCT_AGENT_SURFACES = [
 export const IN_CHAT_ONLY_SURFACES = [
   "in-chat",
 ] as const satisfies readonly AgentSurface[];
+
+/**
+ * Workspace roles, least to most privileged. The ONE ladder every
+ * capability gate reads (`minimumWorkspaceRole`), so MCP listing, MCP
+ * execution, in-product execution and the OAuth consent page cannot drift.
+ */
+export const WORKSPACE_ROLE_RANK = {
+  viewer: 0,
+  member: 1,
+  admin: 2,
+  owner: 3,
+} as const;
+export type WorkspaceRoleName = keyof typeof WORKSPACE_ROLE_RANK;
+export type MinimumWorkspaceRole = "member" | "admin";
+
+/** Does a live workspace role satisfy a capability's minimum? Unknown = no. */
+export function hasMinimumWorkspaceRole(
+  role: string | undefined | null,
+  minimum: MinimumWorkspaceRole,
+): boolean {
+  if (!role) return false;
+  const rank = WORKSPACE_ROLE_RANK[role as WorkspaceRoleName];
+  return rank !== undefined && rank >= WORKSPACE_ROLE_RANK[minimum];
+}

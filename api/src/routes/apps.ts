@@ -103,6 +103,7 @@ import {
   deployBuild,
   deploymentExists,
   ensureDeploymentBindings,
+  recordDeployFailure,
   setPublishedSha,
   serveDeploymentFile,
 } from "../apps/deployment.service";
@@ -2212,6 +2213,12 @@ appsRoutes.openapi(
         try {
           await ensureDeploymentBindings(loaded.project, sha);
         } catch (bindingError) {
+          await recordDeployFailure(
+            loaded.project,
+            sha,
+            "bindings",
+            bindingError,
+          );
           return c.json(
             {
               success: false,
@@ -2236,6 +2243,7 @@ appsRoutes.openapi(
       await checkoutInBox(handle, sha);
       const build = await buildApp(handle, execInWorktree);
       if (!build.ok) {
+        await recordDeployFailure(loaded.project, sha, "build", build.output);
         return c.json(
           {
             success: false,
@@ -2250,6 +2258,12 @@ appsRoutes.openapi(
       try {
         await ensureDeploymentBindings(loaded.project, sha);
       } catch (bindingError) {
+        await recordDeployFailure(
+          loaded.project,
+          sha,
+          "bindings",
+          bindingError,
+        );
         return c.json(
           {
             success: false,
@@ -2329,6 +2343,12 @@ appsRoutes.openapi(
       try {
         await ensureDeploymentBindings(loaded.project, sha);
       } catch (bindingError) {
+        await recordDeployFailure(
+          loaded.project,
+          sha,
+          "bindings",
+          bindingError,
+        );
         return c.json(
           {
             success: false,

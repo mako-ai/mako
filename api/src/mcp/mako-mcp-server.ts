@@ -33,6 +33,8 @@ import {
 import {
   authorizeAgentCapability,
   missingInputConditionalGrant,
+  missingWorkspaceRole,
+  workspaceRoleDenial,
 } from "../agent-lib/capabilities/runtime";
 import { createAppsTools } from "../agent-lib/tools/apps-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
@@ -324,26 +326,18 @@ export function buildMakoMcpToolset(
     if (entry.acpDesktopOnly && !context.acpDesktop) continue;
     if (entry.omitForAcpDesktop && context.acpDesktop) continue;
     const capability = AGENT_CAPABILITY_BY_NAME.get(name);
-    if (
-      capability?.minimumWorkspaceRole === "admin" &&
-      context.memberRole !== "owner" &&
-      context.memberRole !== "admin"
-    ) {
+    // Same rule authorizeAgentCapability applies at CallTool time; the
+    // listing only adds the reason so get_mcp_capabilities can explain.
+    const missingRole = missingWorkspaceRole(name, context.memberRole);
+    if (missingRole) {
       unavailable.push({
         name,
-        reason: "Requires an admin or owner workspace role",
-        requiredWorkspaceRole: "admin",
-      });
-      continue;
-    }
-    if (
-      capability?.minimumWorkspaceRole === "member" &&
-      (!context.memberRole || context.memberRole === "viewer")
-    ) {
-      unavailable.push({
-        name,
-        reason: "Requires at least a member workspace role",
-        requiredWorkspaceRole: "member",
+        reason: workspaceRoleDenial(
+          name,
+          missingRole.required,
+          context.memberRole,
+        ),
+        requiredWorkspaceRole: missingRole.required,
       });
       continue;
     }
@@ -564,6 +558,9 @@ export function buildMakoMcpServer(
       surface: context.acpDesktop ? "desktop-acp" : "external-mcp",
       queryAccess,
       grants,
+      // Always evaluated here: the route resolves the live role per request,
+      // and a credential whose owner lost membership has no role (null).
+      memberRole: context.memberRole ?? null,
     });
     if (!authorization.allowed) {
       return {

@@ -170,13 +170,14 @@ export function createAppsTools({
           })) ?? null;
     if (!project) {
       // No row: the app may exist only as a folder in the repo, which is the
-      // normal case for anything created from a local checkout. Force-fetch
-      // before the folder fallback so an API instance cannot answer from an
-      // older local mirror immediately after another instance received the
-      // push. Every app_* tool resolves through here, so this is the
-      // read-after-push consistency boundary.
-      await freshenForServe(workspaceId, 0);
-      project = await synthesizeProjectFromFolder(workspaceId, ref);
+      // normal case for anything created from a local checkout. The folder
+      // lookup fetches the mirror on a MISS, so an API instance cannot say
+      // "not found" from an older clone right after another instance took
+      // the push — while the twenty app_* calls that follow, all resolving
+      // through here, do not each pay a GitHub round trip.
+      project = await synthesizeProjectFromFolder(workspaceId, ref, {
+        fetchOnMiss: true,
+      });
     }
     if (!project) {
       return { error: `App ${appId} not found. Use app_list_apps.` };
@@ -205,10 +206,9 @@ export function createAppsTools({
       execute: async () => {
         // The repo is the list: an app is a folder under apps/ (§13.6), so
         // one written straight into a checkout and pushed shows up here with
-        // no registration step. Force-fetch for the same reason loadProject's
-        // folder fallback does: list and open must never disagree merely
-        // because they landed on different API instances.
-        await freshenForServe(workspaceId, 0);
+        // no registration step. listAppFolders freshens the mirror itself
+        // (throttled), so list and open cannot disagree for more than a few
+        // seconds merely because they landed on different API instances.
         const folders = await listAppFolders(workspaceId);
         const docs = await AppProject.find({
           workspaceId: new Types.ObjectId(workspaceId),
@@ -545,7 +545,7 @@ export function createAppsTools({
       description:
         "What is LIVE for this app: the published deployment's commit sha vs the tip of the default branch. " +
         "A push to the default branch builds and publishes automatically; when the branch is ahead of the published sha, " +
-        "the newest commits are still building or the build/data preparation failed (app_build_log / the Mako UI header have the output). " +
+        "the newest commits are still building or the build/data preparation failed — `lastDeployError` then names the stage (bindings/build) and the error; app_build_log has the full build output. " +
         "For the sandbox worktree's own git state, use app_status.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
@@ -616,6 +616,9 @@ export function createAppsTools({
               branchSha,
               branchAppSha,
               upToDate,
+              // Why the newest commit is not live, when it is not: recorded by
+              // the deploy worker and the publish route, cleared on success.
+              lastDeployError: project.lastDeployError ?? null,
             },
           };
         } catch (error) {
@@ -677,9 +680,11 @@ export function createAppsTools({
 
     app_build_log: tool({
       description:
-        "Tail the PUBLISH build log (npm install, build, and binding-readiness output from the " +
+        "Tail the PUBLISH build log (npm install + build output from the " +
         "shared publish sandbox) — the first place to look when app_publish " +
-        "or a push deploy does not land. Distinct from app_dev_log (the dev " +
+        "or a push deploy does not land; `lastDeployError` in the result is " +
+        "the recorded reason (binding or build) even when the sandbox is asleep. " +
+        "Distinct from app_dev_log (the dev " +
         "server's log). Never starts a sandbox: an empty result means no " +
         "publish build has run recently.",
       inputSchema: z.object({
@@ -697,10 +702,11 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
+          const lastDeployError = loaded.project.lastDeployError ?? null;
           const handle = await ensureWorktree(loaded.project, PUBLISH_ACTOR);
           const ctx = boxCtx(handle);
           if (!(await getSandboxProvider().hasSession(ctx))) {
-            return { success: true, size: 0, chunk: "" };
+            return { success: true, size: 0, chunk: "", lastDeployError };
           }
           const start = (offset ?? 0) + 1;
           const result = await getSandboxProvider().exec(
@@ -715,6 +721,7 @@ export function createAppsTools({
             success: true,
             size,
             chunk: result.stdout.slice(newline + 1),
+            lastDeployError,
           };
         } catch (error) {
           return { success: false, error: errorMessage(error) };

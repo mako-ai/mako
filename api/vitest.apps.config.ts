@@ -42,6 +42,7 @@ export default defineConfig({
       "src/connectors/probe.service.test.ts",
       "src/agent-lib/tools/connector-tools.test.ts",
       "src/agent-lib/tools/apps-tools-consistency.test.ts",
+      "src/agent-lib/capabilities/runtime.test.ts",
       "src/apps/preview.service.test.ts",
       "src/apps/deployment.service.test.ts",
       "src/apps/deploy-on-push.test.ts",

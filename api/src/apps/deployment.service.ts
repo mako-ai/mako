@@ -31,7 +31,7 @@ import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
   materializeAppBinding,
-  readBindings,
+  readBindingsTolerant,
 } from "./bindings.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
@@ -217,8 +217,54 @@ export async function setPublishedSha(
 ): Promise<void> {
   await AppProject.updateOne(
     { _id: project._id },
-    { $set: { publishedSha: sha, publishedAt: new Date() } },
+    {
+      $set: { publishedSha: sha, publishedAt: new Date() },
+      $unset: { lastDeployError: 1 },
+    },
   );
+}
+
+/**
+ * Unpublish: the folder is gone from `main`, so nothing should serve. The
+ * row stays (env vars, sharing, history); only the live pointer clears, and
+ * with it the hourly reconcile's reason to keep re-enqueuing the app.
+ */
+export async function clearPublishedSha(project: IAppProject): Promise<void> {
+  await AppProject.updateOne(
+    { _id: project._id },
+    { $unset: { publishedSha: 1, publishedAt: 1, lastDeployError: 1 } },
+  );
+}
+
+const DEPLOY_ERROR_MAX_CHARS = 8_000;
+
+/**
+ * Remember why a deploy did not go live, on the row every status reader
+ * already loads. Replaces shelling into the publish sandbox to append a
+ * log line — which booted a box on the repoint path that needs none, and
+ * wrote to a file the next build truncates anyway.
+ */
+export async function recordDeployFailure(
+  project: IAppProject,
+  sha: string,
+  stage: "bindings" | "build" | "publish",
+  error: unknown,
+): Promise<void> {
+  const full = error instanceof Error ? error.message : String(error);
+  const message =
+    full.length > DEPLOY_ERROR_MAX_CHARS
+      ? `…${full.slice(-DEPLOY_ERROR_MAX_CHARS)}`
+      : full;
+  await AppProject.updateOne(
+    { _id: project._id },
+    { $set: { lastDeployError: { sha, stage, message, at: new Date() } } },
+  ).catch(err => {
+    logger.warn("Could not record apps deploy failure", {
+      projectId: project._id.toString(),
+      sha,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
 }
 
 /** Whether a given sha's deployment still exists in the store. */
@@ -236,6 +282,13 @@ export interface DeploymentBindingReadiness {
   reused: string[];
   /** Bindings materialized by this readiness check. */
   materialized: string[];
+  /**
+   * Files under bindings/ that are not servable (bad filename, no
+   * connection). They do not block the release — their data URL 404s
+   * exactly as it did before publish read bindings at all — but they are
+   * reported so the log names the file to fix.
+   */
+  skipped: Array<{ path: string; error: string }>;
 }
 
 /**
@@ -251,7 +304,18 @@ export async function ensureDeploymentBindings(
   project: IAppProject,
   sha: string,
 ): Promise<DeploymentBindingReadiness> {
-  const bindings = await readBindings(project, PUBLISH_ACTOR, sha);
+  const { bindings, skipped } = await readBindingsTolerant(
+    project,
+    PUBLISH_ACTOR,
+    sha,
+  );
+  if (skipped.length > 0) {
+    logger.warn("Apps deployment skips malformed bindings", {
+      projectId: project._id.toString(),
+      sha,
+      skipped,
+    });
+  }
   const live = bindings.filter(binding => binding.materialization === "live");
   if (live.length > 0) {
     throw new Error(
@@ -265,6 +329,7 @@ export async function ensureDeploymentBindings(
     required: bindings.map(binding => binding.name),
     reused: [],
     materialized: [],
+    skipped,
   };
   for (const binding of bindings) {
     const key = bindingArtifactKey(binding);
@@ -284,6 +349,7 @@ export async function ensureDeploymentBindings(
     required: readiness.required.length,
     reused: readiness.reused.length,
     materialized: readiness.materialized.length,
+    skipped: readiness.skipped.length,
   });
   return readiness;
 }
@@ -459,9 +525,11 @@ export async function serveDeploymentFile(input: {
   // derives it from the repo's bindings so published apps get tables too.
   if (assetPath === "__data/index.json") {
     const project = await AppProject.findById(projectId);
-    // AT the deployed commit — see readSource's `at`.
+    // AT the deployed commit — see readSource's `at`. Tolerant, like the
+    // per-binding data path: a malformed neighbour must not 500 the table
+    // index that every healthy binding's registration depends on.
     const names = project
-      ? (await readBindings(project, "", sha)).map(b => b.name)
+      ? (await readBindingsTolerant(project, "", sha)).bindings.map(b => b.name)
       : [];
     return new Response(JSON.stringify(names), {
       status: 200,

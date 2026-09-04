@@ -12,6 +12,7 @@ const stores = vi.hoisted(() => ({
     code: string;
     sql: string;
   }>,
+  skipped: [] as Array<{ path: string; error: string }>,
 }));
 
 vi.mock("../services/dashboard-artifact-store.service", () => ({
@@ -32,7 +33,10 @@ vi.mock("./bindings.service", () => ({
     byteSize: 10,
     materializedAt: new Date(),
   })),
-  readBindings: vi.fn(async () => stores.bindings),
+  readBindingsTolerant: vi.fn(async () => ({
+    bindings: stores.bindings,
+    skipped: stores.skipped,
+  })),
 }));
 
 vi.mock("../database/workspace-schema", () => ({
@@ -64,7 +68,10 @@ import {
   readDeploymentAsset,
   serveDeploymentFile,
 } from "./deployment.service";
-import { materializeAppBinding, readBindings } from "./bindings.service";
+import {
+  materializeAppBinding,
+  readBindingsTolerant,
+} from "./bindings.service";
 
 function mockStore(existingKeys: string[]): DashboardArtifactStore {
   const keys = new Set(existingKeys);
@@ -144,6 +151,7 @@ describe("deployment binding readiness", () => {
   beforeEach(() => {
     stores.primary = mockStore([]);
     stores.source = undefined;
+    stores.skipped = [];
     stores.bindings = [
       {
         name: "sales",
@@ -165,8 +173,9 @@ describe("deployment binding readiness", () => {
       required: ["sales"],
       reused: ["sales"],
       materialized: [],
+      skipped: [],
     });
-    expect(readBindings).toHaveBeenCalledWith(project, "publish", sha);
+    expect(readBindingsTolerant).toHaveBeenCalledWith(project, "publish", sha);
     expect(materializeAppBinding).not.toHaveBeenCalled();
   });
 
@@ -180,6 +189,22 @@ describe("deployment binding readiness", () => {
       "publish",
       { at: sha },
     );
+  });
+
+  it("does not let a malformed neighbour pin the app at its old deployment", async () => {
+    stores.skipped = [
+      {
+        path: "bindings/draft (copy).sql",
+        error: "Invalid binding filename: bindings/draft (copy).sql",
+      },
+    ];
+
+    const result = await ensureDeploymentBindings(project, sha);
+
+    // The healthy binding is prepared; the stray file is reported, not fatal
+    // — its data URL 404s exactly as the serving path already isolates it.
+    expect(result.materialized).toEqual(["sales"]);
+    expect(result.skipped).toEqual(stores.skipped);
   });
 
   it("rejects dev-only live bindings instead of publishing a broken data URL", async () => {

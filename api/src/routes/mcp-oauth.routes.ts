@@ -29,6 +29,7 @@ import {
   registerOAuthClient,
   resolveMcpOAuthConsentScopes,
 } from "../auth/mcp-oauth.service";
+import { hasMinimumWorkspaceRole } from "@mako/agent-tools";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
 
@@ -489,7 +490,10 @@ mcpOAuthRoutes.post("/authorize", async c => {
     parsed.value.scopes,
     form.grant_warehouse_write === "yes",
   );
-  if (scopes.includes("warehouse:write") && member.role === "viewer") {
+  if (
+    scopes.includes("warehouse:write") &&
+    !hasMinimumWorkspaceRole(member.role, "member")
+  ) {
     return c.html(
       "<h1>Cannot connect</h1><p>Warehouse execution requires at least the member workspace role.</p>",
       403,
