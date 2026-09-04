@@ -27,10 +27,20 @@ import {
   type DashboardArtifactStore,
 } from "../services/dashboard-artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
-import { bindingArtifactKeyByName, readBindings } from "./bindings.service";
+import {
+  bindingArtifactKey,
+  bindingArtifactKeyByName,
+  materializeAppBinding,
+  readBindings,
+} from "./bindings.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { boxCtx, handleProject, type WorktreeHandle } from "./worktree.service";
+import {
+  PUBLISH_ACTOR,
+  boxCtx,
+  handleProject,
+  type WorktreeHandle,
+} from "./worktree.service";
 import { readBoxDir } from "./box";
 import { resolveAppEnv } from "./env.service";
 
@@ -219,6 +229,65 @@ export async function deploymentExists(
   return (await existingDeploymentAsset(projectId, sha, "index.html")) !== null;
 }
 
+export interface DeploymentBindingReadiness {
+  /** Parquet bindings that a published deployment must be able to serve. */
+  required: string[];
+  /** Bindings whose existing content-addressed artifact was reused. */
+  reused: string[];
+  /** Bindings materialized by this readiness check. */
+  materialized: string[];
+}
+
+/**
+ * Make the data contract of a deployment ready before it becomes live.
+ *
+ * Binding definitions are read at the exact deployment commit, never from a
+ * mutable worktree. Their artifacts are content-addressed, so an unchanged
+ * query is a cheap existence check while a changed/new query is materialized
+ * once. A failure propagates to the durable deploy job and, critically, the
+ * caller has not moved `publishedSha` yet.
+ */
+export async function ensureDeploymentBindings(
+  project: IAppProject,
+  sha: string,
+): Promise<DeploymentBindingReadiness> {
+  const bindings = await readBindings(project, PUBLISH_ACTOR, sha);
+  const live = bindings.filter(binding => binding.materialization === "live");
+  if (live.length > 0) {
+    throw new Error(
+      `Cannot publish live binding${live.length === 1 ? "" : "s"} ${live
+        .map(binding => `"${binding.name}"`)
+        .join(", ")}. Published apps require parquet materialization.`,
+    );
+  }
+
+  const readiness: DeploymentBindingReadiness = {
+    required: bindings.map(binding => binding.name),
+    reused: [],
+    materialized: [],
+  };
+  for (const binding of bindings) {
+    const key = bindingArtifactKey(binding);
+    if (await artifactStoreForRead(key)) {
+      readiness.reused.push(binding.name);
+      continue;
+    }
+    await materializeAppBinding(project, binding.name, PUBLISH_ACTOR, {
+      at: sha,
+    });
+    readiness.materialized.push(binding.name);
+  }
+
+  logger.info("Apps deployment bindings ready", {
+    projectId: project._id.toString(),
+    sha,
+    required: readiness.required.length,
+    reused: readiness.reused.length,
+    materialized: readiness.materialized.length,
+  });
+  return readiness;
+}
+
 export interface DeploymentAsset {
   stream: NodeJS.ReadableStream;
   contentType: string;
@@ -341,6 +410,7 @@ export async function deployBuild(
   project: IAppProject,
   sha: string,
   handle: WorktreeHandle,
+  options: { bindingsReady?: boolean } = {},
 ): Promise<PublishResult> {
   // The build output lives in the sandbox — it is not in git, and the API
   // host no longer keeps a copy of the working tree. Copy just `dist/` out,
@@ -350,6 +420,13 @@ export async function deployBuild(
   try {
     await readBoxDir(boxCtx(handle), `${handle.appRoot}/dist`, staging);
     const result = await uploadDeployment(project, sha, staging);
+    // Safe by default for every present and future caller. Existing release
+    // paths can prepare bindings earlier to return a more specific error and
+    // pass the proof here; a new caller that forgets still cannot publish a
+    // frontend whose required data artifact is absent.
+    if (!options.bindingsReady) {
+      await ensureDeploymentBindings(project, sha);
+    }
     await setPublishedSha(project, sha);
     return result;
   } finally {

@@ -147,6 +147,7 @@ mcpProtocolRoutes.post(
     const mcpContext = {
       workspaceId,
       userId: user ? String(user.id) : undefined,
+      memberRole: c.get("memberRole"),
       scopes,
       acpDesktop,
       capabilityGrants,

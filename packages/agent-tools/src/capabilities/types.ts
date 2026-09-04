@@ -60,6 +60,8 @@ export interface AgentCapabilityDefinition<
   domain: Domain;
   pack: Pack;
   risk: CapabilityRisk;
+  /** Minimum live workspace role required for this capability. */
+  minimumWorkspaceRole?: "member" | "admin";
   requiredGrant?: CapabilityGrant;
   inputConditionalGrants?: readonly CapabilityInputConditionalGrant[];
   surfaces: readonly AgentSurface[];

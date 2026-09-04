@@ -4361,7 +4361,7 @@ export interface paths {
         put?: never;
         /**
          * Publish the app: merge to main, build, and deploy
-         * @description Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.
+         * @description Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, prepares every required parquet binding at that exact commit, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build or binding leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing code and data artifacts instead of rebuilding them.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_publish"];
         delete?: never;
@@ -4381,7 +4381,7 @@ export interface paths {
         put?: never;
         /**
          * Point the app at a previously published deployment
-         * @description Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no rebuild and no sandbox. The target sha must still have a stored deployment.
+         * @description Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no code rebuild and no sandbox. The target sha must still have a stored deployment, and every parquet binding required by that commit is verified or rematerialized before the pointer moves.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_rollback"];
         delete?: never;

@@ -858,4 +858,44 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     expect(again._id.toString()).toBe(row._id.toString());
     expect(again.publishedSha).toBe(sha);
   }, 60_000);
+
+  it("never makes the push-deploy worker the owner; the first human claims the row", async () => {
+    const { initRepo, repoDirFor } = await import("./repository.service");
+    const { synthesizeProjectFromFolder, ensureProjectRow, PUBLISH_ACTOR } =
+      await import("./worktree.service");
+    const { AppProject } = await import("../database/workspace-schema");
+    const { getResourceOwnerId } = await import("../utils/resource-acl");
+
+    const ws3 = new Types.ObjectId().toString();
+    await initRepo(repoDirFor(ws3), {
+      "apps/pushed/mako.json": JSON.stringify({ title: "Pushed" }),
+    });
+    await bindTestWorkspaceRepo(ws3);
+    const synth = await synthesizeProjectFromFolder(ws3, "pushed");
+    expect(synth).not.toBeNull();
+
+    // A push to main auto-deploys the folder before any person touched it.
+    // The row must exist (so publishedSha persists) but stay ownerless:
+    // "publish" as owner_id would make the app unshareable forever.
+    const byWorker = await ensureProjectRow(synth!, PUBLISH_ACTOR);
+    expect(byWorker.owner_id ?? undefined).toBeUndefined();
+    expect(getResourceOwnerId(byWorker)).toBeUndefined();
+
+    // First human act (publish / restrict / share / env) claims ownership.
+    const alice = new Types.ObjectId().toString();
+    const claimed = await ensureProjectRow(synth!, alice);
+    expect(claimed.owner_id).toBe(alice);
+    expect(claimed.createdBy).toBe(alice);
+    expect(getResourceOwnerId(claimed)).toBe(alice);
+
+    // Ownership is sticky: a later actor (or the worker) does not take it.
+    const bob = new Types.ObjectId().toString();
+    expect((await ensureProjectRow(synth!, bob)).owner_id).toBe(alice);
+    expect((await ensureProjectRow(synth!, PUBLISH_ACTOR)).owner_id).toBe(
+      alice,
+    );
+    expect((await AppProject.findOne({ _id: synth!._id }))?.owner_id).toBe(
+      alice,
+    );
+  }, 60_000);
 });

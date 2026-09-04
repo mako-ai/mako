@@ -20,11 +20,14 @@ import { getCookie } from "hono/cookie";
 import { sessionManager } from "../auth/session";
 import {
   ACP_MCP_CLIENT_ID,
+  MCP_OAUTH_SCOPES,
   createAuthorizationCode,
   exchangeAuthorizationCode,
   getOAuthClient,
+  parseMcpOAuthScopes,
   refreshAccessToken,
   registerOAuthClient,
+  resolveMcpOAuthConsentScopes,
 } from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
@@ -78,7 +81,7 @@ function protectedResourceMetadata(c: Context) {
     resource: `${base}/api/mcp`,
     authorization_servers: [base],
     bearer_methods_supported: ["header"],
-    scopes_supported: ["mcp", "query:read"],
+    scopes_supported: MCP_OAUTH_SCOPES,
     resource_name: "Mako MCP",
   });
 }
@@ -103,7 +106,7 @@ function authorizationServerMetadata(c: Context) {
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["mcp", "query:read"],
+    scopes_supported: MCP_OAUTH_SCOPES,
   });
 }
 
@@ -180,6 +183,7 @@ interface AuthorizeParams {
   redirectUri: string;
   state?: string;
   codeChallenge: string;
+  scopes: ReturnType<typeof parseMcpOAuthScopes>;
 }
 
 /**
@@ -249,6 +253,16 @@ async function parseAuthorizeParams(
     );
   }
 
+  let scopes: ReturnType<typeof parseMcpOAuthScopes>;
+  try {
+    scopes = parseMcpOAuthScopes(params.scope);
+  } catch (error) {
+    return fail(
+      "invalid_scope",
+      error instanceof Error ? error.message : "Unsupported OAuth scope",
+    );
+  }
+
   return {
     ok: true,
     value: {
@@ -256,6 +270,7 @@ async function parseAuthorizeParams(
       redirectUri,
       state: params.state,
       codeChallenge: params.code_challenge,
+      scopes,
     },
   };
 }
@@ -274,6 +289,7 @@ function consentPage(input: {
   workspaces: { id: string; name: string; role: string }[];
 }): string {
   const { clientName, params, workspaces } = input;
+  const warehouseWrite = params.scopes.includes("warehouse:write");
   const options = workspaces
     .map(
       (ws, i) => `
@@ -310,6 +326,9 @@ function consentPage(input: {
            font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
   .scopes { background: #f6f5f1; border: 1px solid #e3e0d7; padding: 10px 12px;
             font-size: 13px; color: #444; margin: 16px 0; }
+  .scope-option { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px;
+                  color: #1a1a1a; cursor: pointer; }
+  .scope-option input { margin-top: 3px; }
   .actions { display: flex; gap: 8px; margin-top: 20px; }
   button { flex: 1; padding: 10px 16px; font-size: 14px; cursor: pointer;
            border: 1px solid #1a1a1a; display: inline-flex;
@@ -332,11 +351,17 @@ function consentPage(input: {
     ${hidden("redirect_uri", params.redirectUri)}
     ${hidden("state", params.state)}
     ${hidden("code_challenge", params.codeChallenge)}
+    ${hidden("scope", params.scopes.join(" "))}
     <p style="margin-bottom:6px;font-weight:600;color:#1a1a1a">Choose a workspace</p>
     ${options}
     <div class="scopes">
-      Read-only access: explore schemas, run read-only queries, and build
-      Mako apps. It can never write to your databases.
+      <strong>Workspace authoring:</strong> explore schemas, run read-only
+      queries, and create or edit Mako apps and dbt files.
+      ${
+        warehouseWrite
+          ? `<label class="scope-option"><input type="checkbox" name="grant_warehouse_write" value="yes" /><span><strong>Allow warehouse execution</strong><br />Run and cancel dbt models and jobs. These operations can create, replace, or modify relations in your warehouse.</span></label>`
+          : `<br /><br />Warehouse execution is not requested. This connection cannot run dbt models or jobs.`
+      }
     </div>
     <div class="actions">
       <button class="deny" type="submit" name="decision" value="deny">Deny</button>
@@ -425,6 +450,7 @@ mcpOAuthRoutes.post("/authorize", async c => {
     state: typeof form.state === "string" ? form.state : undefined,
     code_challenge:
       typeof form.code_challenge === "string" ? form.code_challenge : undefined,
+    scope: typeof form.scope === "string" ? form.scope : undefined,
   };
   const parsed = await parseAuthorizeParams(params);
   if (!parsed.ok) {
@@ -459,6 +485,16 @@ mcpOAuthRoutes.post("/authorize", async c => {
       403,
     );
   }
+  const scopes = resolveMcpOAuthConsentScopes(
+    parsed.value.scopes,
+    form.grant_warehouse_write === "yes",
+  );
+  if (scopes.includes("warehouse:write") && member.role === "viewer") {
+    return c.html(
+      "<h1>Cannot connect</h1><p>Warehouse execution requires at least the member workspace role.</p>",
+      403,
+    );
+  }
 
   const code = await createAuthorizationCode({
     clientId: parsed.value.clientId,
@@ -466,10 +502,12 @@ mcpOAuthRoutes.post("/authorize", async c => {
     workspaceId,
     redirectUri: parsed.value.redirectUri,
     codeChallenge: parsed.value.codeChallenge,
+    scopes,
   });
   logger.info("MCP OAuth grant approved", {
     clientId: parsed.value.clientId,
     workspaceId,
+    scopes,
   });
   redirect.searchParams.set("code", code);
   return c.redirect(redirect.toString(), 302);

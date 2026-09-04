@@ -5364,7 +5364,12 @@ const AppProjectSchema = new Schema<IAppProject>(
     workspaceRole: { type: String, enum: ["viewer", "editor"] },
     sharedWith: { type: [ResourceShareEntrySchema], default: undefined },
     owner_id: { type: String, index: true },
-    createdBy: { type: String, required: true },
+    // Empty when the row was materialized by a system actor (the push-deploy
+    // worker, an API key with no acting user) for a repo-imported folder:
+    // the app is ownerless until the first person acts on it
+    // (ensureProjectRow claims it). resource-acl falls back from owner_id to
+    // createdBy, so a sentinel here would become a permanent fake owner.
+    createdBy: { type: String, default: "" },
     defaultBranch: { type: String, default: "main" },
     cloudRepo: {
       type: new Schema(

@@ -41,8 +41,10 @@ export default defineConfig({
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",
       "src/agent-lib/tools/connector-tools.test.ts",
+      "src/agent-lib/tools/apps-tools-consistency.test.ts",
       "src/apps/preview.service.test.ts",
       "src/apps/deployment.service.test.ts",
+      "src/apps/deploy-on-push.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       // These two were written as vitest suites but listed in no vitest
       // config, so neither runner could execute them: tsx dies on them

@@ -158,7 +158,7 @@ export function createAppsTools({
     // and that is what an agent working in a checkout actually has. Accept the
     // folder name, tolerate an `apps/` prefix, and still resolve legacy ids.
     const ref = appId.replace(/^apps\//, "");
-    const project =
+    let project: IAppProject | null =
       (Types.ObjectId.isValid(ref)
         ? await AppProject.findOne({
             _id: new Types.ObjectId(ref),
@@ -167,10 +167,17 @@ export function createAppsTools({
         : await AppProject.findOne({
             slug: ref,
             workspaceId: new Types.ObjectId(workspaceId),
-          })) ??
+          })) ?? null;
+    if (!project) {
       // No row: the app may exist only as a folder in the repo, which is the
-      // normal case for anything created from a local checkout.
-      (await synthesizeProjectFromFolder(workspaceId, ref));
+      // normal case for anything created from a local checkout. Force-fetch
+      // before the folder fallback so an API instance cannot answer from an
+      // older local mirror immediately after another instance received the
+      // push. Every app_* tool resolves through here, so this is the
+      // read-after-push consistency boundary.
+      await freshenForServe(workspaceId, 0);
+      project = await synthesizeProjectFromFolder(workspaceId, ref);
+    }
     if (!project) {
       return { error: `App ${appId} not found. Use app_list_apps.` };
     }
@@ -198,7 +205,10 @@ export function createAppsTools({
       execute: async () => {
         // The repo is the list: an app is a folder under apps/ (§13.6), so
         // one written straight into a checkout and pushed shows up here with
-        // no registration step.
+        // no registration step. Force-fetch for the same reason loadProject's
+        // folder fallback does: list and open must never disagree merely
+        // because they landed on different API instances.
+        await freshenForServe(workspaceId, 0);
         const folders = await listAppFolders(workspaceId);
         const docs = await AppProject.find({
           workspaceId: new Types.ObjectId(workspaceId),
@@ -535,7 +545,7 @@ export function createAppsTools({
       description:
         "What is LIVE for this app: the published deployment's commit sha vs the tip of the default branch. " +
         "A push to the default branch builds and publishes automatically; when the branch is ahead of the published sha, " +
-        "the newest commits are still building or the build failed (app_dev_log / the Mako UI header have the build output). " +
+        "the newest commits are still building or the build/data preparation failed (app_build_log / the Mako UI header have the output). " +
         "For the sandbox worktree's own git state, use app_status.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
@@ -620,7 +630,8 @@ export function createAppsTools({
         "the push webhook uses (single-build concurrency per app, so it never " +
         "races a push-triggered build) and returns immediately with the " +
         "enqueued sha — poll app_publish_status until publishedSha reaches it " +
-        "(typically under 2 minutes; a failing build surfaces in " +
+        "(typically under 2 minutes; required parquet bindings are prepared " +
+        "at that exact commit before it goes live, and a failing build or binding surfaces in " +
         "app_build_log). Use when a push's automatic deploy did not land, or " +
         "to force a redeploy of the current branch tip.",
       inputSchema: z.object({ appId: z.string() }),
@@ -666,7 +677,7 @@ export function createAppsTools({
 
     app_build_log: tool({
       description:
-        "Tail the PUBLISH build log (npm install + build output from the " +
+        "Tail the PUBLISH build log (npm install, build, and binding-readiness output from the " +
         "shared publish sandbox) — the first place to look when app_publish " +
         "or a push deploy does not land. Distinct from app_dev_log (the dev " +
         "server's log). Never starts a sandbox: an empty result means no " +
@@ -905,6 +916,11 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
+          // A running sandbox is the preferred read source and can predate a
+          // push that created this app or changed its files. Pull it forward
+          // before Vite starts; catchUpLiveBox is deliberately a no-op when
+          // the box is asleep, so opening remains the user-authorized boot.
+          await catchUpLiveBox(loaded.project, actorId);
           const handle = await ensureActorWorktree(loaded.project);
           let url: string | undefined;
           let evicted: string[] | undefined;
@@ -1011,6 +1027,10 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
+          // Binding reads prefer a live sandbox. Make an existing checkout
+          // see the latest pushed binding before resolving its file; this
+          // never boots an idle sandbox.
+          await catchUpLiveBox(loaded.project, actorId);
           markTouched(loaded.project);
           const result = await materializeAppBinding(
             loaded.project,

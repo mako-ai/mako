@@ -887,6 +887,11 @@ export async function deleteProject(project: IAppProject): Promise<void> {
  */
 export const PUBLISH_ACTOR = "publish";
 
+/** A real user id, as opposed to PUBLISH_ACTOR / "" / other system sentinels. */
+function isUserActor(actorId: string): boolean {
+  return /^[0-9a-f]{24}$/i.test(actorId);
+}
+
 // The doctrine of which branch an actor starts on — and where each content
 // kind's commits land — lives in branch-policy.ts (apps.md §18). Re-exported
 // so existing importers keep working.
@@ -2357,8 +2362,25 @@ export async function ensureProjectRow(
   project: IAppProject,
   actorId: string,
 ): Promise<IAppProject> {
+  // Only a person can own an app. The push-deploy worker (PUBLISH_ACTOR), an
+  // API key with no acting user ("") and similar sentinels create the row
+  // ownerless; otherwise the auto-deploy of every repo-imported folder would
+  // stamp the literal "publish" as owner_id, nobody could ever restrict or
+  // share it, and a private access setting would lock out even admins.
+  const owner = isUserActor(actorId) ? actorId : undefined;
   const existing = await AppProject.findOne({ _id: project._id });
-  if (existing) return existing;
+  if (existing) {
+    // First human to act on an ownerless row claims it (resource-acl reads
+    // owner_id, then createdBy).
+    if (owner && !existing.owner_id && !existing.createdBy) {
+      await AppProject.updateOne(
+        { _id: existing._id, owner_id: { $in: [null, ""] } },
+        { $set: { owner_id: owner, createdBy: owner } },
+      );
+      return (await AppProject.findOne({ _id: existing._id })) ?? existing;
+    }
+    return existing;
+  }
   try {
     return await AppProject.create({
       _id: project._id,
@@ -2367,8 +2389,8 @@ export async function ensureProjectRow(
       slug: project.slug,
       description: project.description,
       access: project.access ?? "workspace",
-      createdBy: project.createdBy || actorId,
-      owner_id: actorId,
+      createdBy: project.createdBy || owner || "",
+      ...(owner ? { owner_id: owner } : {}),
       defaultBranch: project.defaultBranch || DEFAULT_BRANCH,
     });
   } catch {

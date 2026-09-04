@@ -101,8 +101,9 @@ import {
   buildApp,
   buildLogPath,
   deployBuild,
-  setPublishedSha,
   deploymentExists,
+  ensureDeploymentBindings,
+  setPublishedSha,
   serveDeploymentFile,
 } from "../apps/deployment.service";
 import {
@@ -2096,7 +2097,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Publish the app: merge to main, build, and deploy",
     description:
-      "Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
+      "Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, prepares every required parquet binding at that exact commit, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build or binding leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing code and data artifacts instead of rebuilding them.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -2123,7 +2124,7 @@ appsRoutes.openapi(
       // published, nothing persists, and a reload shows "not published".
       loaded.project = await ensureProjectRow(
         loaded.project,
-        loaded.userId ?? "api-key",
+        loaded.userId ?? "",
       );
       const body = c.req.valid("json") ?? {};
       const user = c.get("user");
@@ -2208,6 +2209,22 @@ appsRoutes.openapi(
       }
 
       if (await deploymentExists(loaded.project._id.toString(), sha)) {
+        try {
+          await ensureDeploymentBindings(loaded.project, sha);
+        } catch (bindingError) {
+          return c.json(
+            {
+              success: false,
+              error:
+                "Data binding preparation failed — the live app still serves the last successful deployment.",
+              output:
+                bindingError instanceof Error
+                  ? bindingError.message
+                  : String(bindingError),
+            },
+            422,
+          );
+        }
         await setPublishedSha(loaded.project, sha);
         return c.json(
           { success: true as const, sha, fileCount: 0, reused: true },
@@ -2230,7 +2247,26 @@ appsRoutes.openapi(
         );
       }
 
-      const result = await deployBuild(loaded.project, sha, handle);
+      try {
+        await ensureDeploymentBindings(loaded.project, sha);
+      } catch (bindingError) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Data binding preparation failed — main was updated but nothing was deployed; the live app still serves the last successful deployment.",
+            output:
+              bindingError instanceof Error
+                ? bindingError.message
+                : String(bindingError),
+          },
+          422,
+        );
+      }
+
+      const result = await deployBuild(loaded.project, sha, handle, {
+        bindingsReady: true,
+      });
 
       return c.json(
         {
@@ -2254,7 +2290,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Point the app at a previously published deployment",
     description:
-      "Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no rebuild and no sandbox. The target sha must still have a stored deployment.",
+      "Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no code rebuild and no sandbox. The target sha must still have a stored deployment, and every parquet binding required by that commit is verified or rematerialized before the pointer moves.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -2273,6 +2309,12 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      // Same reason as publish: a folder-only app has no row, and
+      // setPublishedSha's updateOne would match nothing and report success.
+      loaded.project = await ensureProjectRow(
+        loaded.project,
+        loaded.userId ?? "",
+      );
       const { sha } = c.req.valid("json");
       const projectId = loaded.project._id.toString();
       if (!(await deploymentExists(projectId, sha))) {
@@ -2282,6 +2324,22 @@ appsRoutes.openapi(
             error: `No stored deployment for ${sha.slice(0, 7)}`,
           },
           404,
+        );
+      }
+      try {
+        await ensureDeploymentBindings(loaded.project, sha);
+      } catch (bindingError) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Rollback data preparation failed — the current live deployment was not changed.",
+            output:
+              bindingError instanceof Error
+                ? bindingError.message
+                : String(bindingError),
+          },
+          422,
         );
       }
       await setPublishedSha(loaded.project, sha);
