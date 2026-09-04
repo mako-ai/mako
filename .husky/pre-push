@@ -1,0 +1,18 @@
+# Both API vitest configs before anything leaves this machine. The tsx chain
+# and the lint/prettier/openapi checks already run per commit (lint-staged);
+# these two are the suites that were being run file-by-file and then failing
+# in CI under a job named "OpenAPI contract" (PRs #976, #979).
+#
+# Skip deliberately with: SKIP_PREPUSH_TESTS=1 git push
+if [ -n "$SKIP_PREPUSH_TESTS" ]; then
+  echo "pre-push: SKIP_PREPUSH_TESTS set, skipping vitest configs"
+  exit 0
+fi
+# git runs hooks with GIT_DIR (and friends) exported. The repo-backed suites
+# spawn `git` against temporary bare repos; with GIT_DIR inherited they all
+# silently operate on THIS repo instead and five dbt specs fail with
+# "expected null not to be null". Unset before anything runs.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_QUARANTINE_PATH
+echo "pre-push: api vitest configs (dbt + apps) — SKIP_PREPUSH_TESTS=1 to bypass"
+pnpm --filter api run test:dbt --reporter=dot || exit 1
+pnpm --filter api run test:apps --reporter=dot || exit 1

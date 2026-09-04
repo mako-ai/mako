@@ -1,10 +1,14 @@
 name: API Contract
 
-# Verifies the OpenAPI contract stays honest:
-#  - runs the API + frontend-client test suites
-#  - regenerates the OpenAPI spec and the generated frontend types, then fails
-#    if either differs from what's committed (so a route change can't ship
-#    without updating the spec + client types).
+# Two jobs, named for what actually fails in them:
+#  - "OpenAPI contract + drift check": regenerates the OpenAPI spec and the
+#    generated frontend types, then fails if either differs from what's
+#    committed (so a route change can't ship without updating the spec +
+#    client types); also runs the frontend typed client's own tests.
+#  - "API tests (tsx + vitest)": every API suite — the tsx chain, the three
+#    vitest configs, agent-tools, destinations, the edge worker. This used to
+#    hide inside the contract job, so a unit-test failure read as "OpenAPI
+#    drift" and got triaged as such twice (PRs #976, #979).
 
 on:
   push:
@@ -59,24 +63,6 @@ jobs:
           pnpm --filter @mako/schemas run build
           pnpm --filter @mako/agent-tools run build
 
-      - name: API contract tests
-        run: pnpm --filter api run test
-
-      - name: Agent tools tests
-        run: pnpm --filter @mako/agent-tools run test
-
-      - name: API destination tests
-        # Offline destination connector suite (driver dialect/write SQL, CDC
-        # MERGE builder, DestinationWriter orchestration). Real-DB integration
-        # specs self-skip without RUN_DB_INTEGRATION (see destination-integration.yml).
-        run: pnpm --filter api run test:destinations
-
-      - name: API dbt tests
-        # vitest.config.ts — src/dbt/**, src/integrations/github/**, the dbt
-        # route integration spec and the dbt-* agent tools. The real-dbt engine
-        # contract self-skips without RUN_DBT_ENGINE_CONTRACT.
-        run: pnpm --filter api run test:dbt
-
       - name: Frontend typed-client tests
         # Deliberately just the typed client, not the whole app suite: this
         # workflow exists to keep the OpenAPI contract honest, and the client
@@ -85,11 +71,6 @@ jobs:
         # would double up on PRs touching both, and running ONLY it here would
         # leave api-only PRs with no client check at all.
         run: pnpm --filter app exec vitest run src/api/client.test.ts
-
-      - name: Cloudflare app-router tests
-        # Maintenance-mode edge worker: raw webhook body forwarding, operator
-        # bypass, redirect rewriting, response streaming.
-        run: pnpm run cf:app:test
 
       - name: Regenerate OpenAPI spec + frontend types
         run: pnpm run openapi:sync
@@ -101,3 +82,67 @@ jobs:
               "Run 'pnpm run openapi:sync' and commit the result."
             exit 1
           fi
+
+  api-tests:
+    name: API tests (tsx + vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          # 22, not 20, because of ONE suite: the workspace-connector specs
+          # execute a real connector, and a connector is TypeScript imported
+          # without a build step. Node strips types from a `.ts` import from
+          # 22.6 (with a flag) and 22.18 (without one); on 20 it cannot, and
+          # every one of those specs fails with `Unknown file extension
+          # ".ts"`. The sandbox that runs connectors in production is on 22 for
+          # the same reason, so this is CI matching the runtime rather than a
+          # preference. The API image itself is still node:20-slim — it never
+          # imports a connector, it ships the code to a box that does.
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Workspace packages the API imports at runtime must be built first so
+      # `tsx` can resolve `@mako/schemas` / `@mako/agent-tools`.
+      - name: Build workspace packages
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+
+      - name: API tsx suites + apps vitest config
+        # api/package.json "test": the hand-rolled tsx + node:assert chain,
+        # then `vitest run --config vitest.apps.config.ts` (apps, consoles,
+        # skills, flows, notebooks).
+        run: pnpm --filter api run test
+
+      - name: API dbt vitest config
+        # vitest.config.ts — src/dbt/**, src/integrations/github/**, the dbt
+        # route integration spec, the dbt-* agent tools, and anything else
+        # that happens to live under src/dbt. The real-dbt engine contract
+        # self-skips without RUN_DBT_ENGINE_CONTRACT.
+        run: pnpm --filter api run test:dbt
+
+      - name: API destination tests
+        # Offline destination connector suite (driver dialect/write SQL, CDC
+        # MERGE builder, DestinationWriter orchestration). Real-DB integration
+        # specs self-skip without RUN_DB_INTEGRATION (see destination-integration.yml).
+        run: pnpm --filter api run test:destinations
+
+      - name: Agent tools tests
+        run: pnpm --filter @mako/agent-tools run test
+
+      - name: Cloudflare app-router tests
+        # Maintenance-mode edge worker: raw webhook body forwarding, operator
+        # bypass, redirect rewriting, response streaming.
+        run: pnpm run cf:app:test
