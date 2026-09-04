@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -11,6 +12,7 @@ import {
   DialogTitle,
   IconButton,
   Stack,
+  FormControlLabel,
   Switch,
   TextField,
   Tooltip,
@@ -19,6 +21,7 @@ import {
 import {
   Delete as DeleteIcon,
   EditOutlined as EditIcon,
+  PushPinOutlined as PinIcon,
   Refresh as RefreshIcon,
   Save as SaveIcon,
 } from "@mui/icons-material";
@@ -28,29 +31,17 @@ import { useConfirm } from "./ConfirmDialog";
 interface SkillSummary {
   id: string;
   name: string;
+  path: string;
   loadWhen: string;
   bodyPreview: string;
   entities: string[];
   suppressed: boolean;
-  useCount: number;
-  lastUsedAt: string | null;
-  createdBy: string;
-  createdAt: string | null;
-  updatedAt: string | null;
-  definitionInvalid?: { reason: string; at: string; path?: string } | null;
+  pinned: boolean;
+  definitionInvalid: { reason: string; path: string } | null;
 }
 
 interface SkillDetail extends SkillSummary {
   body: string;
-  previousBody: string | null;
-  previousUpdatedAt: string | null;
-}
-
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString();
 }
 
 export function SkillsSection() {
@@ -67,6 +58,7 @@ export function SkillsSection() {
   const [editLoadWhen, setEditLoadWhen] = useState("");
   const [editBody, setEditBody] = useState("");
   const [editEntities, setEditEntities] = useState("");
+  const [editPinned, setEditPinned] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -146,6 +138,35 @@ export function SkillsSection() {
     }
   };
 
+  const handleTogglePin = async (skill: SkillSummary) => {
+    if (!workspaceId) return;
+    const nextPinned = !skill.pinned;
+    setSkills(prev =>
+      prev.map(s => (s.id === skill.id ? { ...s, pinned: nextPinned } : s)),
+    );
+    try {
+      const res = await fetch(
+        `/api/workspaces/${workspaceId}/skills/${skill.id}/pin`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pinned: nextPinned }),
+        },
+      );
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(data?.error || `Request failed (${res.status})`);
+      }
+    } catch (err) {
+      setSkills(prev =>
+        prev.map(s => (s.id === skill.id ? { ...s, pinned: skill.pinned } : s)),
+      );
+      setError(err instanceof Error ? err.message : "Failed to update skill");
+    }
+  };
+
   const handleDelete = async (skill: SkillSummary) => {
     if (!workspaceId) return;
     if (
@@ -193,6 +214,7 @@ export function SkillsSection() {
       setEditLoadWhen(detail.loadWhen);
       setEditBody(detail.body);
       setEditEntities(detail.entities.join(", "));
+      setEditPinned(detail.pinned);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load skill");
     } finally {
@@ -218,6 +240,7 @@ export function SkillsSection() {
             loadWhen: editLoadWhen,
             body: editBody,
             entities,
+            pinned: editPinned,
           }),
         },
       );
@@ -322,11 +345,14 @@ export function SkillsSection() {
                     >
                       {skill.name}
                     </Typography>
-                    <Chip
-                      label={`used ${skill.useCount}×`}
-                      size="small"
-                      variant="outlined"
-                    />
+                    {skill.pinned && (
+                      <Chip
+                        label="pinned"
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                      />
+                    )}
                     {skill.suppressed && (
                       <Chip
                         label="suppressed"
@@ -383,9 +409,14 @@ export function SkillsSection() {
                       )}
                     </Stack>
                   )}
-                  <Typography variant="caption" color="text.secondary">
-                    by {skill.createdBy} · updated {formatDate(skill.updatedAt)}{" "}
-                    · last used {formatDate(skill.lastUsedAt)}
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ fontFamily: "monospace" }}
+                  >
+                    {skill.definitionInvalid
+                      ? `${skill.path} — ${skill.definitionInvalid.reason}`
+                      : skill.path}
                   </Typography>
                 </Box>
                 <Stack direction="row" alignItems="center" spacing={0.5}>
@@ -401,6 +432,23 @@ export function SkillsSection() {
                       checked={!skill.suppressed}
                       onChange={() => handleToggleSuppress(skill)}
                     />
+                  </Tooltip>
+                  <Tooltip
+                    title={
+                      skill.pinned
+                        ? "Unpin — back to name + description in the index"
+                        : "Pin — full body in every prompt (use for the few skills every turn needs)"
+                    }
+                  >
+                    <IconButton
+                      size="small"
+                      onClick={() => handleTogglePin(skill)}
+                      aria-label={skill.pinned ? "unpin skill" : "pin skill"}
+                      color={skill.pinned ? "primary" : "default"}
+                      disabled={!!skill.definitionInvalid}
+                    >
+                      <PinIcon fontSize="small" />
+                    </IconButton>
                   </Tooltip>
                   <Tooltip title="Edit">
                     <IconButton
@@ -483,14 +531,17 @@ export function SkillsSection() {
                 value={editEntities}
                 onChange={e => setEditEntities(e.target.value)}
                 fullWidth
-                helperText="Extra tokens the extractor might miss (synonyms, business concepts). Unioned with auto-extracted tokens."
+                helperText="Keywords search_skills matches on (synonyms, business concepts). History lives in git."
               />
-              {editing.previousBody && (
-                <Alert severity="info">
-                  Previous body from {formatDate(editing.previousUpdatedAt)} is
-                  preserved as a one-step undo.
-                </Alert>
-              )}
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={editPinned}
+                    onChange={e => setEditPinned(e.target.checked)}
+                  />
+                }
+                label="Pinned — full body in every prompt (reserve for the few skills every turn needs)"
+              />
             </Stack>
           )}
         </DialogContent>

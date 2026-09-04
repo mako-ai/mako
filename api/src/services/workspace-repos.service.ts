@@ -22,7 +22,6 @@ import {
   NotebookFolder,
   NotebookIndex,
   SavedConsole,
-  Skill,
   Workspace,
   type IWorkspaceRepoBinding,
 } from "../database/workspace-schema";
@@ -177,7 +176,6 @@ export async function purgeMigratedContentIndex(
     SavedConsole.deleteMany({ workspaceId: id }),
     ConsoleFolder.deleteMany({ workspaceId: id }),
     EntityVersion.deleteMany({ workspaceId: id, entityType: "console" }),
-    Skill.deleteMany({ workspaceId: id }),
     AppProject.deleteMany({ workspaceId: id }),
     NotebookIndex.deleteMany({ workspaceId: id }),
     NotebookFolder.deleteMany({ workspaceId: id }),

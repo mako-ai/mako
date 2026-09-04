@@ -37,9 +37,9 @@ const saveSkillSchema = z.object({
   loadWhen: z
     .string()
     .min(1)
-    .max(500)
+    .max(300)
     .describe(
-      "Short (1-2 sentence) description of when to load this skill. This is the primary retrieval signal; write it as a trigger, e.g. 'building a sales report or answering \"who are the best salespeople\"'.",
+      "One trigger line: when to load this skill. It is shown in the agent's prompt on every turn as the skill's index entry, e.g. 'building a sales report or answering \"who are the best salespeople\"'.",
     ),
   body: z
     .string()
@@ -52,7 +52,13 @@ const saveSkillSchema = z.object({
     .array(z.string())
     .optional()
     .describe(
-      "Optional author-declared triggers (table names, columns, business concepts, country names, etc.) — unioned with extractor output to improve retrieval. Include synonyms (e.g. 'revenue' if the body talks about 'MRR').",
+      "Optional keywords (table names, columns, business concepts) that `search_skills` matches on. Include synonyms (e.g. 'revenue' if the body talks about 'MRR').",
+    ),
+  pinned: z
+    .boolean()
+    .optional()
+    .describe(
+      "Pin the skill: its full body rides in every prompt. Reserve for the two or three skills every turn needs (glossaries, warehouse maps). Omit to keep the current setting.",
     ),
 });
 
@@ -68,7 +74,7 @@ const loadSkillSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "Skill name to explicitly load. Use this when you see a skill in the index whose loadWhen matches what you're about to do but it wasn't auto-loaded.",
+      "Skill name to load. Use this as soon as a skill in the index matches what you are about to do.",
     ),
 });
 
@@ -77,7 +83,7 @@ const searchSkillsSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "Free-text query. Use this as a fallback when the injected skills index doesn't show an obvious match.",
+      "Keywords to match against skill names, descriptions, entities and bodies. Use this when no index line rang a bell.",
     ),
   limit: z
     .number()
@@ -110,7 +116,7 @@ const getRelevantSkillsSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "Natural-language task or question to rank skills against — same signal the in-product agent uses for pre-turn auto-injection.",
+      "Keywords describing the task; the best-matching skills come back with their full bodies.",
     ),
 });
 
@@ -141,7 +147,8 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         "user you proposed it. Updates to an existing skill apply directly.",
         "",
         "Choose `name` as a stable snake_case identifier; write `loadWhen`",
-        "as the trigger phrase; keep `body` compact and structured.",
+        "as ONE trigger line (it is in every prompt); keep `body` compact",
+        "and structured.",
       ].join("\n"),
       inputSchema: saveSkillSchema,
       execute: async input => {
@@ -172,20 +179,21 @@ export function createSkillTools(workspaceId: string, userId?: string) {
       description: [
         "List every available skill (workspace + system) as a compact index:",
         "name, loadWhen trigger, scope, and optional references paths.",
-        "Bodies are NOT included — call get_relevant_skills for ranked bodies,",
-        "or load_skill / read_skill_resource for a specific skill.",
+        "Bodies are NOT included — call load_skill / read_skill_resource for",
+        "a specific skill, or get_relevant_skills for keyword matches with bodies.",
         "Prefer this over guessing skill names.",
       ].join(" "),
       inputSchema: listSkillsSchema,
       execute: async () => {
         // Empty query → index only (no body injection / useCount bumps).
-        const result = await retrieveRelevantSkills(workspaceId, "");
+        const result = await retrieveRelevantSkills(workspaceId);
         return {
           success: true as const,
           skills: result.index.map(s => ({
             name: s.name,
             loadWhen: s.loadWhen,
             scope: s.scope,
+            ...(s.pinned ? { pinned: true } : {}),
             ...(s.references && s.references.length > 0
               ? { references: s.references }
               : {}),
@@ -195,37 +203,29 @@ export function createSkillTools(workspaceId: string, userId?: string) {
     }),
     get_relevant_skills: tool({
       description: [
-        "Rank skills against a task/query and return the top relevant bodies",
-        "(same retrieval the in-product agent auto-injects each turn).",
-        "Call this at the start of a multi-step task, or when switching domains",
-        "(e.g. apps → SQL dialect). Also returns near-misses so you can",
-        "load_skill anything the threshold skipped.",
+        "Keyword-match workspace skills against a task and return the best",
+        "matches with their full bodies. Call this at the start of a",
+        "multi-step task when the index in your prompt did not point at an",
+        "obvious skill; otherwise prefer load_skill by name.",
       ].join(" "),
       inputSchema: getRelevantSkillsSchema,
       execute: async ({ query }) => {
-        const result = await retrieveRelevantSkills(workspaceId, query);
+        const hits = await searchSkills(workspaceId, query, 3);
         return {
           success: true as const,
-          queryEntities: result.queryEntities,
-          relevant: result.injected.map(h => ({
+          relevant: hits.map(h => ({
             name: h.name,
             loadWhen: h.loadWhen,
             scope: h.scope,
             score: Math.round(h.score * 100) / 100,
             body: h.body,
           })),
-          considered: result.considered.map(h => ({
-            name: h.name,
-            loadWhen: h.loadWhen,
-            scope: h.scope,
-            score: Math.round(h.score * 100) / 100,
-          })),
         };
       },
     }),
     load_skill: tool({
       description:
-        "Explicitly load a skill by name from the index. Use this when you spot a skill in the index whose `loadWhen` matches what you're about to do, but it wasn't auto-loaded. Bumps the skill's useCount so retrieval can reinforce it later.",
+        "Load a skill by name from the index — its full body. Do this as soon as an index entry matches what you are about to do.",
       inputSchema: loadSkillSchema,
       execute: async ({ name }) => {
         return loadSkill(workspaceId, name);
@@ -241,7 +241,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
     }),
     search_skills: tool({
       description:
-        "Search workspace skills by free-text query. Fallback for when the injected skills index doesn't surface something you know should exist. Returns ranked full bodies.",
+        "Search workspace skills by keywords (names, descriptions, entities, bodies). Use when no index line rang a bell. Returns matches with full bodies.",
       inputSchema: searchSkillsSchema,
       execute: async ({ query, limit }) => {
         const hits = await searchSkills(workspaceId, query, limit ?? 5);
@@ -252,7 +252,6 @@ export function createSkillTools(workspaceId: string, userId?: string) {
             loadWhen: h.loadWhen,
             body: h.body,
             score: Math.round(h.score * 100) / 100,
-            entityOverlap: h.entityOverlap,
           })),
         };
       },

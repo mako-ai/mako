@@ -1,7 +1,7 @@
 /**
- * Skills in git (apps.md §10 Block D1): real bare repos under a temp
- * APPS_GIT_ROOT, mongodb-memory-server for the derived index, no network —
- * the same rig the consoles suite uses.
+ * Skills are files at main (apps.md §27): real bare repos under a temp
+ * APPS_GIT_ROOT, no Mongo, no network. mongodb-memory-server is started only
+ * because the workspace-repo binding helpers read the Workspace model.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -9,7 +9,6 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { Skill } from "../database/workspace-schema";
 import {
   SKILLS_README_PATH,
   parseSkillFile,
@@ -18,7 +17,6 @@ import {
 } from "./skill-files";
 import {
   DEFAULT_BRANCH,
-  blobOid,
   commitBlobsOnBranch,
   initRepo,
   log,
@@ -27,18 +25,15 @@ import {
   resolveCommit,
 } from "./repository.service";
 import {
-  adoptWorkspaceSkills,
   commitSkillDelete,
+  commitSkillFlags,
   commitSkillSave,
-  commitSkillSuppressed,
-  derivedSkillId,
-  listSkillFilesFromRepo,
-  liveSkillToPlain,
-  loadLiveSkillById,
-  loadLiveSkills,
-  syncSkillsIndexFromRepo,
+  findSkill,
+  findSkillById,
+  invalidateSkillCatalog,
+  loadSkillCatalog,
+  skillId,
 } from "./workspace-skills.service";
-import { listSkillsForAdmin } from "../services/skills.service";
 import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
@@ -52,8 +47,6 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
-  delete process.env.OPENAI_API_KEY;
-  delete process.env.AI_GATEWAY_API_KEY;
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
@@ -69,7 +62,7 @@ const WS = new Types.ObjectId().toString();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 beforeEach(async () => {
-  await Skill.deleteMany({});
+  invalidateSkillCatalog(WS);
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
@@ -84,607 +77,155 @@ async function fileAt(rel: string): Promise<string | null> {
   }
 }
 
-const skill = (name: string, body = "Do the thing.") => ({
+async function laptopCommit(
+  writes: Record<string, string>,
+  message = "laptop push",
+): Promise<void> {
+  await commitBlobsOnBranch(
+    repoDirFor(WS),
+    DEFAULT_BRANCH,
+    { writes },
+    { message },
+  );
+}
+
+const skill = (
+  name: string,
+  body = "Do the thing.",
+  extra: { pinned?: boolean; suppressed?: boolean } = {},
+) => ({
   name,
   loadWhen: `when asked about ${name}`,
   entities: [name],
-  suppressed: false,
+  suppressed: extra.suppressed ?? false,
+  pinned: extra.pinned ?? false,
   body,
 });
 
 describe("format round-trip", () => {
-  it("serializes and parses the SKILL.md package shape", () => {
-    const file = serializeSkillFile(skill("mrr_walkthrough"));
+  it("serializes and parses the SKILL.md package shape, flags included", () => {
+    const file = serializeSkillFile(
+      skill("mrr_walkthrough", "Do the thing.", { pinned: true }),
+    );
     expect(file).toContain("description: when asked about mrr_walkthrough");
-    const parsed = parseSkillFile("mrr_walkthrough", file);
-    expect(parsed).toMatchObject({
+    expect(file).toContain("pinned: true");
+    expect(file).not.toContain("suppressed");
+    expect(parseSkillFile("mrr_walkthrough", file)).toMatchObject({
       name: "mrr_walkthrough",
       loadWhen: "when asked about mrr_walkthrough",
       entities: ["mrr_walkthrough"],
       suppressed: false,
+      pinned: true,
       body: "Do the thing.",
     });
   });
 });
 
-describe("write-through", () => {
-  it("the first save adopts existing Mongo skills plus the marker", async () => {
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "legacy_skill",
-      loadWhen: "legacy trigger",
-      body: "Old knowledge.",
-      entities: [],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 3,
-    });
-    await commitSkillSave(WS, skill("fresh_skill"), {
-      loadAdoptable: async () => [
-        {
-          name: "legacy_skill",
-          loadWhen: "legacy trigger",
-          entities: [],
-          suppressed: false,
-          body: "Old knowledge.",
-        },
-      ],
-    });
+describe("the catalog is the files at main", () => {
+  it("lists what is committed, in name order, with stable ids; unbound reads empty", async () => {
+    await commitSkillSave(WS, skill("zeta"));
+    await commitSkillSave(WS, skill("alpha"));
     expect(await fileAt(SKILLS_README_PATH)).not.toBeNull();
-    expect(await fileAt(skillFilePath("fresh_skill"))).toContain(
-      "Do the thing.",
-    );
-    expect(await fileAt(skillFilePath("legacy_skill"))).toContain(
-      "Old knowledge.",
-    );
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.skills.map(s => s.name)).toEqual(["alpha", "zeta"]);
+    expect(catalog.skills[0]!.id).toBe(skillId(WS, "alpha"));
+    expect(catalog.invalid).toEqual([]);
+    expect(await findSkillById(WS, skillId(WS, "zeta"))).toMatchObject({
+      name: "zeta",
+      path: skillFilePath("zeta"),
+    });
+    await unbindTestWorkspaceRepo(WS);
+    expect((await loadSkillCatalog(WS)).skills).toEqual([]);
   });
 
-  it("delete and suppress commit; a Mongo-only skill is a git no-op", async () => {
-    await commitSkillSave(WS, skill("keeper"));
-    expect(await commitSkillSuppressed(WS, "keeper", true)).toBe(true);
-    expect(await fileAt(skillFilePath("keeper"))).toContain("suppressed: true");
-    expect(await commitSkillDelete(WS, "keeper")).toBe(true);
-    expect(await fileAt(skillFilePath("keeper"))).toBeNull();
-    expect(await commitSkillDelete(WS, "never_committed")).toBe(false);
-  });
-});
-
-describe("sync hardening (one bad file, markers, reverts)", () => {
-  it("a file that stops parsing keeps its row (marked), and one bad file never aborts the rest", async () => {
-    await commitSkillSave(WS, skill("keeps_row"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    const before = await Skill.findOne({ name: "keeps_row" });
-    expect(before).not.toBeNull();
-    await Skill.updateOne({ _id: before!._id }, { $set: { useCount: 7 } });
-
-    // aaa_ sorts first: a body past the schema cap used to throw out of the
-    // loop (ValidationError on create) and skip everything after it.
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("aaa_too_long")]: serializeSkillFile(
-            skill("aaa_too_long", "x".repeat(20_001)),
-          ),
-          [skillFilePath("keeps_row")]: "not a skill file at all\n",
-          [skillFilePath("zzz_fine")]: serializeSkillFile(skill("zzz_fine")),
-        },
-      },
-      { message: "hostile batch" },
-    );
-    await expect(
-      syncSkillsIndexFromRepo(WS, "user-1"),
-    ).resolves.toBeUndefined();
-
-    expect(await Skill.findOne({ name: "aaa_too_long" })).toBeNull();
-    expect(await Skill.findOne({ name: "zzz_fine" })).not.toBeNull();
-    const kept = await Skill.findOne({ name: "keeps_row" });
-    expect(kept?.useCount).toBe(7);
-    expect(kept?.body).toBe("Do the thing.");
-    expect(typeof kept?.definitionInvalid?.reason).toBe("string");
-
-    // The list carries the reason (not `{}`), and does not rewrite it.
-    const live = await loadLiveSkills(WS);
-    const plain = liveSkillToPlain(
-      live.find(item => item.def.name === "keeps_row")!,
-      WS,
-    );
-    expect(
-      (plain.definitionInvalid as { reason?: string } | undefined)?.reason,
-    ).toBe(kept?.definitionInvalid?.reason);
-    const at = (await Skill.findOne({ name: "keeps_row" }))?.definitionInvalid
-      ?.at;
-    await loadLiveSkills(WS);
-    expect(
-      (await Skill.findOne({ name: "keeps_row" }))?.definitionInvalid?.at,
-    ).toEqual(at);
-  });
-
-  it("an unset marker is not 'invalid', and reverting to identical content clears a real one", async () => {
-    await commitSkillSave(WS, skill("revertable"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    const good = await fileAt(skillFilePath("revertable"));
-    const row = await Skill.findOne({ name: "revertable" });
-    // Mongoose materialises the unset nested path as `{}` on a hydrated
-    // doc; that must not read as a marker anywhere.
-    expect(row?.definitionInvalid?.reason).toBeUndefined();
-    let plain = liveSkillToPlain(
-      (await loadLiveSkills(WS)).find(item => item.def.name === "revertable")!,
-      WS,
-    );
-    expect(plain.definitionInvalid).toBeUndefined();
-
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      { writes: { [skillFilePath("revertable")]: "broken\n" } },
-      { message: "break" },
-    );
-    await loadLiveSkills(WS);
-    expect(
-      typeof (await Skill.findOne({ name: "revertable" }))?.definitionInvalid
-        ?.reason,
-    ).toBe("string");
-
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      { writes: { [skillFilePath("revertable")]: good! } },
-      { message: "revert" },
-    );
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    expect(
-      (await Skill.findOne({ name: "revertable" }))?.definitionInvalid?.reason,
-    ).toBeUndefined();
-    plain = liveSkillToPlain(
-      (await loadLiveSkills(WS)).find(item => item.def.name === "revertable")!,
-      WS,
-    );
-    expect(plain.definitionInvalid).toBeUndefined();
-  });
-});
-
-describe("sync from repo", () => {
-  it("an external skill edit reaches the index; removal deletes the row", async () => {
+  it("a push from elsewhere is visible on the next read; nothing else has to run", async () => {
     await commitSkillSave(WS, skill("synced"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    let row = await Skill.findOne({ name: "synced" });
-    expect(row?.body).toBe("Do the thing.");
-
-    // Laptop edit: change the body, keep telemetry.
-    await Skill.updateOne({ _id: row!._id }, { $set: { useCount: 9 } });
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("synced")]: serializeSkillFile(
-            skill("synced", "Do the BETTER thing."),
-          ),
-        },
-      },
-      { message: "laptop edit" },
-    );
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    row = await Skill.findOne({ name: "synced" });
-    expect(row?.body).toBe("Do the BETTER thing.");
-    expect(row?.previousBody).toBe("Do the thing.");
-    expect(row?.useCount).toBe(9);
-
+    expect((await findSkill(WS, "synced"))?.body).toBe("Do the thing.");
+    await laptopCommit({
+      [skillFilePath("synced")]: serializeSkillFile(
+        skill("synced", "Do the BETTER thing."),
+      ),
+      [skillFilePath("new_from_laptop")]: serializeSkillFile(
+        skill("new_from_laptop"),
+      ),
+    });
+    expect((await findSkill(WS, "synced"))?.body).toBe("Do the BETTER thing.");
+    expect(await findSkill(WS, "new_from_laptop")).not.toBeNull();
     await commitBlobsOnBranch(
       repoDirFor(WS),
       DEFAULT_BRANCH,
       { deletes: [skillFilePath("synced")] },
       { message: "laptop delete" },
     );
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    expect(await Skill.findOne({ name: "synced" })).toBeNull();
+    expect(await findSkill(WS, "synced")).toBeNull();
   });
 
-  it("never touches a workspace that has not adopted", async () => {
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "mongo_only",
-      loadWhen: "trigger",
-      body: "body",
-      entities: [],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 0,
+  it("is served from memory while main does not move", async () => {
+    await commitSkillSave(WS, skill("cached"));
+    const first = await loadSkillCatalog(WS);
+    const again = await loadSkillCatalog(WS);
+    expect(again).toBe(first);
+    expect(first.head).toBe(await resolveCommit(repoDirFor(WS), MAIN));
+    await commitSkillSave(WS, skill("cached", "v2"));
+    const after = await loadSkillCatalog(WS);
+    expect(after).not.toBe(first);
+    expect(after.skills[0]!.body).toBe("v2");
+  });
+
+  it("a file that does not parse, or a folder with a bad name, is listed as invalid and never offered", async () => {
+    await commitSkillSave(WS, skill("fine"));
+    await laptopCommit({
+      [skillFilePath("broken")]: "no frontmatter here\n",
+      "skills/Bad-Name/SKILL.md": serializeSkillFile(skill("bad_name")),
     });
-    await syncSkillsIndexFromRepo(WS);
-    expect(await Skill.findOne({ name: "mongo_only" })).not.toBeNull();
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.skills.map(s => s.name)).toEqual(["fine"]);
+    expect(catalog.invalid.map(i => [i.name, i.path])).toEqual([
+      ["Bad-Name", "skills/Bad-Name/SKILL.md"],
+      ["broken", skillFilePath("broken")],
+    ]);
+    expect(catalog.invalid.every(i => i.reason.length > 0)).toBe(true);
   });
 });
 
-describe("adoption (migration path)", () => {
-  it("writes missing files + marker once, is re-runnable", async () => {
-    for (const name of ["a_skill", "b_skill"]) {
-      await Skill.create({
-        workspaceId: new Types.ObjectId(WS),
-        name,
-        loadWhen: `use ${name}`,
-        body: `${name} body`,
-        entities: [],
-        scopeType: "workspace",
-        createdBy: "agent",
-        suppressed: false,
-        useCount: 0,
-      });
-    }
-    const first = await adoptWorkspaceSkills(WS);
-    expect(first).toMatchObject({ skills: 2, written: 3, adopted: true });
-    expect((await listSkillFilesFromRepo(WS)).map(f => f.name).sort()).toEqual([
-      "a_skill",
-      "b_skill",
-    ]);
+describe("writes are commits on main", () => {
+  it("save, flags, delete each leave one commit and nothing else", async () => {
+    await commitSkillSave(WS, skill("keeper"));
+    expect(await commitSkillFlags(WS, "keeper", { suppressed: true })).toBe(
+      true,
+    );
+    expect(await fileAt(skillFilePath("keeper"))).toContain("suppressed: true");
+    expect(await commitSkillFlags(WS, "keeper", { pinned: true })).toBe(true);
+    expect(await findSkill(WS, "keeper")).toMatchObject({
+      suppressed: true,
+      pinned: true,
+    });
+    // A no-op flip commits nothing.
     const head = await resolveCommit(repoDirFor(WS), MAIN);
-    const again = await adoptWorkspaceSkills(WS);
-    expect(again.written).toBe(0);
+    expect(await commitSkillFlags(WS, "keeper", { pinned: true })).toBe(true);
     expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(head);
-    expect((await log(repoDirFor(WS), MAIN, 5))[0].subject).toContain(
-      "Adopt workspace skills",
+
+    expect(await commitSkillDelete(WS, "keeper")).toBe(true);
+    expect(await fileAt(skillFilePath("keeper"))).toBeNull();
+    expect(await commitSkillDelete(WS, "never_committed")).toBe(false);
+    expect(
+      await commitSkillFlags(WS, "never_committed", { pinned: true }),
+    ).toBe(false);
+    const subjects = (await log(repoDirFor(WS), MAIN, 10)).map(c => c.subject);
+    expect(subjects).toEqual(
+      expect.arrayContaining([
+        'Save skill "keeper"',
+        'Suppress skill "keeper"',
+        'Pin skill "keeper"',
+        'Delete skill "keeper"',
+      ]),
     );
   });
 
-  it("writes the DECLARED entities to the file, never the derived index", async () => {
-    // A row as the extractor leaves it: the author declared one entity, the
-    // index holds that plus every tokenised body word.
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "mrr_rules",
-      loadWhen: "MRR questions",
-      body: "MRR is working already; null months are pending.",
-      declaredEntities: ["mrr"],
-      entities: ["mrr", "working", "already", "null", "months", "pending"],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 0,
-    });
-    // A row from before `declaredEntities` existed: nothing was declared.
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "legacy_rules",
-      loadWhen: "legacy questions",
-      body: "Legacy body with several tokenised words.",
-      entities: ["legacy", "body", "several", "tokenised", "words"],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 0,
-    });
-    await adoptWorkspaceSkills(WS);
-
-    const declared = parseSkillFile(
-      "mrr_rules",
-      (await fileAt(skillFilePath("mrr_rules"))) ?? "",
-    );
-    expect(declared?.entities).toEqual(["mrr"]);
-    const legacy = await fileAt(skillFilePath("legacy_rules"));
-    expect(legacy).not.toContain("entities:");
-  });
-});
-
-describe("index sync keeps declared and derived apart", () => {
-  it("stores the file's list as declaredEntities and the union as entities", async () => {
-    await commitSkillSave(WS, {
-      ...skill("feed_rules", "Offers come from lead_agents rows."),
-      entities: ["feed"],
-    });
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    const row = await Skill.findOne({ name: "feed_rules" });
-    expect(row?.declaredEntities).toEqual(["feed"]);
-    expect(row?.entities).toEqual(
-      expect.arrayContaining(["feed", "lead_agents"]),
-    );
-    expect(row?.entities.length ?? 0).toBeGreaterThan(1);
-  });
-});
-
-describe("GET/list from git", () => {
-  it("serves the file at main when the Mongo row has a stale body", async () => {
-    await commitSkillSave(WS, skill("close_rules", "Do the git thing."));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    const row = await Skill.findOne({ name: "close_rules" });
-    expect(row).not.toBeNull();
-    await Skill.updateOne({ _id: row!._id }, { $set: { body: "" } });
-    const stale = await Skill.findById(row!._id);
-    expect(stale?.body).toBe("");
-
-    const listed = await loadLiveSkills(WS);
-    expect(listed).toHaveLength(1);
-    const plain = liveSkillToPlain(listed[0], WS);
-    expect(plain.body).toBe("Do the git thing.");
-    expect(plain.loadWhen).toBe("when asked about close_rules");
-
-    const got = await loadLiveSkillById(WS, row!._id.toString());
-    expect(got).not.toBeNull();
-    expect(liveSkillToPlain(got!, WS).body).toBe("Do the git thing.");
-  });
-
-  it("resyncs a stale sourceBlobSha from the blob at main", async () => {
-    await commitSkillSave(WS, skill("close_rules"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    await Skill.updateOne(
-      { workspaceId: WS, name: "close_rules" },
-      { $set: { body: "stale-mongo", sourceBlobSha: "deadbeef" } },
-    );
-
-    const listed = await loadLiveSkills(WS);
-    expect(liveSkillToPlain(listed[0], WS).body).toBe("Do the thing.");
-    const row = await Skill.findOne({ workspaceId: WS, name: "close_rules" });
-    expect(row?.body).toBe("Do the thing.");
-    expect(row?.sourceBlobSha).not.toBe("deadbeef");
-  });
-
-  it("lists a git file that has no Mongo row", async () => {
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("from_laptop")]: serializeSkillFile(
-            skill("from_laptop", "From laptop."),
-          ),
-        },
-      },
-      { message: "laptop skill" },
-    );
-    const listed = await loadLiveSkills(WS);
-    expect(listed.map(item => item.def.name)).toEqual(["from_laptop"]);
-    expect(listed[0].row).toBeNull();
-    expect(listed[0].id.toString()).toBe(
-      derivedSkillId(WS, "from_laptop").toString(),
-    );
-    expect(liveSkillToPlain(listed[0], WS).body).toBe("From laptop.");
-    const got = await loadLiveSkillById(WS, listed[0].id.toString());
-    expect(got?.def.name).toBe("from_laptop");
-  });
-
-  it("does not list a Mongo row that has no git file", async () => {
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "mongo_only",
-      loadWhen: "should not appear",
-      body: "mongo-only body",
-      entities: [],
-      scopeType: "workspace",
-      createdBy: "user-42",
-      suppressed: false,
-      useCount: 0,
-    });
-    const listed = await loadLiveSkills(WS);
-    expect(listed.map(item => item.def.name)).not.toContain("mongo_only");
-    const row = await Skill.findOne({ workspaceId: WS, name: "mongo_only" });
-    expect(row).not.toBeNull();
-    expect(await loadLiveSkillById(WS, row!._id.toString())).toBeNull();
-  });
-
-  it("does not throw when a file at main parses but fails schema save", async () => {
-    await commitSkillSave(WS, skill("close_rules"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("close_rules")]: serializeSkillFile({
-            ...skill("close_rules", "Renamed body."),
-            loadWhen: "x".repeat(501),
-          }),
-        },
-      },
-      { message: "unsavable trigger" },
-    );
-
-    await expect(loadLiveSkills(WS)).resolves.toHaveLength(1);
-    const row = await Skill.findOne({
-      workspaceId: WS,
-      name: "close_rules",
-    });
-    expect(row?.body).toBe("Do the thing.");
-    expect(row?.loadWhen).toBe("when asked about close_rules");
-    expect(row?.definitionInvalid?.reason).toMatch(/loadWhen|maxlength|500/i);
-  });
-
-  it("does not serve a schema-invalid file as a live definition", async () => {
-    await commitSkillSave(WS, skill("close_rules"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("close_rules")]: serializeSkillFile({
-            ...skill("close_rules", "Renamed body."),
-            loadWhen: "x".repeat(501),
-          }),
-        },
-      },
-      { message: "unsavable trigger" },
-    );
-
-    const listed = await loadLiveSkills(WS);
-    const plain = liveSkillToPlain(listed[0], WS);
-    expect(plain.definitionInvalid).toBeTruthy();
-    expect(plain.body).toBe("Do the thing.");
-    expect(plain.loadWhen).toBe("when asked about close_rules");
-  });
-
-  it("does not 500 GET/list when one file is unparseable", async () => {
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("a_broken")]: "---\nname: [broken\n",
-          [skillFilePath("z_good")]: serializeSkillFile(
-            skill("z_good", "Good."),
-          ),
-        },
-      },
-      { message: "one broken skill" },
-    );
-
-    await expect(loadLiveSkills(WS)).resolves.toHaveLength(2);
-    const plains = (await loadLiveSkills(WS)).map(item =>
-      liveSkillToPlain(item, WS),
-    );
-    const bad = plains.find(item => item.name === "a_broken");
-    const good = plains.find(item => item.name === "z_good");
-    expect(bad?.definitionInvalid).toBeTruthy();
-    expect(good?.body).toBe("Good.");
-    expect(good?.definitionInvalid).toBeUndefined();
-  });
-
-  it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
-    await commitSkillSave(WS, skill("leftover", "Leftover body."));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    expect((await loadLiveSkills(WS)).map(item => item.def.name)).toEqual([
-      "leftover",
-    ]);
-    const row = await Skill.findOne({ workspaceId: WS, name: "leftover" });
-    expect(row).not.toBeNull();
-
+  it("refuses to write without a bound repo", async () => {
     await unbindTestWorkspaceRepo(WS);
-    expect(await loadLiveSkills(WS)).toEqual([]);
-    expect(await loadLiveSkillById(WS, row!._id.toString())).toBeNull();
-    expect(await Skill.findById(row!._id)).not.toBeNull();
-    const leftoverHead = await resolveCommit(
-      repoDirFor(WS),
-      `refs/heads/${DEFAULT_BRANCH}`,
-    );
-    expect(leftoverHead).toBeTruthy();
-    const leftoverFile = await readBlob(
-      repoDirFor(WS),
-      leftoverHead as string,
-      skillFilePath("leftover"),
-    );
-    expect(leftoverFile.contents).toContain("Leftover body.");
-    expect(row!.sourceBlobSha).toBe(blobOid(leftoverFile.contents));
-  });
-
-  it("lists last-good as invalid when the file at main is binary, not vanish", async () => {
-    await commitSkillSave(WS, skill("close_rules"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("close_rules")]:
-            `${serializeSkillFile(skill("close_rules", "Binary overwrite."))}\0`,
-        },
-      },
-      { message: "binary skill" },
-    );
-
-    const listed = await loadLiveSkills(WS);
-    expect(listed).toHaveLength(1);
-    const plain = liveSkillToPlain(listed[0], WS);
-    expect(plain.definitionInvalid).toBeTruthy();
-    expect(plain.body).toBe("Do the thing.");
-  });
-
-  it("does not 500 GET/list when an index row is missing required createdBy", async () => {
-    await commitSkillSave(WS, skill("close_rules"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    await Skill.collection.updateOne(
-      { workspaceId: new Types.ObjectId(WS), name: "close_rules" },
-      { $unset: { createdBy: "" } },
-    );
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("close_rules")]: serializeSkillFile(
-            skill("close_rules", "Edited on a laptop."),
-          ),
-        },
-      },
-      { message: "laptop edit" },
-    );
-
-    await expect(loadLiveSkills(WS)).resolves.toHaveLength(1);
-    const listed = await loadLiveSkills(WS);
-    const plain = liveSkillToPlain(listed[0], WS);
-    expect(plain.body).toBe("Edited on a laptop.");
-  });
-
-  it("does not serve an unsavable file as a valid admin list row", async () => {
-    await commitSkillSave(WS, skill("close_rules"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("close_rules")]: serializeSkillFile({
-            ...skill("close_rules", "Renamed body."),
-            loadWhen: "x".repeat(501),
-          }),
-        },
-      },
-      { message: "unsavable trigger" },
-    );
-
-    const listed = await listSkillsForAdmin(WS);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.definitionInvalid).toBeTruthy();
-    expect(listed[0]?.loadWhen).toBe("when asked about close_rules");
-  });
-
-  it("does not 500 GET/list when liveSkillToPlain apply throws for one file", async () => {
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("a_throw")]: serializeSkillFile(
-            skill("a_throw", "Throw body."),
-          ),
-          [skillFilePath("z_good")]: serializeSkillFile(
-            skill("z_good", "Good."),
-          ),
-        },
-      },
-      { message: "one throwing apply" },
-    );
-
-    const listed = await loadLiveSkills(WS);
-    expect(listed).toHaveLength(2);
-    const plains = listed.map(item => {
-      if (item.def.name !== "a_throw" || !item.def.parsed) {
-        return liveSkillToPlain(item, WS);
-      }
-      const explodingEntities = new Proxy([] as string[], {
-        get(_target, prop) {
-          if (prop === "length" || prop === Symbol.iterator) {
-            throw new Error("apply boom");
-          }
-          return Reflect.get(_target, prop);
-        },
-      });
-      return liveSkillToPlain(
-        {
-          ...item,
-          def: {
-            ...item.def,
-            parsed: { ...item.def.parsed, entities: explodingEntities },
-          },
-        },
-        WS,
-      );
+    await expect(commitSkillSave(WS, skill("nope"))).rejects.toMatchObject({
+      name: "RepoRequiredError",
     });
-    const bad = plains.find(item => item.name === "a_throw");
-    const good = plains.find(item => item.name === "z_good");
-    expect(bad?.definitionInvalid).toBeTruthy();
-    expect(good?.body).toBe("Good.");
-    expect(good?.definitionInvalid).toBeUndefined();
   });
 });

@@ -51,12 +51,12 @@ You don't configure dialects — Mako reads the connection metadata and does the
 
 Before writing any query, Mako inspects your actual schema. No guessing, no hallucinated column names:
 
-| Tool               | What It Does                                                          |
-| ------------------ | --------------------------------------------------------------------- |
-| `list_connections` | Shows all database connections in the workspace                       |
-| `list_databases`   | Lists databases on a connection (any type — SQL or MongoDB)           |
-| `list_tables`      | Lists tables/views (SQL) or collections (MongoDB)                     |
-| `inspect_table`    | Gets column types, constraints, and sample data (or MongoDB fields)   |
+| Tool               | What It Does                                                        |
+| ------------------ | ------------------------------------------------------------------- |
+| `list_connections` | Shows all database connections in the workspace                     |
+| `list_databases`   | Lists databases on a connection (any type — SQL or MongoDB)         |
+| `list_tables`      | Lists tables/views (SQL) or collections (MongoDB)                   |
+| `inspect_table`    | Gets column types, constraints, and sample data (or MongoDB fields) |
 
 The agent uses sample data to understand real values — not just types. If your `status` column contains `'active'`, `'churned'`, `'trial'`, it knows what to filter on.
 
@@ -71,7 +71,6 @@ Mako learns your database over time. When it discovers that your `created_at` co
 
 This persists across all conversations. The more you use Mako, the less explaining you need to do.
 
-
 ## Targeted Playbooks (Skills)
 
 Beyond the always-on self-directive, Mako supports **skills** — named, workspace-scoped playbooks that load only when their trigger fires. Good for per-country queries, multi-step procedures, or rare schema gotchas that shouldn't clutter the always-on memory.
@@ -81,27 +80,27 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 | `save_skill`    | Create or overwrite a named playbook                        |
 | `delete_skill`  | Retract a skill that turned out to be wrong                 |
 | `load_skill`    | Explicitly load a skill mid-turn when the index hints at it |
-| `search_skills` | Free-text fallback when the auto-injected index misses      |
+| `search_skills` | Keyword match over names, descriptions, entities, bodies    |
 
-Every turn, Mako injects a compact index of every skill plus the top-3 auto-retrieved bodies (entity overlap 0.6 + semantic similarity 0.4). See [Skills](/skills/) for the full model, admin UI, and REST API.
+Every turn, Mako puts the complete skill index (every skill's name and description) in the prompt, plus the full body of any skill marked `pinned: true` in its `SKILL.md`. The agent loads the rest by name. Skills are files in the workspace repo (`skills/<name>/SKILL.md`) and nothing else — there is no index database, no embeddings, and no usage counters. See [Skills](/skills/) for the file format, admin UI, and REST API.
 
 Skill _retrieval_ and _writes_ (`get_relevant_skills`, `load_skill`, `save_skill`, `read_skill_resource`) are always active — the skills prompt names them every turn, so keeping them core avoids search/load round-trips. Long-tail lookups (`delete_skill`, `list_skills`, `search_skills`) are deferred tools the agent activates on demand — see [Tool paging](#tool-paging) below.
 
 ## Expertise Modes
 
-Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A small set of core tools (memory, skill retrieval, web access, planning, mode-switching, tool discovery) is always available regardless of mode; everything else is either mode-scoped or deferred (see [Tool paging](#tool-paging)).
+Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches _expertise modes_ mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A small set of core tools (memory, skill retrieval, web access, planning, mode-switching, tool discovery) is always available regardless of mode; everything else is either mode-scoped or deferred (see [Tool paging](#tool-paging)).
 
 On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms**, a notebook in **Notebook** — otherwise **Query**. The agent then switches as the task demands.
 
-| Mode | Does |
-|------|------|
-| **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses |
-| **Dashboard** | Create and edit dashboards, widgets, data sources, filters, and charts |
-| **Sync Flow** | Configure database-to-database sync flows, query templates, and schema mapping |
-| **React App** | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings |
-| **Transforms** | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse |
-| **Notebook** | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
-| **Explore** | Read-only investigation across connections, consoles, dashboards, and memory |
+| Mode                | Does                                                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses                                                                  |
+| **Dashboard**       | Create and edit dashboards, widgets, data sources, filters, and charts                                                                            |
+| **Sync Flow**       | Configure database-to-database sync flows, query templates, and schema mapping                                                                    |
+| **React App**       | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings                 |
+| **Transforms**      | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse                       |
+| **Notebook**        | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
+| **Explore**         | Read-only investigation across connections, consoles, dashboards, and memory                                                                      |
 
 `Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
 
@@ -148,14 +147,14 @@ Both are workspace-scoped. See [Version History](/version-history/).
 
 The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:
 
-| Target | Captures |
-|--------|----------|
+| Target             | Captures                                                   |
+| ------------------ | ---------------------------------------------------------- |
 | `active_dashboard` | The current dashboard — for visual QA of layout and charts |
-| `active_tab` | The current main tab |
-| `app_shell` | The full Mako app UI |
-| `widget` | A specific dashboard widget |
-| `viewport` | The current visible page |
-| `selector` | A specific element matched by a CSS selector |
+| `active_tab`       | The current main tab                                       |
+| `app_shell`        | The full Mako app UI                                       |
+| `widget`           | A specific dashboard widget                                |
+| `viewport`         | The current visible page                                   |
+| `selector`         | A specific element matched by a CSS selector               |
 
 This lets the agent verify dashboard rendering (chart legibility, overlap, layout reflow) and debug UI issues by actually looking at the result rather than reasoning blind.
 
@@ -163,9 +162,9 @@ This lets the agent verify dashboard rendering (chart legibility, overlap, layou
 
 When a request needs information from the public internet — a pasted URL, an online document, or fresh facts not in your data — the agent reaches for two web tools. They are always active in every expertise mode (usage guidance lives in the `web` skill):
 
-| Tool | What It Does |
-|------|--------------|
-| `fetch_url` | Reads a specific public URL in full. Handles HTML, PDF, CSV, JSON, and plain text. Returns up to `max_chars` characters (20k default, 50k max). |
+| Tool         | What It Does                                                                                                                                        |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch_url`  | Reads a specific public URL in full. Handles HTML, PDF, CSV, JSON, and plain text. Returns up to `max_chars` characters (20k default, 50k max).     |
 | `web_search` | Searches the web for current information. Returns ranked results as `{ title, url, snippet }`. Follow up with `fetch_url` to read a result in full. |
 
 Typical flow: if you paste a URL, the agent calls `fetch_url` directly; for an open-ended question needing fresh context, it runs `web_search` first, then `fetch_url` on the best one or two results, and cites the source.
@@ -188,10 +187,10 @@ On **Mako Desktop**, the model dropdown also shows an **On this machine** group 
 
 When billing is enabled, models are split into two tiers:
 
-| Tier | Criteria | Examples |
-|------|----------|---------|
+| Tier     | Criteria                      | Examples                                     |
+| -------- | ----------------------------- | -------------------------------------------- |
 | **Free** | Blended cost ≤ $3 / 1M tokens | GPT-4o Mini, Gemini 2.5 Flash, DeepSeek Chat |
-| **Pro** | All other models | Claude Sonnet 4, GPT-4o, Gemini 2.5 Pro |
+| **Pro**  | All other models              | Claude Sonnet 4, GPT-4o, Gemini 2.5 Pro      |
 
 The top 3 free-tier models are auto-selected by ELO ranking. Free users are gated to free-tier models. Pro users can access all models.
 
@@ -224,18 +223,18 @@ A super admin can pin an explicit utility model from **Settings → Admin → Mo
 
 ## Long-Running Queries
 
-Queries that take a while no longer fail at a fixed timeout. When the agent calls `run_console`, the query runs as a *detached server-side task* that outlives the tool call:
+Queries that take a while no longer fail at a fixed timeout. When the agent calls `run_console`, the query runs as a _detached server-side task_ that outlives the tool call:
 
 - If it finishes within a short soft timeout (`QUERY_SOFT_TIMEOUT_MS`, ~90s default), the rows come back immediately, as before.
 - If it's still running after that, `run_console` returns `{ status: "running", executionId }` and the query **keeps running** server-side — nothing is cancelled.
 
 The agent then calls `check_query_status` to fetch the result, and can stop a run with `cancel_query`. `check_query_status` **long-polls server-side** (`QUERY_STATUS_POLL_WAIT_MS`, ~30s default): it blocks until the run settles or the wait window elapses, then returns. This throttles the agent to roughly one poll per window — an LLM can't sleep between tool calls, so without server-side blocking it would re-poll every ~1s and flood the chat UI:
 
-| Tool                 | What It Does                                                                                          |
-| -------------------- | ---------------------------------------------------------------------------------------------------- |
-| `run_console`        | Executes a console's query as a detached run; returns rows, or `status: "running"` + `executionId`   |
-| `check_query_status` | Polls a running query by `consoleId` (+ optional `executionId`); returns `running`/`success`/`error`/`cancelled` |
-| `cancel_query`       | Aborts a running detached query (task + engine-native cancel)                                         |
+| Tool                      | What It Does                                                                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_console`             | Executes a console's query as a detached run; returns rows, or `status: "running"` + `executionId`                                             |
+| `check_query_status`      | Polls a running query by `consoleId` (+ optional `executionId`); returns `running`/`success`/`error`/`cancelled`                               |
+| `cancel_query`            | Aborts a running detached query (task + engine-native cancel)                                                                                  |
 | `list_console_executions` | Lists a console's recent executions with trigger source (App UI / API key / MCP / AI agent / Schedule / Flow), status, duration, and row count |
 
 Results land via the persisted `lastRun` record and the realtime `console.run.completed` pipeline, so result polling works across server instances for **every engine** — no re-attach and no Inngest dependency (multi-instance realtime fan-out uses `REDIS_URL`). A server-side hard cap (`QUERY_HARD_MAX_EXECUTION_MS`, 5 minutes default) aborts any detached run that exceeds it, so no query can run forever.
