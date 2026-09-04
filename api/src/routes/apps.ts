@@ -2124,7 +2124,7 @@ appsRoutes.openapi(
       // published, nothing persists, and a reload shows "not published".
       loaded.project = await ensureProjectRow(
         loaded.project,
-        loaded.userId ?? "api-key",
+        loaded.userId ?? "",
       );
       const body = c.req.valid("json") ?? {};
       const user = c.get("user");
@@ -2309,6 +2309,12 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      // Same reason as publish: a folder-only app has no row, and
+      // setPublishedSha's updateOne would match nothing and report success.
+      loaded.project = await ensureProjectRow(
+        loaded.project,
+        loaded.userId ?? "",
+      );
       const { sha } = c.req.valid("json");
       const projectId = loaded.project._id.toString();
       if (!(await deploymentExists(projectId, sha))) {

@@ -47,16 +47,19 @@ const MCP_OAUTH_SCOPE_SET = new Set<string>(MCP_OAUTH_SCOPES);
  * present so a client asking only for the optional dbt execution permission
  * still receives a useful MCP grant. Omitted scope preserves the historical
  * read-only default.
+ *
+ * Scopes Mako does not know (`offline_access`, `openid`, a client's own
+ * defaults — the reference MCP SDK sends some of these) are dropped rather
+ * than rejected: RFC 6749 §3.3 lets the server narrow the grant, the token
+ * response reports the scope actually issued, and refusing the whole flow
+ * would break clients that connected fine before scopes were parsed at all.
  */
 export function parseMcpOAuthScopes(value?: string): WorkspaceApiKeyScope[] {
   if (!value?.trim()) return [...DEFAULT_WORKSPACE_API_KEY_SCOPES];
 
-  const requested = [...new Set(value.trim().split(/\s+/))];
-  for (const scope of requested) {
-    if (!MCP_OAUTH_SCOPE_SET.has(scope)) {
-      throw new Error(`Unsupported OAuth scope: ${scope}`);
-    }
-  }
+  const requested = [...new Set(value.trim().split(/\s+/))].filter(scope =>
+    MCP_OAUTH_SCOPE_SET.has(scope),
+  );
 
   return [
     ...DEFAULT_WORKSPACE_API_KEY_SCOPES,

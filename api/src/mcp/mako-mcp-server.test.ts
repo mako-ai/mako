@@ -100,10 +100,17 @@ async function main() {
     "query:read",
     "warehouse:write",
   ]);
-  assert.throws(
-    () => parseMcpOAuthScopes("query:read members:write"),
-    /Unsupported OAuth scope: members:write/,
-  );
+  // Unknown scopes narrow, never reject: members:write is not an OAuth scope
+  // and offline_access is what the reference MCP SDK adds on its own.
+  assert.deepEqual(parseMcpOAuthScopes("query:read members:write"), [
+    "mcp",
+    "query:read",
+  ]);
+  assert.deepEqual(parseMcpOAuthScopes("offline_access warehouse:write"), [
+    "mcp",
+    "query:read",
+    "warehouse:write",
+  ]);
   assert.deepEqual(
     resolveMcpOAuthConsentScopes(
       ["mcp", "query:read", "warehouse:write"],
@@ -435,6 +442,10 @@ async function main() {
       "dbt_run_job",
       "dbt_cancel_run",
       "dbt_ensure_dev_environment",
+      // Job CRUD schedules warehouse execution, so it is warehouse authority.
+      "dbt_create_job",
+      "dbt_update_job",
+      "dbt_delete_job",
     ]) {
       assert.equal(
         names.has(warehouseGatedTool),
@@ -449,9 +460,6 @@ async function main() {
       "edit_dbt_file",
       "modify_dbt_file",
       "delete_dbt_file",
-      "dbt_create_job",
-      "dbt_update_job",
-      "dbt_delete_job",
     ]) {
       assert.ok(names.has(dbtCrudTool), `${dbtCrudTool} must be exposed`);
     }

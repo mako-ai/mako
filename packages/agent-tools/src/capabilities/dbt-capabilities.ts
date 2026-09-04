@@ -159,7 +159,11 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-jobs",
     risk: "write",
     minimumWorkspaceRole: "admin",
-    requiredGrant: "schedule-write",
+    // A saved job with a cron schedule is executed by the scheduler against
+    // the warehouse with no further scope check, so creating, rescheduling or
+    // removing one is warehouse authority — never the implicit schedule-write
+    // grant every external MCP key holds.
+    requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
@@ -168,7 +172,11 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-jobs",
     risk: "write",
     minimumWorkspaceRole: "admin",
-    requiredGrant: "schedule-write",
+    // A saved job with a cron schedule is executed by the scheduler against
+    // the warehouse with no further scope check, so creating, rescheduling or
+    // removing one is warehouse authority — never the implicit schedule-write
+    // grant every external MCP key holds.
+    requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
@@ -177,7 +185,11 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-jobs",
     risk: "destructive",
     minimumWorkspaceRole: "admin",
-    requiredGrant: "schedule-write",
+    // A saved job with a cron schedule is executed by the scheduler against
+    // the warehouse with no further scope check, so creating, rescheduling or
+    // removing one is warehouse authority — never the implicit schedule-write
+    // grant every external MCP key holds.
+    requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
