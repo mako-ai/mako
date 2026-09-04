@@ -28,7 +28,6 @@ import {
   AppProject,
   Dashboard,
   SavedConsole,
-  Skill,
 } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
@@ -36,7 +35,7 @@ import {
   repoDirFor,
   repoExists,
 } from "../apps/repository.service";
-import { searchSkills } from "../services/skills.service";
+import { loadSkill, searchSkills } from "../services/skills.service";
 import { listAppFolders } from "../apps/worktree.service";
 import { loggers } from "../logging";
 import type { BridgeableTool, MakoMcpContext } from "./mako-mcp-server";
@@ -349,14 +348,11 @@ async function fetchSkillDoc(
   workspaceId: string,
   name: string,
 ): Promise<FetchedDoc | null> {
-  const workspaceSkill = await Skill.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    name,
-    // A skill whose file at main is broken or gone is not servable.
-    "definitionInvalid.reason": { $exists: false },
-  })
-    .select("name loadWhen body")
-    .lean();
+  const loaded = await loadSkill(workspaceId, name);
+  const workspaceSkill =
+    loaded.success && loaded.skill.id.startsWith("system:") === false
+      ? loaded.skill
+      : null;
   if (workspaceSkill) {
     return {
       id: `skill:${name}`,

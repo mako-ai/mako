@@ -1,36 +1,29 @@
 /**
- * Skills service — per-workspace knowledge + procedure primitive (issue #365).
+ * Skills: files in the workspace repo, served whole (apps.md §27).
  *
- * Skills have a name, a short `loadWhen` trigger, and a body. Retrieval is a
- * weighted combination of entity overlap (authored + extracted tokens) and
- * semantic similarity over the `loadWhen` embedding. The full index (name +
- * loadWhen) is always injected into the agent's system prompt; bodies are
- * injected only for top-k matches above a threshold, or when the agent
- * explicitly calls `load_skill`.
+ * Every non-suppressed skill's name and description is in the agent's
+ * prompt every turn; pinned skills ride with budgeted body excerpts; everything
+ * else is one `load_skill` away. No retrieval, no embeddings, no index rows,
+ * no counters — the catalog is `loadSkillCatalog`, an in-memory view of
+ * `skills/<name>/SKILL.md` at main. `search_skills` is a keyword match over that
+ * catalog for the case where the index line did not ring a bell.
  */
-
-import { Types } from "mongoose";
-import { Skill, type ISkill } from "../database/workspace-schema";
 import {
   commitSkillDelete,
+  commitSkillFlags,
   commitSkillSave,
-  commitSkillSuppressed,
-  derivedSkillId,
-  loadLiveSkillById,
-  loadLiveSkills,
-  liveSkillToPlain,
+  findSkill,
+  findSkillById,
+  loadSkillCatalog,
+  skillId,
+  type WorkspaceSkill,
 } from "../apps/workspace-skills.service";
-import { serializeSkillFile } from "../apps/skill-files";
-import { blobOid, type GitAuthor } from "../apps/repository.service";
-import { authorForUser } from "../apps/workspace-consoles.service";
+import { type GitAuthor } from "../apps/repository.service";
 import {
-  embedText,
-  getEmbeddingModelName,
-  isEmbeddingAvailable,
-  isVectorSearchAvailable,
-} from "./embedding.service";
-import { databaseConnectionService } from "./database-connection.service";
-import { extractEntities, entityOverlap } from "../agent-lib/entity-extraction";
+  MAX_SKILL_BODY_CHARS,
+  MAX_WORKSPACE_SKILLS,
+} from "../apps/skill-files";
+import { authorForUser } from "../apps/workspace-consoles.service";
 import { loggers } from "../logging";
 import {
   getSystemSkill,
@@ -40,44 +33,22 @@ import {
 
 const logger = loggers.app();
 
-/**
- * Agent-facing reads (index injection, search, load) must not serve a skill
- * whose file at main is broken or gone: the row is kept as last-good for the
- * admin surface only. The marker's presence is its `reason` — Mongoose
- * materialises an unset nested path as `{}`, so never test the object.
- */
-const NOT_INVALID = { "definitionInvalid.reason": { $exists: false } } as const;
-
 const MAX_NAME_LENGTH = 80;
-const MAX_LOAD_WHEN_LENGTH = 500;
-const MAX_BODY_LENGTH = 20000;
-/** Hard cap on skills per workspace. Keeps the injected index bounded. */
-const MAX_SKILLS_PER_WORKSPACE = 200;
-/** How many skill bodies to auto-inject per turn. */
-const AUTO_INJECT_LIMIT = 3;
-/**
- * Minimum weighted score for auto-injection. Below this we still show the
- * skill in the index, but we don't inject the body. The agent can still
- * `load_skill` explicitly if it decides it needs it.
- */
-const AUTO_INJECT_THRESHOLD = 0.25;
-/**
- * Workspace entries shown in the always-injected index. The full catalog
- * grew past 200 (apps.md §22) — injecting every trigger line each turn cost
- * ~4-5K tokens of mostly-irrelevant catalog. The rest stays reachable via
- * search_skills / get_relevant_skills, and the block says how many.
- */
-const SKILL_INDEX_LIMIT = 30;
-/** Weights for the composite retrieval score. Sum should be ~1. */
-const ENTITY_WEIGHT = 0.6;
-const SEMANTIC_WEIGHT = 0.4;
+/** The description is in every prompt: keep it a trigger line, not a summary. */
+export const MAX_LOAD_WHEN_LENGTH = 300;
+/** Past this the index alone stops working (selection degrades around 30–50 items). */
+/** What the index shows per skill; longer descriptions are cut with an ellipsis. */
+export const INDEX_DESCRIPTION_CHARS = 200;
+/** Per-skill and total bounds for bodies injected into every agent turn. */
+export const MAX_SKILL_EXCERPT_CHARS = 2_500;
+export const MAX_PINNED_SKILL_BODY_CHARS = 7_500;
 
 export interface SkillInput {
   name: string;
   loadWhen: string;
   body: string;
-  /** Optional author-declared entities, unioned with the extractor's output. */
   entities?: string[];
+  pinned?: boolean;
 }
 
 export interface SkillIndexEntry {
@@ -85,8 +56,7 @@ export interface SkillIndexEntry {
   name: string;
   loadWhen: string;
   scope: "workspace" | "system";
-  suppressed: boolean;
-  useCount: number;
+  pinned: boolean;
   references?: string[];
 }
 
@@ -96,23 +66,14 @@ export interface SkillRetrievalHit {
   loadWhen: string;
   body: string;
   score: number;
-  entityOverlap: number;
-  semanticScore: number;
-  injected: boolean;
   scope: "workspace" | "system";
 }
 
 export interface SkillRetrievalResult {
-  /** Compact index: top workspace skills for THIS turn + all system skills. */
+  /** Every offered skill (workspace, then system), name + description. */
   index: SkillIndexEntry[];
-  /** Workspace skills not shown in the index (find via search_skills). */
-  omittedFromIndex: number;
-  /** Top-k hits with bodies for auto-injection (score >= threshold). */
+  /** Pinned workspace skills, full body. */
   injected: SkillRetrievalHit[];
-  /** Candidates that scored but didn't clear the threshold (for trace). */
-  considered: SkillRetrievalHit[];
-  /** Entities we pulled out of the query, surfaced for trace/debug. */
-  queryEntities: string[];
 }
 
 function validateInput(input: SkillInput): string | null {
@@ -127,38 +88,29 @@ function validateInput(input: SkillInput): string | null {
     return "loadWhen is required";
   }
   if (input.loadWhen.length > MAX_LOAD_WHEN_LENGTH) {
-    return `loadWhen exceeds ${MAX_LOAD_WHEN_LENGTH} characters`;
+    return `loadWhen exceeds ${MAX_LOAD_WHEN_LENGTH} characters — it is shown in every prompt, keep it to one trigger line`;
   }
   if (!input.body || input.body.trim().length === 0) {
     return "body is required";
   }
-  if (input.body.length > MAX_BODY_LENGTH) {
-    return `body exceeds ${MAX_BODY_LENGTH} characters`;
+  if (input.body.length > MAX_SKILL_BODY_CHARS) {
+    return `body exceeds ${MAX_SKILL_BODY_CHARS} characters`;
   }
   return null;
 }
 
-function unionEntities(
-  declared: readonly string[] | undefined,
-  extracted: readonly string[],
-): string[] {
+function normalizeEntities(declared: readonly string[] | undefined): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of [...(declared ?? []), ...extracted]) {
+  for (const raw of declared ?? []) {
     const norm = raw.toLowerCase().trim();
-    if (norm.length < 2) continue;
-    if (seen.has(norm)) continue;
+    if (norm.length < 2 || seen.has(norm)) continue;
     seen.add(norm);
     out.push(norm);
   }
   return out;
 }
 
-/**
- * Git author for a skill commit. `actorId` is a user id or the literal
- * "agent"; a lookup miss (agent, deleted user) falls back to the Mako bot
- * identity inside the git layer.
- */
 async function skillCommitAuthor(
   actorId: string | undefined,
 ): Promise<GitAuthor | undefined> {
@@ -166,37 +118,19 @@ async function skillCommitAuthor(
   return authorForUser(actorId);
 }
 
-async function computeEmbedding(text: string): Promise<{
-  embedding: number[] | null;
-  model: string | null;
-}> {
-  if (!isEmbeddingAvailable()) return { embedding: null, model: null };
-  try {
-    const embedding = await embedText(text);
-    if (!embedding) return { embedding: null, model: null };
-    return { embedding, model: getEmbeddingModelName() };
-  } catch (err) {
-    logger.warn("Skill embedding failed, storing without vector", {
-      error: err,
-    });
-    return { embedding: null, model: null };
-  }
-}
-
+/**
+ * Save (create or overwrite) a skill as a commit on main.
+ *
+ * "agent": a NEW skill starts SUPPRESSED — a proposal a human activates in
+ * the Skills panel or by flipping `suppressed: false` in the file (apps.md
+ * §22); proposals cost nothing until someone approves them. Updates keep
+ * the existing flags unless the caller sets them.
+ */
 export async function saveSkill(
   workspaceId: string,
   input: SkillInput,
   createdBy: string,
-  options: {
-    /**
-     * "agent": a NEW skill starts SUPPRESSED — a proposal a human activates
-     * in the Skills panel (or by flipping `suppressed: false` in the file).
-     * The eager-hoarding era put 200 unreviewed skills in the live index
-     * (apps.md §22); proposals cost nothing until someone approves them.
-     * Updates to an existing skill keep its current suppressed state.
-     */
-    origin?: "agent" | "user";
-  } = {},
+  options: { origin?: "agent" | "user" } = {},
 ): Promise<
   | {
       success: true;
@@ -211,73 +145,30 @@ export async function saveSkill(
 > {
   const validation = validateInput(input);
   if (validation) return { success: false, error: validation };
-
   const name = input.name.trim();
-  const loadWhen = input.loadWhen.trim();
-  const body = input.body.trim();
-
-  const extracted = extractEntities(`${loadWhen}\n${body}`);
-  const declaredEntities = unionEntities(input.entities, []);
-  const entities = unionEntities(declaredEntities, extracted);
-
-  // Compute embedding over loadWhen ONLY. Body content is too long and noisy
-  // for the embedding to represent usefully; entity overlap carries body-
-  // level matching. See issue #365 design notes.
-  const { embedding, model } = await computeEmbedding(loadWhen);
-
-  const existing = await Skill.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    name,
-  });
+  const existing = await findSkill(workspaceId, name);
   const pendingApproval = options.origin === "agent" && !existing;
-
   if (!existing) {
-    const totalSkills = await Skill.countDocuments({
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (totalSkills >= MAX_SKILLS_PER_WORKSPACE) {
+    const catalog = await loadSkillCatalog(workspaceId);
+    if (catalog.skills.length >= MAX_WORKSPACE_SKILLS) {
       return {
         success: false,
-        error: `Workspace has hit the ${MAX_SKILLS_PER_WORKSPACE} skill limit. Delete or merge skills before adding more.`,
+        error: `Workspace has hit the ${MAX_WORKSPACE_SKILLS} skill limit. Delete or merge skills before adding more.`,
       };
     }
   }
-
-  // Git first — skills/<name>/SKILL.md on main is the source of truth; the
-  // Mongo write below is the derived index (apps.md §10 Block D1). On a
-  // workspace whose skills have not been adopted into git yet, this commit
-  // adopts every existing row too.
   try {
-    const loadAdoptable = async () =>
-      (
-        (await Skill.find({ workspaceId: new Types.ObjectId(workspaceId) })
-          .select("name loadWhen body declaredEntities suppressed")
-          .lean()) as Array<
-          Pick<
-            ISkill,
-            "name" | "loadWhen" | "body" | "declaredEntities" | "suppressed"
-          >
-        >
-      ).map(s => ({
-        name: s.name,
-        loadWhen: s.loadWhen,
-        // Adoption writes the declared list, never the derived index.
-        entities: s.declaredEntities ?? [],
-        suppressed: !!s.suppressed,
-        body: s.body,
-      }));
     await commitSkillSave(
       workspaceId,
       {
         name,
-        loadWhen,
-        // The file carries the author-DECLARED entities; the Mongo row below
-        // carries the declared ∪ extracted union the retrieval uses.
-        entities: declaredEntities,
+        loadWhen: input.loadWhen.trim(),
+        entities: normalizeEntities(input.entities ?? existing?.entities),
         suppressed: pendingApproval || !!existing?.suppressed,
-        body,
+        pinned: input.pinned ?? existing?.pinned ?? false,
+        body: input.body.trim(),
       },
-      { author: await skillCommitAuthor(createdBy), loadAdoptable },
+      { author: await skillCommitAuthor(createdBy) },
     );
   } catch (error) {
     logger.error("Skill save: git commit failed", { workspaceId, error });
@@ -286,89 +177,22 @@ export async function saveSkill(
       error: `Could not commit the skill to the workspace repository: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-
-  if (!existing) {
-    const created = await Skill.create({
-      _id: derivedSkillId(workspaceId, name),
-      workspaceId: new Types.ObjectId(workspaceId),
-      name,
-      loadWhen,
-      body,
-      entities,
-      declaredEntities,
-      loadWhenEmbedding: embedding ?? undefined,
-      embeddingModel: model ?? undefined,
-      scopeType: "workspace",
-      createdBy,
-      suppressed: pendingApproval,
-      useCount: 0,
-      sourceBlobSha: blobOid(
-        serializeSkillFile({
-          name,
-          loadWhen,
-          entities: declaredEntities,
-          suppressed: pendingApproval,
-          body,
-        }),
-      ),
-    });
-    return {
-      success: true,
-      skill: {
-        id: created._id.toString(),
-        name: created.name,
-        created: true,
-        ...(pendingApproval ? { pendingApproval: true } : {}),
-      },
-    };
-  }
-
-  // Overwrite path — preserve single-slot undo in `previousBody`.
-  existing.previousBody = existing.body;
-  existing.previousUpdatedAt = existing.updatedAt;
-  existing.loadWhen = loadWhen;
-  existing.body = body;
-  existing.entities = entities;
-  existing.declaredEntities = declaredEntities;
-  if (embedding) {
-    existing.loadWhenEmbedding = embedding;
-    existing.embeddingModel = model ?? undefined;
-  }
-  existing.sourceBlobSha = blobOid(
-    serializeSkillFile({
-      name,
-      loadWhen,
-      entities: declaredEntities,
-      suppressed: !!existing.suppressed,
-      body,
-    }),
-  );
-  await existing.save();
-  // Assigning undefined to a nested path persists `{}`; unset the marker.
-  await Skill.updateOne(
-    { _id: existing._id },
-    { $unset: { definitionInvalid: 1 } },
-  );
-
   return {
     success: true,
-    skill: { id: existing._id.toString(), name: existing.name, created: false },
+    skill: {
+      id: skillId(workspaceId, name),
+      name,
+      created: !existing,
+      ...(pendingApproval ? { pendingApproval: true } : {}),
+    },
   };
 }
 
-/**
- * Existence check that does NOT bump useCount (unlike loadSkill). Used by
- * self-directive archiving to refuse clobbering an unrelated skill.
- */
 export async function skillExists(
   workspaceId: string,
   name: string,
 ): Promise<boolean> {
-  const hit = await Skill.exists({
-    workspaceId: new Types.ObjectId(workspaceId),
-    name: name.trim(),
-  });
-  return hit !== null;
+  return (await findSkill(workspaceId, name)) !== null;
 }
 
 export async function deleteSkill(
@@ -381,13 +205,13 @@ export async function deleteSkill(
   if (!name || name.trim().length === 0) {
     return { success: false, error: "name is required" };
   }
-  const trimmed = name.trim();
   try {
-    await commitSkillDelete(
+    const deleted = await commitSkillDelete(
       workspaceId,
-      trimmed,
+      name.trim(),
       await skillCommitAuthor(actorId),
     );
+    return { success: true, deleted };
   } catch (error) {
     logger.error("Skill delete: git commit failed", { workspaceId, error });
     return {
@@ -395,13 +219,9 @@ export async function deleteSkill(
       error: `Could not commit the deletion to the workspace repository: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const res = await Skill.deleteOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    name: trimmed,
-  });
-  return { success: true, deleted: res.deletedCount > 0 };
 }
 
+/** A skill by name: the workspace file at main, else a system skill. */
 export async function loadSkill(
   workspaceId: string,
   name: string,
@@ -414,6 +234,7 @@ export async function loadSkill(
         loadWhen: string;
         body: string;
         suppressed: boolean;
+        pinned: boolean;
       };
     }
   | { success: false; error: string }
@@ -421,39 +242,33 @@ export async function loadSkill(
   if (!name || name.trim().length === 0) {
     return { success: false, error: "name is required" };
   }
-  const skill = await Skill.findOneAndUpdate(
-    {
-      workspaceId: new Types.ObjectId(workspaceId),
-      name: name.trim(),
-      ...NOT_INVALID,
-    },
-    { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
-    { new: true },
-  );
-  if (!skill) {
-    const systemSkill = getSystemSkill(name.trim());
-    if (!systemSkill) {
-      return { success: false, error: `skill "${name}" not found` };
-    }
+  const skill = await findSkill(workspaceId, name);
+  if (skill) {
     return {
       success: true,
       skill: {
-        id: systemSkill.id,
-        name: systemSkill.name,
-        loadWhen: systemSkill.description,
-        body: systemSkill.body,
-        suppressed: false,
+        id: skill.id,
+        name: skill.name,
+        loadWhen: skill.loadWhen,
+        body: skill.body,
+        suppressed: skill.suppressed,
+        pinned: skill.pinned,
       },
     };
+  }
+  const systemSkill = getSystemSkill(name.trim());
+  if (!systemSkill) {
+    return { success: false, error: `skill "${name}" not found` };
   }
   return {
     success: true,
     skill: {
-      id: skill._id.toString(),
-      name: skill.name,
-      loadWhen: skill.loadWhen,
-      body: skill.body,
-      suppressed: skill.suppressed,
+      id: systemSkill.id,
+      name: systemSkill.name,
+      loadWhen: systemSkill.description,
+      body: systemSkill.body,
+      suppressed: false,
+      pinned: false,
     },
   };
 }
@@ -473,393 +288,131 @@ export function readSkillResource(
   return readSystemSkillResource(name, relPath);
 }
 
-/**
- * Fallback semantic search via $vectorSearch. Only used when
- * isVectorSearchAvailable() is true AND the query produced an embedding.
- */
-async function vectorSearchSkills(
-  queryEmbedding: number[],
-  workspaceId: string,
-  limit: number,
-): Promise<Array<{ id: string; score: number }>> {
-  const { db } = await databaseConnectionService.getMainConnection();
-  const results = await db
-    .collection("skills")
-    .aggregate([
-      {
-        $vectorSearch: {
-          index: "skill_embeddings",
-          path: "loadWhenEmbedding",
-          queryVector: queryEmbedding,
-          numCandidates: Math.max(limit * 10, 50),
-          limit: Math.max(limit * 2, 10),
-          filter: {
-            workspaceId: new Types.ObjectId(workspaceId),
-            suppressed: { $ne: true },
-          },
-        },
-      },
-      {
-        $project: {
-          _id: 1,
-          score: { $meta: "vectorSearchScore" },
-        },
-      },
-    ])
-    .toArray();
-  return results.map(r => ({
-    id: (r._id as Types.ObjectId).toString(),
-    score: (r.score as number) || 0,
-  }));
+// ---------------------------------------------------------------------------
+// Search — keyword match over the catalog
+// ---------------------------------------------------------------------------
+
+function queryTerms(query: string): string[] {
+  return [
+    ...new Set(
+      query
+        .toLowerCase()
+        .split(/[^a-z0-9_]+/)
+        .filter(term => term.length >= 3),
+    ),
+  ];
 }
 
 /**
- * Full text search fallback when vector search is unavailable.
- * Uses Mongo's $text index over name + loadWhen + body.
+ * How many of the query's terms a skill mentions, weighted by where: the
+ * name and description are the author's own trigger, the body is context.
+ * Deliberately plain — the index in the prompt does the real routing.
  */
-async function textSearchSkills(
-  query: string,
-  workspaceId: string,
-  limit: number,
-): Promise<Array<{ id: string; score: number }>> {
-  try {
-    const results = await Skill.find(
-      {
-        $text: { $search: query },
-        workspaceId: new Types.ObjectId(workspaceId),
-        suppressed: { $ne: true },
-        ...NOT_INVALID,
-      },
-      { score: { $meta: "textScore" } },
-    )
-      .select("_id")
-      .sort({ score: { $meta: "textScore" } })
-      .limit(limit * 2)
-      .lean();
-    const items = results as Array<{ _id: Types.ObjectId; score?: number }>;
-    return items.map(r => ({ id: r._id.toString(), score: r.score ?? 0 }));
-  } catch (err) {
-    logger.debug("Skill text search failed", { error: err });
-    return [];
+function keywordScore(
+  terms: string[],
+  skill: { name: string; loadWhen: string; entities: string[]; body: string },
+): number {
+  if (terms.length === 0) return 0;
+  const name = skill.name.toLowerCase();
+  const loadWhen = skill.loadWhen.toLowerCase();
+  const entities = skill.entities.join(" ").toLowerCase();
+  const body = skill.body.toLowerCase();
+  let score = 0;
+  for (const term of terms) {
+    if (name.includes(term)) score += 3;
+    else if (loadWhen.includes(term) || entities.includes(term)) score += 2;
+    else if (body.includes(term)) score += 1;
   }
+  return score / (terms.length * 3);
 }
 
-/**
- * Explicit skill search tool — entity overlap + either vector or text.
- * Returns ranked full skill bodies.
- */
 export async function searchSkills(
   workspaceId: string,
   query: string,
   limit = 5,
 ): Promise<SkillRetrievalHit[]> {
-  if (!query || query.trim().length === 0) return [];
-
-  const queryEntities = extractEntities(query);
-  const all = await Skill.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    suppressed: { $ne: true },
-    ...NOT_INVALID,
-  })
-    .select("+loadWhenEmbedding")
-    .lean();
-
-  if (all.length === 0) return [];
-
-  // Semantic scoring: prefer vectorSearch when available, else textSearch.
-  let semanticScoreById = new Map<string, number>();
-  const canVector = isEmbeddingAvailable() && (await isVectorSearchAvailable());
-
-  if (canVector) {
-    const queryEmbedding = await embedText(query).catch(() => null);
-    if (queryEmbedding) {
-      const hits = await vectorSearchSkills(
-        queryEmbedding,
-        workspaceId,
-        limit,
-      ).catch(err => {
-        logger.warn("Skill vector search failed, falling back to text", {
-          error: err,
-        });
-        return [] as Array<{ id: string; score: number }>;
-      });
-      const maxScore = Math.max(...hits.map(h => h.score), 0.001);
-      semanticScoreById = new Map(
-        hits.map(h => [h.id, maxScore > 0 ? h.score / maxScore : 0]),
-      );
-    }
-  }
-
-  if (semanticScoreById.size === 0) {
-    const hits = await textSearchSkills(query, workspaceId, limit);
-    const maxScore = Math.max(...hits.map(h => h.score), 0.001);
-    semanticScoreById = new Map(
-      hits.map(h => [h.id, maxScore > 0 ? h.score / maxScore : 0]),
-    );
-  }
-
-  const ranked: SkillRetrievalHit[] = all.map(s => {
-    const id = (s._id as Types.ObjectId).toString();
-    const overlap = entityOverlap(queryEntities, s.entities ?? []);
-    const entityScore =
-      queryEntities.length > 0
-        ? Math.min(1, overlap / Math.max(3, queryEntities.length / 2))
-        : 0;
-    const semanticScore = semanticScoreById.get(id) ?? 0;
-    const score = entityScore * ENTITY_WEIGHT + semanticScore * SEMANTIC_WEIGHT;
-    return {
-      id,
-      name: s.name,
-      loadWhen: s.loadWhen,
-      body: s.body,
-      score,
-      entityOverlap: overlap,
-      semanticScore,
-      injected: false,
-      scope: "workspace",
-    };
-  });
-
-  ranked.sort((a, b) => b.score - a.score);
+  const terms = queryTerms(query);
+  if (terms.length === 0) return [];
+  const catalog = await loadSkillCatalog(workspaceId);
+  const ranked: SkillRetrievalHit[] = catalog.skills
+    .filter(skill => !skill.suppressed)
+    .map(skill => ({
+      id: skill.id,
+      name: skill.name,
+      loadWhen: skill.loadWhen,
+      body: skill.body,
+      score: keywordScore(terms, skill),
+      scope: "workspace" as const,
+    }))
+    .filter(hit => hit.score > 0);
+  ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   return ranked.slice(0, limit);
 }
 
-/**
- * Per-turn retrieval. Called from the agent route before building the
- * system prompt. Returns:
- *   - `index`: every non-suppressed skill (name + loadWhen only) — always shown
- *   - `injected`: up to AUTO_INJECT_LIMIT skill bodies above threshold
- *   - `considered`: candidates that scored but didn't clear threshold
- *   - `queryEntities`: extracted tokens (for trace)
- *
- * Also increments use counters for auto-injected skills.
- */
-export async function retrieveRelevantSkills(
-  workspaceId: string,
-  queryText: string,
-): Promise<SkillRetrievalResult> {
-  const wsObjectId = new Types.ObjectId(workspaceId);
+// ---------------------------------------------------------------------------
+// Prompt block — the whole index, pinned bodies
+// ---------------------------------------------------------------------------
 
-  // Always load the index of non-suppressed skills for injection.
-  const indexDocs = await Skill.find({
-    workspaceId: wsObjectId,
-    suppressed: { $ne: true },
-    ...NOT_INVALID,
-  })
-    .select("name loadWhen suppressed useCount entities")
-    // NOT sorted by useCount: the counter measures auto-injection exposure,
-    // and sorting by it fed back into what got injected (rich-get-richer).
-    .sort({ updatedAt: -1 })
-    .lean();
-
-  const workspaceIndexAll: SkillIndexEntry[] = indexDocs.map(s => ({
-    id: (s._id as Types.ObjectId).toString(),
-    name: s.name,
-    loadWhen: s.loadWhen,
-    scope: "workspace",
-    suppressed: !!s.suppressed,
-    useCount: s.useCount ?? 0,
-  }));
-
-  const systemSkills = getSystemSkillIndex();
-  const systemIndex: SkillIndexEntry[] = systemSkills.map(skill => ({
-    id: skill.id,
-    name: skill.name,
-    loadWhen: skill.description,
-    scope: "system",
-    suppressed: false,
-    useCount: 0,
-    references: skill.references,
-  }));
-
-  const buildIndex = (workspaceShown: SkillIndexEntry[]): SkillIndexEntry[] => [
-    ...workspaceShown,
-    ...systemIndex,
-  ];
-  const omitted = Math.max(0, workspaceIndexAll.length - SKILL_INDEX_LIMIT);
-
-  if (
-    (workspaceIndexAll.length === 0 && systemIndex.length === 0) ||
-    !queryText ||
-    queryText.trim().length === 0
-  ) {
-    // No query to rank against: most recently updated first (the docs sort).
-    return {
-      index: buildIndex(workspaceIndexAll.slice(0, SKILL_INDEX_LIMIT)),
-      omittedFromIndex: omitted,
-      injected: [],
-      considered: [],
-      queryEntities: [],
-    };
-  }
-
-  const queryEntities = extractEntities(queryText);
-  const hasEntities = queryEntities.length > 0;
-
-  // Semantic score (per-doc) when available.
-  let semanticScoreById = new Map<string, number>();
-  const canVector = isEmbeddingAvailable() && (await isVectorSearchAvailable());
-  if (canVector) {
-    try {
-      const qEmbedding = await embedText(queryText);
-      if (qEmbedding) {
-        const vecHits = await vectorSearchSkills(
-          qEmbedding,
-          workspaceId,
-          AUTO_INJECT_LIMIT + 3,
-        );
-        const maxScore = Math.max(...vecHits.map(h => h.score), 0.001);
-        semanticScoreById = new Map(
-          vecHits.map(h => [h.id, maxScore > 0 ? h.score / maxScore : 0]),
-        );
-      }
-    } catch (err) {
-      logger.debug("Skill retrieval: vector path failed, ignoring", {
-        error: err,
-      });
-    }
-  }
-
-  const entityScoreFor = (entities: string[] | undefined): number =>
-    hasEntities
-      ? Math.min(
-          1,
-          entityOverlap(queryEntities, entities ?? []) /
-            Math.max(3, queryEntities.length / 2),
-        )
-      : 0;
-
-  const workspaceCandidates: SkillRetrievalHit[] = indexDocs.map(s => {
-    const id = (s._id as Types.ObjectId).toString();
-    const overlap = entityOverlap(queryEntities, s.entities ?? []);
-    const semanticScore = semanticScoreById.get(id) ?? 0;
-    const score =
-      entityScoreFor(s.entities) * ENTITY_WEIGHT +
-      semanticScore * SEMANTIC_WEIGHT;
-    return {
-      id,
-      name: s.name,
-      loadWhen: s.loadWhen,
-      body: "",
-      score,
-      entityOverlap: overlap,
-      semanticScore,
-      injected: false,
-      scope: "workspace",
-    };
-  });
-
-  // System skills do not have embeddings, so entity overlap is the complete
-  // signal. Use the full score so an explicit dialect/capability mention can
-  // cross the auto-injection threshold.
-  const systemCandidates: SkillRetrievalHit[] = systemSkills.map(s => ({
-    id: s.id,
-    name: s.name,
-    loadWhen: s.description,
-    body: "",
-    score: entityScoreFor(s.entities),
-    entityOverlap: entityOverlap(queryEntities, s.entities),
-    semanticScore: 0,
-    injected: false,
-    scope: "system",
-  }));
-
-  const candidates = [...workspaceCandidates, ...systemCandidates];
-  candidates.sort((a, b) => b.score - a.score);
-
-  const toInject = candidates
-    .filter(c => c.score >= AUTO_INJECT_THRESHOLD)
-    .slice(0, AUTO_INJECT_LIMIT);
-  const toInjectIds = new Set(toInject.map(c => c.id));
-
-  // Fetch bodies only for the workspace skills we'll inject; system skill
-  // bodies come from the in-memory registry.
-  const workspaceToInjectIds = toInject
-    .filter(c => c.scope === "workspace")
-    .map(c => new Types.ObjectId(c.id));
-  const bodies: Array<{ _id: Types.ObjectId; body: string }> =
-    workspaceToInjectIds.length
-      ? ((await Skill.find({ _id: { $in: workspaceToInjectIds } })
-          .select("body")
-          .lean()) as unknown as Array<{ _id: Types.ObjectId; body: string }>)
-      : [];
-  const bodyById = new Map(
-    bodies.map(b => [b._id.toString(), b.body as string]),
-  );
-
-  const injected: SkillRetrievalHit[] = [];
-  const considered: SkillRetrievalHit[] = [];
-  for (const c of candidates) {
-    if (c.score <= 0 && !hasEntities) continue;
-    if (toInjectIds.has(c.id)) {
-      injected.push({
-        ...c,
-        body:
-          c.scope === "system"
-            ? (getSystemSkill(c.name)?.body ?? "")
-            : (bodyById.get(c.id) ?? ""),
-        injected: true,
-      });
-    } else if (c.score > 0) {
-      considered.push(c);
-    }
-  }
-
-  // Fire-and-forget: auto-injection bumps injectedCount (EXPOSURE), never
-  // useCount — useCount is reserved for explicit load_skill calls so the two
-  // signals stay honest for curation. System skills have no Mongo row.
-  const workspaceInjectedIds = injected
-    .filter(i => i.scope === "workspace")
-    .map(i => new Types.ObjectId(i.id));
-  if (workspaceInjectedIds.length > 0) {
-    void Skill.updateMany(
-      { _id: { $in: workspaceInjectedIds } },
-      { $inc: { injectedCount: 1 }, $set: { lastInjectedAt: new Date() } },
-    ).catch(err => {
-      logger.debug("Skill useCount bump failed", { error: err });
-    });
-  }
-
-  // The shown workspace index follows THIS turn's relevance ranking; ties
-  // (score 0) keep the recency order from the query above.
-  const scoreById = new Map(workspaceCandidates.map(c => [c.id, c.score]));
-  const shownWorkspace = [...workspaceIndexAll]
-    .map((entry, position) => ({ entry, position }))
-    .sort(
-      (a, b) =>
-        (scoreById.get(b.entry.id) ?? 0) - (scoreById.get(a.entry.id) ?? 0) ||
-        a.position - b.position,
-    )
-    .slice(0, SKILL_INDEX_LIMIT)
-    .map(x => x.entry);
-
-  return {
-    index: buildIndex(shownWorkspace),
-    omittedFromIndex: omitted,
-    injected,
-    considered: considered.slice(0, 5),
-    queryEntities,
-  };
+function indexLine(loadWhen: string): string {
+  return loadWhen.length > INDEX_DESCRIPTION_CHARS
+    ? `${loadWhen.slice(0, INDEX_DESCRIPTION_CHARS - 1).trimEnd()}…`
+    : loadWhen;
 }
 
 /**
- * Render the skills block for injection into the agent's system prompt.
- * Keeps the format compact and includes a retrieval trace so behavior is
- * observable in chat traces.
+ * What every turn gets: the full index (workspace skills first, then system
+ * skills) and the pinned skills' bodies. Independent of the user's text —
+ * the model reads the index and loads what it needs.
  */
+export async function retrieveRelevantSkills(
+  workspaceId: string,
+): Promise<SkillRetrievalResult> {
+  const catalog = await loadSkillCatalog(workspaceId);
+  const offered = catalog.skills.filter(skill => !skill.suppressed);
+  const index: SkillIndexEntry[] = [
+    ...offered.map(skill => ({
+      id: skill.id,
+      name: skill.name,
+      loadWhen: indexLine(skill.loadWhen),
+      scope: "workspace" as const,
+      pinned: skill.pinned,
+    })),
+    ...getSystemSkillIndex().map(skill => ({
+      id: skill.id,
+      name: skill.name,
+      loadWhen: skill.description,
+      scope: "system" as const,
+      pinned: false,
+      references: skill.references,
+    })),
+  ];
+  const injected: SkillRetrievalHit[] = offered
+    .filter(skill => skill.pinned)
+    .map(skill => ({
+      id: skill.id,
+      name: skill.name,
+      loadWhen: skill.loadWhen,
+      body: skill.body,
+      score: 1,
+      scope: "workspace" as const,
+    }));
+  return { index, injected };
+}
+
 export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
   if (result.index.length === 0) return "";
-
   const lines: string[] = [];
   lines.push("\n\n---\n");
   lines.push("### Skills (workspace + system knowledge)");
   lines.push(
     "Skills extend or refine the self-directive for specific contexts. " +
       "If a skill conflicts with the directive, follow the directive. " +
-      "Always available: `get_relevant_skills`, `load_skill`, `save_skill`, " +
-      "`read_skill_resource`. Less common ops (`list_skills`, " +
-      "`delete_skill`, `search_skills`) may need `search_tools` + " +
-      "`load_tools` first — if already loaded, call the tool directly.",
+      "This is the complete index: read it, and `load_skill` any skill " +
+      "whose description matches what you are about to do — before you " +
+      "start, not after. Pinned skill bodies are loaded below within a " +
+      "fixed prompt budget. " +
+      "`search_skills` finds a skill by keyword when the index line did " +
+      "not ring a bell; `save_skill` proposes a new one.",
   );
   lines.push("");
   lines.push("#### Available skills (index)");
@@ -868,185 +421,116 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
       s.scope === "system" && s.references && s.references.length > 0
         ? ` (references: ${s.references.join(", ")})`
         : "";
-    lines.push(`- [${s.scope}] \`${s.name}\`: ${s.loadWhen}${references}`);
-  }
-  if (result.omittedFromIndex > 0) {
+    const pinned = s.pinned ? " (pinned)" : "";
     lines.push(
-      `- …plus ${result.omittedFromIndex} more workspace skills not shown — ` +
-        "find them with `search_skills` or `get_relevant_skills`.",
+      `- [${s.scope}] \`${s.name}\`${pinned}: ${s.loadWhen}${references}`,
     );
   }
-
   if (result.injected.length > 0) {
     lines.push("");
-    lines.push("#### Auto-loaded skills (relevant to current turn)");
+    lines.push("#### Pinned skill excerpts (budgeted)");
+    let remainingBodyChars = MAX_PINNED_SKILL_BODY_CHARS;
+    let omitted = 0;
     for (const s of result.injected) {
+      const trimmedBody = s.body.trim();
+      if (!trimmedBody) continue;
+      if (remainingBodyChars <= 0) {
+        omitted++;
+        continue;
+      }
+      const excerptLength = Math.min(
+        trimmedBody.length,
+        MAX_SKILL_EXCERPT_CHARS,
+        remainingBodyChars,
+      );
+      const body = trimmedBody.slice(0, excerptLength);
+      const truncated = body.length < trimmedBody.length;
       lines.push("");
       lines.push(`##### \`${s.name}\``);
       lines.push(`_loadWhen:_ ${s.loadWhen}`);
       lines.push("");
-      lines.push(s.body);
+      lines.push(body);
+      remainingBodyChars -= body.length;
+      if (truncated) {
+        lines.push("");
+        lines.push(
+          `[Excerpt truncated. Use load_skill("${s.name}") for the complete guide.]`,
+        );
+      }
+    }
+    if (omitted > 0) {
+      lines.push("");
+      lines.push(
+        `[${omitted} additional pinned skill${omitted === 1 ? " was" : "s were"} omitted by the prompt budget; use load_skill by name from the index.]`,
+      );
     }
   }
-
-  // Retrieval trace — invisible to casual chat readers but in the trace.
-  lines.push("");
-  lines.push("<!-- skills retrieval trace");
-  lines.push(
-    `query_entities: [${result.queryEntities.slice(0, 20).join(", ")}]`,
-  );
-  for (const s of result.injected) {
-    lines.push(
-      `injected   ${s.name.padEnd(30)} score=${s.score.toFixed(2)} overlap=${s.entityOverlap} sem=${s.semanticScore.toFixed(2)}`,
-    );
-  }
-  for (const s of result.considered) {
-    lines.push(
-      `considered ${s.name.padEnd(30)} score=${s.score.toFixed(2)} overlap=${s.entityOverlap} sem=${s.semanticScore.toFixed(2)}`,
-    );
-  }
-  lines.push("-->");
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Admin (settings UI)
+// ---------------------------------------------------------------------------
 
 export interface AdminSkillSummary {
   id: string;
   name: string;
+  path: string;
   loadWhen: string;
   bodyPreview: string;
   entities: string[];
   suppressed: boolean;
-  useCount: number;
-  lastUsedAt: Date | null;
-  createdBy: string;
-  createdAt: Date | null;
-  updatedAt: Date | null;
-  definitionInvalid?: { reason: string; at: Date; path?: string } | null;
+  pinned: boolean;
+  definitionInvalid: { reason: string; path: string } | null;
 }
 
 export interface AdminSkillDetail extends AdminSkillSummary {
   body: string;
-  previousBody: string | null;
-  previousUpdatedAt: Date | null;
-  definitionInvalid?: { reason: string; at: Date; path?: string } | null;
 }
 
-function dateOrNull(value: unknown): Date | null {
-  return value instanceof Date ? value : null;
-}
-
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-function idFromPlain(plain: Record<string, unknown>): string {
-  const id = plain._id;
-  if (typeof id === "string") return id;
-  if (id && typeof id === "object" && "toString" in id) {
-    return String(id);
-  }
-  return "";
-}
-
-function invalidFromPlain(
-  value: unknown,
-): AdminSkillSummary["definitionInvalid"] {
-  if (!value || typeof value !== "object") return null;
-  const reason = (value as { reason?: unknown }).reason;
-  if (typeof reason !== "string" || reason.length === 0) return null;
-  const atRaw = (value as { at?: unknown }).at;
-  const at = atRaw instanceof Date ? atRaw : new Date();
-  const path = (value as { path?: unknown }).path;
+function summaryOf(skill: WorkspaceSkill): AdminSkillSummary {
   return {
-    reason,
-    at,
-    path: typeof path === "string" ? path : undefined,
+    id: skill.id,
+    name: skill.name,
+    path: skill.path,
+    loadWhen: skill.loadWhen,
+    bodyPreview:
+      skill.body.slice(0, 240) + (skill.body.length > 240 ? "…" : ""),
+    entities: skill.entities,
+    suppressed: skill.suppressed,
+    pinned: skill.pinned,
+    definitionInvalid: null,
   };
 }
 
-function adminSummaryFromPlain(
-  plain: Record<string, unknown>,
-  fallbackName: string,
-): AdminSkillSummary {
-  const body = typeof plain.body === "string" ? plain.body : "";
-  return {
-    id: idFromPlain(plain),
-    name: typeof plain.name === "string" ? plain.name : fallbackName,
-    loadWhen: typeof plain.loadWhen === "string" ? plain.loadWhen : "",
-    bodyPreview: body.slice(0, 240) + (body.length > 240 ? "…" : ""),
-    entities: stringList(plain.entities),
-    suppressed: !!plain.suppressed,
-    useCount: typeof plain.useCount === "number" ? plain.useCount : 0,
-    lastUsedAt: dateOrNull(plain.lastUsedAt),
-    createdBy: typeof plain.createdBy === "string" ? plain.createdBy : "git",
-    createdAt: dateOrNull(plain.createdAt),
-    updatedAt: dateOrNull(plain.updatedAt),
-    definitionInvalid: invalidFromPlain(plain.definitionInvalid),
-  };
-}
-
+/** Valid skills first (by name), then files that do not parse, with why. */
 export async function listSkillsForAdmin(
   workspaceId: string,
 ): Promise<AdminSkillSummary[]> {
-  const live = await loadLiveSkills(workspaceId);
-  const summaries: AdminSkillSummary[] = [];
-  for (const item of live) {
-    try {
-      summaries.push(
-        adminSummaryFromPlain(
-          liveSkillToPlain(item, workspaceId),
-          item.def.name,
-        ),
-      );
-    } catch (error) {
-      summaries.push({
-        id: item.id.toString(),
-        name: item.def.name,
-        loadWhen: "",
-        bodyPreview: "",
-        entities: [],
-        suppressed: false,
-        useCount: 0,
-        lastUsedAt: null,
-        createdBy: "git",
-        createdAt: null,
-        updatedAt: null,
-        definitionInvalid: {
-          reason: error instanceof Error ? error.message : String(error),
-          at: new Date(),
-          path: item.def.path,
-        },
-      });
-    }
-  }
-  return summaries.sort(
-    (a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0),
-  );
+  const catalog = await loadSkillCatalog(workspaceId);
+  return [
+    ...catalog.skills.map(summaryOf),
+    ...catalog.invalid.map(file => ({
+      id: skillId(workspaceId, file.name),
+      name: file.name,
+      path: file.path,
+      loadWhen: "",
+      bodyPreview: "",
+      entities: [],
+      suppressed: false,
+      pinned: false,
+      definitionInvalid: { reason: file.reason, path: file.path },
+    })),
+  ];
 }
 
 export async function getSkillForAdmin(
   workspaceId: string,
   id: string,
 ): Promise<AdminSkillDetail | null> {
-  if (!Types.ObjectId.isValid(id)) return null;
-  const live = await loadLiveSkillById(workspaceId, id);
-  if (!live) return null;
-  const plain = liveSkillToPlain(live, workspaceId);
-  const summary = adminSummaryFromPlain(plain, live.def.name);
-  const invalid = plain.definitionInvalid;
-  return {
-    ...summary,
-    body: typeof plain.body === "string" ? plain.body : "",
-    previousBody:
-      typeof plain.previousBody === "string" ? plain.previousBody : null,
-    previousUpdatedAt: dateOrNull(plain.previousUpdatedAt),
-    definitionInvalid:
-      invalid && typeof invalid === "object"
-        ? (invalid as AdminSkillDetail["definitionInvalid"])
-        : null,
-  };
+  const skill = await findSkillById(workspaceId, id);
+  if (!skill) return null;
+  return { ...summaryOf(skill), body: skill.body };
 }
 
 export async function toggleSkillSuppressed(
@@ -1055,25 +539,30 @@ export async function toggleSkillSuppressed(
   suppressed: boolean,
   actorId?: string,
 ): Promise<boolean> {
-  if (!Types.ObjectId.isValid(id)) return false;
-  const doc = await Skill.findOne({
-    _id: new Types.ObjectId(id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  }).select("name");
-  const live = doc ? null : await loadLiveSkillById(workspaceId, id);
-  const name = doc?.name ?? live?.def.name;
-  if (!name) return false;
-  // Suppression is frontmatter, so it commits like any other skill edit.
-  const committed = await commitSkillSuppressed(
+  const skill = await findSkillById(workspaceId, id);
+  if (!skill) return false;
+  return commitSkillFlags(
     workspaceId,
-    name,
-    suppressed,
+    skill.name,
+    { suppressed },
     await skillCommitAuthor(actorId),
   );
-  if (!committed) return false;
-  if (!doc) return true;
-  const res = await Skill.updateOne({ _id: doc._id }, { $set: { suppressed } });
-  return res.matchedCount > 0;
+}
+
+export async function setSkillPinned(
+  workspaceId: string,
+  id: string,
+  pinned: boolean,
+  actorId?: string,
+): Promise<boolean> {
+  const skill = await findSkillById(workspaceId, id);
+  if (!skill) return false;
+  return commitSkillFlags(
+    workspaceId,
+    skill.name,
+    { pinned },
+    await skillCommitAuthor(actorId),
+  );
 }
 
 export async function deleteSkillById(
@@ -1081,21 +570,11 @@ export async function deleteSkillById(
   id: string,
   actorId?: string,
 ): Promise<boolean> {
-  if (!Types.ObjectId.isValid(id)) return false;
-  const doc = await Skill.findOne({
-    _id: new Types.ObjectId(id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  }).select("name");
-  const live = doc ? null : await loadLiveSkillById(workspaceId, id);
-  const name = doc?.name ?? live?.def.name;
-  if (!name) return false;
-  const committed = await commitSkillDelete(
+  const skill = await findSkillById(workspaceId, id);
+  if (!skill) return false;
+  return commitSkillDelete(
     workspaceId,
-    name,
+    skill.name,
     await skillCommitAuthor(actorId),
   );
-  if (!committed) return false;
-  if (!doc) return true;
-  const res = await Skill.deleteOne({ _id: doc._id });
-  return res.deletedCount > 0;
 }

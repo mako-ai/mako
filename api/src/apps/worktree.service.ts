@@ -97,7 +97,6 @@ import {
   type TreeEntry,
 } from "./repository.service";
 import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
-import { syncSkillsIndexFromRepo } from "./workspace-skills.service";
 import { createAppsScaffold } from "./scaffold";
 import {
   ensureCommitLocally,
@@ -235,13 +234,7 @@ export function syncRepoBackedResources(
       error: error instanceof Error ? error.message : String(error),
     });
   });
-  // Same doctrine for skills/ (apps.md §10 Block D1).
-  void syncSkillsIndexFromRepo(workspaceId, userId).catch(error => {
-    logger.warn("Skills index sync after push failed", {
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
+  // Skills are files only (apps.md §27): nothing to reconcile on push.
   // dbt orchestration config (jobs/environments YAML — apps.md §23):
   // external edits re-register schedules on the next push.
   void import("../dbt/dbt-config.service")
