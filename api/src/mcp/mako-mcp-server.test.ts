@@ -34,6 +34,11 @@ import {
   resolveWorkspaceApiKeyScopes,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
+import {
+  parseMcpOAuthScopes,
+  resolveMcpOAuthConsentScopes,
+} from "../auth/mcp-oauth.service";
+import { mcpOAuthWellKnownRoutes } from "../routes/mcp-oauth.routes";
 import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
@@ -53,9 +58,11 @@ async function exchange(
   scopes: WorkspaceApiKeyScope[] = ["mcp", "query:read"],
   acpDesktop = false,
   capabilityGrants?: CapabilityGrant[],
+  memberRole = "admin",
 ): Promise<Record<string, unknown>[]> {
   const server = buildMakoMcpServer({
     workspaceId: WORKSPACE_ID,
+    memberRole,
     scopes,
     acpDesktop,
     ...(capabilityGrants ? { capabilityGrants } : {}),
@@ -87,6 +94,42 @@ async function main() {
     () => parseWorkspaceApiKeyScopes(["mcp", "unknown"]),
     /Unsupported API key scope/,
   );
+  assert.deepEqual(parseMcpOAuthScopes(), ["mcp", "query:read"]);
+  assert.deepEqual(parseMcpOAuthScopes("warehouse:write"), [
+    "mcp",
+    "query:read",
+    "warehouse:write",
+  ]);
+  assert.throws(
+    () => parseMcpOAuthScopes("query:read members:write"),
+    /Unsupported OAuth scope: members:write/,
+  );
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(
+      ["mcp", "query:read", "warehouse:write"],
+      false,
+    ),
+    ["mcp", "query:read"],
+  );
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(
+      ["mcp", "query:read", "warehouse:write"],
+      true,
+    ),
+    ["mcp", "query:read", "warehouse:write"],
+  );
+  const oauthMetadataResponse = await mcpOAuthWellKnownRoutes.request(
+    "http://localhost/.well-known/oauth-authorization-server",
+  );
+  assert.equal(oauthMetadataResponse.status, 200);
+  const oauthMetadata = (await oauthMetadataResponse.json()) as {
+    scopes_supported: string[];
+  };
+  assert.deepEqual(oauthMetadata.scopes_supported, [
+    "mcp",
+    "query:read",
+    "warehouse:write",
+  ]);
   // query:write is double-gated: the scope alone yields "write-opt-in",
   // which resolves to write ONLY against connections a workspace admin
   // marked allowAgentWrites — and can never upgrade a plain query:read key.
@@ -381,12 +424,17 @@ async function main() {
       names.has("app_browse"),
       "app_browse is the external verify capability",
     );
+    assert.ok(
+      names.has("get_mcp_capabilities"),
+      "capability diagnostics must always be exposed",
+    );
     // Warehouse-mutating dbt runs require the explicit warehouse:write
     // scope; a default query:read key must not see them.
     for (const warehouseGatedTool of [
       "dbt_run_model",
       "dbt_run_job",
       "dbt_cancel_run",
+      "dbt_ensure_dev_environment",
     ]) {
       assert.equal(
         names.has(warehouseGatedTool),
@@ -394,6 +442,49 @@ async function main() {
         `${warehouseGatedTool} must stay hidden without warehouse:write`,
       );
     }
+    for (const dbtCrudTool of [
+      "dbt_create_project",
+      "create_dbt_file",
+      "read_dbt_file",
+      "edit_dbt_file",
+      "modify_dbt_file",
+      "delete_dbt_file",
+      "dbt_create_job",
+      "dbt_update_job",
+      "dbt_delete_job",
+    ]) {
+      assert.ok(names.has(dbtCrudTool), `${dbtCrudTool} must be exposed`);
+    }
+
+    const [capabilityResponse] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: "capabilities",
+        method: "tools/call",
+        params: { name: "get_mcp_capabilities", arguments: {} },
+      },
+    ]);
+    const capabilityText = (
+      capabilityResponse.result as { content: { text: string }[] }
+    ).content[0].text;
+    const capabilityReport = JSON.parse(capabilityText) as {
+      scopes: string[];
+      unavailableTools: Array<{
+        name: string;
+        requiredScope?: string;
+      }>;
+    };
+    assert.deepEqual(capabilityReport.scopes, ["mcp", "query:read"]);
+    assert.deepEqual(
+      capabilityReport.unavailableTools.find(
+        tool => tool.name === "dbt_run_model",
+      ),
+      {
+        name: "dbt_run_model",
+        reason: "Missing warehouse:write scope",
+        requiredScope: "warehouse:write",
+      },
+    );
     // dbt git tools are GONE (apps.md §20): the workspace repo is the git
     // surface; nothing dbt-git-shaped may reappear over MCP.
     for (const goneTool of [
@@ -408,6 +499,42 @@ async function main() {
         `${goneTool} was deleted with Block D3 and must not be exposed`,
       );
     }
+  }
+
+  // 3a1. Workspace roles remain at least as strict as the Transform REST UI:
+  // viewers can inspect dbt, but cannot mutate files or execute the warehouse.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "viewer-list", method: "tools/list" }],
+      ["mcp", "query:read", "warehouse:write"],
+      false,
+      undefined,
+      "viewer",
+    );
+    const { tools } = res.result as { tools: { name: string }[] };
+    const names = new Set(tools.map(tool => tool.name));
+    assert.ok(names.has("read_dbt_file"));
+    assert.equal(names.has("create_dbt_file"), false);
+    assert.equal(names.has("dbt_run_model"), false);
+    assert.equal(names.has("dbt_create_job"), false);
+  }
+
+  // Members can author and execute models, while project/job administration
+  // remains reserved for admins and owners.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "member-list", method: "tools/list" }],
+      ["mcp", "query:read", "warehouse:write"],
+      false,
+      undefined,
+      "member",
+    );
+    const { tools } = res.result as { tools: { name: string }[] };
+    const names = new Set(tools.map(tool => tool.name));
+    assert.ok(names.has("create_dbt_file"));
+    assert.ok(names.has("dbt_run_model"));
+    assert.equal(names.has("dbt_create_project"), false);
+    assert.equal(names.has("dbt_create_job"), false);
   }
 
   // 3a. warehouse:write opt-in: run tools appear (destructive-annotated) and
@@ -425,7 +552,12 @@ async function main() {
       }[];
     };
     const byName = new Map(tools.map(tool => [tool.name, tool]));
-    for (const runTool of ["dbt_run_model", "dbt_run_job", "dbt_cancel_run"]) {
+    for (const runTool of [
+      "dbt_run_model",
+      "dbt_run_job",
+      "dbt_cancel_run",
+      "dbt_ensure_dev_environment",
+    ]) {
       assert.ok(
         byName.has(runTool),
         `${runTool} must be exposed with warehouse:write`,

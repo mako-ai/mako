@@ -4,8 +4,9 @@
  * Public clients only (token_endpoint_auth_method "none") with mandatory
  * PKCE S256 — exactly what the MCP spec's auth profile and every major MCP
  * client (Claude, Cursor, Codex) implement. Tokens are opaque `mcpat_`/
- * `mcprt_` strings; scopes are always the read-only MCP set, so an OAuth
- * grant can never do more than a freshly-created MCP API key.
+ * `mcprt_` strings. OAuth grants default to the read-only MCP set; clients
+ * may explicitly request the narrower `warehouse:write` scope for governed
+ * dbt execution, which is shown prominently on the consent screen.
  */
 import * as crypto from "crypto";
 
@@ -31,6 +32,49 @@ const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
 
 const MAX_REDIRECT_URIS = 10;
+
+/** Public scopes the browser OAuth flow may grant to an MCP client. */
+export const MCP_OAUTH_SCOPES = [
+  "mcp",
+  "query:read",
+  "warehouse:write",
+] as const satisfies readonly WorkspaceApiKeyScope[];
+
+const MCP_OAUTH_SCOPE_SET = new Set<string>(MCP_OAUTH_SCOPES);
+
+/**
+ * Parse the OAuth `scope` parameter. Baseline MCP/read scopes are always
+ * present so a client asking only for the optional dbt execution permission
+ * still receives a useful MCP grant. Omitted scope preserves the historical
+ * read-only default.
+ */
+export function parseMcpOAuthScopes(value?: string): WorkspaceApiKeyScope[] {
+  if (!value?.trim()) return [...DEFAULT_WORKSPACE_API_KEY_SCOPES];
+
+  const requested = [...new Set(value.trim().split(/\s+/))];
+  for (const scope of requested) {
+    if (!MCP_OAUTH_SCOPE_SET.has(scope)) {
+      throw new Error(`Unsupported OAuth scope: ${scope}`);
+    }
+  }
+
+  return [
+    ...DEFAULT_WORKSPACE_API_KEY_SCOPES,
+    ...(requested.includes("warehouse:write")
+      ? (["warehouse:write"] as const)
+      : []),
+  ];
+}
+
+/** Never turn a client request into warehouse authority without user opt-in. */
+export function resolveMcpOAuthConsentScopes(
+  requested: readonly WorkspaceApiKeyScope[],
+  warehouseWriteApproved: boolean,
+): WorkspaceApiKeyScope[] {
+  return requested.filter(
+    scope => scope !== "warehouse:write" || warehouseWriteApproved,
+  );
+}
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -99,6 +143,7 @@ export async function createAuthorizationCode(input: {
   workspaceId: string;
   redirectUri: string;
   codeChallenge: string;
+  scopes: WorkspaceApiKeyScope[];
 }): Promise<string> {
   const code = randomToken("mcpac_");
   await McpOAuthCode.create({
@@ -108,7 +153,7 @@ export async function createAuthorizationCode(input: {
     workspaceId: input.workspaceId,
     redirectUri: input.redirectUri,
     codeChallenge: input.codeChallenge,
-    scopes: [...DEFAULT_WORKSPACE_API_KEY_SCOPES],
+    scopes: input.scopes,
     expiresAt: new Date(Date.now() + AUTH_CODE_TTL_MS),
   });
   return code;

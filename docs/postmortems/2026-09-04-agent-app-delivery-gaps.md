@@ -128,16 +128,16 @@ an equivalent automated path.
 | P0       | Data-safe publish           | Verify/materialize every required parquet binding at the exact deployment SHA before updating `publishedSha`; reuse existing content-addressed artifacts. | A successful publish cannot expose an app with a missing required parquet artifact. |
 | P1       | Publish observability       | Report code-build and binding-readiness state, including the failing binding, from publish status and logs.                                               | An agent can diagnose a stalled deploy without a browser or bucket inspection.      |
 | P1       | Durable dev startup         | Return an operation identifier for cold dev starts and expose status/log polling while retaining a fast synchronous path for warm starts.                 | Tool request timeouts never leave startup outcome ambiguous.                        |
-| P1       | Capability discovery        | Expose effective scopes plus unavailable tool names/reasons, with a documented scoped API-key flow for `warehouse:write`.                                 | An agent can distinguish "unsupported" from "not authorized" in one call.           |
+| P1       | Capability discovery        | Expose effective scopes plus unavailable tool names/reasons, with explicit OAuth and API-key flows for `warehouse:write`.                                 | An agent can distinguish "unsupported" from "not authorized" in one call.           |
 | P2       | First-class CLI parity      | Provide authenticated CLI commands for app list/open/status/publish/materialize and dbt run/status using the same backend operations as MCP.              | Routine delivery can be scripted end-to-end without browser control.                |
 
 ## Security decision
 
-The default OAuth client remains read-only for warehouse operations. Production
-dbt execution can change durable datasets and must require an explicit
-`warehouse:write` grant, such as a scoped API key or an approved delegated
-credential. Remediation should make that boundary visible and easy to satisfy;
-it must not silently broaden existing credentials.
+The default OAuth grant remains read-only for warehouse operations. Production
+dbt execution can change durable datasets and requires an explicit
+`warehouse:write` grant, requested by the client and separately checked on the
+consent page, or a scoped API key. Remediation makes that boundary visible and
+easy to satisfy without silently broadening existing credentials.
 
 ## Verification plan
 
@@ -156,7 +156,8 @@ Automated coverage must prove that:
 
 ## Follow-up ownership
 
-The P0 items are implemented on the platform reliability branch associated
-with this post-mortem. P1 and P2 work should be tracked independently so the
-atomic correctness fixes can ship without waiting for broader CLI and
+The P0 items and P1 capability discovery are implemented on the platform
+reliability branch associated with this post-mortem. The remaining P1
+observability/startup work and P2 CLI parity should be tracked independently
+so the atomic correctness fixes can ship without waiting for broader CLI and
 operation-status design.

@@ -250,14 +250,14 @@ app.get("/api/user/profile", authMiddleware, async c => {
 
 | Method | Endpoint                    | Description                                 | Auth Required |
 | ------ | --------------------------- | ------------------------------------------- | ------------- |
-| POST   | `/api/auth/register`        | Register new user                           | No            |
-| POST   | `/api/auth/login`           | Login with email/password                   | No            |
-| POST   | `/api/auth/logout`          | Logout user                                 | Yes           |
-| GET    | `/api/auth/me`              | Get current user                            | Yes           |
-| POST   | `/api/auth/refresh`         | Refresh session                             | No            |
-| GET    | `/api/auth/google`          | Initiate Google OAuth                       | No            |
+| POST   | `/api/auth/register`         | Register new user                           | No             |
+| POST   | `/api/auth/login`            | Login with email/password                   | No             |
+| POST   | `/api/auth/logout`           | Logout user                                 | Yes            |
+| GET    | `/api/auth/me`               | Get current user                            | Yes            |
+| POST   | `/api/auth/refresh`          | Refresh session                             | No             |
+| GET    | `/api/auth/google`           | Initiate Google OAuth                       | No             |
 | GET    | `/api/auth/google/callback` | Google OAuth callback                       | No            |
-| GET    | `/api/auth/github`          | Initiate GitHub OAuth                       | No            |
+| GET    | `/api/auth/github`           | Initiate GitHub OAuth                       | No             |
 | GET    | `/api/auth/github/callback` | GitHub OAuth callback                       | No            |
 | GET    | `/api/auth/oauth-receive`   | Receive session from production OAuth proxy | No            |
 | POST   | `/api/auth/desktop/code`    | Mint one-time desktop handoff code          | Yes           |
@@ -454,14 +454,14 @@ Desktop app (deep link received: open-url on macOS, argv on Win/Linux)
 
 ### Key Files
 
-| File                                   | Purpose                                                  |
-| -------------------------------------- | -------------------------------------------------------- |
-| `api/src/auth/desktop-auth.ts`         | Code mint/redeem helpers (hashing, PKCE verification)    |
-| `api/src/database/schema.ts`           | `DesktopAuthCode` model (TTL index on `expiresAt`)       |
-| `api/src/auth/auth.controller.ts`      | `/desktop/code` and `/desktop/complete` routes           |
-| `app/src/components/DesktopAuthPage.tsx` | Browser-side handoff page (`/desktop-auth`)            |
-| `app/src/utils/desktop-auth-redirect.ts` | sessionStorage resume across the login round trip      |
-| `packages/desktop/src/main.ts`         | PKCE generation, `mako://` protocol, deep-link handling  |
+| File                                     | Purpose                                                 |
+| ---------------------------------------- | ------------------------------------------------------- |
+| `api/src/auth/desktop-auth.ts`           | Code mint/redeem helpers (hashing, PKCE verification)   |
+| `api/src/database/schema.ts`             | `DesktopAuthCode` model (TTL index on `expiresAt`)      |
+| `api/src/auth/auth.controller.ts`        | `/desktop/code` and `/desktop/complete` routes          |
+| `app/src/components/DesktopAuthPage.tsx` | Browser-side handoff page (`/desktop-auth`)             |
+| `app/src/utils/desktop-auth-redirect.ts` | sessionStorage resume across the login round trip       |
+| `packages/desktop/src/main.ts`           | PKCE generation, `mako://` protocol, deep-link handling |
 
 ## MCP OAuth (AI agent connections)
 
@@ -477,12 +477,12 @@ mandatory PKCE S256 — the MCP spec's auth profile, implemented by Claude,
 Cursor, and Codex. Clients self-register via RFC 7591 dynamic registration;
 no provider console setup is needed.
 
-| Method | Endpoint                  | Description                                        |
-| ------ | ------------------------- | -------------------------------------------------- |
-| POST   | `/api/oauth/mcp/register` | RFC 7591 dynamic client registration               |
-| GET    | `/api/oauth/mcp/authorize`| Consent page (bounces through `/login` if needed)  |
-| POST   | `/api/oauth/mcp/authorize`| Consent form submit → authorization code redirect  |
-| POST   | `/api/oauth/mcp/token`    | Code/refresh-token exchange                        |
+| Method | Endpoint                   | Description                                       |
+| ------ | -------------------------- | ------------------------------------------------- |
+| POST   | `/api/oauth/mcp/register`  | RFC 7591 dynamic client registration              |
+| GET    | `/api/oauth/mcp/authorize` | Consent page (bounces through `/login` if needed) |
+| POST   | `/api/oauth/mcp/authorize` | Consent form submit → authorization code redirect |
+| POST   | `/api/oauth/mcp/token`     | Code/refresh-token exchange                       |
 
 Discovery documents are mounted at root in `src/index.ts` (not in
 `register-routes.ts`): `/.well-known/oauth-protected-resource` and six
@@ -497,10 +497,10 @@ would fall through to the SPA fallback and poison client discovery.
   10 minutes and are consumed atomically.
 - `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
-- Scopes are always the read-only set (`mcp`, `query:read`). There is
-  deliberately no `query:write` scope, and OAuth grants can never carry
-  `warehouse:write` — an OAuth grant can never do more than a
-  freshly-created MCP API key with default scopes.
+- Scopes default to the read-only set (`mcp`, `query:read`). OAuth clients may
+  request `warehouse:write`; the authorize page shows a separate, unchecked
+  warehouse-mutation approval. Raw `query:write`, membership, and other
+  administrative scopes are never available through browser OAuth.
 - Redirect URIs accepted at registration: `https` anywhere, `http` on
   loopback only (RFC 8252), or a custom app scheme (e.g. `cursor://`).
   Max 10 per client.
@@ -515,17 +515,12 @@ Workspace API keys (`revops_*`) now carry a `scopes` array
 `scopes: undefined` and are refused by the MCP endpoint with a rotation
 hint — they keep working everywhere else.
 
-The opt-in `warehouse:write` scope (never granted by default, never
-available to OAuth) maps to the `warehouse-write` capability grant on the
+The opt-in `warehouse:write` scope (never granted by default, available only
+through an explicit OAuth request or scoped API key) maps to the
+`warehouse-write` capability grant on the
 external MCP surface, exposing governed dbt executions (`dbt_run_model`,
-`dbt_run_job`, `dbt_cancel_run`). It does not unlock raw SQL writes —
-`sql_execute_query` stays read-only under every scope combination.
-
-The opt-in `git:write` scope works the same way: it maps to the
-`git-write` capability grant, exposing dbt repository mutations (commit,
-branch, and pull-request tools). Git *reads* (`dbt_git_status`, branch and
-PR listings) are part of the default surface so headless agents can tell
-when their edits are uncommitted drafts.
+`dbt_run_job`, `dbt_cancel_run`). That scope alone does not unlock raw SQL
+writes; those use the separate, double-gated `query:write` API-key scope.
 
 The opt-in `query:write` scope is double-gated: it yields "write-opt-in"
 query access, which `sql_execute_query` resolves per connection — write
@@ -546,17 +541,16 @@ The app surface for this is **Settings → Connect Agents**.
 
 ### Key Files
 
-| File                                    | Purpose                                                        |
-| --------------------------------------- | -------------------------------------------------------------- |
-| `api/src/routes/mcp-oauth.routes.ts`    | AS endpoints, well-known discovery documents, consent page      |
-| `api/src/auth/mcp-oauth.service.ts`     | Code/token mint, exchange, refresh rotation, revocation         |
-| `api/src/database/mcp-oauth-schema.ts`  | `McpOAuthClient`, `McpOAuthCode`, `McpOAuthToken` models        |
-| `api/src/auth/api-key-scopes.ts`        | Scope constants, parsing, legacy-key resolution                 |
-| `api/src/auth/unified-auth.middleware.ts` | `mcpat_` Bearer recognition alongside sessions and API keys   |
-| `api/src/routes/mcp-server.routes.ts`   | `POST /api/mcp` — auth-type and scope enforcement               |
+| File                                      | Purpose                                                     |
+| ----------------------------------------- | ----------------------------------------------------------- |
+| `api/src/routes/mcp-oauth.routes.ts`      | AS endpoints, well-known discovery documents, consent page  |
+| `api/src/auth/mcp-oauth.service.ts`       | Code/token mint, exchange, refresh rotation, revocation     |
+| `api/src/database/mcp-oauth-schema.ts`    | `McpOAuthClient`, `McpOAuthCode`, `McpOAuthToken` models    |
+| `api/src/auth/api-key-scopes.ts`          | Scope constants, parsing, legacy-key resolution             |
+| `api/src/auth/unified-auth.middleware.ts` | `mcpat_` Bearer recognition alongside sessions and API keys |
+| `api/src/routes/mcp-server.routes.ts`     | `POST /api/mcp` — auth-type and scope enforcement           |
 
 User-facing setup docs live in the Starlight site: `docs/src/content/docs/mcp-server.md`.
-
 
 ## Customization
 

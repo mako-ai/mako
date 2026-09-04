@@ -89,7 +89,7 @@ Typical loop:
 4. Verify with app_open_app (starts the dev server, focuses the user's UI) + app_dev_log (vite + browser console) + app_browse (headless browser: click, navigate, screenshot the running app).
 5. app_commit → app_merge_to_main (main is what publishes buildable state).
 
-dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope.
+dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
@@ -127,6 +127,8 @@ export interface MakoMcpContext {
   workspaceId: string;
   /** Acting user (the API key's creator). */
   userId?: string;
+  /** Live workspace role, resolved on every MCP request. */
+  memberRole?: string;
   /** Capabilities granted to the authenticated workspace API key. */
   scopes?: readonly WorkspaceApiKeyScope[];
   /**
@@ -253,7 +255,7 @@ export function buildMakoMcpCandidateTools(
  * External MCP keeps its long-standing implicit headless-authoring authority
  * (artifact-write for app/notebook/dbt-file drafts, schedule-write for
  * binding schedules — both relied on by every existing key), and derives the
- * rest from explicit opt-in API-key scopes (warehouse:write → the
+ * rest from explicit opt-in OAuth/API-key scopes (warehouse:write → the
  * warehouse-write grant behind dbt_run_model / dbt_run_job / dbt_cancel_run).
  *
  * Desktop ACP holds every grant: plan-grant gating is DISABLED pending
@@ -309,22 +311,98 @@ export function buildMakoMcpToolset(
   const grants = sessionCapabilityGrants(context, scopes);
   const candidates = buildMakoMcpCandidateTools(context);
   const exposed: Record<string, BridgeableTool> = {};
+  const unavailable: Array<{
+    name: string;
+    reason: string;
+    requiredScope?: WorkspaceApiKeyScope;
+    requiredWorkspaceRole?: string;
+  }> = [];
 
   for (const [name, tool] of Object.entries(candidates)) {
     const entry = MCP_BRIDGE_POLICY[name];
     if (!entry || entry.status !== "bridge") continue;
     if (entry.acpDesktopOnly && !context.acpDesktop) continue;
     if (entry.omitForAcpDesktop && context.acpDesktop) continue;
-    if (entry.requiresQueryAccess && queryAccess === "none") continue;
+    const capability = AGENT_CAPABILITY_BY_NAME.get(name);
+    if (
+      capability?.minimumWorkspaceRole === "admin" &&
+      context.memberRole !== "owner" &&
+      context.memberRole !== "admin"
+    ) {
+      unavailable.push({
+        name,
+        reason: "Requires an admin or owner workspace role",
+        requiredWorkspaceRole: "admin",
+      });
+      continue;
+    }
+    if (
+      capability?.minimumWorkspaceRole === "member" &&
+      (!context.memberRole || context.memberRole === "viewer")
+    ) {
+      unavailable.push({
+        name,
+        reason: "Requires at least a member workspace role",
+        requiredWorkspaceRole: "member",
+      });
+      continue;
+    }
+    if (entry.requiresQueryAccess && queryAccess === "none") {
+      unavailable.push({
+        name,
+        reason: "Missing query access",
+        requiredScope: "query:read",
+      });
+      continue;
+    }
     // Grant-gated tools stay hidden from stateless external clients that
     // did not opt in via scopes (mirrors the requiresQueryAccess hiding
     // above). Execution re-checks via authorizeAgentCapability regardless.
-    const requiredGrant = AGENT_CAPABILITY_BY_NAME.get(name)?.requiredGrant;
-    if (requiredGrant && !grants.has(requiredGrant)) continue;
+    const requiredGrant = capability?.requiredGrant;
+    if (requiredGrant && !grants.has(requiredGrant)) {
+      const requiredScope = capabilityScopeForGrant(requiredGrant);
+      unavailable.push({
+        name,
+        reason: requiredScope
+          ? `Missing ${requiredScope} scope`
+          : `Missing ${requiredGrant} capability grant`,
+        ...(requiredScope ? { requiredScope } : {}),
+      });
+      continue;
+    }
     exposed[name] = tool;
   }
 
+  exposed.get_mcp_capabilities = {
+    description:
+      "Report this MCP connection's effective scopes, grants, available " +
+      "tools, and grant-gated tools that are hidden. Call this when a tool " +
+      "seems missing or before planning dbt warehouse execution.",
+    inputSchema: z.object({}),
+    execute: async () => ({
+      scopes,
+      queryAccess,
+      grants: [...grants].sort(),
+      availableTools: Object.keys(exposed).sort(),
+      unavailableTools: unavailable.sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
+      hint:
+        "warehouse:write is never granted by default. Request it during " +
+        "OAuth authorization or use a workspace API key carrying that scope.",
+    }),
+  };
+
   return exposed;
+}
+
+function capabilityScopeForGrant(
+  grant: CapabilityGrant,
+): WorkspaceApiKeyScope | undefined {
+  if (grant === "warehouse-write") return "warehouse:write";
+  if (grant === "git-write") return "git:write";
+  if (grant === "members-write") return "members:write";
+  return undefined;
 }
 
 function toolAnnotations(
