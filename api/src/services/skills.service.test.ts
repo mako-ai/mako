@@ -153,7 +153,7 @@ describe("the prompt gets the whole index and the pinned bodies", () => {
     const block = renderSkillsPromptBlock(result);
     expect(block).toContain("`alpha`: when asked about alpha");
     expect(block).toContain("`pinned_one` (pinned)");
-    expect(block).toContain("#### Pinned skills (always loaded)");
+    expect(block).toContain("#### Pinned skill excerpts (budgeted)");
     expect(block).not.toContain("hidden");
     expect(block).not.toContain("retrieval trace");
   });

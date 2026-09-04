@@ -10,6 +10,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
+  MAX_SKILL_BODY_CHARS,
+  MAX_SKILL_FILE_BYTES,
   SKILLS_README_PATH,
   parseSkillFile,
   serializeSkillFile,
@@ -185,6 +187,24 @@ describe("the catalog is the files at main", () => {
       ["broken", skillFilePath("broken")],
     ]);
     expect(catalog.invalid.every(i => i.reason.length > 0)).toBe(true);
+  });
+
+  it("rejects oversized files and bodies before retaining them in the catalog", async () => {
+    await laptopCommit({
+      [skillFilePath("body_too_large")]: serializeSkillFile(
+        skill("body_too_large", "x".repeat(MAX_SKILL_BODY_CHARS + 1)),
+      ),
+      [skillFilePath("file_too_large")]:
+        "---\nname: file_too_large\ndescription: x\n---\n\n" +
+        "y".repeat(MAX_SKILL_FILE_BYTES),
+    });
+
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.skills).toEqual([]);
+    expect(catalog.invalid.map(file => file.reason)).toEqual([
+      `body exceeds ${MAX_SKILL_BODY_CHARS} characters`,
+      `skill file exceeds ${MAX_SKILL_FILE_BYTES} bytes`,
+    ]);
   });
 });
 

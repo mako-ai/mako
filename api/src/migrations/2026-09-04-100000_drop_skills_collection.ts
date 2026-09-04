@@ -4,22 +4,35 @@ import { loggers } from "../logging";
 const log = loggers.migration();
 
 export const description =
-  "Drop the skills collection: skills are files in the workspace repo (apps.md §27)";
+  "Archive the retired skills collection: skills are files in the workspace repo (apps.md §27)";
+
+const ARCHIVE_COLLECTION = "skills_retired_20260904";
 
 /**
- * The derived retrieval index (rows, $text index, Atlas vector index) is
- * gone with the collection; the agent reads `skills/<name>/SKILL.md` at main.
- * Nothing is migrated out: every workspace with a bound repo already holds
- * its skills as files (adopted 2026-08-31), and there are no users on
- * unbound workspaces.
+ * Rename rather than destroy the retired index. The 2026-08-31 adoption was
+ * best-effort (unbound workspaces were skipped and per-workspace failures were
+ * logged), so the collection can still contain the only copy of a skill. The
+ * archive is outside every runtime code path and can be deleted manually once
+ * each deployment has verified that its files are complete.
  */
 export async function up(db: Db): Promise<void> {
-  const names = await db.listCollections({ name: "skills" }).toArray();
-  if (names.length === 0) {
-    log.info("skills collection already absent");
+  const collections = await db.listCollections().toArray();
+  const names = new Set(collections.map(collection => collection.name));
+  if (!names.has("skills")) {
+    log.info("skills collection already absent", {
+      archivePresent: names.has(ARCHIVE_COLLECTION),
+    });
     return;
   }
+  if (names.has(ARCHIVE_COLLECTION)) {
+    throw new Error(
+      `Refusing to overwrite ${ARCHIVE_COLLECTION} while skills still exists`,
+    );
+  }
   const count = await db.collection("skills").estimatedDocumentCount();
-  await db.collection("skills").drop();
-  log.info("Dropped skills collection", { rows: count });
+  await db.collection("skills").rename(ARCHIVE_COLLECTION);
+  log.info("Archived retired skills collection", {
+    archiveCollection: ARCHIVE_COLLECTION,
+    rows: count,
+  });
 }

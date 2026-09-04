@@ -32,7 +32,7 @@ const saveSkillSchema = z.object({
     .max(80)
     .regex(/^[a-z0-9_]+$/, "name must be lowercase snake_case")
     .describe(
-      "Unique skill name. Lowercase snake_case. Stable identifier — reuse the same name to overwrite an existing skill (the previous body is preserved for one undo step).",
+      "Unique skill name. Lowercase snake_case. Stable identifier — reuse the same name to overwrite an existing skill; previous versions remain recoverable from git history.",
     ),
   loadWhen: z
     .string()
@@ -58,7 +58,7 @@ const saveSkillSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Pin the skill: its full body rides in every prompt. Reserve for the two or three skills every turn needs (glossaries, warehouse maps). Omit to keep the current setting.",
+      "Pin the skill: a budgeted body excerpt rides in every prompt. Reserve for the two or three skills every turn needs (glossaries, warehouse maps). Omit to keep the current setting.",
     ),
 });
 
@@ -66,7 +66,9 @@ const deleteSkillSchema = z.object({
   name: z
     .string()
     .min(1)
-    .describe("Skill name to delete. Deletion is permanent."),
+    .describe(
+      "Skill name to delete. Removes the current file; git history retains prior versions.",
+    ),
 });
 
 const loadSkillSchema = z.object({
@@ -169,7 +171,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
     }),
     delete_skill: tool({
       description:
-        "Delete a workspace skill by name. Use this to retract a skill that turned out to be wrong — without deletion, bad skills poison every future query. Deletion is permanent.",
+        "Delete a workspace skill by name. Use this to retract a skill that turned out to be wrong — without deletion, bad skills poison every future query. The current file is removed; git history retains prior versions.",
       inputSchema: deleteSkillSchema,
       execute: async ({ name }) => {
         return deleteSkill(workspaceId, name, authorId);
@@ -185,7 +187,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
       ].join(" "),
       inputSchema: listSkillsSchema,
       execute: async () => {
-        // Empty query → index only (no body injection / useCount bumps).
+        // Index only; pinned bodies are omitted from this tool response.
         const result = await retrieveRelevantSkills(workspaceId);
         return {
           success: true as const,

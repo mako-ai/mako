@@ -82,7 +82,7 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 | `load_skill`    | Explicitly load a skill mid-turn when the index hints at it |
 | `search_skills` | Keyword match over names, descriptions, entities, bodies    |
 
-Every turn, Mako puts the complete skill index (every skill's name and description) in the prompt, plus the full body of any skill marked `pinned: true` in its `SKILL.md`. The agent loads the rest by name. Skills are files in the workspace repo (`skills/<name>/SKILL.md`) and nothing else — there is no index database, no embeddings, and no usage counters. See [Skills](/skills/) for the file format, admin UI, and REST API.
+Every turn, Mako puts the complete skill index (every skill's name and description) in the prompt, plus budgeted body excerpts for skills marked `pinned: true` in their `SKILL.md`. The agent loads complete bodies by name. Skills are files in the workspace repo (`skills/<name>/SKILL.md`) and nothing else — there is no live index database, no embeddings, and no usage counters. See [Skills](/skills/) for the file format, admin UI, and REST API.
 
 Skill _retrieval_ and _writes_ (`get_relevant_skills`, `load_skill`, `save_skill`, `read_skill_resource`) are always active — the skills prompt names them every turn, so keeping them core avoids search/load round-trips. Long-tail lookups (`delete_skill`, `list_skills`, `search_skills`) are deferred tools the agent activates on demand — see [Tool paging](#tool-paging) below.
 

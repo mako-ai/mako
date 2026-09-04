@@ -1,25 +1,19 @@
 import { resolveDbtRulesBlockForTurn } from "../dbt/dbt-rules-turn.service";
-import { retrieveRelevantSkills } from "./skills.service";
+import {
+  MAX_SKILL_EXCERPT_CHARS,
+  renderSkillsPromptBlock,
+  retrieveRelevantSkills,
+} from "./skills.service";
 
-export const MAX_SKILL_EXCERPT_CHARS = 2_500;
+export { MAX_SKILL_EXCERPT_CHARS };
 
 export function renderCompactSkillBlock(
   retrieval: Pick<
     Awaited<ReturnType<typeof retrieveRelevantSkills>>,
-    "injected"
+    "index" | "injected"
   >,
 ): string {
-  const pinned = retrieval.injected.filter(skill => skill.body.trim());
-  if (pinned.length === 0) return "";
-  const lines = ["\n\n---\n", "### Pinned skills (always loaded)"];
-  for (const skill of pinned) {
-    const body =
-      skill.body.length <= MAX_SKILL_EXCERPT_CHARS
-        ? skill.body
-        : `${skill.body.slice(0, MAX_SKILL_EXCERPT_CHARS)}\n\n[Excerpt truncated. Use load_skill("${skill.name}") for the complete guide.]`;
-    lines.push("", `#### \`${skill.name}\` — ${skill.loadWhen}`, "", body);
-  }
-  return lines.join("\n");
+  return renderSkillsPromptBlock(retrieval);
 }
 
 export interface AgentTurnGuidance {

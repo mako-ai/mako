@@ -39,6 +39,9 @@ import {
   SKILLS_README_PATH,
   SKILL_FILE_GLOB,
   SKILL_NAME_RE,
+  MAX_SKILL_BODY_CHARS,
+  MAX_SKILL_FILE_BYTES,
+  MAX_WORKSPACE_SKILLS,
   parseSkillFile,
   serializeSkillFile,
   skillFilePath,
@@ -85,7 +88,31 @@ export function skillId(workspaceId: string, name: string): string {
     .slice(0, 24);
 }
 
+/** Cloud Run is multi-tenant; never retain every workspace catalog forever. */
+export const MAX_CACHED_SKILL_CATALOGS = 16;
 const catalogCache = new Map<string, SkillCatalog>();
+
+function getCachedCatalog(
+  workspaceId: string,
+  head: string,
+): SkillCatalog | null {
+  const cached = catalogCache.get(workspaceId);
+  if (!cached || cached.head !== head) return null;
+  // Refresh recency for the insertion-ordered Map used as a tiny LRU.
+  catalogCache.delete(workspaceId);
+  catalogCache.set(workspaceId, cached);
+  return cached;
+}
+
+function cacheCatalog(workspaceId: string, catalog: SkillCatalog): void {
+  catalogCache.delete(workspaceId);
+  catalogCache.set(workspaceId, catalog);
+  while (catalogCache.size > MAX_CACHED_SKILL_CATALOGS) {
+    const oldest = catalogCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    catalogCache.delete(oldest);
+  }
+}
 
 function emptyCatalog(workspaceId: string): SkillCatalog {
   return { workspaceId, head: null, skills: [], invalid: [] };
@@ -103,8 +130,8 @@ export async function loadSkillCatalog(
   if (repoDir == null) return emptyCatalog(workspaceId);
   const head = await resolveCommit(repoDir, MAIN);
   if (!head) return emptyCatalog(workspaceId);
-  const cached = catalogCache.get(workspaceId);
-  if (cached && cached.head === head) return cached;
+  const cached = getCachedCatalog(workspaceId, head);
+  if (cached) return cached;
 
   const skills: WorkspaceSkill[] = [];
   const invalid: InvalidSkillFile[] = [];
@@ -120,9 +147,16 @@ export async function loadSkillCatalog(
       continue;
     }
     let contents: string | null = null;
+    let invalidReason: string | null = null;
     try {
       const blob = await readBlob(repoDir, MAIN, path);
-      contents = blob.isBinary ? null : blob.contents;
+      if (blob.isBinary) {
+        invalidReason = "binary skill file";
+      } else if (blob.size > MAX_SKILL_FILE_BYTES) {
+        invalidReason = `skill file exceeds ${MAX_SKILL_FILE_BYTES} bytes`;
+      } else {
+        contents = blob.contents;
+      }
     } catch (error) {
       logger.warn("Unreadable skill file at main", {
         workspaceId,
@@ -136,16 +170,33 @@ export async function loadSkillCatalog(
         name,
         path,
         reason:
-          contents === null
+          invalidReason ??
+          (contents === null
             ? "unreadable or binary skill file"
-            : "unparseable skill file (frontmatter with `description` and a body are required)",
+            : "unparseable skill file (frontmatter with `description` and a body are required)"),
+      });
+      continue;
+    }
+    if (parsed.body.length > MAX_SKILL_BODY_CHARS) {
+      invalid.push({
+        name,
+        path,
+        reason: `body exceeds ${MAX_SKILL_BODY_CHARS} characters`,
+      });
+      continue;
+    }
+    if (skills.length >= MAX_WORKSPACE_SKILLS) {
+      invalid.push({
+        name,
+        path,
+        reason: `workspace exceeds the ${MAX_WORKSPACE_SKILLS} skill limit`,
       });
       continue;
     }
     skills.push({ ...parsed, id: skillId(workspaceId, name), path });
   }
   const catalog: SkillCatalog = { workspaceId, head, skills, invalid };
-  catalogCache.set(workspaceId, catalog);
+  cacheCatalog(workspaceId, catalog);
   return catalog;
 }
 

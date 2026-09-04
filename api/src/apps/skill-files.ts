@@ -10,7 +10,7 @@
  *   description: <when to load it — this line is in every prompt>
  *   entities: [mrr, france]        # optional author-declared triggers
  *   suppressed: true               # optional soft-disable, omitted when false
- *   pinned: true                   # optional: full body in every prompt
+ *   pinned: true                   # optional: budgeted body excerpt in every prompt
  *   ---
  *   <body — the playbook>
  *
@@ -25,6 +25,12 @@ import yaml from "js-yaml";
 
 export const SKILLS_DIR = "skills";
 export const SKILL_FILE_GLOB = `${SKILLS_DIR}/*/SKILL.md`;
+/** Matches the agent/API save contract; larger authored files are invalid. */
+export const MAX_SKILL_BODY_CHARS = 20_000;
+/** Bounds one git blob before it is retained in the in-memory catalog. */
+export const MAX_SKILL_FILE_BYTES = 64_000;
+/** Bounds both API saves and catalogs authored directly in git. */
+export const MAX_WORKSPACE_SKILLS = 200;
 /** Written with the first skill save so the folder explains itself. */
 export const SKILLS_README_PATH = `${SKILLS_DIR}/README.md`;
 
@@ -38,8 +44,8 @@ turn. There is no other store.
 Format (same as Mako's system skills): YAML frontmatter with \`name\`,
 \`description\` (when to load it — every skill's name and description is in
 the agent's prompt, so keep it short), optional \`entities\`, optional
-\`suppressed: true\` (kept but never offered), optional \`pinned: true\` (the
-full body is in every prompt, for the handful of skills every turn needs),
+\`suppressed: true\` (kept but never offered), optional \`pinned: true\` (a
+budgeted body excerpt is in every prompt, for skills every turn needs),
 then the playbook body. The folder name is the identity.
 `;
 
@@ -52,7 +58,7 @@ export interface WorkspaceSkillFile {
   loadWhen: string;
   entities: string[];
   suppressed: boolean;
-  /** Full body rides in every prompt (the skills equivalent of a non-deferred tool). */
+  /** A budgeted body excerpt rides in every prompt. */
   pinned: boolean;
   body: string;
 }

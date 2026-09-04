@@ -3122,15 +3122,20 @@ So: the files at main are the skills. `loadSkillCatalog` is an in-memory
 view keyed by the main commit — a push moves the commit, the next read
 rebuilds; nothing else runs. Every offered skill's name and description
 (cut at 200 characters) is in every prompt; `pinned: true` in frontmatter
-puts the full body there too (the skills equivalent of a non-deferred
-tool); `load_skill` reads by name; `search_skills` is a keyword match over
-the catalog. Writes are commits, as before. The `skills` collection, its
+puts a body excerpt there too, within a 2,500-character per-skill and
+7,500-character aggregate budget; `load_skill` reads the complete body by
+name; `search_skills` is a keyword match over the catalog. Writes are
+commits, as before. The live `skills` collection, its
 vector and text indexes, `useCount`/`lastUsedAt`/`injectedCount`, the
 single-slot `previousBody` undo (git history is the undo), `sourceBlobSha`,
 `definitionInvalid` markers, the push-sync, the derived ids — all gone.
 Ids are `sha1(workspace:name)`, stable as long as the name is. A file that
 does not parse is listed in the settings panel with the reason and never
-offered.
+offered. The removal migration renames the old collection to
+`skills_retired_20260904` instead of destroying it, because the earlier
+best-effort adoption may have skipped a workspace; that recovery archive is
+outside every runtime path and can be removed after deployment-specific
+verification.
 
 Two limits are now about the prompt, not a schema: descriptions cap at 300
 characters (they are index lines), and the 200-skill cap stays as the point

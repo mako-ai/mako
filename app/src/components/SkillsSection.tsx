@@ -172,7 +172,7 @@ export function SkillsSection() {
     if (
       !(await confirm({
         title: `Delete skill "${skill.name}"?`,
-        body: "This is permanent — the agent can still recreate it later.",
+        body: "This removes the current skill file. A previous version can still be recovered from git history.",
         confirmLabel: "Delete",
         destructive: true,
       }))
@@ -437,7 +437,7 @@ export function SkillsSection() {
                     title={
                       skill.pinned
                         ? "Unpin — back to name + description in the index"
-                        : "Pin — full body in every prompt (use for the few skills every turn needs)"
+                        : "Pin — include a budgeted body excerpt in every prompt (use for the few skills every turn needs)"
                     }
                   >
                     <IconButton
@@ -459,7 +459,7 @@ export function SkillsSection() {
                       <EditIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                  <Tooltip title="Delete permanently">
+                  <Tooltip title="Delete current skill file">
                     <IconButton
                       size="small"
                       onClick={() => handleDelete(skill)}
@@ -490,7 +490,8 @@ export function SkillsSection() {
                 {editing.name}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Editing will preserve the current body as a one-step undo slot.
+                Every edit is recoverable from the workspace repository&apos;s
+                git history.
               </Typography>
             </Box>
           ) : (
@@ -513,8 +514,8 @@ export function SkillsSection() {
                 multiline
                 minRows={2}
                 fullWidth
-                inputProps={{ maxLength: 500 }}
-                helperText="Short trigger describing when this skill should load."
+                inputProps={{ maxLength: 300 }}
+                helperText="One trigger line describing when this skill should load (max 300 characters)."
               />
               <TextField
                 label="body"
@@ -540,7 +541,7 @@ export function SkillsSection() {
                     onChange={e => setEditPinned(e.target.checked)}
                   />
                 }
-                label="Pinned — full body in every prompt (reserve for the few skills every turn needs)"
+                label="Pinned — include a budgeted body excerpt in every prompt (reserve for the few skills every turn needs)"
               />
             </Stack>
           )}

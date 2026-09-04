@@ -2,7 +2,7 @@
  * Skills: files in the workspace repo, served whole (apps.md §27).
  *
  * Every non-suppressed skill's name and description is in the agent's
- * prompt every turn; pinned skills ride with their full body; everything
+ * prompt every turn; pinned skills ride with budgeted body excerpts; everything
  * else is one `load_skill` away. No retrieval, no embeddings, no index rows,
  * no counters — the catalog is `loadSkillCatalog`, an in-memory view of
  * `skills/<name>/SKILL.md` at main. `search_skills` is a keyword match over that
@@ -19,6 +19,10 @@ import {
   type WorkspaceSkill,
 } from "../apps/workspace-skills.service";
 import { type GitAuthor } from "../apps/repository.service";
+import {
+  MAX_SKILL_BODY_CHARS,
+  MAX_WORKSPACE_SKILLS,
+} from "../apps/skill-files";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import { loggers } from "../logging";
 import {
@@ -32,11 +36,12 @@ const logger = loggers.app();
 const MAX_NAME_LENGTH = 80;
 /** The description is in every prompt: keep it a trigger line, not a summary. */
 export const MAX_LOAD_WHEN_LENGTH = 300;
-const MAX_BODY_LENGTH = 20000;
 /** Past this the index alone stops working (selection degrades around 30–50 items). */
-const MAX_SKILLS_PER_WORKSPACE = 200;
 /** What the index shows per skill; longer descriptions are cut with an ellipsis. */
 export const INDEX_DESCRIPTION_CHARS = 200;
+/** Per-skill and total bounds for bodies injected into every agent turn. */
+export const MAX_SKILL_EXCERPT_CHARS = 2_500;
+export const MAX_PINNED_SKILL_BODY_CHARS = 7_500;
 
 export interface SkillInput {
   name: string;
@@ -88,8 +93,8 @@ function validateInput(input: SkillInput): string | null {
   if (!input.body || input.body.trim().length === 0) {
     return "body is required";
   }
-  if (input.body.length > MAX_BODY_LENGTH) {
-    return `body exceeds ${MAX_BODY_LENGTH} characters`;
+  if (input.body.length > MAX_SKILL_BODY_CHARS) {
+    return `body exceeds ${MAX_SKILL_BODY_CHARS} characters`;
   }
   return null;
 }
@@ -145,10 +150,10 @@ export async function saveSkill(
   const pendingApproval = options.origin === "agent" && !existing;
   if (!existing) {
     const catalog = await loadSkillCatalog(workspaceId);
-    if (catalog.skills.length >= MAX_SKILLS_PER_WORKSPACE) {
+    if (catalog.skills.length >= MAX_WORKSPACE_SKILLS) {
       return {
         success: false,
-        error: `Workspace has hit the ${MAX_SKILLS_PER_WORKSPACE} skill limit. Delete or merge skills before adding more.`,
+        error: `Workspace has hit the ${MAX_WORKSPACE_SKILLS} skill limit. Delete or merge skills before adding more.`,
       };
     }
   }
@@ -404,7 +409,8 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
       "If a skill conflicts with the directive, follow the directive. " +
       "This is the complete index: read it, and `load_skill` any skill " +
       "whose description matches what you are about to do — before you " +
-      "start, not after. Pinned skills are already loaded below. " +
+      "start, not after. Pinned skill bodies are loaded below within a " +
+      "fixed prompt budget. " +
       "`search_skills` finds a skill by keyword when the index line did " +
       "not ring a bell; `save_skill` proposes a new one.",
   );
@@ -422,13 +428,41 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
   }
   if (result.injected.length > 0) {
     lines.push("");
-    lines.push("#### Pinned skills (always loaded)");
+    lines.push("#### Pinned skill excerpts (budgeted)");
+    let remainingBodyChars = MAX_PINNED_SKILL_BODY_CHARS;
+    let omitted = 0;
     for (const s of result.injected) {
+      const trimmedBody = s.body.trim();
+      if (!trimmedBody) continue;
+      if (remainingBodyChars <= 0) {
+        omitted++;
+        continue;
+      }
+      const excerptLength = Math.min(
+        trimmedBody.length,
+        MAX_SKILL_EXCERPT_CHARS,
+        remainingBodyChars,
+      );
+      const body = trimmedBody.slice(0, excerptLength);
+      const truncated = body.length < trimmedBody.length;
       lines.push("");
       lines.push(`##### \`${s.name}\``);
       lines.push(`_loadWhen:_ ${s.loadWhen}`);
       lines.push("");
-      lines.push(s.body);
+      lines.push(body);
+      remainingBodyChars -= body.length;
+      if (truncated) {
+        lines.push("");
+        lines.push(
+          `[Excerpt truncated. Use load_skill("${s.name}") for the complete guide.]`,
+        );
+      }
+    }
+    if (omitted > 0) {
+      lines.push("");
+      lines.push(
+        `[${omitted} additional pinned skill${omitted === 1 ? " was" : "s were"} omitted by the prompt budget; use load_skill by name from the index.]`,
+      );
     }
   }
   return lines.join("\n");
