@@ -5,6 +5,13 @@ import type { DashboardArtifactStore } from "../services/dashboard-artifact-stor
 const stores = vi.hoisted(() => ({
   primary: undefined as DashboardArtifactStore | undefined,
   source: undefined as DashboardArtifactStore | undefined,
+  bindings: [] as Array<{
+    name: string;
+    connectionId: string;
+    materialization: "parquet" | "live";
+    code: string;
+    sql: string;
+  }>,
 }));
 
 vi.mock("../services/dashboard-artifact-store.service", () => ({
@@ -13,10 +20,19 @@ vi.mock("../services/dashboard-artifact-store.service", () => ({
 }));
 
 vi.mock("./bindings.service", () => ({
+  bindingArtifactKey: vi.fn(
+    (binding: { connectionId: string; name: string }) =>
+      `apps/bindings/${binding.connectionId}/${binding.name}.parquet`,
+  ),
   bindingArtifactKeyByName: vi.fn(
     async () => "apps/bindings/connection/binding.parquet",
   ),
-  readBindings: vi.fn(async () => []),
+  materializeAppBinding: vi.fn(async () => ({
+    rowCount: 1,
+    byteSize: 10,
+    materializedAt: new Date(),
+  })),
+  readBindings: vi.fn(async () => stores.bindings),
 }));
 
 vi.mock("../database/workspace-schema", () => ({
@@ -33,12 +49,22 @@ vi.mock("../services/artifact-delivery.service", () => ({
   ),
 }));
 
+vi.mock("./box", () => ({
+  readBoxDir: vi.fn(async (_ctx, _source, destination: string) => {
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(`${destination}/index.html`, "<html></html>");
+  }),
+}));
+
 import {
+  deployBuild,
   deploymentExists,
   deploymentKey,
+  ensureDeploymentBindings,
   readDeploymentAsset,
   serveDeploymentFile,
 } from "./deployment.service";
+import { materializeAppBinding, readBindings } from "./bindings.service";
 
 function mockStore(existingKeys: string[]): DashboardArtifactStore {
   const keys = new Set(existingKeys);
@@ -64,6 +90,8 @@ describe("published deployment artifact source", () => {
   beforeEach(() => {
     stores.primary = mockStore([]);
     stores.source = undefined;
+    stores.bindings = [];
+    vi.clearAllMocks();
   });
 
   it("falls back to the read-only source when the preview bucket is empty", async () => {
@@ -104,5 +132,82 @@ describe("published deployment artifact source", () => {
     expect(await response?.text()).toBe(`true:${bindingKey}`);
     expect(stores.primary.exists).toHaveBeenCalledWith(bindingKey);
     expect(stores.source.exists).toHaveBeenCalledWith(bindingKey);
+  });
+});
+
+describe("deployment binding readiness", () => {
+  const sha = "38ce8e7b28e8ace0c1d83bdacb95e28df3d5175b";
+  const project = {
+    _id: { toString: () => "6a9411eb4c8b33609a65e665" },
+  } as never;
+
+  beforeEach(() => {
+    stores.primary = mockStore([]);
+    stores.source = undefined;
+    stores.bindings = [
+      {
+        name: "sales",
+        connectionId: "warehouse",
+        materialization: "parquet",
+        code: "select 1",
+        sql: "select 1",
+      },
+    ];
+    vi.clearAllMocks();
+  });
+
+  it("reuses a content-addressed artifact and reads definitions at the deployment sha", async () => {
+    stores.source = mockStore(["apps/bindings/warehouse/sales.parquet"]);
+
+    const result = await ensureDeploymentBindings(project, sha);
+
+    expect(result).toEqual({
+      required: ["sales"],
+      reused: ["sales"],
+      materialized: [],
+    });
+    expect(readBindings).toHaveBeenCalledWith(project, "publish", sha);
+    expect(materializeAppBinding).not.toHaveBeenCalled();
+  });
+
+  it("materializes a missing artifact from the exact deployment sha", async () => {
+    const result = await ensureDeploymentBindings(project, sha);
+
+    expect(result.materialized).toEqual(["sales"]);
+    expect(materializeAppBinding).toHaveBeenCalledWith(
+      project,
+      "sales",
+      "publish",
+      { at: sha },
+    );
+  });
+
+  it("rejects dev-only live bindings instead of publishing a broken data URL", async () => {
+    stores.bindings[0].materialization = "live";
+
+    await expect(ensureDeploymentBindings(project, sha)).rejects.toThrow(
+      /Cannot publish live binding "sales"/,
+    );
+    expect(materializeAppBinding).not.toHaveBeenCalled();
+  });
+
+  it("keeps the low-level deploy primitive data-safe by default", async () => {
+    const handle = {
+      project,
+      appRoot: "apps/sales",
+      doc: {
+        workspaceId: "6a9411eb4c8b33609a65e666",
+        userId: "publish",
+      },
+    } as never;
+
+    await deployBuild(project, sha, handle);
+
+    expect(materializeAppBinding).toHaveBeenCalledWith(
+      project,
+      "sales",
+      "publish",
+      { at: sha },
+    );
   });
 });

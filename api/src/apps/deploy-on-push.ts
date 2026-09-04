@@ -17,6 +17,7 @@ import { runGit } from "./git";
 import {
   PUBLISH_ACTOR,
   checkoutInBox,
+  ensureProjectRow,
   ensureWorktree,
   execInWorktree,
   listAppFolders,
@@ -25,13 +26,38 @@ import {
 } from "./worktree.service";
 import {
   buildApp,
+  buildLogPath,
   deployBuild,
   deploymentExists,
+  ensureDeploymentBindings,
   setPublishedSha,
 } from "./deployment.service";
 import { Types } from "mongoose";
+import { freshenForServe } from "./cloud-repo.service";
 
 const logger = loggers.api("apps-deploy-on-push");
+
+/** Put data-readiness failures where app_build_log already tells agents to look. */
+async function ensureBindingsForDeploy(
+  project: IAppProject,
+  sha: string,
+  handle: Awaited<ReturnType<typeof ensureWorktree>>,
+): Promise<void> {
+  try {
+    await ensureDeploymentBindings(project, sha);
+  } catch (error) {
+    const message = `\nBinding readiness failed: ${
+      error instanceof Error ? error.message : String(error)
+    }\n`;
+    const encoded = Buffer.from(message).toString("base64");
+    await execInWorktree(
+      handle,
+      `printf %s ${encoded} | base64 -d >> ${buildLogPath(handle)}`,
+      { timeoutMs: 15_000 },
+    ).catch(() => undefined);
+    throw error;
+  }
+}
 
 /** App folders touched between two commits. */
 async function changedApps(
@@ -109,18 +135,31 @@ export async function deployOneApp(
   sha: string;
   outcome: "built" | "already-built" | "gone";
 }> {
-  const project =
+  // Inngest can run on a different instance from the webhook or manual tool
+  // that enqueued this sha. Fetch here as well: the durable worker must not
+  // depend on the request-serving instance's local mirror being warm.
+  await freshenForServe(workspaceId, 0);
+  const discovered =
     (await AppProject.findOne({
       slug,
       workspaceId: new Types.ObjectId(workspaceId),
     })) ?? (await synthesizeProjectFromFolder(workspaceId, slug));
   // The folder may have been deleted in this very push.
-  if (!project) return { slug, sha, outcome: "gone" };
+  if (!discovered) return { slug, sha, outcome: "gone" };
+  // Auto-deploying a repo-imported folder is a publish action, so materialize
+  // its derived project row before setPublishedSha. Otherwise updateOne
+  // matches nothing and the deploy reports success without staying live.
+  const project = await ensureProjectRow(discovered, PUBLISH_ACTOR);
 
   const handle = await ensureWorktree(project as IAppProject, PUBLISH_ACTOR, {
     branch: project.defaultBranch || "main",
   });
   if (await deploymentExists(project._id.toString(), sha)) {
+    // A code artifact alone is not a deployable app: bindings may have been
+    // absent when this immutable frontend was uploaded, or their definitions
+    // may resolve to artifacts that have not been built yet. Do the same data
+    // gate on reuse as on a fresh build before moving the live pointer.
+    await ensureBindingsForDeploy(project as IAppProject, sha, handle);
     await setPublishedSha(project as IAppProject, sha);
     return { slug, sha, outcome: "already-built" };
   }
@@ -134,7 +173,14 @@ export async function deployOneApp(
   await checkoutInBox(handle, sha);
   const build = await buildApp(handle, execInWorktree);
   if (!build.ok) throw new Error(build.output);
-  await deployBuild(project as IAppProject, sha, handle);
+  // Keep publishing atomic from a viewer's perspective: only upload/repoint
+  // after every parquet binding required by this exact commit can be served.
+  // A warehouse failure leaves the previous deployment live and lets the
+  // Inngest job retry with a precise binding error.
+  await ensureBindingsForDeploy(project as IAppProject, sha, handle);
+  await deployBuild(project as IAppProject, sha, handle, {
+    bindingsReady: true,
+  });
   logger.info("Deployed app from main", { workspaceId, slug, sha });
   return { slug, sha, outcome: "built" };
 }
