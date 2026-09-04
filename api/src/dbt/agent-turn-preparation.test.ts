@@ -1,47 +1,57 @@
 import { describe, expect, it } from "vitest";
-
 import {
   MAX_SKILL_EXCERPT_CHARS,
   renderCompactSkillBlock,
 } from "../services/agent-turn-preparation.service";
 
 describe("renderCompactSkillBlock", () => {
-  it("injects one relevant skill within the turn budget", () => {
-    const body = "x".repeat(MAX_SKILL_EXCERPT_CHARS * 2);
+  it("renders every pinned skill, each within the excerpt budget", () => {
+    const long = "x".repeat(MAX_SKILL_EXCERPT_CHARS * 2);
     const block = renderCompactSkillBlock({
       injected: [
         {
           id: "one",
-          name: "dbt",
-          loadWhen: "Use for dbt",
-          body,
+          name: "warehouse_map",
+          loadWhen: "Every warehouse question",
+          body: long,
           score: 1,
-          entityOverlap: 1,
-          semanticScore: 0,
-          injected: true,
-          scope: "system",
+          scope: "workspace",
         },
         {
           id: "two",
-          name: "unrelated",
-          loadWhen: "Use elsewhere",
-          body: "must not be injected",
-          score: 0.9,
-          entityOverlap: 1,
-          semanticScore: 0,
-          injected: true,
-          scope: "system",
+          name: "entity_glossary",
+          loadWhen: "Every metric definition",
+          body: "short body",
+          score: 1,
+          scope: "workspace",
         },
       ],
     });
-
-    expect(block).toContain("`dbt`");
+    expect(block).toContain("### Pinned skills (always loaded)");
+    expect(block).toContain("`warehouse_map`");
     expect(block).toContain("Excerpt truncated");
-    expect(block).not.toContain("must not be injected");
-    expect(block.length).toBeLessThan(MAX_SKILL_EXCERPT_CHARS + 500);
+    expect(block).toContain("`entity_glossary`");
+    expect(block).toContain("short body");
+    // Two bodies: one cut at the budget, one short — never the raw long body.
+    expect(block).not.toContain(long);
+    expect(block.length).toBeLessThan(MAX_SKILL_EXCERPT_CHARS + 600);
   });
 
-  it("returns no block when retrieval selected no skill", () => {
+  it("returns no block when nothing is pinned or a pinned body is empty", () => {
     expect(renderCompactSkillBlock({ injected: [] })).toBe("");
+    expect(
+      renderCompactSkillBlock({
+        injected: [
+          {
+            id: "e",
+            name: "empty",
+            loadWhen: "x",
+            body: "   ",
+            score: 1,
+            scope: "workspace",
+          },
+        ],
+      }),
+    ).toBe("");
   });
 });
