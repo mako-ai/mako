@@ -222,7 +222,6 @@ This IP is used by Mako's cloud service for all outbound database connections.
 | ----------------------- | ------------------------------------------------------------- |
 | `pnpm run dev`          | Start API, frontend, and Inngest dev server                   |
 | `pnpm run app:dev:scan` | Start the frontend with React Scan and render debug logging   |
-| `pnpm run sync`         | Run the interactive sync tool                                 |
 | `pnpm run migrate`      | Run database migrations                                       |
 | `pnpm run docker:up`    | Start the local notebook Python kernel (run notebook code cells) |
 | `pnpm run test`         | Run test suite                                                |
