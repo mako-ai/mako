@@ -46,3 +46,20 @@ test("getAccessToken refreshes an expiring token and persists the rotation", asy
   assert.equal(calls.length, 1);
   assert.equal(await getAccessToken("https://nobody.test", null, { file: f }), null);
 });
+
+test("a CLI credential unused for years renews without another browser login", async () => {
+  const f = file();
+  saveCredential("https://api.test", null, {
+    clientId: "cid", accessToken: "old", refreshToken: "persistent-grant",
+    expiresAt: "2000-01-01T00:00:00.000Z",
+  }, f);
+  const fetchImpl = async (_url, init) => {
+    assert.equal(new URLSearchParams(init.body).get("refresh_token"), "persistent-grant");
+    return new Response(JSON.stringify({
+      access_token: "renewed", refresh_token: "rotated-grant", expires_in: 28800,
+    }));
+  };
+  assert.equal(await getAccessToken("https://api.test", "ws1", { file: f, fetch: fetchImpl }), "renewed");
+  assert.equal(findCredential("https://api.test", "ws1", readCredentialStore(f)).refreshToken, "rotated-grant");
+  fs.rmSync(path.dirname(f), { recursive: true });
+});

@@ -52,6 +52,11 @@ url = "https://your-mako-host/api/mcp"
 
 Verify the connection (Claude Code): `claude mcp list` should show `mako … ✓ Connected`.
 
+CLI and external MCP sign-ins stay connected until you revoke them, even after
+long periods of inactivity. Access tokens last 8 hours and clients renew them
+automatically with a rotating refresh token that has no expiry. You can revoke
+a connection from your workspace settings.
+
 Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Grants default to `mcp query:read`; `warehouse:write` is the only OAuth write scope and must be requested and approved explicitly.
 
 ## Headless / CI: API keys
@@ -192,7 +197,7 @@ systems must not be mixed on one app.
 | Symptom                                                                  | Cause / fix                                                                                                                                                                            |
 | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Client never opens the sign-in browser                                   | The client predates MCP OAuth support — update it, or fall back to an API key header.                                                                                                  |
-| `401 Invalid or expired MCP access token`                                | The OAuth grant was revoked or fully expired — reconnect the server in your client (it re-runs the sign-in).                                                                           |
+| `401 Invalid or expired MCP access token`                                | The access token expired or the connection was revoked. The client should refresh automatically; reconnect if the grant was revoked or the client lost its saved credentials.                                                                           |
 | `403 … created before MCP scopes existed`                                | Legacy key. Sign in via OAuth or create a new key under Workspace Settings → API Keys.                                                                                                 |
 | `403 … does not include the mcp scope`                                   | Key was created without the `mcp` scope — create a new key.                                                                                                                            |
 | `Mako MCP access is read-only: the query was rejected…`                  | The agent attempted a write (`UPDATE`/`INSERT`/DDL). Expected — run writes with your own database tooling.                                                                             |

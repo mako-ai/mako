@@ -15,6 +15,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "src/dbt/**/*.test.ts",
+      "src/auth/mcp-oauth.service.test.ts",
       "src/integrations/github/**/*.test.ts",
       "src/routes/dbt.routes.integration.test.ts",
       "src/routes/connector-reveal-secret.test.ts",
