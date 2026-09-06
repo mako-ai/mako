@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import { saveCredential, normalizeApiUrl } from "@makoai/app-sdk/credentials";
 import { openInBrowser } from "./browser.js";
+import { loginPage } from "./login-page.js";
 
 const CLIENT_NAME = "Mako CLI";
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -72,15 +73,15 @@ function awaitCallback(server, expectedState, timeoutMs) {
       const code = url.searchParams.get("code");
       const error = url.searchParams.get("error");
       res.setHeader("content-type", "text/html; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
+      res.setHeader("referrer-policy", "no-referrer");
       if (state !== expectedState || (!code && !error)) {
         res.statusCode = 400;
-        res.end("<p>Unexpected callback. Return to the terminal and run <code>mako login</code> again.</p>");
+        res.end(loginPage("error"));
         return;
       }
       res.end(
-        error
-          ? `<p>Sign-in failed: ${error}. You can close this tab.</p>`
-          : "<p>Signed in to Mako. You can close this tab and return to the terminal.</p>",
+        loginPage(error === "access_denied" ? "denied" : error ? "error" : "approved", error === "access_denied" ? "" : error ?? ""),
       );
       clearTimeout(timer);
       server.close();

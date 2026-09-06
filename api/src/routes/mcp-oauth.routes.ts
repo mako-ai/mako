@@ -311,40 +311,84 @@ function consentPage(input: {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Connect ${escapeHtml(clientName)} — Mako</title>
+<script>
+  // Match the app's explicit preference before paint; otherwise CSS follows the OS.
+  (function () {
+    function syncTheme() {
+      try {
+        var mode = localStorage.getItem("themeMode");
+        if (mode === "light" || mode === "dark") {
+          document.documentElement.dataset.theme = mode;
+        } else {
+          delete document.documentElement.dataset.theme;
+        }
+      } catch (_) { /* System theme still works when storage is unavailable. */ }
+    }
+    syncTheme();
+    window.addEventListener("storage", syncTheme);
+  })();
+</script>
 <style>
+  :root { color-scheme: light; --page: #f6f5f1; --surface: #fff;
+          --ink: #1a1a1a; --muted: #555; --border: #d8d5cc;
+          --shadow: #e3e0d7; --accent: #6c4fd8; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { color-scheme: dark; --page: #161513;
+      --surface: #201e1a; --ink: #edeae3; --muted: #b8b3a9;
+      --border: #55504a; --shadow: #302c26; --accent: #b7a5ff; }
+  }
+  :root[data-theme="dark"] { color-scheme: dark; --page: #161513;
+    --surface: #201e1a; --ink: #edeae3; --muted: #b8b3a9;
+    --border: #55504a; --shadow: #302c26; --accent: #b7a5ff; }
+  * { box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: #f6f5f1; color: #1a1a1a; display: flex; min-height: 100vh;
+         background: var(--page); color: var(--ink); display: flex;
+         min-height: 100vh; min-height: 100svh; padding: 32px 24px;
          align-items: center; justify-content: center; margin: 0; }
-  .card { background: #fff; border: 1px solid #d8d5cc; padding: 32px;
-          max-width: 420px; width: calc(100% - 48px);
-          box-shadow: 6px 6px 0 0 #e3e0d7; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  p { color: #555; font-size: 14px; line-height: 1.5; }
-  .ws { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-        border: 1px solid #d8d5cc; margin-bottom: 8px; cursor: pointer;
+  .card { background: var(--surface); border: 1px solid var(--border); padding: 32px;
+          max-width: 486px; width: 100%; overflow-wrap: anywhere;
+          box-shadow: 6px 6px 0 0 var(--shadow); }
+  .brand { font: 600 12px ui-monospace, monospace; letter-spacing: 0.14em;
+           margin-bottom: 28px; }
+  h1 { font-size: 22px; letter-spacing: -0.025em; margin: 0 0 4px; }
+  p { color: var(--muted); font-size: 14px; line-height: 1.6; }
+  fieldset { border: 0; padding: 0; margin: 24px 0 0; min-width: 0; }
+  legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 8px; }
+  .ws { display: flex; align-items: center; gap: 10px; padding: 12px;
+        border: 1px solid var(--border); margin-bottom: 8px; cursor: pointer;
         font-size: 14px; }
-  .ws em { margin-left: auto; color: #888; font-style: normal;
+  .ws:has(input:checked) { border-color: var(--accent); background: var(--page); }
+  .ws:hover { background: var(--page); }
+  .ws span { min-width: 0; }
+  .ws em { margin-left: auto; color: var(--muted); font-style: normal;
            font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-  .scopes { background: #f6f5f1; border: 1px solid #e3e0d7; padding: 10px 12px;
-            font-size: 13px; color: #444; margin: 16px 0; }
+  input { accent-color: var(--accent); flex-shrink: 0; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .scopes { background: var(--page); border: 1px solid var(--border); padding: 12px;
+            font-size: 13px; line-height: 1.6; color: var(--muted); margin: 16px 0; }
+  .scopes strong { color: var(--ink); }
   .scope-option { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px;
-                  color: #1a1a1a; cursor: pointer; }
-  .scope-option input { margin-top: 3px; }
-  .actions { display: flex; gap: 8px; margin-top: 20px; }
-  button { flex: 1; padding: 10px 16px; font-size: 14px; cursor: pointer;
-           border: 1px solid #1a1a1a; display: inline-flex;
-           align-items: center; justify-content: center; gap: 8px; }
-  .allow { background: #1a1a1a; color: #fff; }
-  .deny { background: #fff; color: #1a1a1a; }
+                  cursor: pointer; }
+  .scope-option input { margin-top: 4px; }
+  .actions { display: flex; gap: 8px; margin-top: 24px; }
+  button { flex: 1; padding: 12px 16px; font: inherit; font-size: 14px;
+           font-weight: 500; cursor: pointer; border: 1px solid var(--ink);
+           display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  .allow { background: var(--ink); color: var(--surface); }
+  .deny { background: var(--surface); color: var(--ink); }
+  button:hover { opacity: 0.8; }
   button[disabled] { cursor: default; opacity: 0.65; }
   .spinner { width: 14px; height: 14px; border-radius: 50%; flex: none;
              border: 2px solid currentColor; border-top-color: transparent;
              animation: spin 0.7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  @media (max-width: 480px) { .card { padding: 24px; } }
 </style>
 </head>
 <body>
 <main class="card">
+  <div class="brand">MAKO / CONNECT</div>
   <h1>Connect ${escapeHtml(clientName)}</h1>
   <p><strong>${escapeHtml(clientName)}</strong> wants to access a Mako workspace over MCP.</p>
   <form method="post" action="${AUTHORIZE_PATH}">
@@ -353,8 +397,10 @@ function consentPage(input: {
     ${hidden("state", params.state)}
     ${hidden("code_challenge", params.codeChallenge)}
     ${hidden("scope", params.scopes.join(" "))}
-    <p style="margin-bottom:6px;font-weight:600;color:#1a1a1a">Choose a workspace</p>
-    ${options}
+    <fieldset>
+      <legend>Choose a workspace</legend>
+      ${options}
+    </fieldset>
     <div class="scopes">
       <strong>Workspace authoring:</strong> explore schemas, run read-only
       queries, and create or edit Mako apps and dbt files.

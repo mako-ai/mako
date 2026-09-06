@@ -27,7 +27,9 @@ const CLIENT_ID_PREFIX = "mcpc_";
 
 const AUTH_CODE_TTL_MS = 10 * 60 * 1000;
 const ACCESS_TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// Only session-minted Desktop ACP grants expire; browser-authorized grants
+// remain renewable until explicitly revoked.
+const ACP_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Avoid a write per MCP request: bump lastUsedAt at most once a minute. */
 const LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
 
@@ -188,7 +190,9 @@ async function issueTokens(grant: {
     agentSessionId: grant.agentSessionId,
     scopes: grant.scopes,
     accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
-    refreshExpiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    ...(grant.clientId === ACP_MCP_CLIENT_ID
+      ? { refreshExpiresAt: new Date(Date.now() + ACP_GRANT_TTL_MS) }
+      : {}),
   });
   return {
     accessToken,
@@ -296,28 +300,46 @@ export async function refreshAccessToken(input: {
   refreshToken: string;
   clientId: string;
 }): Promise<IssuedTokens> {
-  // Rotation: the old grant is deleted and a fresh pair is issued.
-  const record = await McpOAuthToken.findOneAndDelete({
-    refreshTokenHash: sha256(input.refreshToken),
-    refreshExpiresAt: { $gt: new Date() },
-  });
-  if (!record) throw new Error("invalid_grant: unknown or expired token");
-  if (record.clientId !== input.clientId) {
-    throw new Error("invalid_grant: token was issued to a different client");
+  if (input.clientId === ACP_MCP_CLIENT_ID) {
+    throw new Error("invalid_grant: session-minted tokens cannot be refreshed");
   }
-  return issueTokens({
-    clientId: record.clientId,
-    userId: record.userId,
-    workspaceId: record.workspaceId,
+  const accessToken = randomToken(MCP_ACCESS_TOKEN_PREFIX);
+  const refreshToken = randomToken(MCP_REFRESH_TOKEN_PREFIX);
+  // Rotate atomically in place: a failed write or wrong client must not
+  // destroy a valid grant. Only one caller may consume each refresh token.
+  const record = await McpOAuthToken.findOneAndUpdate(
+    {
+      refreshTokenHash: sha256(input.refreshToken),
+      clientId: input.clientId,
+      $or: [
+        { refreshExpiresAt: { $exists: false } },
+        { refreshExpiresAt: { $gt: new Date() } },
+      ],
+    },
+    {
+      $set: {
+        accessTokenHash: sha256(accessToken),
+        refreshTokenHash: sha256(refreshToken),
+        accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
+      },
+      $unset: { refreshExpiresAt: "" },
+    },
+    { new: true },
+  );
+  if (!record) throw new Error("invalid_grant: unknown or expired token");
+  return {
+    accessToken,
+    refreshToken,
+    expiresInSeconds: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
     scopes: record.scopes,
     agentSessionId: record.agentSessionId,
-  });
+  };
 }
 
 /**
  * One row per connected agent: a (client × user) pair that holds at least one
- * live grant in the workspace. Grants are token documents; refresh rotation
- * replaces them, so `connectedAt` is the oldest surviving grant's creation.
+ * live grant in the workspace. Rotation preserves the grant, so connectedAt
+ * remains the original authorization time.
  */
 export interface McpConnectionSummary {
   clientId: string;
@@ -337,7 +359,15 @@ export async function listMcpConnections(
     lastUsedAt?: Date;
     accessExpiresAt: Date;
   }>([
-    { $match: { workspaceId, refreshExpiresAt: { $gt: new Date() } } },
+    {
+      $match: {
+        workspaceId,
+        $or: [
+          { refreshExpiresAt: { $exists: false } },
+          { refreshExpiresAt: { $gt: new Date() } },
+        ],
+      },
+    },
     {
       $group: {
         _id: { clientId: "$clientId", userId: "$userId" },

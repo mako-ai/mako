@@ -493,8 +493,10 @@ would fall through to the SPA fallback and poison client discovery.
 ### Token model
 
 - Opaque tokens, stored as SHA-256 hashes: access `mcpat_*` (8 h TTL),
-  refresh `mcprt_*` (30 d TTL, rotated on every refresh). Auth codes live
-  10 minutes and are consumed atomically.
+  refresh `mcprt_*` (no expiry for CLI / external MCP grants, rotated on every
+  refresh). Sign-ins last until revoked, including after long periods of
+  inactivity. Access tokens renew silently; auth codes live 10 minutes and
+  are consumed atomically. Session-minted Desktop ACP grants remain expiring.
 - `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
 - Scopes default to the read-only set (`mcp`, `query:read`). OAuth clients may
