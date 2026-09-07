@@ -34,8 +34,6 @@ export interface Workspace {
   name: string;
   slug: string;
   role: string;
-  /** Domain auto-join: waiting for an admin to set the job role. */
-  profilePending?: boolean;
   createdAt: string;
   updatedAt: string;
   settings: {
@@ -56,8 +54,6 @@ export interface WorkspaceMember {
   jobRole: JobRole | null;
   /** ISO 3166-1 alpha-2, or null. */
   country: string | null;
-  /** Auto-joined, waiting for an admin to set the job role. */
-  profilePending?: boolean;
   joinedAt: string;
 }
 
@@ -106,7 +102,6 @@ export interface WorkspaceAutoJoin {
   role: "member" | "viewer";
   jobRole: JobRole | null;
   country: string | null;
-  slackWebhookConfigured?: boolean;
 }
 
 /** Any subset; null clears a profile field. */
@@ -264,8 +259,6 @@ class WorkspaceClient {
       role: "member" | "viewer";
       jobRole?: JobRole | null;
       country?: string | null;
-      /** null clears, absent keeps */
-      slackWebhookUrl?: string | null;
     },
   ): Promise<WorkspaceAutoJoin | null> {
     const body = unwrap(
