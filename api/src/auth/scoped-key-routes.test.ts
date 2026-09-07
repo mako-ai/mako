@@ -21,6 +21,27 @@ for (const app of ["latest-sales", "68b0c0ffee0000000000abcd"]) {
     scopedKeyMayAccess("POST", `${base}/latest_sales/materialize`, read),
     true,
   );
+  // The viewer lookup behind `__data/viewer.json` in a laptop `vite dev`.
+  assert.equal(
+    scopedKeyMayAccess("GET", `/api/workspaces/${WS}/apps/${app}/viewer`, read),
+    true,
+  );
+  assert.equal(
+    scopedKeyMayAccess(
+      "POST",
+      `/api/workspaces/${WS}/apps/${app}/viewer`,
+      read,
+    ),
+    false,
+  );
+  assert.equal(
+    scopedKeyMayAccess(
+      "GET",
+      `/api/workspaces/${WS}/apps/${app}/viewer`,
+      mcpOnly,
+    ),
+    false,
+  );
   // Wrong verb on an allowed path is not allowed.
   assert.equal(scopedKeyMayAccess("POST", base, read), false);
   assert.equal(
