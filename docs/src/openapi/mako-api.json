@@ -4411,6 +4411,14 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "slackWebhookUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 500,
+                    "format": "uri"
                   }
                 },
                 "required": [
