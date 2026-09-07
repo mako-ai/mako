@@ -1,5 +1,6 @@
 import { Types } from "mongoose";
 import type { JobRole } from "@mako/schemas";
+import { completePendingProfile } from "./auto-join.service";
 import {
   Workspace,
   WorkspaceMember,
@@ -28,6 +29,8 @@ export interface MemberProfile {
 
 export interface MemberPatch extends MemberProfile {
   role?: "admin" | "member" | "viewer";
+  /** Who is making the change (for the "done" Slack line). */
+  actor?: string;
 }
 
 export class WorkspaceService {
@@ -105,6 +108,7 @@ export class WorkspaceService {
     Array<{
       workspace: IWorkspace;
       role: string;
+      profilePending?: boolean;
     }>
   > {
     const members = await WorkspaceMember.aggregate([
@@ -122,6 +126,7 @@ export class WorkspaceService {
         $project: {
           workspace: 1,
           role: 1,
+          profilePending: 1,
         },
       },
     ]);
@@ -287,7 +292,7 @@ export class WorkspaceService {
     const update: Record<string, unknown> = {};
     if (Object.keys($set).length) update.$set = $set;
     if (Object.keys($unset).length) update.$unset = $unset;
-    return WorkspaceMember.findOneAndUpdate(
+    const updated = await WorkspaceMember.findOneAndUpdate(
       {
         workspaceId: new Types.ObjectId(workspaceId),
         userId: userId,
@@ -295,6 +300,28 @@ export class WorkspaceService {
       update,
       { new: true, runValidators: true },
     ).populate("userId", "email");
+    // A waiting newcomer just got their role: let them in, tell them.
+    if (updated?.profilePending && updated.jobRole) {
+      const populated = updated.userId as unknown as
+        | { email?: string }
+        | string;
+      const email =
+        typeof populated === "object" &&
+        populated &&
+        typeof populated.email === "string"
+          ? populated.email
+          : null;
+      if (email) {
+        await completePendingProfile(workspaceId, userId, {
+          email,
+          jobRole: updated.jobRole,
+          country: updated.country ?? null,
+          actor: patch.actor,
+        });
+        updated.profilePending = undefined;
+      }
+    }
+    return updated;
   }
 
   /** @deprecated use updateMember */

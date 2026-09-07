@@ -52,6 +52,8 @@ interface MemberRow {
   /** Job role + country: what published apps scope their data by. */
   jobRole: JobRole | null;
   country: string | null;
+  /** Auto-joined, waiting for an admin to set the job role. */
+  profilePending?: boolean;
   status: "active" | "pending";
   joinedAt?: string;
   expiresAt?: string;
@@ -232,6 +234,7 @@ export function WorkspaceMembers() {
       role: member.role,
       jobRole: member.jobRole ?? null,
       country: member.country ?? null,
+      profilePending: member.profilePending === true,
       status: "active" as const,
       joinedAt: member.joinedAt,
       userId: member.userId,
@@ -443,10 +446,18 @@ export function WorkspaceMembers() {
                   </TableCell>
                   <TableCell>
                     <Chip
-                      label={row.status}
+                      label={
+                        row.profilePending ? "waiting for role" : row.status
+                      }
                       size="small"
                       variant="outlined"
-                      color={row.status === "active" ? "success" : "warning"}
+                      color={
+                        row.profilePending
+                          ? "warning"
+                          : row.status === "active"
+                            ? "success"
+                            : "warning"
+                      }
                     />
                   </TableCell>
                   <TableCell>
@@ -636,6 +647,8 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
   const [role, setRole] = useState<"member" | "viewer">("viewer");
   const [jobRole, setJobRole] = useState<JobRole | "">("");
   const [country, setCountry] = useState("");
+  const [slackWebhook, setSlackWebhook] = useState("");
+  const [slackConfigured, setSlackConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -650,6 +663,7 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
         setRole(current?.role ?? "viewer");
         setJobRole(current?.jobRole ?? "");
         setCountry(current?.country ?? "");
+        setSlackConfigured(!!current?.slackWebhookConfigured);
       })
       .catch((e: any) => setError(e.message || "Failed to load auto-join"))
       .finally(() => !cancelled && setLoaded(true));
@@ -672,13 +686,23 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
         role,
         jobRole: jobRole || null,
         country: country || null,
+        ...(slackWebhook.trim()
+          ? { slackWebhookUrl: slackWebhook.trim() }
+          : {}),
       });
+      setSlackConfigured(!!saved?.slackWebhookConfigured);
+      setSlackWebhook("");
       setMessage(
         saved
           ? `Anyone with an email on ${saved.domains.join(", ")} now joins as ${saved.role}` +
-              (saved.jobRole ? ` · ${JOB_ROLE_LABELS[saved.jobRole]}` : "") +
-              (saved.country ? ` · ${saved.country}` : "") +
-              " the first time they open the workspace or one of its apps."
+              (saved.jobRole
+                ? ` · ${JOB_ROLE_LABELS[saved.jobRole]}` +
+                  (saved.country ? ` · ${saved.country}` : "") +
+                  " the first time they open the workspace or one of its apps."
+                : " and WAITS until an admin sets their job role here" +
+                  (saved.slackWebhookConfigured
+                    ? " — Slack is told each time."
+                    : " — add a Slack webhook to be told each time."))
           : "Auto-join is off.",
       );
       setTimeout(() => setMessage(null), 6000);
@@ -709,8 +733,10 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
       >
         People who sign in with an email on these domains become members the
         first time they open the workspace or one of its apps — no invitation
-        needed — with the access role, job role and country below. Leave the
-        domains empty to turn it off.
+        needed. With a job role below they are in at once; with none they see a
+        &quot;please wait for an administrator&quot; page, the Slack channel is
+        told to assign their role and country, and they get an email once you
+        do. Leave the domains empty to turn it off.
       </Typography>
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
@@ -796,6 +822,20 @@ function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
           {saving ? <CircularProgress size={18} /> : "Save"}
         </Button>
       </Box>
+      <TextField
+        size="small"
+        fullWidth
+        sx={{ mt: 1.5 }}
+        label={
+          slackConfigured
+            ? "Slack incoming webhook (configured — paste a new one to replace)"
+            : "Slack incoming webhook (optional) — #mako-internal-signup"
+        }
+        placeholder="https://hooks.slack.com/services/…"
+        value={slackWebhook}
+        onChange={e => setSlackWebhook(e.target.value)}
+        disabled={!loaded || saving}
+      />
     </Paper>
   );
 }

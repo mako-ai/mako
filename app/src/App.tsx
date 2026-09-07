@@ -16,6 +16,7 @@ import {
   BottomNavigation,
   BottomNavigationAction,
   Paper,
+  Typography,
 } from "@mui/material";
 import {
   MessageCircleMore as AskTabIcon,
@@ -78,7 +79,7 @@ const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
-import { WorkspaceProvider } from "./contexts/workspace-context";
+import { WorkspaceProvider, useWorkspace } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
@@ -148,6 +149,7 @@ function clamp(value: number, min: number, max: number): number {
 
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
+  const pendingGate = usePendingProfileGate();
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const activeTabId = useConsoleStore(state => state.activeTabId);
   const requestReveal = useExplorerRevealStore(state => state.requestReveal);
@@ -735,6 +737,10 @@ function MainApp() {
     );
   }
 
+  // Domain auto-join: waiting for an admin to set the job role. Nothing
+  // else is useful until then — show the waiting screen and poll.
+  if (pendingGate) return pendingGate;
+
   return (
     <AuthWrapper>
       <UrlSync />
@@ -1099,3 +1105,61 @@ function App() {
 }
 
 export default App;
+
+/**
+ * The "veuillez attendre qu'un administrateur finalise votre inscription"
+ * screen for a member who auto-joined by email domain and has no job role
+ * yet (apps.md §27). Re-reads the workspace list every 20 s and lets them
+ * through the moment an admin sets it.
+ */
+function usePendingProfileGate(): React.ReactElement | null {
+  const { currentWorkspace, refreshWorkspaces } = useWorkspace();
+  const { user } = useAuth();
+  const pending = !!currentWorkspace?.profilePending;
+  useEffect(() => {
+    if (!pending) return;
+    const id = window.setInterval(() => void refreshWorkspaces(), 20_000);
+    return () => window.clearInterval(id);
+  }, [pending, refreshWorkspaces]);
+  if (!pending) return null;
+  return (
+    <Box
+      sx={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        bgcolor: "background.default",
+        p: 3,
+      }}
+    >
+      <Box
+        sx={{
+          maxWidth: 520,
+          p: 4,
+          border: "1px solid",
+          borderColor: "divider",
+          borderRadius: 3,
+          bgcolor: "background.paper",
+        }}
+      >
+        <Typography variant="h6" sx={{ mb: 1.5 }}>
+          Veuillez attendre qu&apos;un administrateur finalise votre inscription
+        </Typography>
+        <Typography variant="body2" sx={{ mb: 1 }}>
+          Vous êtes connecté à <b>{currentWorkspace?.name}</b> en tant que{" "}
+          <b>{user?.email}</b>. Un administrateur doit encore vous attribuer un
+          rôle et un pays.
+        </Typography>
+        <Typography variant="body2" sx={{ mb: 2 }}>
+          Les administrateurs ont été prévenus. Vous recevrez un email dès que
+          c&apos;est fait — cette page se met à jour toute seule.
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          Please wait for an administrator to finish your signup. This page
+          updates itself.
+        </Typography>
+      </Box>
+    </Box>
+  );
+}

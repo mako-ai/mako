@@ -3171,7 +3171,20 @@ skills — the posture every other kind already had.
 > `requireWorkspace`), with the workspace's default access role, job role
 > and country — RealAdvisor: `realadvisor.com` → viewer / bdr / FR. The
 > published app's live URL already gates on login with `returnTo`, so the
-> chain is link → Google → auto-join → served as `bdr`. The trade Théo accepted: someone
+> chain is link → Google → auto-join → served as `bdr`. Then Théo, on
+> seeing that: *"j'aime pas ça. je préfère que dans le cas général: l'IC
+> se connecte à mako. il y a un blocker genre veuillez attendre qu'un
+> administrateur finalise votre inscription. slack dans un channel
+> #mako-internal-signup please assign role and country to blablabla. and
+> then slack notif or email once done."* So the default job role is
+> optional: without one the newcomer joins with `profilePending` (and
+> `pendingReturnTo` = the URL they came for), the live route and the IDE
+> show a waiting page (`pendingProfileHtml`, `usePendingProfileGate`),
+> the workspace's Slack incoming webhook (`autoJoin.slackWebhookUrlEncrypted`,
+> Members page) gets "please assign role and country to <email>", and
+> when an admin sets the job role (`updateMember` →
+> `completePendingProfile`) the person is emailed the link they wanted
+> and the channel gets a ✅. The trade Théo accepted: someone
 > edits the member list when a rep joins or moves, instead of the CRM roster
 > doing it. What follows is the history of how the enforcement path (which
 > stands) was arrived at; read "role" below as "job role from the membership"
