@@ -528,7 +528,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update a member's role */
+        /**
+         * Update a member's access role, job role or country
+         * @description `role` is the access level (admin, member, viewer). `jobRole` and `country` are the member's profile — published apps read them as the viewer's `role` and `country` claims to scope their data (apps.md §27). Pass null to clear a profile field. At least one field is required.
+         */
         put: operations["put_api_workspaces_id_members_userId"];
         post?: never;
         /** Remove a workspace member */
@@ -4011,9 +4014,29 @@ export interface paths {
         };
         /**
          * Serve a binding's materialized parquet artifact
-         * @description Redirects to a short-lived signed bucket URL when the artifact store supports it (the browser downloads directly from the bucket); streams the bytes otherwise. Follow redirects.
+         * @description Redirects to a short-lived signed bucket URL when the artifact store supports it (the browser downloads directly from the bucket); streams the bytes otherwise. Follow redirects. This is the BUILDER path: it serves the whole artifact regardless of viewer roles. Pass `?as=<email>` to preview what that viewer's role would receive (row-filtered, or 404 when the role may not read the binding).
          */
         get: operations["get_api_workspaces_workspaceId_apps_id_bindings_name_artifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/viewer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's viewer role for this app (apps.md §27)
+         * @description What `__data/viewer.json` will say for the caller — their job role and country from their workspace membership (the Members page). `role` is null for a member nobody assigned yet. Builders may pass `?as=<email>` to see another viewer's resolution (a laptop `vite dev` uses this to preview a role).
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_viewer"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7686,7 +7709,10 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    role: "admin" | "member" | "viewer";
+                    role?: "admin" | "member" | "viewer";
+                    /** @enum {string|null} */
+                    jobRole?: "sdr" | "bdr" | "csm" | "head_of_csm" | "team_leader" | "developer" | "admin" | null;
+                    country?: string | null;
                 };
             };
         };
@@ -7816,6 +7842,9 @@ export interface operations {
                     email: string;
                     /** @enum {string} */
                     role: "admin" | "member" | "viewer";
+                    /** @enum {string} */
+                    jobRole?: "sdr" | "bdr" | "csm" | "head_of_csm" | "team_leader" | "developer" | "admin";
+                    country?: string;
                 };
             };
         };
@@ -19094,7 +19123,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_apps_id_bindings_name_artifact: {
         parameters: {
-            query?: never;
+            query?: {
+                as?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -19112,6 +19143,49 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_id_viewer: {
+        parameters: {
+            query?: {
+                as?: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
             /** @description Successful response */
             "2XX": {
                 headers: {

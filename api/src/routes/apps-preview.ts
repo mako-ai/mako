@@ -81,6 +81,10 @@ async function serveAsset(c: Context): Promise<Response> {
       // The token is the only credential, so nothing in between should keep
       // a copy of a private app's build.
       private: true,
+      // The token is also the only place the viewer's identity can ride
+      // (no cookie in the sandboxed iframe) — a role-scoped app refuses a
+      // grant minted without one.
+      viewer: grant.viewer ?? null,
     });
     if (!response) {
       return c.json({ success: false, error: "Not found" }, 404);

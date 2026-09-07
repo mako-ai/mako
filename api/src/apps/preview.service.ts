@@ -47,6 +47,13 @@ export interface PreviewGrant {
    * nothing.
    */
   publishedSha?: string;
+  /**
+   * Who the published grant was minted for. The serving route has no
+   * cookie (opaque-origin iframe), so the token is the only place the
+   * viewer's identity can ride — role-scoped apps (viewers.service) refuse
+   * a grant without one. Never set on dev/static grants.
+   */
+  viewer?: { id: string; email: string };
   expiresAt: number;
 }
 
@@ -113,6 +120,9 @@ interface PublishedTokenPayload {
   w: string;
   p: string;
   s: string;
+  /** Viewer user id + email (apps.md §27). Absent on tokens minted before. */
+  u?: string;
+  e?: string;
   /** Epoch milliseconds. */
   exp: number;
 }
@@ -135,12 +145,14 @@ export function mintPublishedGrant(input: {
   workspaceId: string;
   projectId: string;
   sha: string;
+  viewer?: { id: string; email: string };
 }): PreviewGrant {
   const payload: PublishedTokenPayload = {
     v: 1,
     w: input.workspaceId,
     p: input.projectId,
     s: input.sha,
+    ...(input.viewer ? { u: input.viewer.id, e: input.viewer.email } : {}),
     exp: Date.now() + PREVIEW_TTL_MS,
   };
   const body = Buffer.from(JSON.stringify(payload), "utf8").toString(
@@ -152,6 +164,7 @@ export function mintPublishedGrant(input: {
     workspaceId: input.workspaceId,
     projectId: input.projectId,
     publishedSha: input.sha,
+    ...(input.viewer ? { viewer: { ...input.viewer } } : {}),
     expiresAt: payload.exp,
   };
 }
@@ -192,11 +205,20 @@ function resolvePublishedGrant(token: string): PreviewGrant | null {
   ) {
     return null;
   }
+  let viewer: PreviewGrant["viewer"];
+  if (payload.u !== undefined || payload.e !== undefined) {
+    // Half a viewer is a malformed token, not an anonymous one.
+    if (typeof payload.u !== "string" || typeof payload.e !== "string") {
+      return null;
+    }
+    viewer = { id: payload.u, email: payload.e };
+  }
   return {
     token,
     workspaceId: payload.w,
     projectId: payload.p,
     publishedSha: payload.s,
+    ...(viewer ? { viewer } : {}),
     expiresAt: payload.exp,
   };
 }

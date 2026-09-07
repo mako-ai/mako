@@ -88,6 +88,8 @@ export function resolveMakoContext(appDir, options = {}) {
     slug: options.slug ?? path.basename(path.resolve(appDir)),
     bindingsDir: path.join(appDir, "bindings"),
     cacheDir: path.join(appDir, "node_modules", ".mako-data"),
+    /** Preview the app as this viewer (email) — see makoData(). */
+    viewAs: options.viewAs ?? env("MAKO_VIEWER_AS") ?? "",
   };
 }
 
@@ -160,7 +162,7 @@ export function makoData(options = {}) {
       }
 
       async function fetchArtifact(name) {
-        const url = `${appBase()}/bindings/${encodeURIComponent(name)}/artifact`;
+        const url = `${appBase()}/bindings/${encodeURIComponent(name)}/artifact${asQuery}`;
         let res = await apiFetch(url, { headers: await headers() });
         if (res.status === 404 && options.materialize !== false) {
           // Never materialized (or a live binding): build it now, then read.
@@ -190,11 +192,18 @@ export function makoData(options = {}) {
         return Buffer.from(await res.arrayBuffer());
       }
 
+      // Preview another viewer's role: MAKO_VIEWER_AS=<email> (env or .env)
+      // makes the API answer viewer.json and every parquet AS that person —
+      // row filters included. Without it, the developer's own role applies.
+      const viewAs = ctx.viewAs;
+      const asQuery = viewAs ? `?as=${encodeURIComponent(viewAs)}` : "";
+      const cacheSuffix = viewAs ? `.as-${viewAs.replace(/[^A-Za-z0-9]+/g, "_")}` : "";
+
       // POST __data/<name>/refresh — the SDK's refresh(): rebuild the
       // binding through the API (the same call app_materialize makes), then
       // forget the local copy so the next read is the new artifact.
       async function refreshBinding(name, res) {
-        const cached = path.join(ctx.cacheDir, `${name}.parquet`);
+        const cached = path.join(ctx.cacheDir, `${name}${cacheSuffix}.parquet`);
         try {
           const built = await apiFetch(
             `${appBase()}/bindings/${encodeURIComponent(name)}/materialize`,
@@ -228,6 +237,23 @@ export function makoData(options = {}) {
         if (pathname === "/__data/index.json") {
           return json(res, 200, listBindings(ctx.bindingsDir));
         }
+        if (pathname === "/__data/viewer.json") {
+          if (problems.length) return json(res, 200, { email: null, role: null, claims: {} });
+          try {
+            const r = await apiFetch(`${appBase()}/viewer${asQuery}`, { headers: await headers() });
+            const body = await r.json().catch(() => ({}));
+            if (r.status === 404) return json(res, 200, { email: null, role: null, claims: {} });
+            return json(
+              res,
+              r.ok ? 200 : r.status,
+              r.ok
+                ? { email: body.email ?? null, role: body.role ?? null, claims: body.claims ?? {} }
+                : { error: body.error ?? `viewer: HTTP ${r.status}` },
+            );
+          } catch (error) {
+            return json(res, 502, { error: error instanceof Error ? error.message : String(error) });
+          }
+        }
         const match = /^\/__data\/([^/]+)(\.parquet|\/refresh)$/.exec(pathname);
         if (!match) return next();
         const name = decodeURIComponent(match[1]);
@@ -243,7 +269,7 @@ export function makoData(options = {}) {
           });
         }
         if (isRefresh) return refreshBinding(name, res);
-        const cached = path.join(ctx.cacheDir, `${name}.parquet`);
+        const cached = path.join(ctx.cacheDir, `${name}${cacheSuffix}.parquet`);
         const refresh = /(^|&)refresh(=|&|$)/.test(query);
         try {
           const stat = fs.statSync(cached, { throwIfNoEntry: false });

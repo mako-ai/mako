@@ -179,6 +179,27 @@ export async function refreshBindings(names) {
   return settled.map(s => s.value);
 }
 
+/** Who is looking — `__data/viewer.json`, served per request by Mako
+ * (apps.md §27). Absent (older servers): nobody known, no role. */
+let viewerPromise = null;
+function fetchViewer() {
+  viewerPromise ??= fetch("__data/viewer.json").then(async r => {
+    if (r.status === 404) return { email: null, role: null, claims: {} };
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      throw new Error(
+        body && body.error ? String(body.error) : "Viewer lookup failed (HTTP " + r.status + ")",
+      );
+    }
+    return {
+      email: typeof body.email === "string" ? body.email : null,
+      role: typeof body.role === "string" ? body.role : null,
+      claims: body.claims && typeof body.claims === "object" ? body.claims : {},
+    };
+  });
+  return viewerPromise;
+}
+
 /** Names of every staged binding — written by the dev server next to the
  * parquet files. Absent (older servers, published builds): empty list. */
 let indexPromise = null;
@@ -304,6 +325,35 @@ export function useQuery(name, opts) {
   );
   const refresh = React.useCallback(() => refreshBinding(name), [name]);
   return { ...state, refresh };
+}
+
+/**
+ * The signed-in viewer and their role for this app — `null` role when the
+ * app declares no `viewers` in mako.json. Data is already scoped by Mako
+ * before it reaches the browser; this is for the UI to branch on.
+ */
+export function useViewer() {
+  const [state, setState] = React.useState({ viewer: null, loading: true, error: null });
+  React.useEffect(() => {
+    let active = true;
+    fetchViewer().then(
+      viewer => {
+        if (active) setState({ viewer, loading: false, error: null });
+      },
+      error => {
+        if (active)
+          setState({
+            viewer: null,
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, []);
+  return state;
 }
 
 export function useDuckDB(sql, opts) {

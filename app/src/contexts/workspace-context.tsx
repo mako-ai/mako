@@ -14,6 +14,7 @@ import {
   type WorkspaceInvite,
   type CreateWorkspaceData,
   type InviteMemberData,
+  type UpdateMemberData,
 } from "../lib/workspace-client";
 import { useAuth } from "./auth-context";
 import { useUIStore } from "../store/uiStore";
@@ -53,6 +54,7 @@ interface WorkspaceContextState {
   // Member management
   loadMembers: () => Promise<void>;
   inviteMember: (data: InviteMemberData) => Promise<void>;
+  updateMember: (userId: string, data: UpdateMemberData) => Promise<void>;
   updateMemberRole: (
     userId: string,
     role: "admin" | "member" | "viewer",
@@ -397,16 +399,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [currentWorkspace],
   );
 
-  const updateMemberRole = useCallback(
-    async (userId: string, role: "admin" | "member" | "viewer") => {
+  const updateMember = useCallback(
+    async (userId: string, data: UpdateMemberData) => {
       if (!currentWorkspace) throw new Error("No workspace selected");
 
       try {
         setError(null);
-        const updated = await workspaceClient.updateMemberRole(
+        const updated = await workspaceClient.updateMember(
           currentWorkspace.id,
           userId,
-          { role },
+          data,
         );
         setMembers(prev =>
           prev.map(member =>
@@ -428,6 +430,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
     },
     [currentWorkspace],
+  );
+
+  const updateMemberRole = useCallback(
+    (userId: string, role: "admin" | "member" | "viewer") =>
+      updateMember(userId, { role }),
+    [updateMember],
   );
 
   const removeMember = useCallback(
@@ -534,6 +542,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       // Member management
       loadMembers,
       inviteMember,
+      updateMember,
       updateMemberRole,
       removeMember,
 
@@ -559,6 +568,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       switchWorkspace,
       loadMembers,
       inviteMember,
+      updateMember,
       updateMemberRole,
       removeMember,
       loadInvites,

@@ -134,12 +134,22 @@ import { getBoxState, markBoxOffline } from "../apps/box-state.service";
 import { getSandboxProvider } from "../apps/sandbox/provider";
 import { Readable } from "node:stream";
 import {
-  bindingArtifactKeyByName,
+  bindingArtifactKey,
   getBindingState,
   materializeAppBinding,
   readBindings,
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  bindingVisibleTo,
+  compileRowFilter,
+  rowFilterFor,
+} from "../apps/viewers.service";
+import { resolveViewerFor } from "../apps/viewer-resolution.service";
+import {
+  filterArtifactToTempFile,
+  streamTempParquet,
+} from "../apps/filtered-parquet.service";
 import {
   AppEnvValidationError,
   deleteAppEnvVar,
@@ -1304,12 +1314,16 @@ appsRoutes.openapi(
     description:
       "Redirects to a short-lived signed bucket URL when the artifact " +
       "store supports it (the browser downloads directly from the bucket); " +
-      "streams the bytes otherwise. Follow redirects.",
+      "streams the bytes otherwise. Follow redirects. This is the BUILDER " +
+      "path: it serves the whole artifact regardless of viewer roles. Pass " +
+      "`?as=<email>` to preview what that viewer's role would receive " +
+      "(row-filtered, or 404 when the role may not read the binding).",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam.extend({
         name: z.string().openapi({ param: { name: "name", in: "path" } }),
       }),
+      query: z.object({ as: z.string().optional() }),
     },
     responses: {
       ...OPEN_RESPONSES,
@@ -1321,19 +1335,61 @@ appsRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { name } = c.req.valid("param");
+      const { as } = c.req.valid("query");
       if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
         return c.json({ success: false, error: "Invalid binding name" }, 400);
       }
-      const key = await bindingArtifactKeyByName(
-        loaded.project,
-        name,
-        loaded.userId ?? "",
+      const actorId = loaded.userId ?? "";
+      const binding = (await readBindings(loaded.project, actorId)).find(
+        b => b.name === name,
       );
-      const response = key
-        ? await serveParquetArtifact(getDashboardArtifactStore(), key, {
-            cacheControl: "no-store",
-          })
-        : null;
+      if (!binding) {
+        return c.json(
+          { success: false, error: `Binding "${name}" is not materialized` },
+          404,
+        );
+      }
+      const store = getDashboardArtifactStore();
+      const key = bindingArtifactKey(binding);
+      if (as) {
+        // As that member of this workspace would receive it (apps.md §27).
+        const viewer = await resolveViewerFor({
+          workspaceId: loaded.project.workspaceId.toString(),
+          viewer: { email: as },
+        });
+        if (!bindingVisibleTo(binding.policy, viewer.role)) {
+          return c.json(
+            {
+              success: false,
+              error: viewer.role
+                ? `Role "${viewer.role}" may not read binding "${name}"`
+                : `${as} has no job role in this workspace (Members page), so scoped bindings are not served to them`,
+            },
+            404,
+          );
+        }
+        const predicate = rowFilterFor(binding.policy, viewer);
+        if (predicate !== undefined) {
+          const file = await filterArtifactToTempFile(
+            store,
+            key,
+            compileRowFilter(predicate, viewer),
+          );
+          if (!file) {
+            return c.json(
+              {
+                success: false,
+                error: `Binding "${name}" is not materialized`,
+              },
+              404,
+            );
+          }
+          return streamTempParquet(file, { cacheControl: "no-store" });
+        }
+      }
+      const response = await serveParquetArtifact(store, key, {
+        cacheControl: "no-store",
+      });
       if (!response) {
         return c.json(
           { success: false, error: `Binding "${name}" is not materialized` },
@@ -1341,6 +1397,60 @@ appsRoutes.openapi(
         );
       }
       return response;
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/viewer",
+    tags: ["Apps"],
+    summary: "The caller's viewer role for this app (apps.md §27)",
+    description:
+      "What `__data/viewer.json` will say for the caller — their job role and " +
+      "country from their workspace membership (the Members page). `role` is " +
+      "null for a member nobody assigned yet. Builders may pass " +
+      "`?as=<email>` to see another viewer's resolution (a laptop `vite dev` " +
+      "uses this to preview a role).",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({ as: z.string().optional() }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { as } = c.req.valid("query");
+      const self = viewerOf(c);
+      const identity = as ? { email: as } : self;
+      if (!identity) {
+        return c.json(
+          {
+            success: false,
+            error: "No signed-in viewer to resolve a role for",
+          },
+          403,
+        );
+      }
+      const viewer = await resolveViewerFor({
+        workspaceId: loaded.project.workspaceId.toString(),
+        viewer: identity,
+      });
+      return c.json(
+        {
+          success: true as const,
+          email: viewer.email,
+          role: viewer.role,
+          claims: viewer.claims,
+        },
+        200,
+      );
     } catch (error) {
       return handleError(c, error);
     }
@@ -2410,8 +2520,17 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     projectId,
     sha,
     assetPath: rest.replace(/^\/+/, ""),
+    viewer: viewerOf(c),
   });
   return response ?? c.json({ success: false, error: "Not found" }, 404);
+}
+
+/** The signed-in person, as the published serving layer wants them. */
+function viewerOf(
+  c: AuthenticatedContext,
+): { id: string; email: string } | null {
+  const user = c.get("user");
+  return user?.email ? { id: user.id, email: user.email } : null;
 }
 
 appsRoutes.openapi(
@@ -2441,6 +2560,9 @@ appsRoutes.openapi(
         workspaceId: loaded.project.workspaceId.toString(),
         projectId: loaded.project._id.toString(),
         sha,
+        // Binds the token to this person: the cookie-free serving route
+        // resolves their viewer role from it (apps.md §27).
+        viewer: viewerOf(c) ?? undefined,
       });
       return c.json(
         {
