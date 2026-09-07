@@ -1,5 +1,4 @@
 import { Types } from "mongoose";
-import type { JobRole } from "@mako/schemas";
 import {
   Workspace,
   WorkspaceMember,
@@ -18,16 +17,6 @@ import {
 import { loggers } from "../logging";
 
 const logger = loggers.workspace();
-
-/** The profile published apps read as viewer claims (apps.md §27). */
-export interface MemberProfile {
-  jobRole?: JobRole | null;
-  country?: string | null;
-}
-
-export interface MemberPatch extends MemberProfile {
-  role?: "admin" | "member" | "viewer";
-}
 
 export class WorkspaceService {
   /**
@@ -254,41 +243,21 @@ export class WorkspaceService {
   }
 
   /**
-   * Update a member: access role, and/or the profile published apps read
-   * (job role, country). `null` clears a profile field.
+   * Update member role
    */
-  async updateMember(
+  async updateMemberRole(
     workspaceId: string,
     userId: string,
-    patch: MemberPatch,
+    newRole: string,
   ): Promise<IWorkspaceMember | null> {
-    const $set: Record<string, unknown> = {};
-    const $unset: Record<string, 1> = {};
-    if (patch.role !== undefined) $set.role = patch.role;
-    if (patch.jobRole === null) $unset.jobRole = 1;
-    else if (patch.jobRole !== undefined) $set.jobRole = patch.jobRole;
-    if (patch.country === null) $unset.country = 1;
-    else if (patch.country !== undefined) $set.country = patch.country;
-    const update: Record<string, unknown> = {};
-    if (Object.keys($set).length) update.$set = $set;
-    if (Object.keys($unset).length) update.$unset = $unset;
     return WorkspaceMember.findOneAndUpdate(
       {
         workspaceId: new Types.ObjectId(workspaceId),
         userId: userId,
       },
-      update,
-      { new: true, runValidators: true },
+      { role: newRole },
+      { new: true },
     ).populate("userId", "email");
-  }
-
-  /** @deprecated use updateMember */
-  async updateMemberRole(
-    workspaceId: string,
-    userId: string,
-    newRole: "admin" | "member" | "viewer",
-  ): Promise<IWorkspaceMember | null> {
-    return this.updateMember(workspaceId, userId, { role: newRole });
   }
 
   /**
@@ -310,7 +279,6 @@ export class WorkspaceService {
     email: string,
     role: "admin" | "member" | "viewer",
     invitedBy: string,
-    profile: MemberProfile = {},
   ): Promise<IWorkspaceInvite> {
     const normalizedEmail = validateAndNormalizeEmail(email);
 
@@ -339,12 +307,6 @@ export class WorkspaceService {
     if (existingInvite) {
       existingInvite.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       existingInvite.invitedBy = invitedBy as any;
-      if (profile.jobRole !== undefined) {
-        existingInvite.jobRole = profile.jobRole ?? undefined;
-      }
-      if (profile.country !== undefined) {
-        existingInvite.country = profile.country ?? undefined;
-      }
       await existingInvite.save();
       await this.sendInviteEmail(workspaceId, invitedBy, existingInvite);
       return existingInvite;
@@ -355,8 +317,6 @@ export class WorkspaceService {
       email: normalizedEmail,
       token: uuidv4().replace(/-/g, ""),
       role,
-      ...(profile.jobRole ? { jobRole: profile.jobRole } : {}),
-      ...(profile.country ? { country: profile.country } : {}),
       invitedBy: invitedBy,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
     });
@@ -480,8 +440,6 @@ export class WorkspaceService {
         workspaceId: invite.workspaceId,
         userId: userId,
         role: invite.role,
-        ...(invite.jobRole ? { jobRole: invite.jobRole } : {}),
-        ...(invite.country ? { country: invite.country } : {}),
         joinedAt: new Date(),
       });
       await member.save({ session });

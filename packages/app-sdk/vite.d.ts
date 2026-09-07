@@ -15,12 +15,6 @@ export interface MakoDataOptions {
   revalidateMs?: number;
   /** Build a never-materialized binding on first request. Default: true. */
   materialize?: boolean;
-  /**
-   * Preview the app as this viewer (an email): `__data/viewer.json` and every
-   * parquet come back as Mako would serve them to that person's role — row
-   * filters included. Default: MAKO_VIEWER_AS, else the signed-in developer.
-   */
-  viewAs?: string;
 }
 
 export interface MakoContext {
@@ -31,8 +25,6 @@ export interface MakoContext {
   slug: string;
   bindingsDir: string;
   cacheDir: string;
-  /** Email of the viewer being previewed, or "" for the developer's own role. */
-  viewAs: string;
 }
 
 /** Resolve credentials and identity the way `makoData` does. */

@@ -83,13 +83,3 @@ export {
   type ValidateSyncConfigInput,
   type ValidateSyncConfigResult,
 } from "./sync-mode-matrix";
-
-export {
-  JOB_ROLES,
-  JOB_ROLE_LABELS,
-  COUNTRY_CODES,
-  isJobRole,
-  isCountryCode,
-  type JobRole,
-  type CountryCode,
-} from "./member-profile";

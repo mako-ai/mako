@@ -1,5 +1,4 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { JOB_ROLES } from "@mako/schemas";
 import {
   isSessionAuth,
   unifiedAuthMiddleware,
@@ -46,16 +45,6 @@ import {
 } from "../openapi/core";
 
 const MemberRole = z.enum(["admin", "member", "viewer"]);
-/** What the person does — read by published apps as the viewer's role. */
-const JobRoleField = z.enum(JOB_ROLES);
-const CountryField = z
-  .string()
-  .transform(v => v.trim().toUpperCase())
-  .pipe(
-    z
-      .string()
-      .regex(/^[A-Z]{2}$/, "country must be an ISO 3166-1 alpha-2 code"),
-  );
 /**
  * A workspace name is a LABEL, not a document. Unbounded free text pasted
  * at onboarding (entire app prompts, SQL queries) poisoned every list that
@@ -95,20 +84,9 @@ const UpdateWorkspaceBody = jsonBody(
 const AddMemberBody = jsonBody(
   z.object({ userId: z.string(), role: MemberRole }),
 );
-const UpdateMemberBody = jsonBody(
-  z.object({
-    role: MemberRole.optional(),
-    jobRole: JobRoleField.nullable().optional(),
-    country: CountryField.nullable().optional(),
-  }),
-);
+const UpdateMemberRoleBody = jsonBody(z.object({ role: MemberRole }));
 const CreateInviteBody = jsonBody(
-  z.object({
-    email: z.string(),
-    role: MemberRole,
-    jobRole: JobRoleField.optional(),
-    country: CountryField.optional(),
-  }),
+  z.object({ email: z.string(), role: MemberRole }),
 );
 const AcpPlanDecisionBody = jsonBody(
   z.object({
@@ -170,8 +148,6 @@ type WorkspaceMemberResponseSource = {
   _id: unknown;
   userId?: unknown;
   role: string;
-  jobRole?: string;
-  country?: string;
   joinedAt: unknown;
 };
 
@@ -186,8 +162,6 @@ function serializeWorkspaceMember(member: WorkspaceMemberResponseSource) {
     userId: populatedUser?._id ?? member.userId,
     email: typeof populatedUser?.email === "string" ? populatedUser.email : "",
     role: member.role,
-    jobRole: member.jobRole ?? null,
-    country: member.country ?? null,
     joinedAt: member.joinedAt,
   };
 }
@@ -1198,19 +1172,14 @@ workspaceRoutes.openapi(
     method: "put",
     path: "/{id}/members/{userId}",
     tags: ["Workspaces"],
-    summary: "Update a member's access role, job role or country",
-    description:
-      "`role` is the access level (admin, member, viewer). `jobRole` and " +
-      "`country` are the member's profile — published apps read them as the " +
-      "viewer's `role` and `country` claims to scope their data (apps.md §27). " +
-      "Pass null to clear a profile field. At least one field is required.",
+    summary: "Update a member's role",
     security: AUTH_SECURITY,
     middleware: [
       unifiedAuthMiddleware,
       requireWorkspace,
       requireWorkspaceRole(["owner", "admin"]),
     ] as const,
-    request: { params: IdUserParam, body: UpdateMemberBody },
+    request: { params: IdUserParam, body: UpdateMemberRoleBody },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
@@ -1218,43 +1187,39 @@ workspaceRoutes.openapi(
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
       const userId = c.req.param("userId");
-      const body = c.req.valid("json");
-      const { role, jobRole, country } = body;
+      const body = await c.req.json();
+      const { role } = body;
 
       if (workspaceId !== workspace._id.toString()) {
         return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
       }
 
-      if (
-        role === undefined &&
-        jobRole === undefined &&
-        country === undefined
-      ) {
+      if (!role || !["admin", "member", "viewer"].includes(role)) {
         return c.json(
           {
             success: false,
-            error: "Nothing to update: pass role, jobRole or country",
+            error: "Valid role is required (admin, member, or viewer)",
           },
           400,
         );
       }
 
-      // The owner's ACCESS role is not for changing; their profile is.
+      // Don't allow changing owner role
       const currentMember = await workspaceService.getMember(
         workspaceId,
         userId,
       );
-      if (role !== undefined && currentMember?.role === "owner") {
+      if (currentMember?.role === "owner") {
         return c.json(
           { success: false, error: "Cannot change owner role" },
           403,
         );
       }
 
-      const updatedMember = await workspaceService.updateMember(
+      const updatedMember = await workspaceService.updateMemberRole(
         workspaceId,
         userId,
-        { role, jobRole, country },
+        role,
       );
 
       if (!updatedMember) {
@@ -1361,8 +1326,8 @@ workspaceRoutes.openapi(
       const user = c.get("user");
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
-      const body = c.req.valid("json");
-      const { email, role, jobRole, country } = body;
+      const body = await c.req.json();
+      const { email, role } = body;
 
       if (workspaceId !== workspace._id.toString()) {
         return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
@@ -1391,7 +1356,6 @@ workspaceRoutes.openapi(
         email,
         role,
         user.id,
-        { jobRole, country },
       );
 
       return c.json(
@@ -1401,8 +1365,6 @@ workspaceRoutes.openapi(
             id: invite._id,
             email: invite.email,
             role: invite.role,
-            jobRole: invite.jobRole ?? null,
-            country: invite.country ?? null,
             token: invite.token,
             expiresAt: invite.expiresAt,
           },
@@ -1454,8 +1416,6 @@ workspaceRoutes.openapi(
           id: invite._id,
           email: invite.email,
           role: invite.role,
-          jobRole: invite.jobRole ?? null,
-          country: invite.country ?? null,
           invitedBy: invite.invitedBy?.email || "",
           expiresAt: invite.expiresAt,
         })),
