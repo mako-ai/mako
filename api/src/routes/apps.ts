@@ -146,7 +146,6 @@ import {
   rowFilterFor,
 } from "../apps/viewers.service";
 import { resolveViewerFor } from "../apps/viewer-resolution.service";
-import { ensureAutoJoin } from "../services/auto-join.service";
 import {
   filterArtifactToTempFile,
   streamTempParquet,
@@ -192,11 +191,7 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
         );
       }
     } else if (user) {
-      // A stranger from a trusted domain joins here — this is the request a
-      // rep's first click on the app link makes (apps.md §27).
-      const hasAccess =
-        (await ensureAutoJoin(workspaceId, user)) !== null ||
-        (await workspaceService.hasAccess(workspaceId, user.id));
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
       if (!hasAccess) {
         return c.json(
           { success: false, error: "Access denied to workspace" },

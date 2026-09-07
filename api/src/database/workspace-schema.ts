@@ -128,13 +128,6 @@ export interface IWorkspace extends Document {
      * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     dashboardRefreshConcurrency?: number;
-    /**
-     * Domain auto-join (apps.md §27): a signed-in person whose email domain
-     * is listed becomes a member on first contact with the workspace — no
-     * invitation — with this access role, job role and country. How a rep
-     * clicks the app link, signs in with Google, and lands on their view.
-     */
-    autoJoin?: IWorkspaceAutoJoin;
   };
   billing: IWorkspaceBilling;
   apiKeys?: IWorkspaceApiKey[];
@@ -183,14 +176,6 @@ export interface IWorkspaceApiKey {
   createdAt: Date;
   lastUsedAt?: Date;
   createdBy: string;
-}
-
-export interface IWorkspaceAutoJoin {
-  /** Lowercase email domains, exact match (no sub-domains). */
-  domains: string[];
-  role: "member" | "viewer";
-  jobRole?: JobRole;
-  country?: string;
 }
 
 /**
@@ -1318,27 +1303,6 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         type: Number,
         default: 2,
         min: 1,
-      },
-      autoJoin: {
-        type: new Schema(
-          {
-            domains: [{ type: String, lowercase: true, trim: true }],
-            role: {
-              type: String,
-              enum: ["member", "viewer"],
-              default: "viewer",
-            },
-            jobRole: { type: String, enum: JOB_ROLES },
-            country: {
-              type: String,
-              uppercase: true,
-              trim: true,
-              match: /^[A-Z]{2}$/,
-            },
-          },
-          { _id: false },
-        ),
-        required: false,
       },
     },
     billing: {

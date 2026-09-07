@@ -1,6 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { JOB_ROLES } from "@mako/schemas";
-import { normalizeAutoJoin } from "../services/auto-join.service";
 import {
   isSessionAuth,
   unifiedAuthMiddleware,
@@ -32,10 +31,7 @@ import {
   optionalWorkspace,
 } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
-import {
-  Workspace,
-  type IWorkspaceAutoJoin,
-} from "../database/workspace-schema";
+import { Workspace } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { normalizeEmail } from "../utils/email.utils";
 import { loggers } from "../logging";
@@ -102,14 +98,6 @@ const AddMemberBody = jsonBody(
 const UpdateMemberBody = jsonBody(
   z.object({
     role: MemberRole.optional(),
-    jobRole: JobRoleField.nullable().optional(),
-    country: CountryField.nullable().optional(),
-  }),
-);
-const AutoJoinBody = jsonBody(
-  z.object({
-    domains: z.array(z.string()).max(20),
-    role: z.enum(["member", "viewer"]).default("viewer"),
     jobRole: JobRoleField.nullable().optional(),
     country: CountryField.nullable().optional(),
   }),
@@ -186,16 +174,6 @@ type WorkspaceMemberResponseSource = {
   country?: string;
   joinedAt: unknown;
 };
-
-function serializeAutoJoin(autoJoin: IWorkspaceAutoJoin | null | undefined) {
-  if (!autoJoin || autoJoin.domains.length === 0) return null;
-  return {
-    domains: autoJoin.domains,
-    role: autoJoin.role,
-    jobRole: autoJoin.jobRole ?? null,
-    country: autoJoin.country ?? null,
-  };
-}
 
 function serializeWorkspaceMember(member: WorkspaceMemberResponseSource) {
   const populatedUser =
@@ -1355,104 +1333,6 @@ workspaceRoutes.openapi(
           success: false,
           error:
             error instanceof Error ? error.message : "Failed to remove member",
-        },
-        500,
-      );
-    }
-  },
-);
-
-// Domain auto-join — read
-workspaceRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/auto-join",
-    tags: ["Workspaces"],
-    summary: "Domain auto-join settings",
-    description:
-      "Email domains whose signed-in users become members on first contact " +
-      "(no invitation), and the access role, job role and country they get. " +
-      "`null` when off. How a rep opens a published app link, signs in with " +
-      "Google and lands on their own view (apps.md §27).",
-    security: AUTH_SECURITY,
-    middleware: [
-      unifiedAuthMiddleware,
-      requireWorkspace,
-      requireWorkspaceRole(["owner", "admin"]),
-    ] as const,
-    request: { params: IdParam },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    const workspace = c.get("workspace");
-    if (c.req.param("id") !== workspace._id.toString()) {
-      return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
-    }
-    const fresh = await workspaceService.getWorkspaceById(
-      workspace._id.toString(),
-    );
-    return c.json({
-      success: true,
-      data: serializeAutoJoin(fresh?.settings?.autoJoin),
-    });
-  },
-);
-
-// Domain auto-join — write (an empty domain list turns it off)
-workspaceRoutes.openapi(
-  createRoute({
-    method: "put",
-    path: "/{id}/auto-join",
-    tags: ["Workspaces"],
-    summary: "Set domain auto-join",
-    security: AUTH_SECURITY,
-    middleware: [
-      unifiedAuthMiddleware,
-      requireWorkspace,
-      requireWorkspaceRole(["owner", "admin"]),
-    ] as const,
-    request: { params: IdParam, body: AutoJoinBody },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspace = c.get("workspace");
-      const workspaceId = c.req.param("id");
-      if (workspaceId !== workspace._id.toString()) {
-        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
-      }
-      const body = c.req.valid("json");
-      const normalized = normalizeAutoJoin(body);
-      const rejected = body.domains
-        .filter(
-          d =>
-            !normalized?.domains.includes(
-              d.trim().toLowerCase().replace(/^@/, ""),
-            ),
-        )
-        .filter(d => d.trim() !== "");
-      if (rejected.length > 0) {
-        return c.json(
-          { success: false, error: `Not a domain: ${rejected.join(", ")}` },
-          400,
-        );
-      }
-      await workspaceService.setAutoJoin(workspaceId, normalized);
-      logger.info("Workspace auto-join updated", {
-        workspaceId,
-        by: c.get("user")?.id,
-        domains: normalized?.domains ?? [],
-      });
-      return c.json({ success: true, data: serializeAutoJoin(normalized) });
-    } catch (error) {
-      logger.error("Error updating auto-join", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to update auto-join",
         },
         500,
       );

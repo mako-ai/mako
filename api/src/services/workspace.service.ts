@@ -7,7 +7,6 @@ import {
   IWorkspace,
   IWorkspaceMember,
   IWorkspaceInvite,
-  type IWorkspaceAutoJoin,
 } from "../database/workspace-schema";
 import { Session, User } from "../database/schema";
 import { v4 as uuidv4 } from "uuid";
@@ -185,20 +184,6 @@ export class WorkspaceService {
     updates: Partial<IWorkspace>,
   ): Promise<IWorkspace | null> {
     return Workspace.findByIdAndUpdate(workspaceId, updates, { new: true });
-  }
-
-  /** Domain auto-join settings; null turns it off. */
-  async setAutoJoin(
-    workspaceId: string,
-    autoJoin: IWorkspaceAutoJoin | null,
-  ): Promise<void> {
-    await Workspace.updateOne(
-      { _id: new Types.ObjectId(workspaceId) },
-      autoJoin
-        ? { $set: { "settings.autoJoin": autoJoin } }
-        : { $unset: { "settings.autoJoin": 1 } },
-      { runValidators: true },
-    );
   }
 
   /**

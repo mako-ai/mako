@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Box,
   Typography,
@@ -40,7 +40,6 @@ import {
   type JobRole,
 } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
-import { workspaceClient } from "../lib/workspace-client";
 import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
 import { useConfirm } from "./ConfirmDialog";
@@ -294,8 +293,6 @@ export function WorkspaceMembers() {
           {successMessage}
         </Alert>
       )}
-
-      {canManageMembers && <AutoJoinCard workspaceId={currentWorkspace.id} />}
 
       <TableContainer
         component={Paper}
@@ -621,181 +618,5 @@ export function WorkspaceMembers() {
         </DialogActions>
       </Dialog>
     </Box>
-  );
-}
-
-/**
- * Domain auto-join: anyone signing in with an email on these domains joins
- * the workspace on first contact — no invitation — with these defaults. The
- * way a rep clicks a published app's link, signs in with Google, and lands
- * on their own view.
- */
-function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
-  const [loaded, setLoaded] = useState(false);
-  const [domains, setDomains] = useState("");
-  const [role, setRole] = useState<"member" | "viewer">("viewer");
-  const [jobRole, setJobRole] = useState<JobRole | "">("");
-  const [country, setCountry] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    workspaceClient
-      .getAutoJoin(workspaceId)
-      .then(current => {
-        if (cancelled) return;
-        setDomains(current?.domains.join(", ") ?? "");
-        setRole(current?.role ?? "viewer");
-        setJobRole(current?.jobRole ?? "");
-        setCountry(current?.country ?? "");
-      })
-      .catch((e: any) => setError(e.message || "Failed to load auto-join"))
-      .finally(() => !cancelled && setLoaded(true));
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId]);
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const list = domains
-        .split(/[,\s]+/)
-        .map(d => d.trim())
-        .filter(Boolean);
-      const saved = await workspaceClient.setAutoJoin(workspaceId, {
-        domains: list,
-        role,
-        jobRole: jobRole || null,
-        country: country || null,
-      });
-      setMessage(
-        saved
-          ? `Anyone with an email on ${saved.domains.join(", ")} now joins as ${saved.role}` +
-              (saved.jobRole ? ` · ${JOB_ROLE_LABELS[saved.jobRole]}` : "") +
-              (saved.country ? ` · ${saved.country}` : "") +
-              " the first time they open the workspace or one of its apps."
-          : "Auto-join is off.",
-      );
-      setTimeout(() => setMessage(null), 6000);
-    } catch (e: any) {
-      setError(e.message || "Failed to save auto-join");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Paper
-      variant="outlined"
-      sx={{
-        p: 2,
-        mb: 2,
-        boxShadow: "none",
-        border: "1px solid rgba(224, 224, 224, 1)",
-      }}
-    >
-      <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-        Auto-join by email domain
-      </Typography>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{ display: "block", mb: 1.5 }}
-      >
-        People who sign in with an email on these domains become members the
-        first time they open the workspace or one of its apps — no invitation
-        needed — with the access role, job role and country below. Leave the
-        domains empty to turn it off.
-      </Typography>
-      {error && (
-        <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
-      {message && (
-        <Alert
-          severity="success"
-          sx={{ mb: 1.5 }}
-          onClose={() => setMessage(null)}
-        >
-          {message}
-        </Alert>
-      )}
-      <Box
-        sx={{ display: "flex", gap: 2, flexWrap: "wrap", alignItems: "center" }}
-      >
-        <TextField
-          size="small"
-          label="Domains"
-          placeholder="acme.com, acme.ch"
-          value={domains}
-          onChange={e => setDomains(e.target.value)}
-          disabled={!loaded || saving}
-          sx={{ minWidth: 260, flex: 1 }}
-        />
-        <FormControl size="small" sx={{ minWidth: 120 }}>
-          <InputLabel>Access</InputLabel>
-          <Select
-            value={role}
-            label="Access"
-            onChange={e => setRole(e.target.value as "member" | "viewer")}
-            disabled={!loaded || saving}
-          >
-            <MenuItem value="viewer">Viewer</MenuItem>
-            <MenuItem value="member">Member</MenuItem>
-          </Select>
-        </FormControl>
-        <FormControl size="small" sx={{ minWidth: 150 }}>
-          <InputLabel>Job role</InputLabel>
-          <Select
-            value={jobRole}
-            label="Job role"
-            onChange={e => setJobRole(e.target.value as JobRole | "")}
-            disabled={!loaded || saving}
-          >
-            <MenuItem value="">
-              <em>Not set</em>
-            </MenuItem>
-            {JOB_ROLES.map(r => (
-              <MenuItem key={r} value={r}>
-                {JOB_ROLE_LABELS[r]}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <FormControl size="small" sx={{ minWidth: 110 }}>
-          <InputLabel>Country</InputLabel>
-          <Select
-            value={country}
-            label="Country"
-            onChange={e => setCountry(e.target.value)}
-            disabled={!loaded || saving}
-            MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
-          >
-            <MenuItem value="">
-              <em>Not set</em>
-            </MenuItem>
-            {COUNTRY_CODES.map(code => (
-              <MenuItem key={code} value={code}>
-                {code} · {countryName(code)}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <Button
-          variant="contained"
-          size="small"
-          onClick={save}
-          disabled={!loaded || saving}
-        >
-          {saving ? <CircularProgress size={18} /> : "Save"}
-        </Button>
-      </Box>
-    </Paper>
   );
 }
