@@ -3161,7 +3161,17 @@ skills — the posture every other kind already had.
 > que moi, jonas et joan devont avoir un role d'admin et que les admin
 > doivent tout voir"* — so the `admin` job role bypasses every `roles` list
 > and every row filter (`rowFilterFor`), and a workspace owner/admin with no
-> job role IS an admin viewer (`viewerFromMember`). The trade Théo accepted: someone
+> job role IS an admin viewer (`viewerFromMember`). And, later the same day:
+> *"un bdr reçoit le lien généraliste du dashboard, il clique, il passe par
+> gauth mako, et pouf il est sur sa vue personnelle et c'est tout"* — no
+> invitation, no per-rep admin action. Hence **domain auto-join**
+> (`settings.autoJoin`, Members page): a signed-in stranger whose email
+> domain the workspace lists becomes a member at the first request that
+> would have refused them (the apps router's access check, and
+> `requireWorkspace`), with the workspace's default access role, job role
+> and country — RealAdvisor: `realadvisor.com` → viewer / bdr / FR. The
+> published app's live URL already gates on login with `returnTo`, so the
+> chain is link → Google → auto-join → served as `bdr`. The trade Théo accepted: someone
 > edits the member list when a rep joins or moves, instead of the CRM roster
 > doing it. What follows is the history of how the enforcement path (which
 > stands) was arrived at; read "role" below as "job role from the membership"
