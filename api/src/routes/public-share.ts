@@ -662,8 +662,9 @@ async function serveSharedApp(c: Context): Promise<Response> {
     sha,
     assetPath,
     private: true,
-    // Anonymous: an app that declares viewer roles refuses to be served
-    // this way (viewers.service) — there is no one to scope the data to.
+    // Anonymous: a scoped binding (roles / row filters, apps.md §27) is not
+    // served this way — there is no one to scope the data to. Unscoped
+    // bindings are.
     viewer: null,
   });
   return response ?? c.json({ success: false, error: "Not found" }, 404);

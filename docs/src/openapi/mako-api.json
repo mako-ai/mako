@@ -4086,7 +4086,8 @@
         "tags": [
           "Workspaces"
         ],
-        "summary": "Update a member's role",
+        "summary": "Update a member's access role, job role or country",
+        "description": "`role` is the access level (admin, member, viewer). `jobRole` and `country` are the member's profile — published apps read them as the viewer's `role` and `country` claims to scope their data (apps.md §27). Pass null to clear a profile field. At least one field is required.",
         "security": [
           {
             "cookieAuth": []
@@ -4127,11 +4128,30 @@
                       "member",
                       "viewer"
                     ]
+                  },
+                  "jobRole": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "sdr",
+                      "bdr",
+                      "csm",
+                      "head_of_csm",
+                      "team_leader",
+                      "developer",
+                      "admin",
+                      null
+                    ]
+                  },
+                  "country": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
-                },
-                "required": [
-                  "role"
-                ]
+                }
               }
             }
           }
@@ -4297,6 +4317,21 @@
                       "member",
                       "viewer"
                     ]
+                  },
+                  "jobRole": {
+                    "type": "string",
+                    "enum": [
+                      "sdr",
+                      "bdr",
+                      "csm",
+                      "head_of_csm",
+                      "team_leader",
+                      "developer",
+                      "admin"
+                    ]
+                  },
+                  "country": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -25619,7 +25654,7 @@
           "Apps"
         ],
         "summary": "The caller's viewer role for this app (apps.md §27)",
-        "description": "What `__data/viewer.json` will say for the caller — resolved from the app's mako.json `viewers` block at the caller's view of the repo. `role` is null for an app that declares no roles. Builders may pass `?as=<email>` to see another viewer's resolution (a laptop `vite dev` uses this to preview a role).",
+        "description": "What `__data/viewer.json` will say for the caller — their job role and country from their workspace membership (the Members page). `role` is null for a member nobody assigned yet. Builders may pass `?as=<email>` to see another viewer's resolution (a laptop `vite dev` uses this to preview a role).",
         "security": [
           {
             "cookieAuth": []

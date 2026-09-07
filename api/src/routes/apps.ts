@@ -140,15 +140,8 @@ import {
   readBindings,
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
-import {
-  bindingVisibleTo,
-  compileRowFilter,
-  loadViewersConfig,
-} from "../apps/viewers.service";
-import {
-  resolveViewerFor,
-  ViewerSourceError,
-} from "../apps/viewer-resolution.service";
+import { bindingVisibleTo, compileRowFilter } from "../apps/viewers.service";
+import { resolveViewerFor } from "../apps/viewer-resolution.service";
 import {
   filterArtifactToTempFile,
   streamTempParquet,
@@ -160,12 +153,6 @@ import {
   setAppEnvVar,
 } from "../apps/env.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-
-/** The builder-side artifact store, when it holds `key` (viewer sources). */
-async function storeHoldingArtifact(key: string) {
-  const store = getDashboardArtifactStore();
-  return (await store.exists(key)) ? store : null;
-}
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
@@ -343,9 +330,6 @@ function handleError(c: AuthenticatedContext, error: unknown) {
   }
   if (error instanceof WorkspaceRepoNotBoundError) {
     return c.json({ success: false, error: error.message }, 404);
-  }
-  if (error instanceof ViewerSourceError) {
-    return c.json({ success: false, error: error.message }, 403);
   }
   logger.error("Apps route error", { error });
   return c.json(
@@ -1364,35 +1348,27 @@ appsRoutes.openapi(
       const store = getDashboardArtifactStore();
       const key = bindingArtifactKey(binding);
       if (as) {
-        const config = await loadViewersConfig(loaded.project, actorId);
-        const viewer = config
-          ? await resolveViewerFor({
-              project: loaded.project,
-              actorId,
-              config,
-              viewer: { email: as },
-              storeFor: storeHoldingArtifact,
-            })
-          : null;
-        if (config && !viewer) {
-          return c.json(
-            { success: false, error: `No viewer role includes ${as}` },
-            403,
-          );
-        }
-        if (viewer && !bindingVisibleTo(binding.policy, viewer.role)) {
+        // As that member of this workspace would receive it (apps.md §27).
+        const viewer = await resolveViewerFor({
+          workspaceId: loaded.project.workspaceId.toString(),
+          viewer: { email: as },
+        });
+        if (!bindingVisibleTo(binding.policy, viewer.role)) {
           return c.json(
             {
               success: false,
-              error: `Role "${viewer.role}" may not read binding "${name}"`,
+              error: viewer.role
+                ? `Role "${viewer.role}" may not read binding "${name}"`
+                : `${as} has no job role in this workspace (Members page), so scoped bindings are not served to them`,
             },
             404,
           );
         }
-        const predicate = viewer
-          ? binding.policy.rowFilters[viewer.role]
-          : undefined;
-        if (viewer && predicate !== undefined) {
+        const predicate =
+          viewer.role !== null
+            ? binding.policy.rowFilters[viewer.role]
+            : undefined;
+        if (predicate !== undefined) {
           const file = await filterArtifactToTempFile(
             store,
             key,
@@ -1433,9 +1409,9 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "The caller's viewer role for this app (apps.md §27)",
     description:
-      "What `__data/viewer.json` will say for the caller — resolved from the " +
-      "app's mako.json `viewers` block at the caller's view of the repo. " +
-      "`role` is null for an app that declares no roles. Builders may pass " +
+      "What `__data/viewer.json` will say for the caller — their job role and " +
+      "country from their workspace membership (the Members page). `role` is " +
+      "null for a member nobody assigned yet. Builders may pass " +
       "`?as=<email>` to see another viewer's resolution (a laptop `vite dev` " +
       "uses this to preview a role).",
     security: AUTH_SECURITY,
@@ -1451,48 +1427,23 @@ appsRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { as } = c.req.valid("query");
       const self = viewerOf(c);
-      const email = as ?? self?.email ?? null;
-      const config = await loadViewersConfig(
-        loaded.project,
-        loaded.userId ?? "",
-      );
-      if (!config) {
-        return c.json(
-          {
-            success: true as const,
-            scoped: false,
-            email,
-            role: null,
-            claims: {},
-          },
-          200,
-        );
-      }
-      const viewer = email
-        ? await resolveViewerFor({
-            project: loaded.project,
-            actorId: loaded.userId ?? "",
-            config,
-            viewer: { email },
-            storeFor: storeHoldingArtifact,
-          })
-        : null;
-      if (!viewer) {
+      const identity = as ? { email: as } : self;
+      if (!identity) {
         return c.json(
           {
             success: false,
-            scoped: true,
-            error: email
-              ? `No viewer role includes ${email}`
-              : "No signed-in viewer to resolve a role for",
+            error: "No signed-in viewer to resolve a role for",
           },
           403,
         );
       }
+      const viewer = await resolveViewerFor({
+        workspaceId: loaded.project.workspaceId.toString(),
+        viewer: identity,
+      });
       return c.json(
         {
           success: true as const,
-          scoped: true,
           email: viewer.email,
           role: viewer.role,
           claims: viewer.claims,

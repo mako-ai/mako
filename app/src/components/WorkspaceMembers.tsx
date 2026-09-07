@@ -33,6 +33,12 @@ import {
   ContentCopy,
   Close,
 } from "@mui/icons-material";
+import {
+  COUNTRY_CODES,
+  JOB_ROLES,
+  JOB_ROLE_LABELS,
+  type JobRole,
+} from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
@@ -42,11 +48,26 @@ interface MemberRow {
   id: string;
   email: string;
   role: string;
+  /** Job role + country: what published apps scope their data by. */
+  jobRole: JobRole | null;
+  country: string | null;
   status: "active" | "pending";
   joinedAt?: string;
   expiresAt?: string;
   userId?: string;
   token?: string;
+}
+
+const countryNames =
+  typeof Intl !== "undefined" && "DisplayNames" in Intl
+    ? new Intl.DisplayNames(["en"], { type: "region" })
+    : null;
+function countryName(code: string): string {
+  try {
+    return countryNames?.of(code) ?? code;
+  } catch {
+    return code;
+  }
 }
 
 export function WorkspaceMembers() {
@@ -57,6 +78,7 @@ export function WorkspaceMembers() {
     members,
     invites,
     inviteMember,
+    updateMember,
     updateMemberRole,
     removeMember,
     cancelInvite,
@@ -67,6 +89,8 @@ export function WorkspaceMembers() {
   const [inviteRole, setInviteRole] = useState<"admin" | "member" | "viewer">(
     "member",
   );
+  const [inviteJobRole, setInviteJobRole] = useState<JobRole | "">("");
+  const [inviteCountry, setInviteCountry] = useState("");
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -76,12 +100,21 @@ export function WorkspaceMembers() {
       setError("Email is required");
       return;
     }
+    if (!inviteJobRole) {
+      setError("Job role is required — apps scope their data by it");
+      return;
+    }
 
     setInviting(true);
     setError(null);
 
     try {
-      await inviteMember({ email: inviteEmail.trim(), role: inviteRole });
+      await inviteMember({
+        email: inviteEmail.trim(),
+        role: inviteRole,
+        jobRole: inviteJobRole,
+        ...(inviteCountry ? { country: inviteCountry } : {}),
+      });
 
       // Track invite sent
       trackEvent("invite_sent", {
@@ -91,6 +124,8 @@ export function WorkspaceMembers() {
       setInviteDialogOpen(false);
       setInviteEmail("");
       setInviteRole("member");
+      setInviteJobRole("");
+      setInviteCountry("");
       setSuccessMessage("Invitation sent successfully");
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (error: any) {
@@ -113,6 +148,21 @@ export function WorkspaceMembers() {
       await updateMemberRole(userId, newRole);
     } catch (error: any) {
       setError(error.message || "Failed to update role");
+    }
+  };
+
+  const handleProfileChange = async (
+    userId: string,
+    patch: { jobRole?: JobRole | null; country?: string | null },
+  ) => {
+    if (!userId) {
+      setError("Cannot update a member with missing user details");
+      return;
+    }
+    try {
+      await updateMember(userId, patch);
+    } catch (error: any) {
+      setError(error.message || "Failed to update member");
     }
   };
 
@@ -179,6 +229,8 @@ export function WorkspaceMembers() {
       id: member.id,
       email: member.email ?? "",
       role: member.role,
+      jobRole: member.jobRole ?? null,
+      country: member.country ?? null,
       status: "active" as const,
       joinedAt: member.joinedAt,
       userId: member.userId,
@@ -188,6 +240,8 @@ export function WorkspaceMembers() {
       id: invite.id,
       email: invite.email ?? "",
       role: invite.role,
+      jobRole: invite.jobRole ?? null,
+      country: invite.country ?? null,
       status: "pending" as const,
       expiresAt: invite.expiresAt,
       token: invite.token,
@@ -251,7 +305,13 @@ export function WorkspaceMembers() {
                 Email
               </TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
-                Role
+                Access
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
+                Job role
+              </TableCell>
+              <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
+                Country
               </TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
                 Status
@@ -277,6 +337,10 @@ export function WorkspaceMembers() {
               const isCurrentUser = row.email === user?.email;
               const isOwner = row.role === "owner";
               const canEdit = canManageMembers && !isOwner && !isCurrentUser;
+              // Job role and country are a profile, not a permission: an
+              // admin may set them on anyone, the owner and themselves included.
+              const canEditProfile =
+                canManageMembers && row.status === "active" && !!row.userId;
 
               return (
                 <TableRow key={row.id} hover>
@@ -296,6 +360,83 @@ export function WorkspaceMembers() {
                       size="small"
                       color={getRoleBadgeColor(row.role)}
                     />
+                  </TableCell>
+                  <TableCell>
+                    {canEditProfile ? (
+                      <FormControl size="small" sx={{ minWidth: 130 }}>
+                        <Select
+                          value={row.jobRole ?? ""}
+                          displayEmpty
+                          onChange={e =>
+                            handleProfileChange(row.userId ?? "", {
+                              jobRole: (e.target.value ||
+                                null) as JobRole | null,
+                            })
+                          }
+                          size="small"
+                          variant="standard"
+                          renderValue={value =>
+                            value ? (
+                              JOB_ROLE_LABELS[value as JobRole]
+                            ) : (
+                              <Typography
+                                variant="caption"
+                                color="warning.main"
+                              >
+                                Not set
+                              </Typography>
+                            )
+                          }
+                        >
+                          <MenuItem value="">
+                            <em>Not set</em>
+                          </MenuItem>
+                          {JOB_ROLES.map(role => (
+                            <MenuItem key={role} value={role}>
+                              {JOB_ROLE_LABELS[role]}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : row.jobRole ? (
+                      <Chip label={JOB_ROLE_LABELS[row.jobRole]} size="small" />
+                    ) : (
+                      <Typography variant="caption" color="text.secondary">
+                        —
+                      </Typography>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {canEditProfile ? (
+                      <FormControl size="small" sx={{ minWidth: 70 }}>
+                        <Select
+                          value={row.country ?? ""}
+                          displayEmpty
+                          onChange={e =>
+                            handleProfileChange(row.userId ?? "", {
+                              country: e.target.value || null,
+                            })
+                          }
+                          size="small"
+                          variant="standard"
+                          renderValue={value => (value ? String(value) : "—")}
+                          MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
+                        >
+                          <MenuItem value="">
+                            <em>Not set</em>
+                          </MenuItem>
+                          {COUNTRY_CODES.map(code => (
+                            <MenuItem key={code} value={code}>
+                              {code} · {countryName(code)}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : (
+                      <Typography variant="body2">
+                        {row.country ?? "—"}
+                      </Typography>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Chip
@@ -414,12 +555,50 @@ export function WorkspaceMembers() {
               <MenuItem value="viewer">Viewer - Read-only access</MenuItem>
             </Select>
           </FormControl>
+          <Box sx={{ display: "flex", gap: 2, mt: 2 }}>
+            <FormControl fullWidth variant="outlined" required>
+              <InputLabel>Job role</InputLabel>
+              <Select
+                value={inviteJobRole}
+                onChange={e => setInviteJobRole(e.target.value as JobRole)}
+                label="Job role"
+                disabled={inviting}
+              >
+                {JOB_ROLES.map(role => (
+                  <MenuItem key={role} value={role}>
+                    {JOB_ROLE_LABELS[role]}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl fullWidth variant="outlined">
+              <InputLabel>Country</InputLabel>
+              <Select
+                value={inviteCountry}
+                onChange={e => setInviteCountry(e.target.value)}
+                label="Country"
+                disabled={inviting}
+                MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
+              >
+                <MenuItem value="">
+                  <em>Not set</em>
+                </MenuItem>
+                {COUNTRY_CODES.map(code => (
+                  <MenuItem key={code} value={code}>
+                    {code} · {countryName(code)}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
           <Typography
             variant="caption"
             color="text.secondary"
             sx={{ mt: 2, display: "block" }}
           >
-            An invitation email will be sent to the provided address.
+            Apps scope their data by job role and country — a member without a
+            job role sees nothing that is scoped. An invitation email will be
+            sent to the provided address.
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -432,7 +611,7 @@ export function WorkspaceMembers() {
           <Button
             onClick={handleInviteMember}
             variant="contained"
-            disabled={inviting || !inviteEmail.trim()}
+            disabled={inviting || !inviteEmail.trim() || !inviteJobRole}
           >
             {inviting ? <CircularProgress size={20} /> : "Send Invitation"}
           </Button>

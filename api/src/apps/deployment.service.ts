@@ -36,10 +36,8 @@ import {
 import {
   bindingVisibleTo,
   compileRowFilter,
-  loadViewersConfig,
   type ResolvedViewer,
   type ViewerIdentity,
-  type ViewersConfig,
 } from "./viewers.service";
 import {
   filterArtifactToTempFile,
@@ -525,11 +523,12 @@ function jsonResponse(body: unknown, status: number, cache: string): Response {
  * binding at `__data/<name>.parquet`.
  *
  * The only difference between the signed-in viewer and an anonymous share is
- * WHO is allowed to call it; what gets served is identical — UNLESS the app
- * declares viewer roles (viewers.service, apps.md §27), in which case the
- * document, the binding list and every parquet are shaped by the viewer's
- * role, and a request with no viewer (an anonymous share, a token minted
- * before viewers existed) is refused. Keeping all of that in one place is
+ * WHO is allowed to call it; what gets served is identical — UNLESS a
+ * binding is scoped (`roles` / `row_filter_<role>` front matter, apps.md
+ * §27), in which case the binding list and every parquet are shaped by the
+ * viewer's job role (their workspace membership), and a request with no
+ * role — an anonymous share, a member nobody assigned yet — gets only the
+ * unscoped bindings. Keeping all of that in one place is
  * what stops the routes drifting into serving different things — which is
  * exactly how the viewer once ended up returning index.html for every asset
  * while the share route did not.
@@ -542,7 +541,7 @@ export async function serveDeploymentFile(input: {
   private?: boolean;
   /**
    * Who is asking. `null`/absent = nobody known (anonymous share, legacy
-   * token). Only consulted when the app's mako.json declares `viewers`.
+   * token): only unscoped bindings are served.
    */
   viewer?: ViewerIdentity | null;
 }): Promise<Response | null> {
@@ -556,74 +555,19 @@ export async function serveDeploymentFile(input: {
   const isDocument = assetPath === "" || assetPath === "index.html";
   const isData = assetPath.startsWith("__data/");
 
-  // Role resolution costs a git read of mako.json at the deployed commit, so
-  // it happens for the document and the data — never per JS/CSS chunk.
+  // The viewer's role is one Mongo read (their membership), so it happens
+  // for the document and the data — never per JS/CSS chunk.
   let viewer: ResolvedViewer | null = null;
   if (isDocument || isData) {
     const project = await AppProject.findById(projectId);
     if (!project) return null;
-    let config: ViewersConfig | null;
-    try {
-      config = await loadViewersConfig(project, "", sha);
-    } catch (error) {
-      logger.warn("Published app has an invalid viewers config; refusing", {
-        projectId,
-        sha,
-        error: error instanceof Error ? error.message : String(error),
+    if (input.viewer) {
+      viewer = await resolveViewerFor({
+        workspaceId: project.workspaceId.toString(),
+        viewer: input.viewer,
       });
-      return jsonResponse(
-        {
-          success: false,
-          error:
-            "This app's mako.json declares viewer roles but the block is invalid. " +
-            (error instanceof Error ? error.message : String(error)),
-        },
-        403,
-        dataCache,
-      );
     }
-    if (config) {
-      try {
-        viewer = input.viewer
-          ? await resolveViewerFor({
-              project,
-              actorId: "",
-              at: sha,
-              config,
-              viewer: input.viewer,
-              storeFor: artifactStoreForRead,
-            })
-          : null;
-      } catch (error) {
-        logger.warn("Published app could not resolve its viewer; refusing", {
-          projectId,
-          sha,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return jsonResponse(
-          {
-            success: false,
-            error:
-              "This app's viewer roles cannot be resolved. " +
-              (error instanceof Error ? error.message : String(error)),
-          },
-          403,
-          dataCache,
-        );
-      }
-      if (!viewer) {
-        return jsonResponse(
-          {
-            success: false,
-            error: input.viewer
-              ? `This app defines viewer roles and none includes ${input.viewer.email}. Ask the app's owner to add you to a role in its mako.json.`
-              : "This app defines viewer roles and cannot be viewed without signing in.",
-          },
-          403,
-          dataCache,
-        );
-      }
-    }
+    const role = viewer?.role ?? null;
 
     // Who the app is talking to — the SDK's useViewer(). For an app without
     // roles this is still the signed-in email (or nothing, on a share).
@@ -631,7 +575,7 @@ export async function serveDeploymentFile(input: {
       return jsonResponse(
         viewer
           ? { email: viewer.email, role: viewer.role, claims: viewer.claims }
-          : { email: input.viewer?.email ?? null, role: null, claims: {} },
+          : { email: null, role: null, claims: {} },
         200,
         dataCache,
       );
@@ -645,7 +589,7 @@ export async function serveDeploymentFile(input: {
       // AT the deployed commit — see readSource's `at`.
       const { bindings } = await readBindingsTolerant(project, "", sha);
       const names = bindings
-        .filter(b => !viewer || bindingVisibleTo(b.policy, viewer.role))
+        .filter(b => bindingVisibleTo(b.policy, role))
         .map(b => b.name);
       return jsonResponse(names, 200, cache);
     }
@@ -658,13 +602,12 @@ export async function serveDeploymentFile(input: {
       // writes: published apps could never see their data (§13.19).
       const binding = await readBinding(project, dataMatch[1], "", sha);
       if (!binding) return null;
-      if (viewer && !bindingVisibleTo(binding.policy, viewer.role)) return null;
+      if (!bindingVisibleTo(binding.policy, role)) return null;
       const key = bindingArtifactKey(binding);
       const store = await artifactStoreForRead(key);
       if (!store) return null;
-      const predicate = viewer
-        ? binding.policy.rowFilters[viewer.role]
-        : undefined;
+      const predicate =
+        viewer && role !== null ? binding.policy.rowFilters[role] : undefined;
       if (viewer && predicate !== undefined) {
         // Filtered rows are computed here and streamed — never a redirect
         // to the bucket, which holds only the unfiltered object.

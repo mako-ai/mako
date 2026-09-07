@@ -164,7 +164,7 @@ A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 -- materialization: parquet                (default; only option today)
 -- schedule: 0 6 * * *                     (optional cron refresh)
 -- dbt_project: <id>                       (optional)
--- roles: team_lead, bdr                   (optional; viewer roles that may read it)
+-- roles: team_leader, bdr                 (optional; job roles that may read it)
 -- row_filter_bdr: rep_email = {{ viewer.email }}   (optional; rows one role gets)
 SELECT ...
 ```
@@ -172,14 +172,15 @@ SELECT ...
 Front matter is a leading block of `-- key: value` SQL comments; the first
 SQL line ends it. Keep queries read-only SELECTs.
 
-`roles` / `row_filter_<role>` only apply when the app's `mako.json` declares
-`viewers` (role names, optional `default`, and either static `members`
-per role or — better, nothing hardcoded — a `source` binding whose rows are
-`email`, `role` and claim columns; a viewer with no row gets `default`).
+`roles` / `row_filter_<role>` scope a binding by the viewer's JOB ROLE
+(sdr, bdr, csm, head_of_csm, team_leader, developer, admin) and `country`,
+which an admin sets per member on the workspace Members page — nothing
+about people lives in the repo. A member with no job role, and an
+anonymous share, get only unscoped bindings.
 Mako then serves each viewer only the bindings and rows their role allows —
 enforced server-side, so the browser never receives the rest — and
 `useViewer()` from the SDK tells the UI which role is looking. Who may OPEN
-the app is still its access setting; `viewers` only narrows. Preview a role
+the app is still its access setting; front matter only narrows. Preview a role
 with `GET …/bindings/<name>/artifact?as=<email>` or `MAKO_VIEWER_AS` in a
 laptop `vite dev`. Build the artifact with
 `app_materialize` (appId + binding name) — it reads the working branch, so

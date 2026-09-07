@@ -9,6 +9,7 @@
  */
 
 import { api, unwrap } from "../api";
+import type { JobRole } from "@mako/schemas";
 
 // Types
 export interface WorkspaceBilling {
@@ -49,6 +50,10 @@ export interface WorkspaceMember {
   userId: string;
   email: string;
   role: "owner" | "admin" | "member" | "viewer";
+  /** What they do — published apps scope their data by it. null = unset. */
+  jobRole: JobRole | null;
+  /** ISO 3166-1 alpha-2, or null. */
+  country: string | null;
   joinedAt: string;
 }
 
@@ -56,6 +61,8 @@ export interface WorkspaceInvite {
   id: string;
   email: string;
   role: "admin" | "member" | "viewer";
+  jobRole?: JobRole | null;
+  country?: string | null;
   token?: string;
   invitedBy: string;
   expiresAt: string;
@@ -85,11 +92,18 @@ export interface CreateWorkspaceData {
 export interface InviteMemberData {
   email: string;
   role: "admin" | "member" | "viewer";
+  jobRole?: JobRole;
+  country?: string;
 }
 
-export interface UpdateMemberRoleData {
-  role: "admin" | "member" | "viewer";
+/** Any subset; null clears a profile field. */
+export interface UpdateMemberData {
+  role?: "admin" | "member" | "viewer";
+  jobRole?: JobRole | null;
+  country?: string | null;
 }
+/** @deprecated use UpdateMemberData */
+export type UpdateMemberRoleData = UpdateMemberData;
 
 export interface WorkspaceDatabase {
   id: string;
@@ -203,12 +217,12 @@ class WorkspaceClient {
   }
 
   /**
-   * Update member role
+   * Update a member: access role and/or job role + country (apps read them).
    */
-  async updateMemberRole(
+  async updateMember(
     workspaceId: string,
     userId: string,
-    data: UpdateMemberRoleData,
+    data: UpdateMemberData,
   ): Promise<WorkspaceMember> {
     const body = unwrap(
       await api.PUT("/api/workspaces/{id}/members/{userId}", {

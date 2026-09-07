@@ -1,76 +1,46 @@
 /**
- * Who the viewer is under an app's `viewers` config — the one place that
- * joins the pure resolution (viewers.service) to the repo and the artifact
- * store, for a config whose roles come from a `source` binding (apps.md
- * §27). Used by published serving and by the builder preview routes, so
- * `?as=<email>` on a laptop shows exactly what the published app will do.
+ * Who the viewer is, from their workspace membership (apps.md §27): the job
+ * role and country set on the Members page become the viewer's claims. One
+ * Mongo read per document/data request; the published token carries the
+ * user id, the builder routes' `?as=<email>` resolves through the User.
  */
-import type { IAppProject } from "../database/workspace-schema";
-import type { DashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { bindingArtifactKey, readBinding } from "./bindings.service";
-import { lookupViewerRowInArtifact } from "./filtered-parquet.service";
+import { Types } from "mongoose";
+import { User } from "../database/schema";
+import { WorkspaceMember } from "../database/workspace-schema";
 import {
-  resolveViewer,
+  normalizeEmail,
+  viewerFromMember,
   type ResolvedViewer,
   type ViewerIdentity,
-  type ViewersConfig,
 } from "./viewers.service";
 
-/** The config cannot be applied — the app must refuse, with this message. */
-export class ViewerSourceError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ViewerSourceError";
-  }
-}
-
+/**
+ * The viewer for `identity` in `workspaceId`. A signed-in person who is not
+ * a member (or has no job role) resolves with `role: null` — they read only
+ * what is unscoped. Never throws for a missing membership.
+ */
 export async function resolveViewerFor(input: {
-  project: IAppProject;
-  /** Whose view of the repo (builder preview), or "" at a published commit. */
-  actorId: string;
-  /** The published commit; absent = the actor's working view. */
-  at?: string;
-  config: ViewersConfig;
+  workspaceId: string;
   viewer: ViewerIdentity;
-  /** Where the source artifact may be read from; null = nowhere (never built). */
-  storeFor: (key: string) => Promise<DashboardArtifactStore | null>;
-}): Promise<ResolvedViewer | null> {
-  const { config } = input;
-  if (!config.source) return resolveViewer(config, input.viewer);
-
-  const binding = await readBinding(
-    input.project,
-    config.source,
-    input.actorId,
-    input.at,
-  );
-  if (!binding) {
-    throw new ViewerSourceError(
-      `mako.json names viewers source "${config.source}", but bindings/${config.source}.sql does not exist`,
-    );
+}): Promise<ResolvedViewer> {
+  const workspaceId = new Types.ObjectId(input.workspaceId);
+  let userId = input.viewer.id;
+  if (!userId) {
+    const user = await User.findOne({
+      email: normalizeEmail(input.viewer.email),
+    })
+      .select("_id")
+      .lean<{ _id: Types.ObjectId }>();
+    userId = user?._id.toString();
   }
-  const key = bindingArtifactKey(binding);
-  const store = await input.storeFor(key);
-  let found: Awaited<ReturnType<typeof lookupViewerRowInArtifact>> = null;
-  if (store) {
-    try {
-      found = await lookupViewerRowInArtifact(store, key, input.viewer.email);
-    } catch (error) {
-      throw new ViewerSourceError(
-        `viewers source "${config.source}": ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  if (!found) {
-    throw new ViewerSourceError(
-      `viewers source "${config.source}" has not been materialized yet — roles cannot be resolved until it is`,
-    );
-  }
-  try {
-    return resolveViewer(config, input.viewer, found.row);
-  } catch (error) {
-    throw new ViewerSourceError(
-      error instanceof Error ? error.message : String(error),
-    );
-  }
+  const member = userId
+    ? await WorkspaceMember.findOne({ workspaceId, userId })
+        .select("jobRole country")
+        .lean<{ jobRole?: string; country?: string }>()
+    : null;
+  return viewerFromMember({
+    email: input.viewer.email,
+    jobRole: member?.jobRole ?? null,
+    country: member?.country ?? null,
+  });
 }

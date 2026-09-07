@@ -47,46 +47,12 @@ path in Mako's sandbox, in a published app, and on a laptop.
 
 ### Viewer roles
 
-An app can show different views by role — team leads see everything, a rep
-sees their own rows — and Mako enforces it before the data reaches the
-browser. Declare the roles in `mako.json`:
-
-```json
-"viewers": {
-  "default": "bdr",
-  "roles": {
-    "team_lead": { "members": { "lead@acme.com": {} } },
-    "bdr":       { "members": { "sam@acme.com": { "rep": "Sam Ple" } } }
-  }
-}
-```
-
-Roles are tried in declaration order; the first one listing the viewer's
-email wins, else `default`, else the viewer is refused.
-
-Nobody's email has to live in the repo: name a **`source`** binding and the
-roster the warehouse already holds decides. Its rows carry `email`, `role`
-and any other column as a claim; a viewer with no row gets `default`:
-
-```json
-"viewers": {
-  "source": "fr_viewers",
-  "default": "team_lead",
-  "roles": { "team_lead": {}, "bdr": {} }
-}
-```
-
-```sql
--- bindings/fr_viewers.sql
--- connection: <id>
--- roles: team_lead
-SELECT LOWER(u.email) AS email, 'bdr' AS role, u.full_name AS rep
-FROM crm.users u JOIN crm.group_members m ON m.user_id = u.id
-WHERE m.group_name = 'BDR'
-```
-
-A role the source names but `roles` does not declare, or a source that was
-never materialized, refuses the viewer — the roster and the repo must agree.
+An app can show different views by role — team leaders see everything, a
+rep sees their own rows — and Mako enforces it before the data reaches the
+browser. Who is what is NOT in the repo: an admin sets each member's **job
+role** (sdr, bdr, csm, head_of_csm, team_leader, developer, admin) and
+**country** on the workspace's Members page, and the published app receives
+them as the viewer's `role` and `country` claims next to their `email`.
 Then scope each binding in its front matter:
 
 ```sql
@@ -94,20 +60,22 @@ Then scope each binding in its front matter:
 -- row_filter_bdr: sales_rep_email = {{ viewer.email }}  (rows a role gets; omit = all rows)
 ```
 
-`{{ viewer.<claim> }}` is bound as a parameter, never spliced into SQL;
-`email` and `role` are always available, plus the member's own claims.
+`{{ viewer.<claim> }}` is bound as a parameter, never spliced into SQL; the
+claims are `email`, `role` and `country`. A binding with `roles` or any
+`row_filter_*` is **scoped**: a member whose job role was never set, and an
+anonymous share link, get only the unscoped bindings (fail closed). A role
+the binding has no filter for gets every row.
 In the app:
 
 ```tsx
 import { useViewer } from "@makoai/app-sdk";
 
 const { viewer, loading } = useViewer();
-// viewer.role is "team_lead" | "bdr" | … — or null when the app declares no roles.
+// viewer.role is "team_leader" | "bdr" | … — or null when nobody set this member's job role yet.
 ```
 
-Who may *open* the app is still the app's access setting in Mako; the
-`viewers` block only narrows what an admitted viewer sees. An app with a
-`viewers` block cannot be shared anonymously.
+Who may *open* the app is still the app's access setting in Mako; front
+matter only narrows what an admitted viewer sees.
 
 ## In `vite.config.ts`
 

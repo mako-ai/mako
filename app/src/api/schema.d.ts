@@ -528,7 +528,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update a member's role */
+        /**
+         * Update a member's access role, job role or country
+         * @description `role` is the access level (admin, member, viewer). `jobRole` and `country` are the member's profile — published apps read them as the viewer's `role` and `country` claims to scope their data (apps.md §27). Pass null to clear a profile field. At least one field is required.
+         */
         put: operations["put_api_workspaces_id_members_userId"];
         post?: never;
         /** Remove a workspace member */
@@ -4031,7 +4034,7 @@ export interface paths {
         };
         /**
          * The caller's viewer role for this app (apps.md §27)
-         * @description What `__data/viewer.json` will say for the caller — resolved from the app's mako.json `viewers` block at the caller's view of the repo. `role` is null for an app that declares no roles. Builders may pass `?as=<email>` to see another viewer's resolution (a laptop `vite dev` uses this to preview a role).
+         * @description What `__data/viewer.json` will say for the caller — their job role and country from their workspace membership (the Members page). `role` is null for a member nobody assigned yet. Builders may pass `?as=<email>` to see another viewer's resolution (a laptop `vite dev` uses this to preview a role).
          */
         get: operations["get_api_workspaces_workspaceId_apps_id_viewer"];
         put?: never;
@@ -7706,7 +7709,10 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    role: "admin" | "member" | "viewer";
+                    role?: "admin" | "member" | "viewer";
+                    /** @enum {string|null} */
+                    jobRole?: "sdr" | "bdr" | "csm" | "head_of_csm" | "team_leader" | "developer" | "admin" | null;
+                    country?: string | null;
                 };
             };
         };
@@ -7836,6 +7842,9 @@ export interface operations {
                     email: string;
                     /** @enum {string} */
                     role: "admin" | "member" | "viewer";
+                    /** @enum {string} */
+                    jobRole?: "sdr" | "bdr" | "csm" | "head_of_csm" | "team_leader" | "developer" | "admin";
+                    country?: string;
                 };
             };
         };
