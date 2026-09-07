@@ -146,10 +146,7 @@ import {
   rowFilterFor,
 } from "../apps/viewers.service";
 import { resolveViewerFor } from "../apps/viewer-resolution.service";
-import {
-  ensureAutoJoin,
-  pendingProfileHtml,
-} from "../services/auto-join.service";
+import { ensureAutoJoin } from "../services/auto-join.service";
 import {
   filterArtifactToTempFile,
   streamTempParquet,
@@ -198,8 +195,8 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
       // A stranger from a trusted domain joins here — this is the request a
       // rep's first click on the app link makes (apps.md §27).
       const hasAccess =
-        (await ensureAutoJoin(workspaceId, user, { returnTo: c.req.path })) !==
-          null || (await workspaceService.hasAccess(workspaceId, user.id));
+        (await ensureAutoJoin(workspaceId, user)) !== null ||
+        (await workspaceService.hasAccess(workspaceId, user.id));
       if (!hasAccess) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
@@ -2523,46 +2520,12 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
   const marker = `/apps/${ref}/live`;
   const at = c.req.path.indexOf(marker);
   const rest = at === -1 ? "" : c.req.path.slice(at + marker.length);
-  const assetPath = rest.replace(/^\/+/, "");
-
-  // A member still waiting for an admin to set their job role (domain
-  // auto-join, apps.md §27) gets the waiting page instead of the app.
-  const self = viewerOf(c);
-  if (self) {
-    const member = await workspaceService.getMember(
-      project.workspaceId.toString(),
-      self.id,
-    );
-    if (member?.profilePending) {
-      if (assetPath === "" || assetPath === "index.html") {
-        const workspace = await workspaceService.getWorkspaceById(
-          project.workspaceId.toString(),
-        );
-        return c.html(
-          pendingProfileHtml({
-            email: self.email,
-            workspaceName: workspace?.name ?? "Mako",
-          }),
-          403,
-          { "Cache-Control": "no-store" },
-        );
-      }
-      return c.json(
-        {
-          success: false,
-          error:
-            "Your signup is waiting for an administrator to set your role.",
-        },
-        403,
-      );
-    }
-  }
 
   const response = await serveDeploymentFile({
     projectId,
     sha,
-    assetPath,
-    viewer: self,
+    assetPath: rest.replace(/^\/+/, ""),
+    viewer: viewerOf(c),
   });
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
