@@ -35,7 +35,6 @@ import { Types } from "mongoose";
 import {
   Workspace,
   type IWorkspaceAutoJoin,
-  encrypt,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { normalizeEmail } from "../utils/email.utils";
@@ -113,8 +112,6 @@ const AutoJoinBody = jsonBody(
     role: z.enum(["member", "viewer"]).default("viewer"),
     jobRole: JobRoleField.nullable().optional(),
     country: CountryField.nullable().optional(),
-    /** Slack incoming webhook for "please assign role to …"; null clears, absent keeps. */
-    slackWebhookUrl: z.string().url().max(500).nullable().optional(),
   }),
 );
 const CreateInviteBody = jsonBody(
@@ -187,7 +184,6 @@ type WorkspaceMemberResponseSource = {
   role: string;
   jobRole?: string;
   country?: string;
-  profilePending?: boolean;
   joinedAt: unknown;
 };
 
@@ -198,7 +194,6 @@ function serializeAutoJoin(autoJoin: IWorkspaceAutoJoin | null | undefined) {
     role: autoJoin.role,
     jobRole: autoJoin.jobRole ?? null,
     country: autoJoin.country ?? null,
-    slackWebhookConfigured: !!autoJoin.slackWebhookUrlEncrypted,
   };
 }
 
@@ -215,7 +210,6 @@ function serializeWorkspaceMember(member: WorkspaceMemberResponseSource) {
     role: member.role,
     jobRole: member.jobRole ?? null,
     country: member.country ?? null,
-    profilePending: member.profilePending === true,
     joinedAt: member.joinedAt,
   };
 }
@@ -313,13 +307,11 @@ workspaceRoutes.openapi(
       const workspaces = await workspaceService.getWorkspacesForUser(user.id);
       return c.json({
         success: true,
-        data: workspaces.map(({ workspace, role, profilePending }) => ({
+        data: workspaces.map(({ workspace, role }) => ({
           id: workspace._id,
           name: workspace.name,
           slug: workspace.slug,
           role,
-          // Waiting for an admin to set a job role (domain auto-join).
-          profilePending: profilePending === true,
           createdAt: workspace.createdAt,
           updatedAt: workspace.updatedAt,
           settings: workspace.settings,
@@ -1284,7 +1276,7 @@ workspaceRoutes.openapi(
       const updatedMember = await workspaceService.updateMember(
         workspaceId,
         userId,
-        { role, jobRole, country, actor: c.get("user")?.email },
+        { role, jobRole, country },
       );
 
       if (!updatedMember) {
@@ -1431,28 +1423,6 @@ workspaceRoutes.openapi(
       }
       const body = c.req.valid("json");
       const normalized = normalizeAutoJoin(body);
-      if (normalized) {
-        const current = (await workspaceService.getWorkspaceById(workspaceId))
-          ?.settings?.autoJoin;
-        if (body.slackWebhookUrl === undefined) {
-          if (current?.slackWebhookUrlEncrypted) {
-            normalized.slackWebhookUrlEncrypted =
-              current.slackWebhookUrlEncrypted;
-          }
-        } else if (body.slackWebhookUrl) {
-          if (!/^https:\/\/hooks\.slack\.com\//.test(body.slackWebhookUrl)) {
-            return c.json(
-              {
-                success: false,
-                error:
-                  "The Slack webhook must start with https://hooks.slack.com/",
-              },
-              400,
-            );
-          }
-          normalized.slackWebhookUrlEncrypted = encrypt(body.slackWebhookUrl);
-        }
-      }
       const rejected = body.domains
         .filter(
           d =>

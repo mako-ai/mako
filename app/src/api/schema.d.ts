@@ -7869,8 +7869,6 @@ export interface operations {
                     /** @enum {string|null} */
                     jobRole?: "sdr" | "bdr" | "csm" | "head_of_csm" | "team_leader" | "developer" | "admin" | null;
                     country?: string | null;
-                    /** Format: uri */
-                    slackWebhookUrl?: string | null;
                 };
             };
         };
