@@ -189,8 +189,11 @@ export interface IWorkspaceAutoJoin {
   /** Lowercase email domains, exact match (no sub-domains). */
   domains: string[];
   role: "member" | "viewer";
+  /** Set = newcomers get it at once. Unset = they wait for an admin (profilePending). */
   jobRole?: JobRole;
   country?: string;
+  /** Slack incoming webhook (encrypted) told about each newcomer waiting for a role. */
+  slackWebhookUrlEncrypted?: string;
 }
 
 /**
@@ -209,6 +212,13 @@ export interface IWorkspaceMember extends Document {
   jobRole?: JobRole;
   /** ISO 3166-1 alpha-2; the viewer's `country` claim. */
   country?: string;
+  /**
+   * Auto-joined without a job role: waiting for an admin to set one. Until
+   * then the person sees a "please wait" page instead of apps or the IDE.
+   */
+  profilePending?: boolean;
+  /** Where they were going when they joined — what the "you're in" email links to. */
+  pendingReturnTo?: string;
   joinedAt: Date;
   /** True only for the first workspace auto-created during user onboarding */
   isDefaultMembership?: boolean;
@@ -1335,6 +1345,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
               trim: true,
               match: /^[A-Z]{2}$/,
             },
+            slackWebhookUrlEncrypted: { type: String },
           },
           { _id: false },
         ),
@@ -1470,6 +1481,8 @@ const WorkspaceMemberSchema = new Schema<IWorkspaceMember>({
   },
   jobRole: { type: String, enum: JOB_ROLES },
   country: { type: String, uppercase: true, trim: true, match: /^[A-Z]{2}$/ },
+  profilePending: { type: Boolean },
+  pendingReturnTo: { type: String },
   joinedAt: {
     type: Date,
     default: Date.now,
