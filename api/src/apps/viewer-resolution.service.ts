@@ -16,8 +16,9 @@ import {
 
 /**
  * The viewer for `identity` in `workspaceId`. A signed-in person who is not
- * a member (or has no job role) resolves with `role: null` — they read only
- * what is unscoped. Never throws for a missing membership.
+ * a member (or has no job role and is not a workspace owner/admin) resolves
+ * with `role: null` — they read only what is unscoped. Never throws for a
+ * missing membership.
  */
 export async function resolveViewerFor(input: {
   workspaceId: string;
@@ -35,12 +36,13 @@ export async function resolveViewerFor(input: {
   }
   const member = userId
     ? await WorkspaceMember.findOne({ workspaceId, userId })
-        .select("jobRole country")
-        .lean<{ jobRole?: string; country?: string }>()
+        .select("role jobRole country")
+        .lean<{ role?: string; jobRole?: string; country?: string }>()
     : null;
   return viewerFromMember({
     email: input.viewer.email,
     jobRole: member?.jobRole ?? null,
     country: member?.country ?? null,
+    accessRole: member?.role ?? null,
   });
 }

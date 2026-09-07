@@ -163,8 +163,8 @@ SELECT …
 binding, keyed by content) or let the dev server do it on first load.
 
 Per-role views: an admin sets each member's job role and country on the
-workspace Members page (Mako, not the repo); \`roles\` / \`row_filter_<role>\`
-on a
+workspace Members page (Mako, not the repo; job role \`admin\` sees
+everything); \`roles\` / \`row_filter_<role>\` on a
 binding then narrow what each role receives — enforced server-side, and
 \`useViewer()\` tells the UI which role is looking. \`MAKO_VIEWER_AS=<email>\`
 in \`.env\` previews the app as that viewer during \`npm run dev\`. See

@@ -3157,7 +3157,11 @@ skills — the posture every other kind already had.
 > `mako.json` any more. Binding front matter (`roles`, `row_filter_<role>`)
 > is unchanged and is the whole repo-side contract. Fail closed: a member
 > nobody assigned a job role to, and an anonymous share, read only bindings
-> that scope nothing (`isScopedPolicy`). The trade Théo accepted: someone
+> that scope nothing (`isScopedPolicy`). Théo, same day: *"il est évident
+> que moi, jonas et joan devont avoir un role d'admin et que les admin
+> doivent tout voir"* — so the `admin` job role bypasses every `roles` list
+> and every row filter (`rowFilterFor`), and a workspace owner/admin with no
+> job role IS an admin viewer (`viewerFromMember`). The trade Théo accepted: someone
 > edits the member list when a rep joins or moves, instead of the CRM roster
 > doing it. What follows is the history of how the enforcement path (which
 > stands) was arrived at; read "role" below as "job role from the membership"

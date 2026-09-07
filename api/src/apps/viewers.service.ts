@@ -37,14 +37,28 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-/** The viewer a workspace membership (or the lack of one) makes. */
+/** The job role that sees everything, whatever a binding's front matter says. */
+export const ADMIN_ROLE = "admin";
+
+/**
+ * The viewer a workspace membership (or the lack of one) makes. A workspace
+ * owner or admin who never set a job role is an `admin` viewer: the people
+ * who run the workspace see everything without a second setting to make.
+ * An explicit job role wins (an access-admin can still be a team leader).
+ */
 export function viewerFromMember(member: {
   email: string;
   jobRole?: JobRole | string | null;
   country?: string | null;
+  /** The workspace ACCESS role (owner/admin/member/viewer). */
+  accessRole?: string | null;
 }): ResolvedViewer {
   const email = normalizeEmail(member.email);
-  const role = member.jobRole ? String(member.jobRole) : null;
+  const role = member.jobRole
+    ? String(member.jobRole)
+    : member.accessRole === "owner" || member.accessRole === "admin"
+      ? ADMIN_ROLE
+      : null;
   const claims: ViewerClaims = { email };
   if (role) claims.role = role;
   if (member.country) claims.country = String(member.country).toUpperCase();
@@ -99,7 +113,21 @@ export function bindingVisibleTo(
   role: string | null,
 ): boolean {
   if (role === null) return !isScopedPolicy(policy);
+  if (role === ADMIN_ROLE) return true;
   return policy.roles === null || policy.roles.includes(role);
+}
+
+/**
+ * The row filter this viewer's role gets on a binding, or undefined for
+ * every row. Admin never gets one — "admins see everything" holds even
+ * against a `row_filter_admin` someone wrote by mistake.
+ */
+export function rowFilterFor(
+  policy: BindingPolicy,
+  viewer: ResolvedViewer,
+): string | undefined {
+  if (viewer.role === null || viewer.role === ADMIN_ROLE) return undefined;
+  return policy.rowFilters[viewer.role];
 }
 
 /** A predicate ready for DuckDB: positional `$n` parameters, values apart. */

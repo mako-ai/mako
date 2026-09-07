@@ -176,7 +176,8 @@ SQL line ends it. Keep queries read-only SELECTs.
 (sdr, bdr, csm, head_of_csm, team_leader, developer, admin) and `country`,
 which an admin sets per member on the workspace Members page — nothing
 about people lives in the repo. A member with no job role, and an
-anonymous share, get only unscoped bindings.
+anonymous share, get only unscoped bindings; the `admin` job role (and a
+workspace owner/admin with no job role) sees everything regardless.
 Mako then serves each viewer only the bindings and rows their role allows —
 enforced server-side, so the browser never receives the rest — and
 `useViewer()` from the SDK tells the UI which role is looking. Who may OPEN

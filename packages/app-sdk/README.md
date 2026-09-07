@@ -64,7 +64,9 @@ Then scope each binding in its front matter:
 claims are `email`, `role` and `country`. A binding with `roles` or any
 `row_filter_*` is **scoped**: a member whose job role was never set, and an
 anonymous share link, get only the unscoped bindings (fail closed). A role
-the binding has no filter for gets every row.
+the binding has no filter for gets every row. The **admin** job role sees
+everything, whatever the front matter says — and a workspace owner or admin
+who never set a job role counts as admin.
 In the app:
 
 ```tsx

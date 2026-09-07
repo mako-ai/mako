@@ -21,6 +21,7 @@ import {
   compileRowFilter,
   isScopedPolicy,
   parseBindingPolicy,
+  rowFilterFor,
   viewerFromMember,
 } from "./viewers.service";
 
@@ -37,6 +38,29 @@ describe("viewerFromMember", () => {
       role: "bdr",
       claims: { email: "sam@realadvisor.com", role: "bdr", country: "FR" },
     });
+  });
+
+  it("a workspace owner or admin with no job role is an admin viewer", () => {
+    expect(
+      viewerFromMember({ email: "theo@realadvisor.com", accessRole: "owner" })
+        .role,
+    ).toBe("admin");
+    expect(
+      viewerFromMember({ email: "joan@realadvisor.com", accessRole: "admin" })
+        .role,
+    ).toBe("admin");
+    // An explicit job role wins over the access role.
+    expect(
+      viewerFromMember({
+        email: "x@realadvisor.com",
+        accessRole: "admin",
+        jobRole: "team_leader",
+      }).role,
+    ).toBe("team_leader");
+    expect(
+      viewerFromMember({ email: "m@realadvisor.com", accessRole: "member" })
+        .role,
+    ).toBeNull();
   });
 
   it("a member with no job role has no role and no country claim", () => {
@@ -79,6 +103,33 @@ describe("binding policies", () => {
     expect(bindingVisibleTo(restricted, "team_leader")).toBe(true);
     expect(bindingVisibleTo(restricted, "bdr")).toBe(false);
     expect(bindingVisibleTo(open, "anyone")).toBe(true);
+  });
+
+  it("admin sees everything: every binding, every row, whatever the front matter says", () => {
+    const admin = {
+      email: "theo@realadvisor.com",
+      role: "admin",
+      claims: { email: "theo@realadvisor.com", role: "admin" },
+    };
+    const adminFiltered = parseBindingPolicy({
+      connection: "c",
+      roles: "bdr",
+      row_filter_admin: "1 = 0",
+    });
+    expect(bindingVisibleTo(restricted, "admin")).toBe(true);
+    expect(bindingVisibleTo(adminFiltered, "admin")).toBe(true);
+    expect(rowFilterFor(adminFiltered, admin)).toBeUndefined();
+    const bdr = {
+      email: "sam@x.com",
+      role: "bdr",
+      claims: { email: "sam@x.com", role: "bdr" },
+    };
+    expect(rowFilterFor(scoped, bdr)).toBe(
+      "sales_rep_email = {{ viewer.email }}",
+    );
+    expect(
+      rowFilterFor(scoped, { ...bdr, role: "team_leader" }),
+    ).toBeUndefined();
   });
 
   it("no role (unassigned member, anonymous share) reads only unscoped bindings", () => {

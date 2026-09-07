@@ -140,7 +140,11 @@ import {
   readBindings,
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
-import { bindingVisibleTo, compileRowFilter } from "../apps/viewers.service";
+import {
+  bindingVisibleTo,
+  compileRowFilter,
+  rowFilterFor,
+} from "../apps/viewers.service";
 import { resolveViewerFor } from "../apps/viewer-resolution.service";
 import {
   filterArtifactToTempFile,
@@ -1364,10 +1368,7 @@ appsRoutes.openapi(
             404,
           );
         }
-        const predicate =
-          viewer.role !== null
-            ? binding.policy.rowFilters[viewer.role]
-            : undefined;
+        const predicate = rowFilterFor(binding.policy, viewer);
         if (predicate !== undefined) {
           const file = await filterArtifactToTempFile(
             store,

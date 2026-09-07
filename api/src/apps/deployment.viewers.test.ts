@@ -37,6 +37,8 @@ const LEAD = { id: "u-lead", email: "Lead@RealAdvisor.com" };
 const BDR = { id: "u-bdr", email: "sam@realadvisor.com" };
 /** A member whose job role was never set. */
 const UNASSIGNED = { id: "u-x", email: "nobody@realadvisor.com" };
+/** Workspace owner who never set a job role: an admin viewer regardless. */
+const OWNER = { id: "u-owner", email: "theo@realadvisor.com" };
 /** Signed in, but not a member of this workspace at all. */
 const OUTSIDER = { id: "u-out", email: "out@elsewhere.com" };
 
@@ -101,6 +103,7 @@ beforeAll(async () => {
       country: "FR",
     },
     { workspaceId: WS, userId: UNASSIGNED.id, role: "viewer" },
+    { workspaceId: WS, userId: OWNER.id, role: "owner" },
   ]);
 });
 
@@ -265,6 +268,12 @@ describe("an app with scoped bindings, served per member", () => {
       "SELECT n FROM read_parquet('{f}') ORDER BY n",
     );
     expect(forLead).toEqual([{ n: 1 }, { n: 3 }]);
+    // The owner has no country and no job role, yet sees every row: admin.
+    const forOwner = await rows(
+      await serve("__data/by_country.parquet", OWNER),
+      "SELECT count(*) AS n FROM read_parquet('{f}')",
+    );
+    expect(Number(forOwner[0].n)).toBe(3);
     // No filter for bdr on this binding: every row.
     const forBdr = await rows(
       await serve("__data/by_country.parquet", BDR),

@@ -36,6 +36,7 @@ import {
 import {
   bindingVisibleTo,
   compileRowFilter,
+  rowFilterFor,
   type ResolvedViewer,
   type ViewerIdentity,
 } from "./viewers.service";
@@ -606,8 +607,9 @@ export async function serveDeploymentFile(input: {
       const key = bindingArtifactKey(binding);
       const store = await artifactStoreForRead(key);
       if (!store) return null;
-      const predicate =
-        viewer && role !== null ? binding.policy.rowFilters[role] : undefined;
+      const predicate = viewer
+        ? rowFilterFor(binding.policy, viewer)
+        : undefined;
       if (viewer && predicate !== undefined) {
         // Filtered rows are computed here and streamed — never a redirect
         // to the bucket, which holds only the unfiltered object.
