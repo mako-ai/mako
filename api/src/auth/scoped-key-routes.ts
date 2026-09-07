@@ -38,6 +38,13 @@ const BINDING_ROUTES: ReadonlyArray<{
       /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/materialize\/?$/,
     scope: "query:read",
   },
+  // `__data/viewer.json` on a laptop: the Vite plugin asks who the login
+  // belongs to with the same token it reads bindings with (apps.md §28).
+  {
+    method: "GET",
+    pattern: /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/viewer\/?$/,
+    scope: "query:read",
+  },
 ];
 
 export function isMcpEndpoint(path: string): boolean {
