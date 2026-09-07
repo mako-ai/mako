@@ -118,6 +118,12 @@ import fs from "node:fs/promises";
 import { readBoxDir } from "../apps/box";
 import { mintPreviewGrant, mintPublishedGrant } from "../apps/preview.service";
 import {
+  resolveAppViewer,
+  resolveAppViewerByEmail,
+  type ViewerIdentity,
+} from "../apps/app-viewer.service";
+import { ensureAutoJoin } from "../services/auto-join.service";
+import {
   forgetTerminalCaches,
   killAllTerminalSessions,
   killTerminalSession,
@@ -181,7 +187,11 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
         );
       }
     } else if (user) {
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      // A stranger from a trusted domain joins here — this is the request
+      // their first click on a published app's link makes (apps.md §28).
+      const hasAccess =
+        (await workspaceService.hasAccess(workspaceId, user.id)) ||
+        (await ensureAutoJoin(workspaceId, user)) !== null;
       if (!hasAccess) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
@@ -1298,6 +1308,59 @@ appsRoutes.openapi(
 appsRoutes.openapi(
   createRoute({
     method: "get",
+    path: "/{id}/viewer",
+    tags: ["Apps"],
+    summary: "Who the caller is to this app (what `useViewer()` sees)",
+    description:
+      "What `__data/viewer.json` says for the caller: their id and email, " +
+      "the workspace (id, name, their access role) and their role on this " +
+      "app (owner / editor / viewer). Nothing else — an app looks up what " +
+      "it needs about the person in the warehouse by email (apps.md §28). " +
+      "Editors of the app may pass `?as=<email>` to see another member's " +
+      "resolution; a laptop `vite dev` uses this for MAKO_VIEWER_AS.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({ as: z.string().optional() }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { as } = c.req.valid("query");
+      const self = viewerOf(c);
+      if (!self) {
+        return c.json(
+          { success: false, error: "No signed-in viewer to resolve" },
+          403,
+        );
+      }
+      if (as && as.toLowerCase() !== self.email.toLowerCase()) {
+        // Previewing as someone else is a builder's tool.
+        const builder = await loadProject(c, { write: true });
+        if ("errorResponse" in builder) return builder.errorResponse;
+        const viewer = await resolveAppViewerByEmail(loaded.project, as);
+        if (!viewer) {
+          return c.json(
+            { success: false, error: `No Mako user has the email ${as}` },
+            404,
+          );
+        }
+        return c.json({ success: true as const, viewer }, 200);
+      }
+      const viewer = await resolveAppViewer(loaded.project, self);
+      return c.json({ success: true as const, viewer }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
     path: "/{id}/bindings/{name}/artifact",
     tags: ["Apps"],
     summary: "Serve a binding's materialized parquet artifact",
@@ -1620,6 +1683,8 @@ appsRoutes.openapi(
         workspaceId: loaded.project.workspaceId.toString(),
         projectId: loaded.project._id.toString(),
         rootDir: staging,
+        // The builder previewing their own build: `useViewer()` is them.
+        viewer: viewerOf(c) ?? undefined,
       });
       return c.json(
         {
@@ -2410,8 +2475,15 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     projectId,
     sha,
     assetPath: rest.replace(/^\/+/, ""),
+    viewer: viewerOf(c),
   });
   return response ?? c.json({ success: false, error: "Not found" }, 404);
+}
+
+/** The signed-in person, as the published serving layer wants them. */
+function viewerOf(c: AuthenticatedContext): ViewerIdentity | null {
+  const user = c.get("user");
+  return user?.email ? { id: user.id, email: user.email } : null;
 }
 
 appsRoutes.openapi(
@@ -2441,6 +2513,9 @@ appsRoutes.openapi(
         workspaceId: loaded.project.workspaceId.toString(),
         projectId: loaded.project._id.toString(),
         sha,
+        // Binds the token to this person: the cookie-free serving route
+        // answers `__data/viewer.json` from it (apps.md §28).
+        viewer: viewerOf(c) ?? undefined,
       });
       return c.json(
         {

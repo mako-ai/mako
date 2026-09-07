@@ -46,6 +46,17 @@ vi.mock("../database/workspace-schema", () => ({
   },
 }));
 
+vi.mock("./app-viewer.service", () => ({
+  resolveAppViewer: vi.fn(
+    async (_project: unknown, identity: { id: string; email: string }) => ({
+      id: identity.id,
+      email: identity.email,
+      workspace: { id: "ws", name: "Acme", role: "viewer" },
+      app: { id: "project", slug: "sales", role: "viewer" },
+    }),
+  ),
+}));
+
 vi.mock("../services/artifact-delivery.service", () => ({
   serveParquetArtifact: vi.fn(
     async (store, key) =>
@@ -139,6 +150,35 @@ describe("published deployment artifact source", () => {
     expect(await response?.text()).toBe(`true:${bindingKey}`);
     expect(stores.primary.exists).toHaveBeenCalledWith(bindingKey);
     expect(stores.source.exists).toHaveBeenCalledWith(bindingKey);
+  });
+
+  it("answers __data/viewer.json for the signed-in viewer, and null when nobody is known", async () => {
+    const known = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/viewer.json",
+      viewer: { id: "u1", email: "sam@acme.com" },
+    });
+    expect(known?.status).toBe(200);
+    expect(known?.headers.get("cache-control")).toBe("no-store");
+    expect(await known?.json()).toMatchObject({
+      email: "sam@acme.com",
+      workspace: { role: "viewer" },
+      app: { role: "viewer" },
+    });
+
+    const anonymous = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/viewer.json",
+      private: true,
+      viewer: null,
+    });
+    expect(anonymous?.status).toBe(200);
+    expect(anonymous?.headers.get("cache-control")).toBe("private, no-store");
+    expect(await anonymous?.json()).toBeNull();
+    // Never a store read: identity is not an artifact.
+    expect(stores.primary.exists).not.toHaveBeenCalled();
   });
 });
 

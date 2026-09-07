@@ -179,6 +179,54 @@ export async function refreshBindings(names) {
   return settled.map(s => s.value);
 }
 
+// ---------------------------------------------------------------------------
+// Viewer — who is looking. `__data/viewer.json` is answered per request by
+// whoever serves the app (Mako's published/preview routes from the session
+// or the signed token, the Vite plugin from the API), so the app cannot
+// forge it. `null` on an anonymous share link, and on servers that predate
+// it (404). Mako says only what it knows: id, email, the workspace and the
+// person's ACCESS role in it, their role on this app. Anything else about
+// the person is data the app looks up in the warehouse by email.
+// ---------------------------------------------------------------------------
+let viewerPromise = null;
+function normalizeViewer(body) {
+  if (!body || typeof body !== "object" || typeof body.email !== "string") return null;
+  const ws = body.workspace && typeof body.workspace === "object" ? body.workspace : {};
+  const app = body.app && typeof body.app === "object" ? body.app : {};
+  return {
+    id: typeof body.id === "string" ? body.id : "",
+    email: body.email,
+    workspace: {
+      id: typeof ws.id === "string" ? ws.id : "",
+      name: typeof ws.name === "string" ? ws.name : "",
+      role: typeof ws.role === "string" ? ws.role : null,
+    },
+    app: {
+      id: typeof app.id === "string" ? app.id : "",
+      slug: typeof app.slug === "string" ? app.slug : null,
+      role: typeof app.role === "string" ? app.role : null,
+    },
+  };
+}
+
+/** The viewer, once per page. Resolves to null when nobody is known. */
+export function getViewer() {
+  viewerPromise ??= fetch("__data/viewer.json").then(async r => {
+    if (r.status === 404) return null;
+    const body = await r.json().catch(() => null);
+    if (!r.ok) {
+      throw new Error(
+        body && body.error ? String(body.error) : "Viewer lookup failed (HTTP " + r.status + ")",
+      );
+    }
+    return normalizeViewer(body);
+  });
+  viewerPromise.catch(() => {
+    viewerPromise = null;
+  });
+  return viewerPromise;
+}
+
 /** Names of every staged binding — written by the dev server next to the
  * parquet files. Absent (older servers, published builds): empty list. */
 let indexPromise = null;
@@ -304,6 +352,37 @@ export function useQuery(name, opts) {
   );
   const refresh = React.useCallback(() => refreshBinding(name), [name]);
   return { ...state, refresh };
+}
+
+/**
+ * Who is looking at the app: `{ viewer, loading, error }`. `viewer` is null
+ * while loading, on an anonymous share link, and when the server does not
+ * know. Join `viewer.email` against your own roster binding for anything
+ * beyond identity and access role — that is the app's call, not Mako's.
+ */
+export function useViewer() {
+  const [state, setState] = React.useState({ viewer: null, loading: true, error: null });
+  React.useEffect(() => {
+    let active = true;
+    getViewer().then(
+      viewer => {
+        if (active) setState({ viewer, loading: false, error: null });
+      },
+      error => {
+        if (active) {
+          setState({
+            viewer: null,
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, []);
+  return state;
 }
 
 export function useDuckDB(sql, opts) {

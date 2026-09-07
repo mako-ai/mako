@@ -45,6 +45,10 @@ export default defineConfig({
       "src/agent-lib/capabilities/runtime.test.ts",
       "src/apps/preview.service.test.ts",
       "src/apps/deployment.service.test.ts",
+      // Viewer identity (apps.md §28): who an app is talking to, and the
+      // domain auto-join that lets a link-clicker become a member.
+      "src/apps/app-viewer.service.test.ts",
+      "src/services/auto-join.service.test.ts",
       "src/apps/deploy-on-push.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       // These two were written as vitest suites but listed in no vitest

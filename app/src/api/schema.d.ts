@@ -538,6 +538,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{id}/auto-join": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Domain auto-join settings
+         * @description Email domains whose signed-in users become members on first contact (no invitation), and the access role they get (viewer or member). `null` when off. How someone opens a published app's link, signs in, and is simply in (apps.md §28).
+         */
+        get: operations["get_api_workspaces_id_auto_join"];
+        /** Set domain auto-join */
+        put: operations["put_api_workspaces_id_auto_join"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{id}/invites": {
         parameters: {
             query?: never;
@@ -3994,6 +4015,26 @@ export interface paths {
         };
         /** List the app's data bindings (front matter + build state) */
         get: operations["get_api_workspaces_workspaceId_apps_id_bindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/viewer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Who the caller is to this app (what `useViewer()` sees)
+         * @description What `__data/viewer.json` says for the caller: their id and email, the workspace (id, name, their access role) and their role on this app (owner / editor / viewer). Nothing else — an app looks up what it needs about the person in the warehouse by email (apps.md §28). Editors of the app may pass `?as=<email>` to see another member's resolution; a laptop `vite dev` uses this for MAKO_VIEWER_AS.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_viewer"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7731,6 +7772,97 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_id_auto_join: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_api_workspaces_id_auto_join: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    domains: string[];
+                    /**
+                     * @default viewer
+                     * @enum {string}
+                     */
+                    role?: "member" | "viewer";
+                };
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {
@@ -19054,6 +19186,49 @@ export interface operations {
     get_api_workspaces_workspaceId_apps_id_bindings: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_id_viewer: {
+        parameters: {
+            query?: {
+                as?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;

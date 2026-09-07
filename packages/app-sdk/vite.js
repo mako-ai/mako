@@ -88,6 +88,8 @@ export function resolveMakoContext(appDir, options = {}) {
     slug: options.slug ?? path.basename(path.resolve(appDir)),
     bindingsDir: path.join(appDir, "bindings"),
     cacheDir: path.join(appDir, "node_modules", ".mako-data"),
+    /** Preview the app as this viewer (email) — see makoData(). */
+    viewAs: options.viewAs ?? env("MAKO_VIEWER_AS") ?? "",
   };
 }
 
@@ -223,11 +225,31 @@ export function makoData(options = {}) {
         }
       }
 
+      // `__data/viewer.json` — the SDK's useViewer(): the developer's own
+      // identity, or, with MAKO_VIEWER_AS=<email> (env or .env), another
+      // member's, exactly as Mako would answer for them.
+      const viewAsQuery = ctx.viewAs ? `?as=${encodeURIComponent(ctx.viewAs)}` : "";
+      async function serveViewer(res) {
+        if (problems.length) return json(res, 200, null);
+        try {
+          const r = await apiFetch(`${appBase()}/viewer${viewAsQuery}`, {
+            headers: await headers(),
+          });
+          const body = await r.json().catch(() => ({}));
+          if (r.status === 404) return json(res, 200, null);
+          if (!r.ok) return json(res, r.status, { error: body.error ?? `viewer: HTTP ${r.status}` });
+          return json(res, 200, body.viewer ?? null);
+        } catch (error) {
+          return json(res, 502, { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
       server.middlewares.use(async (req, res, next) => {
         const [pathname, query = ""] = (req.url || "").split("?");
         if (pathname === "/__data/index.json") {
           return json(res, 200, listBindings(ctx.bindingsDir));
         }
+        if (pathname === "/__data/viewer.json") return serveViewer(res);
         const match = /^\/__data\/([^/]+)(\.parquet|\/refresh)$/.exec(pathname);
         if (!match) return next();
         const name = decodeURIComponent(match[1]);
