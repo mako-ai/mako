@@ -3141,3 +3141,88 @@ Two limits are now about the prompt, not a schema: descriptions cap at 300
 characters (they are index lines), and the 200-skill cap stays as the point
 past which an index alone stops routing well. Unbound workspaces have no
 skills — the posture every other kind already had.
+
+## 28. Who is looking: identity is a primitive, permissions are the app's (2026-09-07)
+
+> Supersedes §27 (viewer roles). Rolled back the same evening (PR #988):
+> #983 put a fixed list of job roles (`sdr`, `bdr`, `csm`, …) and an ISO
+> country on every workspace member, #984 auto-joined domains with a
+> default job role and country, #985/#987 added a "wait for an admin"
+> gate. Joan: *"Mako is meant to be an Open Source data platform as well
+> as a SaaS. It cannot be so opinionated about roles and countries. These
+> are specific to RealAdvisor and don't belong in the platform."* The
+> problem stands; the solution is replaced by this section.
+
+**The rule.** The platform knows WHO a person is and WHAT THEY MAY TOUCH,
+and nothing about what they do for a living. Workspace roles stay access
+levels — owner / admin / member / viewer — and `WorkspaceMember` gains no
+field a company would want to rename. Anything an app needs to shape its
+view (team, territory, seniority, quota) is data the app owns, looked up in
+the warehouse by the one key every CRM, HRIS and warehouse already share:
+the email address.
+
+**The primitive: `useViewer()`.** A published app can ask who is looking.
+`__data/viewer.json` — next to `__data/index.json` and the parquet files,
+so it exists in the sandbox, the published app and a laptop `vite dev`
+alike — answers:
+
+```json
+{
+  "id": "…", "email": "sam@acme.com",
+  "workspace": { "id": "…", "name": "Acme", "role": "viewer" },
+  "app": { "id": "…", "slug": "fr-sales", "role": "viewer" }
+}
+```
+
+or `null` on an anonymous share link. `workspace.role` is the access role;
+`app.role` is the resource ACL's answer (owner / editor / viewer,
+`utils/resource-acl.ts`). Nothing else, deliberately: every extra key here
+would be the first step back to §27.
+
+**Identity reaches the cookie-free route through the grant.** The
+sandboxed iframe has an opaque origin and no cookies, so the `pub.` token
+minted by `POST /apps/{id}/view-token` carries `u`/`e` (user id, email)
+under the HMAC — a tampered email fails like any other byte. Static build
+previews carry the builder the same way (in-memory grant). `/live/*` uses
+the session. `serveDeploymentFile({ viewer })` is still the one function
+all three published routes converge on; the anonymous share passes `null`.
+The identity lookup (workspace name, membership, ACL) happens only on the
+`viewer.json` request — never per asset.
+
+**The pattern (the apps skill teaches it):** a roster binding —
+`bindings/viewers.sql`, `email` plus only the columns the app's logic
+needs — joined on `lower(viewer.email)` in `useDuckDB`, and the UI
+branches on the row. A promotion in the CRM changes the view the next
+morning with no commit and no admin click. `MAKO_VIEWER_AS=<email>` in the
+repo's `.env` (or `GET /apps/{id}/viewer?as=`) previews the app as another
+member; editors of the app only.
+
+**What this is not (yet).** Every binding an admitted viewer can read is
+downloaded whole into their browser, so the roster pattern shapes the UI;
+it is not access control. Accepted for now (Joan: *"I don't care about
+that at this point"*). Server-side enforcement is an additive step on the
+same primitive when the day comes: `mako.json` names a claims binding
+whose row for `viewer.email` supplies `{{ viewer.<column> }}`, a single
+`-- row_filter:` per binding compiles to a bound-parameter predicate, and
+the DuckDB filter service from #983 (`filtered-parquet.service.ts`,
+`compileRowFilter`) streams the result. That was Théo's rejected `source`
+design, which was the generic one: claims from data, never from an enum.
+
+**Domain auto-join stays, stripped.** The UX Théo needed — *"un bdr reçoit
+le lien … il passe par gauth mako, et pouf il est sur sa vue"* — needs
+membership without an invitation, which Slack, Notion and Google Workspace
+all offer. `settings.autoJoin = { domains, role: "viewer" | "member" }`,
+one card on the Members page, applied by `requireWorkspace` and the apps
+router's access check on the first request that would have refused the
+person. No default job role, no country, no pending gate: a newcomer with
+no roster row simply sees an empty app.
+
+Code: `api/src/apps/app-viewer.service.ts` (resolution),
+`preview.service.ts` (`viewer` on grants), `deployment.service.ts`,
+routes `apps.ts` (`GET /{id}/viewer`, view-token, preview grant) /
+`apps-preview.ts` / `public-share.ts`; `services/auto-join.service.ts`,
+`routes/workspaces.ts` (`GET`/`PUT /{id}/auto-join`); SDK `useViewer()` /
+`getViewer()` and the Vite plugin's `viewer.json` + `MAKO_VIEWER_AS`
+(2.4.0); workspace template v12. Tests: `app-viewer.service.test.ts`,
+`preview.service.test.ts`, `deployment.service.test.ts`,
+`auto-join.service.test.ts`.

@@ -76,6 +76,41 @@ export function refreshBindings(
   names?: string[],
 ): Promise<RefreshResult[]>;
 
+/**
+ * The person viewing the app, as Mako resolved them from the session or the
+ * signed view token (apps.md §28). Only what the platform knows: identity,
+ * the workspace and their ACCESS role in it, their role on this app. Look
+ * up anything else (team, territory, …) in the warehouse by `email`.
+ */
+export interface Viewer {
+  id: string;
+  /** Signed-in email, lowercased. */
+  email: string;
+  workspace: {
+    id: string;
+    name: string;
+    /** Access role in the workspace; null when not a member. */
+    role: "owner" | "admin" | "member" | "viewer" | null;
+  };
+  app: {
+    id: string;
+    slug: string | null;
+    /** What they may do to this app. */
+    role: "owner" | "editor" | "viewer" | null;
+  };
+}
+export interface ViewerState {
+  /** null while loading, on an anonymous share, or on an older server. */
+  viewer: Viewer | null;
+  loading: boolean;
+  error: string | null;
+}
+
+/** Who is looking. The app decides what that means for its UI and data. */
+export function useViewer(): ViewerState;
+/** The same, outside a component; resolved once per page. */
+export function getViewer(): Promise<Viewer | null>;
+
 export function useTheme(): { theme: "light" | "dark" };
 export function useLocation(): MakoLocation;
 export function useSearchParams(): [

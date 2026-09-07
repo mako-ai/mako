@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 11;
+export const WORKSPACE_TEMPLATE_VERSION = 12;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -159,6 +159,16 @@ SELECT …
 \`useQuery("<name>")\` in the app reads it. Materialize on demand with the
 \`app_materialize\` tool (safe from a checkout: it builds from the committed
 binding, keyed by content) or let the dev server do it on first load.
+
+## Who is looking
+
+\`useViewer()\` gives the signed-in person: \`{ id, email, workspace: { id,
+name, role }, app: { id, slug, role } }\`, or \`null\` on an anonymous share.
+Mako knows nothing else about people on purpose — team, country, seniority
+are YOUR data: put a roster in a binding (\`email\` + the columns the app's
+logic needs) and join it on the email in \`useDuckDB\`. \`MAKO_VIEWER_AS=<email>\`
+in \`.env\` previews the app as another member during \`npm run dev\`. See
+\`packages/app-sdk/README.md\`.
 
 ## Shipping
 

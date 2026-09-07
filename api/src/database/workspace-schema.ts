@@ -127,6 +127,13 @@ export interface IWorkspace extends Document {
      * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     dashboardRefreshConcurrency?: number;
+    /**
+     * Domain auto-join (apps.md §28): a signed-in person whose email domain
+     * is listed becomes a member on first contact with the workspace — no
+     * invitation — with this access role. How someone clicks a published
+     * app's link, signs in, and is simply in.
+     */
+    autoJoin?: IWorkspaceAutoJoin;
   };
   billing: IWorkspaceBilling;
   apiKeys?: IWorkspaceApiKey[];
@@ -166,6 +173,13 @@ export type IAppsRepoBinding = IWorkspaceRepoBinding;
 /**
  * API Key interface for workspace authentication
  */
+export interface IWorkspaceAutoJoin {
+  /** Lowercase email domains, exact match (no sub-domains). */
+  domains: string[];
+  /** The ACCESS role newcomers get. Never owner/admin. */
+  role: "member" | "viewer";
+}
+
 export interface IWorkspaceApiKey {
   _id?: Types.ObjectId;
   name: string;
@@ -1291,6 +1305,20 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         type: Number,
         default: 2,
         min: 1,
+      },
+      autoJoin: {
+        type: new Schema(
+          {
+            domains: [{ type: String, lowercase: true, trim: true }],
+            role: {
+              type: String,
+              enum: ["member", "viewer"],
+              default: "viewer",
+            },
+          },
+          { _id: false },
+        ),
+        required: false,
       },
     },
     billing: {

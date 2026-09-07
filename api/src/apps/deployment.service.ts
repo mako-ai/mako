@@ -34,6 +34,7 @@ import {
   readBindingsTolerant,
 } from "./bindings.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
+import { resolveAppViewer, type ViewerIdentity } from "./app-viewer.service";
 import { loggers } from "../logging";
 import {
   PUBLISH_ACTOR,
@@ -505,10 +506,12 @@ export async function deployBuild(
  * binding at `__data/<name>.parquet`.
  *
  * The only difference between the signed-in viewer and an anonymous share is
- * WHO is allowed to call it; what gets served is identical. Keeping that in
- * one place is what stops the two drifting into serving different things —
- * which is exactly how the viewer ended up returning index.html for every
- * asset while the share route did not.
+ * WHO is allowed to call it; what gets served is identical — except
+ * `__data/viewer.json`, which tells the app who that is (apps.md §28) and
+ * is `null` for an anonymous share. Keeping that in one place is what stops
+ * the routes drifting into serving different things — which is exactly how
+ * the viewer once ended up returning index.html for every asset while the
+ * share route did not.
  */
 export async function serveDeploymentFile(input: {
   projectId: string;
@@ -516,9 +519,30 @@ export async function serveDeploymentFile(input: {
   assetPath: string;
   /** Anonymous shares must not be cached by anything in between. */
   private?: boolean;
+  /**
+   * Who is asking, from the session or the signed token. Absent/null =
+   * nobody known (anonymous share, a token minted before viewers existed).
+   */
+  viewer?: ViewerIdentity | null;
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
   const cache = input.private ? "private, no-cache" : "no-cache";
+
+  // Who the app is talking to — the SDK's useViewer(). Two small reads
+  // (workspace, membership), only on this one request, never per asset.
+  if (assetPath === "__data/viewer.json") {
+    const project = input.viewer ? await AppProject.findById(projectId) : null;
+    const viewer = project
+      ? await resolveAppViewer(project, input.viewer)
+      : null;
+    return new Response(JSON.stringify(viewer), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": input.private ? "private, no-store" : "no-store",
+      },
+    });
+  }
 
   // The staged-binding list the SDK's useDuckDB registers tables from. The
   // dev server writes this file next to its staged parquet; published serving

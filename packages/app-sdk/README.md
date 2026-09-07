@@ -45,6 +45,48 @@ or 502 with the query's error.
 Data arrives from `__data/<name>.parquet`, relative to the page — the same
 path in Mako's sandbox, in a published app, and on a laptop.
 
+### Who is looking: `useViewer()`
+
+```tsx
+import { useViewer } from "@makoai/app-sdk";
+
+const { viewer, loading } = useViewer();
+// viewer === null       → anonymous share link (or still loading)
+// viewer.email          → "sam@acme.com"
+// viewer.workspace.role → "owner" | "admin" | "member" | "viewer" | null
+// viewer.app.role       → "owner" | "editor" | "viewer" | null
+```
+
+Mako resolves the viewer server-side from the session or the signed view
+token — the page cannot forge it — and reports only what the platform
+knows: identity, the workspace and the person's **access** role in it, and
+their role on this app. There is no job title, team or country in the
+platform, on purpose: those are your data. Put a roster in a binding and
+join on the email:
+
+```sql
+-- bindings/viewers.sql
+SELECT lower(email) AS email, team, country, is_lead FROM hr.people
+```
+
+```tsx
+const { viewer } = useViewer();
+const me = useDuckDB(
+  viewer ? `select * from viewers where email = '${viewer.email.replace(/'/g, "''")}'` : "select 1 where false",
+);
+const board = useDuckDB(
+  me.data?.[0]?.is_lead
+    ? "select * from pipeline"
+    : `select * from pipeline where team = '${me.data?.[0]?.team ?? ""}'`,
+);
+```
+
+Keep the roster binding to the columns the app needs for its logic: every
+binding the app can read is downloaded whole into the viewer's browser, so
+this shapes the UI rather than enforcing access. Who may *open* the app is
+the app's access setting in Mako; server-side row filtering is a follow-up
+on the same identity (apps.md §28).
+
 ## In `vite.config.ts`
 
 ```ts
@@ -61,6 +103,10 @@ materialized is built on first request, and `POST __data/<name>/refresh`
 `node_modules/.mako-data/` for five minutes (`?refresh` bypasses; a stale
 copy is served if the API is unreachable). It is `apply: "serve"` only —
 production builds never load it.
+
+It also answers `__data/viewer.json` (you, as Mako sees you), and
+`MAKO_VIEWER_AS=<email>` — in the environment or the repo's `.env` —
+previews the app as that member instead (editors of the app only).
 
 Credentials, in order: `MAKO_API_URL` / `MAKO_API_KEY` in the environment,
 then in the repo-root `.env`. The workspace id comes from

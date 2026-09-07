@@ -47,7 +47,21 @@ export interface PreviewGrant {
    * nothing.
    */
   publishedSha?: string;
+  /**
+   * Who the grant was minted for (apps.md §28). The serving route has no
+   * cookie (opaque-origin iframe), so the token is the only place the
+   * viewer's identity can ride; `__data/viewer.json` — the SDK's
+   * `useViewer()` — is answered from it. Absent on an anonymous share and
+   * on tokens minted before viewers existed.
+   */
+  viewer?: ViewerIdentity;
   expiresAt: number;
+}
+
+/** The signed-in person behind a request, as the session knows them. */
+export interface ViewerIdentity {
+  id: string;
+  email: string;
 }
 
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
@@ -61,7 +75,12 @@ function sweep(): void {
 }
 
 function mint(
-  input: { workspaceId: string; projectId: string; token?: string },
+  input: {
+    workspaceId: string;
+    projectId: string;
+    token?: string;
+    viewer?: ViewerIdentity;
+  },
   scope: Pick<PreviewGrant, "rootDir">,
   dedupe: (grant: PreviewGrant) => boolean,
 ): PreviewGrant {
@@ -79,6 +98,7 @@ function mint(
     workspaceId: input.workspaceId,
     projectId: input.projectId,
     ...scope,
+    ...(input.viewer ? { viewer: { ...input.viewer } } : {}),
     expiresAt: Date.now() + PREVIEW_TTL_MS,
   };
   grants.set(grant.token, grant);
@@ -90,6 +110,8 @@ export function mintPreviewGrant(input: {
   workspaceId: string;
   projectId: string;
   rootDir: string;
+  /** The builder previewing their own build — what `useViewer()` sees. */
+  viewer?: ViewerIdentity;
 }): PreviewGrant {
   return mint(
     input,
@@ -113,6 +135,9 @@ interface PublishedTokenPayload {
   w: string;
   p: string;
   s: string;
+  /** Viewer user id + email (apps.md §28). Absent on tokens minted before. */
+  u?: string;
+  e?: string;
   /** Epoch milliseconds. */
   exp: number;
 }
@@ -135,12 +160,15 @@ export function mintPublishedGrant(input: {
   workspaceId: string;
   projectId: string;
   sha: string;
+  /** Binds the token to this person; a tampered email fails the HMAC. */
+  viewer?: ViewerIdentity;
 }): PreviewGrant {
   const payload: PublishedTokenPayload = {
     v: 1,
     w: input.workspaceId,
     p: input.projectId,
     s: input.sha,
+    ...(input.viewer ? { u: input.viewer.id, e: input.viewer.email } : {}),
     exp: Date.now() + PREVIEW_TTL_MS,
   };
   const body = Buffer.from(JSON.stringify(payload), "utf8").toString(
@@ -152,6 +180,7 @@ export function mintPublishedGrant(input: {
     workspaceId: input.workspaceId,
     projectId: input.projectId,
     publishedSha: input.sha,
+    ...(input.viewer ? { viewer: { ...input.viewer } } : {}),
     expiresAt: payload.exp,
   };
 }
@@ -192,11 +221,20 @@ function resolvePublishedGrant(token: string): PreviewGrant | null {
   ) {
     return null;
   }
+  let viewer: ViewerIdentity | undefined;
+  if (payload.u !== undefined || payload.e !== undefined) {
+    // Half a viewer is a malformed token, not an anonymous one.
+    if (typeof payload.u !== "string" || typeof payload.e !== "string") {
+      return null;
+    }
+    viewer = { id: payload.u, email: payload.e };
+  }
   return {
     token,
     workspaceId: payload.w,
     projectId: payload.p,
     publishedSha: payload.s,
+    ...(viewer ? { viewer } : {}),
     expiresAt: payload.exp,
   };
 }

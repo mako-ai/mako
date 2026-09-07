@@ -15,6 +15,11 @@ export interface MakoDataOptions {
   revalidateMs?: number;
   /** Build a never-materialized binding on first request. Default: true. */
   materialize?: boolean;
+  /**
+   * Preview the app as this member (an email): `__data/viewer.json` answers
+   * as Mako would for them. Default: MAKO_VIEWER_AS, else yourself.
+   */
+  viewAs?: string;
 }
 
 export interface MakoContext {
@@ -25,6 +30,8 @@ export interface MakoContext {
   slug: string;
   bindingsDir: string;
   cacheDir: string;
+  /** Email of the member being previewed, or "" for yourself. */
+  viewAs: string;
 }
 
 /** Resolve credentials and identity the way `makoData` does. */
