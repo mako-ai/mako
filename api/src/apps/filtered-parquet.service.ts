@@ -24,7 +24,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { DashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import type { CompiledRowFilter } from "./viewers.service";
+import type { CompiledRowFilter, ViewerSourceRow } from "./viewers.service";
 
 function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -77,6 +77,90 @@ export async function filterParquetFile(input: {
     } catch {
       /* best-effort */
     }
+  }
+}
+
+/**
+ * The viewer's row of a `viewers.source` parquet: the one row whose `email`
+ * matches (trimmed, case-insensitively), every column rendered as text so
+ * it can be a claim. Null when no row matches. A parquet without `email`
+ * and `role` columns is not a viewers source at all — throw, so the app
+ * fails closed with a message the builder can act on.
+ */
+export async function lookupViewerRow(
+  sourcePath: string,
+  email: string,
+): Promise<ViewerSourceRow | null> {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  try {
+    await connection.run("PRAGMA threads=1");
+    await connection.run("PRAGMA memory_limit='256MB'");
+    const described = await connection.run(
+      `DESCRIBE SELECT * FROM read_parquet(${sqlString(sourcePath)})`,
+    );
+    const columns = (
+      (await described.getRowObjectsJson()) as Array<{ column_name: string }>
+    ).map(r => r.column_name);
+    if (!columns.includes("email") || !columns.includes("role")) {
+      throw new Error(
+        `viewers source must have "email" and "role" columns (has: ${columns.join(", ") || "none"})`,
+      );
+    }
+    const prepared = await connection.prepare(
+      `SELECT * FROM read_parquet(${sqlString(sourcePath)}) WHERE lower(trim(CAST(email AS VARCHAR))) = $1 LIMIT 1`,
+    );
+    try {
+      prepared.bind([email.trim().toLowerCase()]);
+      const result = await prepared.run();
+      const [row] = (await result.getRowObjectsJson()) as Array<
+        Record<string, unknown>
+      >;
+      if (!row) return null;
+      const out: ViewerSourceRow = {};
+      for (const [column, value] of Object.entries(row)) {
+        if (value === null || value === undefined) continue;
+        out[column] =
+          column === "email"
+            ? String(value).trim().toLowerCase()
+            : String(value);
+      }
+      return out;
+    } finally {
+      prepared.destroySync();
+    }
+  } finally {
+    try {
+      connection.closeSync();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      instance.closeSync();
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+/**
+ * `lookupViewerRow` against the artifact at `key`. Null when the artifact
+ * does not exist — distinct from a row that does not: the caller decides
+ * what a never-materialized source means (refuse; it is not "no roles").
+ */
+export async function lookupViewerRowInArtifact(
+  store: DashboardArtifactStore,
+  key: string,
+  email: string,
+): Promise<{ row: ViewerSourceRow | null } | null> {
+  const stream = await store.openReadStream(key);
+  if (!stream) return null;
+  const sourcePath = tempPath(".source.parquet");
+  try {
+    await pipeline(stream as Readable, createWriteStream(sourcePath));
+    return { row: await lookupViewerRow(sourcePath, email) };
+  } finally {
+    await fs.rm(sourcePath, { force: true });
   }
 }
 

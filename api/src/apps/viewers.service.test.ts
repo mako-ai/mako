@@ -187,3 +187,66 @@ describe("binding policies", () => {
     );
   });
 });
+
+describe("a viewers source — roles resolved from a binding's rows", () => {
+  const sourced = mustParse({
+    viewers: {
+      source: "fr_viewers",
+      default: "team_lead",
+      roles: { team_lead: {}, bdr: {} },
+    },
+  });
+
+  it("parses the source binding name and keeps roles member-less", () => {
+    expect(sourced.source).toBe("fr_viewers");
+    expect(sourced.roles.map(r => r.members.size)).toEqual([0, 0]);
+    expect(() =>
+      parseViewersConfig({
+        viewers: { source: "../x", roles: { a: {} } },
+      }),
+    ).toThrow(/source/);
+  });
+
+  it("a source row gives the viewer its role, its other columns as claims", () => {
+    const row = { email: "Sam@RealAdvisor.com", role: "bdr", rep: "Sam Ple" };
+    expect(
+      resolveViewer(sourced, { email: "sam@realadvisor.com" }, row),
+    ).toEqual({
+      email: "sam@realadvisor.com",
+      role: "bdr",
+      claims: { rep: "Sam Ple", email: "sam@realadvisor.com", role: "bdr" },
+    });
+  });
+
+  it("no row → the default; a row naming an undeclared role is refused", () => {
+    expect(
+      resolveViewer(sourced, { email: "lead@realadvisor.com" }, null)?.role,
+    ).toBe("team_lead");
+    expect(() =>
+      resolveViewer(
+        sourced,
+        { email: "x@realadvisor.com" },
+        { email: "x@realadvisor.com", role: "csm" },
+      ),
+    ).toThrow(/"csm"/);
+  });
+
+  it("a member listed in mako.json wins over the source row", () => {
+    const pinned = mustParse({
+      viewers: {
+        source: "fr_viewers",
+        roles: {
+          team_lead: { members: { "sam@realadvisor.com": {} } },
+          bdr: {},
+        },
+      },
+    });
+    expect(
+      resolveViewer(
+        pinned,
+        { email: "sam@realadvisor.com" },
+        { email: "sam@realadvisor.com", role: "bdr" },
+      )?.role,
+    ).toBe("team_lead");
+  });
+});

@@ -62,8 +62,32 @@ browser. Declare the roles in `mako.json`:
 ```
 
 Roles are tried in declaration order; the first one listing the viewer's
-email wins, else `default`, else the viewer is refused. Then scope each
-binding in its front matter:
+email wins, else `default`, else the viewer is refused.
+
+Nobody's email has to live in the repo: name a **`source`** binding and the
+roster the warehouse already holds decides. Its rows carry `email`, `role`
+and any other column as a claim; a viewer with no row gets `default`:
+
+```json
+"viewers": {
+  "source": "fr_viewers",
+  "default": "team_lead",
+  "roles": { "team_lead": {}, "bdr": {} }
+}
+```
+
+```sql
+-- bindings/fr_viewers.sql
+-- connection: <id>
+-- roles: team_lead
+SELECT LOWER(u.email) AS email, 'bdr' AS role, u.full_name AS rep
+FROM crm.users u JOIN crm.group_members m ON m.user_id = u.id
+WHERE m.group_name = 'BDR'
+```
+
+A role the source names but `roles` does not declare, or a source that was
+never materialized, refuses the viewer — the roster and the repo must agree.
+Then scope each binding in its front matter:
 
 ```sql
 -- roles: team_lead, bdr                                 (who may read it; omit = everyone)

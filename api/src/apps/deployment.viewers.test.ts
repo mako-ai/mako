@@ -23,6 +23,9 @@ import { bindingArtifactKey, readBindings } from "./bindings.service";
 import { serveDeploymentFile } from "./deployment.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
+import { initRepo, repoDirFor } from "./repository.service";
+import { seededTemplateFiles } from "./workspace-template";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -76,6 +79,8 @@ beforeAll(async () => {
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
+  await bindTestWorkspaceRepo(WS);
 });
 
 afterAll(async () => {
@@ -225,6 +230,133 @@ describe("a role-scoped app, served per viewer", () => {
       run(`SELECT count(*) AS n FROM read_parquet('${strangerFile}')`),
     );
     expect(Number(strangerRows[0].n)).toBe(0);
+  });
+});
+
+describe("roles resolved from a source binding — no member list in the repo", () => {
+  let projectId: string;
+  let sha: string;
+  let rosterKey: string;
+  const CSM = { id: "u-csm", email: "csm@realadvisor.com" };
+
+  beforeAll(async () => {
+    // A fresh session worktree: the one above predates this app's scaffold.
+    await fs.rm(path.join(tmpRoot, "sessions"), {
+      recursive: true,
+      force: true,
+    });
+    const project = await createProject({
+      workspaceId: WS,
+      title: "Sourced Roles App",
+      userId: USER,
+    });
+    projectId = project._id.toString();
+    const handle = await ensureWorktree(project, USER);
+    const manifest = JSON.parse(
+      (await readFile(project, "mako.json", USER)).contents,
+    );
+    manifest.viewers = {
+      source: "roster",
+      default: "team_lead",
+      roles: { team_lead: {}, bdr: {} },
+    };
+    await writeFile(
+      handle,
+      "mako.json",
+      JSON.stringify(manifest, null, 2) + "\n",
+    );
+    await writeFile(
+      handle,
+      "bindings/roster.sql",
+      // Artifacts are content-addressed: distinct SQL from the app above.
+      [
+        "-- connection: conn-1",
+        "-- roles: team_lead",
+        "SELECT 'roster'",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      handle,
+      "bindings/pipeline.sql",
+      [
+        "-- connection: conn-1",
+        "-- row_filter_bdr: rep = {{ viewer.rep }}",
+        "SELECT 'pipeline'",
+        "",
+      ].join("\n"),
+    );
+    const committed = await commitWorktree(handle, "sourced roles");
+    sha = committed.commitOid!;
+
+    const bindings = await readBindings(project, USER);
+    const pipeline = path.join(tmpRoot, "sourced-pipeline.parquet");
+    await withDuckDB(run =>
+      run(
+        `COPY (SELECT * FROM (VALUES ('Sam', 1), ('Ana', 2), ('Sam', 3)) t(rep, n))
+         TO '${pipeline.replace(/'/g, "''")}' (FORMAT PARQUET, COMPRESSION SNAPPY)`,
+      ),
+    );
+    await getDashboardArtifactStore().put(
+      pipeline,
+      bindingArtifactKey(bindings.find(b => b.name === "pipeline")!),
+    );
+    rosterKey = bindingArtifactKey(bindings.find(b => b.name === "roster")!);
+  });
+
+  const serve = (
+    assetPath: string,
+    viewer: { id: string; email: string } | null,
+  ) => serveDeploymentFile({ projectId, sha, assetPath, viewer });
+
+  it("refuses everyone while the source has never been materialized", async () => {
+    const res = await serve("__data/viewer.json", LEAD);
+    expect(res?.status).toBe(403);
+    expect((await res!.json()).error).toMatch(/roster/);
+  });
+
+  it("the roster decides: a listed BDR gets their role and claims, others the default", async () => {
+    const roster = path.join(tmpRoot, "roster.parquet");
+    await withDuckDB(run =>
+      run(
+        `COPY (SELECT * FROM (VALUES ('Sam@RealAdvisor.com', 'bdr', 'Sam'), ('csm@realadvisor.com', 'csm', 'C')) t(email, role, rep))
+         TO '${roster.replace(/'/g, "''")}' (FORMAT PARQUET, COMPRESSION SNAPPY)`,
+      ),
+    );
+    await getDashboardArtifactStore().put(roster, rosterKey);
+
+    const bdr = await serve("__data/viewer.json", BDR);
+    expect(bdr?.status).toBe(200);
+    expect(await bdr!.json()).toEqual({
+      email: "sam@realadvisor.com",
+      role: "bdr",
+      claims: { rep: "Sam", email: "sam@realadvisor.com", role: "bdr" },
+    });
+    const lead = await serve("__data/viewer.json", LEAD);
+    expect((await lead!.json()).role).toBe("team_lead");
+
+    // The roster names a role the repo never declared: fail closed.
+    const csm = await serve("__data/viewer.json", CSM);
+    expect(csm?.status).toBe(403);
+    expect((await csm!.json()).error).toMatch(/"csm"/);
+  });
+
+  it("filters the BDR's rows by a claim that came from the roster", async () => {
+    const forBdr = await serve("__data/pipeline.parquet", BDR);
+    expect(forBdr?.status).toBe(200);
+    const file = await bodyToTempParquet(forBdr!);
+    const rows = await withDuckDB(run =>
+      run(`SELECT n FROM read_parquet('${file}') ORDER BY n`),
+    );
+    expect(rows).toEqual([{ n: 1 }, { n: 3 }]);
+
+    // The roster itself is a team-lead binding: the BDR cannot list or read it.
+    const names = (await (await serve(
+      "__data/index.json",
+      BDR,
+    ))!.json()) as string[];
+    expect(names).not.toContain("roster");
+    expect(await serve("__data/roster.parquet", BDR)).toBeNull();
   });
 });
 

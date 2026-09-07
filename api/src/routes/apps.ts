@@ -144,8 +144,11 @@ import {
   bindingVisibleTo,
   compileRowFilter,
   loadViewersConfig,
-  resolveViewer,
 } from "../apps/viewers.service";
+import {
+  resolveViewerFor,
+  ViewerSourceError,
+} from "../apps/viewer-resolution.service";
 import {
   filterArtifactToTempFile,
   streamTempParquet,
@@ -157,6 +160,12 @@ import {
   setAppEnvVar,
 } from "../apps/env.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+
+/** The builder-side artifact store, when it holds `key` (viewer sources). */
+async function storeHoldingArtifact(key: string) {
+  const store = getDashboardArtifactStore();
+  return (await store.exists(key)) ? store : null;
+}
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
@@ -334,6 +343,9 @@ function handleError(c: AuthenticatedContext, error: unknown) {
   }
   if (error instanceof WorkspaceRepoNotBoundError) {
     return c.json({ success: false, error: error.message }, 404);
+  }
+  if (error instanceof ViewerSourceError) {
+    return c.json({ success: false, error: error.message }, 403);
   }
   logger.error("Apps route error", { error });
   return c.json(
@@ -1353,7 +1365,15 @@ appsRoutes.openapi(
       const key = bindingArtifactKey(binding);
       if (as) {
         const config = await loadViewersConfig(loaded.project, actorId);
-        const viewer = config ? resolveViewer(config, { email: as }) : null;
+        const viewer = config
+          ? await resolveViewerFor({
+              project: loaded.project,
+              actorId,
+              config,
+              viewer: { email: as },
+              storeFor: storeHoldingArtifact,
+            })
+          : null;
         if (config && !viewer) {
           return c.json(
             { success: false, error: `No viewer role includes ${as}` },
@@ -1448,7 +1468,15 @@ appsRoutes.openapi(
           200,
         );
       }
-      const viewer = email ? resolveViewer(config, { email }) : null;
+      const viewer = email
+        ? await resolveViewerFor({
+            project: loaded.project,
+            actorId: loaded.userId ?? "",
+            config,
+            viewer: { email },
+            storeFor: storeHoldingArtifact,
+          })
+        : null;
       if (!viewer) {
         return c.json(
           {

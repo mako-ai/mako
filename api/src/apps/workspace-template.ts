@@ -162,8 +162,10 @@ SELECT …
 \`app_materialize\` tool (safe from a checkout: it builds from the committed
 binding, keyed by content) or let the dev server do it on first load.
 
-Per-role views: declare \`viewers\` in \`mako.json\` (roles → member emails +
-claims, ordered, optional \`default\`); \`roles\` / \`row_filter_<role>\` on a
+Per-role views: declare \`viewers\` in \`mako.json\` (role names, optional
+\`default\`, and either \`members\` per role or a \`source\` binding whose rows
+are \`email\`, \`role\` + claims — no emails in the repo); \`roles\` /
+\`row_filter_<role>\` on a
 binding then narrow what each role receives — enforced server-side, and
 \`useViewer()\` tells the UI which role is looking. \`MAKO_VIEWER_AS=<email>\`
 in \`.env\` previews the app as that viewer during \`npm run dev\`. See

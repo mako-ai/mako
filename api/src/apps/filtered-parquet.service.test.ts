@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { filterParquetFile } from "./filtered-parquet.service";
+import { filterParquetFile, lookupViewerRow } from "./filtered-parquet.service";
 import { compileRowFilter } from "./viewers.service";
 
 let dir: string;
@@ -101,5 +101,39 @@ describe("filterParquetFile", () => {
       outputPath: out,
     });
     expect(rowCount).toBe(0);
+  });
+});
+
+describe("lookupViewerRow", () => {
+  let roster: string;
+  beforeAll(async () => {
+    roster = path.join(dir, "roster.parquet");
+    const instance = await DuckDBInstance.create(":memory:");
+    const connection = await instance.connect();
+    try {
+      await connection.run(
+        `COPY (SELECT * FROM (VALUES ('Sam@X.com', 'bdr', 'Sam Ple', 7), ('ana@x.com', 'bdr', 'Ana', 8)) t(email, role, rep, n))
+         TO '${roster.replace(/'/g, "''")}' (FORMAT PARQUET, COMPRESSION SNAPPY)`,
+      );
+    } finally {
+      connection.closeSync();
+      instance.closeSync();
+    }
+  });
+
+  it("finds the viewer's row by email, case-insensitively, every column as text", async () => {
+    expect(await lookupViewerRow(roster, "sam@x.com")).toEqual({
+      email: "sam@x.com",
+      role: "bdr",
+      rep: "Sam Ple",
+      n: "7",
+    });
+    expect(await lookupViewerRow(roster, "nobody@x.com")).toBeNull();
+  });
+
+  it("refuses a source without email and role columns", async () => {
+    await expect(lookupViewerRow(source, "a@x.com")).rejects.toThrow(
+      /email.*role/,
+    );
   });
 });

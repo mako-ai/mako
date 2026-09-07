@@ -173,7 +173,9 @@ Front matter is a leading block of `-- key: value` SQL comments; the first
 SQL line ends it. Keep queries read-only SELECTs.
 
 `roles` / `row_filter_<role>` only apply when the app's `mako.json` declares
-`viewers` (roles → member emails + claims, ordered, optional `default`).
+`viewers` (role names, optional `default`, and either static `members`
+per role or — better, nothing hardcoded — a `source` binding whose rows are
+`email`, `role` and claim columns; a viewer with no row gets `default`).
 Mako then serves each viewer only the bindings and rows their role allows —
 enforced server-side, so the browser never receives the rest — and
 `useViewer()` from the SDK tells the UI which role is looking. Who may OPEN

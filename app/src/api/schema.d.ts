@@ -4030,7 +4030,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The caller's viewer role for this app (apps.md §26)
+         * The caller's viewer role for this app (apps.md §27)
          * @description What `__data/viewer.json` will say for the caller — resolved from the app's mako.json `viewers` block at the caller's view of the repo. `role` is null for an app that declares no roles. Builders may pass `?as=<email>` to see another viewer's resolution (a laptop `vite dev` uses this to preview a role).
          */
         get: operations["get_api_workspaces_workspaceId_apps_id_viewer"];

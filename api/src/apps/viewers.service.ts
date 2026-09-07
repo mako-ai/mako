@@ -40,11 +40,22 @@ export interface ViewerRole {
 }
 
 export interface ViewersConfig {
+  /**
+   * A binding of this app whose rows resolve viewers: `email`, `role`, and
+   * any other column as a claim. Roles as DATA — the roster the warehouse
+   * already holds (a CRM group, a directory) decides, and nobody's email
+   * lives in the repo. Consulted after the static `members`, before
+   * `default`.
+   */
+  source?: string;
   /** Role for an admitted viewer no role lists. Absent = refuse them. */
   defaultRole?: string;
   /** Declaration order: the first role listing a viewer wins. */
   roles: ViewerRole[];
 }
+
+/** One row of the `source` binding, every column as text (`email`, `role`, claims…). */
+export type ViewerSourceRow = Record<string, string>;
 
 /** What the serving layer knows about the person behind the request. */
 export interface ViewerIdentity {
@@ -65,9 +76,12 @@ const RoleSchema = z.strictObject({
   members: z.record(z.string(), z.record(z.string(), ClaimValue)).optional(),
 });
 const ViewersSchema = z.strictObject({
+  source: z.string().optional(),
   default: z.string().optional(),
   roles: z.record(z.string(), RoleSchema),
 });
+/** Binding names, as the data routes accept them (`__data/<name>.parquet`). */
+const SOURCE_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -132,16 +146,25 @@ export function parseViewersConfig(manifest: unknown): ViewersConfig | null {
   if (defaultRole !== undefined && !roles.some(r => r.name === defaultRole)) {
     throw invalid(`default role "${defaultRole}" is not declared in roles`);
   }
-  return { defaultRole, roles };
+  const source = parsed.data.source;
+  if (source !== undefined && !SOURCE_NAME_RE.test(source)) {
+    throw invalid(`source "${source}" is not a binding name`);
+  }
+  return { source, defaultRole, roles };
 }
 
 /**
  * The viewer's role and claims under this config, or null when the config
- * does not admit them (no role lists them and there is no default).
+ * does not admit them (no role lists them, no source row, and there is no
+ * default). `sourceRow` is the viewer's row of the `source` binding when
+ * the config names one and the row exists — looked up by the caller, so
+ * this stays pure. A row naming a role the manifest never declared throws:
+ * the roster and the repo disagree, and the safe answer is to refuse.
  */
 export function resolveViewer(
   config: ViewersConfig,
   viewer: ViewerIdentity,
+  sourceRow?: ViewerSourceRow | null,
 ): ResolvedViewer | null {
   const email = normalizeEmail(viewer.email);
   for (const role of config.roles) {
@@ -153,6 +176,21 @@ export function resolveViewer(
         claims: { ...claims, email, role: role.name },
       };
     }
+  }
+  if (sourceRow) {
+    const role = String(sourceRow.role ?? "").trim();
+    if (!config.roles.some(r => r.name === role)) {
+      throw new Error(
+        `viewers source lists ${email} with role "${role}", which mako.json does not declare`,
+      );
+    }
+    const claims: ViewerClaims = {};
+    for (const [column, value] of Object.entries(sourceRow)) {
+      if (BUILTIN_CLAIMS.has(column) || !CLAIM_NAME_RE.test(column)) continue;
+      if (value === null || value === undefined) continue;
+      claims[column] = String(value);
+    }
+    return { email, role, claims: { ...claims, email, role } };
   }
   if (config.defaultRole) {
     return {

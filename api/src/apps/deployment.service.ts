@@ -30,13 +30,13 @@ import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import {
   bindingArtifactKey,
   materializeAppBinding,
+  readBinding,
   readBindingsTolerant,
 } from "./bindings.service";
 import {
   bindingVisibleTo,
   compileRowFilter,
   loadViewersConfig,
-  resolveViewer,
   type ResolvedViewer,
   type ViewerIdentity,
   type ViewersConfig,
@@ -45,6 +45,7 @@ import {
   filterArtifactToTempFile,
   streamTempParquet,
 } from "./filtered-parquet.service";
+import { resolveViewerFor } from "./viewer-resolution.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
@@ -582,7 +583,34 @@ export async function serveDeploymentFile(input: {
       );
     }
     if (config) {
-      viewer = input.viewer ? resolveViewer(config, input.viewer) : null;
+      try {
+        viewer = input.viewer
+          ? await resolveViewerFor({
+              project,
+              actorId: "",
+              at: sha,
+              config,
+              viewer: input.viewer,
+              storeFor: artifactStoreForRead,
+            })
+          : null;
+      } catch (error) {
+        logger.warn("Published app could not resolve its viewer; refusing", {
+          projectId,
+          sha,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return jsonResponse(
+          {
+            success: false,
+            error:
+              "This app's viewer roles cannot be resolved. " +
+              (error instanceof Error ? error.message : String(error)),
+          },
+          403,
+          dataCache,
+        );
+      }
       if (!viewer) {
         return jsonResponse(
           {
@@ -628,11 +656,7 @@ export async function serveDeploymentFile(input: {
       // `apps/bindings/<connectionId>/<definitionHash>.parquet`. The old
       // `apps/<projectId>/<name>.parquet` key here was a scheme nothing
       // writes: published apps could never see their data (§13.19).
-      const binding = (
-        await readBindingsTolerant(project, "", sha)
-      ).bindings.find(
-        b => b.name === dataMatch[1],
-      );
+      const binding = await readBinding(project, dataMatch[1], "", sha);
       if (!binding) return null;
       if (viewer && !bindingVisibleTo(binding.policy, viewer.role)) return null;
       const key = bindingArtifactKey(binding);
