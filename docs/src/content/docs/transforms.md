@@ -3,7 +3,7 @@ title: Transforms (dbt)
 description: Build, run, and schedule dbt Core projects inside Mako — a dbt Cloud replica with a file IDE, jobs, run history, lineage, and an AI Transform Agent.
 ---
 
-The **Transforms** section runs [dbt Core](https://docs.getdbt.com) projects directly inside your Mako workspace — a self-hosted dbt Cloud replica. Project files live in the workspace database (one document per file) and execute as `dbt` subprocesses against your existing [database connections](/databases/connect-databases/).
+The **Transforms** section runs [dbt Core](https://docs.getdbt.com) projects directly inside your Mako workspace — a self-hosted dbt Cloud replica. Project files live in the workspace's git repo (a `dbt/` folder, same repo as consoles, notebooks, and apps) and execute as `dbt` subprocesses against your existing [database connections](/databases/connect-databases/). Job definitions (`dbt/jobs/*.yml`) and environments (`dbt/environments.yml`) are authoritative in git; Mongo holds only a derived, SHA-checked index for fast reads.
 
 You get a file IDE, saved jobs with cron schedules, run history with artifacts, a DAG lineage view, and the AI agent's [Transforms mode](/ai-agent/#expertise-modes) that writes and verifies models for you.
 
@@ -44,16 +44,7 @@ snapshots/             # SCD2 snapshots
 tests/                 # singular SQL tests
 ```
 
-Files are unique per path (`{projectId, path}`), deletes are soft (`is_deleted`) so history is preserved, and every write is also captured in the shared [version history](/version-history/).
-
-## GitHub integration
-
-Projects can be **imported from GitHub** and kept in sync via Mako's multi-tenant GitHub App.
-
-- **Install flow** is HMAC-state protected — the signed `state` pins the initiating workspace + user, and binding an installation requires that same user with **admin** access (prevents install IDOR/CSRF).
-- **Browse & import** — list repos, check a repo's dbt layout, and import a project.
-- **Continuous branch sync** — pushes to the tracked branch flow back into the in-app project.
-- **Slim CI on PRs** (opt-in per project, off by default) — `state:modified+` builds with prod-manifest `defer`, posting commit statuses back to the PR.
+Reads come from the workspace repo at your session branch (git `listTree`/`readBlob`); writes are commits on that branch, and every write is also captured in the shared [version history](/version-history/). There's one dbt project per workspace, scaffolded into `dbt/` on first use — or imported by pointing at an existing `dbt/dbt_project.yml` in the repo.
 
 ## Studio-style editor
 
@@ -100,9 +91,9 @@ Every execution produces a **run** record with per-node status, timing, and logs
 
 Transforms access is enforced by a pure policy (`api/src/dbt/rbac.ts`):
 
-- **Reads (GET)** — open to any member, including viewers (GitHub repo discovery is member+).
-- **File/run mutations** (edit files, trigger runs, repo sync) — require **member** or above (viewers excluded).
-- **Deployment-config changes** (GitHub connect/import, repo writes, job create/edit/delete, project create/delete) — require **admin** or **owner**.
+- **Reads (GET)** — open to any member, including viewers.
+- **File/run mutations** (edit files, trigger runs, ad-hoc compile/run) — require **member** or above (viewers excluded).
+- **Deployment-config changes** (job create/edit/delete, project create/delete, PR merges) — require **admin** or **owner**. Connecting the workspace's GitHub repo is workspace-level infrastructure now (`/workspaces/:workspaceId/github/*`), not a dbt-specific route.
 
 ## Runner security
 
@@ -138,8 +129,6 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `POST` | `/projects/:projectId/preview` | `dbt show --select` — bounded read-only row preview |
 | `POST` | `/projects/:projectId/command` | Run an allow-listed free-form command |
 | `GET` | `/projects/:projectId/lineage` | DAG nodes + edges from the latest manifest |
-
-GitHub connect/import and in-IDE git operations (status, diff, commit, branch, pull request) are exposed under the same `/dbt` prefix.
 
 ## Project rules (`.makorules.md`)
 
