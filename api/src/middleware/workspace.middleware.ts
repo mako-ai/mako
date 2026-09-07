@@ -1,7 +1,6 @@
 import { Context, Next } from "hono";
 import { ValidatedSession, ValidatedUser } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
-import { ensureAutoJoin } from "../services/auto-join.service";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 
@@ -113,11 +112,8 @@ export async function requireWorkspace(c: Context, next: Next) {
         return c.json({ error: "Invalid workspace ID format" }, 400);
       }
 
-      // Verify user has access to workspace — or admit them now, when the
-      // workspace auto-joins their email domain (auto-join.service).
-      const member =
-        (await workspaceService.getMember(workspaceId, user.id)) ??
-        (await ensureAutoJoin(workspaceId, user));
+      // Verify user has access to workspace
+      const member = await workspaceService.getMember(workspaceId, user.id);
 
       if (!member) {
         return c.json({ error: "Access denied to workspace" }, 403);

@@ -9,7 +9,6 @@
  */
 
 import { api, unwrap } from "../api";
-import type { JobRole } from "@mako/schemas";
 
 // Types
 export interface WorkspaceBilling {
@@ -34,8 +33,6 @@ export interface Workspace {
   name: string;
   slug: string;
   role: string;
-  /** Domain auto-join: waiting for an admin to set the job role. */
-  profilePending?: boolean;
   createdAt: string;
   updatedAt: string;
   settings: {
@@ -52,12 +49,6 @@ export interface WorkspaceMember {
   userId: string;
   email: string;
   role: "owner" | "admin" | "member" | "viewer";
-  /** What they do — published apps scope their data by it. null = unset. */
-  jobRole: JobRole | null;
-  /** ISO 3166-1 alpha-2, or null. */
-  country: string | null;
-  /** Auto-joined, waiting for an admin to set the job role. */
-  profilePending?: boolean;
   joinedAt: string;
 }
 
@@ -65,8 +56,6 @@ export interface WorkspaceInvite {
   id: string;
   email: string;
   role: "admin" | "member" | "viewer";
-  jobRole?: JobRole | null;
-  country?: string | null;
   token?: string;
   invitedBy: string;
   expiresAt: string;
@@ -96,27 +85,11 @@ export interface CreateWorkspaceData {
 export interface InviteMemberData {
   email: string;
   role: "admin" | "member" | "viewer";
-  jobRole?: JobRole;
-  country?: string;
 }
 
-/** Domain auto-join: who joins by email domain, and as what. null = off. */
-export interface WorkspaceAutoJoin {
-  domains: string[];
-  role: "member" | "viewer";
-  jobRole: JobRole | null;
-  country: string | null;
-  slackWebhookConfigured?: boolean;
+export interface UpdateMemberRoleData {
+  role: "admin" | "member" | "viewer";
 }
-
-/** Any subset; null clears a profile field. */
-export interface UpdateMemberData {
-  role?: "admin" | "member" | "viewer";
-  jobRole?: JobRole | null;
-  country?: string | null;
-}
-/** @deprecated use UpdateMemberData */
-export type UpdateMemberRoleData = UpdateMemberData;
 
 export interface WorkspaceDatabase {
   id: string;
@@ -230,12 +203,12 @@ class WorkspaceClient {
   }
 
   /**
-   * Update a member: access role and/or job role + country (apps read them).
+   * Update member role
    */
-  async updateMember(
+  async updateMemberRole(
     workspaceId: string,
     userId: string,
-    data: UpdateMemberData,
+    data: UpdateMemberRoleData,
   ): Promise<WorkspaceMember> {
     const body = unwrap(
       await api.PUT("/api/workspaces/{id}/members/{userId}", {
@@ -244,37 +217,6 @@ class WorkspaceClient {
       }),
     );
     return body.data as WorkspaceMember;
-  }
-
-  /** Domain auto-join settings (owner/admin). */
-  async getAutoJoin(workspaceId: string): Promise<WorkspaceAutoJoin | null> {
-    const body = unwrap(
-      await api.GET("/api/workspaces/{id}/auto-join", {
-        params: { path: { id: workspaceId } },
-      }),
-    );
-    return (body.data ?? null) as WorkspaceAutoJoin | null;
-  }
-
-  /** An empty domain list turns auto-join off. */
-  async setAutoJoin(
-    workspaceId: string,
-    data: {
-      domains: string[];
-      role: "member" | "viewer";
-      jobRole?: JobRole | null;
-      country?: string | null;
-      /** null clears, absent keeps */
-      slackWebhookUrl?: string | null;
-    },
-  ): Promise<WorkspaceAutoJoin | null> {
-    const body = unwrap(
-      await api.PUT("/api/workspaces/{id}/auto-join", {
-        params: { path: { id: workspaceId } },
-        body: data,
-      }),
-    );
-    return (body.data ?? null) as WorkspaceAutoJoin | null;
   }
 
   /**

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Box,
   Typography,
@@ -33,14 +33,7 @@ import {
   ContentCopy,
   Close,
 } from "@mui/icons-material";
-import {
-  COUNTRY_CODES,
-  JOB_ROLES,
-  JOB_ROLE_LABELS,
-  type JobRole,
-} from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
-import { workspaceClient } from "../lib/workspace-client";
 import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
 import { useConfirm } from "./ConfirmDialog";
@@ -49,28 +42,11 @@ interface MemberRow {
   id: string;
   email: string;
   role: string;
-  /** Job role + country: what published apps scope their data by. */
-  jobRole: JobRole | null;
-  country: string | null;
-  /** Auto-joined, waiting for an admin to set the job role. */
-  profilePending?: boolean;
   status: "active" | "pending";
   joinedAt?: string;
   expiresAt?: string;
   userId?: string;
   token?: string;
-}
-
-const countryNames =
-  typeof Intl !== "undefined" && "DisplayNames" in Intl
-    ? new Intl.DisplayNames(["en"], { type: "region" })
-    : null;
-function countryName(code: string): string {
-  try {
-    return countryNames?.of(code) ?? code;
-  } catch {
-    return code;
-  }
 }
 
 export function WorkspaceMembers() {
@@ -81,7 +57,6 @@ export function WorkspaceMembers() {
     members,
     invites,
     inviteMember,
-    updateMember,
     updateMemberRole,
     removeMember,
     cancelInvite,
@@ -92,8 +67,6 @@ export function WorkspaceMembers() {
   const [inviteRole, setInviteRole] = useState<"admin" | "member" | "viewer">(
     "member",
   );
-  const [inviteJobRole, setInviteJobRole] = useState<JobRole | "">("");
-  const [inviteCountry, setInviteCountry] = useState("");
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -103,21 +76,12 @@ export function WorkspaceMembers() {
       setError("Email is required");
       return;
     }
-    if (!inviteJobRole) {
-      setError("Job role is required — apps scope their data by it");
-      return;
-    }
 
     setInviting(true);
     setError(null);
 
     try {
-      await inviteMember({
-        email: inviteEmail.trim(),
-        role: inviteRole,
-        jobRole: inviteJobRole,
-        ...(inviteCountry ? { country: inviteCountry } : {}),
-      });
+      await inviteMember({ email: inviteEmail.trim(), role: inviteRole });
 
       // Track invite sent
       trackEvent("invite_sent", {
@@ -127,8 +91,6 @@ export function WorkspaceMembers() {
       setInviteDialogOpen(false);
       setInviteEmail("");
       setInviteRole("member");
-      setInviteJobRole("");
-      setInviteCountry("");
       setSuccessMessage("Invitation sent successfully");
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (error: any) {
@@ -151,21 +113,6 @@ export function WorkspaceMembers() {
       await updateMemberRole(userId, newRole);
     } catch (error: any) {
       setError(error.message || "Failed to update role");
-    }
-  };
-
-  const handleProfileChange = async (
-    userId: string,
-    patch: { jobRole?: JobRole | null; country?: string | null },
-  ) => {
-    if (!userId) {
-      setError("Cannot update a member with missing user details");
-      return;
-    }
-    try {
-      await updateMember(userId, patch);
-    } catch (error: any) {
-      setError(error.message || "Failed to update member");
     }
   };
 
@@ -232,9 +179,6 @@ export function WorkspaceMembers() {
       id: member.id,
       email: member.email ?? "",
       role: member.role,
-      jobRole: member.jobRole ?? null,
-      country: member.country ?? null,
-      profilePending: member.profilePending === true,
       status: "active" as const,
       joinedAt: member.joinedAt,
       userId: member.userId,
@@ -244,8 +188,6 @@ export function WorkspaceMembers() {
       id: invite.id,
       email: invite.email ?? "",
       role: invite.role,
-      jobRole: invite.jobRole ?? null,
-      country: invite.country ?? null,
       status: "pending" as const,
       expiresAt: invite.expiresAt,
       token: invite.token,
@@ -298,8 +240,6 @@ export function WorkspaceMembers() {
         </Alert>
       )}
 
-      {canManageMembers && <AutoJoinCard workspaceId={currentWorkspace.id} />}
-
       <TableContainer
         component={Paper}
         sx={{ boxShadow: "none", border: "1px solid rgba(224, 224, 224, 1)" }}
@@ -311,13 +251,7 @@ export function WorkspaceMembers() {
                 Email
               </TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
-                Access
-              </TableCell>
-              <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
-                Job role
-              </TableCell>
-              <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
-                Country
+                Role
               </TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
                 Status
@@ -343,10 +277,6 @@ export function WorkspaceMembers() {
               const isCurrentUser = row.email === user?.email;
               const isOwner = row.role === "owner";
               const canEdit = canManageMembers && !isOwner && !isCurrentUser;
-              // Job role and country are a profile, not a permission: an
-              // admin may set them on anyone, the owner and themselves included.
-              const canEditProfile =
-                canManageMembers && row.status === "active" && !!row.userId;
 
               return (
                 <TableRow key={row.id} hover>
@@ -368,96 +298,11 @@ export function WorkspaceMembers() {
                     />
                   </TableCell>
                   <TableCell>
-                    {canEditProfile ? (
-                      <FormControl size="small" sx={{ minWidth: 130 }}>
-                        <Select
-                          value={row.jobRole ?? ""}
-                          displayEmpty
-                          onChange={e =>
-                            handleProfileChange(row.userId ?? "", {
-                              jobRole: (e.target.value ||
-                                null) as JobRole | null,
-                            })
-                          }
-                          size="small"
-                          variant="standard"
-                          renderValue={value =>
-                            value ? (
-                              JOB_ROLE_LABELS[value as JobRole]
-                            ) : (
-                              <Typography
-                                variant="caption"
-                                color="warning.main"
-                              >
-                                Not set
-                              </Typography>
-                            )
-                          }
-                        >
-                          <MenuItem value="">
-                            <em>Not set</em>
-                          </MenuItem>
-                          {JOB_ROLES.map(role => (
-                            <MenuItem key={role} value={role}>
-                              {JOB_ROLE_LABELS[role]}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                    ) : row.jobRole ? (
-                      <Chip label={JOB_ROLE_LABELS[row.jobRole]} size="small" />
-                    ) : (
-                      <Typography variant="caption" color="text.secondary">
-                        —
-                      </Typography>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {canEditProfile ? (
-                      <FormControl size="small" sx={{ minWidth: 70 }}>
-                        <Select
-                          value={row.country ?? ""}
-                          displayEmpty
-                          onChange={e =>
-                            handleProfileChange(row.userId ?? "", {
-                              country: e.target.value || null,
-                            })
-                          }
-                          size="small"
-                          variant="standard"
-                          renderValue={value => (value ? String(value) : "—")}
-                          MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
-                        >
-                          <MenuItem value="">
-                            <em>Not set</em>
-                          </MenuItem>
-                          {COUNTRY_CODES.map(code => (
-                            <MenuItem key={code} value={code}>
-                              {code} · {countryName(code)}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                    ) : (
-                      <Typography variant="body2">
-                        {row.country ?? "—"}
-                      </Typography>
-                    )}
-                  </TableCell>
-                  <TableCell>
                     <Chip
-                      label={
-                        row.profilePending ? "waiting for role" : row.status
-                      }
+                      label={row.status}
                       size="small"
                       variant="outlined"
-                      color={
-                        row.profilePending
-                          ? "warning"
-                          : row.status === "active"
-                            ? "success"
-                            : "warning"
-                      }
+                      color={row.status === "active" ? "success" : "warning"}
                     />
                   </TableCell>
                   <TableCell>
@@ -569,50 +414,12 @@ export function WorkspaceMembers() {
               <MenuItem value="viewer">Viewer - Read-only access</MenuItem>
             </Select>
           </FormControl>
-          <Box sx={{ display: "flex", gap: 2, mt: 2 }}>
-            <FormControl fullWidth variant="outlined" required>
-              <InputLabel>Job role</InputLabel>
-              <Select
-                value={inviteJobRole}
-                onChange={e => setInviteJobRole(e.target.value as JobRole)}
-                label="Job role"
-                disabled={inviting}
-              >
-                {JOB_ROLES.map(role => (
-                  <MenuItem key={role} value={role}>
-                    {JOB_ROLE_LABELS[role]}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <FormControl fullWidth variant="outlined">
-              <InputLabel>Country</InputLabel>
-              <Select
-                value={inviteCountry}
-                onChange={e => setInviteCountry(e.target.value)}
-                label="Country"
-                disabled={inviting}
-                MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
-              >
-                <MenuItem value="">
-                  <em>Not set</em>
-                </MenuItem>
-                {COUNTRY_CODES.map(code => (
-                  <MenuItem key={code} value={code}>
-                    {code} · {countryName(code)}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
           <Typography
             variant="caption"
             color="text.secondary"
             sx={{ mt: 2, display: "block" }}
           >
-            Apps scope their data by job role and country — a member without a
-            job role sees nothing that is scoped. An invitation email will be
-            sent to the provided address.
+            An invitation email will be sent to the provided address.
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -625,217 +432,12 @@ export function WorkspaceMembers() {
           <Button
             onClick={handleInviteMember}
             variant="contained"
-            disabled={inviting || !inviteEmail.trim() || !inviteJobRole}
+            disabled={inviting || !inviteEmail.trim()}
           >
             {inviting ? <CircularProgress size={20} /> : "Send Invitation"}
           </Button>
         </DialogActions>
       </Dialog>
     </Box>
-  );
-}
-
-/**
- * Domain auto-join: anyone signing in with an email on these domains joins
- * the workspace on first contact — no invitation — with these defaults. The
- * way a rep clicks a published app's link, signs in with Google, and lands
- * on their own view.
- */
-function AutoJoinCard({ workspaceId }: { workspaceId: string }) {
-  const [loaded, setLoaded] = useState(false);
-  const [domains, setDomains] = useState("");
-  const [role, setRole] = useState<"member" | "viewer">("viewer");
-  const [jobRole, setJobRole] = useState<JobRole | "">("");
-  const [country, setCountry] = useState("");
-  const [slackWebhook, setSlackWebhook] = useState("");
-  const [slackConfigured, setSlackConfigured] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    workspaceClient
-      .getAutoJoin(workspaceId)
-      .then(current => {
-        if (cancelled) return;
-        setDomains(current?.domains.join(", ") ?? "");
-        setRole(current?.role ?? "viewer");
-        setJobRole(current?.jobRole ?? "");
-        setCountry(current?.country ?? "");
-        setSlackConfigured(!!current?.slackWebhookConfigured);
-      })
-      .catch((e: any) => setError(e.message || "Failed to load auto-join"))
-      .finally(() => !cancelled && setLoaded(true));
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId]);
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const list = domains
-        .split(/[,\s]+/)
-        .map(d => d.trim())
-        .filter(Boolean);
-      const saved = await workspaceClient.setAutoJoin(workspaceId, {
-        domains: list,
-        role,
-        jobRole: jobRole || null,
-        country: country || null,
-        ...(slackWebhook.trim()
-          ? { slackWebhookUrl: slackWebhook.trim() }
-          : {}),
-      });
-      setSlackConfigured(!!saved?.slackWebhookConfigured);
-      setSlackWebhook("");
-      setMessage(
-        saved
-          ? `Anyone with an email on ${saved.domains.join(", ")} now joins as ${saved.role}` +
-              (saved.jobRole
-                ? ` · ${JOB_ROLE_LABELS[saved.jobRole]}` +
-                  (saved.country ? ` · ${saved.country}` : "") +
-                  " the first time they open the workspace or one of its apps."
-                : " and WAITS until an admin sets their job role here" +
-                  (saved.slackWebhookConfigured
-                    ? " — Slack is told each time."
-                    : " — add a Slack webhook to be told each time."))
-          : "Auto-join is off.",
-      );
-      setTimeout(() => setMessage(null), 6000);
-    } catch (e: any) {
-      setError(e.message || "Failed to save auto-join");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Paper
-      variant="outlined"
-      sx={{
-        p: 2,
-        mb: 2,
-        boxShadow: "none",
-        border: "1px solid rgba(224, 224, 224, 1)",
-      }}
-    >
-      <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-        Auto-join by email domain
-      </Typography>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{ display: "block", mb: 1.5 }}
-      >
-        People who sign in with an email on these domains become members the
-        first time they open the workspace or one of its apps — no invitation
-        needed. With a job role below they are in at once; with none they see a
-        &quot;please wait for an administrator&quot; page, the Slack channel is
-        told to assign their role and country, and they get an email once you
-        do. Leave the domains empty to turn it off.
-      </Typography>
-      {error && (
-        <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
-      {message && (
-        <Alert
-          severity="success"
-          sx={{ mb: 1.5 }}
-          onClose={() => setMessage(null)}
-        >
-          {message}
-        </Alert>
-      )}
-      <Box
-        sx={{ display: "flex", gap: 2, flexWrap: "wrap", alignItems: "center" }}
-      >
-        <TextField
-          size="small"
-          label="Domains"
-          placeholder="acme.com, acme.ch"
-          value={domains}
-          onChange={e => setDomains(e.target.value)}
-          disabled={!loaded || saving}
-          sx={{ minWidth: 260, flex: 1 }}
-        />
-        <FormControl size="small" sx={{ minWidth: 120 }}>
-          <InputLabel>Access</InputLabel>
-          <Select
-            value={role}
-            label="Access"
-            onChange={e => setRole(e.target.value as "member" | "viewer")}
-            disabled={!loaded || saving}
-          >
-            <MenuItem value="viewer">Viewer</MenuItem>
-            <MenuItem value="member">Member</MenuItem>
-          </Select>
-        </FormControl>
-        <FormControl size="small" sx={{ minWidth: 150 }}>
-          <InputLabel>Job role</InputLabel>
-          <Select
-            value={jobRole}
-            label="Job role"
-            onChange={e => setJobRole(e.target.value as JobRole | "")}
-            disabled={!loaded || saving}
-          >
-            <MenuItem value="">
-              <em>Not set</em>
-            </MenuItem>
-            {JOB_ROLES.map(r => (
-              <MenuItem key={r} value={r}>
-                {JOB_ROLE_LABELS[r]}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <FormControl size="small" sx={{ minWidth: 110 }}>
-          <InputLabel>Country</InputLabel>
-          <Select
-            value={country}
-            label="Country"
-            onChange={e => setCountry(e.target.value)}
-            disabled={!loaded || saving}
-            MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
-          >
-            <MenuItem value="">
-              <em>Not set</em>
-            </MenuItem>
-            {COUNTRY_CODES.map(code => (
-              <MenuItem key={code} value={code}>
-                {code} · {countryName(code)}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <Button
-          variant="contained"
-          size="small"
-          onClick={save}
-          disabled={!loaded || saving}
-        >
-          {saving ? <CircularProgress size={18} /> : "Save"}
-        </Button>
-      </Box>
-      <TextField
-        size="small"
-        fullWidth
-        sx={{ mt: 1.5 }}
-        label={
-          slackConfigured
-            ? "Slack incoming webhook (configured — paste a new one to replace)"
-            : "Slack incoming webhook (optional) — #mako-internal-signup"
-        }
-        placeholder="https://hooks.slack.com/services/…"
-        value={slackWebhook}
-        onChange={e => setSlackWebhook(e.target.value)}
-        disabled={!loaded || saving}
-      />
-    </Paper>
   );
 }

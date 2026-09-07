@@ -28,14 +28,6 @@ vi.mock("./bindings.service", () => ({
   bindingArtifactKeyByName: vi.fn(
     async () => "apps/bindings/connection/binding.parquet",
   ),
-  readBinding: vi.fn(async () => ({
-    name: "binding",
-    connectionId: "connection",
-    materialization: "parquet",
-    code: "select 1",
-    sql: "select 1",
-    policy: { roles: null, rowFilters: {} },
-  })),
   materializeAppBinding: vi.fn(async () => ({
     rowCount: 1,
     byteSize: 10,

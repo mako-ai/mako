@@ -1,6 +1,4 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { JOB_ROLES } from "@mako/schemas";
-import { normalizeAutoJoin } from "../services/auto-join.service";
 import {
   isSessionAuth,
   unifiedAuthMiddleware,
@@ -32,11 +30,7 @@ import {
   optionalWorkspace,
 } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
-import {
-  Workspace,
-  type IWorkspaceAutoJoin,
-  encrypt,
-} from "../database/workspace-schema";
+import { Workspace } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { normalizeEmail } from "../utils/email.utils";
 import { loggers } from "../logging";
@@ -51,16 +45,6 @@ import {
 } from "../openapi/core";
 
 const MemberRole = z.enum(["admin", "member", "viewer"]);
-/** What the person does — read by published apps as the viewer's role. */
-const JobRoleField = z.enum(JOB_ROLES);
-const CountryField = z
-  .string()
-  .transform(v => v.trim().toUpperCase())
-  .pipe(
-    z
-      .string()
-      .regex(/^[A-Z]{2}$/, "country must be an ISO 3166-1 alpha-2 code"),
-  );
 /**
  * A workspace name is a LABEL, not a document. Unbounded free text pasted
  * at onboarding (entire app prompts, SQL queries) poisoned every list that
@@ -100,30 +84,9 @@ const UpdateWorkspaceBody = jsonBody(
 const AddMemberBody = jsonBody(
   z.object({ userId: z.string(), role: MemberRole }),
 );
-const UpdateMemberBody = jsonBody(
-  z.object({
-    role: MemberRole.optional(),
-    jobRole: JobRoleField.nullable().optional(),
-    country: CountryField.nullable().optional(),
-  }),
-);
-const AutoJoinBody = jsonBody(
-  z.object({
-    domains: z.array(z.string()).max(20),
-    role: z.enum(["member", "viewer"]).default("viewer"),
-    jobRole: JobRoleField.nullable().optional(),
-    country: CountryField.nullable().optional(),
-    /** Slack incoming webhook for "please assign role to …"; null clears, absent keeps. */
-    slackWebhookUrl: z.string().url().max(500).nullable().optional(),
-  }),
-);
+const UpdateMemberRoleBody = jsonBody(z.object({ role: MemberRole }));
 const CreateInviteBody = jsonBody(
-  z.object({
-    email: z.string(),
-    role: MemberRole,
-    jobRole: JobRoleField.optional(),
-    country: CountryField.optional(),
-  }),
+  z.object({ email: z.string(), role: MemberRole }),
 );
 const AcpPlanDecisionBody = jsonBody(
   z.object({
@@ -185,22 +148,8 @@ type WorkspaceMemberResponseSource = {
   _id: unknown;
   userId?: unknown;
   role: string;
-  jobRole?: string;
-  country?: string;
-  profilePending?: boolean;
   joinedAt: unknown;
 };
-
-function serializeAutoJoin(autoJoin: IWorkspaceAutoJoin | null | undefined) {
-  if (!autoJoin || autoJoin.domains.length === 0) return null;
-  return {
-    domains: autoJoin.domains,
-    role: autoJoin.role,
-    jobRole: autoJoin.jobRole ?? null,
-    country: autoJoin.country ?? null,
-    slackWebhookConfigured: !!autoJoin.slackWebhookUrlEncrypted,
-  };
-}
 
 function serializeWorkspaceMember(member: WorkspaceMemberResponseSource) {
   const populatedUser =
@@ -213,9 +162,6 @@ function serializeWorkspaceMember(member: WorkspaceMemberResponseSource) {
     userId: populatedUser?._id ?? member.userId,
     email: typeof populatedUser?.email === "string" ? populatedUser.email : "",
     role: member.role,
-    jobRole: member.jobRole ?? null,
-    country: member.country ?? null,
-    profilePending: member.profilePending === true,
     joinedAt: member.joinedAt,
   };
 }
@@ -313,13 +259,11 @@ workspaceRoutes.openapi(
       const workspaces = await workspaceService.getWorkspacesForUser(user.id);
       return c.json({
         success: true,
-        data: workspaces.map(({ workspace, role, profilePending }) => ({
+        data: workspaces.map(({ workspace, role }) => ({
           id: workspace._id,
           name: workspace.name,
           slug: workspace.slug,
           role,
-          // Waiting for an admin to set a job role (domain auto-join).
-          profilePending: profilePending === true,
           createdAt: workspace.createdAt,
           updatedAt: workspace.updatedAt,
           settings: workspace.settings,
@@ -1228,19 +1172,14 @@ workspaceRoutes.openapi(
     method: "put",
     path: "/{id}/members/{userId}",
     tags: ["Workspaces"],
-    summary: "Update a member's access role, job role or country",
-    description:
-      "`role` is the access level (admin, member, viewer). `jobRole` and " +
-      "`country` are the member's profile — published apps read them as the " +
-      "viewer's `role` and `country` claims to scope their data (apps.md §27). " +
-      "Pass null to clear a profile field. At least one field is required.",
+    summary: "Update a member's role",
     security: AUTH_SECURITY,
     middleware: [
       unifiedAuthMiddleware,
       requireWorkspace,
       requireWorkspaceRole(["owner", "admin"]),
     ] as const,
-    request: { params: IdUserParam, body: UpdateMemberBody },
+    request: { params: IdUserParam, body: UpdateMemberRoleBody },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
@@ -1248,43 +1187,39 @@ workspaceRoutes.openapi(
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
       const userId = c.req.param("userId");
-      const body = c.req.valid("json");
-      const { role, jobRole, country } = body;
+      const body = await c.req.json();
+      const { role } = body;
 
       if (workspaceId !== workspace._id.toString()) {
         return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
       }
 
-      if (
-        role === undefined &&
-        jobRole === undefined &&
-        country === undefined
-      ) {
+      if (!role || !["admin", "member", "viewer"].includes(role)) {
         return c.json(
           {
             success: false,
-            error: "Nothing to update: pass role, jobRole or country",
+            error: "Valid role is required (admin, member, or viewer)",
           },
           400,
         );
       }
 
-      // The owner's ACCESS role is not for changing; their profile is.
+      // Don't allow changing owner role
       const currentMember = await workspaceService.getMember(
         workspaceId,
         userId,
       );
-      if (role !== undefined && currentMember?.role === "owner") {
+      if (currentMember?.role === "owner") {
         return c.json(
           { success: false, error: "Cannot change owner role" },
           403,
         );
       }
 
-      const updatedMember = await workspaceService.updateMember(
+      const updatedMember = await workspaceService.updateMemberRole(
         workspaceId,
         userId,
-        { role, jobRole, country, actor: c.get("user")?.email },
+        role,
       );
 
       if (!updatedMember) {
@@ -1370,126 +1305,6 @@ workspaceRoutes.openapi(
   },
 );
 
-// Domain auto-join — read
-workspaceRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/auto-join",
-    tags: ["Workspaces"],
-    summary: "Domain auto-join settings",
-    description:
-      "Email domains whose signed-in users become members on first contact " +
-      "(no invitation), and the access role, job role and country they get. " +
-      "`null` when off. How a rep opens a published app link, signs in with " +
-      "Google and lands on their own view (apps.md §27).",
-    security: AUTH_SECURITY,
-    middleware: [
-      unifiedAuthMiddleware,
-      requireWorkspace,
-      requireWorkspaceRole(["owner", "admin"]),
-    ] as const,
-    request: { params: IdParam },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    const workspace = c.get("workspace");
-    if (c.req.param("id") !== workspace._id.toString()) {
-      return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
-    }
-    const fresh = await workspaceService.getWorkspaceById(
-      workspace._id.toString(),
-    );
-    return c.json({
-      success: true,
-      data: serializeAutoJoin(fresh?.settings?.autoJoin),
-    });
-  },
-);
-
-// Domain auto-join — write (an empty domain list turns it off)
-workspaceRoutes.openapi(
-  createRoute({
-    method: "put",
-    path: "/{id}/auto-join",
-    tags: ["Workspaces"],
-    summary: "Set domain auto-join",
-    security: AUTH_SECURITY,
-    middleware: [
-      unifiedAuthMiddleware,
-      requireWorkspace,
-      requireWorkspaceRole(["owner", "admin"]),
-    ] as const,
-    request: { params: IdParam, body: AutoJoinBody },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspace = c.get("workspace");
-      const workspaceId = c.req.param("id");
-      if (workspaceId !== workspace._id.toString()) {
-        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
-      }
-      const body = c.req.valid("json");
-      const normalized = normalizeAutoJoin(body);
-      if (normalized) {
-        const current = (await workspaceService.getWorkspaceById(workspaceId))
-          ?.settings?.autoJoin;
-        if (body.slackWebhookUrl === undefined) {
-          if (current?.slackWebhookUrlEncrypted) {
-            normalized.slackWebhookUrlEncrypted =
-              current.slackWebhookUrlEncrypted;
-          }
-        } else if (body.slackWebhookUrl) {
-          if (!/^https:\/\/hooks\.slack\.com\//.test(body.slackWebhookUrl)) {
-            return c.json(
-              {
-                success: false,
-                error:
-                  "The Slack webhook must start with https://hooks.slack.com/",
-              },
-              400,
-            );
-          }
-          normalized.slackWebhookUrlEncrypted = encrypt(body.slackWebhookUrl);
-        }
-      }
-      const rejected = body.domains
-        .filter(
-          d =>
-            !normalized?.domains.includes(
-              d.trim().toLowerCase().replace(/^@/, ""),
-            ),
-        )
-        .filter(d => d.trim() !== "");
-      if (rejected.length > 0) {
-        return c.json(
-          { success: false, error: `Not a domain: ${rejected.join(", ")}` },
-          400,
-        );
-      }
-      await workspaceService.setAutoJoin(workspaceId, normalized);
-      logger.info("Workspace auto-join updated", {
-        workspaceId,
-        by: c.get("user")?.id,
-        domains: normalized?.domains ?? [],
-      });
-      return c.json({ success: true, data: serializeAutoJoin(normalized) });
-    } catch (error) {
-      logger.error("Error updating auto-join", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to update auto-join",
-        },
-        500,
-      );
-    }
-  },
-);
-
 // Create workspace invite
 workspaceRoutes.openapi(
   createRoute({
@@ -1511,8 +1326,8 @@ workspaceRoutes.openapi(
       const user = c.get("user");
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
-      const body = c.req.valid("json");
-      const { email, role, jobRole, country } = body;
+      const body = await c.req.json();
+      const { email, role } = body;
 
       if (workspaceId !== workspace._id.toString()) {
         return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
@@ -1541,7 +1356,6 @@ workspaceRoutes.openapi(
         email,
         role,
         user.id,
-        { jobRole, country },
       );
 
       return c.json(
@@ -1551,8 +1365,6 @@ workspaceRoutes.openapi(
             id: invite._id,
             email: invite.email,
             role: invite.role,
-            jobRole: invite.jobRole ?? null,
-            country: invite.country ?? null,
             token: invite.token,
             expiresAt: invite.expiresAt,
           },
@@ -1604,8 +1416,6 @@ workspaceRoutes.openapi(
           id: invite._id,
           email: invite.email,
           role: invite.role,
-          jobRole: invite.jobRole ?? null,
-          country: invite.country ?? null,
           invitedBy: invite.invitedBy?.email || "",
           expiresAt: invite.expiresAt,
         })),

@@ -2,7 +2,6 @@ import { AuthProvider } from "../contexts/auth-context";
 import { WorkspaceProvider } from "../contexts/workspace-context";
 import { OnboardingProvider } from "../contexts/onboarding-context";
 import { ProtectedRoute } from "./ProtectedRoute";
-import { PendingProfileGate } from "./PendingProfileGate";
 
 interface AuthWrapperProps {
   children: React.ReactNode;
@@ -20,9 +19,7 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
     <AuthProvider>
       <OnboardingProvider>
         <WorkspaceProvider>
-          <ProtectedRoute>
-            <PendingProfileGate>{children}</PendingProfileGate>
-          </ProtectedRoute>
+          <ProtectedRoute>{children}</ProtectedRoute>
         </WorkspaceProvider>
       </OnboardingProvider>
     </AuthProvider>

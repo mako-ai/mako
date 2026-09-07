@@ -4086,8 +4086,7 @@
         "tags": [
           "Workspaces"
         ],
-        "summary": "Update a member's access role, job role or country",
-        "description": "`role` is the access level (admin, member, viewer). `jobRole` and `country` are the member's profile — published apps read them as the viewer's `role` and `country` claims to scope their data (apps.md §27). Pass null to clear a profile field. At least one field is required.",
+        "summary": "Update a member's role",
         "security": [
           {
             "cookieAuth": []
@@ -4128,30 +4127,11 @@
                       "member",
                       "viewer"
                     ]
-                  },
-                  "jobRole": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "enum": [
-                      "sdr",
-                      "bdr",
-                      "csm",
-                      "head_of_csm",
-                      "team_leader",
-                      "developer",
-                      "admin",
-                      null
-                    ]
-                  },
-                  "country": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
                   }
-                }
+                },
+                "required": [
+                  "role"
+                ]
               }
             }
           }
@@ -4276,203 +4256,6 @@
         "operationId": "delete_api_workspaces_id_members_userId"
       }
     },
-    "/api/workspaces/{id}/auto-join": {
-      "get": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Domain auto-join settings",
-        "description": "Email domains whose signed-in users become members on first contact (no invitation), and the access role, job role and country they get. `null` when off. How a rep opens a published app link, signs in with Google and lands on their own view (apps.md §27).",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_id_auto_join"
-      },
-      "put": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Set domain auto-join",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "domains": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "maxItems": 20
-                  },
-                  "role": {
-                    "type": "string",
-                    "enum": [
-                      "member",
-                      "viewer"
-                    ],
-                    "default": "viewer"
-                  },
-                  "jobRole": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "enum": [
-                      "sdr",
-                      "bdr",
-                      "csm",
-                      "head_of_csm",
-                      "team_leader",
-                      "developer",
-                      "admin",
-                      null
-                    ]
-                  },
-                  "country": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "slackWebhookUrl": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "maxLength": 500,
-                    "format": "uri"
-                  }
-                },
-                "required": [
-                  "domains"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "put_api_workspaces_id_auto_join"
-      }
-    },
     "/api/workspaces/{id}/invites": {
       "post": {
         "tags": [
@@ -4514,21 +4297,6 @@
                       "member",
                       "viewer"
                     ]
-                  },
-                  "jobRole": {
-                    "type": "string",
-                    "enum": [
-                      "sdr",
-                      "bdr",
-                      "csm",
-                      "head_of_csm",
-                      "team_leader",
-                      "developer",
-                      "admin"
-                    ]
-                  },
-                  "country": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -25754,7 +25522,7 @@
           "Apps"
         ],
         "summary": "Serve a binding's materialized parquet artifact",
-        "description": "Redirects to a short-lived signed bucket URL when the artifact store supports it (the browser downloads directly from the bucket); streams the bytes otherwise. Follow redirects. This is the BUILDER path: it serves the whole artifact regardless of viewer roles. Pass `?as=<email>` to preview what that viewer's role would receive (row-filtered, or 404 when the role may not read the binding).",
+        "description": "Redirects to a short-lived signed bucket URL when the artifact store supports it (the browser downloads directly from the bucket); streams the bytes otherwise. Follow redirects.",
         "security": [
           {
             "cookieAuth": []
@@ -25787,14 +25555,6 @@
             "required": true,
             "name": "name",
             "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "as",
-            "in": "query"
           }
         ],
         "responses": {
@@ -25843,92 +25603,6 @@
           }
         },
         "operationId": "get_api_workspaces_workspaceId_apps_id_bindings_name_artifact"
-      }
-    },
-    "/api/workspaces/{workspaceId}/apps/{id}/viewer": {
-      "get": {
-        "tags": [
-          "Apps"
-        ],
-        "summary": "The caller's viewer role for this app (apps.md §27)",
-        "description": "What `__data/viewer.json` will say for the caller — their job role and country from their workspace membership (the Members page). `role` is null for a member nobody assigned yet. Builders may pass `?as=<email>` to see another viewer's resolution (a laptop `vite dev` uses this to preview a role).",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "as",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_apps_id_viewer"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/materialize": {

@@ -76,27 +76,6 @@ export function refreshBindings(
   names?: string[],
 ): Promise<RefreshResult[]>;
 
-/** The person viewing the app, as Mako resolved them (apps.md §27). */
-export interface Viewer {
-  /** Signed-in email; null on an anonymous share or an older server. */
-  email: string | null;
-  /** Role from the app's mako.json `viewers` block; null when it has none. */
-  role: string | null;
-  /** `email`, `role`, plus the member's own claims from mako.json. */
-  claims: Record<string, string>;
-}
-export interface ViewerState {
-  viewer: Viewer | null;
-  loading: boolean;
-  error: string | null;
-}
-
-/**
- * Who is looking and what role they hold. The data the app receives is
- * already scoped to that role server-side; use this to shape the UI.
- */
-export function useViewer(): ViewerState;
-
 export function useTheme(): { theme: "light" | "dark" };
 export function useLocation(): MakoLocation;
 export function useSearchParams(): [

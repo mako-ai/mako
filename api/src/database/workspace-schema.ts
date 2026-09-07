@@ -1,5 +1,4 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
-import { JOB_ROLES, type JobRole } from "@mako/schemas";
 import { v4 as uuidv4 } from "uuid";
 import { encryptString, decryptString } from "../services/crypto.service";
 import { loggers } from "../logging";
@@ -128,13 +127,6 @@ export interface IWorkspace extends Document {
      * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     dashboardRefreshConcurrency?: number;
-    /**
-     * Domain auto-join (apps.md §27): a signed-in person whose email domain
-     * is listed becomes a member on first contact with the workspace — no
-     * invitation — with this access role, job role and country. How a rep
-     * clicks the app link, signs in with Google, and lands on their view.
-     */
-    autoJoin?: IWorkspaceAutoJoin;
   };
   billing: IWorkspaceBilling;
   apiKeys?: IWorkspaceApiKey[];
@@ -185,17 +177,6 @@ export interface IWorkspaceApiKey {
   createdBy: string;
 }
 
-export interface IWorkspaceAutoJoin {
-  /** Lowercase email domains, exact match (no sub-domains). */
-  domains: string[];
-  role: "member" | "viewer";
-  /** Set = newcomers get it at once. Unset = they wait for an admin (profilePending). */
-  jobRole?: JobRole;
-  country?: string;
-  /** Slack incoming webhook (encrypted) told about each newcomer waiting for a role. */
-  slackWebhookUrlEncrypted?: string;
-}
-
 /**
  * WorkspaceMember model interface
  */
@@ -204,21 +185,6 @@ export interface IWorkspaceMember extends Document {
   workspaceId: Types.ObjectId;
   userId: string;
   role: "owner" | "admin" | "member" | "viewer";
-  /**
-   * What the person does (sdr, bdr, csm, …) — NOT an access level. Published
-   * apps read it as the viewer's `role` claim and scope their data by it
-   * (apps.md §27). Unset = the member sees nothing an app scopes by role.
-   */
-  jobRole?: JobRole;
-  /** ISO 3166-1 alpha-2; the viewer's `country` claim. */
-  country?: string;
-  /**
-   * Auto-joined without a job role: waiting for an admin to set one. Until
-   * then the person sees a "please wait" page instead of apps or the IDE.
-   */
-  profilePending?: boolean;
-  /** Where they were going when they joined — what the "you're in" email links to. */
-  pendingReturnTo?: string;
   joinedAt: Date;
   /** True only for the first workspace auto-created during user onboarding */
   isDefaultMembership?: boolean;
@@ -233,9 +199,6 @@ export interface IWorkspaceInvite extends Document {
   email: string;
   token: string;
   role: "admin" | "member" | "viewer";
-  /** Copied onto the membership when the invite is accepted. */
-  jobRole?: JobRole;
-  country?: string;
   invitedBy: string;
   expiresAt: Date;
   acceptedAt?: Date;
@@ -1329,28 +1292,6 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         default: 2,
         min: 1,
       },
-      autoJoin: {
-        type: new Schema(
-          {
-            domains: [{ type: String, lowercase: true, trim: true }],
-            role: {
-              type: String,
-              enum: ["member", "viewer"],
-              default: "viewer",
-            },
-            jobRole: { type: String, enum: JOB_ROLES },
-            country: {
-              type: String,
-              uppercase: true,
-              trim: true,
-              match: /^[A-Z]{2}$/,
-            },
-            slackWebhookUrlEncrypted: { type: String },
-          },
-          { _id: false },
-        ),
-        required: false,
-      },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },
@@ -1479,10 +1420,6 @@ const WorkspaceMemberSchema = new Schema<IWorkspaceMember>({
     enum: ["owner", "admin", "member", "viewer"],
     required: true,
   },
-  jobRole: { type: String, enum: JOB_ROLES },
-  country: { type: String, uppercase: true, trim: true, match: /^[A-Z]{2}$/ },
-  profilePending: { type: Boolean },
-  pendingReturnTo: { type: String },
   joinedAt: {
     type: Date,
     default: Date.now,
@@ -1528,8 +1465,6 @@ const WorkspaceInviteSchema = new Schema<IWorkspaceInvite>({
     enum: ["admin", "member", "viewer"],
     required: true,
   },
-  jobRole: { type: String, enum: JOB_ROLES },
-  country: { type: String, uppercase: true, trim: true, match: /^[A-Z]{2}$/ },
   invitedBy: {
     type: String,
     ref: "User",

@@ -45,40 +45,6 @@ or 502 with the query's error.
 Data arrives from `__data/<name>.parquet`, relative to the page — the same
 path in Mako's sandbox, in a published app, and on a laptop.
 
-### Viewer roles
-
-An app can show different views by role — team leaders see everything, a
-rep sees their own rows — and Mako enforces it before the data reaches the
-browser. Who is what is NOT in the repo: an admin sets each member's **job
-role** (sdr, bdr, csm, head_of_csm, team_leader, developer, admin) and
-**country** on the workspace's Members page, and the published app receives
-them as the viewer's `role` and `country` claims next to their `email`.
-Then scope each binding in its front matter:
-
-```sql
--- roles: team_lead, bdr                                 (who may read it; omit = everyone)
--- row_filter_bdr: sales_rep_email = {{ viewer.email }}  (rows a role gets; omit = all rows)
-```
-
-`{{ viewer.<claim> }}` is bound as a parameter, never spliced into SQL; the
-claims are `email`, `role` and `country`. A binding with `roles` or any
-`row_filter_*` is **scoped**: a member whose job role was never set, and an
-anonymous share link, get only the unscoped bindings (fail closed). A role
-the binding has no filter for gets every row. The **admin** job role sees
-everything, whatever the front matter says — and a workspace owner or admin
-who never set a job role counts as admin.
-In the app:
-
-```tsx
-import { useViewer } from "@makoai/app-sdk";
-
-const { viewer, loading } = useViewer();
-// viewer.role is "team_leader" | "bdr" | … — or null when nobody set this member's job role yet.
-```
-
-Who may *open* the app is still the app's access setting in Mako; front
-matter only narrows what an admitted viewer sees.
-
 ## In `vite.config.ts`
 
 ```ts
@@ -95,11 +61,6 @@ materialized is built on first request, and `POST __data/<name>/refresh`
 `node_modules/.mako-data/` for five minutes (`?refresh` bypasses; a stale
 copy is served if the API is unreachable). It is `apply: "serve"` only —
 production builds never load it.
-
-It also answers `__data/viewer.json` (the developer's own role), and
-`MAKO_VIEWER_AS=<email>` — in the environment or the repo's `.env` — previews
-the app as that viewer: role, binding list and row filters exactly as Mako
-would serve them.
 
 Credentials, in order: `MAKO_API_URL` / `MAKO_API_KEY` in the environment,
 then in the repo-root `.env`. The workspace id comes from
