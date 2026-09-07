@@ -339,10 +339,12 @@ export class WorkspaceService {
     if (existingInvite) {
       existingInvite.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       existingInvite.invitedBy = invitedBy as any;
-      if (profile.jobRole !== undefined)
+      if (profile.jobRole !== undefined) {
         existingInvite.jobRole = profile.jobRole ?? undefined;
-      if (profile.country !== undefined)
+      }
+      if (profile.country !== undefined) {
         existingInvite.country = profile.country ?? undefined;
+      }
       await existingInvite.save();
       await this.sendInviteEmail(workspaceId, invitedBy, existingInvite);
       return existingInvite;
