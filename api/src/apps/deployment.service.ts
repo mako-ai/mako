@@ -6,8 +6,12 @@
  *
  * Immutability is the whole design. Because every deployment keeps its own
  * prefix, rolling back is repointing `publishedSha` at an earlier sha — no
- * rebuild, no sandbox, and no risk that "the last good version" has drifted.
- * It also means a deployment can be linked to by sha.
+ * build, no sandbox, and no risk that "the last good version" has drifted.
+ * It also means a deployment can be linked to by sha. The one thing a
+ * rollback does prepare first is its DATA: a scheduled binding whose artifact
+ * predates the schedule's latest occurrence is re-materialized before the
+ * repoint (ensureDeploymentBindings), so an old sha never brings old numbers
+ * back with it.
  *
  * Deployments live in the same artifact store as dashboards and bindings (GCS
  * in deployed environments), so they survive API restarts and are shared
@@ -32,7 +36,9 @@ import {
   bindingArtifactKeyByName,
   materializeAppBinding,
   readBindingsTolerant,
+  type AppBinding,
 } from "./bindings.service";
+import { isCronDue, nextCronRunAt } from "../services/cron-due";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { resolveAppViewer, type ViewerIdentity } from "./app-viewer.service";
 import { loggers } from "../logging";
@@ -293,18 +299,103 @@ export interface DeploymentBindingReadiness {
 }
 
 /**
+ * Whether an artifact that already exists for `binding` may be served as-is.
+ *
+ * Content addressing answers "same query?", not "current data?". Scheduler
+ * state is per binding NAME, so when a merge reverts a query to an earlier
+ * text, the old text's artifact is still in the store (built before the
+ * edit) while the scheduler believes it ran the binding this morning — it
+ * did, for the other text. Reusing that artifact served day-old numbers for
+ * a whole day (#992). A scheduled binding's artifact therefore counts only
+ * if it is at least as fresh as the schedule's latest occurrence, judged by
+ * the store's own write time: no state read, no warehouse query, and the
+ * common case (built by this morning's sweep) still reuses. An unknown
+ * write time is treated as stale — one extra warehouse query is the cheap
+ * side of that mistake.
+ *
+ * The write time is the artifact's own, which is why it has the same scope
+ * as the content-addressed key (another app, a branch build or the sweep may
+ * all have written it). Two known limits: a binding on a sub-tick cron (every
+ * 15 minutes) is almost always overdue at publish time, so a code-only
+ * publish of such an app pays one warehouse query per such binding; and
+ * adoptBindingArtifact (v1 → v2 migration) COPIES an old artifact, so its
+ * write time is the adoption time until the scheduler's next tick rebuilds
+ * it from the run it recorded at `builtAt`.
+ */
+async function isBindingArtifactCurrent(
+  store: DashboardArtifactStore,
+  key: string,
+  binding: AppBinding,
+  context: { projectId: string; sha: string; now: Date },
+): Promise<boolean> {
+  if (!binding.schedule) return true;
+  const { projectId, sha, now } = context;
+  // Validate the cron before paying the metadata round trip. The scheduler
+  // skips a binding whose cron it cannot parse; publish treats it the same
+  // way (effectively unscheduled) rather than failing the release.
+  try {
+    nextCronRunAt(binding.schedule, { timezone: binding.timezone, from: now });
+  } catch (error) {
+    logger.warn("Invalid binding schedule", {
+      projectId,
+      sha,
+      binding: binding.name,
+      schedule: binding.schedule,
+      timezone: binding.timezone ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return true;
+  }
+  const builtAt = await store.getLastModified(key);
+  if (
+    builtAt &&
+    !isCronDue({
+      cron: binding.schedule,
+      timezone: binding.timezone,
+      lastRunAt: builtAt,
+      now,
+    })
+  ) {
+    return true;
+  }
+  logger.info("Apps deployment rebuilds stale binding artifact", {
+    projectId,
+    sha,
+    binding: binding.name,
+    key,
+    storeType: store.type,
+    schedule: binding.schedule,
+    timezone: binding.timezone ?? null,
+    builtAt: builtAt?.toISOString() ?? null,
+    reason: builtAt ? "overdue" : "unknown-build-time",
+  });
+  return false;
+}
+
+/**
  * Make the data contract of a deployment ready before it becomes live.
  *
  * Binding definitions are read at the exact deployment commit, never from a
  * mutable worktree. Their artifacts are content-addressed, so an unchanged
  * query is a cheap existence check while a changed/new query is materialized
- * once. A failure propagates to the durable deploy job and, critically, the
- * caller has not moved `publishedSha` yet.
+ * once — unless the binding is scheduled and the existing artifact predates
+ * the schedule's latest occurrence (isBindingArtifactCurrent), in which case
+ * it is rebuilt exactly like a missing one. A failure propagates to the
+ * durable deploy job and, critically, the caller has not moved
+ * `publishedSha` yet. That includes a scheduled binding whose query is
+ * currently broken: once its artifact is overdue it blocks every publish
+ * and rollback of the app (silent reuse of the old artifact IS #992) —
+ * fix or unschedule the binding to release.
  */
 export async function ensureDeploymentBindings(
   project: IAppProject,
   sha: string,
+  options: {
+    /** The moment freshness is judged against; injectable for tests. */
+    now?: Date;
+  } = {},
 ): Promise<DeploymentBindingReadiness> {
+  const projectId = project._id.toString();
   const { bindings, skipped } = await readBindingsTolerant(
     project,
     PUBLISH_ACTOR,
@@ -312,7 +403,7 @@ export async function ensureDeploymentBindings(
   );
   if (skipped.length > 0) {
     logger.warn("Apps deployment skips malformed bindings", {
-      projectId: project._id.toString(),
+      projectId,
       sha,
       skipped,
     });
@@ -334,7 +425,18 @@ export async function ensureDeploymentBindings(
   };
   for (const binding of bindings) {
     const key = bindingArtifactKey(binding);
-    if (await artifactStoreForRead(key)) {
+    const store = await artifactStoreForRead(key);
+    // Judged per binding: an earlier binding's rebuild can take minutes, and
+    // a schedule may have come due meanwhile.
+    const now = options.now ?? new Date();
+    if (
+      store &&
+      (await isBindingArtifactCurrent(store, key, binding, {
+        projectId,
+        sha,
+        now,
+      }))
+    ) {
       readiness.reused.push(binding.name);
       continue;
     }
@@ -345,7 +447,7 @@ export async function ensureDeploymentBindings(
   }
 
   logger.info("Apps deployment bindings ready", {
-    projectId: project._id.toString(),
+    projectId,
     sha,
     required: readiness.required.length,
     reused: readiness.reused.length,
