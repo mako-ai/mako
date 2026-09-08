@@ -22,8 +22,10 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
+  getBindingState,
   readBindings,
   readBindingsTolerant,
+  recordBindingRun,
 } from "./bindings.service";
 import { createProject, ensureWorktree, writeFile } from "./worktree.service";
 import { initRepo, repoDirFor } from "./repository.service";
@@ -156,5 +158,40 @@ describe("bindingArtifactKeyByName", () => {
     await expect(
       bindingArtifactKeyByName(project, "../../etc/passwd", USER),
     ).resolves.toBeNull();
+  });
+});
+
+describe("recordBindingRun", () => {
+  it("keeps which artifact each run built, newest first", async () => {
+    const projectId = new Types.ObjectId().toString();
+    const keyA = bindingArtifactKey({
+      connectionId: "conn-a",
+      code: "SELECT 1",
+    });
+    const keyB = bindingArtifactKey({
+      connectionId: "conn-a",
+      code: "SELECT 2",
+    });
+
+    await recordBindingRun(projectId, "revenue", {
+      at: new Date("2026-09-07T05:49:00Z"),
+      status: "ready",
+      rowCount: 3,
+      artifactKey: keyA,
+    });
+    await recordBindingRun(projectId, "revenue", {
+      at: new Date("2026-09-08T05:47:00Z"),
+      status: "error",
+      error: "boom",
+      artifactKey: keyB,
+    });
+
+    const state = await getBindingState(projectId, "revenue");
+    // Newest first; the key survives the (strict) history subdocument schema.
+    expect(state?.history?.map(run => [run.status, run.artifactKey])).toEqual([
+      ["error", keyB],
+      ["ready", keyA],
+    ]);
+    expect(state?.lastMaterializedAt).toEqual(new Date("2026-09-07T05:49:00Z"));
   });
 });

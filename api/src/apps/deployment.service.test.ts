@@ -5,13 +5,18 @@ import type { DashboardArtifactStore } from "../services/dashboard-artifact-stor
 const stores = vi.hoisted(() => ({
   primary: undefined as DashboardArtifactStore | undefined,
   source: undefined as DashboardArtifactStore | undefined,
-  bindings: [] as Array<{
-    name: string;
-    connectionId: string;
-    materialization: "parquet" | "live";
-    code: string;
-    sql: string;
-  }>,
+  bindings: [] as Array<
+    Pick<
+      AppBinding,
+      | "name"
+      | "connectionId"
+      | "materialization"
+      | "schedule"
+      | "timezone"
+      | "code"
+      | "sql"
+    >
+  >,
   skipped: [] as Array<{ path: string; error: string }>,
 }));
 
@@ -82,9 +87,14 @@ import {
 import {
   materializeAppBinding,
   readBindingsTolerant,
+  type AppBinding,
 } from "./bindings.service";
 
-function mockStore(existingKeys: string[]): DashboardArtifactStore {
+function mockStore(
+  existingKeys: string[],
+  /** Write time per key; an existing key without one has an unknown time. */
+  modifiedAt: Record<string, Date> = {},
+): DashboardArtifactStore {
   const keys = new Set(existingKeys);
   return {
     type: "gcs",
@@ -96,6 +106,9 @@ function mockStore(existingKeys: string[]): DashboardArtifactStore {
       keys.has(key) ? Readable.from(["deployment"]) : null,
     ),
     getSize: vi.fn(async key => (keys.has(key) ? 10 : null)),
+    getLastModified: vi.fn(async key =>
+      keys.has(key) ? (modifiedAt[key] ?? null) : null,
+    ),
     delete: vi.fn(),
   };
 }
@@ -245,6 +258,180 @@ describe("deployment binding readiness", () => {
     // — its data URL 404s exactly as the serving path already isolates it.
     expect(result.materialized).toEqual(["sales"]);
     expect(result.skipped).toEqual(stores.skipped);
+  });
+
+  describe("scheduled bindings", () => {
+    const key = "apps/bindings/warehouse/sales.parquet";
+    // "44 7 * * *" Europe/Paris = 05:44Z in September (CEST).
+    const schedule = { schedule: "44 7 * * *", timezone: "Europe/Paris" };
+    const deployAt = new Date("2026-09-08T06:46:00Z");
+
+    it("reuses an artifact built after the schedule's latest occurrence", async () => {
+      stores.bindings[0] = { ...stores.bindings[0], ...schedule };
+      stores.primary = mockStore([key], {
+        [key]: new Date("2026-09-08T05:47:00Z"),
+      });
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      expect(result.reused).toEqual(["sales"]);
+      expect(result.materialized).toEqual([]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
+    });
+
+    it("rebuilds an artifact older than the schedule's latest occurrence at the deployment sha", async () => {
+      stores.bindings[0] = { ...stores.bindings[0], ...schedule };
+      stores.primary = mockStore([key], {
+        [key]: new Date("2026-09-07T12:00:00Z"),
+      });
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      expect(result.reused).toEqual([]);
+      expect(result.materialized).toEqual(["sales"]);
+      expect(materializeAppBinding).toHaveBeenCalledWith(
+        project,
+        "sales",
+        "publish",
+        { at: sha },
+      );
+    });
+
+    it("reproduces #992: a merge reverting the query to an older text must not serve yesterday's build", async () => {
+      // fr-sales-dashboard, binding fr_demos, "44 7 * * *" Europe/Paris.
+      // Day 1 07:49: the scheduler built text A. Day 1 17:24: an edit to
+      // text B was published. Day 2 07:47: the scheduler built B (main).
+      // Day 2 08:45: a merge reverted the file to A. A's key is still in the
+      // store from day 1 NEXT TO the fresh sibling artifact for B, and the
+      // per-name scheduler state says the binding ran today — neither the
+      // sibling nor that state may vouch for A's day-old bytes.
+      const siblingKey = "apps/bindings/warehouse/other-text.parquet";
+      stores.bindings[0] = { ...stores.bindings[0], ...schedule };
+      const primary = mockStore([key, siblingKey], {
+        [key]: new Date("2026-09-07T05:49:00Z"),
+        [siblingKey]: new Date("2026-09-08T05:47:00Z"),
+      });
+      stores.primary = primary;
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: new Date("2026-09-08T06:46:00Z"),
+      });
+
+      expect(result.reused).toEqual([]);
+      expect(result.materialized).toEqual(["sales"]);
+      expect(materializeAppBinding).toHaveBeenCalledTimes(1);
+      expect(materializeAppBinding).toHaveBeenCalledWith(
+        project,
+        "sales",
+        "publish",
+        { at: sha },
+      );
+      expect(primary.getLastModified).toHaveBeenCalledTimes(1);
+      expect(primary.getLastModified).toHaveBeenCalledWith(key);
+    });
+
+    it("materializes a scheduled binding with no artifact exactly once", async () => {
+      stores.bindings[0] = { ...stores.bindings[0], ...schedule };
+      const primary = mockStore([]);
+      stores.primary = primary;
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      expect(result.materialized).toEqual(["sales"]);
+      expect(materializeAppBinding).toHaveBeenCalledTimes(1);
+      // Nothing to date when nothing is there.
+      expect(primary.getLastModified).not.toHaveBeenCalled();
+    });
+
+    it("rebuilds when the store cannot say how old the artifact is", async () => {
+      stores.bindings[0] = { ...stores.bindings[0], ...schedule };
+      stores.primary = mockStore([key]);
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      expect(result.materialized).toEqual(["sales"]);
+      expect(materializeAppBinding).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps reusing an unscheduled binding's artifact however old it is", async () => {
+      const primary = mockStore([key], {
+        [key]: new Date("2020-01-01T00:00:00Z"),
+      });
+      stores.primary = primary;
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      expect(result.reused).toEqual(["sales"]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
+      // Nothing to check without a schedule: no extra store round trip.
+      expect(primary.getLastModified).not.toHaveBeenCalled();
+    });
+
+    it("reuses and warns instead of failing the publish when the schedule is unparseable", async () => {
+      stores.bindings[0] = { ...stores.bindings[0], schedule: "not a cron" };
+      const primary = mockStore([key], {
+        [key]: new Date("2020-01-01T00:00:00Z"),
+      });
+      stores.primary = primary;
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      // The scheduler log-and-skips such a binding; publish must not fail
+      // (or rebuild on every publish) because of it — effectively unscheduled.
+      expect(result.reused).toEqual(["sales"]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
+      expect(primary.getLastModified).not.toHaveBeenCalled();
+    });
+
+    it("treats an unknown timezone like an unparseable schedule", async () => {
+      stores.bindings[0] = {
+        ...stores.bindings[0],
+        ...schedule,
+        timezone: "Mars/Olympus",
+      };
+      const primary = mockStore([key], {
+        [key]: new Date("2020-01-01T00:00:00Z"),
+      });
+      stores.primary = primary;
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      expect(result.reused).toEqual(["sales"]);
+      expect(materializeAppBinding).not.toHaveBeenCalled();
+      expect(primary.getLastModified).not.toHaveBeenCalled();
+    });
+
+    it("reads the build time from the store that holds the artifact", async () => {
+      stores.bindings[0] = { ...stores.bindings[0], ...schedule };
+      const primary = mockStore([]);
+      const source = mockStore([key], {
+        [key]: new Date("2026-09-08T05:47:00Z"),
+      });
+      stores.primary = primary;
+      stores.source = source;
+
+      const result = await ensureDeploymentBindings(project, sha, {
+        now: deployAt,
+      });
+
+      expect(result.reused).toEqual(["sales"]);
+      expect(source.getLastModified).toHaveBeenCalledWith(key);
+      expect(primary.getLastModified).not.toHaveBeenCalled();
+    });
   });
 
   it("rejects dev-only live bindings instead of publishing a broken data URL", async () => {
