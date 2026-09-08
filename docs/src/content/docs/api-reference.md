@@ -46,6 +46,8 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 | `GET`  | `/api/workspaces/:id` | Get workspace details  |
 | `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`dashboardRefreshConcurrency`, `appBindingRefreshConcurrency`; defaults 2, clamped to the per-workspace max) |
 | `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits |
+| `GET`  | `/api/workspaces/:id/auto-join` | Get domain auto-join settings (email domains that auto-join on first sign-in, and the role granted: `member` \| `viewer`) |
+| `PUT`  | `/api/workspaces/:id/auto-join` | Set domain auto-join (`{ domains: string[] (max 20), role?: "member" \| "viewer" }`, default role `viewer`) |
 
 ## Database Connections
 
@@ -363,6 +365,7 @@ Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps 
 | `POST`   | `/api/workspaces/:wid/apps/:id/preview` / `…/dev-preview`     | Published-build preview / live dev server preview          |
 | `POST`   | `/api/workspaces/:wid/apps/:id/public-share`                  | Manage the anonymous public link (also `PATCH`/`DELETE`)   |
 | `GET`    | `/api/workspaces/:wid/apps/:id/sandbox`                       | Sandbox status (also `POST …/sandbox/recycle`)             |
+| `GET`    | `/api/workspaces/:wid/apps/:id/viewer`                        | Resolve the caller's viewer identity (what `useViewer()` sees): id, email, workspace role, app role. Editors may pass `?as=<email>` to preview another member's resolution |
 
 ## Notebooks
 
