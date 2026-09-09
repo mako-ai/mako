@@ -34,9 +34,12 @@ import {
 import { syncBackfillEntityFunction } from "./sync-entity";
 import { emitFlowExecutionTerminalEvent } from "../../services/flow-run-notification.emit";
 import {
+  buildReconcileFlowSelection,
   buildScheduledFlowSelection,
   hasScheduleTrigger,
   hasWebhookTrigger,
+  resolveFlowSchedules,
+  type ResolvedFlowSchedule,
 } from "../../services/flow-triggers.service";
 import { ensureFlowDerivedCache } from "../../services/flow-sync.service";
 
@@ -375,6 +378,7 @@ export const flowFunction = inngest.createFunction(
       backfill,
       backfillRunId,
       backfillEntities,
+      entityScope,
       triggerType: eventTriggerType,
     } = event.data as {
       flowId: string;
@@ -382,6 +386,12 @@ export const flowFunction = inngest.createFunction(
       backfill?: boolean;
       backfillRunId?: string;
       backfillEntities?: string[];
+      /**
+       * Entity narrowing requested by the trigger (a schedule row's scope).
+       * `backfillEntities` is the older name for the same thing on backfill
+       * runs and stays accepted.
+       */
+      entityScope?: string[];
       triggerType?: "manual" | "schedule";
     };
     const runTriggerType: "manual" | "schedule" =
@@ -392,18 +402,21 @@ export const flowFunction = inngest.createFunction(
           : noJitter
             ? "manual"
             : "schedule";
-    const requestedBackfillEntities = Array.isArray(backfillEntities)
-      ? Array.from(
-          new Set(
-            backfillEntities
-              .filter(
-                (entity): entity is string =>
-                  typeof entity === "string" && entity.trim().length > 0,
-              )
-              .map(entity => entity.trim()),
-          ),
-        )
-      : [];
+    const requestedEntityScopeInput = Array.isArray(entityScope)
+      ? entityScope
+      : Array.isArray(backfillEntities)
+        ? backfillEntities
+        : [];
+    const requestedBackfillEntities = Array.from(
+      new Set(
+        requestedEntityScopeInput
+          .filter(
+            (entity): entity is string =>
+              typeof entity === "string" && entity.trim().length > 0,
+          )
+          .map(entity => entity.trim()),
+      ),
+    );
 
     logger.info("Flow function started", {
       flowId,
@@ -1233,7 +1246,7 @@ export const flowFunction = inngest.createFunction(
                   `Invalid entities: ${invalidEntities.join(", ")}. Available: ${availableEntities.join(", ")}`,
                 );
               }
-              if (backfill && scopedBackfillEntities.length > 0) {
+              if (scopedBackfillEntities.length > 0) {
                 const invalidScope = scopedBackfillEntities.filter(
                   entity => !configuredEntities.includes(entity),
                 );
@@ -1247,7 +1260,7 @@ export const flowFunction = inngest.createFunction(
               return configuredEntities;
             }
 
-            if (backfill && scopedBackfillEntities.length > 0) {
+            if (scopedBackfillEntities.length > 0) {
               const invalidScope = scopedBackfillEntities.filter(
                 entity => !availableEntities.includes(entity),
               );
@@ -1432,7 +1445,7 @@ export const flowFunction = inngest.createFunction(
                   );
                 }
 
-                if (backfill && scopedBackfillEntities.length > 0) {
+                if (scopedBackfillEntities.length > 0) {
                   const invalidScope = scopedBackfillEntities.filter(
                     entity => !configuredEntities.includes(entity),
                   );
@@ -1446,7 +1459,7 @@ export const flowFunction = inngest.createFunction(
                 }
               }
 
-              if (backfill && scopedBackfillEntities.length > 0) {
+              if (scopedBackfillEntities.length > 0) {
                 const invalidScope = scopedBackfillEntities.filter(
                   entity => !availableEntities.includes(entity),
                 );
@@ -1994,37 +2007,45 @@ export const flowSchedulerFunction = inngest.createFunction(
     const executedFlows: string[] = [];
     let schedulingJitter = 0;
 
-    // Check each flow to see if it should run
+    // A flow can carry several poll cadences (e.g. hourly for every entity,
+    // plus a slower row scoped to a few heavy ones), so the unit of work here
+    // is one schedule row rather than one flow.
+    const duePolls: { flow: IFlow; schedule: ResolvedFlowSchedule }[] = [];
     for (const flow of flows) {
-      const shouldRun = await step.run(`check-flow-${flow._id}`, async () => {
+      for (const schedule of resolveFlowSchedules(flow)) {
+        if (schedule.kind !== "poll") continue;
+        duePolls.push({ flow, schedule });
+      }
+    }
+
+    for (const { flow, schedule } of duePolls) {
+      const stepKey = `${flow._id}-${schedule.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      const shouldRun = await step.run(`check-flow-${stepKey}`, async () => {
         try {
           const flowLogger = getSyncLogger(`scheduler.${flow._id}`);
 
-          // Safety check: skip flows without a poll cron (a webhook flow
-          // with an enabled schedule is a valid hybrid and must be polled).
-          if (!flow.schedule?.cron) {
-            flowLogger.warn(
-              "CRITICAL: Flow without poll schedule found in scheduler!",
-              {
-                flowId: flow._id.toString(),
-                flowType: flow.type,
-                hasSchedule: !!flow.schedule,
-                hasCron: !!flow.schedule?.cron,
-                schedule: flow.schedule,
-              },
-            );
-            return false;
-          }
+          flowLogger.debug("Checking flow schedule", {
+            flowId: flow._id.toString(),
+            scheduleId: schedule.id,
+            cronExpression: schedule.cron,
+            timezone: schedule.timezone,
+            entityScope: schedule.entities.length ? schedule.entities : "all",
+            currentTime: now.toISOString(),
+          });
+
+          // Legacy `schedule` rows have always tracked their cadence off the
+          // flow-level lastRunAt (stamped by the execution itself); rows from
+          // the `schedules[]` list carry their own, stamped at dispatch.
+          const lastRunSource =
+            schedule.origin === "schedule" ? flow.lastRunAt : schedule.lastRunAt;
 
           // Due = the schedule has an occurrence after the last run that has
-          // already passed (never ran → due). This replaces three hand-rolled
-          // heuristics ("original", "alternative", "missed run") that were
-          // equivalent to exactly this predicate.
+          // already passed (never ran → due).
           if (
             !isCronDue({
-              cron: flow.schedule.cron,
-              timezone: flow.schedule.timezone || "UTC",
-              lastRunAt: flow.lastRunAt ? new Date(flow.lastRunAt) : null,
+              cron: schedule.cron,
+              timezone: schedule.timezone,
+              lastRunAt: lastRunSource ? new Date(lastRunSource) : null,
               now,
             })
           ) {
@@ -2056,6 +2077,7 @@ export const flowSchedulerFunction = inngest.createFunction(
           logger.error(`Failed to parse cron expression for flow ${flow._id}`, {
             error,
             flowId: flow._id.toString(),
+            scheduleId: schedule.id,
           });
           return false;
         }
@@ -2064,15 +2086,32 @@ export const flowSchedulerFunction = inngest.createFunction(
       if (shouldRun) {
         // Add small scheduling jitter (0-5 seconds) between flows to spread out the load
         if (schedulingJitter > 0) {
-          await step.sleep(`scheduling-jitter-${flow._id}`, schedulingJitter);
+          await step.sleep(`scheduling-jitter-${stepKey}`, schedulingJitter);
+        }
+
+        // Rows from the `schedules[]` list own their cadence bookkeeping:
+        // stamp before dispatch so a slow or failed start doesn't re-trigger
+        // on every cron tick.
+        if (schedule.origin === "list") {
+          await step.run(`stamp-schedule-${stepKey}`, async () => {
+            await Flow.updateOne(
+              { _id: new Types.ObjectId(flow._id) },
+              { $set: { "schedules.$[row].lastRunAt": now } },
+              { arrayFilters: [{ "row.id": schedule.id }] },
+            );
+          });
         }
 
         // Trigger the flow (without noJitter flag, so jitter will be applied)
-        await step.sendEvent(`trigger-flow-${flow._id}`, {
+        await step.sendEvent(`trigger-flow-${stepKey}`, {
           name: "flow.execute",
           data: {
             flowId: flow._id.toString(),
             triggerType: "schedule",
+            scheduleId: schedule.id,
+            ...(schedule.entities.length > 0
+              ? { entityScope: schedule.entities }
+              : {}),
           },
         });
 
@@ -2098,10 +2137,11 @@ export const flowSchedulerFunction = inngest.createFunction(
   },
 );
 
-// Scheduled CDC full backfill - triggers a periodic full reconciliation
-// backfill for CDC flows that opted into `backfillSchedule`. The live stream
-// stays active between runs; this just kicks `cdcBackfillService.startBackfill`
-// on the configured cadence.
+// Scheduled full reconcile - runs every schedule row with
+// `kind: "reconcile"` (and the legacy `backfillSchedule`). On the CDC engine
+// the live stream stays active between runs and this just kicks
+// `cdcBackfillService.startBackfill` on the configured cadence; on the legacy
+// engine the same row dispatches a `backfill: true` run.
 export const cdcScheduledBackfillFunction = inngest.createFunction(
   {
     id: "cdc-scheduled-backfill",
@@ -2113,8 +2153,7 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
       "fetch-backfill-scheduled-flows",
       async () => {
         const found = await Flow.find({
-          syncEngine: "cdc",
-          "backfillSchedule.enabled": true,
+          ...buildReconcileFlowSelection(),
           enabled: { $ne: false },
         }).lean();
         return found;
@@ -2124,72 +2163,119 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
     const now = new Date();
     const triggered: string[] = [];
 
+    // One flow can hold several reconcile cadences with different entity
+    // scopes, so iterate schedule rows rather than flows.
+    const dueReconciles: { flow: IFlow; schedule: ResolvedFlowSchedule }[] = [];
     for (const flow of flows) {
+      for (const schedule of resolveFlowSchedules(flow)) {
+        if (schedule.kind !== "reconcile") continue;
+        dueReconciles.push({ flow, schedule });
+      }
+    }
+
+    for (const { flow, schedule } of dueReconciles) {
       const flowId = flow._id.toString();
       const workspaceId = String(flow.workspaceId);
-      const schedule = flow.backfillSchedule;
-      const cron = schedule?.cron;
-      if (!cron) continue;
+      const cron = schedule.cron;
+      const stepKey = `${flowId}-${schedule.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      const isCdcFlow = flow.syncEngine === "cdc";
+      // The legacy `backfillSchedule` field only ever drove CDC flows; keep
+      // that scope so this selection change can't start firing reconciles on
+      // legacy-engine flows that carry a stale field.
+      if (!isCdcFlow && schedule.origin === "backfillSchedule") continue;
 
-      const shouldRun = await step.run(`check-backfill-${flowId}`, async () => {
-        const backfillLogger = getSyncLogger(
-          `cdc-backfill-scheduler.${flowId}`,
-        );
-        try {
-          // Don't pile up: skip if a backfill is already in flight, the
-          // stream is paused, or an execution is currently running.
-          if (flow.backfillState?.status === "running") {
-            return false;
-          }
-          if (flow.streamState === "paused") {
-            return false;
-          }
-          const activeExecution = await Flow.db
-            .collection("flow_executions")
-            .findOne({
-              flowId: new Types.ObjectId(flowId),
-              status: "running",
+      const shouldRun = await step.run(
+        `check-backfill-${stepKey}`,
+        async () => {
+          const backfillLogger = getSyncLogger(
+            `cdc-backfill-scheduler.${flowId}`,
+          );
+          try {
+            // Don't pile up: skip if a backfill is already in flight, the
+            // stream is paused, or an execution is currently running.
+            if (flow.backfillState?.status === "running") {
+              return false;
+            }
+            if (flow.streamState === "paused") {
+              return false;
+            }
+            const activeExecution = await Flow.db
+              .collection("flow_executions")
+              .findOne({
+                flowId: new Types.ObjectId(flowId),
+                status: "running",
+              });
+            if (activeExecution) {
+              return false;
+            }
+
+            return isCronDue({
+              cron,
+              timezone: schedule.timezone,
+              lastRunAt: schedule.lastRunAt,
+              now,
             });
-          if (activeExecution) {
+          } catch (error) {
+            backfillLogger.error("Failed to evaluate reconcile schedule", {
+              flowId,
+              scheduleId: schedule.id,
+              cron,
+              error: error instanceof Error ? error.message : String(error),
+            });
             return false;
           }
-
-          return isCronDue({
-            cron,
-            timezone: schedule?.timezone,
-            lastRunAt: schedule?.lastRunAt
-              ? new Date(schedule.lastRunAt)
-              : null,
-            now,
-          });
-        } catch (error) {
-          backfillLogger.error("Failed to evaluate CDC backfill schedule", {
-            flowId,
-            cron,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return false;
-        }
-      });
+        },
+      );
 
       if (!shouldRun) continue;
 
-      await step.run(`trigger-backfill-${flowId}`, async () => {
+      await step.run(`trigger-backfill-${stepKey}`, async () => {
         // Stamp lastRunAt first so a slow/failed start doesn't re-trigger every
         // cron tick (next attempt waits for the next cron occurrence).
-        await Flow.updateOne(
-          { _id: new Types.ObjectId(flowId) },
-          { $set: { "backfillSchedule.lastRunAt": now } },
-        );
-        await cdcBackfillService.startBackfill(workspaceId, flowId, {
-          reason: "Scheduled full backfill",
+        if (schedule.origin === "list") {
+          await Flow.updateOne(
+            { _id: new Types.ObjectId(flowId) },
+            { $set: { "schedules.$[row].lastRunAt": now } },
+            { arrayFilters: [{ "row.id": schedule.id }] },
+          );
+        } else {
+          await Flow.updateOne(
+            { _id: new Types.ObjectId(flowId) },
+            { $set: { "backfillSchedule.lastRunAt": now } },
+          );
+        }
+
+        const scope =
+          schedule.entities.length > 0 ? schedule.entities : undefined;
+        const reason = scope
+          ? `Scheduled full reconcile (${scope.join(", ")})`
+          : "Scheduled full backfill";
+
+        if (isCdcFlow) {
+          await cdcBackfillService.startBackfill(workspaceId, flowId, {
+            reason,
+            ...(scope ? { entities: scope } : {}),
+          });
+          return;
+        }
+
+        // Legacy engine: a reconcile row is a full re-pull run.
+        await inngest.send({
+          name: "flow.execute",
+          data: {
+            flowId,
+            triggerType: "schedule",
+            scheduleId: schedule.id,
+            backfill: true,
+            ...(scope ? { entityScope: scope } : {}),
+          },
         });
       });
 
       triggered.push(flowId);
     }
 
-    logger.info("Scheduled CDC backfill runner completed", {
+    logger.info("Scheduled reconcile runner completed", {
       checked: flows.length,
       triggered: triggered.length,
       flowIds: triggered,

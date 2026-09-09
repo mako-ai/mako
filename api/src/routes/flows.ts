@@ -19,6 +19,7 @@ import {
   commitFlowFile,
   deleteFlowFile,
 } from "../services/flow-config.service";
+import { randomUUID } from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
@@ -60,7 +61,11 @@ import {
   hasCdcDestinationAdapter,
   supportedCdcWriteModes,
 } from "../sync-cdc/adapters/registry";
-import { resolveDefaultSyncEngine } from "../services/flow-triggers.service";
+import {
+  deriveLegacyScheduleMirrors,
+  normalizeFlowScheduleList,
+  resolveDefaultSyncEngine,
+} from "../services/flow-triggers.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { connectorRegistry } from "../connectors/registry";
 import {
@@ -1094,7 +1099,24 @@ flowRoutes.openapi(
         flowData.entityLayouts = body.entityLayouts;
       }
 
-      if (flowType === "scheduled") {
+      // Unified schedule list: when the client sends `schedules`, it is the
+      // source of truth and the standalone schedule fields become mirrors.
+      if (body.schedules !== undefined) {
+        const normalized = normalizeFlowScheduleList(body.schedules, {
+          generateId: randomUUID,
+        });
+        if (!normalized.ok) {
+          return c.json({ success: false, error: normalized.error }, 400);
+        }
+        flowData.schedules = normalized.schedules;
+        const mirrors = deriveLegacyScheduleMirrors(normalized.schedules);
+        flowData.schedule = mirrors.schedule;
+        if (mirrors.backfillSchedule.enabled) {
+          flowData.backfillSchedule = mirrors.backfillSchedule;
+        } else {
+          delete flowData.backfillSchedule;
+        }
+      } else if (flowType === "scheduled") {
         const scheduleEnabled = body.schedule?.enabled === true;
         flowData.schedule = {
           enabled: scheduleEnabled,
@@ -1105,7 +1127,7 @@ flowRoutes.openapi(
             ? body.schedule?.timezone || body.timezone || "UTC"
             : undefined,
         };
-      } else if (flowType === "webhook") {
+      } else if (flowType === "webhook" && body.schedules === undefined) {
         // Unified trigger model: a webhook flow may also carry a poll
         // schedule (hybrid trigger set). Persist it so the scheduler's
         // trigger-based selection picks it up.
@@ -1116,6 +1138,9 @@ flowRoutes.openapi(
             timezone: body.schedule?.timezone || body.timezone || "UTC",
           };
         }
+      }
+
+      if (flowType === "webhook") {
         // Generate webhook configuration
         const requestBaseUrl = getRequestBaseUrl(c);
         const webhookEndpoint = generateWebhookEndpoint(
@@ -1368,7 +1393,22 @@ flowRoutes.openapi(
 
       // Update common fields. Under the unified trigger model any flow may
       // carry a poll schedule (hybrid trigger set), not only type=scheduled.
-      if (body.schedule) {
+      if (body.schedules !== undefined) {
+        const normalized = normalizeFlowScheduleList(body.schedules, {
+          previous: (flow as any).schedules,
+          generateId: randomUUID,
+        });
+        if (!normalized.ok) {
+          return c.json({ success: false, error: normalized.error }, 400);
+        }
+        (flow as any).schedules = normalized.schedules;
+        const mirrors = deriveLegacyScheduleMirrors(normalized.schedules);
+        flow.schedule = mirrors.schedule;
+        flow.backfillSchedule = {
+          ...mirrors.backfillSchedule,
+          lastRunAt: flow.backfillSchedule?.lastRunAt,
+        };
+      } else if (body.schedule) {
         const scheduleEnabled = body.schedule.enabled === true;
         flow.schedule = {
           enabled: scheduleEnabled,
@@ -1620,7 +1660,11 @@ flowRoutes.openapi(
 
       // Periodic full backfill cadence (CDC flows only). The dedicated
       // /backfill-schedule endpoint offers the same behavior for API consumers.
-      if (body.backfillSchedule !== undefined && flow.syncEngine === "cdc") {
+      if (
+        body.backfillSchedule !== undefined &&
+        body.schedules === undefined &&
+        flow.syncEngine === "cdc"
+      ) {
         const sched = body.backfillSchedule || {};
         const enabled = Boolean(sched.enabled);
         const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
