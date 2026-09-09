@@ -863,18 +863,6 @@ export function SyncFlowForm({
       return;
     }
 
-    // Trigger-set validation. The periodic full reconcile is a real trigger
-    // (migrated legacy full-refresh syncs run on it exclusively), but it only
-    // exists for CDC-capable destinations.
-    const hasReconcileTrigger =
-      isCdcCapableDest && Boolean(data.backfillScheduleEnabled);
-    if (!data.scheduleEnabled && !data.webhookEnabled && !hasReconcileTrigger) {
-      setError(
-        "Enable at least one trigger — a schedule, a webhook, or a periodic full reconcile.",
-      );
-      setOpenSteps(prev => new Set([...prev, 4]));
-      return;
-    }
     if (data.scheduleEnabled && !data.scheduleCron.trim()) {
       setError("A cron expression is required for the scheduled trigger.");
       setOpenSteps(prev => new Set([...prev, 4]));
@@ -2247,9 +2235,9 @@ export function SyncFlowForm({
                   {!watchScheduleEnabled &&
                     !watchWebhookEnabled &&
                     !(isCdcCapableDest && watchBackfillScheduleEnabled) && (
-                      <Alert severity="warning">
-                        Enable at least one trigger — a schedule, a webhook, or
-                        a periodic full reconcile.
+                      <Alert severity="info">
+                        No automatic triggers are enabled. You can still run
+                        this sync manually.
                       </Alert>
                     )}
 
@@ -2649,12 +2637,7 @@ export function SyncFlowForm({
                       variant="contained"
                       startIcon={<AddIcon />}
                       onClick={handleFormSubmit}
-                      disabled={
-                        isSubmitting ||
-                        (!watchScheduleEnabled &&
-                          !watchWebhookEnabled &&
-                          !(isCdcCapableDest && watchBackfillScheduleEnabled))
-                      }
+                      disabled={isSubmitting}
                       fullWidth
                     >
                       {isSubmitting
@@ -2674,12 +2657,7 @@ export function SyncFlowForm({
                       <Button
                         variant="contained"
                         onClick={handleFormSubmit}
-                        disabled={
-                          isSubmitting ||
-                          (!watchScheduleEnabled &&
-                            !watchWebhookEnabled &&
-                            !(isCdcCapableDest && watchBackfillScheduleEnabled))
-                        }
+                        disabled={isSubmitting}
                       >
                         {isSubmitting ? "Saving..." : "Save triggers"}
                       </Button>
