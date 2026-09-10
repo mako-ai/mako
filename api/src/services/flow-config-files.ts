@@ -148,6 +148,14 @@ function plain<T>(value: unknown): T | undefined {
           depopulate: true,
         })
       : value;
+  // A nested path (`tableDestination.partitioning`, `.clustering`) is not a
+  // subdocument: Mongoose hands back a getter object whose `toObject()` is
+  // `undefined` when nothing is set — which is the state after the update
+  // route reassigns `tableDestination` from a form payload that never
+  // carries either. `JSON.stringify(undefined)` is `undefined`, and
+  // `JSON.parse(undefined)` throws `"undefined" is not valid JSON`, which
+  // reached the user as the save error for every edit of a CDC flow.
+  if (source === null || source === undefined) return undefined;
   // The round-trip also normalises ObjectIds and Dates to strings, which is
   // what the file wants anyway.
   return JSON.parse(JSON.stringify(source)) as T;

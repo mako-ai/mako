@@ -96,6 +96,28 @@ async function main(): Promise<void> {
       "document and lean projections must agree",
     );
 
+    // The update route replaces `tableDestination` wholesale from the form
+    // payload, which never carries `partitioning` / `clustering`. Those are
+    // nested paths, not subdocuments: Mongoose's getter object for an unset
+    // nested path has a `toObject()` that returns `undefined`, and the
+    // serializer used to feed that to `JSON.parse(JSON.stringify(...))` —
+    // `"undefined" is not valid JSON`, surfaced as the save error on every
+    // edit of a CDC flow.
+    doc.tableDestination = {
+      connectionId: new Types.ObjectId(),
+      schema: "analytics",
+      tableName: "",
+      createIfNotExists: true,
+    } as never;
+    const reassigned = serializeFlowFile(flowToFile(doc));
+    assert.ok(reassigned.includes("schema: analytics"));
+    assert.ok(
+      !reassigned.includes("partitioning") &&
+        !reassigned.includes("clustering"),
+      `unset layout hints must be omitted, not serialized:\n${reassigned}`,
+    );
+    assert.ok(parseFlowFile(reassigned), "reassigned document parses back");
+
     console.log("flow-config mongoose-safety tests passed");
   } finally {
     await mongoose.disconnect();
