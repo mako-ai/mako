@@ -113,6 +113,20 @@ interface TransferQueryField {
   rows?: number;
 }
 
+/**
+ * One cron row of the Schedule trigger. Replaces the old
+ * scheduled-poll / periodic-full-reconcile pair of checkboxes: a sync has a
+ * list of cadences, each with its own entity scope and run kind.
+ */
+interface ScheduleRowConfig {
+  id: string;
+  cron: string;
+  timezone: string;
+  /** Empty = every entity enabled in the Entities step. */
+  entities: string[];
+  kind: "poll" | "reconcile";
+}
+
 interface FormData {
   dataSourceId: string;
   destinationDatabaseId: string;
@@ -121,19 +135,14 @@ interface FormData {
     tablePrefix?: string;
     schema?: string;
   };
-  // Trigger set
-  scheduleEnabled: boolean;
-  scheduleCron: string;
-  scheduleTimezone: string;
+  // Trigger set: a list of cron rows plus the optional webhook push.
+  schedules: ScheduleRowConfig[];
   webhookEnabled: boolean;
   webhookSecret?: string;
   // Sync configuration
   syncMode: "full" | "incremental";
   writeMode: "append_dedup" | "append" | "overwrite";
   deleteMode?: "hard" | "soft";
-  backfillScheduleEnabled?: boolean;
-  backfillScheduleCron?: string;
-  backfillScheduleTimezone?: string;
   // Entities
   entityFilter: string[];
   entityLayouts?: EntityLayoutConfig[];
@@ -165,6 +174,74 @@ const SCHEDULE_PRESETS = [
   { label: "Monthly on 1st", cron: "0 0 1 * *" },
 ];
 
+const DEFAULT_POLL_CRON = "0 * * * *";
+const DEFAULT_RECONCILE_CRON = "0 3 * * *";
+
+function newScheduleId(): string {
+  const cryptoRef = globalThis.crypto;
+  return cryptoRef?.randomUUID
+    ? cryptoRef.randomUUID()
+    : `schedule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function makeScheduleRow(
+  kind: "poll" | "reconcile",
+  overrides: Partial<ScheduleRowConfig> = {},
+): ScheduleRowConfig {
+  return {
+    id: newScheduleId(),
+    cron: kind === "reconcile" ? DEFAULT_RECONCILE_CRON : DEFAULT_POLL_CRON,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    entities: [],
+    kind,
+    ...overrides,
+  };
+}
+
+/**
+ * Schedule rows for an existing sync. Flows saved before the unified list
+ * still carry the standalone `schedule` (poll) / `backfillSchedule`
+ * (reconcile) fields, so project those into rows when the list is absent.
+ */
+function scheduleRowsFromFlow(flow: any): ScheduleRowConfig[] {
+  const stored = Array.isArray(flow?.schedules) ? flow.schedules : [];
+  if (stored.length > 0) {
+    return stored
+      .filter((row: any) => row?.enabled !== false && row?.cron)
+      .map((row: any) => ({
+        id: row.id || newScheduleId(),
+        cron: row.cron,
+        timezone: row.timezone || "UTC",
+        entities: Array.isArray(row.entities) ? row.entities : [],
+        kind: row.kind === "reconcile" ? "reconcile" : "poll",
+      }));
+  }
+
+  const rows: ScheduleRowConfig[] = [];
+  if (flow?.schedule?.enabled && flow.schedule?.cron) {
+    rows.push(
+      makeScheduleRow("poll", {
+        cron: flow.schedule.cron,
+        timezone: flow.schedule.timezone || "UTC",
+      }),
+    );
+  }
+  if (flow?.backfillSchedule?.enabled && flow.backfillSchedule?.cron) {
+    rows.push(
+      makeScheduleRow("reconcile", {
+        cron: flow.backfillSchedule.cron,
+        timezone: flow.backfillSchedule.timezone || "UTC",
+      }),
+    );
+  }
+  return rows;
+}
+
+function isValidCron(cron: string): boolean {
+  const fields = cron.trim().split(/\s+/).filter(Boolean);
+  return fields.length === 5 || fields.length === 6;
+}
+
 /**
  * Airbyte-style per-entity incremental badge — mirrors backend
  * `IncrementalMode` (BaseConnector.getIncrementalCapabilities). Shown in the
@@ -191,8 +268,7 @@ const STEPS = [
   { label: "Entities", description: "What data is synced" },
   {
     label: "Triggers",
-    description:
-      "How the sync is triggered — schedule, webhook, or periodic reconcile",
+    description: "How the sync is triggered — schedules and/or webhook",
   },
 ];
 
@@ -273,8 +349,10 @@ export function SyncFlowForm({
     FlattenedConnectorEntity[]
   >([]);
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
-  const [scheduleCronMode, setScheduleCronMode] = useState<"preset" | "custom">(
-    "preset",
+  // Schedule rows whose cadence the user switched to a raw cron expression
+  // (a cron that matches no preset renders as custom regardless).
+  const [customCronRows, setCustomCronRows] = useState<Set<string>>(
+    () => new Set(),
   );
   const [pendingLayoutReset, setPendingLayoutReset] = useState<{
     data: FormData;
@@ -337,18 +415,12 @@ export function SyncFlowForm({
       destinationDatabaseId: "",
       destinationDatabaseName: "",
       tableDestination: { tablePrefix: "", schema: "" },
-      scheduleEnabled: true,
-      scheduleCron: "0 * * * *",
-      scheduleTimezone:
-        Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      schedules: [makeScheduleRow("poll")],
       webhookEnabled: false,
       webhookSecret: "",
       syncMode: "incremental",
       writeMode: "append_dedup",
       deleteMode: "hard",
-      backfillScheduleEnabled: false,
-      backfillScheduleCron: "0 3 * * *",
-      backfillScheduleTimezone: "UTC",
       entityFilter: [],
       entityLayouts: [],
       queries: [],
@@ -357,12 +429,10 @@ export function SyncFlowForm({
 
   const watchDataSourceId = watch("dataSourceId");
   const watchDestinationId = watch("destinationDatabaseId");
-  const watchScheduleEnabled = watch("scheduleEnabled");
-  const watchScheduleCron = watch("scheduleCron");
+  const watchSchedules = watch("schedules") || [];
   const watchWebhookEnabled = watch("webhookEnabled");
   const watchEntityLayouts = watch("entityLayouts") || [];
   const watchDeleteMode = watch("deleteMode");
-  const watchBackfillScheduleEnabled = watch("backfillScheduleEnabled");
   const watchSyncMode = watch("syncMode");
   const watchWriteMode = watch("writeMode");
 
@@ -371,6 +441,19 @@ export function SyncFlowForm({
     append: appendQuery,
     remove: removeQuery,
   } = useFieldArray({ control, name: "queries" });
+
+  const {
+    fields: scheduleFields,
+    append: appendSchedule,
+    remove: removeSchedule,
+  } = useFieldArray({ control, name: "schedules" });
+
+  const hasReconcileSchedule = watchSchedules.some(
+    row => row.kind === "reconcile",
+  );
+  // Stable dependency for the kind-legality effect below (`watchSchedules` is
+  // a fresh array every render).
+  const scheduleKindsKey = watchSchedules.map(row => row.kind).join(",");
 
   const selectedConnector = connectors.find(ds => ds._id === watchDataSourceId);
   const selectedConnectorType = selectedConnector?.type;
@@ -505,6 +588,12 @@ export function SyncFlowForm({
       incrementalCheckEntities,
     );
 
+  // Rows can only scope down to entities the sync already syncs.
+  const scheduleEntityOptions =
+    enabledEntityNames.length > 0
+      ? enabledEntityNames
+      : entityMetadata.map(e => e.name);
+
   const layoutMode: "partition" | "index" | "none" = hasStagingDest
     ? "partition"
     : destType === "postgresql" ||
@@ -526,11 +615,20 @@ export function SyncFlowForm({
   const requiresQueries = Boolean(transferQueriesSchema?.required);
   const requiresDestinationDatabaseName =
     !isCdcCapableDest && availableDatabases.length > 0;
-  // For Full Refresh on a CDC destination, "poll on a cron" and "periodic
-  // full reconcile" both mean "run a complete backfill on this cadence" —
-  // the same underlying operation exposed as two controls. Collapse to the
-  // single reconcile cron below and hide the redundant Scheduled trigger.
-  const showScheduleTrigger = !(isCdcCapableDest && watchSyncMode === "full");
+  // For Full Refresh on a CDC destination, "poll on a cron" and "run a full
+  // reconcile on a cron" are the same operation, and only the reconcile path
+  // drives the CDC backfill machinery (table swap, event drain). Force every
+  // schedule row to that kind and hide the per-row kind picker.
+  const forceReconcileKind = isCdcCapableDest && watchSyncMode === "full";
+  // The reconcile kind only exists on CDC destinations; elsewhere a schedule
+  // row is always a normal run.
+  const allowReconcileKind = isCdcCapableDest;
+  const pollKindLabel =
+    watchSyncMode === "incremental" ? "Incremental poll" : "Full sync";
+  const pollDescription =
+    watchSyncMode === "incremental"
+      ? "Fetches records changed since this schedule's last run."
+      : "Re-pulls every record in scope on this cadence.";
   const reconcileDescription =
     watchSyncMode === "full" && watchWriteMode === "overwrite"
       ? "Refreshes an exact snapshot each run — additions, edits, and deletions at the source are all reflected."
@@ -579,18 +677,30 @@ export function SyncFlowForm({
     setValue,
   ]);
 
-  // The Scheduled trigger is hidden (see showScheduleTrigger) once Full
-  // Refresh + a CDC destination make it redundant with the reconcile cron —
-  // disable it too so it doesn't keep firing invisibly in the background.
+  // Keep row kinds legal for the current destination + sync mode: Full
+  // Refresh on CDC is always a reconcile, and non-CDC destinations have no
+  // reconcile path at all.
   useEffect(() => {
-    if (
-      !showScheduleTrigger &&
-      watchScheduleEnabled &&
-      formTouchedRef.current
-    ) {
-      setValue("scheduleEnabled", false);
-    }
-  }, [showScheduleTrigger, watchScheduleEnabled, setValue]);
+    if (!formTouchedRef.current) return;
+    const rows = getValues("schedules") || [];
+    const target: "poll" | "reconcile" | null = forceReconcileKind
+      ? "reconcile"
+      : !allowReconcileKind
+        ? "poll"
+        : null;
+    if (!target) return;
+    rows.forEach((row, index) => {
+      if (row.kind !== target) {
+        setValue(`schedules.${index}.kind`, target, { shouldDirty: true });
+      }
+    });
+  }, [
+    forceReconcileKind,
+    allowReconcileKind,
+    scheduleKindsKey,
+    setValue,
+    getValues,
+  ]);
 
   // Incremental requires at least one selected entity to do better than a
   // full re-pull; fall back to Full Refresh | Deduped when the connector (or
@@ -614,9 +724,9 @@ export function SyncFlowForm({
 
   // The periodic full reconcile is opt-in. When Incremental polls cannot see
   // updates for the selected entities (created-anchor or none), the form
-  // RECOMMENDS it (warning + "Enable daily" button, see step 3) but never
-  // switches it on by itself: a reconcile re-upserts every current record on
-  // a cron, which is a cost and a load on the source the user must choose.
+  // RECOMMENDS it (warning + "Add daily" button, see step 3) but never adds a
+  // reconcile schedule by itself: a reconcile re-upserts every current record
+  // on a cron, which is a cost and a load on the source the user must choose.
 
   // transferQueries schema (GraphQL/PostHog-style connectors).
   // Stale-while-revalidate: show the persisted cache immediately, but always
@@ -759,17 +869,11 @@ export function SyncFlowForm({
     const hasWebhookTrigger = Boolean(
       flow.webhookConfig?.enabled && flow.webhookConfig?.endpoint,
     );
-    const hasScheduleTrigger = Boolean(
-      flow.schedule?.enabled && flow.schedule?.cron,
-    );
-
     const formData: FormData = {
       dataSourceId: dataSourceId || "",
       destinationDatabaseId: destinationDatabaseId || "",
       destinationDatabaseName: flow.destinationDatabaseName || "",
-      scheduleEnabled: hasScheduleTrigger,
-      scheduleCron: flow.schedule?.cron || "0 * * * *",
-      scheduleTimezone: flow.schedule?.timezone || "UTC",
+      schedules: scheduleRowsFromFlow(flow),
       webhookEnabled: hasWebhookTrigger,
       // Prefer the server secret when present. If a flows refresh races with
       // one-click provisioning (secret just set in the form, not yet visible
@@ -781,9 +885,6 @@ export function SyncFlowForm({
         (flow.writeMode as "append_dedup" | "append" | "overwrite") ||
         "append_dedup",
       deleteMode: flow.deleteMode || "hard",
-      backfillScheduleEnabled: flow.backfillSchedule?.enabled ?? false,
-      backfillScheduleCron: flow.backfillSchedule?.cron || "0 3 * * *",
-      backfillScheduleTimezone: flow.backfillSchedule?.timezone || "UTC",
       entityFilter: flow.entityFilter || [],
       entityLayouts: (flow.entityLayouts || []).map((l: any) => ({
         ...l,
@@ -803,11 +904,7 @@ export function SyncFlowForm({
       setWebhookUrl(flow.webhookConfig.endpoint);
     }
 
-    setScheduleCronMode(
-      SCHEDULE_PRESETS.some(p => p.cron === formData.scheduleCron)
-        ? "preset"
-        : "custom",
-    );
+    setCustomCronRows(new Set());
     formTouchedRef.current = false;
     reset(formData);
   }, [isNewMode, currentFlowId, flows, reset, getValues]);
@@ -863,8 +960,33 @@ export function SyncFlowForm({
       return;
     }
 
-    if (data.scheduleEnabled && !data.scheduleCron.trim()) {
-      setError("A cron expression is required for the scheduled trigger.");
+    // Destination + sync mode decide which kinds are legal, so normalize here
+    // rather than trusting whatever the row last held: Full Refresh on a CDC
+    // destination is always a reconcile (only that path drives the CDC
+    // backfill), and non-CDC destinations have no reconcile path at all.
+    // A row can only scope down to entities the sync still syncs — otherwise
+    // a stale scope makes every scheduled run fail on an unknown entity.
+    const scopeableEntities = (data.entityLayouts || [])
+      .filter(l => l.enabled !== false)
+      .map(l => l.entity);
+    const schedules = (data.schedules || []).map(row => ({
+      ...row,
+      cron: (row.cron || "").trim(),
+      timezone: (row.timezone || "").trim() || "UTC",
+      entities:
+        scopeableEntities.length > 0
+          ? (row.entities || []).filter(e => scopeableEntities.includes(e))
+          : row.entities || [],
+      kind: forceReconcileKind
+        ? ("reconcile" as const)
+        : allowReconcileKind
+          ? row.kind
+          : ("poll" as const),
+    }));
+    if (schedules.some(row => !isValidCron(row.cron))) {
+      setError(
+        "Every schedule needs a valid cron expression (5 or 6 space-separated fields).",
+      );
       setOpenSteps(prev => new Set([...prev, 4]));
       return;
     }
@@ -926,21 +1048,6 @@ export function SyncFlowForm({
       setOpenSteps(prev => new Set([...prev, 3]));
       return;
     }
-    const backfillSchedule = {
-      enabled: Boolean(data.backfillScheduleEnabled),
-      cron: (data.backfillScheduleCron || "").trim(),
-      timezone: data.backfillScheduleTimezone || "UTC",
-    };
-    if (
-      backfillSchedule.enabled &&
-      backfillSchedule.cron.split(" ").filter(Boolean).length < 5
-    ) {
-      setError(
-        "A valid cron expression is required to enable the periodic full reconcile.",
-      );
-      setOpenSteps(prev => new Set([...prev, 4]));
-      return;
-    }
 
     setIsSubmitting(true);
     setError(null);
@@ -967,13 +1074,17 @@ export function SyncFlowForm({
         destinationDatabaseId: data.destinationDatabaseId,
         syncMode: data.syncMode,
         writeMode: data.writeMode,
-        schedule: data.scheduleEnabled
-          ? {
-              enabled: true,
-              cron: data.scheduleCron.trim(),
-              timezone: data.scheduleTimezone || "UTC",
-            }
-          : { enabled: false },
+        // Unified trigger list; the API mirrors it onto the legacy
+        // schedule / backfillSchedule fields for older readers.
+        schedules: schedules.map(row => ({
+          id: row.id,
+          enabled: true,
+          cron: row.cron,
+          timezone: row.timezone,
+          kind: row.kind,
+          // Empty scope = every entity enabled in the Entities step.
+          ...(row.entities.length > 0 ? { entities: row.entities } : {}),
+        })),
         queries: data.queries,
       };
 
@@ -984,7 +1095,6 @@ export function SyncFlowForm({
         payload.deleteMode = isBigQueryDest
           ? "soft"
           : data.deleteMode || "hard";
-        payload.backfillSchedule = backfillSchedule;
         payload.tableDestination = {
           connectionId: data.destinationDatabaseId,
           schema: data.tableDestination?.schema,
@@ -1051,12 +1161,13 @@ export function SyncFlowForm({
           flow_type: flowType,
           connector_type: selectedSource?.type,
           triggers: [
-            ...(data.scheduleEnabled ? ["schedule"] : []),
+            ...(schedules.some(row => row.kind === "poll") ? ["schedule"] : []),
             ...(data.webhookEnabled ? ["webhook"] : []),
-            ...(isCdcCapableDest && data.backfillScheduleEnabled
+            ...(schedules.some(row => row.kind === "reconcile")
               ? ["reconcile"]
               : []),
           ].join("+"),
+          schedule_count: schedules.length,
         });
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
         setIsNewMode(false);
@@ -1249,12 +1360,6 @@ export function SyncFlowForm({
       </Box>
     </AccordionSummary>
   );
-
-  const cronPresetValue = SCHEDULE_PRESETS.some(
-    p => p.cron === watchScheduleCron,
-  )
-    ? watchScheduleCron
-    : "__custom__";
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -1676,15 +1781,13 @@ export function SyncFlowForm({
                     <Alert
                       severity="info"
                       action={
-                        !watchBackfillScheduleEnabled ? (
+                        !hasReconcileSchedule ? (
                           <Button
                             color="inherit"
                             size="small"
                             onClick={() => {
                               formTouchedRef.current = true;
-                              setValue("backfillScheduleEnabled", true, {
-                                shouldDirty: true,
-                              });
+                              appendSchedule(makeScheduleRow("reconcile"));
                               setOpenSteps(prev => {
                                 const next = new Set(prev);
                                 next.add(4);
@@ -1692,14 +1795,14 @@ export function SyncFlowForm({
                               });
                             }}
                           >
-                            Enable reconcile
+                            Add reconcile schedule
                           </Button>
                         ) : undefined
                       }
                     >
-                      {watchBackfillScheduleEnabled
-                        ? "Periodic full reconcile is on — it covers updates and snapshot entities that Incremental polls cannot see."
-                        : "Enable the periodic full reconcile trigger (step 3) so created-anchor / full-repull entities stay current."}
+                      {hasReconcileSchedule
+                        ? "A full reconcile schedule is set — it covers updates and snapshot entities that Incremental polls cannot see."
+                        : "Add a full reconcile schedule in Triggers so created-anchor / full-repull entities stay current."}
                     </Alert>
                   )}
 
@@ -2232,127 +2335,323 @@ export function SyncFlowForm({
               {renderStepHeader(4)}
               <AccordionDetails>
                 <Stack spacing={2}>
-                  {!watchScheduleEnabled &&
-                    !watchWebhookEnabled &&
-                    !(isCdcCapableDest && watchBackfillScheduleEnabled) && (
-                      <Alert severity="info">
-                        No automatic triggers are enabled. You can still run
-                        this sync manually.
+                  {watchSchedules.length === 0 && !watchWebhookEnabled && (
+                    <Alert severity="info">
+                      No automatic triggers are enabled. You can still run this
+                      sync manually.
+                    </Alert>
+                  )}
+
+                  {/* Schedule trigger. One list of cron rows instead of a
+                      "scheduled poll" and a "periodic full reconcile"
+                      checkbox: each row carries its own cadence, entity
+                      scope and run kind, so "poll everything hourly" and
+                      "fully reconcile the heavy entities nightly" are two
+                      rows of the same trigger. */}
+                  <Box
+                    sx={{
+                      border: 1,
+                      borderColor:
+                        suggestReconcile && !hasReconcileSchedule
+                          ? "warning.main"
+                          : "divider",
+                      borderRadius: 1,
+                      p: 2,
+                    }}
+                  >
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="flex-start"
+                      spacing={2}
+                    >
+                      <Box>
+                        <Typography variant="subtitle2">Schedule</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Run the sync on one or more cron cadences. Each row
+                          syncs the entities you scope it to — leave the scope
+                          empty for every entity enabled in the Entities step.
+                        </Typography>
+                      </Box>
+                      <Button
+                        size="small"
+                        startIcon={<AddIcon />}
+                        onClick={() => {
+                          formTouchedRef.current = true;
+                          appendSchedule(
+                            makeScheduleRow(
+                              forceReconcileKind ? "reconcile" : "poll",
+                            ),
+                          );
+                        }}
+                        sx={{ flexShrink: 0 }}
+                      >
+                        Add schedule
+                      </Button>
+                    </Stack>
+
+                    {suggestReconcile && !hasReconcileSchedule && (
+                      <Alert
+                        severity="warning"
+                        sx={{ mt: 2 }}
+                        action={
+                          <Button
+                            color="inherit"
+                            size="small"
+                            onClick={() => {
+                              formTouchedRef.current = true;
+                              appendSchedule(makeScheduleRow("reconcile"));
+                            }}
+                          >
+                            Add daily
+                          </Button>
+                        }
+                      >
+                        Incremental polls for the selected entities miss updates
+                        (created-only) or silently re-fetch everything. Add a
+                        full reconcile schedule so the destination stays honest
+                        between webhook events.
                       </Alert>
                     )}
 
-                  {/* Scheduled trigger. Hidden for Full Refresh on CDC
-                      destinations: "poll on a cron" and "periodic full
-                      reconcile" are the same operation there (a full
-                      backfill), so showing both would just be two cron
-                      controls for one behavior. The reconcile trigger below
-                      becomes the sync's single cron in that case. */}
-                  {showScheduleTrigger && (
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor: "divider",
-                        borderRadius: 1,
-                        p: 2,
-                      }}
-                    >
-                      <Controller
-                        name="scheduleEnabled"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={Boolean(field.value)}
-                                onChange={e => field.onChange(e.target.checked)}
-                              />
-                            }
-                            label={
-                              <Box>
-                                <Typography variant="subtitle2">
-                                  Scheduled
-                                </Typography>
+                    {hasReconcileSchedule &&
+                      watchSyncMode === "incremental" &&
+                      watchWriteMode === "append" && (
+                        <Alert severity="warning" sx={{ mt: 2 }}>
+                          Combined with Incremental | Append, each reconcile run
+                          appends a full duplicate snapshot into the history
+                          table. Consider Full Refresh | Append (a
+                          snapshot-per-run table) or Deduped instead.
+                        </Alert>
+                      )}
+
+                    {scheduleFields.length === 0 ? (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block", mt: 2 }}
+                      >
+                        No schedules — this sync runs only when triggered
+                        manually
+                        {watchWebhookEnabled
+                          ? " or by an incoming webhook"
+                          : ""}
+                        .
+                      </Typography>
+                    ) : (
+                      <Stack spacing={2} sx={{ mt: 2 }}>
+                        {scheduleFields.map((field, index) => {
+                          const row = watchSchedules[index];
+                          const rowKey = row?.id || field.id;
+                          const cron = row?.cron || "";
+                          const isCustomCron =
+                            customCronRows.has(rowKey) ||
+                            (cron.length > 0 &&
+                              !SCHEDULE_PRESETS.some(
+                                preset => preset.cron === cron,
+                              ));
+                          const rowIsReconcile =
+                            forceReconcileKind ||
+                            (allowReconcileKind && row?.kind === "reconcile");
+                          return (
+                            <Box
+                              key={field.id}
+                              sx={{
+                                border: 1,
+                                borderColor: "divider",
+                                borderRadius: 1,
+                                p: 2,
+                              }}
+                            >
+                              <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={2}
+                                alignItems={{ xs: "stretch", sm: "center" }}
+                              >
+                                <FormControl
+                                  size="small"
+                                  sx={{ minWidth: 170, flex: 1 }}
+                                >
+                                  <InputLabel>Cadence</InputLabel>
+                                  <Select
+                                    label="Cadence"
+                                    value={isCustomCron ? "__custom__" : cron}
+                                    onChange={e => {
+                                      const value = e.target.value as string;
+                                      formTouchedRef.current = true;
+                                      if (value === "__custom__") {
+                                        setCustomCronRows(prev =>
+                                          new Set(prev).add(rowKey),
+                                        );
+                                        return;
+                                      }
+                                      setCustomCronRows(prev => {
+                                        const next = new Set(prev);
+                                        next.delete(rowKey);
+                                        return next;
+                                      });
+                                      setValue(
+                                        `schedules.${index}.cron`,
+                                        value,
+                                        { shouldDirty: true },
+                                      );
+                                    }}
+                                  >
+                                    {SCHEDULE_PRESETS.map(preset => (
+                                      <MenuItem
+                                        key={preset.cron}
+                                        value={preset.cron}
+                                      >
+                                        {preset.label}
+                                      </MenuItem>
+                                    ))}
+                                    <MenuItem value="__custom__">
+                                      Custom cron…
+                                    </MenuItem>
+                                  </Select>
+                                </FormControl>
+
+                                {isCustomCron && (
+                                  <Controller
+                                    name={`schedules.${index}.cron`}
+                                    control={control}
+                                    render={({ field: cronField }) => (
+                                      <TextField
+                                        {...cronField}
+                                        label="Cron expression"
+                                        placeholder="0 * * * *"
+                                        size="small"
+                                        fullWidth
+                                        error={
+                                          Boolean(cronField.value) &&
+                                          !isValidCron(cronField.value)
+                                        }
+                                        helperText="Format: minute hour day month weekday"
+                                      />
+                                    )}
+                                  />
+                                )}
+
+                                <Controller
+                                  name={`schedules.${index}.timezone`}
+                                  control={control}
+                                  render={({ field: tzField }) => (
+                                    <TextField
+                                      {...tzField}
+                                      label="Timezone"
+                                      placeholder="UTC"
+                                      size="small"
+                                      sx={{ minWidth: 150 }}
+                                    />
+                                  )}
+                                />
+
+                                {allowReconcileKind && !forceReconcileKind && (
+                                  <FormControl
+                                    size="small"
+                                    sx={{ minWidth: 170 }}
+                                  >
+                                    <InputLabel>Run</InputLabel>
+                                    <Controller
+                                      name={`schedules.${index}.kind`}
+                                      control={control}
+                                      render={({ field: kindField }) => (
+                                        <Select {...kindField} label="Run">
+                                          <MenuItem value="poll">
+                                            {pollKindLabel}
+                                          </MenuItem>
+                                          <MenuItem value="reconcile">
+                                            Full reconcile
+                                          </MenuItem>
+                                        </Select>
+                                      )}
+                                    />
+                                  </FormControl>
+                                )}
+
+                                <IconButton
+                                  aria-label="Remove schedule"
+                                  size="small"
+                                  onClick={() => {
+                                    formTouchedRef.current = true;
+                                    removeSchedule(index);
+                                  }}
+                                >
+                                  <DeleteIcon fontSize="small" />
+                                </IconButton>
+                              </Stack>
+
+                              {scheduleEntityOptions.length > 0 && (
+                                <FormControl
+                                  size="small"
+                                  fullWidth
+                                  sx={{ mt: 2 }}
+                                >
+                                  <InputLabel>Entities</InputLabel>
+                                  <Controller
+                                    name={`schedules.${index}.entities`}
+                                    control={control}
+                                    render={({ field: entityField }) => (
+                                      <Select
+                                        multiple
+                                        label="Entities"
+                                        value={entityField.value || []}
+                                        onChange={e => {
+                                          formTouchedRef.current = true;
+                                          const value = e.target.value;
+                                          entityField.onChange(
+                                            typeof value === "string"
+                                              ? value.split(",").filter(Boolean)
+                                              : value,
+                                          );
+                                        }}
+                                        renderValue={selected =>
+                                          (selected as string[]).length === 0
+                                            ? "All enabled entities"
+                                            : (selected as string[]).join(", ")
+                                        }
+                                      >
+                                        {scheduleEntityOptions.map(entity => (
+                                          <MenuItem key={entity} value={entity}>
+                                            <Checkbox
+                                              size="small"
+                                              checked={(
+                                                entityField.value || []
+                                              ).includes(entity)}
+                                            />
+                                            <Typography variant="body2">
+                                              {entity}
+                                            </Typography>
+                                          </MenuItem>
+                                        ))}
+                                      </Select>
+                                    )}
+                                  />
+                                  <FormHelperText>
+                                    {rowIsReconcile
+                                      ? reconcileDescription
+                                      : pollDescription}
+                                  </FormHelperText>
+                                </FormControl>
+                              )}
+
+                              {scheduleEntityOptions.length === 0 && (
                                 <Typography
                                   variant="caption"
                                   color="text.secondary"
+                                  sx={{ display: "block", mt: 1 }}
                                 >
-                                  Poll the source on a cron cadence.
+                                  {rowIsReconcile
+                                    ? reconcileDescription
+                                    : pollDescription}
                                 </Typography>
-                              </Box>
-                            }
-                          />
-                        )}
-                      />
-                      {watchScheduleEnabled && (
-                        <Stack
-                          direction={{ xs: "column", sm: "row" }}
-                          spacing={2}
-                          sx={{ mt: 1 }}
-                        >
-                          <FormControl size="small" fullWidth>
-                            <InputLabel>Cadence</InputLabel>
-                            <Select
-                              label="Cadence"
-                              value={
-                                scheduleCronMode === "custom"
-                                  ? "__custom__"
-                                  : cronPresetValue
-                              }
-                              onChange={e => {
-                                const value = e.target.value;
-                                if (value === "__custom__") {
-                                  setScheduleCronMode("custom");
-                                } else {
-                                  setScheduleCronMode("preset");
-                                  setValue("scheduleCron", value, {
-                                    shouldDirty: true,
-                                  });
-                                }
-                              }}
-                            >
-                              {SCHEDULE_PRESETS.map(preset => (
-                                <MenuItem key={preset.cron} value={preset.cron}>
-                                  {preset.label}
-                                </MenuItem>
-                              ))}
-                              <MenuItem value="__custom__">
-                                Custom cron…
-                              </MenuItem>
-                            </Select>
-                          </FormControl>
-                          {scheduleCronMode === "custom" && (
-                            <Controller
-                              name="scheduleCron"
-                              control={control}
-                              render={({ field }) => (
-                                <TextField
-                                  {...field}
-                                  label="Cron Expression"
-                                  placeholder="0 * * * *"
-                                  size="small"
-                                  fullWidth
-                                  helperText="Format: minute hour day month weekday"
-                                />
                               )}
-                            />
-                          )}
-                          <Controller
-                            name="scheduleTimezone"
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                label="Timezone"
-                                placeholder="UTC"
-                                size="small"
-                                fullWidth
-                              />
-                            )}
-                          />
-                        </Stack>
-                      )}
-                    </Box>
-                  )}
+                            </Box>
+                          );
+                        })}
+                      </Stack>
+                    )}
+                  </Box>
 
                   {/* Webhook trigger */}
                   <Tooltip
@@ -2503,134 +2802,6 @@ export function SyncFlowForm({
                       )}
                     </Box>
                   </Tooltip>
-
-                  {/* Periodic full reconcile trigger (CDC destinations).
-                      For Full Refresh, this IS the schedule (see
-                      showScheduleTrigger above) — the label and helper text
-                      reflect that instead of duplicating a second cron. */}
-                  {isCdcCapableDest && (
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor:
-                          suggestReconcile && !watchBackfillScheduleEnabled
-                            ? "warning.main"
-                            : "divider",
-                        borderRadius: 1,
-                        p: 2,
-                      }}
-                    >
-                      <Controller
-                        name="backfillScheduleEnabled"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={Boolean(field.value)}
-                                onChange={e => field.onChange(e.target.checked)}
-                              />
-                            }
-                            label={
-                              <Box>
-                                <Typography variant="subtitle2">
-                                  {showScheduleTrigger
-                                    ? "Periodic full reconcile"
-                                    : "Schedule (periodic full reconcile)"}
-                                  {suggestReconcile ? " (recommended)" : ""}
-                                </Typography>
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  {reconcileDescription}
-                                  {showScheduleTrigger &&
-                                    " Other triggers stay active between runs."}
-                                </Typography>
-                              </Box>
-                            }
-                          />
-                        )}
-                      />
-                      {suggestReconcile && !watchBackfillScheduleEnabled && (
-                        <Alert
-                          severity="warning"
-                          sx={{ mt: 1 }}
-                          action={
-                            <Button
-                              color="inherit"
-                              size="small"
-                              onClick={() => {
-                                formTouchedRef.current = true;
-                                setValue("backfillScheduleEnabled", true, {
-                                  shouldDirty: true,
-                                });
-                                if (!getValues("backfillScheduleCron")) {
-                                  setValue(
-                                    "backfillScheduleCron",
-                                    "0 3 * * *",
-                                    { shouldDirty: true },
-                                  );
-                                }
-                              }}
-                            >
-                              Enable daily
-                            </Button>
-                          }
-                        >
-                          Incremental polls for the selected entities miss
-                          updates (created-only) or silently re-fetch
-                          everything. Enable a periodic full reconcile so the
-                          destination stays honest between webhook events.
-                        </Alert>
-                      )}
-                      {watchBackfillScheduleEnabled &&
-                        watchSyncMode === "incremental" &&
-                        watchWriteMode === "append" && (
-                          <Alert severity="warning" sx={{ mt: 1 }}>
-                            Combined with Incremental | Append, each reconcile
-                            run appends a full duplicate snapshot into the
-                            history table. Consider Full Refresh | Append (a
-                            snapshot-per-run table) or Deduped instead.
-                          </Alert>
-                        )}
-                      {watchBackfillScheduleEnabled && (
-                        <Stack
-                          direction={{ xs: "column", sm: "row" }}
-                          spacing={2}
-                          sx={{ mt: 2 }}
-                        >
-                          <Controller
-                            name="backfillScheduleCron"
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                label="Cron expression"
-                                placeholder="0 3 * * *"
-                                size="small"
-                                fullWidth
-                                helperText="e.g. '0 3 * * *' = daily at 03:00"
-                              />
-                            )}
-                          />
-                          <Controller
-                            name="backfillScheduleTimezone"
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                label="Timezone"
-                                placeholder="UTC"
-                                size="small"
-                                fullWidth
-                              />
-                            )}
-                          />
-                        </Stack>
-                      )}
-                    </Box>
-                  )}
 
                   {isNewMode ? (
                     <Button
