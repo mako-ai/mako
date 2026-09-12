@@ -76,4 +76,21 @@ assert.equal(
   "flow mutations must commit the file before flow.save() — git is the store",
 );
 
+// Prove the row will save before the file is committed. The reverse order
+// leaves a definition on main that Mongo refuses, and the next read marks the
+// flow invalid for a change made in a form.
+assert.ok(
+  /validateSync\(\)[\s\S]*await commitFlowFile\(/.test(helper),
+  "the helper must validate the row before committing its file",
+);
+
+// A UI edit reconciles the stream itself; waiting for the mirror push to
+// reach the reactor leaves a dropped entity's checkpoint live meanwhile.
+assert.ok(
+  /await flow\.save\(\);[\s\S]{0,400}reconcileFlowSelection\(flow\)/.test(
+    routes,
+  ),
+  "the update route must reconcile the selection after saving the row",
+);
+
 console.log("flow write-through honesty: all assertions passed");

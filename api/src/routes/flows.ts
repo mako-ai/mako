@@ -31,7 +31,10 @@ import {
   checkQuerySafety,
   dryRunDbSync,
 } from "../services/destination-writer.service";
-import { teardownFlow } from "../sync-cdc/flow-reconcile";
+import {
+  reconcileFlowSelection,
+  teardownFlow,
+} from "../sync-cdc/flow-reconcile";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
 import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
@@ -95,6 +98,16 @@ async function commitFlowFileOrFail(
   flow: Parameters<typeof commitFlowFile>[0],
   actorUserId?: string,
 ): Promise<Response | null> {
+  // Prove the row will save BEFORE the file is committed: a definition git
+  // accepts and Mongo refuses would be marked invalid on the next read, for
+  // a change the user made in a form.
+  const invalid = flow.validateSync();
+  if (invalid) {
+    return c.json(
+      { success: false, code: "invalid_definition", error: invalid.message },
+      400,
+    );
+  }
   const result = await commitFlowFile(flow, actorUserId);
   if (result.ok) {
     if (result.sourceBlobSha) flow.sourceBlobSha = result.sourceBlobSha;
@@ -1662,6 +1675,16 @@ flowRoutes.openapi(
         if (failed) return failed;
       }
       await flow.save();
+
+      // The stream half: an entity dropped from the selection has a live
+      // consumer and a checkpoint behind it. Dispose them now rather than
+      // whenever the mirror push happens to reach the reactor.
+      const dropped = await reconcileFlowSelection(flow);
+      if (dropped.length > 0) {
+        syncConfigWarnings.push(
+          `Disposed checkpoints for entities removed from the selection: ${dropped.join(", ")}`,
+        );
+      }
 
       // Populate references for response based on source type
       if (flow.sourceType !== "database" && flow.dataSourceId) {

@@ -245,6 +245,44 @@ async function resumeAfterReconcile(
   await flow.save();
 }
 
+/** Dispose the runtime state of entities no longer selected, under our own pause. */
+async function dropStaleEntities(flow: IFlow, stale: string[]): Promise<void> {
+  const taken = await pauseForReconcile(flow);
+  try {
+    const query = {
+      flowId: flow._id,
+      workspaceId: flow.workspaceId,
+      entity: { $in: stale },
+    };
+    await CdcEntityState.deleteMany(query);
+    await CdcChangeEvent.deleteMany(query);
+    log.info("Dropped entities removed from a flow's selection", {
+      workspaceId: flow.workspaceId.toString(),
+      slug: flow.slug,
+      entities: stale,
+    });
+  } finally {
+    // Always resume, including when the drop threw: a stream left paused
+    // by a failed reconcile stops moving and nothing else lifts it.
+    await resumeAfterReconcile(flow, taken);
+  }
+}
+
+/**
+ * The stream half of an in-product edit: the row was just saved with its new
+ * selection, so drop what that selection no longer covers.
+ *
+ * No mirror guard here, on purpose. The guard proves a TREE READ is current
+ * before it is allowed to destroy anything; this path read no tree — the
+ * caller wrote the row it hands over. The push reactor still runs later and
+ * finds nothing left to do.
+ */
+export async function reconcileFlowSelection(flow: IFlow): Promise<string[]> {
+  const stale = await staleEntitiesFor(flow, flow);
+  if (stale.length > 0) await dropStaleEntities(flow, stale);
+  return stale;
+}
+
 /**
  * Entities that have runtime state but are no longer selected.
  *
@@ -475,7 +513,6 @@ export async function reconcileFlowsFromRepo(input: {
   };
 
   const { plan, removals, perFlowStale } = await computePlan(input);
-  const workspaceOid = new Types.ObjectId(workspaceId);
 
   // Fail closed on ANY verdict that is not an affirmative "verified": the
   // live path always passes a treeSha, so "unevaluated" cannot occur here —
@@ -503,29 +540,8 @@ export async function reconcileFlowsFromRepo(input: {
   }
 
   for (const [slug, { flow, stale }] of perFlowStale) {
-    const taken = await pauseForReconcile(flow);
-    try {
-      await CdcEntityState.deleteMany({
-        flowId: flow._id,
-        workspaceId: workspaceOid,
-        entity: { $in: stale },
-      });
-      await CdcChangeEvent.deleteMany({
-        flowId: flow._id,
-        workspaceId: workspaceOid,
-        entity: { $in: stale },
-      });
-      result.entitiesDropped.push({ slug, entities: stale });
-      log.info("Dropped entities removed from a flow's selection", {
-        workspaceId,
-        slug,
-        entities: stale,
-      });
-    } finally {
-      // Always resume, including when the drop threw: a stream left paused
-      // by a failed reconcile stops moving and nothing else lifts it.
-      await resumeAfterReconcile(flow, taken);
-    }
+    await dropStaleEntities(flow, stale);
+    result.entitiesDropped.push({ slug, entities: stale });
     result.reconfigured.push(slug);
   }
 

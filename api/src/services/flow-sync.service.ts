@@ -635,6 +635,8 @@ function flowFileApplyFailure(
 
 /** What a file would produce if it were written onto a fresh row. */
 export interface HydratedFlowRow {
+  /** The unsaved row the file produced — what the reactor would persist. */
+  row: IFlow;
   /** Set when `applyDefinition` refuses the file outright. */
   refusal: string | null;
   /** Field-level schema failures, as mongoose would raise them on save. */
@@ -677,7 +679,7 @@ export function hydrateFlowRow(
   } catch (error) {
     refusal = error instanceof Error ? error.message : String(error);
   }
-  if (refusal) return { refusal, schemaErrors: [] };
+  if (refusal) return { row: doc, refusal, schemaErrors: [] };
 
   // validateSync() runs the schema's own validators in-process and touches no
   // connection — the document is never saved and this function never writes.
@@ -690,6 +692,7 @@ export function hydrateFlowRow(
   ).validateSync();
   const errors = error?.errors ?? {};
   return {
+    row: doc,
     refusal: null,
     schemaErrors: Object.entries(errors).map(([path, err]) => ({
       path,

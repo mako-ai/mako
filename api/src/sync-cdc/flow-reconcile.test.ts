@@ -59,6 +59,7 @@ import { DEFAULT_BRANCH, initRepo } from "../apps/repository.service";
 import type { FlowFile } from "../services/flow-config-files";
 import {
   dryRunFlowReconcile,
+  reconcileFlowSelection,
   reconcileFlowsFromRepo,
   type DesiredFlow,
 } from "./flow-reconcile";
@@ -301,6 +302,38 @@ describe("entity selection", () => {
     });
     expect(result.entitiesDropped).toEqual([]);
     expect(await CdcEntityState.countDocuments({ flowId: flow._id })).toBe(1);
+  });
+});
+
+describe("in-product edit", () => {
+  it("drops an entity the saved row no longer selects — with no tree to verify", async () => {
+    const flow = await seedFlow("crm", ["leads"]);
+    for (const entity of ["leads", "dropped"]) {
+      await CdcEntityState.create({
+        workspaceId: WS,
+        flowId: flow._id,
+        entity,
+        mode: "steady",
+        lastIngestSeq: 7,
+        lastMaterializedSeq: 7,
+        backlogCount: 0,
+        lifetimeEventsProcessed: 1,
+        lifetimeRowsApplied: 1,
+        mergeIntervalSeconds: 30,
+        consecutiveFailures: 0,
+      });
+    }
+    // The mirror is unreachable: a UI save must not wait for it.
+    state.binding = { owner: "acme", repo: "nowhere" };
+
+    expect(await reconcileFlowSelection(flow)).toEqual(["dropped"]);
+
+    const left = await CdcEntityState.find({ flowId: flow._id });
+    expect(left.map(s => s.entity)).toEqual(["leads"]);
+    const after = await Flow.findById(flow._id);
+    expect(after?.streamState).toBe("active");
+    // Idempotent: a second pass finds nothing.
+    expect(await reconcileFlowSelection(flow)).toEqual([]);
   });
 });
 

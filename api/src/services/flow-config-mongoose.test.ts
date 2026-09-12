@@ -96,6 +96,26 @@ async function main(): Promise<void> {
       "document and lean projections must agree",
     );
 
+    // The two definition mappers must agree. The UI path builds a row field
+    // by field in routes/flows.ts and commits `flowToFile` of it; the push
+    // reactor rebuilds the row from that file with `applyDefinition`. If
+    // either learns a field the other does not, a UI save commits a file the
+    // next push applies differently — silently. Identity here means the
+    // file survives a full trip through the reactor's mapper unchanged.
+    const { hydrateFlowRow } = await import("./flow-sync.service");
+    const hydrated = hydrateFlowRow(parsed, {
+      workspaceId: doc.workspaceId.toString(),
+      slug: "bq-warehouse",
+      createdBy: "u1",
+    });
+    assert.equal(hydrated.refusal, null);
+    assert.deepEqual(hydrated.schemaErrors, []);
+    assert.equal(
+      serializeFlowFile(flowToFile(hydrated.row)),
+      text,
+      "the file the UI commits must be the file the reactor re-applies",
+    );
+
     console.log("flow-config mongoose-safety tests passed");
   } finally {
     await mongoose.disconnect();
