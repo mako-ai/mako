@@ -1,0 +1,71 @@
+/**
+ * Advances a chat's cumulative usage by one delta per finished turn.
+ *
+ * Exposes a ref-held callback rather than a plain function, matching the
+ * `*ImplRef` pattern the rest of Chat.tsx uses: `useChat`'s `onFinish` closure
+ * is created once, so anything it calls must be reachable through a stable
+ * reference.
+ *
+ * Replay safety: a resumed stream can re-deliver the same `finish` part. Each
+ * counted turn is recorded under a key derived from the message id and its
+ * exact token counts, so re-delivery is a no-op while a genuinely different
+ * turn still counts.
+ */
+
+import { useEffect, useRef, type MutableRefObject } from "react";
+import { getResponseCostMetadata } from "../response-cost";
+import { turnUsageKey, usageDeltaFromMetadata } from "../session-usage";
+import { useChatUsageStore } from "../../../store/chatUsageStore";
+
+interface UseSessionUsageCounterArgs {
+  chatId: string;
+  /** Fallback source for the finished message when the SDK omits it. */
+  messagesRef: MutableRefObject<Array<{ id?: string; metadata?: unknown }>>;
+}
+
+export interface UseSessionUsageCounterResult {
+  onTurnFinishedRef: MutableRefObject<
+    (message?: { id?: string; metadata?: unknown }) => void
+  >;
+}
+
+export function useSessionUsageCounter({
+  chatId,
+  messagesRef,
+}: UseSessionUsageCounterArgs): UseSessionUsageCounterResult {
+  const chatIdRef = useRef(chatId);
+  const countedKeysRef = useRef<Set<string>>(new Set());
+
+  // Switching chats starts a fresh dedup ledger; keys from the previous chat
+  // must not suppress a turn here.
+  useEffect(() => {
+    if (chatIdRef.current !== chatId) {
+      chatIdRef.current = chatId;
+      countedKeysRef.current = new Set();
+    }
+  }, [chatId]);
+
+  const onTurnFinishedRef = useRef<
+    (message?: { id?: string; metadata?: unknown }) => void
+  >(() => {});
+
+  onTurnFinishedRef.current = message => {
+    const finished =
+      message ??
+      // The AI SDK does not guarantee the finished message in the callback
+      // payload across versions; the last assistant message is the same turn.
+      messagesRef.current[messagesRef.current.length - 1];
+    if (!finished) return;
+
+    const delta = usageDeltaFromMetadata(getResponseCostMetadata(finished));
+    if (!delta) return;
+
+    const key = turnUsageKey(finished.id, delta);
+    if (countedKeysRef.current.has(key)) return;
+    countedKeysRef.current.add(key);
+
+    useChatUsageStore.getState().addTurnUsage(chatIdRef.current, delta);
+  };
+
+  return { onTurnFinishedRef };
+}
