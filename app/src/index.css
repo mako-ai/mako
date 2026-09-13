@@ -153,8 +153,13 @@
    scroll container. A wide table already scrolls there — the problem is that
    macOS overlay scrollbars are invisible at rest, so a scrollable table looks
    identical to a truncated one. Two affordances, no restructuring:
-     1. an always-visible thin horizontal scrollbar, and
-     2. a right-edge fade that says "there is more to the right" at rest.
+     1. a right-edge fade that says "there is more to the right" at rest, and
+     2. scrollbar styling for platforms that reserve space for a bar.
+   The fade is the load-bearing one. VERIFIED in Chrome on macOS: with the OS
+   set to show scroll bars "automatically" (the default) the bar stays an
+   overlay and reserves no height, so the styling below changes nothing there —
+   it only pays off on Windows/Linux and when the user forces bars always-on.
+   Do not drop the fade on the assumption the scrollbar covers it.
    `--bui-line-strong` flips with the theme, so both are dark-mode correct. */
 [data-streamdown="table-wrapper"] > div {
   border: none !important;
@@ -177,8 +182,8 @@
   );
 }
 
-/* Firefox/`scrollbar-width` aside, WebKit hides overlay scrollbars entirely
-   until a scroll gesture — styling them explicitly makes the bar permanent. */
+/* Styling the bar makes it permanent only where the platform reserves space
+   for one; macOS overlay scrollbars ignore this (see the note above). */
 [data-streamdown="table-wrapper"] > div::-webkit-scrollbar {
   height: 8px;
 }
