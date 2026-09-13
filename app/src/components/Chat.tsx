@@ -11,11 +11,11 @@ import React, {
 } from "react";
 import {
   Box,
-  Chip,
   IconButton,
   Typography,
   Alert,
   Collapse,
+  Snackbar,
   Tooltip,
 } from "@mui/material";
 import { ChevronDown, Copy, Check, History, Plus, X } from "lucide-react";
@@ -77,12 +77,15 @@ import {
 } from "../agent-runtime/request-context";
 import { consumePendingScreenshotVisionAttachments } from "../agent-runtime/screenshot-agent-tools";
 import { UpgradePrompt } from "./UpgradePrompt";
+import { useConfirm } from "./ConfirmDialog";
 import {
   readStoredChatSession,
   writeStoredChatSession,
   type StoredChatSession,
 } from "./chat/session-storage";
 import {
+  isToolPartType,
+  toolNameFromPartType,
   type AutoSendPredicateArgs,
   type ToolInvocationInfo,
 } from "./chat/tool-presentation";
@@ -108,6 +111,8 @@ import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
 import { ChatMessageErrorBoundary } from "./chat/ChatMessageErrorBoundary";
 import { QueuedPromptList } from "./chat/QueuedPrompts";
 import { ChatInputArea } from "./chat/ChatInputArea";
+import { ChatEmptyState } from "./chat/ChatEmptyState";
+import { useSessionUsageCounter } from "./chat/hooks/useSessionUsageCounter";
 import { AcpPermissionBanner } from "./AcpPermissionBanner";
 import { AcpWorkspaceToolsBanner } from "./AcpWorkspaceToolsBanner";
 import {
@@ -145,15 +150,6 @@ function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
     : "empty";
 }
 
-// Starter prompts for the mobile "Ask your data" empty state. Tapping one runs
-// it through the normal send path.
-const MOBILE_ASK_SUGGESTIONS = [
-  "What tables are in my database?",
-  "Show me the 10 most recent records",
-  "How many rows are in each table?",
-  "Summarize my data with a chart",
-];
-
 // Claude-style floating round button used in the mobile pane headers. Each
 // control carries its own paper fill + blur + hairline so it reads as floating
 // chrome over the content rather than sitting in a solid app bar.
@@ -176,6 +172,10 @@ const Chat: React.FC<ChatProps> = ({
   resultsContextRef,
 }) => {
   const paletteMode = useMuiTheme().palette.mode;
+  const confirm = useConfirm();
+  // One-off feedback for user-initiated actions that fail quietly otherwise
+  // (clipboard, session delete).
+  const [actionError, setActionError] = useState<string | null>(null);
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
 
@@ -536,6 +536,10 @@ const Chat: React.FC<ChatProps> = ({
       // a plan-feedback auto-send latch that was never consumed (leak guard).
       errorResumeRef.current.count = 0;
       suppressNextAutoSendRef.current = false;
+      // Advance the session's cumulative token/cost counter by this turn.
+      // Once per finished turn, never per chunk — the composer must not
+      // re-render while streaming (chat-performance).
+      onTurnFinishedRef.current?.();
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }
@@ -570,6 +574,15 @@ const Chat: React.FC<ChatProps> = ({
   messagesRef.current = messages;
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
+
+  // Cumulative session token/cost. Seeded from the server's persisted totals by
+  // the session loader; advanced here once per finished turn.
+  const { onTurnFinishedRef } = useSessionUsageCounter({
+    chatId,
+    messagesRef: messagesRef as unknown as React.MutableRefObject<
+      Array<{ id?: string; metadata?: unknown }>
+    >,
+  });
 
   // Leaving local Claude/Codex must drop the persisted ACP binding so History
   // reopen doesn't force a dead session (Bugbot: stale localAcp).
@@ -661,7 +674,7 @@ const Chat: React.FC<ChatProps> = ({
         if (msg.role !== "assistant") return msg;
         const hasPending = msg.parts?.some(p => {
           const pt = p.type as string;
-          if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+          if (!isToolPartType(pt)) return false;
           const s = (p as Record<string, unknown>).state as string;
           return s !== "output-available" && s !== "error";
         });
@@ -670,7 +683,7 @@ const Chat: React.FC<ChatProps> = ({
           ...msg,
           parts: msg.parts.map(p => {
             const pt = p.type as string;
-            if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+            if (!isToolPartType(pt)) return p;
             const s = (p as Record<string, unknown>).state as string;
             if (s === "output-available" || s === "error") return p;
             return {
@@ -976,9 +989,22 @@ const Chat: React.FC<ChatProps> = ({
 
   const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    // Deleting a chat is irreversible and the control sits one row away from
+    // "open this chat", so it must be confirmed.
+    const ok = await confirm({
+      title: "Delete this chat?",
+      body: "The conversation and its history are removed for good.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     const deleted = await deleteSession(id);
+    if (!deleted) {
+      setActionError("Could not delete that chat. Please try again.");
+      return;
+    }
     // If we deleted the current chat, start a new one.
-    if (deleted && chatId === id) {
+    if (chatId === id) {
       createNewSession();
     }
   };
@@ -1220,14 +1246,14 @@ const Chat: React.FC<ChatProps> = ({
             text: (part as Record<string, unknown>).text,
           };
         }
-        if (partType?.startsWith("tool-") || partType === "dynamic-tool") {
+        if (isToolPartType(partType)) {
           return {
             type: partType,
             toolCallId: part.toolCallId,
             toolName:
               partType === "dynamic-tool"
                 ? part.toolName
-                : partType.split("-").slice(1).join("-"),
+                : toolNameFromPartType(partType),
             state: part.state,
             input: part.input,
             output: part.output,
@@ -1246,9 +1272,22 @@ const Chat: React.FC<ChatProps> = ({
       setCopiedChat(true);
       setTimeout(() => setCopiedChat(false), 2000);
     } catch {
-      /* clipboard not available */
+      // Clipboard can be unavailable (insecure context, denied permission).
+      // Silently doing nothing looks like a broken button.
+      setActionError("Could not copy the chat history to the clipboard.");
     }
   };
+
+  const isLocalAcp = isLocalAcpModelId(selectedModelId);
+
+  // Focus the composer on chat switch and after the USER sends — not on every
+  // assistant message. Keying this on `messages.length` yanked focus out of an
+  // expanded reasoning block or a plan card mid-turn.
+  const userMessageCount = messages.reduce(
+    (n, m) => (m.role === "user" ? n + 1 : n),
+    0,
+  );
+  const focusKey = `${chatId}-${userMessageCount}`;
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -1433,65 +1472,12 @@ const Chat: React.FC<ChatProps> = ({
           flexDirection: "column",
         }}
       >
-        {/* Mobile "Ask your data" home: hero + starter chips when empty */}
-        {isMobile && messages.length === 0 && (
-          <Box
-            sx={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              textAlign: "center",
-              px: 3,
-              gap: 3,
-              pointerEvents: "none",
-            }}
-          >
-            <Box>
-              <Typography variant="h5" sx={{ fontWeight: 700 }}>
-                Ask your data
-              </Typography>
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                sx={{ mt: 1, maxWidth: 360 }}
-              >
-                Ask a question in plain English — Mako writes and runs the query
-                for you.
-              </Typography>
-            </Box>
-            <Box
-              sx={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 1,
-                justifyContent: "center",
-                maxWidth: 440,
-                pointerEvents: "auto",
-              }}
-            >
-              {MOBILE_ASK_SUGGESTIONS.map(suggestion => (
-                <Chip
-                  key={suggestion}
-                  label={suggestion}
-                  clickable
-                  variant="outlined"
-                  disabled={!currentWorkspace}
-                  onClick={() => handleChatSubmit(suggestion)}
-                  sx={{
-                    height: "auto",
-                    py: 0.75,
-                    "& .MuiChip-label": {
-                      whiteSpace: "normal",
-                      display: "block",
-                    },
-                  }}
-                />
-              ))}
-            </Box>
-          </Box>
+        {messages.length === 0 && (
+          <ChatEmptyState
+            isMobile={isMobile}
+            disabled={!currentWorkspace}
+            onSelect={handleChatSubmit}
+          />
         )}
 
         <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
@@ -1526,7 +1512,7 @@ const Chat: React.FC<ChatProps> = ({
             atBottomThreshold={120}
             increaseViewportBy={{ top: 600, bottom: 900 }}
             components={messageVirtuosoComponents}
-            style={{ flex: 1 }}
+            style={{ flex: 1, paddingBottom: 24 }}
             itemContent={(msgIdx, message) => (
               <ChatMessageErrorBoundary
                 messageId={message.id}
@@ -1549,32 +1535,35 @@ const Chat: React.FC<ChatProps> = ({
         </React.Profiler>
 
         {!isAtBottom && (
-          <IconButton
-            onClick={() =>
-              virtuosoRef.current?.scrollToIndex({
-                index: messages.length - 1,
-                align: "end",
-                behavior: "smooth",
-              })
-            }
-            size="small"
-            sx={{
-              position: "absolute",
-              bottom: 8,
-              left: "50%",
-              transform: "translateX(-50%)",
-              zIndex: 1,
-              backgroundColor: "background.paper",
-              border: 1,
-              borderColor: "divider",
-              boxShadow: 2,
-              "&:hover": { backgroundColor: "action.hover" },
-              width: 32,
-              height: 32,
-            }}
-          >
-            <ChevronDown size={18} />
-          </IconButton>
+          <Tooltip title="Scroll to latest" placement="top">
+            <IconButton
+              aria-label="Scroll to latest message"
+              onClick={() =>
+                virtuosoRef.current?.scrollToIndex({
+                  index: messages.length - 1,
+                  align: "end",
+                  behavior: "smooth",
+                })
+              }
+              size="small"
+              sx={{
+                position: "absolute",
+                bottom: 8,
+                left: "50%",
+                transform: "translateX(-50%)",
+                zIndex: 1,
+                backgroundColor: "background.paper",
+                border: 1,
+                borderColor: "divider",
+                boxShadow: 2,
+                "&:hover": { backgroundColor: "action.hover" },
+                width: 32,
+                height: 32,
+              }}
+            >
+              <ChevronDown size={18} />
+            </IconButton>
+          </Tooltip>
         )}
       </Box>
 
@@ -1639,13 +1628,13 @@ const Chat: React.FC<ChatProps> = ({
       </Collapse>
 
       {/* Local Claude/Codex: activate workspace MCP + HITL for Bash/edits. */}
-      {isLocalAcpModelId(selectedModelId) ? (
+      {isLocalAcp ? (
         <AcpWorkspaceToolsBanner
           modelId={selectedModelId}
           workspaceId={currentWorkspace?.id}
         />
       ) : null}
-      {isLocalAcpModelId(selectedModelId) ? <AcpPermissionBanner /> : null}
+      {isLocalAcp ? <AcpPermissionBanner /> : null}
 
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea
@@ -1653,12 +1642,29 @@ const Chat: React.FC<ChatProps> = ({
         onStop={handleStop}
         isLoading={isLoading}
         disabled={!currentWorkspace}
-        focusKey={`${chatId}-${messages.length}`}
+        focusKey={focusKey}
+        chatId={chatId}
+        isLocalAgent={isLocalAcp}
         paletteMode={paletteMode}
         editingPrompt={editingPrompt}
         onCancelEdit={handleCancelEditQueuedPrompt}
         planFeedbackMode={isPlanAwaitingFeedback}
       />
+
+      <Snackbar
+        open={actionError !== null}
+        autoHideDuration={5000}
+        onClose={() => setActionError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity="error"
+          variant="filled"
+          onClose={() => setActionError(null)}
+        >
+          {actionError}
+        </Alert>
+      </Snackbar>
 
       {/* Tool Debug Dialog */}
       <ToolDetailsDialog

@@ -42,6 +42,23 @@ function isStepStart(p: Part): boolean {
   return p.type === "step-start";
 }
 
+// A `text` part whose content is empty/whitespace. The AI SDK pushes such a
+// part the moment a `text-start` chunk arrives (before any delta), and
+// persistence stores text parts verbatim — so aborted/empty text blocks survive
+// into history. The message row renders NOTHING for them, so a reasoning run
+// split by one shows up as two visually adjacent "Thinking" rows with nothing
+// between them.
+function isEmptyTextPart(p: Part): boolean {
+  return p.type === "text" && partText(p).trim().length === 0;
+}
+
+// Parts that do NOT break a reasoning run because they render nothing. A bridge
+// never extends the run's `lastIndex` (which must stay on a real reasoning part
+// so `getStreamingReasoningGroupStart` can read its live `state`).
+function bridgesReasoningRun(p: Part): boolean {
+  return isStepStart(p) || isEmptyTextPart(p);
+}
+
 interface RunItem {
   text: string;
   sig: string | null;
@@ -122,9 +139,11 @@ function dedupeMessageItems(
 // thinking segments, and (critically) resume/continuation replay re-emits a
 // `step-start` between a partial reasoning part and its replayed copy. Keeping
 // the run intact lets `dedupeRunText` collapse those copies into one block
-// instead of rendering the same thinking twice. Any OTHER non-reasoning part
-// (tool call, text) genuinely ends the run, so the next reasoning part starts a
-// fresh group.
+// instead of rendering the same thinking twice. An EMPTY text part bridges for
+// the same reason: the row renders nothing for it, so letting it split the run
+// produced several visually adjacent "Thinking" rows with nothing between them.
+// Any OTHER non-reasoning part (tool call, non-empty text) genuinely ends the
+// run, so the next reasoning part starts a fresh group.
 //
 // Grouping by contiguous runs — rather than only indexing parts that already
 // have text — is important: when a new thinking block begins, its first
@@ -158,9 +177,10 @@ export function computeReasoningGroups(
         if (trimmed) items.push({ text: trimmed, sig: partSignature(p) });
         lastIndex = j;
         j++;
-      } else if (isStepStart(p)) {
-        // Bridge the run across the step boundary without extending lastIndex
-        // (which must stay on a real reasoning part so its `state` is readable).
+      } else if (bridgesReasoningRun(p)) {
+        // Bridge the run across a part that renders nothing (step boundary, or
+        // an empty text part) without extending lastIndex (which must stay on a
+        // real reasoning part so its `state` is readable).
         j++;
       } else {
         break;
