@@ -12,7 +12,7 @@
  * turn still counts.
  */
 
-import { useEffect, useRef, type MutableRefObject } from "react";
+import { useRef, type MutableRefObject } from "react";
 import { getResponseCostMetadata } from "../response-cost";
 import { turnUsageKey, usageDeltaFromMetadata } from "../session-usage";
 import { useChatUsageStore } from "../../../store/chatUsageStore";
@@ -36,14 +36,16 @@ export function useSessionUsageCounter({
   const chatIdRef = useRef(chatId);
   const countedKeysRef = useRef<Set<string>>(new Set());
 
-  // Switching chats starts a fresh dedup ledger; keys from the previous chat
-  // must not suppress a turn here.
-  useEffect(() => {
-    if (chatIdRef.current !== chatId) {
-      chatIdRef.current = chatId;
-      countedKeysRef.current = new Set();
-    }
-  }, [chatId]);
+  // Assigned during render, NOT in an effect — the same deliberate pattern as
+  // Chat.tsx's other refs. An effect would leave a window between the chatId
+  // prop changing and the effect flushing, and a turn finishing inside that
+  // window would be credited to the chat the user just navigated away from.
+  // Switching chats also starts a fresh dedup ledger, so keys from the
+  // previous chat cannot suppress a turn here.
+  if (chatIdRef.current !== chatId) {
+    chatIdRef.current = chatId;
+    countedKeysRef.current = new Set();
+  }
 
   const onTurnFinishedRef = useRef<
     (message?: { id?: string; metadata?: unknown }) => void
