@@ -16,9 +16,18 @@ import { useRef, type MutableRefObject } from "react";
 import { getResponseCostMetadata } from "../response-cost";
 import { turnUsageKey, usageDeltaFromMetadata } from "../session-usage";
 import { useChatUsageStore } from "../../../store/chatUsageStore";
+import { api } from "../../../api/client";
+
+/**
+ * How long to wait after a turn settles before reconciling against the server.
+ * Long enough for the final `saveChat` to land, short enough that the figure
+ * is right before the user reads it.
+ */
+const RECONCILE_DELAY_MS = 1200;
 
 interface UseSessionUsageCounterArgs {
   chatId: string;
+  workspaceId: string | undefined;
   /** Fallback source for the finished message when the SDK omits it. */
   messagesRef: MutableRefObject<Array<{ id?: string; metadata?: unknown }>>;
 }
@@ -31,8 +40,12 @@ export interface UseSessionUsageCounterResult {
 
 export function useSessionUsageCounter({
   chatId,
+  workspaceId,
   messagesRef,
 }: UseSessionUsageCounterArgs): UseSessionUsageCounterResult {
+  const workspaceIdRef = useRef(workspaceId);
+  workspaceIdRef.current = workspaceId;
+  const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatIdRef = useRef(chatId);
   const countedKeysRef = useRef<Set<string>>(new Set());
 
@@ -51,7 +64,10 @@ export function useSessionUsageCounter({
     (message?: { id?: string; metadata?: unknown }) => void
   >(() => {});
 
-  onTurnFinishedRef.current = message => {
+  const onTurnFinishedImpl = (message?: {
+    id?: string;
+    metadata?: unknown;
+  }) => {
     const finished =
       message ??
       // The AI SDK does not guarantee the finished message in the callback
@@ -68,6 +84,53 @@ export function useSessionUsageCounter({
 
     useChatUsageStore.getState().addTurnUsage(chatIdRef.current, delta);
   };
+
+  // The optimistic delta above only covers segments whose `finish` part
+  // actually reached this browser. An agentic turn is several segments, and
+  // measured on the preview a tool-using turn showed 25.0k live against 76.8k
+  // persisted — the figure only became right on reload. So after the turn
+  // settles, reconcile against the authoritative per-chat aggregate and
+  // REPLACE. Cheap: ~2KB and ~70ms, once per turn, never per chunk.
+  onTurnFinishedRef.current = (message => {
+    const applyOptimistic = onTurnFinishedImpl;
+    applyOptimistic(message);
+
+    if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+    const targetChatId = chatIdRef.current;
+    const targetWorkspaceId = workspaceIdRef.current;
+    if (!targetChatId || !targetWorkspaceId) return;
+
+    reconcileTimerRef.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const { data } = await api.GET(
+            "/api/workspaces/{workspaceId}/usage/by-chat/{chatId}",
+            {
+              params: {
+                path: { workspaceId: targetWorkspaceId, chatId: targetChatId },
+              },
+            },
+          );
+          const totals = data?.totals;
+          if (!totals) return;
+          // The user may have switched chats while this was in flight.
+          if (chatIdRef.current !== targetChatId) return;
+          useChatUsageStore.getState().seedSessionUsage(targetChatId, {
+            inputTokens: totals.inputTokens ?? 0,
+            outputTokens: totals.outputTokens ?? 0,
+            cacheReadTokens: totals.cacheReadTokens ?? 0,
+            cacheWriteTokens: totals.cacheWriteTokens ?? 0,
+            reasoningTokens: totals.reasoningTokens ?? 0,
+            costUsd: totals.costUsd ?? 0,
+            hasCost: (totals.costUsd ?? 0) > 0,
+          });
+        } catch {
+          // Best effort: the optimistic figure stands and the next chat load
+          // reseeds from the server anyway.
+        }
+      })();
+    }, RECONCILE_DELAY_MS);
+  }) as typeof onTurnFinishedRef.current;
 
   return { onTurnFinishedRef };
 }

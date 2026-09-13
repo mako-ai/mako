@@ -579,6 +579,7 @@ const Chat: React.FC<ChatProps> = ({
   // the session loader; advanced here once per finished turn.
   const { onTurnFinishedRef } = useSessionUsageCounter({
     chatId,
+    workspaceId: currentWorkspace?.id,
     messagesRef: messagesRef as unknown as React.MutableRefObject<
       Array<{ id?: string; metadata?: unknown }>
     >,
