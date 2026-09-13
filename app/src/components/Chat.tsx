@@ -1534,7 +1534,9 @@ const Chat: React.FC<ChatProps> = ({
           />
         </React.Profiler>
 
-        {!isAtBottom && (
+        {/* An empty thread has nothing to scroll to — the button used to sit
+            over the intro screen on a brand-new chat. */}
+        {!isAtBottom && messages.length > 0 && (
           <Tooltip title="Scroll to latest" placement="top">
             <IconButton
               aria-label="Scroll to latest message"
