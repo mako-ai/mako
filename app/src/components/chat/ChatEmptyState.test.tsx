@@ -42,4 +42,20 @@ describe("ChatEmptyState", () => {
     expect(getComputedStyle(overlay).justifyContent).not.toBe("center");
     expect(getComputedStyle(inner).margin).toBe("auto");
   });
+
+  it("stacks above the virtual list so the prompts are actually clickable", () => {
+    // Regression: the overlay and Virtuoso's scroller are positioned siblings
+    // in the same container, and the scroller comes LATER in DOM order. With
+    // `z-index: auto` it painted on top and swallowed every click, so the
+    // intro screen looked correct and did nothing. Caught on the preview by
+    // hit-testing a suggestion's centre, which returned Virtuoso's div rather
+    // than the button. jsdom cannot hit-test, so pin the declaration instead.
+    const { container } = render(
+      <ChatEmptyState isMobile={false} disabled={false} onSelect={() => {}} />,
+    );
+    const overlay = container.firstElementChild as HTMLElement;
+    const z = getComputedStyle(overlay).zIndex;
+    expect(z).not.toBe("auto");
+    expect(Number(z)).toBeGreaterThan(0);
+  });
 });

@@ -53,6 +53,12 @@ export const ChatEmptyState = React.memo(function ChatEmptyState({
         // Only rendered when the thread is empty, so there is nothing
         // underneath that still needs to receive clicks or wheel events.
         pointerEvents: "auto",
+        // Virtuoso's scroller is a positioned sibling that comes LATER in DOM
+        // order, so with `z-index: auto` it paints on top of this overlay and
+        // swallows every click on a starter prompt — the intro screen looks
+        // right and does nothing. Measured on the preview: a hit test at a
+        // suggestion's centre returned Virtuoso's div, not the button.
+        zIndex: 1,
       }}
     >
       <Box
