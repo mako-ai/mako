@@ -451,6 +451,21 @@ export function navigate(to, opts) {
     window.history.pushState(null, "", url);
   }
   emitLocation();
+  // Inside Mako's shell the app is a sandboxed iframe with an opaque origin,
+  // so the line above moved a URL nobody can see or copy. Tell the host,
+  // which projects the query onto its own address bar (/apps/<slug>?...)
+  // and seeds it back into the iframe when that link is opened. Only the
+  // query travels: the frame's pathname is the preview token, not the app's.
+  if (window.parent !== window) {
+    try {
+      window.parent.postMessage(
+        { type: "mako-app:navigate", search: url.search },
+        "*",
+      );
+    } catch {
+      // A host that is not Mako, or a frame that forbids it: nothing to tell.
+    }
+  }
 }
 
 export function useLocation() {

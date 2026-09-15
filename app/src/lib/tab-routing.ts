@@ -106,7 +106,18 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const appId = tab.metadata?.appId as string | undefined;
       const slug = tab.metadata?.appSlug as string | undefined;
       const ref = slug || appId;
-      return ref ? `/apps/${ref}` : null;
+      // The app's own query string rides along, so a filtered view is a
+      // link. The published app is a sandboxed iframe whose URL nobody can
+      // see; it reports its query over postMessage on every navigate()
+      // (AppWorkspace stores it here) and boots from it when the link opens.
+      const search = tab.metadata?.appSearch;
+      const query =
+        typeof search === "string" && search.length > 1
+          ? search.startsWith("?")
+            ? search
+            : `?${search}`
+          : "";
+      return ref ? `/apps/${ref}${query}` : null;
     }
     case "app-file": {
       const appId = tab.metadata?.appId as string | undefined;
