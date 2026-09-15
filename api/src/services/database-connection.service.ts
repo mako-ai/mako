@@ -17,6 +17,7 @@ import {
 } from "../databases/drivers/postgresql/pg-type-utils";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 import { loggers } from "../logging";
+import { createBigQueryPollBudget } from "./bigquery-poll-budget";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
 import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
@@ -1624,15 +1625,22 @@ export class DatabaseConnectionService {
         60 * 60 * 1000,
       );
       const pollIntervalMs = this.getBigQueryPollIntervalMs();
-      let waitedMs = 0;
+      // A wall-clock deadline: see bigquery-poll-budget.ts for why counting
+      // only the sleeps turned 5 minutes into 55.
+      const budget = createBigQueryPollBudget(maxWaitMs);
 
-      while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+      while (data.jobComplete === false && jobId && !budget.expired()) {
         checkAborted();
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-        waitedMs += pollIntervalMs;
+        await new Promise(resolve =>
+          setTimeout(resolve, budget.sleepMs(pollIntervalMs)),
+        );
         checkAborted();
+        if (budget.expired()) break;
 
-        const params: any = { maxResults: batchSize };
+        const params: any = {
+          maxResults: batchSize,
+          timeoutMs: budget.requestTimeoutMs(),
+        };
         if (jobLocation) params.location = jobLocation;
         response = await client.get(
           `/projects/${project_id}/queries/${jobId}`,
@@ -1822,15 +1830,21 @@ export class DatabaseConnectionService {
 
       const maxWaitMs = 5 * 60 * 1000;
       const pollIntervalMs = this.getBigQueryPollIntervalMs();
-      let waitedMs = 0;
+      // A wall-clock deadline: see bigquery-poll-budget.ts.
+      const budget = createBigQueryPollBudget(maxWaitMs);
 
-      while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+      while (data.jobComplete === false && jobId && !budget.expired()) {
         checkAborted();
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-        waitedMs += pollIntervalMs;
+        await new Promise(resolve =>
+          setTimeout(resolve, budget.sleepMs(pollIntervalMs)),
+        );
         checkAborted();
+        if (budget.expired()) break;
 
-        const params: any = { maxResults: pageSize };
+        const params: any = {
+          maxResults: pageSize,
+          timeoutMs: budget.requestTimeoutMs(),
+        };
         if (jobLocation) {
           params.location = jobLocation;
         }
@@ -1990,15 +2004,21 @@ export class DatabaseConnectionService {
 
       const maxWaitMs = 5 * 60 * 1000;
       const pollIntervalMs = this.getBigQueryPollIntervalMs();
-      let waitedMs = 0;
+      // A wall-clock deadline: see bigquery-poll-budget.ts.
+      const budget = createBigQueryPollBudget(maxWaitMs);
 
-      while (data.jobComplete === false && jobId && waitedMs < maxWaitMs) {
+      while (data.jobComplete === false && jobId && !budget.expired()) {
         checkAborted();
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-        waitedMs += pollIntervalMs;
+        await new Promise(resolve =>
+          setTimeout(resolve, budget.sleepMs(pollIntervalMs)),
+        );
         checkAborted();
+        if (budget.expired()) break;
 
-        const params: any = { maxResults: batchSize };
+        const params: any = {
+          maxResults: batchSize,
+          timeoutMs: budget.requestTimeoutMs(),
+        };
         if (jobLocation) {
           params.location = jobLocation;
         }

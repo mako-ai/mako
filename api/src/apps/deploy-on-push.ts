@@ -116,6 +116,24 @@ export async function appFolderChanged(
 }
 
 /**
+ * The deploy stopped because a data binding could not be materialized — a
+ * warehouse query that failed or timed out, not a flaky build. Retrying it
+ * immediately re-runs the same query against the same warehouse; the caller
+ * treats it as final and the hourly reconcile backs off from it.
+ */
+export class DeployBindingsError extends Error {
+  constructor(
+    message: string,
+    readonly slug: string,
+    readonly sha: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "DeployBindingsError";
+  }
+}
+
+/**
  * Build one app at `sha` and make it the live deployment. Idempotent: a
  * commit already built (the Publish button got there first) is just made
  * live. Throws on a failed build so Inngest retries and records it; `main`
@@ -174,7 +192,12 @@ export async function deployOneApp(
     await ensureDeploymentBindings(project, sha);
   } catch (error) {
     await recordDeployFailure(project, sha, "bindings", error);
-    throw error;
+    throw new DeployBindingsError(
+      error instanceof Error ? error.message : String(error),
+      slug,
+      sha,
+      { cause: error },
+    );
   }
   if (await deploymentExists(project._id.toString(), sha)) {
     // The frontend was already uploaded (the Publish button got there
