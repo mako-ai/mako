@@ -82,6 +82,43 @@ Apps follow the same model as dashboards (see [Sharing & Collaborators](/dashboa
 
 Public links (optionally password-protected) render the published deployment for anonymous viewers.
 
+## Identity: `useViewer()`
+
+Apps can ask who's looking. `@makoai/app-sdk` (v2.4+) exports a `useViewer()`
+hook:
+
+```ts
+const { viewer, loading, error } = useViewer();
+```
+
+`viewer` is `null` for an anonymous visitor on a public share link.
+Otherwise it resolves to:
+
+```ts
+{
+  id: string;
+  email: string; // lowercased
+  workspace: { id: string; name: string; role: "owner" | "admin" | "member" | "viewer" | null };
+  app: { id: string; slug: string; role: "owner" | "editor" | "viewer" | null };
+}
+```
+
+`workspace.role` is the person's access role on the workspace itself;
+`app.role` is their role on this specific app (owner/editor/viewer). Mako
+resolves both server-side from the session or a signed token — the app's
+own code cannot forge them. A standalone `getViewer()` promise is also
+available for non-React contexts.
+
+This is UI-shaping data, not access control: every binding an app can read
+is downloaded whole to the browser regardless of who's viewing, so don't
+rely on `useViewer()` to hide data — gate what a binding *contains*
+instead if that's the goal. Team, seniority, quota, or any other business
+attribute isn't part of the viewer shape by design; join a roster binding
+on `lower(viewer.email)` if the app needs it.
+
+For local development, set `MAKO_VIEWER_AS=<email>` in the app's `.env` to
+preview the app as a specific workspace member during `npm run dev`.
+
 ## Security Model
 
 - Binding queries are validated against the workspace's connections and run server-side with read-only enforcement on materialization SQL.
