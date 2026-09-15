@@ -31,11 +31,19 @@ export function focusAppsTab(
   // stored search would otherwise win, the address bar would be rewritten
   // to it, and the shared view would never arrive. A plain link (no query)
   // leaves the tab as it was.
+  //
+  // appSearchSeed counts the times a DIFFERENT query landed on an existing
+  // tab. AppWorkspace seeds the published iframe once per boot and must not
+  // follow every navigate(), so this is the one signal that says "reload the
+  // app with this query": measured on the live shell after the tab kept the
+  // query on the address bar but the app inside still showed "All countries".
   if (search && id) {
     useConsoleStore.setState(state => {
       const t = state.tabs[id];
       if (t?.metadata && t.metadata.appSearch !== search) {
         t.metadata.appSearch = search;
+        t.metadata.appSearchSeed =
+          ((t.metadata.appSearchSeed as number | undefined) ?? 0) + 1;
       }
     });
   }
