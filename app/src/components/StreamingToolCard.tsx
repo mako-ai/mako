@@ -15,7 +15,6 @@ import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import {
   BarChart3,
   Brain,
-  Check,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -449,15 +448,30 @@ export const StreamingToolCard = React.memo(
         ? "json"
         : "text";
 
+    // A row must state its status ONCE. While the tool is live the chip carries
+    // the phase ("Generating…" / "Running…"); once it settles the chip carries
+    // only real information — the output summary ("12 rows") or the error.
+    // A successful tool with nothing to summarise shows NO chip at all: the
+    // label already goes to primary ink and the leading icon drops its accent
+    // tint when the tool settles, so a literal "Done" was the third redundant
+    // statement of the same fact.
     const statusText = isStreaming
       ? "Generating…"
       : isExecuting
         ? "Running…"
         : isDone
-          ? (outputSummary ?? "Done")
+          ? (outputSummary ?? "")
           : isError
             ? (outputSummary ?? "Error")
             : "";
+
+    const handleActivate = () => {
+      if (canExpand) {
+        setExpanded(prev => !prev);
+      } else {
+        onDetailClick?.();
+      }
+    };
 
     return (
       <Box sx={{ my: 0.25 }}>
@@ -465,12 +479,22 @@ export const StreamingToolCard = React.memo(
             chevron, medium label, mono status chip, state affordance. */}
         <Box
           className="tool-card-header"
-          onClick={() => {
-            if (canExpand) {
-              setExpanded(prev => !prev);
-            } else {
-              onDetailClick?.();
-            }
+          role="button"
+          tabIndex={0}
+          // Only claim expandability when the row really has a body; a row that
+          // merely opens the details dialog must not announce a closed
+          // disclosure. `role` + `tabIndex` (NOT `component="button"`) because
+          // the title below may itself be a real <button>, and nesting buttons
+          // is invalid HTML.
+          aria-expanded={canExpand ? expanded : undefined}
+          aria-label={statusText ? `${label}, ${statusText}` : label}
+          onClick={handleActivate}
+          onKeyDown={(event: React.KeyboardEvent<HTMLElement>) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            if (event.target !== event.currentTarget) return;
+            // Space would otherwise scroll the chat list.
+            event.preventDefault();
+            handleActivate();
           }}
           sx={{
             display: "flex",
@@ -485,6 +509,10 @@ export const StreamingToolCard = React.memo(
             transition: "background-color 0.1s",
             "&:hover": {
               backgroundColor: "var(--bui-hover-2)",
+            },
+            "&:focus-visible": {
+              outline: "2px solid var(--bui-accent)",
+              outlineOffset: "1px",
             },
           }}
         >
@@ -604,13 +632,20 @@ export const StreamingToolCard = React.memo(
             </Box>
           )}
 
+          {/* State rail. Stays mounted at a fixed minWidth in every state so
+              the row's inner width never jitters as the tool settles
+              (anti-bounce). A successful tool shows NOTHING here — the settled
+              label/icon already say it. The error ✗ earns its slot because the
+              error chip truncates at maxWidth 260. */}
           <Box
             sx={{
               display: "flex",
               alignItems: "center",
+              justifyContent: "flex-end",
               ml: "auto",
               pl: 0.5,
               flexShrink: 0,
+              minWidth: 13,
             }}
           >
             {isStreaming ? (
@@ -625,8 +660,6 @@ export const StreamingToolCard = React.memo(
               />
             ) : isExecuting ? (
               <CircularProgress size={12} thickness={5} />
-            ) : isDone ? (
-              <Check size={13} style={{ color: "var(--bui-green)" }} />
             ) : isError ? (
               <X size={13} style={{ color: "var(--bui-red)" }} />
             ) : null}

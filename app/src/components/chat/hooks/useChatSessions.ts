@@ -8,6 +8,12 @@ import {
 import { api } from "../../../api/client";
 import { useRealtimeStore } from "../../../store/realtimeStore";
 
+/** Rolled-up spend for a chat, as the list endpoint returns it. */
+export interface ChatSessionUsage {
+  totalTokens?: number;
+  costUsd?: number;
+}
+
 export interface ChatSessionMeta {
   _id: string;
   title: string;
@@ -15,6 +21,11 @@ export interface ChatSessionMeta {
   updatedAt?: string;
   /** Resume pointer set while a turn is generating server-side. */
   activeStreamId?: string | null;
+  /**
+   * Per-chat token/cost roll-up. The list endpoint returns the whole chat
+   * document minus `messages`, so this rides along for every session.
+   */
+  usage?: ChatSessionUsage;
 }
 
 export interface UseChatSessionsArgs {
@@ -54,7 +65,35 @@ export function useChatSessions({ workspaceId }: UseChatSessionsArgs): {
         { params: { path: { workspaceId } } },
       );
       if (response.ok && Array.isArray(data)) {
-        setSessions(data as ChatSessionMeta[]);
+        // Map explicitly rather than casting the raw document: `usage` is the
+        // field the history menu prices each chat with, and a blanket cast
+        // silently dropped it from the declared shape before.
+        setSessions(
+          (data as Array<Record<string, unknown>>).map(raw => {
+            const session = raw as unknown as ChatSessionMeta;
+            const usage = raw.usage as ChatSessionUsage | undefined;
+            return {
+              _id: session._id,
+              title: session.title,
+              createdAt: session.createdAt,
+              updatedAt: session.updatedAt,
+              activeStreamId: session.activeStreamId,
+              usage:
+                usage && typeof usage === "object"
+                  ? {
+                      totalTokens:
+                        typeof usage.totalTokens === "number"
+                          ? usage.totalTokens
+                          : undefined,
+                      costUsd:
+                        typeof usage.costUsd === "number"
+                          ? usage.costUsd
+                          : undefined,
+                    }
+                  : undefined,
+            };
+          }),
+        );
       }
     } catch {
       /* ignore */

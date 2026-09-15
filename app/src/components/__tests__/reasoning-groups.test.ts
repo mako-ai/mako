@@ -88,6 +88,57 @@ describe("computeReasoningGroups", () => {
     expect(groups.get(3)?.text).toBe("block B");
   });
 
+  it("bridges a reasoning run across an EMPTY text part", () => {
+    // The AI SDK pushes `{ type: "text", text: "" }` on `text-start` (before
+    // any delta) and persistence stores text parts verbatim, so empty text
+    // parts survive into history. The row renders nothing for them, so if they
+    // split the run the user sees two adjacent "Thinking" rows with nothing
+    // between them.
+    const parts: Part[] = [
+      { type: "reasoning", text: "part one" },
+      { type: "text", text: "" },
+      { type: "reasoning", text: "part two" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect([...groups.keys()]).toEqual([0]);
+    expect(groups.get(0)).toEqual({
+      text: "part one\n\npart two",
+      lastIndex: 2,
+    });
+  });
+
+  it("bridges a reasoning run across a whitespace-only text part", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "part one" },
+      { type: "text", text: "   \n " },
+      { type: "reasoning", text: "part two" },
+    ];
+    expect([...computeReasoningGroups(parts).keys()]).toEqual([0]);
+  });
+
+  it("does NOT bridge across a NON-empty text part", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "block A" },
+      { type: "text", text: "Here is the answer" },
+      { type: "reasoning", text: "block B" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect([...groups.keys()]).toEqual([0, 2]);
+  });
+
+  it("keeps lastIndex on a reasoning part when an empty text part trails the run", () => {
+    // lastIndex must never point at the bridge: the streaming latch reads
+    // `parts[lastIndex].state`, which only a reasoning part carries.
+    const parts: Part[] = [
+      { type: "reasoning", text: "thinking", state: "streaming" },
+      { type: "text", text: "" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    const lastIndex = groups.get(0)?.lastIndex ?? -1;
+    expect(lastIndex).toBe(0);
+    expect(parts[lastIndex]?.type).toBe("reasoning");
+  });
+
   it("dedupes an exact duplicate reasoning part (replay artifact)", () => {
     const parts: Part[] = [
       { type: "reasoning", text: "thinking hard" },
@@ -275,6 +326,32 @@ describe("getStreamingReasoningGroupStart (state-driven)", () => {
       { type: "reasoning", text: "final", state: "done" },
     ];
     expect(getStreamingReasoningGroupStart(parts)).toBeNull();
+  });
+
+  it("keeps the streaming latch on the bridged run's reasoning part", () => {
+    // An empty text part bridges the run, so both reasoning parts belong to the
+    // group at 0 and the latch reads the LAST reasoning part's live state.
+    const streaming: Part[] = [
+      { type: "reasoning", text: "one", state: "done" },
+      { type: "text", text: "" },
+      { type: "reasoning", text: "two", state: "streaming" },
+    ];
+    expect(getStreamingReasoningGroupStart(streaming)).toBe(0);
+
+    const settled: Part[] = [
+      { type: "reasoning", text: "one", state: "done" },
+      { type: "text", text: "" },
+      { type: "reasoning", text: "two", state: "done" },
+    ];
+    expect(getStreamingReasoningGroupStart(settled)).toBeNull();
+  });
+
+  it("ignores a trailing empty text part when reading the streaming state", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "live", state: "streaming" },
+      { type: "text", text: "" },
+    ];
+    expect(getStreamingReasoningGroupStart(parts)).toBe(0);
   });
 
   it("ignores a trailing step-start when reading the streaming state", () => {
