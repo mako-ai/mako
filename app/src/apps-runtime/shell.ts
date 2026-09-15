@@ -10,6 +10,10 @@ export function focusAppsTab(
   appId: string,
   title: string,
   slug?: string,
+  /** The app's own query string ("?..."), from a shared link. Carried on
+   *  the tab so the address bar shows it and the published iframe boots
+   *  with it — see tabUrlPath and AppWorkspace. */
+  search?: string,
 ): string {
   return useConsoleStore.getState().focusOrOpenTab(
     { kind: "app", metadata: { appId } },
@@ -17,7 +21,7 @@ export function focusAppsTab(
       title: title || "App",
       content: "",
       kind: "app",
-      metadata: { appId: appId, appSlug: slug },
+      metadata: { appId: appId, appSlug: slug, appSearch: search || undefined },
     }),
     { title: title || undefined },
   ) as string;

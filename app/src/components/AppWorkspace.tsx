@@ -1232,6 +1232,60 @@ export default function AppWorkspace({
   // Bumping this remounts the preview iframe — a plain page refresh.
   const [previewNonce, setPreviewNonce] = useState(0);
 
+  // THE APP'S QUERY STRING, PROJECTED ONTO THE ADDRESS BAR.
+  //
+  // The published app is a sandboxed iframe with an opaque origin: its own
+  // URL is invisible and unshareable, so the SDK posts the query on every
+  // navigate() and the tab carries it (metadata.appSearch). tabUrlPath puts
+  // it on the address bar, UrlSync captures it from a shared link into the
+  // tab, and the iframe boots from it below. Only the published iframe is
+  // trusted as a source, and only the query is taken — never a path.
+  const pubIframeRef = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const frame = pubIframeRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
+      const data = event.data as { type?: unknown; search?: unknown } | null;
+      if (
+        !data ||
+        data.type !== "mako-app:navigate" ||
+        typeof data.search !== "string"
+      ) {
+        return;
+      }
+      const search =
+        data.search === "" || data.search.startsWith("?")
+          ? data.search
+          : `?${data.search}`;
+      useConsoleStore.setState(state => {
+        const t = state.tabs[_tabId];
+        if (t?.metadata && t.metadata.appSearch !== search) {
+          t.metadata.appSearch = search;
+        }
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [_tabId]);
+  // Seeded once per boot — re-read only when the key below remounts the
+  // iframe on an explicit rebuild, so the reloaded app keeps its view. It
+  // must NOT follow every navigate(): a src that changed on each filter
+  // would reload the app and throw away exactly the state being kept.
+  const seededSearchRef = useRef<{ nonce: number; search: string } | null>(
+    null,
+  );
+  if (
+    seededSearchRef.current === null ||
+    seededSearchRef.current.nonce !== previewNonce
+  ) {
+    const s = useConsoleStore.getState().tabs[_tabId]?.metadata?.appSearch;
+    seededSearchRef.current = {
+      nonce: previewNonce,
+      search: typeof s === "string" && s.length > 1 ? s : "",
+    };
+  }
+  const seededSearch = seededSearchRef.current.search;
+
   useEffect(() => {
     if (!workspaceId) return;
     if (!app) void fetchApps(workspaceId);
@@ -1559,8 +1613,19 @@ export default function AppWorkspace({
             // the sandbox entirely.
             <iframe
               key={`pub-${previewNonce}`}
+              ref={pubIframeRef}
               title={`${app?.title ?? "App"} (published)`}
-              src={viewUrl}
+              // The view URL never carries a query of its own; the app's
+              // rides on it so the SDK reads it at mount (the preview route
+              // resolves the asset from the path alone).
+              src={
+                seededSearch
+                  ? viewUrl +
+                    (viewUrl.includes("?")
+                      ? `&${seededSearch.slice(1)}`
+                      : seededSearch)
+                  : viewUrl
+              }
               sandbox="allow-scripts allow-forms"
               style={{ border: 0, width: "100%", height: "100%" }}
             />

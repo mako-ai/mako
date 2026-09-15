@@ -255,6 +255,11 @@ export function UrlSync() {
     } else if (appMatch) {
       // /a/:appId — Apps (git-backed, experimental)
       const appId = appMatch[1];
+      // The app's own query (a shared filtered view). Read NOW, synchronously:
+      // the outgoing sync below rewrites the address bar to the tab's URL as
+      // soon as hydration completes, and until the tab carries this search
+      // that URL has none — reading it after the fetch would find it gone.
+      const appSearch = window.location.search;
       setLeftPane("apps");
       const store = useAppsStore.getState();
       void store.fetchApps(currentWorkspace.id).then(() => {
@@ -277,7 +282,7 @@ export function UrlSync() {
           );
           return;
         }
-        focusAppsTab(app.id, app.title, app.slug);
+        focusAppsTab(app.id, app.title, app.slug, appSearch);
       });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path
