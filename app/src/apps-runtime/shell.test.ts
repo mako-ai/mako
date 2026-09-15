@@ -76,6 +76,41 @@ describe("focusAppsTab carries a link's query to the tab", () => {
     );
   });
 
+  it("a different query on an existing tab bumps the seed so the iframe reloads with it; the same query does not", () => {
+    const seedOf = (id: string) =>
+      useConsoleStore.getState().tabs[id]?.metadata?.appSearchSeed;
+    const id = focusAppsTab(
+      "app1",
+      "Seller Media",
+      "seller-media",
+      "?chart.breakdown=device",
+    );
+    expect(seedOf(id)).toBeUndefined();
+    focusAppsTab(
+      "app1",
+      "Seller Media",
+      "seller-media",
+      "?filters.countries=PL",
+    );
+    expect(seedOf(id)).toBe(1);
+    focusAppsTab(
+      "app1",
+      "Seller Media",
+      "seller-media",
+      "?filters.countries=PL",
+    );
+    expect(seedOf(id)).toBe(1);
+    focusAppsTab("app1", "Seller Media", "seller-media");
+    expect(seedOf(id)).toBe(1);
+    focusAppsTab(
+      "app1",
+      "Seller Media",
+      "seller-media",
+      "?filters.countries=PT",
+    );
+    expect(seedOf(id)).toBe(2);
+  });
+
   it("a plain link leaves the tab's stored query alone", () => {
     const id = focusAppsTab(
       "app1",

@@ -1268,19 +1268,24 @@ export default function AppWorkspace({
     return () => window.removeEventListener("message", onMessage);
   }, [_tabId]);
   // Seeded once per boot — re-read only when the key below remounts the
-  // iframe on an explicit rebuild, so the reloaded app keeps its view. It
-  // must NOT follow every navigate(): a src that changed on each filter
-  // would reload the app and throw away exactly the state being kept.
-  const seededSearchRef = useRef<{ nonce: number; search: string } | null>(
-    null,
+  // iframe: on an explicit rebuild (previewNonce), or when a shared link
+  // lands a DIFFERENT query on this already-open tab (appSearchSeed, bumped
+  // by focusAppsTab). It must NOT follow every navigate(): a src that changed
+  // on each filter would reload the app and throw away exactly the state
+  // being kept. Without the seed, a deep link into an open tab kept the
+  // query on the address bar while the app inside still showed its old view.
+  const appSearchSeed = useConsoleStore(
+    s => (s.tabs[_tabId]?.metadata?.appSearchSeed as number | undefined) ?? 0,
   );
+  const seedKey = `${previewNonce}:${appSearchSeed}`;
+  const seededSearchRef = useRef<{ key: string; search: string } | null>(null);
   if (
     seededSearchRef.current === null ||
-    seededSearchRef.current.nonce !== previewNonce
+    seededSearchRef.current.key !== seedKey
   ) {
     const s = useConsoleStore.getState().tabs[_tabId]?.metadata?.appSearch;
     seededSearchRef.current = {
-      nonce: previewNonce,
+      key: seedKey,
       search: typeof s === "string" && s.length > 1 ? s : "",
     };
   }
@@ -1612,7 +1617,7 @@ export default function AppWorkspace({
             // granting it would hand app code our origin and let it out of
             // the sandbox entirely.
             <iframe
-              key={`pub-${previewNonce}`}
+              key={`pub-${seedKey}`}
               ref={pubIframeRef}
               title={`${app?.title ?? "App"} (published)`}
               // The view URL never carries a query of its own; the app's
