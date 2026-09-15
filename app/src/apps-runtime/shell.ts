@@ -15,7 +15,7 @@ export function focusAppsTab(
    *  with it — see tabUrlPath and AppWorkspace. */
   search?: string,
 ): string {
-  return useConsoleStore.getState().focusOrOpenTab(
+  const id = useConsoleStore.getState().focusOrOpenTab(
     { kind: "app", metadata: { appId } },
     () => ({
       title: title || "App",
@@ -25,6 +25,21 @@ export function focusAppsTab(
     }),
     { title: title || undefined },
   ) as string;
+  // A link that carries a query applies to the tab whether it was just
+  // created or already open. The create callback above only runs for a new
+  // tab; for an existing one — everyone who has opened the app before — the
+  // stored search would otherwise win, the address bar would be rewritten
+  // to it, and the shared view would never arrive. A plain link (no query)
+  // leaves the tab as it was.
+  if (search && id) {
+    useConsoleStore.setState(state => {
+      const t = state.tabs[id];
+      if (t?.metadata && t.metadata.appSearch !== search) {
+        t.metadata.appSearch = search;
+      }
+    });
+  }
+  return id;
 }
 
 /** Open (or focus) a file of an Apps project in its own editor tab. */
