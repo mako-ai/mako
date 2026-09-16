@@ -268,8 +268,11 @@ export function DashboardsExplorer() {
       // explorer, where only leaves carry icons. Returning null lets ResourceTree
       // collapse the icon column so the label sits right after the chevron.
       if (node.entityType === "dashboard") {
-        // Access folded into the glyph rather than a badge column — the
-        // sidebar cannot spare the width.
+        // Only a PINNED row under Starred carries the access overlay: it has
+        // left the section that would otherwise say who can see it.
+        if (!entityIdFromStarredRow(node.id)) {
+          return <DashboardIcon size={20} strokeWidth={1.5} />;
+        }
         return (
           <AccessIcon
             Glyph={DashboardIcon}

@@ -5,6 +5,11 @@
  * taking space the editor wants — so visibility gets no column of its own. It
  * rides inside the glyph's own box, which costs nothing.
  *
+ * Used ONLY on rows that have left their access section — a shortcut under
+ * Starred, or a row filed in a personal folder. Everywhere else the section
+ * header already says who can see the entity, and repeating it per row would
+ * mark almost every row for no gain.
+ *
  * SHAPE is the channel, not colour. An earlier pass tinted the whole glyph and
  * two collisions showed up immediately: the "workspace" blue was the very same
  * hue as the selected-row background (so blue meant both "open" and "shared

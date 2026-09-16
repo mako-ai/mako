@@ -289,9 +289,12 @@ export default function NotebooksExplorer() {
 
   const getItemIcon = useCallback(
     (node: ResourceTreeNode) => {
-      // Folders keep the tree's own chevron treatment; only notebooks carry
-      // the access tint, folded into the glyph instead of a badge column.
-      if (node.isDirectory) return <NotebookIcon size={14} opacity={0.75} />;
+      // Only a PINNED row under Starred carries the access overlay: it has
+      // left the section that would otherwise say who can see it. Rows in the
+      // tree below keep the plain glyph.
+      if (node.isDirectory || !entityIdFromStarredRow(node.id)) {
+        return <NotebookIcon size={14} opacity={0.75} />;
+      }
       return (
         <AccessIcon
           Glyph={NotebookIcon}

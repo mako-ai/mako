@@ -961,12 +961,11 @@ export default function AppsExplorer() {
                   getRightAdornment={rowAdornment}
                   getItemIcon={(node, ctx) => {
                     const parsed = parseNodeId(node.id);
-                    if (
-                      parsed.kind === "app" ||
-                      parsed.kind === "personal-item"
-                    ) {
-                      // Access is folded into this glyph rather than given its
-                      // own badge column — the sidebar cannot spare the width.
+                    // Only rows that have LEFT their access section carry the
+                    // overlay: in My Apps / Workspace / Shared with me the
+                    // header already says who can see the app, so repeating it
+                    // on every row is noise.
+                    if (parsed.kind === "personal-item") {
                       const app = apps.find(a => a.id === parsed.appId);
                       return (
                         <AccessIcon
@@ -975,6 +974,9 @@ export default function AppsExplorer() {
                           kindLabel="App"
                         />
                       );
+                    }
+                    if (parsed.kind === "app") {
+                      return <AppIcon size={16} strokeWidth={1.5} />;
                     }
                     if (parsed.kind === "file") {
                       return fileIcon(node.name, node.path ?? node.name);
