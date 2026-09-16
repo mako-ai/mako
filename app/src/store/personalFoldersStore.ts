@@ -1,16 +1,13 @@
 /**
  * Personal folders — one user's private organization of an explorer's list.
  *
- * Two concepts share one storage row:
+ * **One home per entity**, the Slack-sections model: an entity sits in exactly
+ * one of this user's lists — a folder, or Starred, or (in neither) its
+ * access-based home section. Filing moves it; starring moves it. Starred is
+ * just the system row (`system: "starred"`), created on first use and never
+ * renamed or deleted.
  *
- * - A **folder** MOVES an entity within this user's view (the Slack-sections
- *   model): it leaves My Apps / Workspace here and lives in the folder, and it
- *   lives in at most one folder. Nobody else's view changes.
- * - The **Starred** list is a SHORTCUT (the Drive / Notion model): the entity
- *   stays where it is and is also pinned on top. It is a system row
- *   (`system: "starred"`), created on first use, never renamed or deleted.
- *
- * Neither can change an entity's sharing, identity or deployment — that is
+ * None of it can change an entity's sharing, identity or deployment — that is
  * the whole point, and why this shipped without touching the apps backend.
  *
  * Membership edits are optimistic because they come from a drag or a single
@@ -59,8 +56,8 @@ interface PersonalFoldersActions {
   ) => Promise<boolean>;
   deleteFolder: (workspaceId: string, folderId: string) => Promise<boolean>;
   /**
-   * File an entity in a folder. It leaves the user's other folders (a folder
-   * is a move); the Starred list is untouched (a star is a shortcut).
+   * File an entity in a folder. One home per entity, so it leaves every other
+   * list of this kind — Starred included.
    */
   addItem: (
     workspaceId: string,
@@ -254,8 +251,9 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         get,
         workspaceId,
         folders => {
+          // One home per app: filing it here takes it out of every other
+          // list, Starred included.
           for (const f of folders) {
-            if (f.system) continue; // a star is a shortcut; leave it
             f.items =
               f.id === folderId ? withKey(f.items, key) : without(f.items, key);
           }
@@ -295,13 +293,15 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         get,
         workspaceId,
         folders => {
-          // Until the first star there is no list to update locally; the
-          // server creates it and the response inserts it.
-          const star = folders.find(f => f.system === "starred");
-          if (star) {
-            star.items = starred
-              ? withKey(star.items, key)
-              : without(star.items, key);
+          // Starring is a move like any other, so it also leaves whatever
+          // folder the app was in. Until the first star there is no Starred
+          // list locally; the server creates it and the response inserts it.
+          for (const f of folders) {
+            if (f.system === "starred") {
+              f.items = starred ? withKey(f.items, key) : without(f.items, key);
+            } else if (starred) {
+              f.items = without(f.items, key);
+            }
           }
         },
         async () =>

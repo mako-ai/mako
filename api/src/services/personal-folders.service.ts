@@ -28,7 +28,9 @@ import { PersonalFolder } from "../database/workspace-schema";
 export const DEFAULT_PERSONAL_FOLDER_KIND = "app";
 
 export const MAX_FOLDER_NAME_LENGTH = 120;
-export const MAX_FOLDERS_PER_KIND = 100;
+/** Flat, Slack-style sections: a sidebar stops being navigable long before
+ *  this, and the Starred list does not count toward it. */
+export const MAX_FOLDERS_PER_KIND = 20;
 export const MAX_ITEMS_PER_FOLDER = 500;
 /** An entity key (an app slug) — long enough for any real slug, bounded. */
 export const MAX_ITEM_KEY_LENGTH = 200;
@@ -79,6 +81,31 @@ function toJson(doc: PersonalFolderDocLike): PersonalFolderJson {
 
 /** Ordinary (user-made) folders only — the Starred list is a system row. */
 const USER_FOLDER = { system: { $exists: false } } as const;
+
+/**
+ * ONE home per entity, the Slack-sections rule: an entity sits in exactly one
+ * of this user's lists for a kind — a folder, or Starred, or (in none of them)
+ * its access-based home section. Filing it anywhere therefore pulls it out of
+ * every other list, Starred included: starring an app takes it out of its
+ * folder, and filing a starred app unstars it.
+ */
+async function pullFromOtherLists(
+  scope: PersonalFolderScope,
+  kind: string,
+  keepId: Types.ObjectId,
+  keys: string[],
+): Promise<void> {
+  if (keys.length === 0) return;
+  await PersonalFolder.updateMany(
+    {
+      ...scopeFilter(scope),
+      kind,
+      _id: { $ne: keepId },
+      items: { $in: keys },
+    },
+    { $pull: { items: { $in: keys } } },
+  );
+}
 
 /** The scope filter every query starts from — workspace AND user, always. */
 function scopeFilter(scope: PersonalFolderScope) {
@@ -273,31 +300,19 @@ export async function updatePersonalFolderItems(
   doc.items = [...next];
   await doc.save();
 
-  // A user folder MOVES an entity within that user's view (Slack sections),
-  // so it lives in at most one of them: filing it here pulls it from the
-  // user's other folders of this kind. The Starred list is a shortcut and
-  // is left alone — an app can be both starred and filed.
-  if (!doc.system && add.length > 0) {
-    await PersonalFolder.updateMany(
-      {
-        ...scopeFilter(scope),
-        kind: doc.kind,
-        _id: { $ne: doc._id },
-        ...USER_FOLDER,
-        items: { $in: add },
-      },
-      { $pull: { items: { $in: add } } },
-    );
-  }
+  await pullFromOtherLists(scope, doc.kind, doc._id, add);
 
   return { ok: true, value: toJson(doc as unknown as PersonalFolderDocLike) };
 }
 
 /**
- * Star or unstar one entity. The Starred list is created on first use, once
- * per (workspace, user, kind); the partial unique index makes a racing second
- * creation fail, and that failure is simply resolved by reading the winner.
- * Idempotent in both directions.
+ * Star or unstar one entity. Starred is a list like any other: starring moves
+ * the entity there and out of any folder it was in; unstarring returns it to
+ * its access-based home section.
+ *
+ * The list is created on first use, once per (workspace, user, kind); the
+ * partial unique index makes a racing second creation fail, and that failure
+ * is resolved by reading the winner. Idempotent in both directions.
  */
 export async function setStarred(
   scope: PersonalFolderScope,
@@ -336,5 +351,8 @@ export async function setStarred(
   }
   doc.items = [...next];
   await doc.save();
+  // Starring is a move like any other: it takes the entity out of whatever
+  // folder it was in.
+  if (input.starred) await pullFromOtherLists(scope, kind, doc._id, [key]);
   return { ok: true, value: toJson(doc as unknown as PersonalFolderDocLike) };
 }

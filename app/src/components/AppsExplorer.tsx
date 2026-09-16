@@ -65,10 +65,11 @@ import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { useConfirm } from "./ConfirmDialog";
 import {
   buildPersonalSections,
-  folderOfKey,
-  folderedKeys,
+  listIdFromSectionKey,
+  listOfKey,
   parsePersonalNodeId,
   personalItemNodeId,
+  placedKeys,
   starredKeys,
 } from "./apps-explorer/personal-sections";
 import PersonalFolderDialogs, {
@@ -84,13 +85,12 @@ const AppIcon = TAB_KIND_ICONS["app"];
 type ParsedNode =
   | { kind: "app"; appId: string; path: "" }
   | { kind: "dir" | "file"; appId: string; path: string }
-  | { kind: "personal-folder"; folderId: string }
-  | { kind: "personal-item"; folderId: string; appId: string };
+  | { kind: "personal-item"; listId: string; appId: string };
 
 function parseNodeId(id: string): ParsedNode {
-  // Personal-folder rows first: they are a view over the same apps, and their
-  // ids must never be mistaken for an app id — that is what would let a drop
-  // into a folder fall through to the sharing logic in handleMoveNode.
+  // Rows in this user's own sections first: their ids must never be mistaken
+  // for an app id, which is what would let a drag inside your own grouping
+  // fall through to the sharing logic in handleMoveNode.
   const personal = parsePersonalNodeId(id);
   if (personal) return personal;
   if (id.includes(APP_FILE_SEP)) {
@@ -218,13 +218,13 @@ export default function AppsExplorer() {
   const toggleStar = usePersonalFoldersStore(s => s.toggleStar);
   const folderError = usePersonalFoldersStore(s => s.error);
   const clearFolderError = usePersonalFoldersStore(s => s.clearError);
-  // Which slugs are starred, and which are filed in a folder (and therefore
-  // hidden from their home section in this user's view).
+  // Which slugs are starred, and which have a home in one of this user's
+  // lists at all (starred or filed) and so leave their home section.
   const starred = useMemo(
     () => starredKeys(personalFolders),
     [personalFolders],
   );
-  const filed = useMemo(() => folderedKeys(personalFolders), [personalFolders]);
+  const placed = useMemo(() => placedKeys(personalFolders), [personalFolders]);
   const slugOf = useCallback(
     (appId: string) => apps.find(a => a.id === appId)?.slug,
     [apps],
@@ -252,9 +252,9 @@ export default function AppsExplorer() {
     if (activeTab?.kind === "app") {
       const appId = (activeTab.metadata?.appId as string) ?? null;
       if (!appId) return null;
-      // A filed app's only row is inside its folder; highlight that one.
-      const folder = folderOfKey(personalFolders, slugOf(appId));
-      return folder ? personalItemNodeId(folder.id, appId) : appId;
+      // A placed app has exactly one row — inside Starred or its folder.
+      const list = listOfKey(personalFolders, slugOf(appId));
+      return list ? personalItemNodeId(list.id, appId) : appId;
     }
     if (activeTab?.kind === "app-file") {
       return `${activeTab.metadata?.appId}${APP_FILE_SEP}${activeTab.metadata?.path}`;
@@ -353,15 +353,14 @@ export default function AppsExplorer() {
       const owner = byId.get(id)?.owner_id;
       return !isWorkspace(id) && !!owner && !!userId && owner !== userId;
     };
-    // An app filed in one of your folders has MOVED there in your view, so it
-    // leaves its home section (a star, by contrast, is a shortcut and leaves
-    // the home row in place). Everyone else still sees it exactly where the
-    // access rules put it.
-    const isFiled = (id: string) => {
+    // One home per app: anything you have starred or filed has MOVED there in
+    // your view and leaves its access-based section. Everyone else still sees
+    // it exactly where the access rules put it.
+    const isPlaced = (id: string) => {
       const slug = byId.get(id)?.slug;
-      return !!slug && filed.has(slug);
+      return !!slug && placed.has(slug);
     };
-    const home = appNodes.filter(n => !isFiled(n.id));
+    const home = appNodes.filter(n => !isPlaced(n.id));
     const mine = home.filter(n => !isWorkspace(n.id) && !isSharedWithMe(n.id));
     const sharedWithMe = home.filter(n => isSharedWithMe(n.id));
     const shared = home.filter(n => isWorkspace(n.id));
@@ -398,7 +397,7 @@ export default function AppsExplorer() {
         defaultAccess: "workspace" as const,
       },
     ];
-  }, [apps, filesByApp, userId, personalFolders, filed]);
+  }, [apps, filesByApp, userId, personalFolders, placed]);
 
   // Drag an app onto the other section (or any node inside it) to flip its
   // sharing. Drops within the same section no-op.
@@ -413,23 +412,16 @@ export default function AppsExplorer() {
       // Membership is keyed by slug — an app may have no row to reference.
       const slug = draggedAppId ? slugOf(draggedAppId) : undefined;
 
-      // Dropping onto one of your folders files the app there and stops. It
-      // must never reach the sharing logic below: putting an app in your own
-      // folder says nothing about who else may see it.
-      const personalTarget = targetId ? parsePersonalNodeId(targetId) : null;
-      if (personalTarget) {
-        if (slug) void addToFolder(workspaceId, personalTarget.folderId, slug);
-        return;
-      }
-
-      // Dragging a row OUT of one of your folders (onto a home section or a
-      // home row) sends it back home — and nothing more. A drag that starts
-      // inside your own organization is never a sharing change.
+      // Dropping INTO one of your sections is handled by handleSectionDrop;
+      // this path only sees drops on the access sections and on app rows.
+      //
+      // Dragging a row OUT of one of your lists (onto a home section or a home
+      // row) sends it back home — unstarring it if it came from Starred, and
+      // nothing more. A drag that starts inside your own grouping is never a
+      // sharing change.
       if (parsed.kind === "personal-item") {
-        const from = personalFolders.find(f => f.id === parsed.folderId);
-        if (from && !from.system && slug) {
-          void removeFromFolder(workspaceId, from.id, slug);
-        }
+        const from = personalFolders.find(f => f.id === parsed.listId);
+        if (from && slug) void removeFromFolder(workspaceId, from.id, slug);
         return;
       }
 
@@ -465,7 +457,6 @@ export default function AppsExplorer() {
       apps,
       setAppAccess,
       userId,
-      addToFolder,
       removeFromFolder,
       personalFolders,
       slugOf,
@@ -490,8 +481,6 @@ export default function AppsExplorer() {
   const handleItemClick = useCallback(
     (node: ResourceTreeNode) => {
       const parsed = parseNodeId(node.id);
-      // A folder row only expands; the caret and the name do the same thing.
-      if (parsed.kind === "personal-folder") return;
       const slug = apps.find(a => a.id === parsed.appId)?.slug;
       // A shortcut inside a folder opens the very same app as its home row.
       if (parsed.kind === "app" || parsed.kind === "personal-item") {
@@ -615,47 +604,82 @@ export default function AppsExplorer() {
     [slugOf, starred, handleToggleStar],
   );
 
+  /**
+   * A drop on one of this user's section headers files the app there — or
+   * stars it, when the section is Starred. Returning true claims the drop so
+   * ResourceTree never reads it as an access change.
+   */
+  const handleSectionDrop = useCallback(
+    (sectionKey: string, nodeId: string) => {
+      const listId = listIdFromSectionKey(sectionKey);
+      // My Apps / Workspace keep the normal sharing behaviour.
+      if (!listId || !workspaceId) return false;
+      const parsed = parseNodeId(nodeId);
+      const appId =
+        parsed.kind === "app" || parsed.kind === "personal-item"
+          ? parsed.appId
+          : null;
+      const slug = appId ? slugOf(appId) : undefined;
+      if (slug) {
+        const list = personalFolders.find(f => f.id === listId);
+        if (list?.system === "starred") {
+          void toggleStar(workspaceId, slug, true);
+        } else {
+          void addToFolder(workspaceId, listId, slug);
+        }
+      }
+      // Claimed either way: a drop here can mean nothing else.
+      return true;
+    },
+    [workspaceId, slugOf, personalFolders, toggleStar, addToFolder],
+  );
+
+  /** Folders ARE sections now, so rename/delete live on the header. */
+  const getSectionContextMenuItems = useCallback(
+    (sectionKey: string, helpers: { closeMenu: () => void }) => {
+      const listId = listIdFromSectionKey(sectionKey);
+      if (!listId) return null;
+      const list = personalFolders.find(f => f.id === listId);
+      // Starred is a system list — it empties itself as you unstar.
+      if (!list || list.system) return [];
+      return [
+        <MenuItem
+          key="rename-folder"
+          onClick={() => {
+            helpers.closeMenu();
+            setRenameTarget({ id: list.id, name: list.name });
+          }}
+        >
+          <ListItemIcon>
+            <RenameIcon size={16} />
+          </ListItemIcon>
+          Rename folder
+        </MenuItem>,
+        <MenuItem
+          key="delete-folder"
+          onClick={() => {
+            helpers.closeMenu();
+            void handleDeleteFolder(list.id, list.name);
+          }}
+        >
+          <ListItemIcon>
+            <DeleteIcon size={16} />
+          </ListItemIcon>
+          Delete folder
+        </MenuItem>,
+      ];
+    },
+    [personalFolders, handleDeleteFolder],
+  );
+
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
       const parsed = parseNodeId(node.id);
 
-      if (parsed.kind === "personal-folder") {
-        const folder = personalFolders.find(f => f.id === parsed.folderId);
-        return [
-          <MenuItem
-            key="rename-folder"
-            onClick={() => {
-              helpers.closeMenu();
-              setRenameTarget({
-                id: parsed.folderId,
-                name: folder?.name ?? "",
-              });
-            }}
-          >
-            <ListItemIcon>
-              <RenameIcon size={16} />
-            </ListItemIcon>
-            Rename folder
-          </MenuItem>,
-          <MenuItem
-            key="delete-folder"
-            onClick={() => {
-              helpers.closeMenu();
-              void handleDeleteFolder(parsed.folderId, folder?.name ?? "");
-            }}
-          >
-            <ListItemIcon>
-              <DeleteIcon size={16} />
-            </ListItemIcon>
-            Delete folder
-          </MenuItem>,
-        ];
-      }
-
       if (parsed.kind === "personal-item") {
         const slug = slugOf(parsed.appId);
         const inStarred =
-          personalFolders.find(f => f.id === parsed.folderId)?.system ===
+          personalFolders.find(f => f.id === parsed.listId)?.system ===
           "starred";
         // A row in the Starred list only offers Unstar; a row in a folder
         // offers both leaving the folder and starring.
@@ -667,7 +691,7 @@ export default function AppsExplorer() {
                 onClick={() => {
                   helpers.closeMenu();
                   if (workspaceId && slug) {
-                    void removeFromFolder(workspaceId, parsed.folderId, slug);
+                    void removeFromFolder(workspaceId, parsed.listId, slug);
                   }
                 }}
               >
@@ -723,7 +747,6 @@ export default function AppsExplorer() {
     },
     [
       handleDelete,
-      handleDeleteFolder,
       personalFolders,
       workspaceId,
       removeFromFolder,
@@ -763,7 +786,10 @@ export default function AppsExplorer() {
             sx={{
               p: 0.25,
               color: isStarred ? "warning.main" : "text.disabled",
-              opacity: isStarred ? 1 : 0,
+              // Never a standing mark: being in the Starred section already
+              // says the app is starred. This is an affordance, so it stays
+              // hidden until the row is hovered or the button is focused.
+              opacity: 0,
               ".MuiListItemButton-root:hover &, &:focus-visible": {
                 opacity: 1,
               },
@@ -779,7 +805,8 @@ export default function AppsExplorer() {
       );
 
       // Inside Starred / a folder the section no longer tells you who can see
-      // the app, so the row does.
+      // the app, so the row does. This is the badge that replaces the signal
+      // the app lost when it moved out of My Apps / Workspace.
       let badge: React.ReactNode = null;
       if (parsed.kind === "personal-item" && app) {
         const isWorkspace = (app.access ?? "workspace") === "workspace";
@@ -976,6 +1003,8 @@ export default function AppsExplorer() {
                     return parsed.kind === "app" && !!loadingApps[parsed.appId];
                   }}
                   getContextMenuItems={getContextMenuItems}
+                  getSectionContextMenuItems={getSectionContextMenuItems}
+                  onSectionDrop={handleSectionDrop}
                   enableRename={false}
                   enableDelete={false}
                   isFolderExpanded={isFolderOpen}

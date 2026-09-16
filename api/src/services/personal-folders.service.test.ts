@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       );
     }
 
-    // ── starring: one system list per (user, kind), a shortcut not a move ──
+    // ── starring: one system list per (user, kind), and a move like any other ──
     {
       await PersonalFolder.deleteMany({});
       const folder = ok(await createPersonalFolder(ALICE, { name: "Work" }));
@@ -263,11 +263,29 @@ async function main(): Promise<void> {
       assert.equal(starred.name, "Starred");
       assert.deepEqual(starred.items, ["billing"]);
 
-      // Starring did NOT pull it from the folder: a star is a shortcut.
+      // One home per app: starring PULLED it out of the folder.
       const work = (await listPersonalFolders(ALICE)).find(
         f => f.name === "Work",
       );
-      assert.deepEqual(work?.items, ["billing"], "still filed in Work");
+      assert.deepEqual(work?.items, [], "starring emptied Work");
+
+      // …and filing it again unstars it — the same rule the other way round.
+      ok(
+        await updatePersonalFolderItems(ALICE, {
+          folderId: folder.id,
+          add: ["billing"],
+        }),
+      );
+      const refiled = await listPersonalFolders(ALICE);
+      assert.deepEqual(refiled.find(f => f.name === "Work")?.items, [
+        "billing",
+      ]);
+      assert.deepEqual(
+        refiled.find(f => f.system === "starred")?.items,
+        [],
+        "filing unstarred it",
+      );
+      ok(await setStarred(ALICE, { key: "billing", starred: true }));
 
       // Idempotent both ways, and never a second list.
       ok(await setStarred(ALICE, { key: "billing", starred: true }));

@@ -4600,9 +4600,8 @@ export interface IPersonalFolder extends Document {
   items: string[];
   /**
    * Set on the ONE system list per (user, kind) that the star toggle fills.
-   * A starred entity is a shortcut — it stays where it is and is also pinned
-   * on top — whereas a user-made folder moves it within that user's view.
-   * System lists cannot be renamed or deleted and do not count toward the
+   * Starred behaves like any other list — an entity sits in exactly one of
+   * them — but it cannot be renamed or deleted and does not count toward the
    * folder cap.
    */
   system?: "starred";

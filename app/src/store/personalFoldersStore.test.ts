@@ -182,7 +182,7 @@ describe("personalFoldersStore", () => {
     ).toBe("Renamed");
   });
 
-  it("filing an app moves it: it leaves the user's other folders, not Starred", async () => {
+  it("filing an app moves it: it leaves every other list, Starred included", async () => {
     http.GET.mockResolvedValueOnce(
       ok({
         success: true,
@@ -214,10 +214,11 @@ describe("personalFoldersStore", () => {
           f.items,
         ]),
       );
-    // Optimistically, before the server answers.
-    expect(byId()).toEqual({ s1: ["x"], f1: [], f2: ["x"] });
+    // Optimistically, before the server answers: one home per app, so the
+    // Starred copy goes too.
+    expect(byId()).toEqual({ s1: [], f1: [], f2: ["x"] });
     await pending;
-    expect(byId()).toEqual({ s1: ["x"], f1: [], f2: ["x"] });
+    expect(byId()).toEqual({ s1: [], f1: [], f2: ["x"] });
   });
 
   it("stars optimistically and inserts the list when the server creates it", async () => {

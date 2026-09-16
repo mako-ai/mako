@@ -159,6 +159,21 @@ export interface ResourceTreeProps {
     node: ResourceTreeNode,
     helpers: { closeMenu: () => void },
   ) => ReactNode[] | null;
+  /**
+   * The same override for a SECTION header's menu. When it returns a non-null
+   * array those items replace the default "New Folder" entry — for an explorer
+   * whose sections ARE its folders, so rename/delete belong on the header.
+   */
+  getSectionContextMenuItems?: (
+    sectionKey: string,
+    helpers: { closeMenu: () => void },
+  ) => ReactNode[] | null;
+  /**
+   * Fires when a row is dropped on a section header, BEFORE the normal
+   * move/access handling. Return `true` to claim the drop and stop there —
+   * for sections that are a personal grouping rather than an access bucket.
+   */
+  onSectionDrop?: (sectionKey: string, nodeId: string) => boolean | void;
   showFiles?: boolean;
   /**
    * When true, folder rows render only a chevron + name (no folder icon), and
@@ -241,6 +256,8 @@ function ResourceTreeInner(
     onLoadChildren,
     isLoadingChildren,
     getContextMenuItems,
+    getSectionContextMenuItems,
+    onSectionDrop,
     showFiles = true,
     hideFolderIcon = false,
     enableDragDrop = true,
@@ -752,6 +769,9 @@ function ResourceTreeInner(
       if (!target) return;
 
       if (target.kind === "section") {
+        // A personal-grouping section claims its own drops; an access bucket
+        // (My X / Workspace) falls through to the move below.
+        if (onSectionDrop?.(target.sectionKey, activeId) === true) return;
         if (activeLocation.node.isDirectory) {
           onMoveFolder?.(activeId, null, target.access);
         } else {
@@ -782,7 +802,7 @@ function ResourceTreeInner(
         onMoveItem?.(activeId, target.targetFolderId);
       }
     },
-    [findNodeLocation, onMoveFolder, onMoveItem, sections],
+    [findNodeLocation, onMoveFolder, onMoveItem, onSectionDrop, sections],
   );
 
   useEffect(() => {
@@ -1717,20 +1737,31 @@ function ResourceTreeInner(
         anchorReference="anchorPosition"
         anchorPosition={sectionContextMenu?.anchorPosition}
       >
-        {sectionContextMenu && enableNewFolder && onCreateFolder && (
-          <MenuItem
-            onClick={async () => {
-              const section = sections.find(
-                entry => entry.key === sectionContextMenu.sectionKey,
-              );
-              setSectionContextMenu(null);
-              await triggerCreateFolder(null, section?.defaultAccess);
-            }}
-          >
-            <FolderPlus size={14} style={{ marginRight: 8 }} />
-            New Folder
-          </MenuItem>
-        )}
+        {sectionContextMenu &&
+          (() => {
+            const customItems = getSectionContextMenuItems?.(
+              sectionContextMenu.sectionKey,
+              { closeMenu: () => setSectionContextMenu(null) },
+            );
+            if (customItems !== undefined && customItems !== null) {
+              return customItems;
+            }
+            if (!enableNewFolder || !onCreateFolder) return null;
+            return (
+              <MenuItem
+                onClick={async () => {
+                  const section = sections.find(
+                    entry => entry.key === sectionContextMenu.sectionKey,
+                  );
+                  setSectionContextMenu(null);
+                  await triggerCreateFolder(null, section?.defaultAccess);
+                }}
+              >
+                <FolderPlus size={14} style={{ marginRight: 8 }} />
+                New Folder
+              </MenuItem>
+            );
+          })()}
       </Menu>
     </>
   );
