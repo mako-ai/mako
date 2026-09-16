@@ -4845,6 +4845,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/personal-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List my personal folders
+         * @description Lists the calling user's personal folders for an explorer kind. Private to the caller — it never returns another member's folders.
+         */
+        get: operations["get_api_workspaces_workspaceId_personal_folders"];
+        put?: never;
+        /** Create a personal folder */
+        post: operations["post_api_workspaces_workspaceId_personal_folders"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/personal-folders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete a personal folder
+         * @description Removes the grouping only. The entities it listed are untouched.
+         */
+        delete: operations["delete_api_workspaces_workspaceId_personal_folders_id"];
+        options?: never;
+        head?: never;
+        /** Rename a personal folder */
+        patch: operations["patch_api_workspaces_workspaceId_personal_folders_id"];
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/personal-folders/{id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Add or remove items in a personal folder
+         * @description Membership is a set, so repeating an add is harmless. Items are entity keys — an app's slug. A key sent in both `add` and `remove` is removed.
+         */
+        patch: operations["patch_api_workspaces_workspaceId_personal_folders_id_items"];
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {
         parameters: {
             query?: never;
@@ -5989,6 +6051,17 @@ export interface components {
         NotebookExecuteRequest: {
             code: string;
             blockId?: string;
+        };
+        CreatePersonalFolderRequest: {
+            name: string;
+            kind?: string;
+        };
+        RenamePersonalFolderRequest: {
+            name: string;
+        };
+        UpdatePersonalFolderItemsRequest: {
+            add?: string[];
+            remove?: string[];
         };
         ConnectorMetadata: {
             type: string;
@@ -21360,6 +21433,223 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_personal_folders: {
+        parameters: {
+            query?: {
+                kind?: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_personal_folders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePersonalFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    delete_api_workspaces_workspaceId_personal_folders_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_personal_folders_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenamePersonalFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_personal_folders_id_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdatePersonalFolderItemsRequest"];
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {

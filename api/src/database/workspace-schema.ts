@@ -4571,6 +4571,61 @@ export const DbtEnvPreference = mongoose.model<IDbtEnvPreference>(
 );
 
 /**
+ * A personal folder: one user's private grouping of entities in a workspace
+ * explorer — "the apps I actually use", not a structure the workspace shares.
+ *
+ * It is an organization layer over a list and nothing more. Notebooks,
+ * consoles and dashboards each own a `<Kind>Folder` collection plus a
+ * `folderId` on the item, but apps cannot work that way: an app IS a folder in
+ * the workspace repo (`apps/<slug>/`, apps.md §13.6) and usually has no row
+ * here at all, so there is nothing to hang a `folderId` on and giving it one
+ * would force a row into existence for every organized app. Membership is
+ * therefore stored here, as the entity's own durable key — the SLUG for apps.
+ *
+ * `kind` keeps one collection serving every explorer, so notebooks/consoles/
+ * dashboards can adopt personal folders later without another migration.
+ *
+ * Privacy is structural: nothing reads this collection without filtering on
+ * BOTH `workspaceId` and `userId`, and there is no sharing surface at all.
+ */
+export interface IPersonalFolder extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  /** The owning user. A folder is visible to this user and nobody else. */
+  userId: string;
+  /** Which explorer's entities this groups — "app" today. */
+  kind: string;
+  name: string;
+  /** Entity keys; for apps, the slug. Unresolvable keys are ignored on read. */
+  items: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const PersonalFolderSchema = new Schema<IPersonalFolder>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    kind: { type: String, required: true, trim: true },
+    name: { type: String, required: true, trim: true },
+    items: { type: [String], default: [] },
+  },
+  { collection: "personal_folders", timestamps: true },
+);
+
+// Every read is "this user's folders of this kind in this workspace".
+PersonalFolderSchema.index({ workspaceId: 1, userId: 1, kind: 1 });
+
+export const PersonalFolder = mongoose.model<IPersonalFolder>(
+  "PersonalFolder",
+  PersonalFolderSchema,
+);
+
+/**
  * GitHub App installation linked to a workspace. We never persist installation
  * access tokens (they expire hourly and are minted on demand from the App's
  * private key); this record just maps a workspace to the installation id and

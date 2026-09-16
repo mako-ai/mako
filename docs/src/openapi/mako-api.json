@@ -1364,6 +1364,48 @@
           "code"
         ]
       },
+      "CreatePersonalFolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "RenamePersonalFolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "UpdatePersonalFolderItemsRequest": {
+        "type": "object",
+        "properties": {
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ConnectorMetadata": {
         "type": "object",
         "properties": {
@@ -29972,6 +30014,412 @@
           }
         },
         "operationId": "get_api_workspaces_workspaceId_repo_github_branches"
+      }
+    },
+    "/api/workspaces/{workspaceId}/personal-folders": {
+      "get": {
+        "summary": "List my personal folders",
+        "description": "Lists the calling user's personal folders for an explorer kind. Private to the caller — it never returns another member's folders.",
+        "tags": [
+          "Personal Folders"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_personal_folders"
+      },
+      "post": {
+        "summary": "Create a personal folder",
+        "tags": [
+          "Personal Folders"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePersonalFolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_personal_folders"
+      }
+    },
+    "/api/workspaces/{workspaceId}/personal-folders/{id}": {
+      "patch": {
+        "summary": "Rename a personal folder",
+        "tags": [
+          "Personal Folders"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenamePersonalFolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_personal_folders_id"
+      },
+      "delete": {
+        "summary": "Delete a personal folder",
+        "description": "Removes the grouping only. The entities it listed are untouched.",
+        "tags": [
+          "Personal Folders"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_personal_folders_id"
+      }
+    },
+    "/api/workspaces/{workspaceId}/personal-folders/{id}/items": {
+      "patch": {
+        "summary": "Add or remove items in a personal folder",
+        "description": "Membership is a set, so repeating an add is harmless. Items are entity keys — an app's slug. A key sent in both `add` and `remove` is removed.",
+        "tags": [
+          "Personal Folders"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePersonalFolderItemsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_personal_folders_id_items"
       }
     },
     "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {

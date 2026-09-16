@@ -44,6 +44,7 @@ import { workspaceRepoRoutes } from "./workspace-repo";
 import { appsGitRoutes } from "./apps-git";
 import { appsBoxRoutes } from "./apps-box";
 import { appsPreviewRoutes } from "./apps-preview";
+import { personalFolderRoutes } from "./personal-folders";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -112,6 +113,13 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // The workspace repo itself (status, branches, commits, GitHub connect) —
   // the repo is workspace infrastructure; apps/consoles/dbt are lenses on it.
   app.route("/api/workspaces/:workspaceId/repo", workspaceRepoRoutes);
+  // Per-user grouping of an explorer's entities. Deliberately NOT part of the
+  // apps surface: it stores only one person's view and can never change an
+  // app's identity, sharing or deployment.
+  app.route(
+    "/api/workspaces/:workspaceId/personal-folders",
+    personalFolderRoutes,
+  );
   app.route("/api/apps-preview", appsPreviewRoutes);
   // Intentionally public: the workspace repo over git's own HTTP protocol,
   // authorized by a scoped `mgt_` token. This is what makes a sandbox a
