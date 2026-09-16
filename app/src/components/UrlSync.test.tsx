@@ -102,6 +102,12 @@ vi.mock("../store/appsStore", () => {
       (selector: (s: typeof state) => unknown) => selector(state),
       { getState: () => state },
     ),
+    // The real rule: a top-level app is addressed by its slug, anything
+    // else by its id (no slug on the tab).
+    appUrlSlug: (app: { id: string; slug?: string; path?: string }) =>
+      app.slug && (app.path ?? `apps/${app.slug}`) === `apps/${app.slug}`
+        ? app.slug
+        : undefined,
   };
 });
 

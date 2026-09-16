@@ -202,7 +202,23 @@ export async function addFavourite(
     kind: input.kind,
     refId,
   }).lean();
-  if (existing) return { ok: true, value: toJson(existing) };
+  if (existing) {
+    // Idempotent star — but a star INTO a folder of something already
+    // starred is a move, not a no-op: dropping a starred dashboard on a
+    // Starred folder must land there rather than snap back.
+    if (
+      input.parentId !== undefined &&
+      String(existing.parentId ?? "") !== String(parentId ?? "")
+    ) {
+      const moved = await Favourite.findOneAndUpdate(
+        { _id: existing._id, ...scopeFilter(scope) },
+        { $set: { parentId, position: await nextPosition(scope, parentId) } },
+        { new: true },
+      ).lean();
+      return { ok: true, value: toJson(moved ?? existing) };
+    }
+    return { ok: true, value: toJson(existing) };
+  }
   const room = await assertRoom(scope);
   if (room) return fail(409, room);
   try {

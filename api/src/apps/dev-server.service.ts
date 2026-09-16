@@ -73,10 +73,15 @@ const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
  */
 const MAX_RUNNING_DEV_SERVERS = 3;
 
-/** One filesystem identity per app for launcher, log and staged data. */
+/**
+ * One in-box identity per app for launcher, log, staged data, the port
+ * registry and the box agent's reports: the app's ID. Folder basenames are
+ * not unique once apps nest (`apps/sales/report`, `users/<me>/apps/report`),
+ * and a path is not a filename — so every site that used to key by the
+ * basename keys by this instead, and they cannot disagree with each other.
+ */
 function appSlug(handle: WorktreeHandle): string {
-  const base = handle.appRoot.split("/").filter(Boolean).pop() ?? "app";
-  return base.replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 60);
+  return handleProject(handle)._id.toString();
 }
 
 /**
@@ -168,7 +173,7 @@ async function devPort(
         `console.log(m[app]??"");`);
   const result = await provider.exec(
     ctx,
-    `node -e ${sh(script)} ${JSON.stringify(handle.appRoot)}`,
+    `node -e ${sh(script)} ${JSON.stringify(appSlug(handle))}`,
     { timeoutMs: 30_000 },
   );
   const port = Number(result.stdout.trim());
@@ -851,7 +856,7 @@ async function reapDevServerBySlug(
     .exec(
       ctx,
       `pkill -f "[m]ako-dev-${slug}.mjs" 2>/dev/null; rm -f /tmp/mako-term-dev-${slug}.sock; ` +
-        `node -e 'const fs=require("fs");const f=${JSON.stringify(PORTS_REGISTRY)};let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}delete m["apps/"+process.argv[1]];try{fs.writeFileSync(f,JSON.stringify(m))}catch{}' ${JSON.stringify(slug)}; echo reaped`,
+        `node -e 'const fs=require("fs");const f=${JSON.stringify(PORTS_REGISTRY)};let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}delete m[process.argv[1]];delete m["apps/"+process.argv[1]];try{fs.writeFileSync(f,JSON.stringify(m))}catch{}' ${JSON.stringify(slug)}; echo reaped`,
       { timeoutMs: 30_000 },
     )
     .catch(() => undefined);
@@ -1038,7 +1043,7 @@ async function ensureDevServerLaunch(
     }
     const write = await provider.exec(
       ctx,
-      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx), appEnv)}\nMAKO_LAUNCHER_EOF\necho written`,
+      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx), appEnv)}\nMAKO_LAUNCHER_EOF\nprintf %s ${sh(appDir)} > /tmp/mako-dev-${appSlug(handle)}.dir\necho written`,
       { timeoutMs: 30_000 },
     );
     if (write.exitCode !== 0) {

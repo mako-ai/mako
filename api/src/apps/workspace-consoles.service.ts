@@ -68,6 +68,7 @@ import {
   resolveMirrorTarget,
 } from "./cloud-repo.service";
 import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
+import { createSerializer } from "./serialized";
 import {
   requireWorkspaceRepo,
   boundRepoDirIfExists,
@@ -919,18 +920,8 @@ export interface ConsoleSyncStats {
   skipped: number;
 }
 
-const syncChains = new Map<string, Promise<unknown>>();
-
 /** Serialize per workspace: two rapid pushes must not interleave a sync. */
-function serialized<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = syncChains.get(workspaceId) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  syncChains.set(
-    workspaceId,
-    next.catch(() => undefined),
-  );
-  return next;
-}
+const serialized = createSerializer();
 
 type IndexRow = ISavedConsole;
 

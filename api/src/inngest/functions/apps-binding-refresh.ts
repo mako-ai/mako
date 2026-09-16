@@ -19,6 +19,7 @@
  *
  */
 import { inngest } from "../client";
+import { loadAppsIndex } from "../../apps/app-index.service";
 import { loggers } from "../../logging";
 import {
   AppIndexEntry,
@@ -98,6 +99,25 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
     // published would otherwise re-run its warehouse query every tick for
     // no reader.
     const scheduled = (await step.run("list-scheduled", async () => {
+      // The index is built on reads and pushes. A workspace nobody has
+      // opened since this API deployed (its apps consumed through shares
+      // only) has no rows yet, and its schedules would silently stop — so
+      // bring every workspace with a published app up to date first. One
+      // throttled fetch + rev-parse per workspace per tick; a no-op when
+      // main has not moved.
+      const publishedWorkspaces = await AppProject.distinct("workspaceId", {
+        publishedSha: { $exists: true, $nin: [null, ""] },
+      });
+      for (const ws of publishedWorkspaces) {
+        try {
+          await loadAppsIndex(ws.toString());
+        } catch (error) {
+          log.warn("Apps index refresh failed before scheduling", {
+            workspaceId: ws.toString(),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       const entries = await AppIndexEntry.find({
         "schedules.0": { $exists: true },
       })

@@ -3,6 +3,7 @@ import {
   appKeyOf,
   appRepoPath,
   derivedAppId,
+  isSafeSegment,
   parseAppFolderPath,
   parseAppManifest,
   parseAppRepoPath,
@@ -132,5 +133,12 @@ assert.match(
   ) ?? "",
   /6a9411eb4c8b33609a65e665/,
 );
+
+// Folder names are Unicode: apps/café is an app people already have.
+assert.equal(isSafeSegment("café"), true);
+assert.equal(isSafeSegment("日本語 report"), true);
+assert.equal(isSafeSegment("a/b"), false);
+assert.equal(isSafeSegment(".hidden"), false);
+assert.equal(parseAppRepoPath("apps/café")?.slug, "café");
 
 console.log("app-paths: ok");

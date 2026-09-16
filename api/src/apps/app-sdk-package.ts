@@ -33,6 +33,15 @@ export function appSdkDependency(): Record<string, string> {
   return { "@makoai/app-sdk": `^${appSdkVersion()}` };
 }
 
+/**
+ * The pre-npm dependency entry, kept ONLY for the applied 2026-08-25
+ * migration (migrations are never edited once applied — see
+ * `.cursor/rules/90-migrations.mdc`). New scaffolds use appSdkDependency().
+ */
+export const APP_SDK_DEPENDENCY: Record<string, string> = {
+  "@makoai/app-sdk": "file:../../packages/app-sdk",
+};
+
 /** Files of the package that ship into workspace repos (the npm `files`). */
 const SHIPPED_FILES = [
   "package.json",

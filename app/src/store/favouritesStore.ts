@@ -121,7 +121,6 @@ export const useFavouritesStore = create<FavouritesState & FavouritesActions>()(
     },
 
     toggle: async (workspaceId, kind, refId, starred, parentId = null) => {
-      const previous = get().byWorkspace[workspaceId] ?? [];
       // Optimistic: the row appears or disappears immediately.
       set(s => {
         const rows = s.byWorkspace[workspaceId] ?? [];
@@ -169,10 +168,17 @@ export const useFavouritesStore = create<FavouritesState & FavouritesActions>()(
         }
         return true;
       } catch (e) {
+        // Do NOT restore a snapshot: another toggle may have completed in
+        // between, and putting the old rows back would undo it (and leave
+        // this placeholder behind to 404 on its next move). Drop the
+        // placeholder, then let the server say what the rows are.
         set(s => {
-          s.byWorkspace[workspaceId] = previous;
+          s.byWorkspace[workspaceId] = (
+            s.byWorkspace[workspaceId] ?? []
+          ).filter(f => f.id !== `pending:${kind}:${refId}`);
           s.error = toErrorMessage(e, "Failed to update favourites");
         });
+        await get().fetch(workspaceId);
         return false;
       }
     },

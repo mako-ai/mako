@@ -107,3 +107,49 @@ export function buildAppTree(input: {
   sort(rootChildren);
   return rootChildren;
 }
+
+// ---------------------------------------------------------------------------
+// Ref resolution — the same rules the server's resolver applies
+// ---------------------------------------------------------------------------
+
+export interface RefApp {
+  id: string;
+  slug?: string;
+  path?: string;
+}
+
+/** Repo-relative folder of an app; legacy rows sit at `apps/<slug>`. */
+export function appPathOf(app: RefApp): string {
+  return app.path ?? `apps/${app.slug ?? app.id}`;
+}
+
+/**
+ * Find an app by whatever a link carries, exactly as the API resolves it:
+ * a 24-hex id → by id; something with a slash → by repo path (with or
+ * without the leading `apps/`); a bare slug → the one app with that folder
+ * name, else the top-level `apps/<slug>`, else nothing. An ambiguous nested
+ * name must NOT silently pick a folder — the server refuses it too, and a
+ * client that guessed would open one app while the address bar named another.
+ */
+export function resolveAppRef<T extends RefApp>(
+  apps: readonly T[],
+  ref: string,
+): T | null {
+  const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!clean) return null;
+  if (/^[0-9a-f]{24}$/i.test(clean)) {
+    const lower = clean.toLowerCase();
+    const byId = apps.find(a => a.id.toLowerCase() === lower);
+    if (byId) return byId;
+  }
+  if (clean.includes("/")) {
+    return (
+      apps.find(a => appPathOf(a) === clean) ??
+      apps.find(a => appPathOf(a) === `apps/${clean}`) ??
+      null
+    );
+  }
+  const matches = apps.filter(a => basenameOf(appPathOf(a)) === clean);
+  if (matches.length === 1) return matches[0];
+  return matches.find(a => appPathOf(a) === `apps/${clean}`) ?? null;
+}

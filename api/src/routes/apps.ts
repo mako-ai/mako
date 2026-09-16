@@ -95,6 +95,10 @@ import {
 } from "../apps/worktree.service";
 import { resolveAppRef } from "../apps/app-index.service";
 import { parseAppRepoPath } from "../apps/app-paths";
+import {
+  authorizeAppMove,
+  authorizeFolderTarget,
+} from "../apps/app-authorization";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
   APPS_EXEC_MAX_TIMEOUT_MS,
@@ -321,37 +325,6 @@ async function manifestForProject(
   return folder
     ? { title: folder.title, description: folder.description }
     : undefined;
-}
-
-/**
- * Who may reorganise the WORKSPACE tree: any editing member. Viewers read.
- * A person's own tree (`users/<id>/apps`) is theirs to arrange regardless.
- */
-function canOrganizeWorkspaceTree(role: string | undefined): boolean {
-  return role === "owner" || role === "admin" || role === "member";
-}
-
-/**
- * Resolve and authorize a folder target for the caller: a private target
- * must be the caller's own tree; a workspace target needs an editing role.
- */
-function authorizeFolderTarget(
-  target: AppFolderTarget,
-  userId: string | undefined,
-  role: string | undefined,
-): string | null {
-  if (target.scope === "private") {
-    if (!userId) return "Personal folders need a signed-in user";
-    if (target.ownerId && target.ownerId !== userId) {
-      return "You can only file things into your own personal folders";
-    }
-    target.ownerId = userId;
-    return null;
-  }
-  if (!canOrganizeWorkspaceTree(role)) {
-    return "Only workspace editors can reorganise the Workspace tree";
-  }
-  return null;
 }
 
 function handleError(c: AuthenticatedContext, error: unknown) {
@@ -1059,13 +1032,7 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
       const target = folderTargetFromPath(folder);
       const source = parseAppRepoPath(appRootFor(loaded.project));
-      const denied =
-        authorizeFolderTarget(target, userId, role) ??
-        (source?.scope === "workspace" && !canOrganizeWorkspaceTree(role)
-          ? "Only workspace editors can reorganise the Workspace tree"
-          : source?.scope === "private" && source.ownerId !== userId
-            ? "Only the owner can move an app out of their personal folder"
-            : null);
+      const denied = authorizeAppMove(source, target, userId, role);
       if (denied) return c.json({ success: false, error: denied }, 403);
       const moved = await moveProject(
         loaded.project,

@@ -5466,9 +5466,12 @@ AppProjectSchema.index(
 // the manifest carries). Two apps cannot share a path; two may share a slug
 // once folders nest, so the old unique slug index is dropped by the
 // app-folders migration and replaced by this one.
+// Partial, not sparse: a COMPOUND sparse index still indexes a row whose
+// `path` is missing (workspaceId is present), so two rows with the path
+// unset — mid-move, or orphaned state rows — would collide on `null`.
 AppProjectSchema.index(
   { workspaceId: 1, path: 1 },
-  { unique: true, sparse: true },
+  { unique: true, partialFilterExpression: { path: { $exists: true } } },
 );
 AppProjectSchema.index({ workspaceId: 1, slug: 1 });
 
@@ -5559,8 +5562,10 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
   { collection: "app_index", timestamps: true },
 );
 
+// An app id is unique across workspaces (a copied manifest must not alias
+// another workspace's app); the per-workspace lookup index is plain.
 AppIndexEntrySchema.index({ appId: 1 }, { unique: true });
-AppIndexEntrySchema.index({ workspaceId: 1, appId: 1 }, { unique: true });
+AppIndexEntrySchema.index({ workspaceId: 1, appId: 1 });
 AppIndexEntrySchema.index({ workspaceId: 1, path: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, slug: 1 });
 

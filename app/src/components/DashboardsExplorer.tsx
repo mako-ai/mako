@@ -21,6 +21,7 @@ import {
   Star as StarIcon,
 } from "lucide-react";
 import {
+  favouriteFor,
   selectFavourites,
   starredRefs,
   useFavouritesStore,
@@ -398,27 +399,31 @@ export function DashboardsExplorer() {
         : favouriteIdFromFolderRow(id);
       if (favId) void moveFavourite(workspaceId, favId, dest);
     };
+    // A real row dropped into a Starred folder: star it there — or, when
+    // it is already starred, MOVE the existing star (adding again is
+    // idempotent server-side and the row would snap back).
+    const starInto = (id: string, folderId: string) => {
+      if (!workspaceId) return;
+      const fav = favouriteIdFromFolderRow(folderId);
+      const existing = favouriteFor(favourites, "dashboard", id);
+      if (existing) void moveFavourite(workspaceId, existing.id, fav);
+      else void toggleFavourite(workspaceId, "dashboard", id, true, fav);
+    };
     return {
       ...rest,
       onMoveItem: (id: string, folderId: string | null, access?: string) => {
         if (isStarredRow(id)) moveStarred(id, folderId);
         else if (folderId && isStarredRow(folderId)) {
-          const fav = favouriteIdFromFolderRow(folderId);
-          if (workspaceId) {
-            void toggleFavourite(workspaceId, "dashboard", id, true, fav);
-          }
+          if (isDashboardEntryId(id)) starInto(id, folderId);
         } else onMoveItem(id, folderId, access);
       },
       onMoveFolder: (id: string, parentId: string | null, access?: string) => {
         if (isStarredRow(id)) moveStarred(id, parentId);
         else if (parentId && isStarredRow(parentId)) {
           // A dashboard row is a directory (its data sources): starring it.
-          if (isDashboardEntryId(id)) {
-            const fav = favouriteIdFromFolderRow(parentId);
-            if (workspaceId) {
-              void toggleFavourite(workspaceId, "dashboard", id, true, fav);
-            }
-          }
+          // A dashboard FOLDER dropped here is refused — an item pointing at
+          // a folder id would be invisible and impossible to remove.
+          if (isDashboardEntryId(id)) starInto(id, parentId);
         } else onMoveFolder(id, parentId, access);
       },
       onRenameItem: (id: string, name: string, isDirectory: boolean) => {

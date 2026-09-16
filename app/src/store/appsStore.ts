@@ -14,7 +14,11 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
 import { api, unwrapBody, ApiError, toErrorMessage as message } from "../api";
-import { focusAppsTab, reconcileAppsTabs } from "../apps-runtime/shell";
+import {
+  focusAppsTab,
+  healAppsTabs,
+  reconcileAppsTabs,
+} from "../apps-runtime/shell";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
@@ -32,6 +36,32 @@ export function appRootOf(app: Pick<AppMeta, "id" | "slug" | "path">): string {
  */
 export function appUrlRef(app: Pick<AppMeta, "id" | "slug" | "path">): string {
   return app.slug && appRootOf(app) === `apps/${app.slug}` ? app.slug : app.id;
+}
+
+/**
+ * The `appSlug` a tab should carry: the URL slug when the app has one, else
+ * nothing (the tab falls back to the id). Every caller that opens a tab for
+ * an app must pass THIS, never `app.slug` — a nested app's folder name is
+ * not a URL handle, and a link built from it would not resolve.
+ */
+export function appUrlSlug(
+  app: Pick<AppMeta, "id" | "slug" | "path">,
+): string | undefined {
+  const ref = appUrlRef(app);
+  return ref === app.id ? undefined : ref;
+}
+
+/**
+ * Does a dev-server entry from the box belong to this app? The box reports
+ * the app's id (nested and personal apps have no unique folder name); a box
+ * whose agent predates that still reports the folder basename until it
+ * restarts, so both are accepted.
+ */
+export function devServerKeyMatches(
+  key: string,
+  app: Pick<AppMeta, "id" | "slug">,
+): boolean {
+  return key === app.id || (!!app.slug && key === app.slug);
 }
 
 /**
@@ -871,6 +901,9 @@ export const useAppsStore = create<AppsStore>()(
           // Drop tabs pointing at apps this workspace does not have, so a
           // deleted app cannot leave a working-looking workspace view behind.
           reconcileAppsTabs(new Set(apps.map(a => a.id)));
+          // And keep the survivors' URL handles current: a push that moved
+          // an app changes what its tabs' links should say.
+          healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
         } catch (e) {
           // GET /apps is 412 without a GitHub binding. That is an empty
           // explorer (disconnect, never linked), not a load failure. Keeping
@@ -959,6 +992,8 @@ export const useAppsStore = create<AppsStore>()(
                 : "workspace";
             }
           });
+          const moved = get().apps.find(a => a.id === appId);
+          if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
           void get().fetchApps(workspaceId);
           return true;
         } catch (e) {
@@ -1991,12 +2026,12 @@ export const useAppsStore = create<AppsStore>()(
           return;
         }
         if (state.devServers) {
-          const serving = new Map(state.devServers.map(d => [d.slug, d]));
+          const servers = state.devServers;
           set(s => {
-            s.runningDevApps = [...serving.keys()];
+            s.runningDevApps = servers.map(d => d.slug);
           });
           for (const app of apps) {
-            const entry = app.slug ? serving.get(app.slug) : undefined;
+            const entry = servers.find(d => devServerKeyMatches(d.slug, app));
             if (entry?.url) {
               get().markDevServing(app.id, entry.url, entry.reachable);
             } else get().markDevDown(app.id);
@@ -2138,7 +2173,7 @@ export const useAppsStore = create<AppsStore>()(
                 );
               });
               for (const sl of evicted) {
-                const a = apps.find(x => x.slug === sl);
+                const a = apps.find(x => devServerKeyMatches(sl, x));
                 if (a) get().markDevDown(a.id);
               }
             }
@@ -2310,5 +2345,13 @@ onRealtimeEvent("app.open-app", "appsStore", (event, ctx) => {
   // The user's own agent asked the UI to show an app. Scoped to the
   // requesting user — a teammate's agent must not steal this focus.
   if (!ctx.currentUserId || event.userId !== ctx.currentUserId) return;
-  focusAppsTab(event.appId, event.title ?? event.slug ?? "App", event.slug);
+  // The event's slug is the folder basename, which is a URL handle only for
+  // a top-level app. Derive the tab's handle from the listing when the app
+  // is known; an id-addressed tab always resolves.
+  const known = useAppsStore.getState().apps.find(a => a.id === event.appId);
+  focusAppsTab(
+    event.appId,
+    event.title ?? event.slug ?? "App",
+    known ? appUrlSlug(known) : undefined,
+  );
 });

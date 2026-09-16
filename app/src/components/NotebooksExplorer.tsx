@@ -37,6 +37,7 @@ import {
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useAuth } from "../contexts/auth-context";
 import {
+  favouriteFor,
   selectFavourites,
   starredRefs,
   useFavouritesStore,
@@ -247,11 +248,14 @@ export default function NotebooksExplorer() {
       onMoveItem: (id: string, folderId: string | null, access?: string) => {
         if (isStarredRow(id)) moveStarred(id, folderId);
         else if (folderId && isStarredRow(folderId)) {
-          // A real row dropped into a Starred folder: star it there.
+          // A real row dropped into a Starred folder: star it there — or,
+          // when it is already starred, MOVE the existing star (adding again
+          // is idempotent server-side and the row would snap back).
           const fav = favouriteIdFromFolderRow(folderId);
-          if (workspaceId) {
-            void toggleFavourite(workspaceId, "notebook", id, true, fav);
-          }
+          if (!workspaceId) return;
+          const existing = favouriteFor(favourites, "notebook", id);
+          if (existing) void moveFavourite(workspaceId, existing.id, fav);
+          else void toggleFavourite(workspaceId, "notebook", id, true, fav);
         } else onMoveItem(id, folderId, access);
       },
       onMoveFolder: (id: string, parentId: string | null, access?: string) => {
@@ -312,12 +316,18 @@ export default function NotebooksExplorer() {
           f => f.kind === "notebook" && f.refId === pinned,
         );
         if (row) void moveFavourite(workspaceId, row.id, null);
-      } else if (!isStarredRow(nodeId)) {
+      } else if (
+        !isStarredRow(nodeId) &&
+        // Only a NOTEBOOK can be starred. A notebook folder dropped here
+        // would become an item row pointing at a folder id: invisible (no
+        // notebook resolves it) and impossible to remove from the UI.
+        allNotebooks.some(n => n.id === nodeId)
+      ) {
         void toggleFavourite(workspaceId, "notebook", nodeId, true, null);
       }
       return true;
     },
-    [workspaceId, favourites, moveFavourite, toggleFavourite],
+    [workspaceId, favourites, allNotebooks, moveFavourite, toggleFavourite],
   );
 
   const getContextMenuItems = useCallback(

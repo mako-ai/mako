@@ -10,6 +10,7 @@ import { SquareArrowOutUpRight as OpenIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
   appRootOf,
+  appUrlSlug,
   useAppsStore,
   type AppFileVersions,
 } from "../store/appsStore";
@@ -119,7 +120,7 @@ export default function AppDiffTab({
             size="small"
             startIcon={<OpenIcon size={14} />}
             onClick={() =>
-              focusAppsFileTab(owner.app.id, owner.rel, owner.app.slug)
+              focusAppsFileTab(owner.app.id, owner.rel, appUrlSlug(owner.app))
             }
           >
             Open file

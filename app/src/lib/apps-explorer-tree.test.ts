@@ -5,6 +5,7 @@ import {
   folderNodeId,
   folderPathFromNodeId,
   parentPathOf,
+  resolveAppRef,
 } from "./apps-explorer-tree";
 
 const apps = [
@@ -66,5 +67,66 @@ describe("buildAppTree", () => {
     expect(folderPathFromNodeId("a1")).toBeNull();
     expect(parentPathOf("apps/Sales/CH")).toBe("apps/Sales");
     expect(parentPathOf("apps")).toBe("");
+  });
+});
+
+describe("resolveAppRef", () => {
+  const list = [
+    { id: "5ae23997208465e4541cd59d", slug: "report", path: "apps/report" },
+    {
+      id: "6aaaed797eb3d8d53c497fc3",
+      slug: "report",
+      path: "apps/Sales/report",
+    },
+    {
+      id: "6aaaed797eb3d8d53c497fc4",
+      slug: "daily",
+      path: "apps/Sales/CH/daily",
+    },
+    {
+      id: "6aaaed797eb3d8d53c497fc5",
+      slug: "scratch",
+      path: "users/u1/apps/scratch",
+    },
+    // A legacy row: no path yet, so it sits at apps/<slug>.
+    { id: "6aaaed797eb3d8d53c497fc6", slug: "legacy" },
+  ];
+
+  it("resolves a 24-hex id regardless of case", () => {
+    expect(resolveAppRef(list, "6AAAED797EB3D8D53C497FC4")?.slug).toBe("daily");
+  });
+
+  it("resolves a repo path with or without the leading apps/", () => {
+    expect(resolveAppRef(list, "apps/Sales/CH/daily")?.slug).toBe("daily");
+    expect(resolveAppRef(list, "Sales/CH/daily")?.slug).toBe("daily");
+    expect(resolveAppRef(list, "/users/u1/apps/scratch/")?.slug).toBe(
+      "scratch",
+    );
+  });
+
+  it("resolves a bare slug only when it is unique, else the top-level app", () => {
+    expect(resolveAppRef(list, "daily")?.path).toBe("apps/Sales/CH/daily");
+    expect(resolveAppRef(list, "legacy")?.id).toBe("6aaaed797eb3d8d53c497fc6");
+    // Two apps named "report": the top-level one wins, as on the server.
+    expect(resolveAppRef(list, "report")?.path).toBe("apps/report");
+  });
+
+  it("refuses an ambiguous nested slug rather than guessing", () => {
+    const nestedOnly = list.filter(a => a.path !== "apps/report");
+    expect(
+      resolveAppRef(
+        [
+          ...nestedOnly,
+          {
+            id: "6aaaed797eb3d8d53c497fc7",
+            slug: "report",
+            path: "apps/Ops/report",
+          },
+        ],
+        "report",
+      ),
+    ).toBeNull();
+    expect(resolveAppRef(list, "")).toBeNull();
+    expect(resolveAppRef(list, "nope")).toBeNull();
   });
 });

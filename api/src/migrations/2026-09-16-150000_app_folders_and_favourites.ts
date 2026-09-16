@@ -52,14 +52,29 @@ export async function up(db: Db): Promise<void> {
       name: slugIndex.name,
     });
   }
-  const after = await projects.indexes();
+  const after = (await projects.indexes()) as Array<{
+    name: string;
+    key: Record<string, unknown>;
+    sparse?: boolean;
+    partialFilterExpression?: unknown;
+  }>;
   if (!hasIndexOnKeys(after, { workspaceId: 1, slug: 1 })) {
     await projects.createIndex({ workspaceId: 1, slug: 1 });
   }
-  if (!hasIndexOnKeys(after, { workspaceId: 1, path: 1 })) {
+  // Partial, not sparse: a compound sparse index still indexes rows whose
+  // `path` is missing (workspaceId is present), so two rows with the path
+  // unset — mid-move, or orphaned state rows — would collide on null.
+  const pathIndex = after.find(
+    idx =>
+      JSON.stringify(idx.key) === JSON.stringify({ workspaceId: 1, path: 1 }),
+  );
+  if (pathIndex && !pathIndex.partialFilterExpression) {
+    await projects.dropIndex(pathIndex.name);
+  }
+  if (!pathIndex || !pathIndex.partialFilterExpression) {
     await projects.createIndex(
       { workspaceId: 1, path: 1 },
-      { unique: true, sparse: true },
+      { unique: true, partialFilterExpression: { path: { $exists: true } } },
     );
   }
 

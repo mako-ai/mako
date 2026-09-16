@@ -259,6 +259,19 @@ function viewerCount(slug, port) {
   return activeConns(port);
 }
 
+// Does the folder a dev server serves still exist? The API writes
+// /tmp/mako-dev-<id>.dir when it writes the launcher; without one (a server
+// someone started from a shell) fall back to the legacy apps/<name> guess.
+function appDirExists(slug) {
+  try {
+    const dir = readFileSync("/tmp/mako-dev-" + slug + ".dir", "utf8").trim();
+    if (dir) return existsSync(dir);
+  } catch {
+    // No record: not launched by the API.
+  }
+  return existsSync(ROOT + "/apps/" + slug);
+}
+
 // Stop an idle dev server: kill the launcher (which is vite), drop its
 // session socket, and free its registry slot. A STOP, never a start.
 async function reap(slug) {
@@ -278,6 +291,7 @@ async function reap(slug) {
     } catch {
       m = {};
     }
+    delete m[slug];
     delete m["apps/" + slug];
     writeFileSync(PORTS, JSON.stringify(m));
   } catch {
@@ -321,7 +335,11 @@ async function tick() {
     // A server whose app folder is gone (the app was deleted) serves a
     // ghost from open fds forever; nothing legitimate watches it. Reap it
     // regardless of connections.
-    if (!existsSync(ROOT + "/apps/" + s.slug)) {
+    // The launcher records the app's directory next to itself (servers are
+    // keyed by app id, and an id says nothing about where the folder is);
+    // a server adopted from a shell has no record and is judged by its
+    // package name under apps/.
+    if (!appDirExists(s.slug)) {
       await reap(s.slug);
       idleTicks.delete(s.slug);
       continue;
@@ -387,7 +405,7 @@ async function tick() {
     }
   }
   for (const k of [...deadRegTicks.keys()]) {
-    if (!(("apps/" + k) in reg)) deadRegTicks.delete(k);
+    if (!(k in reg) && !(("apps/" + k) in reg)) deadRegTicks.delete(k);
   }
   const snapshot = { source: "agent", devServers: alive, terminals: terminals() };
   if (process.env.E2B_SANDBOX_ID) snapshot.sandboxId = process.env.E2B_SANDBOX_ID;

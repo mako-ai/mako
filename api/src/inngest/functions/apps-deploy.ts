@@ -78,7 +78,10 @@ export const appsDeployFunction = inngest.createFunction(
     // A per-app concurrency limit queued them instead — behind a failing
     // deploy that queue only grew (25 events for one app in a day).
     singleton: {
-      key: "event.data.workspaceId + '/' + (event.data.appId ?? event.data.slug)",
+      // CEL, not JS: `??` is not an operator there, and Inngest ignores an
+      // expression it cannot evaluate — silently, with the dedupe off. Every
+      // producer goes through requestAppDeploys, which always sends appId.
+      key: "event.data.workspaceId + '/' + event.data.appId",
       mode: "cancel",
     },
     retries: 2,

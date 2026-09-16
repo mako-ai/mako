@@ -141,6 +141,31 @@ async function main(): Promise<void> {
     assert.equal(deleted.removed, 5, "folder + sub + 3 items");
     assert.equal((await listFavourites(ALICE)).length, 0);
 
+    // Starring something already starred INTO a folder moves it there:
+    // dropping a starred dashboard on a Starred folder must not snap back.
+    const target = ok(await createFavouriteFolder(ALICE, { title: "Target" }));
+    const loose = ok(
+      await addFavourite(ALICE, { kind: "dashboard", refId: "d9" }),
+    );
+    assert.equal(loose.parentId, null);
+    const filed = ok(
+      await addFavourite(ALICE, {
+        kind: "dashboard",
+        refId: "d9",
+        parentId: target.id,
+      }),
+    );
+    assert.equal(filed.id, loose.id, "still one row");
+    assert.equal(filed.parentId, target.id, "moved into the folder");
+    const same = ok(
+      await addFavourite(ALICE, { kind: "dashboard", refId: "d9" }),
+    );
+    assert.equal(
+      same.parentId,
+      target.id,
+      "a bare re-star leaves it where it is",
+    );
+
     // Unknown folder / kind are refused cleanly.
     const badParent = await addFavourite(ALICE, {
       kind: "app",

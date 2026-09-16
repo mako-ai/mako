@@ -55,6 +55,7 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import {
   appRootOf,
+  appUrlSlug,
   useAppsStore,
   type AppChange,
   type AppCommit,
@@ -327,7 +328,9 @@ export default function SourceControlExplorer() {
   const openFile = useCallback(
     (path: string) => {
       const owner = ownerOf(path);
-      if (owner) focusAppsFileTab(owner.app.id, owner.rel, owner.app.slug);
+      if (owner) {
+        focusAppsFileTab(owner.app.id, owner.rel, appUrlSlug(owner.app));
+      }
     },
     [ownerOf],
   );

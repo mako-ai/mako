@@ -92,11 +92,27 @@ function requireObjectId(kind: string, id: string): Types.ObjectId {
 // search
 // ---------------------------------------------------------------------------
 
+/**
+ * The app folders this actor may see. A personal tree (`users/<id>/apps`)
+ * is its owner's alone — the same rule the REST list and app_list_apps
+ * apply; the connector must not be the one door that skips it.
+ */
+async function visibleAppFolders(
+  workspaceId: string,
+  userId: string | undefined,
+): Promise<Awaited<ReturnType<typeof listAppFolders>>> {
+  const folders = await listAppFolders(workspaceId);
+  return folders.filter(
+    f => f.scope !== "private" || (!!userId && f.ownerId === userId),
+  );
+}
+
 async function searchWorkspaceApps(
   workspaceId: string,
+  userId: string | undefined,
   query: string,
 ): Promise<SearchResultDoc[]> {
-  const folders = await listAppFolders(workspaceId);
+  const folders = await visibleAppFolders(workspaceId, userId);
   const q = query.trim().toLowerCase();
   return folders
     .filter(
@@ -150,12 +166,13 @@ async function searchAllSkills(
 
 async function executeSearch(
   workspaceId: string,
+  userId: string | undefined,
   query: string,
 ): Promise<{ results: SearchResultDoc[] }> {
   const [consoles, dashboards, apps, skills] = await Promise.allSettled([
     searchConsoles(query, workspaceId, RESULTS_PER_KIND),
     searchDashboardsByQuery(query, workspaceId, RESULTS_PER_KIND),
-    searchWorkspaceApps(workspaceId, query),
+    searchWorkspaceApps(workspaceId, userId, query),
     searchAllSkills(workspaceId, query),
   ]);
 
@@ -286,9 +303,10 @@ async function fetchDashboardDoc(
 
 async function fetchAppDoc(
   workspaceId: string,
+  userId: string | undefined,
   id: string,
 ): Promise<FetchedDoc | null> {
-  const folders = await listAppFolders(workspaceId);
+  const folders = await visibleAppFolders(workspaceId, userId);
   const folder =
     folders.find(f => f.id === id) ??
     folders.find(f => f.path === id) ??
@@ -304,7 +322,7 @@ async function fetchAppDoc(
         .select("slug")
         .lean();
       if (app?.slug) {
-        return fetchAppDoc(workspaceId, app.slug);
+        return fetchAppDoc(workspaceId, userId, app.slug);
       }
     }
     return null;
@@ -389,6 +407,7 @@ async function fetchSkillDoc(
 
 async function executeFetch(
   workspaceId: string,
+  userId: string | undefined,
   id: string,
 ): Promise<FetchedDoc> {
   const separator = id.indexOf(":");
@@ -409,7 +428,7 @@ async function executeFetch(
       doc = await fetchDashboardDoc(workspaceId, rest);
       break;
     case "app":
-      doc = await fetchAppDoc(workspaceId, rest);
+      doc = await fetchAppDoc(workspaceId, userId, rest);
       break;
     case "skill":
       doc = await fetchSkillDoc(workspaceId, rest);
@@ -437,7 +456,7 @@ async function executeFetch(
 export function createChatGptConnectorTools(
   context: MakoMcpContext,
 ): Record<string, BridgeableTool> {
-  const { workspaceId } = context;
+  const { workspaceId, userId } = context;
   return {
     search: tool({
       description:
@@ -452,7 +471,7 @@ export function createChatGptConnectorTools(
           .min(1)
           .describe("Free-text search query (e.g. 'monthly revenue')."),
       }),
-      execute: async ({ query }) => executeSearch(workspaceId, query),
+      execute: async ({ query }) => executeSearch(workspaceId, userId, query),
     }),
     fetch: tool({
       description:
@@ -467,7 +486,7 @@ export function createChatGptConnectorTools(
             'Document id from search results, e.g. "console:64ac…" or "skill:apps".',
           ),
       }),
-      execute: async ({ id }) => executeFetch(workspaceId, id),
+      execute: async ({ id }) => executeFetch(workspaceId, userId, id),
     }),
   };
 }

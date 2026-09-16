@@ -49,7 +49,11 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useRealtimeStore } from "../store/realtimeStore";
-import { appUrlRef, useAppsStore } from "../store/appsStore";
+import {
+  appUrlRef,
+  devServerKeyMatches,
+  useAppsStore,
+} from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -612,7 +616,9 @@ function TerminalTabs({
   // never on mount for a stopped app, which used to spawn a "[waiting for the
   // dev server]" attach with nothing behind it (apps.md §13.11).
   const runningDevApps = useAppsStore(st => st.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
   const isMobile = useIsMobile();
   // One writer ref per terminal id, handed to its TerminalPanel; the mobile
   // key bar writes through the active one. Refs, not state: a socket coming
@@ -1126,7 +1132,9 @@ export default function AppWorkspace({
   // Every "running" affordance derives from this, so they cannot disagree
   // (apps.md §13.11).
   const runningDevApps = useAppsStore(s => s.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
   const viewUrl = useAppsStore(s => s.viewUrlByApp[appId]);
   const hiddenPaused = useHiddenPause();
   // Durable, session-authorized URL for the published app — for normal tabs.

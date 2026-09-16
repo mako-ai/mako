@@ -33,6 +33,7 @@ import {
   resolveCommit,
 } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
+import { createSerializer } from "./serialized";
 import {
   APPS_DIR,
   APP_MANIFEST,
@@ -275,19 +276,34 @@ export async function readAppsAt(
  */
 export function assignAppIds(
   workspaceId: string,
-  apps: Array<{ path: string; declaredId?: string }>,
+  apps: Array<{ path: string; declaredId?: string; treeOid?: string }>,
   incumbents: Map<string, string>,
   unavailableIds: ReadonlySet<string> = new Set(),
+  /**
+   * Tree oid → id of an UNSTAMPED app whose folder is no longer where the
+   * index last saw it. A laptop `git mv` of a legacy app (no `id` in its
+   * manifest) keeps the folder's tree oid, and that is the only trace of its
+   * identity left in git — without this tier the move reads as a delete plus
+   * a brand-new app, and its deployment, share link and env vars are lost.
+   * Each entry is consumed once, so a copy never inherits it too.
+   */
+  treeIncumbents: Map<string, string> = new Map(),
 ): Map<
   string,
   { appId: string; hasManifestId: boolean; duplicateOf?: string }
 > {
   const idByPath = new Map([...incumbents].map(([id, path]) => [path, id]));
+  const byTree = new Map(treeIncumbents);
   const claims = new Map<string, string[]>();
   const wanted = new Map<string, { id: string; declared: boolean }>();
   for (const app of apps) {
     const derived = derivedAppId(workspaceId, appKeyOf(app.path)).toHexString();
-    const id = app.declaredId ?? idByPath.get(app.path) ?? derived;
+    let id = app.declaredId ?? idByPath.get(app.path);
+    if (!id && app.treeOid && byTree.has(app.treeOid)) {
+      id = byTree.get(app.treeOid);
+      byTree.delete(app.treeOid);
+    }
+    id ??= derived;
     wanted.set(app.path, { id, declared: !!app.declaredId });
     const list = claims.get(id) ?? [];
     list.push(app.path);
@@ -342,20 +358,53 @@ export function assignAppIds(
   return out;
 }
 
+/**
+ * Tree oid → id for the unstamped apps among `rows` whose path is not in
+ * `presentPaths`: the identities a laptop `git mv` can only be matched to by
+ * content. Ambiguous oids (two vanished folders with identical trees) are
+ * left out rather than guessed.
+ */
+export function treeIncumbentsOf(
+  rows: Array<
+    Pick<AppIndexRow, "appId" | "path" | "treeOid" | "hasManifestId">
+  >,
+  presentPaths: ReadonlySet<string>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const row of rows) {
+    if (row.hasManifestId || presentPaths.has(row.path)) continue;
+    if (out.has(row.treeOid)) ambiguous.add(row.treeOid);
+    out.set(row.treeOid, row.appId);
+  }
+  for (const oid of ambiguous) out.delete(oid);
+  return out;
+}
+
+/** Is `ancestor` reachable from `descendant`? False when either is unknown here. */
+async function isAncestor(
+  repoDir: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  if (ancestor === descendant) return true;
+  return runGit([
+    "-C",
+    repoDir,
+    "merge-base",
+    "--is-ancestor",
+    ancestor,
+    descendant,
+  ])
+    .then(() => true)
+    .catch(() => false);
+}
+
 // ---------------------------------------------------------------------------
 // Sync
 // ---------------------------------------------------------------------------
 
-const syncChains = new Map<string, Promise<unknown>>();
-function serialized<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = syncChains.get(workspaceId) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  syncChains.set(
-    workspaceId,
-    next.catch(() => undefined),
-  );
-  return next;
-}
+const serialized = createSerializer();
 
 /** Per-process memo: the rows cannot change while main's sha does not. */
 const snapshotCache = new Map<string, AppsIndexSnapshot>();
@@ -420,17 +469,32 @@ async function syncNow(
   if (!sha) return null;
   const ws = new Types.ObjectId(workspaceId);
   const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
-  if (
-    head?.sha === sha &&
-    head.schemaVersion === INDEX_SCHEMA_VERSION &&
-    !options.force
-  ) {
-    const cached = snapshotCache.get(workspaceId);
-    if (cached?.sha === sha) return cached;
-    const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
-    const snapshot = { sha, apps: rows.map(rowToIndex), folders: head.folders };
-    snapshotCache.set(workspaceId, snapshot);
-    return snapshot;
+  if (head?.schemaVersion === INDEX_SCHEMA_VERSION && !options.force) {
+    if (head.sha === sha) {
+      const cached = snapshotCache.get(workspaceId);
+      if (cached?.sha === sha) return cached;
+      const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+      const snapshot = {
+        sha,
+        apps: rows.map(rowToIndex),
+        folders: head.folders,
+      };
+      snapshotCache.set(workspaceId, snapshot);
+      return snapshot;
+    }
+    // Never rebuild BACKWARDS. On a multi-instance host the instance that
+    // took a push has the new commit before the others fetch it (up to the
+    // freshen interval); an instance still on the older main must not
+    // overwrite the rows — and flip a just-moved app's project path back —
+    // with what its stale clone says. Serve what the index has instead.
+    if (await isAncestor(repoDir, sha, head.sha)) {
+      const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+      return {
+        sha: head.sha,
+        apps: rows.map(rowToIndex),
+        folders: head.folders,
+      };
+    }
   }
 
   // Retryable after a migration repairs old collisions; Model.init() retains
@@ -442,7 +506,7 @@ async function syncNow(
   for (const row of existing) incumbents.set(row.appId, row.path);
   // Existing state owns the legacy identity, even before path was backfilled.
   const projectRows = await AppProject.find({ workspaceId: ws })
-    .select("_id path slug title description")
+    .select("_id path slug title description access owner_id")
     .lean();
   for (const p of projectRows) {
     const id = p._id.toString();
@@ -480,9 +544,11 @@ async function syncNow(
     read.apps.map(a => ({
       path: a.path,
       declaredId: read.manifests.get(a.path)?.id,
+      treeOid: a.treeOid,
     })),
     incumbents,
     unavailableIds,
+    treeIncumbentsOf(existing, new Set(read.apps.map(a => a.path))),
   );
 
   const rows: AppIndexRow[] = read.apps.map(app => {
@@ -542,6 +608,25 @@ async function syncNow(
     );
   }
 
+  // A state row whose folder is now claimed by a DIFFERENT id (a manifest
+  // stamped with another app's id landed at a legacy row's path) must give
+  // the path up, or ensureProjectRow for the new id hits the unique path
+  // index forever. The row keeps its state (env vars, shares) without a
+  // folder; nothing deletes it.
+  const orphaned = projectRows.filter(
+    p =>
+      !keepIds.has(p._id.toString()) &&
+      p.path &&
+      pathOwner.has(p.path) &&
+      pathOwner.get(p.path) !== p._id.toString(),
+  );
+  if (orphaned.length > 0) {
+    await AppProject.updateMany(
+      { _id: { $in: orphaned.map(p => p._id) }, workspaceId: ws },
+      { $unset: { path: 1 } },
+    );
+  }
+
   // Project rows follow the folder: a move in git relocates the app's state
   // row too, so appRootFor() keeps pointing at the right directory.
   const projectById = new Map(projectRows.map(p => [p._id.toString(), p]));
@@ -552,15 +637,51 @@ async function syncNow(
     );
   });
   if (moves.length > 0) {
-    await AppProject.bulkWrite(
-      moves.map(row => ({
-        updateOne: {
-          filter: { _id: new Types.ObjectId(row.appId), workspaceId: ws },
-          update: {
-            $set: { path: row.path, slug: row.slug, title: row.title },
-          },
+    // Two phases, like the index write above: two apps that swapped folders
+    // in one commit would each collide with the other's old path under the
+    // unique (workspaceId, path) index if set in place. The index is sparse,
+    // so rows without a path are free to take any.
+    const pathMoves = moves.filter(row => {
+      const p = projectById.get(row.appId);
+      return p?.path !== row.path;
+    });
+    if (pathMoves.length > 0) {
+      await AppProject.updateMany(
+        {
+          _id: { $in: pathMoves.map(row => new Types.ObjectId(row.appId)) },
+          workspaceId: ws,
         },
-      })),
+        { $unset: { path: 1 } },
+      );
+    }
+    await AppProject.bulkWrite(
+      moves.map(row => {
+        const p = projectById.get(row.appId);
+        const location = parseAppRepoPath(row.path);
+        const wasPrivate = parseAppRepoPath(p?.path ?? "")?.scope === "private";
+        // Visibility follows the tree: an app filed into someone's personal
+        // tree is theirs (private, owner = the tree's owner); one filed back
+        // into the workspace tree is workspace content again.
+        const access =
+          location?.scope === "private"
+            ? { access: "private", owner_id: location.ownerId }
+            : wasPrivate
+              ? { access: "workspace" }
+              : {};
+        return {
+          updateOne: {
+            filter: { _id: new Types.ObjectId(row.appId), workspaceId: ws },
+            update: {
+              $set: {
+                path: row.path,
+                slug: row.slug,
+                title: row.title,
+                ...access,
+              },
+            },
+          },
+        };
+      }),
       { ordered: false },
     );
   }
@@ -695,8 +816,13 @@ export async function readIndexedAppsAt(
             n.path === a.path &&
             n.duplicateOf === read.manifests.get(a.path)?.id,
         )?.appId ?? read.manifests.get(a.path)?.id,
+      treeOid: a.treeOid,
     })),
     incumbents,
+    new Set(),
+    // An unstamped app the current index files elsewhere: at this older
+    // commit its folder sat at the old path with the same tree oid.
+    treeIncumbentsOf(now.apps, new Set(read.apps.map(a => a.path))),
   );
   return read.apps.map(a => ({
     appId: ids.get(a.path)!.appId,

@@ -57,6 +57,10 @@ import {
   type AppFolderTarget,
 } from "../../apps/worktree.service";
 import { parseAppRepoPath } from "../../apps/app-paths";
+import {
+  authorizeAppMove,
+  authorizeFolderTarget,
+} from "../../apps/app-authorization";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
   DEFAULT_BRANCH,
@@ -256,30 +260,15 @@ export function createAppsTools({
           let target: AppFolderTarget | undefined;
           if (folder) {
             target = folderTargetFromPath(folder);
-            if (target.scope === "private") {
-              if (!userId) {
-                return {
-                  success: false,
-                  error: "Personal folders need a signed-in user",
-                };
-              }
-              if (target.ownerId && target.ownerId !== userId) {
-                return {
-                  success: false,
-                  error:
-                    "You can only create apps in your own personal folders",
-                };
-              }
-              target.ownerId = userId;
-            } else if (userId) {
-              const role = await memberRole();
-              if (role === "viewer") {
-                return {
-                  success: false,
-                  error: "Viewers cannot add to the Workspace tree",
-                };
-              }
-            }
+            // The same rules as the REST route (app-authorization.ts): an
+            // actor with no role at all — an API key whose creator left —
+            // is refused here exactly as it is there.
+            const denied = authorizeFolderTarget(
+              target,
+              userId,
+              await memberRole(),
+            );
+            if (denied) return { success: false, error: denied };
           }
           const project = await createProject({
             workspaceId,
@@ -1029,41 +1018,13 @@ export function createAppsTools({
         try {
           const target = folderTargetFromPath(folder);
           const source = parseAppRepoPath(appRootFor(loaded.project));
-          if (target.scope === "private") {
-            if (!userId) {
-              return {
-                success: false,
-                error: "Personal folders need a signed-in user",
-              };
-            }
-            if (target.ownerId && target.ownerId !== userId) {
-              return {
-                success: false,
-                error: "You can only file apps into your own personal folders",
-              };
-            }
-            target.ownerId = userId;
-          }
-          if (userId) {
-            const role = await memberRole();
-            if (
-              (target.scope === "workspace" || source?.scope === "workspace") &&
-              role === "viewer"
-            ) {
-              return {
-                success: false,
-                error:
-                  "Only workspace editors can reorganise the Workspace tree",
-              };
-            }
-            if (source?.scope === "private" && source.ownerId !== userId) {
-              return {
-                success: false,
-                error:
-                  "Only the owner can move an app out of their personal folder",
-              };
-            }
-          }
+          const denied = authorizeAppMove(
+            source,
+            target,
+            userId,
+            await memberRole(),
+          );
+          if (denied) return { success: false, error: denied };
           const moved = await moveProject(
             loaded.project,
             { ...target, slug: name },

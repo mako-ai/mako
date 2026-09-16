@@ -33,6 +33,7 @@ import {
 import {
   Globe as GlobeIcon,
   User as UserIcon,
+  Users as SharedIcon,
   Braces as JsonFileIcon,
   Database as BindingIcon,
   File as PlainFileIcon,
@@ -60,6 +61,7 @@ import { SECTION_LABELS } from "../pages/settings/sections";
 import {
   appRootOf,
   appUrlRef,
+  devServerKeyMatches,
   useAppsStore,
   type AppFileEntry,
   type AppMeta,
@@ -108,6 +110,7 @@ const AppIcon = TAB_KIND_ICONS["app"];
 const WORKSPACE_ROOT = "apps";
 const WORKSPACE_SECTION = "workspace";
 const PERSONAL_SECTION = "personal";
+const SHARED_SECTION = "shared-with-me";
 
 type ParsedNode =
   | { kind: "app"; appId: string; pinned: boolean }
@@ -389,6 +392,17 @@ export default function AppsExplorer() {
     const personalApps = personalRoot
       ? apps.filter(a => appRootOf(a).startsWith(`${personalRoot}/`))
       : [];
+    // Someone else's personal app that they shared with you: the list
+    // returns it (you can read it), but it lives in THEIR tree, which is
+    // never rendered here. Flat rows, no folder chrome, not a drop target —
+    // only the owner can move it, so a drag here has nothing to do.
+    const sharedWithMe = apps.filter(
+      a =>
+        a.scope === "private" &&
+        !!a.owner_id &&
+        a.owner_id !== userId &&
+        !(personalRoot && appRootOf(a).startsWith(`${personalRoot}/`)),
+    );
     const starredSection = buildStarredSection(
       favourites,
       "app",
@@ -436,8 +450,46 @@ export default function AppsExplorer() {
             },
           ]
         : []),
+      ...(sharedWithMe.length > 0
+        ? [
+            {
+              key: SHARED_SECTION,
+              label: "Shared with me",
+              icon: <SharedIcon size={16} strokeWidth={1.5} />,
+              nodes: sharedWithMe
+                .map(app => ({
+                  id: app.id,
+                  name: app.title,
+                  path: appRootOf(app),
+                  isDirectory: true,
+                  children: appChildren(app.id),
+                  ...(app.access ? { access: app.access } : {}),
+                  ...(app.owner_id ? { owner_id: app.owner_id } : {}),
+                }))
+                .sort((a, b) =>
+                  a.name.localeCompare(b.name, undefined, {
+                    sensitivity: "base",
+                  }),
+                ),
+            },
+          ]
+        : []),
     ];
-  }, [apps, folders, favourites, appById, appChildren, personalRoot]);
+  }, [apps, folders, favourites, appById, appChildren, personalRoot, userId]);
+
+  /** An app in someone else's personal tree: readable, never movable here. */
+  const isSharedWithMe = useCallback(
+    (appId: string): boolean => {
+      const app = appById.get(appId);
+      return (
+        !!app &&
+        app.scope === "private" &&
+        !!app.owner_id &&
+        app.owner_id !== userId
+      );
+    },
+    [appById, userId],
+  );
 
   // -------------------------------------------------------------------------
   // Actions
@@ -512,7 +564,10 @@ export default function AppsExplorer() {
         sectionKey === PERSONAL_SECTION ? personalRoot : WORKSPACE_ROOT;
       if (!root || !mayWriteTo(root)) return true;
       if (dragged.kind === "app" && !dragged.pinned) {
-        if (folderOfApp(dragged.appId) !== root) {
+        if (
+          folderOfApp(dragged.appId) !== root &&
+          !isSharedWithMe(dragged.appId)
+        ) {
           void moveApp(workspaceId, dragged.appId, root);
         }
       } else if (dragged.kind === "folder") {
@@ -533,6 +588,7 @@ export default function AppsExplorer() {
       folderOfApp,
       moveApp,
       moveAppFolder,
+      isSharedWithMe,
     ],
   );
 
@@ -542,6 +598,17 @@ export default function AppsExplorer() {
       if (!workspaceId || !targetId) return;
       const dragged = parseNodeId(nodeId);
       const target = parseNodeId(targetId);
+      // A shared app can be starred (a pinned row is a view of it), never
+      // filed: it is the owner's to move, and the server would refuse.
+      if (
+        dragged.kind === "app" &&
+        !dragged.pinned &&
+        isSharedWithMe(dragged.appId) &&
+        target.kind !== "starfolder" &&
+        !(target.kind === "app" && target.pinned)
+      ) {
+        return;
+      }
 
       // Destination: a git folder path, or a favourites folder id (null =
       // the Starred root when the target is a pinned row at the root).
@@ -597,6 +664,7 @@ export default function AppsExplorer() {
       workspaceId,
       favourites,
       folderOfApp,
+      isSharedWithMe,
       mayWriteTo,
       moveApp,
       moveAppFolder,
@@ -753,7 +821,11 @@ export default function AppsExplorer() {
     ],
   );
 
-  /** Inline rename (F2): folders only — an app row shows its title, not its folder. */
+  /**
+   * Inline rename (F2 / double-click): a git folder, a Starred folder, or an
+   * app row — which renames the app's FOLDER (its slug) in place, the one
+   * name the row can honestly change; the title lives in mako.json.
+   */
   const handleRename = useCallback(
     (id: string, name: string) => {
       if (!workspaceId) return;
@@ -765,9 +837,25 @@ export default function AppsExplorer() {
         if (to !== parsed.folderPath && mayWriteTo(parsed.folderPath)) {
           void moveAppFolder(workspaceId, parsed.folderPath, to);
         }
+      } else if (parsed.kind === "app" && !parsed.pinned) {
+        const app = appById.get(parsed.appId);
+        const folder = folderOfApp(parsed.appId);
+        if (!app || !folder || isSharedWithMe(parsed.appId)) return;
+        if (name !== app.slug && mayWriteTo(folder)) {
+          void moveApp(workspaceId, parsed.appId, folder, name);
+        }
       }
     },
-    [workspaceId, renameFavourite, mayWriteTo, moveAppFolder],
+    [
+      workspaceId,
+      renameFavourite,
+      mayWriteTo,
+      moveAppFolder,
+      moveApp,
+      appById,
+      folderOfApp,
+      isSharedWithMe,
+    ],
   );
 
   const submitFolderDialog = useCallback(
@@ -1199,8 +1287,9 @@ export default function AppsExplorer() {
                     const parsed = parseNodeId(node.id);
                     if (parsed.kind !== "app") return null;
                     const app = appById.get(parsed.appId);
-                    const slug = app?.slug;
-                    const running = !!slug && runningDevApps.includes(slug);
+                    const running =
+                      !!app &&
+                      runningDevApps.some(k => devServerKeyMatches(k, app));
                     const p = previewByApp[parsed.appId];
                     // Tri-state dot: amber while a boot is in flight, green
                     // when the box says it serves, red when the last start
@@ -1312,6 +1401,19 @@ export default function AppsExplorer() {
                   }}
                   onRenameItem={handleRename}
                   onDeleteItem={handleDeleteNode}
+                  // Rename, delete and drag act on folders and app rows. A
+                  // file or directory INSIDE an app has no handler (the editor
+                  // owns files), and a shared app is the owner's to arrange.
+                  canManageItem={node => {
+                    const parsed = parseNodeId(node.id);
+                    if (parsed.kind === "file" || parsed.kind === "dir") {
+                      return false;
+                    }
+                    if (parsed.kind === "app" && !parsed.pinned) {
+                      return !isSharedWithMe(parsed.appId);
+                    }
+                    return true;
+                  }}
                   enableRename
                   enableDelete
                   enableNewFolder={false}

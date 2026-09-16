@@ -95,27 +95,53 @@ describe("favouritesStore", () => {
     expect(rows()).toEqual([server]);
   });
 
-  it("rolls a failed unstar back and surfaces the error", async () => {
-    useFavouritesStore.setState({
-      byWorkspace: {
-        [WS]: [
-          {
-            id: "i1",
-            parentId: null,
-            type: "item",
-            kind: "app",
-            refId: "a1",
-            position: 0,
-          },
-        ],
-      },
-    });
+  it("re-reads the server after a failed unstar and surfaces the error", async () => {
+    const i1: Favourite = {
+      id: "i1",
+      parentId: null,
+      type: "item",
+      kind: "app",
+      refId: "a1",
+      position: 0,
+    };
+    useFavouritesStore.setState({ byWorkspace: { [WS]: [i1] } });
     http.DELETE.mockResolvedValueOnce(fail(500, "boom"));
+    http.GET.mockResolvedValueOnce(ok({ success: true, favourites: [i1] }));
     expect(
       await useFavouritesStore.getState().toggle(WS, "app", "a1", false),
     ).toBe(false);
+    expect(http.GET).toHaveBeenCalledTimes(1);
     expect(starredRefs(rows(), "app").has("a1")).toBe(true);
     expect(useFavouritesStore.getState().error).toMatch(/boom/);
+  });
+
+  it("a failed star never restores a snapshot over a toggle that landed meanwhile", async () => {
+    // Star a2 (will fail) while a1 gets starred and completes first. The old
+    // rollback put the pre-a2 snapshot back, erasing a1 and leaving the
+    // `pending:` placeholder to 404 on its next move.
+    const a1Row: Favourite = {
+      id: "srv-a1",
+      parentId: null,
+      type: "item",
+      kind: "app",
+      refId: "a1",
+      position: 0,
+    };
+    let failA2: (v: unknown) => void = () => {};
+    http.PUT.mockImplementationOnce(
+      () => new Promise(resolve => void (failA2 = resolve)),
+    );
+    http.PUT.mockResolvedValueOnce(ok({ success: true, favourite: a1Row }));
+    http.GET.mockResolvedValueOnce(ok({ success: true, favourites: [a1Row] }));
+    const store = useFavouritesStore.getState();
+    const a2 = store.toggle(WS, "app", "a2", true);
+    await store.toggle(WS, "app", "a1", true);
+    expect(rows().map(r => r.id)).toEqual(["pending:app:a2", "srv-a1"]);
+    failA2(fail(500, "nope"));
+    expect(await a2).toBe(false);
+    expect(rows()).toEqual([a1Row]);
+    expect(rows().some(r => r.id.startsWith("pending:"))).toBe(false);
+    expect(useFavouritesStore.getState().error).toMatch(/nope/);
   });
 
   it("moves a row into a folder optimistically and re-indexes siblings", async () => {

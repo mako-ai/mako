@@ -162,6 +162,37 @@ export function closeAppsTabsFor(appId: string): boolean {
 }
 
 /**
+ * Keep every Apps tab's URL handle honest after a listing or a move: a
+ * top-level app is addressed by its slug, a nested one by its id. The app
+ * tab heals itself while it is mounted (AppWorkspace), but `app-file` and
+ * `app-diff` tabs carry the same handle and never re-read it — so a file
+ * opened before a move kept producing `/apps/<old-slug>/file/…`, a link that
+ * no longer resolves. `slugs` maps app id → URL slug (undefined = use the id).
+ */
+export function healAppsTabs(slugs: Map<string, string | undefined>): void {
+  useConsoleStore.setState(state => {
+    for (const tab of Object.values(state.tabs) as Array<{
+      kind?: string;
+      metadata?: Record<string, unknown>;
+    }>) {
+      if (
+        tab.kind !== "app" &&
+        tab.kind !== "app-file" &&
+        tab.kind !== "app-diff"
+      ) {
+        continue;
+      }
+      const appId = tab.metadata?.appId;
+      if (typeof appId !== "string" || !slugs.has(appId) || !tab.metadata) {
+        continue;
+      }
+      const slug = slugs.get(appId);
+      if (tab.metadata.appSlug !== slug) tab.metadata.appSlug = slug;
+    }
+  });
+}
+
+/**
  * Close every Apps tab whose app is not in `validIds`.
  *
  * Tabs are persisted per workspace but outlive the apps they point at: an app

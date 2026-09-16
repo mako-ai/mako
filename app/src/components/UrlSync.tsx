@@ -3,7 +3,8 @@ import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
-import { useAppsStore } from "../store/appsStore";
+import { appUrlSlug, useAppsStore } from "../store/appsStore";
+import { resolveAppRef } from "../lib/apps-explorer-tree";
 import {
   closeAppsTabsFor,
   focusAppsFileTab,
@@ -232,16 +233,18 @@ export function UrlSync() {
       );
     } else if (appFileMatch) {
       // /a/:appId/file/:path — Apps file editor
-      const appId = appFileMatch[1];
+      const appId = decodeURIComponent(appFileMatch[1]);
       const filePath = decodePathSegments(appFileMatch[2]);
       setLeftPane("apps");
       void useAppsStore
         .getState()
         .fetchApps(currentWorkspace.id)
         .then(() => {
-          const app = useAppsStore
-            .getState()
-            .apps.find(a => a.id === appId || a.slug === appId);
+          // Resolve exactly as the server does: id, repo path, or a slug
+          // that names ONE app (else the top-level one). Guessing a nested
+          // app from a bare name would open one app while the address bar
+          // named another.
+          const app = resolveAppRef(useAppsStore.getState().apps, appId);
           if (!app) {
             closeAppsTabsFor(appId);
             window.history.replaceState(null, "", "/");
@@ -250,11 +253,11 @@ export function UrlSync() {
             );
             return;
           }
-          focusAppsFileTab(app.id, filePath, app.slug);
+          focusAppsFileTab(app.id, filePath, appUrlSlug(app));
         });
     } else if (appMatch) {
       // /a/:appId — Apps (git-backed, experimental)
-      const appId = appMatch[1];
+      const appId = decodeURIComponent(appMatch[1]);
       // The app's own query (a shared filtered view). Read NOW, synchronously:
       // the outgoing sync below rewrites the address bar to the tab's URL as
       // soon as hydration completes, and until the tab carries this search
@@ -266,9 +269,7 @@ export function UrlSync() {
         // The path segment may be a slug (the app's folder in the repo) or a
         // legacy Mongo id. Resolve either; the outgoing sync then rewrites the
         // URL to the slug form, so old links upgrade themselves.
-        const app = useAppsStore
-          .getState()
-          .apps.find(a => a.id === appId || a.slug === appId);
+        const app = resolveAppRef(useAppsStore.getState().apps, appId);
         if (!app) {
           // The link points at an app that is gone, or lives in another
           // workspace. Opening a tab anyway rendered the whole workspace view
@@ -282,7 +283,7 @@ export function UrlSync() {
           );
           return;
         }
-        focusAppsTab(app.id, app.title, app.slug, appSearch);
+        focusAppsTab(app.id, app.title, appUrlSlug(app), appSearch);
       });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path

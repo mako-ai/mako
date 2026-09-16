@@ -582,6 +582,187 @@ describe("folders", () => {
   });
 });
 
+describe("identity across laptop moves", () => {
+  it("follows an UNSTAMPED legacy app by tree oid when its folder is renamed from a checkout", async () => {
+    // `apps/a` predates manifest ids: its identity is derived from its
+    // path, and nothing in git names it. A laptop `git mv` keeps the tree.
+    const aId = derivedAppId(WS, "a").toHexString();
+    await loadAppsIndex(WS);
+    const row = await ensureProjectRow(
+      (await resolveProjectRef(WS, "a"))!,
+      USER,
+    );
+    expect(row.path).toBe("apps/a");
+    const oid = await treeOidOf("apps/a");
+    const before = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    await externalCommit(
+      {
+        "apps/Sales/a/mako.json": manifest("A"),
+        "apps/Sales/a/src/main.tsx": "export {}\n",
+        "apps/Sales/a/fixtures/mako.json": manifest("Not an app"),
+      },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "git mv apps/a apps/Sales/a",
+    );
+    const snapshot = await loadAppsIndex(WS);
+    const moved = snapshot.apps.find(a => a.path === "apps/Sales/a");
+    expect(moved?.appId).toBe(aId);
+    expect(moved?.hasManifestId).toBe(false);
+    expect(snapshot.apps.some(a => a.path === "apps/a")).toBe(false);
+    expect((await AppProject.findById(aId))?.path).toBe("apps/Sales/a");
+    expect(await treeOidOf("apps/Sales/a")).toBe(oid);
+    // Deploy-on-push sees the same app with the same tree: nothing to do.
+    const after = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    expect(await appFolderChanged(WS, repoDirFor(WS), aId, before, after)).toBe(
+      false,
+    );
+  });
+
+  it("gives a plain COPY of an unstamped app its own id while the original stays", async () => {
+    const aId = derivedAppId(WS, "a").toHexString();
+    await loadAppsIndex(WS);
+    await externalCommit({
+      "apps/a-copy/mako.json": manifest("A"),
+      "apps/a-copy/src/main.tsx": "export {}\n",
+      "apps/a-copy/fixtures/mako.json": manifest("Not an app"),
+    });
+    const snapshot = await loadAppsIndex(WS);
+    expect(snapshot.apps.find(a => a.path === "apps/a")?.appId).toBe(aId);
+    const copy = snapshot.apps.find(a => a.path === "apps/a-copy");
+    expect(copy?.appId).toBe(derivedAppId(WS, "a-copy").toHexString());
+    expect(copy?.duplicateOf).toBeUndefined();
+  });
+
+  it("survives two stamped apps swapping folders in one commit", async () => {
+    const d = await createProject({
+      workspaceId: WS,
+      title: "D",
+      userId: USER,
+      folder: { scope: "workspace", folderSegments: [] },
+    });
+    const dId = d._id.toString();
+    const dManifest = (await fileAt("apps/d/mako.json"))!;
+    const bManifest = (await fileAt("apps/Sales/CH/b/mako.json"))!;
+    await ensureProjectRow((await resolveProjectRef(WS, B_ID))!, USER);
+    // git mv apps/d tmp; git mv apps/Sales/CH/b apps/d; git mv tmp apps/Sales/CH/b
+    await externalCommit(
+      {
+        "apps/d/mako.json": bManifest,
+        "apps/d/bindings/rows.sql":
+          "-- connection: c1\n-- schedule: 0 * * * *\nselect 1\n",
+        "apps/Sales/CH/b/mako.json": dManifest,
+      },
+      ["apps/Sales/CH/b/bindings/rows.sql"],
+      "swap b and d",
+    );
+    const snapshot = await loadAppsIndex(WS);
+    expect(snapshot.apps.find(a => a.appId === B_ID)?.path).toBe("apps/d");
+    expect(snapshot.apps.find(a => a.appId === dId)?.path).toBe(
+      "apps/Sales/CH/b",
+    );
+    expect((await AppProject.findById(B_ID))?.path).toBe("apps/d");
+    expect((await AppProject.findById(dId))?.path).toBe("apps/Sales/CH/b");
+  });
+
+  it("frees a legacy row's path when a stamped manifest with another id lands there", async () => {
+    const aId = derivedAppId(WS, "a").toHexString();
+    await loadAppsIndex(WS);
+    await ensureProjectRow((await resolveProjectRef(WS, "a"))!, USER);
+    const newId = new Types.ObjectId().toHexString();
+    await externalCommit({ "apps/a/mako.json": manifest("A2", newId) });
+    const snapshot = await loadAppsIndex(WS);
+    expect(snapshot.apps.find(a => a.path === "apps/a")?.appId).toBe(newId);
+    expect((await AppProject.findById(aId))?.path).toBeUndefined();
+    // The new identity can now take the folder's state row.
+    const row = await ensureProjectRow(
+      (await resolveProjectRef(WS, newId))!,
+      USER,
+    );
+    expect(row.path).toBe("apps/a");
+  });
+
+  it("never rebuilds the index backwards from an instance whose main is behind", async () => {
+    const before = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    await externalCommit({ "apps/new/mako.json": manifest("New") });
+    const fresh = await loadAppsIndex(WS);
+    expect(fresh.apps.some(a => a.path === "apps/new")).toBe(true);
+    // Another instance, still on the older commit, serves a read.
+    await runGit(["-C", repoDirFor(WS), "update-ref", MAIN, before]);
+    invalidateAppsIndexCache(WS);
+    const stale = await loadAppsIndex(WS);
+    expect(stale.sha).toBe(fresh.sha);
+    expect(stale.apps.some(a => a.path === "apps/new")).toBe(true);
+    expect((await AppIndexHead.findOne({ workspaceId: WS }))?.sha).toBe(
+      fresh.sha,
+    );
+  });
+});
+
+describe("visibility follows the tree", () => {
+  it("a workspace app filed into a personal tree becomes private, and public again on the way back", async () => {
+    const a = (await resolveProjectRef(WS, "a"))!;
+    await ensureProjectRow(a, USER);
+    await moveProject(
+      a,
+      { scope: "private", ownerId: USER, folderSegments: [] },
+      { userId: USER },
+    );
+    let row = (await AppProject.findById(a._id))!;
+    expect(row.path).toBe(`users/${USER}/apps/a`);
+    expect(row.access).toBe("private");
+    expect(row.owner_id).toBe(USER);
+    expect(canReadResource(row, "someone-else", "member")).toBe(false);
+    await moveProject(
+      (await resolveProjectRef(WS, a._id.toString()))!,
+      { scope: "workspace", folderSegments: [] },
+      { userId: USER },
+    );
+    row = (await AppProject.findById(a._id))!;
+    expect(row.path).toBe("apps/a");
+    expect(row.access).toBe("workspace");
+  });
+
+  it("a laptop move into a personal tree is private too", async () => {
+    const aId = derivedAppId(WS, "a").toHexString();
+    await loadAppsIndex(WS);
+    await ensureProjectRow((await resolveProjectRef(WS, "a"))!, USER);
+    await externalCommit(
+      {
+        [`users/${USER}/apps/a/mako.json`]: manifest("A"),
+        [`users/${USER}/apps/a/src/main.tsx`]: "export {}\n",
+        [`users/${USER}/apps/a/fixtures/mako.json`]: manifest("Not an app"),
+      },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+    );
+    await loadAppsIndex(WS);
+    const row = (await AppProject.findById(aId))!;
+    expect(row.path).toBe(`users/${USER}/apps/a`);
+    expect(row.access).toBe("private");
+    expect(row.owner_id).toBe(USER);
+  });
+});
+
+describe("ambiguous slugs", () => {
+  it("resolve to nothing rather than to whichever row Mongo returns first", async () => {
+    await externalCommit({ "apps/Ops/c/mako.json": manifest("Ops C") });
+    await loadAppsIndex(WS);
+    // "c" now names users/<USER>/apps/c and apps/Ops/c; neither is top-level.
+    await ensureProjectRow((await resolveProjectRef(WS, "apps/Ops/c"))!, USER);
+    expect(await resolveProjectRef(WS, "c")).toBeNull();
+    expect((await resolveProjectRef(WS, "apps/Ops/c"))?.path).toBe(
+      "apps/Ops/c",
+    );
+  });
+});
+
+describe("folder names", () => {
+  it("accept non-ASCII letters, so apps/café is listed and manageable", async () => {
+    await externalCommit({ "apps/café/mako.json": manifest("Café") });
+    const snapshot = await loadAppsIndex(WS);
+    expect(snapshot.apps.find(a => a.path === "apps/café")?.slug).toBe("café");
+  });
+});
+
 describe("createProject", () => {
   it("scaffolds into a folder with the row's id in the manifest", async () => {
     const project = await createProject({

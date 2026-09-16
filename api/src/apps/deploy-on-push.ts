@@ -39,6 +39,7 @@ import {
   setPublishedSha,
 } from "./deployment.service";
 import { ensureCommitLocally } from "./cloud-repo.service";
+import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
 
 const logger = loggers.api("apps-deploy-on-push");
 
@@ -67,20 +68,26 @@ async function changedApps(
   workspaceId: string,
   repoDir: string,
   before: string | undefined,
+  after: string,
 ): Promise<string[]> {
-  // The index describes main's current head, which is `after` for a push
-  // this instance just fetched (and anything newer is still what to deploy).
-  const now = await loadAppsIndex(workspaceId);
+  // Diff AT the delivery's own commits, never at "main's current head": two
+  // deliveries handled out of order (or a webhook that arrives after a later
+  // push was already fetched) would otherwise attribute the newer commit's
+  // changes to the older sha and deploy a rollback under a fresh event.
+  // The index is refreshed first so identities (stamped ids, moved folders)
+  // are the ones it currently knows.
+  await loadAppsIndex(workspaceId);
+  const now = await readIndexedAppsAt(workspaceId, repoDir, after);
   const range =
     before && /^[0-9a-f]{40}$/.test(before) && !/^0+$/.test(before)
       ? before
       : // First push, or a force-push we cannot diff against: treat every app
         // as changed rather than silently deploying none.
         null;
-  if (!range) return now.apps.map(a => a.appId);
+  if (!range) return now.map(a => a.appId);
 
-  // The same identity rules at `before` as the index applied at `after`, so
-  // a moved app matches itself across the two commits.
+  // The same identity rules at `before` as at `after`, so a moved app
+  // matches itself across the two commits.
   const oidBefore = new Map(
     (await readIndexedAppsAt(workspaceId, repoDir, range)).map(a => [
       a.appId,
@@ -88,14 +95,32 @@ async function changedApps(
     ]),
   );
   const changed = new Set<string>();
-  for (const app of now.apps) {
+  for (const app of now) {
     if (oidBefore.get(app.appId) !== app.treeOid) changed.add(app.appId);
   }
   // Gone: present before, absent now.
   for (const id of oidBefore.keys()) {
-    if (!now.apps.some(a => a.appId === id)) changed.add(id);
+    if (!now.some(a => a.appId === id)) changed.add(id);
   }
   return [...changed];
+}
+
+/** Is `ancestor` reachable from `descendant`? False when either is unknown. */
+async function isAncestor(
+  repoDir: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  return runGit([
+    "-C",
+    repoDir,
+    "merge-base",
+    "--is-ancestor",
+    ancestor,
+    descendant,
+  ])
+    .then(() => true)
+    .catch(() => false);
 }
 
 /**
@@ -159,7 +184,7 @@ export async function deployOneApp(
 ): Promise<{
   app: string;
   sha: string;
-  outcome: "built" | "already-built" | "gone";
+  outcome: "built" | "already-built" | "gone" | "superseded";
 }> {
   // Inngest can run on a different instance from the webhook or manual tool
   // that enqueued this sha. Make sure THIS commit is here — a no-op when it
@@ -169,19 +194,57 @@ export async function deployOneApp(
   await ensureCommitLocally(workspaceId, sha);
   const discovered = await resolveProjectRef(workspaceId, appRef);
   if (!discovered) return { app: appRef, sha, outcome: "gone" };
-  const appPath = appRootFor(discovered);
+  const repoDir = await repoForWorkspace(workspaceId);
+  // The commit itself must be here before anything below reads the tree at
+  // it: a missing commit is a fetch problem to retry, never "the app is
+  // gone" (which would unpublish a live app over a stale mirror).
+  await runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`]);
+  // A delivery that arrives AFTER a newer commit of this app already went
+  // live must not roll it back: Inngest's singleton cancels older runs when
+  // a newer event arrives, but not the other way round.
+  if (
+    discovered.publishedSha &&
+    discovered.publishedSha !== sha &&
+    (await isAncestor(repoDir, sha, discovered.publishedSha))
+  ) {
+    return { app: appRef, sha, outcome: "superseded" };
+  }
+  // Where the app's folder sat AT this commit — not where main has it now. A
+  // folder moved by a later push still exists at `sha` under its old path,
+  // and must be built from there rather than read as deleted.
+  const appId = discovered._id.toString();
+  const atSha = await readIndexedAppsAt(workspaceId, repoDir, sha);
+  const appPath = atSha.find(a => a.appId === appId)?.path;
+  // Moved since this commit: the sandbox checkout is keyed by the CURRENT
+  // path, so a build at `sha` would run in a directory that does not exist
+  // there. The content is the same tree (a move changes no oid), so deploy
+  // main's head under the new path instead and let this delivery go.
+  if (appPath && appPath !== appRootFor(discovered)) {
+    const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+    if (head && head !== sha) {
+      const { requestAppDeploys } = await import(
+        "../inngest/functions/apps-deploy"
+      );
+      await requestAppDeploys(workspaceId, [appId], head, "push");
+    }
+    return { app: appRef, sha, outcome: "superseded" };
+  }
   // The folder may have been deleted in this very push. A row that survived
   // its folder (auto-deploy created it) must be UNPUBLISHED, not built: the
   // build would fail on a missing cwd, Inngest would retry it, and the
   // hourly reconcile — seeing publishedSha != head and the folder "changed"
-  // (deleted) — would re-enqueue the same failure forever.
-  const repoDir = await repoForWorkspace(workspaceId);
-  if (!(await appFolderExistsAt(repoDir, appPath, sha))) {
-    if (discovered.publishedSha) {
+  // (deleted) — would re-enqueue the same failure forever. Absent at `sha`
+  // but present on main's current head means a newer push brought it back
+  // (or moved it): that push's own event is the one that deploys it.
+  if (!appPath || !(await appFolderExistsAt(repoDir, appPath, sha))) {
+    const stillOnMain = (await loadAppsIndex(workspaceId)).apps.some(
+      a => a.appId === appId,
+    );
+    if (discovered.publishedSha && !stillOnMain) {
       await clearPublishedSha(discovered);
       logger.info("Unpublished app whose folder left main", {
         workspaceId,
-        app: appPath,
+        app: appRootFor(discovered),
         sha,
       });
     }
@@ -250,7 +313,8 @@ export async function deployAppsForPush(input: {
   after: string;
 }): Promise<string[]> {
   const { workspaceId, repoDir, before, after } = input;
-  const appIds = await changedApps(workspaceId, repoDir, before);
+  await ensureCommitLocally(workspaceId, after);
+  const appIds = await changedApps(workspaceId, repoDir, before, after);
   if (appIds.length === 0) return [];
   const { requestAppDeploys } = await import(
     "../inngest/functions/apps-deploy"

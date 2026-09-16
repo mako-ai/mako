@@ -34,7 +34,10 @@ export interface AppRepoLocation {
   slug: string;
 }
 
-const SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]*$/;
+// Unicode letters and digits: `apps/café` is a folder people already have,
+// and dropping it from discovery left it published but unlisted. Slashes,
+// control characters and leading dots stay out.
+const SEGMENT_RE = /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u;
 const USER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 /** A folder or app name git and every URL are happy with. */

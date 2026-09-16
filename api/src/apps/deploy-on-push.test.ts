@@ -27,6 +27,9 @@ vi.mock("./cloud-repo.service", () => ({
 vi.mock("./git", () => ({
   runGit: vi.fn(async (args: string[]) => {
     const spec = args[args.length - 1];
+    // `merge-base --is-ancestor <sha> <publishedSha>`: never an ancestor
+    // here — every test deploys a commit newer than what is published.
+    if (args.includes("merge-base")) throw new Error("not an ancestor");
     if (spec.endsWith("^{commit}")) {
       if (!state.commitPresent) throw new Error("fatal: Not a valid object");
       return { stdout: "", stderr: "" };
@@ -60,6 +63,18 @@ vi.mock("./worktree.service", () => ({
 vi.mock("./app-index.service", () => ({
   assignAppIds: vi.fn(() => new Map()),
   loadAppsIndex: vi.fn(async () => ({ sha: "", apps: [], folders: [] })),
+  // The app's folder at the deployed commit: present, or gone.
+  readIndexedAppsAt: vi.fn(async () =>
+    state.folderPresent
+      ? [
+          {
+            appId: "6a9411eb4c8b33609a65e665",
+            path: "apps/sales",
+            treeOid: "t",
+          },
+        ]
+      : [],
+  ),
   readAppsAt: vi.fn(async () => ({
     apps: [],
     folders: [],

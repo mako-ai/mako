@@ -14,7 +14,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loggers } from "../logging";
 import { appsReposRoot } from "../apps/config";
-import { APP_SDK_DIR, appSdkFiles } from "../apps/app-sdk-package";
+import {
+  APP_SDK_DEPENDENCY,
+  APP_SDK_DIR,
+  appSdkFiles,
+} from "../apps/app-sdk-package";
 import { commitFilesOnBranch } from "../apps/worktree.service";
 import { resolveCommit } from "../apps/repository.service";
 import { queueMirrorPush } from "../apps/cloud-repo.service";
@@ -85,7 +89,7 @@ export async function up(_db: Db): Promise<void> {
         if (pkg.dependencies?.["@mako/app-sdk"]) continue;
         pkg.dependencies = {
           ...(pkg.dependencies ?? {}),
-          "@makoai/app-sdk": "file:../../packages/app-sdk",
+          ...APP_SDK_DEPENDENCY,
         };
         writes[pkgPath] = `${JSON.stringify(pkg, null, 2)}\n`;
       }

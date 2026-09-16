@@ -88,6 +88,33 @@ describe("buildStarredSection", () => {
     ).toEqual([]);
   });
 
+  it("never renders an item whose ref is not an entity of this kind (a folder starred by mistake)", () => {
+    // The explorers refuse to star a tree folder; if one ever slipped into
+    // the rows (an older client), the section must not show a ghost row.
+    const withFolderRef: Favourite[] = [
+      ...rows,
+      {
+        id: "i9",
+        parentId: null,
+        type: "item",
+        kind: "app",
+        refId: "__folder__apps/Sales",
+        position: 9,
+      },
+    ];
+    // An explorer's resolver only knows its own entities, so a folder id
+    // resolves to nothing and the row is dropped.
+    const known = new Set(["a1", "a2"]);
+    const strict = (refId: string) =>
+      known.has(refId) ? resolve(refId) : undefined;
+    const [section] = buildStarredSection(withFolderRef, "app", strict);
+    expect(JSON.stringify(section.nodes)).not.toContain("__folder__");
+    expect(section.nodes.map(n => n.id)).toEqual([
+      starredRowId("a1"),
+      starredFolderId("f1"),
+    ]);
+  });
+
   it("tells pinned rows and folders from real ones", () => {
     expect(entityIdFromStarredRow(starredRowId("a1"))).toBe("a1");
     expect(entityIdFromStarredRow("a1")).toBeNull();

@@ -3286,10 +3286,12 @@ tree is theirs alone.
 
 Deploy-on-push decides "changed" by the app folder's **git tree oid** by app
 id, not by which paths a diff lists (`changedApps` discovers apps at
-`before` with the same identity rules): a moved app has the same tree and is
-not rebuilt; a vanished one is unpublished. The hourly reconcile compares
-tree oids at `publishedSha` vs head. Inngest deploy events carry `appId`
-(`slug` still resolves for events in flight).
+`before` AND `after` with the same identity rules): a moved app has the same
+tree and is not rebuilt; a vanished one is unpublished. One exception: the
+FIRST server-side move of a legacy app stamps its manifest, which changes the
+tree oid, so each of the 68 pre-id apps rebuilds once. The hourly reconcile
+compares tree oids at `publishedSha` vs head. Inngest deploy events carry
+`appId`; the singleton key is `workspaceId + '/' + appId` (CEL — no `??`).
 
 ### 29.4 Favourites
 
@@ -3316,9 +3318,6 @@ workspace repo's apps were switched in one commit (imports renamed from
 
 ### 29.6 Not done here
 
-- Dev-server sockets and the `runningDevApps` signal key on the app's folder
-  BASENAME (`appSlug(handle)`); two nested apps sharing a basename in one
-  box would collide. Key them by app id when it bites.
 - Consoles keep their own `SavedConsole` index and `ConsoleFolder` rows; the
   generic `repo_entities` table that would fold consoles, notebooks and apps
   into one catalog is the Postgres-era follow-up.
@@ -3328,3 +3327,78 @@ workspace repo's apps were switched in one commit (imports renamed from
   discovery, identity, moves, duplicates, folders, scaffold-in-folder),
   `favourites.service.test.ts`, `apps-explorer-tree.test.ts`,
   `starred-section.test.ts`, `favouritesStore.test.ts`.
+
+### 29.7 What the review changed (2026-09-16)
+
+Twenty-three confirmed findings from the deep review of #1005, all fixed on
+the branch. The ones that change how the design works:
+
+- **Identity across a laptop `git mv` of an UNSTAMPED app.** A manifest
+  without an id leaves no trace of identity in git, so a rename from a
+  checkout used to read as a delete plus a new app (deployment unpublished,
+  share link dead, env vars orphaned). `assignAppIds` gained a tier: an
+  unstamped app whose folder vanished is matched by its **tree oid**
+  (`treeIncumbentsOf`) to the app at the new path, consumed once so a copy
+  never inherits it. `readIndexedAppsAt` applies the same rule at older
+  commits, so deploy-on-push sees a move as unchanged.
+- **The index never rebuilds backwards.** On Cloud Run the instance that took
+  a push has the commit before the others fetch it (≤ `FRESHEN_INTERVAL_MS`).
+  An instance whose local main is an ancestor of the indexed sha serves the
+  rows as they are instead of overwriting them with its stale tree (which
+  also flipped a just-moved app's project path back).
+- **Project rows move in two phases.** `(workspaceId, path)` is a unique
+  PARTIAL index (`path` present), not sparse — a compound sparse index still
+  indexes rows whose `path` is missing, so two rows mid-swap collided on
+  `null`. The sync unsets the moving rows' paths first, then sets them; two
+  stamped apps that swap folders in one commit now sync. A state row whose
+  path a different id claims (a stamped manifest landed on a legacy row's
+  folder) gives the path up rather than blocking `ensureProjectRow` forever.
+- **Visibility follows the tree.** Filing a row-backed app into a personal
+  tree sets `access: private, owner_id`; filing it back into `apps/` sets
+  `access: workspace`. Both the server move and the sync's "row follows the
+  folder" do it, so a "personal" app is never still readable by everyone.
+- **One authorization rule set** (`app-authorization.ts`): the routes, the
+  agent tools and the ChatGPT connector share `authorizeFolderTarget` /
+  `authorizeAppMove`. An actor with NO role (an API key whose creator left)
+  is refused everywhere, not only where the check happened to be
+  `role !== "viewer"`. The connector's search and fetch filter personal
+  trees by the acting user like every other reader.
+- **Deploy-on-push diffs at the delivery's own commits** (`before`→`after`,
+  never "main's current head"), skips a delivery whose sha is an ancestor of
+  what is already published (`superseded`), resolves the app's path AT the
+  deployed sha, and, when the app has moved since, re-enqueues main's head
+  under the new path instead of building in a directory that does not exist
+  there. Absent at `sha` but present on main is not "gone".
+- **The binding scheduler refreshes the index** for every workspace with a
+  published app before reading schedules — the index is built on reads and
+  pushes, and a workspace nobody opens would otherwise silently stop.
+- **Dev servers are keyed by app id** in the box: launcher, log, socket,
+  staged data, the port registry and the agent's reports all use
+  `appSlug(handle)` = the app's id (basenames are not unique once apps nest).
+  The launcher records its app directory in `/tmp/mako-dev-<id>.dir` so the
+  agent can still reap servers of deleted apps; the client matches a
+  dev-server entry by id or basename (legacy boxes).
+- **Ambiguous slugs resolve to nothing** in `resolveProjectRef` too: the
+  row-lookup fallback runs only when the index knows no app by that slug.
+- **A live box that predates a move** pulls main once before reads; if the
+  folder is still missing, reads fall back to the repo at main.
+- Folder names are Unicode (`apps/café` is listed again); the client's app
+  deep-link pattern and URL builder encode/decode the segment.
+- Starring an already-starred item INTO a folder moves it there
+  (`addFavourite` with `parentId`); the client's toggle refetches on failure
+  instead of restoring a snapshot; Notebooks/Dashboards drops of a folder on
+  Starred are refused.
+- The explorer shows "Shared with me" again (personal-tree apps another user
+  shared with you); rename/delete are wired for app rows and off for file
+  rows; the client resolves `/apps/<ref>` with the server's rules.
+- CI fails when `packages/app-sdk`'s version is not on npm (scaffolds pin
+  `^<that version>`).
+
+**Previews cannot verify the write paths.** The preview job does not set
+`APPS_REQUIRE_CONNECTED_REPO`, so `commitOnMainDurably` commits only to that
+instance's local clone (no mirror push); a later request served by another
+instance rebuilds the index from an older main and reports the folder "not
+on main". Reads, favourites and the explorer are testable there; moves and
+folders are proven by `app-index.service.test.ts`. And the preview's bound
+repo is the REAL workspace repo, so a Workspace-tree move from a preview
+would make prod unpublish that app — test moves in a personal tree only.

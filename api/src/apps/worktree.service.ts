@@ -110,6 +110,7 @@ import {
   APPS_DIR,
   FOLDER_KEEP_FILE,
   appRepoPath,
+  parseAppRepoPath,
   appTreeRoot,
   isSafeSegment,
   parseAppFolderPath,
@@ -1139,11 +1140,23 @@ export async function moveProject(
     },
   );
   // The sync above relocated the row; keep the caller's copy honest too.
+  // Visibility follows the tree: filed into a personal tree, the app is that
+  // person's (private, theirs); filed back into the workspace tree, it is
+  // workspace content again — a row-backed app must not keep the visibility
+  // of the tree it left, or a "personal" app stays readable by everyone.
+  const fromScope = parseAppRepoPath(from)?.scope;
+  const visibility: Partial<IAppProject> =
+    target.scope === "private"
+      ? { access: "private", owner_id: target.ownerId }
+      : fromScope === "private"
+        ? { access: "workspace" }
+        : {};
   project.path = to;
   project.slug = slug;
+  Object.assign(project, visibility);
   await AppProject.updateOne(
     { _id: project._id, workspaceId: project.workspaceId },
-    { $set: { path: to, slug } },
+    { $set: { path: to, slug, ...visibility } },
   );
   pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
   return { from, to };
@@ -1576,6 +1589,17 @@ async function readSource(
     .catch(() => false);
   if (live && (await boxHasRepo(ctx).catch(() => false))) {
     await syncBranchFromBox(handle);
+    // The box's checkout may predate a move of this app (or its creation
+    // by another actor): its folder is not where the row now says. Pull
+    // main once; if the folder is still missing, read the repo at main
+    // rather than show an app with no files.
+    if (!(await boxPathExists(ctx, handle.appRoot))) {
+      await boxPull(ctx).catch(() => undefined);
+      lastPull.set(ctx.sessionKey, Date.now());
+      if (!(await boxPathExists(ctx, handle.appRoot))) {
+        return { kind: "repo", repoDir, ref: branchRef };
+      }
+    }
     return { kind: "box", ctx, handle };
   }
 
@@ -1588,6 +1612,23 @@ async function readSource(
     return { kind: "repo", repoDir, ref: actorRef };
   }
   return { kind: "repo", repoDir, ref: branchRef };
+}
+
+/** Whether `relPath` exists in the box's working copy. */
+async function boxPathExists(
+  ctx: SandboxExecContext,
+  relPath: string,
+): Promise<boolean> {
+  const result = await getSandboxProvider()
+    .exec(
+      ctx,
+      `test -e ${sh(`${boxRoot(ctx)}/${relPath}`)} && echo yes || echo no`,
+      {
+        timeoutMs: 15_000,
+      },
+    )
+    .catch(() => null);
+  return result?.stdout.trim() === "yes";
 }
 
 /** Whether `path` exists at `ref` (a file or a directory). */
@@ -2858,8 +2899,16 @@ export async function resolveProjectRef(
     });
   }
   const stripped = clean.replace(/^apps\//, "");
-  return (
-    (await AppProject.findOne({ path: clean, workspaceId: ws })) ??
-    (await AppProject.findOne({ slug: stripped, workspaceId: ws }))
-  );
+  const byPath = await AppProject.findOne({ path: clean, workspaceId: ws });
+  if (byPath) return byPath;
+  // A bare slug the index knows but refused to pick (several nested apps
+  // share the name, none at the top level) must stay unresolved: slugs are
+  // no longer unique per workspace, and "whichever row Mongo returns first"
+  // would edit, publish or serve bindings for the wrong app. The row lookup
+  // is only for an app that has state but no folder on main any more.
+  if (clean === stripped || clean.startsWith("apps/")) {
+    const snapshot = await loadAppsIndex(workspaceId, { freshen: false });
+    if (snapshot.apps.some(a => a.slug === stripped)) return null;
+  }
+  return AppProject.findOne({ slug: stripped, workspaceId: ws });
 }

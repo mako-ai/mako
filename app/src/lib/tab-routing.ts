@@ -40,9 +40,12 @@ export const TAB_DEEP_LINK_PATTERNS = {
   dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
   "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
-  // Apps live at /apps/:slug (the folder name in the workspace repo).
-  app: /^\/apps\/([a-zA-Z0-9-]+)\/?$/,
-  "app-file": /^\/apps\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
+  // Apps live at /apps/:slug (the folder name in the workspace repo) or
+  // /apps/:id (nested apps). Folder names are Unicode, so the segment is
+  // "anything but a slash", percent-encoded on the way out and decoded by
+  // the consumer.
+  app: /^\/apps\/([^/?#]+)\/?$/,
+  "app-file": /^\/apps\/([^/?#]+)\/file\/(.+)$/,
   "app-diff": null,
   "console-diff": null,
   "repo-diff": null,
@@ -117,7 +120,7 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
             ? search
             : `?${search}`
           : "";
-      return ref ? `/apps/${ref}${query}` : null;
+      return ref ? `/apps/${encodeURIComponent(ref)}${query}` : null;
     }
     case "app-file": {
       const appId = tab.metadata?.appId as string | undefined;
@@ -125,7 +128,7 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const ref = slug || appId;
       const path = tab.metadata?.path as string | undefined;
       return ref && path
-        ? `/apps/${ref}/file/${encodePathSegments(path)}`
+        ? `/apps/${encodeURIComponent(ref)}/file/${encodePathSegments(path)}`
         : null;
     }
     case "app-diff":
