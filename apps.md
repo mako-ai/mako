@@ -3401,7 +3401,9 @@ A second review pass on the fixed branch confirmed ten more, also fixed:
   previously indexed commit and the new one), where neither the path nor
   the tree oid could.
 - The no-rebuild-backwards guard also covers an indexed commit this clone
-  has never seen: fetch once, and if it is still unknown, serve the rows.
+  has never seen: fetch it from the mirror first, then compare. A commit
+  that is not on the mirror either was never durable (a re-bound repo, a
+  wiped preview clone), so the index is rebuilt from local main.
 - Move writes (id stamps, and a pre-npm `file:` SDK dependency rewritten to
   the registry package) are computed AFTER the pre-commit freshen, so a
   laptop's manifest edit is never overwritten by a stale copy; the source

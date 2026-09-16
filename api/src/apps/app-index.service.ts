@@ -583,16 +583,19 @@ async function syncNow(
     // overwrite the rows — and flip a just-moved app's project path back —
     // with what its stale clone says. Serve what the index has instead.
     // An indexed commit this clone has never seen is the same case, only
-    // earlier: fetch once, and if it is still unknown, serve the rows.
+    // earlier: fetch it from the mirror first. A commit that is not even on
+    // the mirror after that was never durable (a re-bound repo, a wiped
+    // preview clone): the rows describe history nobody has, so rebuild.
     let headKnown = await commitExists(repoDir, head.sha);
     if (!headKnown) {
       await freshenForServe(workspaceId, 0).catch(() => undefined);
       headKnown = await commitExists(repoDir, head.sha);
     }
-    const localSha = headKnown ? await resolveCommit(repoDir, MAIN) : sha;
+    const localSha = headKnown ? await resolveCommit(repoDir, MAIN) : null;
     if (
-      !headKnown ||
-      (localSha && (await isAncestor(repoDir, localSha, head.sha)))
+      headKnown &&
+      localSha &&
+      (await isAncestor(repoDir, localSha, head.sha))
     ) {
       const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
       return {
