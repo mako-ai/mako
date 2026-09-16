@@ -3431,6 +3431,17 @@ A second review pass on the fixed branch confirmed ten more, also fixed:
   `useStarredTree` hook); the folder name validator matches the server's
   Unicode rule.
 
+Found on a real box while verifying the above, and fixed too: on an agent
+upgrade the installer killed only the process the pid file named, so a box
+resumed from before the pid file existed kept its OLD agent running beside
+the new one — and the old code reaped every id-keyed dev server as a ghost
+within a minute of its start. `installBoxAgent` now stops every running
+`node /tmp/mako-box-agent.mjs` on a version change. Verified on the
+preview: Start dev attaches the `dev-<id>` terminal to the running vite
+session, the sidebar dot and the running list are keyed by id, a fresh API
+instance rediscovers the session, and Stop dev kills the process, frees the
+registry slot and removes the socket.
+
 **Previews cannot verify the write paths.** The preview job does not set
 `APPS_REQUIRE_CONNECTED_REPO`, so `commitOnMainDurably` commits only to that
 instance's local clone (no mirror push); a later request served by another
