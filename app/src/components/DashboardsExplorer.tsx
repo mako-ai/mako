@@ -1,8 +1,10 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   Box,
   Chip,
   IconButton,
+  ListItemIcon,
+  MenuItem,
   Stack,
   Typography,
   Tooltip,
@@ -16,7 +18,24 @@ import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
   Database as DataSourceIcon,
+  Star as StarIcon,
 } from "lucide-react";
+import {
+  selectFavourites,
+  starredRefs,
+  useFavouritesStore,
+} from "../store/favouritesStore";
+import StarToggle from "./starred/StarToggle";
+import {
+  buildStarredSection,
+  entityIdFromStarredRow,
+  favouriteIdFromFolderRow,
+  flattenLeafRows,
+  isStarredRow,
+  realEntityId,
+} from "./starred/starred-section";
+import AccessIcon from "./AccessIcon";
+import { resolveAccessState } from "./access-state";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -96,6 +115,49 @@ export function DashboardsExplorer() {
     isFolder: (id, isDirectory) => isDirectory && !isDashboardEntryId(id),
   });
   const { loading, fetchTree } = tree;
+
+  // Starred dashboards: a star is a SHORTCUT, not a move — dashboards keep
+  // their real shared folders below and are also pinned on top, in this
+  // person's own favourites folders.
+  const favourites = useFavouritesStore(selectFavourites(workspaceId));
+  const fetchFavourites = useFavouritesStore(s => s.fetch);
+  const toggleFavourite = useFavouritesStore(s => s.toggle);
+  const moveFavourite = useFavouritesStore(s => s.move);
+  const createFavouriteFolder = useFavouritesStore(s => s.createFolder);
+  const renameFavourite = useFavouritesStore(s => s.rename);
+  const removeFavourite = useFavouritesStore(s => s.remove);
+  const starred = useMemo(
+    () => starredRefs(favourites, "dashboard"),
+    [favourites],
+  );
+  useEffect(() => {
+    if (workspaceId) void fetchFavourites(workspaceId);
+  }, [workspaceId, fetchFavourites]);
+  const handleToggleStar = useCallback(
+    (dashboardId: string) => {
+      if (!workspaceId) return;
+      void toggleFavourite(
+        workspaceId,
+        "dashboard",
+        dashboardId,
+        !starred.has(dashboardId),
+      );
+    },
+    [workspaceId, toggleFavourite, starred],
+  );
+  /**
+   * Every dashboard in the tree, from the RAW store entries — a dashboard is
+   * a leaf there; `withDataSourceNodes` turns it into a directory later.
+   */
+  const allDashboards = useMemo(
+    () =>
+      flattenLeafRows([
+        ...(tree.myItems as ResourceTreeNode[]),
+        ...(tree.workspaceItems as ResourceTreeNode[]),
+      ]),
+    [tree.myItems, tree.workspaceItems],
+  );
+
   const createDashboard = useDashboardStore(s => s.createDashboard);
   const duplicateDashboard = useDashboardStore(s => s.duplicateDashboard);
   const openDashboard = useDashboardStore(s => s.openDashboard);
@@ -148,8 +210,9 @@ export function DashboardsExplorer() {
       return;
     }
     if (node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)) return;
-
-    focusDashboardTab(node.id, node.name);
+    if (favouriteIdFromFolderRow(node.id)) return;
+    // A pinned row points at the same dashboard as its real row below.
+    focusDashboardTab(realEntityId(node.id), node.name);
   }, []);
 
   const handleDuplicate = useCallback(
@@ -172,6 +235,9 @@ export function DashboardsExplorer() {
       ) {
         return false;
       }
+      // Rows under Starred are this person's own: always theirs to manage.
+      // (Pinned rows keep a real icon and stay draggable this way, too.)
+      if (isStarredRow(node.id)) return true;
       if (isAdmin) return true;
       if (node.owner_id === user?.id) return true;
       return false;
@@ -187,20 +253,35 @@ export function DashboardsExplorer() {
     setInfoTarget(node);
   }, []);
 
-  const getItemIcon = useCallback((node: ResourceTreeNode) => {
-    // Data source leaves keep their database glyph.
-    if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
-      return <DataSourceIcon size={16} strokeWidth={1.5} />;
-    }
-    // Dashboards carry a dashboard glyph. Folders (both real folders and the
-    // synthetic "Data sources" folder) show no icon — matching the consoles
-    // explorer, where only leaves carry icons. Returning null lets ResourceTree
-    // collapse the icon column so the label sits right after the chevron.
-    if (node.entityType === "dashboard") {
-      return <DashboardIcon size={20} strokeWidth={1.5} />;
-    }
-    return null;
-  }, []);
+  const getItemIcon = useCallback(
+    (node: ResourceTreeNode) => {
+      // Data source leaves keep their database glyph.
+      if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
+        return <DataSourceIcon size={16} strokeWidth={1.5} />;
+      }
+      // Dashboards carry a dashboard glyph. Folders (both real folders and the
+      // synthetic "Data sources" folder) show no icon — matching the consoles
+      // explorer, where only leaves carry icons. Returning null lets ResourceTree
+      // collapse the icon column so the label sits right after the chevron.
+      if (node.entityType === "dashboard") {
+        // Only a PINNED row under Starred carries the access overlay: it has
+        // left the section that would otherwise say who can see it.
+        if (entityIdFromStarredRow(node.id)) {
+          return (
+            <AccessIcon
+              Glyph={DashboardIcon}
+              state={resolveAccessState(node, user?.id)}
+              kindLabel="Dashboard"
+              size={20}
+            />
+          );
+        }
+        return <DashboardIcon size={20} strokeWidth={1.5} />;
+      }
+      return null;
+    },
+    [user?.id],
+  );
 
   const withDataSourceNodes = useCallback(
     (nodes: ResourceTreeNode[]): ResourceTreeNode[] =>
@@ -267,9 +348,181 @@ export function DashboardsExplorer() {
     [workspaceId, openDashboard, openDashboards, loadingDashboards],
   );
 
-  const sectionsDef = useMemo(
-    () => tree.sections({ my: "My Dashboards" }, withDataSourceNodes),
-    [tree, withDataSourceNodes],
+  const sectionsDef = useMemo(() => {
+    const byId = new Map(allDashboards.map(d => [d.id, d]));
+    return [
+      ...buildStarredSection(
+        favourites,
+        "dashboard",
+        refId => {
+          const node = byId.get(refId);
+          // Raw entries carry no entityType; the pinned row needs the one
+          // getItemIcon looks for. A pinned row is a leaf: the real row
+          // below owns the data-source children.
+          return node
+            ? {
+                name: node.name,
+                path: node.path,
+                entityType: "dashboard",
+                access: node.access,
+                owner_id: node.owner_id,
+              }
+            : undefined;
+        },
+        { droppable: true },
+      ),
+      ...tree.sections({ my: "My Dashboards" }, withDataSourceNodes),
+    ];
+  }, [favourites, allDashboards, tree, withDataSourceNodes]);
+
+  /**
+   * Rows under Starred are views, not rows the dashboard tree owns: their
+   * moves, renames and deletes go to the favourites store.
+   */
+  const treeHandlers = useMemo(() => {
+    const { onMoveItem, onMoveFolder, onRenameItem, onDeleteItem, ...rest } =
+      tree.treeHandlers;
+    const moveStarred = (id: string, targetId: string | null) => {
+      if (!workspaceId) return;
+      const targetFav = targetId ? favouriteIdFromFolderRow(targetId) : null;
+      const pinnedTarget = targetId ? entityIdFromStarredRow(targetId) : null;
+      if (targetId && targetFav === null && pinnedTarget === null) return;
+      const dest =
+        targetFav ??
+        (pinnedTarget
+          ? (favourites.find(f => f.refId === pinnedTarget)?.parentId ?? null)
+          : null);
+      const pinned = entityIdFromStarredRow(id);
+      const favId = pinned
+        ? favourites.find(f => f.kind === "dashboard" && f.refId === pinned)?.id
+        : favouriteIdFromFolderRow(id);
+      if (favId) void moveFavourite(workspaceId, favId, dest);
+    };
+    return {
+      ...rest,
+      onMoveItem: (id: string, folderId: string | null, access?: string) => {
+        if (isStarredRow(id)) moveStarred(id, folderId);
+        else if (folderId && isStarredRow(folderId)) {
+          const fav = favouriteIdFromFolderRow(folderId);
+          if (workspaceId) {
+            void toggleFavourite(workspaceId, "dashboard", id, true, fav);
+          }
+        } else onMoveItem(id, folderId, access);
+      },
+      onMoveFolder: (id: string, parentId: string | null, access?: string) => {
+        if (isStarredRow(id)) moveStarred(id, parentId);
+        else if (parentId && isStarredRow(parentId)) {
+          // A dashboard row is a directory (its data sources): starring it.
+          if (isDashboardEntryId(id)) {
+            const fav = favouriteIdFromFolderRow(parentId);
+            if (workspaceId) {
+              void toggleFavourite(workspaceId, "dashboard", id, true, fav);
+            }
+          }
+        } else onMoveFolder(id, parentId, access);
+      },
+      onRenameItem: (id: string, name: string, isDirectory: boolean) => {
+        const fav = favouriteIdFromFolderRow(id);
+        if (fav) {
+          if (workspaceId) void renameFavourite(workspaceId, fav, name);
+        } else if (!isStarredRow(id)) onRenameItem(id, name, isDirectory);
+      },
+      onDeleteItem: (node: ResourceTreeNode) => {
+        const pinned = entityIdFromStarredRow(node.id);
+        const fav = favouriteIdFromFolderRow(node.id);
+        if (pinned) handleToggleStar(pinned);
+        else if (fav) {
+          if (workspaceId) void removeFavourite(workspaceId, fav);
+        } else onDeleteItem(node);
+      },
+      onCreateFolder: async (parentId: string | null, access?: string) => {
+        const fav = parentId ? favouriteIdFromFolderRow(parentId) : null;
+        if (!parentId || fav === null) {
+          return tree.treeHandlers.onCreateFolder(parentId, access);
+        }
+        if (!workspaceId) return null;
+        const row = await createFavouriteFolder(workspaceId, "New folder", fav);
+        return row
+          ? { id: `__starfolder__${row.id}`, name: row.title ?? "" }
+          : null;
+      },
+    };
+  }, [
+    tree.treeHandlers,
+    workspaceId,
+    favourites,
+    moveFavourite,
+    toggleFavourite,
+    renameFavourite,
+    removeFavourite,
+    handleToggleStar,
+    createFavouriteFolder,
+    isDashboardEntryId,
+  ]);
+
+  const handleSectionDrop = useCallback(
+    (sectionKey: string, nodeId: string): boolean => {
+      if (sectionKey !== "starred" || !workspaceId) return false;
+      const pinned = entityIdFromStarredRow(nodeId);
+      const fav = favouriteIdFromFolderRow(nodeId);
+      if (fav) void moveFavourite(workspaceId, fav, null);
+      else if (pinned) {
+        const row = favourites.find(
+          f => f.kind === "dashboard" && f.refId === pinned,
+        );
+        if (row) void moveFavourite(workspaceId, row.id, null);
+      } else if (isDashboardEntryId(nodeId)) {
+        void toggleFavourite(workspaceId, "dashboard", nodeId, true, null);
+      }
+      return true;
+    },
+    [
+      workspaceId,
+      favourites,
+      moveFavourite,
+      toggleFavourite,
+      isDashboardEntryId,
+    ],
+  );
+
+  const getContextMenuItems = useCallback(
+    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
+      const pinnedId = entityIdFromStarredRow(node.id);
+      // Only pinned rows get a bespoke menu; every other row keeps the
+      // tree's own rename/duplicate/move/info/delete entries.
+      if (!pinnedId) return null;
+      return [
+        <MenuItem
+          key="unstar"
+          onClick={() => {
+            helpers.closeMenu();
+            handleToggleStar(pinnedId);
+          }}
+        >
+          <ListItemIcon>
+            <StarIcon size={16} fill="currentColor" />
+          </ListItemIcon>
+          Unstar
+        </MenuItem>,
+      ];
+    },
+    [handleToggleStar],
+  );
+
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      const pinnedId = entityIdFromStarredRow(node.id);
+      const dashboardId =
+        pinnedId ?? (node.entityType === "dashboard" ? node.id : null);
+      if (!dashboardId) return null;
+      return (
+        <StarToggle
+          starred={starred.has(dashboardId)}
+          onToggle={() => handleToggleStar(dashboardId)}
+        />
+      );
+    },
+    [starred, handleToggleStar],
   );
 
   const folderOnlyNodes = useCallback(function onlyFolders(
@@ -347,7 +600,10 @@ export function DashboardsExplorer() {
             shouldFolderClickActivate={node => node.entityType === "dashboard"}
             onLoadChildren={handleLoadChildren}
             isLoadingChildren={node => !!loadingDashboards[node.id]}
-            {...tree.treeHandlers}
+            {...treeHandlers}
+            onSectionDrop={handleSectionDrop}
+            getContextMenuItems={getContextMenuItems}
+            getRightAdornment={getRightAdornment}
             onDuplicateItem={handleDuplicate}
             enableMove
             enableInfo

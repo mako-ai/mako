@@ -5338,10 +5338,18 @@ export interface IAppProject extends Document {
   workspaceId: Types.ObjectId;
   title: string;
   /**
-   * Folder name under `apps/` in the workspace repo (§10 monorepo). Kebab,
-   * immutable, unique per workspace. Optional only for pre-migration docs.
+   * The app's own folder name — the last segment of `path`, and its URL
+   * handle. Not unique per workspace any more: `apps/sales/report` and
+   * `users/<id>/apps/report` may coexist. Optional only for pre-migration docs.
    */
   slug?: string;
+  /**
+   * Repo-relative folder the app lives in (`apps/sales/report`,
+   * `users/<id>/apps/scratch`). Maintained by the apps index sync from the
+   * tree at main; a move in git updates it here. Absent on legacy rows until
+   * the backfill migration, where it is `apps/<slug>`.
+   */
+  path?: string;
   description?: string;
   /** Same Google-style ACL model as v1 apps (utils/resource-acl.ts). */
   access: "private" | "workspace";
@@ -5396,6 +5404,7 @@ const AppProjectSchema = new Schema<IAppProject>(
     },
     title: { type: String, required: true, trim: true },
     slug: { type: String, trim: true },
+    path: { type: String, trim: true },
     description: { type: String },
     access: {
       type: String,
@@ -5453,16 +5462,206 @@ AppProjectSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
 );
-// §10 monorepo: one folder per app in the workspace repo. Sparse until the
-// workspace-monorepo migration backfills slugs on legacy docs.
+// The folder is the identity's ADDRESS, not the identity (that is `_id`, which
+// the manifest carries). Two apps cannot share a path; two may share a slug
+// once folders nest, so the old unique slug index is dropped by the
+// app-folders migration and replaced by this one.
 AppProjectSchema.index(
-  { workspaceId: 1, slug: 1 },
+  { workspaceId: 1, path: 1 },
   { unique: true, sparse: true },
 );
+AppProjectSchema.index({ workspaceId: 1, slug: 1 });
 
 export const AppProject = mongoose.model<IAppProject>(
   "AppProject",
   AppProjectSchema,
+);
+
+// ---------------------------------------------------------------------------
+// Apps index — derived from the tree at main, rebuilt on every push
+// ---------------------------------------------------------------------------
+
+/**
+ * One row per app folder on `main`. Derived, disposable, rebuilt from git by
+ * `syncAppsIndexFromRepo`; nothing here is authoritative. Flat on purpose
+ * (string ids, no nested documents) so the Postgres move is a column copy.
+ * The sidebar, search, the agent's list and the binding scheduler read this
+ * instead of scanning the repo.
+ */
+export interface IAppIndexEntry extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  /** The app's identity (24 hex): manifest `id`, or derived from the path. */
+  appId: string;
+  /** Repo-relative folder: `apps/sales/report`, `users/<id>/apps/x`. */
+  path: string;
+  /** Last path segment — the URL handle. */
+  slug: string;
+  scope: "workspace" | "private";
+  /** Owner of the `users/<id>/apps` tree, for `private`. */
+  ownerId?: string;
+  /** git tree oid of the folder: equal ⇒ identical content ⇒ no rebuild. */
+  treeOid: string;
+  title: string;
+  description?: string;
+  /** Whether `mako.json` declares the id (false = derived from the path). */
+  hasManifestId: boolean;
+  /**
+   * Set when this folder declared an id another folder already holds — a
+   * copy that kept its source's manifest. The row is filed under a derived
+   * id instead and the UI offers to stamp a fresh one.
+   */
+  duplicateOf?: string;
+  /** Scheduled bindings, so the scheduler never opens the repo. */
+  schedules: Array<{ binding: string; cron: string; timezone?: string }>;
+  /** The main commit this row was built from. */
+  indexedSha: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    path: { type: String, required: true },
+    slug: { type: String, required: true },
+    scope: {
+      type: String,
+      enum: ["workspace", "private"],
+      required: true,
+    },
+    ownerId: { type: String },
+    treeOid: { type: String, required: true },
+    title: { type: String, required: true },
+    description: { type: String },
+    hasManifestId: { type: Boolean, required: true, default: false },
+    duplicateOf: { type: String },
+    schedules: {
+      type: [
+        new Schema(
+          {
+            binding: { type: String, required: true },
+            cron: { type: String, required: true },
+            timezone: { type: String },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    indexedSha: { type: String, required: true },
+  },
+  { collection: "app_index", timestamps: true },
+);
+
+AppIndexEntrySchema.index({ workspaceId: 1, appId: 1 }, { unique: true });
+AppIndexEntrySchema.index({ workspaceId: 1, path: 1 }, { unique: true });
+AppIndexEntrySchema.index({ workspaceId: 1, slug: 1 });
+
+export const AppIndexEntry = mongoose.model<IAppIndexEntry>(
+  "AppIndexEntry",
+  AppIndexEntrySchema,
+);
+
+/**
+ * Which commit of main a workspace's app index reflects, plus the folders
+ * that exist in its trees — including empty ones held by a `.gitkeep`, which
+ * no app row would otherwise reveal.
+ */
+export interface IAppIndexHead extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  sha: string;
+  /** Every folder in the app trees, as repo-relative paths (`apps/sales`). */
+  folders: string[];
+  updatedAt: Date;
+}
+
+const AppIndexHeadSchema = new Schema<IAppIndexHead>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+      unique: true,
+    },
+    sha: { type: String, required: true },
+    folders: { type: [String], default: [] },
+  },
+  { collection: "app_index_heads", timestamps: true },
+);
+
+export const AppIndexHead = mongoose.model<IAppIndexHead>(
+  "AppIndexHead",
+  AppIndexHeadSchema,
+);
+
+// ---------------------------------------------------------------------------
+// Favourites — one person's bookmark tree, never a location
+// ---------------------------------------------------------------------------
+
+export type FavouriteKind = "app" | "console" | "notebook" | "dashboard";
+
+/**
+ * Browser-bookmark shape (Firefox's `moz_bookmarks`): folders and items are
+ * rows in one self-referential table, so nesting, reordering and "move into
+ * folder" are each one update. An item points at an entity by kind + id and
+ * carries nothing of its own — a favourite that no longer resolves is simply
+ * not shown. Starring never moves the entity: the entity's place is its
+ * folder in git; this is a view over it.
+ */
+export interface IFavourite extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  userId: string;
+  /** Parent folder row, or null at the root. */
+  parentId: string | null;
+  type: "folder" | "item";
+  /** Folders only. */
+  title?: string;
+  /** Items only. */
+  kind?: FavouriteKind;
+  refId?: string;
+  /** Order among siblings. */
+  position: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const FavouriteSchema = new Schema<IFavourite>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    parentId: { type: String, default: null },
+    type: { type: String, enum: ["folder", "item"], required: true },
+    title: { type: String, trim: true },
+    kind: { type: String, enum: ["app", "console", "notebook", "dashboard"] },
+    refId: { type: String },
+    position: { type: Number, required: true, default: 0 },
+  },
+  { collection: "favourites", timestamps: true },
+);
+
+FavouriteSchema.index({ workspaceId: 1, userId: 1, parentId: 1, position: 1 });
+// An entity is in one place in a person's favourites, so "unstar" is
+// unambiguous and the star toggle has one row to look at.
+FavouriteSchema.index(
+  { workspaceId: 1, userId: 1, kind: 1, refId: 1 },
+  { unique: true, partialFilterExpression: { type: "item" } },
+);
+
+export const Favourite = mongoose.model<IFavourite>(
+  "Favourite",
+  FavouriteSchema,
 );
 
 /**

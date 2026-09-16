@@ -21,10 +21,17 @@ import path from "node:path";
 
 export const APP_SDK_DIR = "packages/app-sdk";
 
-/** The dependency entry an app needs to import the SDK. */
-export const APP_SDK_DEPENDENCY: Record<string, string> = {
-  "@makoai/app-sdk": "file:../../packages/app-sdk",
-};
+/**
+ * The dependency entry an app needs to import the SDK: the published package,
+ * pinned to the major of the version this API ships with. Not the vendored
+ * `file:../../packages/app-sdk` any more — that path is relative to the app's
+ * depth, so it broke the first time an app was filed into a folder, and a
+ * laptop clone wants a registry package anyway. `packages/app-sdk` stays in
+ * the workspace repo for apps that still reference it.
+ */
+export function appSdkDependency(): Record<string, string> {
+  return { "@makoai/app-sdk": `^${appSdkVersion()}` };
+}
 
 /** Files of the package that ship into workspace repos (the npm `files`). */
 const SHIPPED_FILES = [

@@ -6,6 +6,11 @@
 import { useConsoleStore } from "../store/consoleStore";
 import { basename } from "../utils/path";
 
+/**
+ * `slug` is the app's URL handle — its folder name when it sits at the top
+ * of the workspace tree, otherwise leave it out and the id is used (see
+ * appsStore.appUrlRef). It is metadata, not identity: the id is.
+ */
 export function focusAppsTab(
   appId: string,
   title: string,

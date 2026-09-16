@@ -5,16 +5,22 @@
  * real package.json, real scripts, real build. The `mako.json` manifest holds
  * non-secret Mako-specific configuration (entry, data bindings, jobs).
  */
+import { appSdkDependency } from "./app-sdk-package";
 
 export interface ScaffoldOptions {
   title: string;
   description?: string;
+  /**
+   * The app's identity, written into `mako.json` so the app keeps its
+   * deployments, sharing and favourites when it is filed into a folder.
+   */
+  id?: string;
 }
 
 export function createAppsScaffold(
   options: ScaffoldOptions,
 ): Record<string, string> {
-  const { title, description } = options;
+  const { title, description, id } = options;
   const safeTitle = title.trim() || "Mako App";
   const pkgName =
     safeTitle
@@ -42,7 +48,10 @@ export function createAppsScaffold(
           preview: "vite preview",
         },
         dependencies: {
-          "@makoai/app-sdk": "file:../../packages/app-sdk",
+          // From npm, not a `file:` path: a relative path breaks the moment
+          // the app is filed into a folder (apps/sales/<app> is one level
+          // deeper), and a published package is what a laptop clone wants.
+          ...appSdkDependency(),
           react: "^18.2.0",
           "react-dom": "^18.2.0",
         },
@@ -59,6 +68,7 @@ export function createAppsScaffold(
     )}\n`,
     "mako.json": `${JSON.stringify(
       {
+        ...(id ? { id } : {}),
         schemaVersion: 1,
         title: safeTitle,
         ...(description ? { description } : {}),

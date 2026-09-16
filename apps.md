@@ -3226,3 +3226,105 @@ routes `apps.ts` (`GET /{id}/viewer`, view-token, preview grant) /
 (2.4.0); workspace template v12. Tests: `app-viewer.service.test.ts`,
 `preview.service.test.ts`, `deployment.service.test.ts`,
 `auto-join.service.test.ts`.
+
+## 29. Apps in real folders; favourites as a view (2026-09-16)
+
+Supersedes the deferral in §14.4 ("nesting would touch slug identity…") and
+replaces PR #1004's per-user Mongo folders. Decided with Joan on 2026-09-16:
+**Workspace and Personal are real filesystem folders, exactly as consoles do
+it; favourites are virtual folders in the database.** No YAML registry, no
+manifest field for organisation.
+
+### 29.1 Identity moves into the manifest
+
+An app is still a folder holding `mako.json` (§13.6) — now at any depth under
+`apps/` or `users/<id>/apps/`. Its identity is **`id` in the manifest**
+(24 hex, a Mongo `_id`), not its path. A manifest without an id keeps the id
+it always had, derived from `apps/<slug>` (`derivedAppId(workspace, key)`,
+`app-paths.ts`), so nothing moves for the 68 apps that predate ids:
+deployments, binding artifacts, sandbox sessions and share tokens are all
+keyed by that same id. New apps are scaffolded with the id; the server stamps
+it on the first move it makes (`moveProject`, `moveAppFolder`) so a move
+never changes an identity, even for an un-stamped app. A copied folder that
+declares another app's id does not steal it: the incumbent keeps the id, the
+copy is indexed under a derived id with `duplicateOf` set, and the UI offers
+"Give this copy its own id" (`POST /apps/{id}/stamp-id`).
+
+### 29.2 The index is the read model
+
+`app-index.service.ts` reads the tree at `main` once per push
+(`syncRepoBackedResources`) and writes one flat row per app to `app_index`
+(`workspaceId, appId, path, slug, scope, ownerId, treeOid, title,
+description, hasManifestId, duplicateOf, schedules[], indexedSha`) plus the
+folders of both trees (`.gitkeep`-only ones included) on `app_index_heads`.
+Derived, disposable, rebuilt when main's sha differs — the sidebar, the
+agent's `app_list_apps`, the ChatGPT connector and the binding scheduler all
+read it instead of opening the repo. Flat on purpose (string ids, no nested
+documents): this is the first table that moves to Postgres, and it is a
+column copy. `AppProject` stays the state row (sharing, `publishedSha`, env,
+share token) and gains `path`, kept current by the sync; the unique
+`(workspaceId, slug)` index becomes unique `(workspaceId, path)`
+(migration `2026-09-16-150000`).
+
+`resolveProjectRef(workspaceId, ref)` is THE resolver: id, repo path
+(`apps/Sales/report`, with or without `apps/`) or slug all mean the same app.
+A slug shared by several apps resolves to the top-level `apps/<slug>` if
+there is one, otherwise to nothing — an ambiguous name never silently picks
+a folder. URLs: a top-level app keeps `/apps/<slug>`; a nested one is
+addressed by id (`appUrlRef`, `appsStore.ts`).
+
+### 29.3 Moves are commits; nothing rebuilds
+
+`POST /apps/{id}/move { folder, name? }` and the agent's `app_move_app` are
+one lifecycle commit on `main` (`git mv` in a throwaway clone, manifest
+stamped if needed), mirror-pushed durably like `createProject`. Folder
+operations are commits too: `POST /apps/folders` writes a `.gitkeep`,
+`PATCH /apps/folders` renames/moves a directory with its apps (ids stamped),
+`DELETE /apps/folders?path=` refuses a non-empty folder. Workspace-tree
+changes need an editing member (viewers read); a person's `users/<id>/apps`
+tree is theirs alone.
+
+Deploy-on-push decides "changed" by the app folder's **git tree oid** by app
+id, not by which paths a diff lists (`changedApps` discovers apps at
+`before` with the same identity rules): a moved app has the same tree and is
+not rebuilt; a vanished one is unpublished. The hourly reconcile compares
+tree oids at `publishedSha` vs head. Inngest deploy events carry `appId`
+(`slug` still resolves for events in flight).
+
+### 29.4 Favourites
+
+`favourites` is one self-referential table (Firefox's `moz_bookmarks`):
+folders and items are rows, `parentId` nests them, `position` orders
+siblings, an item is `(kind, refId)` with a partial unique index per user.
+`/api/workspaces/:id/favourites` — `GET`, `POST /folders`,
+`PUT|DELETE /items/{kind}/{refId}`, `PATCH|DELETE /{id}`. A star is a VIEW:
+it never moves an entity, needs no commit, and a row that no longer resolves
+is simply not rendered. The Apps, Notebooks and Dashboards explorers show a
+Starred tree on top (with the person's folders, drag to file, star toggle on
+hover); Apps additionally shows the Workspace and Personal trees from the
+index, with drag-to-move (`AppsExplorer.tsx`, `apps-explorer-tree.ts`,
+`starred/starred-section.tsx`, `favouritesStore.ts`).
+
+### 29.5 The SDK comes from npm
+
+Every app's `"@makoai/app-sdk": "file:../../packages/app-sdk"` broke the
+moment an app was one level deeper. Scaffolds now depend on the published
+package (`^<version this API ships>`, `appSdkDependency()`), and the
+workspace repo's apps were switched in one commit (imports renamed from
+`@mako/app-sdk` to `@makoai/app-sdk`, lockfiles regenerated).
+`packages/app-sdk` stays vendored for anything still referencing it.
+
+### 29.6 Not done here
+
+- Dev-server sockets and the `runningDevApps` signal key on the app's folder
+  BASENAME (`appSlug(handle)`); two nested apps sharing a basename in one
+  box would collide. Key them by app id when it bites.
+- Consoles keep their own `SavedConsole` index and `ConsoleFolder` rows; the
+  generic `repo_entities` table that would fold consoles, notebooks and apps
+  into one catalog is the Postgres-era follow-up.
+- A pinned (starred) row is a leaf: expanding an app's files happens on the
+  real row in the Workspace/Personal tree.
+- Tests: `app-paths.test.ts`, `app-index.service.test.ts` (real git + mongo:
+  discovery, identity, moves, duplicates, folders, scaffold-in-folder),
+  `favourites.service.test.ts`, `apps-explorer-tree.test.ts`,
+  `starred-section.test.ts`, `favouritesStore.test.ts`.

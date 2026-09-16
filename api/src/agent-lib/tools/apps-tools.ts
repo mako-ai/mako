@@ -34,7 +34,6 @@ import {
   commitWorktree,
   catchUpLiveBox,
   createProject,
-  synthesizeProjectFromFolder,
   listAppFolders,
   ensureWorktree,
   execInWorktree,
@@ -51,7 +50,13 @@ import {
   PUBLISH_ACTOR,
   boxCtx,
   appRootFor,
+  folderTargetFromPath,
+  listAppFolderPaths,
+  moveProject,
+  resolveProjectRef,
+  type AppFolderTarget,
 } from "../../apps/worktree.service";
+import { parseAppRepoPath } from "../../apps/app-paths";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
   DEFAULT_BRANCH,
@@ -154,31 +159,18 @@ export function createAppsTools({
     if (!appId) {
       return { error: `Invalid app: ${appId}. Use app_list_apps first.` };
     }
-    // An app is a FOLDER (apps.md §13.6), so `apps/<name>` is its identity
-    // and that is what an agent working in a checkout actually has. Accept the
-    // folder name, tolerate an `apps/` prefix, and still resolve legacy ids.
-    const ref = appId.replace(/^apps\//, "");
-    let project: IAppProject | null =
-      (Types.ObjectId.isValid(ref)
-        ? await AppProject.findOne({
-            _id: new Types.ObjectId(ref),
-            workspaceId: new Types.ObjectId(workspaceId),
-          })
-        : await AppProject.findOne({
-            slug: ref,
-            workspaceId: new Types.ObjectId(workspaceId),
-          })) ?? null;
-    if (!project) {
-      // No row: the app may exist only as a folder in the repo, which is the
-      // normal case for anything created from a local checkout. The folder
-      // lookup fetches the mirror on a MISS, so an API instance cannot say
-      // "not found" from an older clone right after another instance took
-      // the push — while the twenty app_* calls that follow, all resolving
-      // through here, do not each pay a GitHub round trip.
-      project = await synthesizeProjectFromFolder(workspaceId, ref, {
-        fetchOnMiss: true,
-      });
-    }
+    // An app is a FOLDER (apps.md §13.6): its path (`apps/sales/report`) or
+    // its folder name is what an agent working in a checkout actually has,
+    // and its id is what the manifest carries. All three resolve. The lookup
+    // fetches the mirror on a MISS, so an API instance cannot say "not
+    // found" from an older clone right after another instance took the push
+    // — while the twenty app_* calls that follow, all resolving through
+    // here, do not each pay a GitHub round trip.
+    const project: IAppProject | null = await resolveProjectRef(
+      workspaceId,
+      appId,
+      { fetchOnMiss: true },
+    );
     if (!project) {
       return { error: `App ${appId} not found. Use app_list_apps.` };
     }
@@ -209,46 +201,92 @@ export function createAppsTools({
         // no registration step. listAppFolders freshens the mirror itself
         // (throttled), so list and open cannot disagree for more than a few
         // seconds merely because they landed on different API instances.
-        const folders = await listAppFolders(workspaceId);
+        const [folders, folderPaths] = await Promise.all([
+          listAppFolders(workspaceId),
+          listAppFolderPaths(workspaceId),
+        ]);
         const docs = await AppProject.find({
           workspaceId: new Types.ObjectId(workspaceId),
         });
-        const stateBySlug = new Map(
-          docs.filter(d => d.slug).map(d => [d.slug as string, d]),
-        );
+        const stateById = new Map(docs.map(d => [d._id.toString(), d]));
         const role = await memberRole();
         return {
           success: true,
           apps: folders
             .filter(f => {
-              const state = stateBySlug.get(f.slug);
-              if (!state) return true;
-              return !userId || canReadResource(state, userId, role);
+              const state = stateById.get(f.id);
+              if (state) return !userId || canReadResource(state, userId, role);
+              if (f.scope === "private") return !userId || f.ownerId === userId;
+              return true;
             })
             .map(f => ({
-              app: f.slug,
-              path: `apps/${f.slug}`,
+              app: f.id,
+              // The folder IS the app; its path is what to cd into.
+              path: f.path,
               title: f.title,
               description: f.description,
+              scope: f.scope,
             })),
+          // Folders of the workspace tree and of the caller's personal tree,
+          // for filing new apps (app_create_app `folder`, app_move_app).
+          folders: folderPaths.filter(
+            p =>
+              p.startsWith("apps/") ||
+              (!!userId && p.startsWith(`users/${userId}/apps`)),
+          ),
         };
       },
     }),
 
     app_create_app: tool({
       description:
-        "Create a new app: a real Vite + React + TypeScript project scaffolded into apps/<name>/ in the workspace repo. The FOLDER is the app — creating one is just committing that directory, and you can equally create it yourself with app_bash + app_write_file. Returns the folder name that every other app_* tool takes.",
+        "Create a new app: a real Vite + React + TypeScript project scaffolded into a folder of the workspace repo (apps/<name>/ by default; `folder` files it under apps/<folder>/… or the user's personal users/<id>/apps/). The FOLDER is the app — creating one is just committing that directory, and you can equally create it yourself with app_bash + app_write_file (give its mako.json an `id`). Returns the app id and path that every other app_* tool takes.",
       inputSchema: z.object({
         title: z.string().min(1).describe("Human-readable app title"),
         description: z.string().optional(),
+        folder: z
+          .string()
+          .optional()
+          .describe(
+            'Destination folder path: "apps" (default), "apps/Sales/CH", or "users/<userId>/apps" for a personal app. See app_list_apps → folders.',
+          ),
       }),
-      execute: async ({ title, description }) => {
+      execute: async ({ title, description, folder }) => {
         try {
+          let target: AppFolderTarget | undefined;
+          if (folder) {
+            target = folderTargetFromPath(folder);
+            if (target.scope === "private") {
+              if (!userId) {
+                return {
+                  success: false,
+                  error: "Personal folders need a signed-in user",
+                };
+              }
+              if (target.ownerId && target.ownerId !== userId) {
+                return {
+                  success: false,
+                  error:
+                    "You can only create apps in your own personal folders",
+                };
+              }
+              target.ownerId = userId;
+            } else if (userId) {
+              const role = await memberRole();
+              if (role === "viewer") {
+                return {
+                  success: false,
+                  error: "Viewers cannot add to the Workspace tree",
+                };
+              }
+            }
+          }
           const project = await createProject({
             workspaceId,
             title,
             description,
             userId,
+            folder: target,
           });
           // The scaffold just landed on main server-side. If this actor's
           // sandbox is RUNNING, reads are served from it — and it has not
@@ -259,8 +297,8 @@ export function createAppsTools({
           const { entries } = await listFiles(project, actorId);
           return {
             success: true,
-            app: project.slug ?? project._id.toString(),
-            path: `apps/${project.slug ?? project._id.toString()}`,
+            app: project._id.toString(),
+            path: appRootFor(project),
             title: project.title,
             files: entries.map(e => e.path),
             note: "Real project: use app_bash for shell commands (ls, grep, npm install, npm run build, ...), app_write_file/app_edit_file for edits, app_commit to commit.",
@@ -575,7 +613,7 @@ export function createAppsTools({
                 "--pretty=%H",
                 `refs/heads/${branch}`,
                 "--",
-                `apps/${project.slug}/`,
+                `${appRootFor(project)}/`,
               ]);
               branchAppSha = stdout.trim() || null;
             } catch {
@@ -661,7 +699,7 @@ export function createAppsTools({
           );
           await requestAppDeploys(
             project.workspaceId.toString(),
-            [project.slug ?? appId],
+            [project._id.toString()],
             sha,
             "manual",
           );
@@ -953,7 +991,8 @@ export function createAppsTools({
           });
           return {
             success: true,
-            app: loaded.project.slug,
+            app: loaded.project._id.toString(),
+            path: appRootFor(loaded.project),
             title: loaded.project.title,
             devServerUrl: url,
             evicted,
@@ -962,6 +1001,78 @@ export function createAppsTools({
                 ? "The app tab is open in the user's Mako UI with the live " +
                   "dev session running — file edits hot-reload there."
                 : "The app tab is open in the user's Mako UI.",
+          };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app_move_app: tool({
+      description:
+        "File an app in another folder of the workspace repo, or rename its folder — one commit on main moving the directory (`git mv`). The app keeps its id, so its deployment, sharing, env vars and everyone's favourites follow it and nothing is rebuilt. Workspace folders need an editing role; `users/<userId>/apps/…` is that person's own tree.",
+      inputSchema: z.object({
+        appId: z.string(),
+        folder: z
+          .string()
+          .describe(
+            'Destination folder: "apps", "apps/Sales/CH", or "users/<userId>/apps".',
+          ),
+        name: z
+          .string()
+          .optional()
+          .describe("New folder name for the app itself (a rename)."),
+      }),
+      execute: async ({ appId, folder, name }) => {
+        const loaded = await loadProject(appId, { write: true });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const target = folderTargetFromPath(folder);
+          const source = parseAppRepoPath(appRootFor(loaded.project));
+          if (target.scope === "private") {
+            if (!userId) {
+              return {
+                success: false,
+                error: "Personal folders need a signed-in user",
+              };
+            }
+            if (target.ownerId && target.ownerId !== userId) {
+              return {
+                success: false,
+                error: "You can only file apps into your own personal folders",
+              };
+            }
+            target.ownerId = userId;
+          }
+          if (userId) {
+            const role = await memberRole();
+            if (
+              (target.scope === "workspace" || source?.scope === "workspace") &&
+              role === "viewer"
+            ) {
+              return {
+                success: false,
+                error:
+                  "Only workspace editors can reorganise the Workspace tree",
+              };
+            }
+            if (source?.scope === "private" && source.ownerId !== userId) {
+              return {
+                success: false,
+                error:
+                  "Only the owner can move an app out of their personal folder",
+              };
+            }
+          }
+          const moved = await moveProject(
+            loaded.project,
+            { ...target, slug: name },
+            { userId },
+          );
+          return {
+            success: true,
+            ...moved,
+            app: loaded.project._id.toString(),
           };
         } catch (error) {
           return { success: false, error: errorMessage(error) };

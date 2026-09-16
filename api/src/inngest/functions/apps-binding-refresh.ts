@@ -2,10 +2,12 @@
  * Scheduled refresh for Apps data bindings (Block 4 of the bindings plan).
  *
  * Schedules live IN the binding files ("-- schedule: <cron>" front matter on
- * main) — no Mongo copy of the definition. Every 15 minutes the scheduler
- * scans projects, reads their bindings from git (main), and emits ONE EVENT
- * per due binding; the worker below materializes them with bounded
- * concurrency per workspace.
+ * main) — no Mongo copy of the DEFINITION. The apps index (rebuilt on every
+ * push to main) carries each app's schedules as a derived column, so the
+ * 15-minute tick reads one collection instead of opening every repo. It
+ * emits ONE EVENT per due binding; the worker below materializes them with
+ * bounded concurrency per workspace, reading the binding from git at that
+ * point.
  *
  * It used to materialize inline, sequentially, inside the cron function. With
  * ~170 bindings due at once (the first sweep after a migration) and ~28 of
@@ -15,13 +17,14 @@
  * A tick now finishes in seconds; the backlog drains in parallel; a slow or
  * broken binding delays nothing but itself.
  *
- * Scale note: fine while project counts are small; the recorded scale-up is
- * a derived schedule index maintained on merge-to-main so the scan does not
- * touch git at all.
  */
 import { inngest } from "../client";
 import { loggers } from "../../logging";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import {
+  AppIndexEntry,
+  AppProject,
+  type IAppIndexEntry,
+} from "../../database/workspace-schema";
 import {
   getBindingState,
   materializeAppBinding,
@@ -89,52 +92,58 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
     triggers: { cron: "*/15 * * * *" },
   },
   async ({ step }) => {
-    // `slug` is not optional here: readBindings locates the app's files at
-    // `apps/<slug>/…` (appRootFor), and without it the lookup falls back to
-    // `apps/<mongoId>/…` — a folder that does not exist — so every project
-    // silently read ZERO bindings and this scheduler triggered nothing in
-    // production for weeks while reporting success.
-    const projects = (await step.run("list-projects", async () =>
-      AppProject.find({}).select("_id workspaceId defaultBranch slug").lean(),
-    )) as Array<
-      Pick<IAppProject, "_id" | "workspaceId" | "defaultBranch" | "slug">
-    >;
+    // Only apps that have a project row are scheduled — the same set as
+    // before the index existed (a row appears when an app is published,
+    // restricted or shared). A scheduled binding in an app nobody has
+    // published would otherwise re-run its warehouse query every tick for
+    // no reader.
+    const scheduled = (await step.run("list-scheduled", async () => {
+      const entries = await AppIndexEntry.find({
+        "schedules.0": { $exists: true },
+      })
+        .select("workspaceId appId schedules")
+        .lean();
+      if (entries.length === 0) return [];
+      const rows = await AppProject.find({
+        _id: { $in: entries.map(e => e.appId) },
+      })
+        .select("_id")
+        .lean();
+      const withRow = new Set(rows.map(r => r._id.toString()));
+      return entries.filter(e => withRow.has(e.appId));
+    })) as Array<Pick<IAppIndexEntry, "workspaceId" | "appId" | "schedules">>;
 
     const due = await step.run("find-due-bindings", async () => {
       const out: MaterializeEventData[] = [];
-      for (const project of projects) {
-        const projectId = project._id.toString();
-        let bindings: AppBinding[];
-        try {
-          // undefined actor = the user-less view -> the app's main branch.
-          bindings = await readBindings(
-            project as IAppProject,
-            undefined as never,
-          );
-        } catch (error) {
-          log.warn("Skipping project with unreadable bindings", {
-            projectId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          continue;
-        }
-        for (const binding of bindings) {
-          if (!binding.schedule) continue;
+      for (const entry of scheduled) {
+        const projectId = entry.appId;
+        for (const schedule of entry.schedules) {
+          const binding = {
+            schedule: schedule.cron,
+            timezone: schedule.timezone,
+          };
           try {
-            if (!(await isBindingDue(projectId, binding))) continue;
+            if (
+              !isBindingDueAt(
+                binding,
+                await getBindingState(projectId, schedule.binding),
+              )
+            ) {
+              continue;
+            }
           } catch (error) {
             log.warn("Invalid binding schedule", {
               projectId,
-              binding: binding.name,
+              binding: schedule.binding,
               error: error instanceof Error ? error.message : String(error),
             });
             continue;
           }
           out.push({
-            workspaceId: project.workspaceId.toString(),
+            workspaceId: entry.workspaceId.toString(),
             projectId,
-            binding: binding.name,
-            key: `${projectId}:${binding.name}`,
+            binding: schedule.binding,
+            key: `${projectId}:${schedule.binding}`,
           });
         }
       }
@@ -148,10 +157,10 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
       );
     }
     log.info("Apps binding scheduler run", {
-      projects: projects.length,
+      projects: scheduled.length,
       triggered: due.length,
     });
-    return { projects: projects.length, triggered: due.length };
+    return { projects: scheduled.length, triggered: due.length };
   },
 );
 

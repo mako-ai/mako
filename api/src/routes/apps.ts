@@ -75,14 +75,26 @@ import {
   restoreWorktreeTo,
   promoteToMain,
   readFile,
-  synthesizeProjectFromFolder,
+  resolveProjectRef,
   trialMerge,
   worktreeStatus,
   writeFile,
   repoForWorkspace,
   scopeOf,
   syncRepoBackedResources,
+  AppFolderError,
+  appRootFor,
+  createAppFolder,
+  deleteAppFolder,
+  folderTargetFromPath,
+  listAppFolderPaths,
+  moveAppFolder,
+  moveProject,
+  stampAppId,
+  type AppFolderTarget,
 } from "../apps/worktree.service";
+import { resolveAppRef } from "../apps/app-index.service";
+import { parseAppRepoPath } from "../apps/app-paths";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
   APPS_EXEC_MAX_TIMEOUT_MS,
@@ -232,25 +244,12 @@ async function loadProject(
       errorResponse: c.json({ success: false, error: "Invalid app id" }, 400),
     };
   }
-  // Apps are addressable by SLUG as well as by id. The slug is the folder name
-  // in the workspace repo (§10) — the real identity now that an app is a
-  // directory rather than a document — and the filesystem already guarantees
-  // it is unique, since two apps cannot occupy `apps/<slug>` at once. Ids
-  // still resolve so existing links keep working.
-  const project =
-    (Types.ObjectId.isValid(id)
-      ? await AppProject.findOne({
-          _id: new Types.ObjectId(id),
-          workspaceId: new Types.ObjectId(workspaceId),
-        })
-      : await AppProject.findOne({
-          slug: id,
-          workspaceId: new Types.ObjectId(workspaceId),
-        })) ??
-    // No row: the app may still exist as a folder in the repo. Opening one
-    // must not require a database write, so it is synthesized instead —
-    // a row appears only when someone restricts, publishes, or shares it.
-    (await synthesizeProjectFromFolder(workspaceId, id));
+  // Apps are addressable by id, by repo path (`apps/sales/report`) and by
+  // slug (the folder's own name — unambiguous for a top-level app, and for a
+  // nested one when no other app shares the name). Opening one must not
+  // require a database write: a folder-only app is synthesized, and a row
+  // appears only when someone restricts, publishes, or shares it.
+  const project = await resolveProjectRef(workspaceId, id);
   if (!project) {
     return {
       errorResponse: c.json({ success: false, error: "App not found" }, 404),
@@ -295,10 +294,14 @@ function toProjectJson(
   p: IAppProject,
   manifest?: { title: string; description?: string },
 ) {
+  const path = appRootFor(p);
+  const location = parseAppRepoPath(path);
   return {
     id: p._id.toString(),
     slug: p.slug,
-    title: manifest?.title ?? p.slug ?? "",
+    path,
+    scope: location?.scope ?? "workspace",
+    title: manifest?.title ?? p.title ?? p.slug ?? "",
     description: manifest?.description,
     access: p.access,
     owner_id: p.owner_id,
@@ -312,19 +315,51 @@ function toProjectJson(
 
 async function manifestForProject(
   workspaceId: string,
-  slug: string | undefined,
+  project: IAppProject,
 ): Promise<{ title: string; description?: string } | undefined> {
-  if (!slug) return undefined;
-  const folders = await listAppFolders(workspaceId);
-  const folder = folders.find(f => f.slug === slug);
+  const folder = await resolveAppRef(workspaceId, project._id.toString());
   return folder
     ? { title: folder.title, description: folder.description }
     : undefined;
 }
 
+/**
+ * Who may reorganise the WORKSPACE tree: any editing member. Viewers read.
+ * A person's own tree (`users/<id>/apps`) is theirs to arrange regardless.
+ */
+function canOrganizeWorkspaceTree(role: string | undefined): boolean {
+  return role === "owner" || role === "admin" || role === "member";
+}
+
+/**
+ * Resolve and authorize a folder target for the caller: a private target
+ * must be the caller's own tree; a workspace target needs an editing role.
+ */
+function authorizeFolderTarget(
+  target: AppFolderTarget,
+  userId: string | undefined,
+  role: string | undefined,
+): string | null {
+  if (target.scope === "private") {
+    if (!userId) return "Personal folders need a signed-in user";
+    if (target.ownerId && target.ownerId !== userId) {
+      return "You can only file things into your own personal folders";
+    }
+    target.ownerId = userId;
+    return null;
+  }
+  if (!canOrganizeWorkspaceTree(role)) {
+    return "Only workspace editors can reorganise the Workspace tree";
+  }
+  return null;
+}
+
 function handleError(c: AuthenticatedContext, error: unknown) {
   if (error instanceof WorktreeConflictError) {
     return c.json({ success: false, error: error.message }, 409);
+  }
+  if (error instanceof AppFolderError) {
+    return c.json({ success: false, error: error.message }, error.status);
   }
   if (error instanceof RepoRequiredError) {
     return c.json(
@@ -698,12 +733,16 @@ appsRoutes.openapi(
       const userId = actingUserId(c);
       const role = await memberRoleFor(workspaceId, userId);
 
-      // The REPO is the list. An app exists because `apps/<name>/mako.json`
-      // exists, so a folder pushed from a local checkout shows up with no
-      // registration step (§13). Mongo is consulted only for what cannot live
-      // in a repo the customer can clone: visibility, the deployed sha, and
-      // the share token.
-      const folders = await listAppFolders(workspaceId);
+      // The REPO is the list. An app exists because a folder with a
+      // `mako.json` exists (anywhere under apps/ or users/<id>/apps/), so a
+      // folder pushed from a local checkout shows up with no registration
+      // step (§13). Mongo is consulted only for what cannot live in a repo
+      // the customer can clone: visibility, the deployed sha, the share
+      // token — and the derived index that makes this read one query.
+      const [folders, folderPaths] = await Promise.all([
+        listAppFolders(workspaceId),
+        listAppFolderPaths(workspaceId),
+      ]);
       // Keep the repo's agent-facing template current for whoever is looking
       // at it (throttled, off the request path — see workspace-template.ts).
       repoForWorkspace(workspaceId)
@@ -712,44 +751,63 @@ appsRoutes.openapi(
       const docs = await AppProject.find({
         workspaceId: new Types.ObjectId(workspaceId),
       });
-      const stateBySlug = new Map(
-        docs.filter(d => d.slug).map(d => [d.slug as string, d]),
-      );
+      const stateById = new Map(docs.map(d => [d._id.toString(), d]));
 
       const apps = folders
         .filter(folder => {
-          const state = stateBySlug.get(folder.slug);
+          const state = stateById.get(folder.id);
+          if (state) return !userId || canReadResource(state, userId, role);
           // No record yet means nothing has restricted it — a folder someone
           // pushed is workspace content, visible like any other file in the
-          // repo.
-          if (!state) return true;
-          return !userId || canReadResource(state, userId, role);
+          // repo. A folder in someone's personal tree is theirs alone.
+          if (folder.scope === "private") {
+            return !userId || folder.ownerId === userId;
+          }
+          return true;
         })
         .map(folder => {
-          const state = stateBySlug.get(folder.slug);
+          const state = stateById.get(folder.id);
           return {
-            id: state?._id.toString() ?? folder.slug,
+            id: folder.id,
             slug: folder.slug,
+            path: folder.path,
+            scope: folder.scope,
             title: folder.title,
             description: folder.description,
-            access: state?.access ?? "workspace",
+            access:
+              state?.access ??
+              (folder.scope === "private" ? "private" : "workspace"),
             // Who restricted it — the sidebar files a private app someone
             // else shared with you under "Shared with me", not "My Apps".
-            owner_id: state?.owner_id,
+            owner_id:
+              state?.owner_id ??
+              (folder.scope === "private" ? folder.ownerId : undefined),
             workspaceRole: state?.workspaceRole,
             // Only safe metadata leaves the API. The password hash and its
             // encrypted reveal copy never do.
             publicShare: serializePublicShare(state?.publicShare),
             publishedSha: state?.publishedSha,
             publishedAt: state?.publishedAt,
+            // A copied app that still declares its source's id: the index
+            // filed it under its own derived id; the UI offers to stamp one.
+            duplicateOf: folder.duplicateOf,
           };
         });
+      // Folders of the two trees the caller can see: the workspace tree, and
+      // their own personal tree (never anyone else's).
+      const visibleFolders = folderPaths.filter(p => {
+        if (p.startsWith("apps/")) return true;
+        return !!userId && p.startsWith(`users/${userId}/apps`);
+      });
 
-      return c.json({ success: true as const, apps }, 200);
+      return c.json(
+        { success: true as const, apps, folders: visibleFolders },
+        200,
+      );
     } catch (error) {
       // No GitHub binding: the explorer is empty. Writes still 412.
       if (error instanceof RepoRequiredError) {
-        return c.json({ success: true as const, apps: [] }, 200);
+        return c.json({ success: true as const, apps: [], folders: [] }, 200);
       }
       return handleError(c, error);
     }
@@ -773,6 +831,11 @@ appsRoutes.openapi(
             schema: z.object({
               title: z.string().min(1),
               description: z.string().optional(),
+              /**
+               * Folder to create it in: `apps` (default), `apps/Sales/CH`,
+               * or `users/<me>/apps[/…]` for a personal app.
+               */
+              folder: z.string().optional(),
             }),
           },
         },
@@ -783,8 +846,18 @@ appsRoutes.openapi(
   async c => {
     try {
       const { workspaceId } = c.req.valid("param");
-      const { title, description } = c.req.valid("json");
+      const { title, description, folder } = c.req.valid("json");
       const userId = actingUserId(c);
+      let target: AppFolderTarget | undefined;
+      if (folder) {
+        target = folderTargetFromPath(folder);
+        const denied = authorizeFolderTarget(
+          target,
+          userId,
+          await memberRoleFor(workspaceId, userId),
+        );
+        if (denied) return c.json({ success: false, error: denied }, 403);
+      }
       // Apps live in the workspace's own GitHub repo (apps.md §17). Creating
       // one without a connected repo is refused — there is no local-only
       // Cloud Storage skip (issue #956).
@@ -805,6 +878,7 @@ appsRoutes.openapi(
         title,
         description,
         userId,
+        folder: target,
       });
       return c.json(
         {
@@ -813,6 +887,234 @@ appsRoutes.openapi(
         },
         200,
       );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Folders — real directories in the workspace repo, changed with commits.
+// Registered before /{id} so "folders" is never read as an app ref.
+// ---------------------------------------------------------------------------
+
+const FolderBody = z.object({
+  /** `apps/Sales/CH`, or `users/<me>/apps/Scratch`. */
+  path: z.string().min(1),
+});
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/folders",
+    tags: ["Apps"],
+    summary: "Create an empty app folder",
+    description:
+      "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<me>/apps/…`) are the caller's own.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      body: {
+        required: true,
+        content: { "application/json": { schema: FolderBody } },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path } = c.req.valid("json");
+      const userId = actingUserId(c);
+      const target = folderTargetFromPath(path);
+      const denied = authorizeFolderTarget(
+        target,
+        userId,
+        await memberRoleFor(workspaceId, userId),
+      );
+      if (denied) return c.json({ success: false, error: denied }, 403);
+      const created = await createAppFolder(workspaceId, target, { userId });
+      return c.json({ success: true as const, folder: created }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/folders",
+    tags: ["Apps"],
+    summary: "Rename or move an app folder (its apps keep their identity)",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              path: z.string().min(1),
+              to: z.string().min(1),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path, to } = c.req.valid("json");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const from = folderTargetFromPath(path);
+      const target = folderTargetFromPath(to);
+      const denied =
+        authorizeFolderTarget(from, userId, role) ??
+        authorizeFolderTarget(target, userId, role);
+      if (denied) return c.json({ success: false, error: denied }, 403);
+      const moved = await moveAppFolder(workspaceId, from, target, { userId });
+      return c.json({ success: true as const, ...moved }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/folders",
+    tags: ["Apps"],
+    summary: "Delete an empty app folder",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        path: z
+          .string()
+          .min(1)
+          .openapi({ param: { name: "path", in: "query" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const target = folderTargetFromPath(path);
+      const denied = authorizeFolderTarget(
+        target,
+        userId,
+        await memberRoleFor(workspaceId, userId),
+      );
+      if (denied) return c.json({ success: false, error: denied }, 403);
+      await deleteAppFolder(workspaceId, target, { userId });
+      return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/move",
+    tags: ["Apps"],
+    summary: "File the app in another folder (and/or rename its folder)",
+    description:
+      "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it, and nothing is rebuilt. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              /** Destination folder: `apps`, `apps/Sales`, `users/<me>/apps`. */
+              folder: z.string().min(1),
+              /** New folder name for the app itself (a rename). */
+              name: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { folder, name } = c.req.valid("json");
+      const workspaceId = loaded.project.workspaceId.toString();
+      const userId = loaded.userId;
+      const role = await memberRoleFor(workspaceId, userId);
+      const target = folderTargetFromPath(folder);
+      const source = parseAppRepoPath(appRootFor(loaded.project));
+      const denied =
+        authorizeFolderTarget(target, userId, role) ??
+        (source?.scope === "workspace" && !canOrganizeWorkspaceTree(role)
+          ? "Only workspace editors can reorganise the Workspace tree"
+          : source?.scope === "private" && source.ownerId !== userId
+            ? "Only the owner can move an app out of their personal folder"
+            : null);
+      if (denied) return c.json({ success: false, error: denied }, 403);
+      const moved = await moveProject(
+        loaded.project,
+        { ...target, slug: name },
+        { userId },
+      );
+      return c.json(
+        {
+          success: true as const,
+          ...moved,
+          app: toProjectJson(loaded.project),
+        },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/stamp-id",
+    tags: ["Apps"],
+    summary: "Give a copied app its own id",
+    description:
+      "For a folder whose mako.json declares an id another app already holds (a copy that kept its source's manifest). Writes the id the index filed it under into its manifest, as one commit on main.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const workspaceId = loaded.project.workspaceId.toString();
+      const row = await resolveAppRef(
+        workspaceId,
+        loaded.project._id.toString(),
+      );
+      if (!row) {
+        return c.json(
+          { success: false, error: "App folder is not on main" },
+          404,
+        );
+      }
+      await stampAppId(workspaceId, row, { userId: loaded.userId });
+      return c.json({ success: true as const, id: row.appId }, 200);
     } catch (error) {
       return handleError(c, error);
     }
@@ -835,7 +1137,7 @@ appsRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const manifest = await manifestForProject(
         loaded.project.workspaceId.toString(),
-        loaded.project.slug,
+        loaded.project,
       );
       return c.json(
         {
@@ -2797,25 +3099,14 @@ const loadShareableApp = async (c: AuthenticatedContext) => {
   const workspaceId = c.req.param("workspaceId");
   if (!id || !workspaceId) return null;
   const ref = id.replace(/^apps\//, "");
-  const existing = Types.ObjectId.isValid(ref)
-    ? await AppProject.findOne({
-        _id: new Types.ObjectId(ref),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-    : await AppProject.findOne({
-        slug: ref,
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-  if (existing) return existing;
-
   // Sharing is one of the three things that gives an app a database row
   // (§13.6) — a share token and its password hash cannot live in a repo the
   // customer can clone. So if the app exists only as a folder, materialize
-  // the row now, with the id derived from (workspace, folder) so every
-  // artifact key stays stable.
-  const folder = await synthesizeProjectFromFolder(workspaceId, ref);
-  if (!folder) return null;
-  return ensureProjectRow(folder, actingUserId(c) ?? "");
+  // the row now, with the id the index knows it by so every artifact key
+  // stays stable.
+  const project = await resolveProjectRef(workspaceId, ref);
+  if (!project) return null;
+  return ensureProjectRow(project, actingUserId(c) ?? "");
 };
 registerCollaboratorRoutes(appsRoutes, {
   resourceName: "App",

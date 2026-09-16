@@ -54,6 +54,7 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
+  appRootOf,
   useAppsStore,
   type AppChange,
   type AppCommit,
@@ -311,8 +312,9 @@ export default function SourceControlExplorer() {
   const ownerOf = useCallback(
     (path: string) => {
       for (const app of apps) {
-        if (app.slug && path.startsWith(`apps/${app.slug}/`)) {
-          return { app, rel: path.slice(`apps/${app.slug}/`.length) };
+        const root = `${appRootOf(app)}/`;
+        if (path.startsWith(root)) {
+          return { app, rel: path.slice(root.length) };
         }
       }
       return null;

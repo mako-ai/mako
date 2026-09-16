@@ -41,6 +41,7 @@ vi.mock("./git", () => ({
 
 vi.mock("./worktree.service", () => ({
   PUBLISH_ACTOR: "publish",
+  appRootFor: vi.fn((p: { slug: string }) => `apps/${p.slug}`),
   checkoutInBox: vi.fn(async () => state.events.push("checkout")),
   ensureProjectRow: vi.fn(async project => project),
   ensureWorktree: vi.fn(async () => {
@@ -52,9 +53,19 @@ vi.mock("./worktree.service", () => ({
     stdout: "",
     stderr: "",
   })),
-  listAppFolders: vi.fn(async () => []),
   repoForWorkspace: vi.fn(async () => "/repo"),
-  synthesizeProjectFromFolder: vi.fn(async () => null),
+  resolveProjectRef: vi.fn(async () => state.project),
+}));
+
+vi.mock("./app-index.service", () => ({
+  assignAppIds: vi.fn(() => new Map()),
+  loadAppsIndex: vi.fn(async () => ({ sha: "", apps: [], folders: [] })),
+  readAppsAt: vi.fn(async () => ({
+    apps: [],
+    folders: [],
+    manifests: new Map(),
+    schedules: new Map(),
+  })),
 }));
 
 vi.mock("./deployment.service", () => ({

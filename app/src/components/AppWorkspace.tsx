@@ -49,7 +49,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useRealtimeStore } from "../store/realtimeStore";
-import { useAppsStore } from "../store/appsStore";
+import { appUrlRef, useAppsStore } from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -1182,16 +1182,18 @@ export default function AppWorkspace({
       void fetchViewUrl(workspaceId, appId);
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
-  // Older tabs were opened before slugs rode in tab metadata; heal them so
-  // the URL upgrades from /apps/<id> to /apps/<slug>.
+  // Keep the tab's URL handle honest: a top-level app is addressed by its
+  // slug (/apps/<slug>), a nested one by its id (a nested folder name may
+  // be shared by another app; an id never is). A move updates it in place.
   useEffect(() => {
-    const slug = app?.slug;
-    if (!slug) return;
+    if (!app) return;
+    const ref = appUrlRef(app);
+    const slug = ref === app.id ? undefined : ref;
     useConsoleStore.setState(state => {
       const t = state.tabs[_tabId];
-      if (t?.metadata && !t.metadata.appSlug) t.metadata.appSlug = slug;
+      if (t?.metadata && t.metadata.appSlug !== slug) t.metadata.appSlug = slug;
     });
-  }, [app?.slug, _tabId]);
+  }, [app, _tabId]);
 
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {

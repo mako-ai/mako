@@ -10,20 +10,25 @@
  *
  * `publishedSha` stops being a pointer somebody sets and becomes what it
  * always meant: the last commit of `main` that built.
+ *
+ * "Changed" is decided by the app folder's git TREE oid, not by which paths a
+ * diff lists: a folder moved to another place has the same tree, so filing an
+ * app under `apps/sales/` rebuilds nothing — the deployment is keyed by the
+ * app's id, which the manifest carries along.
  */
-import { AppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { runGit } from "./git";
 import {
   PUBLISH_ACTOR,
+  appRootFor,
   checkoutInBox,
   ensureProjectRow,
   ensureWorktree,
   execInWorktree,
-  listAppFolders,
   repoForWorkspace,
-  synthesizeProjectFromFolder,
+  resolveProjectRef,
 } from "./worktree.service";
+import { assignAppIds, loadAppsIndex, readAppsAt } from "./app-index.service";
 import {
   buildApp,
   clearPublishedSha,
@@ -33,86 +38,111 @@ import {
   recordDeployFailure,
   setPublishedSha,
 } from "./deployment.service";
-import { Types } from "mongoose";
 import { ensureCommitLocally } from "./cloud-repo.service";
 
 const logger = loggers.api("apps-deploy-on-push");
 
 /**
- * Is `apps/<slug>/` present in the tree at `sha`? Throws when the commit
+ * Is the app's folder present in the tree at `sha`? Throws when the commit
  * itself is not here — that is a fetch problem to retry, never "the app is
  * gone" (which would unpublish a live app over a stale mirror).
  */
 async function appFolderExistsAt(
-  workspaceId: string,
-  slug: string,
+  repoDir: string,
+  appPath: string,
   sha: string,
 ): Promise<boolean> {
-  const repoDir = await repoForWorkspace(workspaceId);
   await runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`]);
-  return runGit(["-C", repoDir, "cat-file", "-e", `${sha}:apps/${slug}`])
+  return runGit(["-C", repoDir, "cat-file", "-e", `${sha}:${appPath}`])
     .then(() => true)
     .catch(() => false);
 }
 
-/** App folders touched between two commits. */
+/** The folder's tree oid at a commit, or null when it is not there. */
+async function treeOidAt(
+  repoDir: string,
+  sha: string,
+  appPath: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `${sha}:${appPath}`,
+    ]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Apps whose content differs between two commits, by id. An app that only
+ * moved keeps its tree oid and is not listed; an app whose folder vanished IS
+ * listed, so the deploy can unpublish it.
+ */
 async function changedApps(
   workspaceId: string,
   repoDir: string,
   before: string | undefined,
-  after: string,
 ): Promise<string[]> {
+  // The index describes main's current head, which is `after` for a push
+  // this instance just fetched (and anything newer is still what to deploy).
+  const now = await loadAppsIndex(workspaceId);
   const range =
     before && /^[0-9a-f]{40}$/.test(before) && !/^0+$/.test(before)
-      ? `${before}..${after}`
+      ? before
       : // First push, or a force-push we cannot diff against: treat every app
         // as changed rather than silently deploying none.
         null;
-  if (!range) {
-    return (await listAppFolders(workspaceId)).map(f => f.slug);
-  }
-  const { stdout } = await runGit(
-    ["-C", repoDir, "diff", "--name-only", range],
-    { timeoutMs: 60_000 },
+  if (!range) return now.apps.map(a => a.appId);
+
+  // The same identity rules at `before` as the index applied at `after`, so
+  // a moved app matches itself across the two commits.
+  const was = await readAppsAt(repoDir, range);
+  const ids = assignAppIds(
+    workspaceId,
+    was.apps.map(a => ({
+      path: a.path,
+      declaredId: was.manifests.get(a.path)?.id,
+    })),
+    new Map(now.apps.map(a => [a.appId, a.path])),
   );
-  const slugs = new Set<string>();
-  for (const line of stdout.split("\n")) {
-    const match = /^apps\/([^/]+)\//.exec(line.trim());
-    if (match) slugs.add(match[1]);
+  const oidBefore = new Map<string, string>();
+  for (const app of was.apps) {
+    const id = ids.get(app.path)?.appId;
+    if (id) oidBefore.set(id, app.treeOid);
   }
-  return [...slugs];
+  const changed = new Set<string>();
+  for (const app of now.apps) {
+    if (oidBefore.get(app.appId) !== app.treeOid) changed.add(app.appId);
+  }
+  // Gone: present before, absent now.
+  for (const id of oidBefore.keys()) {
+    if (!now.apps.some(a => a.appId === id)) changed.add(id);
+  }
+  return [...changed];
 }
 
 /**
- * Handle a push to a workspace repo's default branch.
- *
- * Returns the apps it deployed. Safe to call for pushes that touch no app —
- * it simply does nothing.
- */
-/**
- * Did `apps/<slug>/` change between two commits? The one question both the
- * webhook and the hourly reconcile ask.
+ * Did the app's folder change between two commits? Tree oids, so a move
+ * reads as unchanged. The one question both the webhook and the hourly
+ * reconcile ask.
  */
 export async function appFolderChanged(
-  workspaceId: string,
-  slug: string,
+  repoDir: string,
+  appPath: string,
   from: string,
   to: string,
 ): Promise<boolean> {
-  const repoDir = await repoForWorkspace(workspaceId);
-  const { stdout } = await runGit(
-    [
-      "-C",
-      repoDir,
-      "diff",
-      "--name-only",
-      `${from}..${to}`,
-      "--",
-      `apps/${slug}/`,
-    ],
-    { timeoutMs: 60_000 },
-  );
-  return stdout.trim().length > 0;
+  const [a, b] = await Promise.all([
+    treeOidAt(repoDir, from, appPath),
+    treeOidAt(repoDir, to, appPath),
+  ]);
+  return a !== b;
 }
 
 /**
@@ -124,6 +154,7 @@ export async function appFolderChanged(
 export class DeployBindingsError extends Error {
   constructor(
     message: string,
+    /** The app ref the deploy was asked for (its id, or a legacy slug). */
     readonly slug: string,
     readonly sha: string,
     options?: { cause?: unknown },
@@ -142,10 +173,10 @@ export class DeployBindingsError extends Error {
  */
 export async function deployOneApp(
   workspaceId: string,
-  slug: string,
+  appRef: string,
   sha: string,
 ): Promise<{
-  slug: string;
+  app: string;
   sha: string;
   outcome: "built" | "already-built" | "gone";
 }> {
@@ -155,27 +186,25 @@ export async function deployOneApp(
   // mirror fetch per app per attempt (a 58-folder push fetched the same sha
   // 58 times, after the webhook had already fetched it once).
   await ensureCommitLocally(workspaceId, sha);
-  const discovered =
-    (await AppProject.findOne({
-      slug,
-      workspaceId: new Types.ObjectId(workspaceId),
-    })) ?? (await synthesizeProjectFromFolder(workspaceId, slug));
-  if (!discovered) return { slug, sha, outcome: "gone" };
+  const discovered = await resolveProjectRef(workspaceId, appRef);
+  if (!discovered) return { app: appRef, sha, outcome: "gone" };
+  const appPath = appRootFor(discovered);
   // The folder may have been deleted in this very push. A row that survived
   // its folder (auto-deploy created it) must be UNPUBLISHED, not built: the
   // build would fail on a missing cwd, Inngest would retry it, and the
   // hourly reconcile — seeing publishedSha != head and the folder "changed"
   // (deleted) — would re-enqueue the same failure forever.
-  if (!(await appFolderExistsAt(workspaceId, slug, sha))) {
+  const repoDir = await repoForWorkspace(workspaceId);
+  if (!(await appFolderExistsAt(repoDir, appPath, sha))) {
     if (discovered.publishedSha) {
       await clearPublishedSha(discovered);
       logger.info("Unpublished app whose folder left main", {
         workspaceId,
-        slug,
+        app: appPath,
         sha,
       });
     }
-    return { slug, sha, outcome: "gone" };
+    return { app: appRef, sha, outcome: "gone" };
   }
   // Auto-deploying a repo-imported folder is a publish action, so materialize
   // its derived project row before setPublishedSha. Otherwise updateOne
@@ -194,7 +223,7 @@ export async function deployOneApp(
     await recordDeployFailure(project, sha, "bindings", error);
     throw new DeployBindingsError(
       error instanceof Error ? error.message : String(error),
-      slug,
+      appRef,
       sha,
       { cause: error },
     );
@@ -203,7 +232,7 @@ export async function deployOneApp(
     // The frontend was already uploaded (the Publish button got there
     // first, or a retry after a binding failure); it is just made live.
     await setPublishedSha(project, sha);
-    return { slug, sha, outcome: "already-built" };
+    return { app: appRef, sha, outcome: "already-built" };
   }
 
   const handle = await ensureWorktree(project, PUBLISH_ACTOR, {
@@ -223,13 +252,13 @@ export async function deployOneApp(
     throw new Error(build.output);
   }
   await deployBuild(project, sha, handle, { bindingsReady: true });
-  logger.info("Deployed app from main", { workspaceId, slug, sha });
-  return { slug, sha, outcome: "built" };
+  logger.info("Deployed app from main", { workspaceId, app: appPath, sha });
+  return { app: appRef, sha, outcome: "built" };
 }
 
 /**
  * A push to `main` arrived: decide which apps it touched and hand each one to
- * the `apps-deploy` Inngest function. Returns the slugs enqueued. Nothing is
+ * the `apps-deploy` Inngest function. Returns the app ids enqueued. Nothing is
  * built here — the webhook delivery must return quickly, and on Cloud Run
  * work detached from a request does not reliably run to completion.
  */
@@ -240,16 +269,16 @@ export async function deployAppsForPush(input: {
   after: string;
 }): Promise<string[]> {
   const { workspaceId, repoDir, before, after } = input;
-  const slugs = await changedApps(workspaceId, repoDir, before, after);
-  if (slugs.length === 0) return [];
+  const appIds = await changedApps(workspaceId, repoDir, before);
+  if (appIds.length === 0) return [];
   const { requestAppDeploys } = await import(
     "../inngest/functions/apps-deploy"
   );
-  await requestAppDeploys(workspaceId, slugs, after, "push");
+  await requestAppDeploys(workspaceId, appIds, after, "push");
   logger.info("Apps deploys requested from push", {
     workspaceId,
     sha: after,
-    apps: slugs.length,
+    apps: appIds.length,
   });
-  return slugs;
+  return appIds;
 }

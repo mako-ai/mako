@@ -21,9 +21,7 @@ import {
   LiveBindingCoolingDown,
   withLiveBindingGuard,
 } from "../apps/live-binding-guard";
-import { synthesizeProjectFromFolder } from "../apps/worktree.service";
-import { AppProject } from "../database/workspace-schema";
-import { Types } from "mongoose";
+import { resolveProjectRef } from "../apps/worktree.service";
 import { createReadStream } from "node:fs";
 import { rm } from "node:fs/promises";
 import { loggers } from "../logging";
@@ -162,11 +160,9 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
     return c.json({ error: "slug and a valid binding name are required" }, 400);
   }
 
-  const project =
-    (await AppProject.findOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      slug,
-    })) ?? (await synthesizeProjectFromFolder(workspaceId, slug));
+  // `slug` is whatever the box's launcher knows the app by — its path, its
+  // folder name or its id all resolve.
+  const project = await resolveProjectRef(workspaceId, slug);
   if (!project) return c.json({ error: "App not found" }, 404);
 
   let built: { filePath: string; rowCount: number; materializedAt?: Date };

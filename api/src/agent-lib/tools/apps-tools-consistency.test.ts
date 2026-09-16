@@ -53,16 +53,27 @@ vi.mock("../../apps/worktree.service", () => ({
   grepFiles: vi.fn(),
   listAppFolders: vi.fn(async () => {
     state.events.push("list");
-    return [{ slug: "sales", title: "Sales" }];
+    return [
+      {
+        id: "6a9411eb4c8b33609a65e665",
+        slug: "sales",
+        path: "apps/sales",
+        scope: "workspace",
+        title: "Sales",
+      },
+    ];
   }),
+  listAppFolderPaths: vi.fn(async () => []),
+  folderTargetFromPath: vi.fn(),
+  moveProject: vi.fn(),
   listBranches: vi.fn(),
   listFiles: vi.fn(),
   mergeBranchToMain: vi.fn(),
   readFile: vi.fn(),
   readSessionFile: vi.fn(),
   scopeOf: vi.fn(),
-  synthesizeProjectFromFolder: vi.fn(
-    async (_ws: string, _slug: string, options?: { fetchOnMiss?: boolean }) => {
+  resolveProjectRef: vi.fn(
+    async (_ws: string, _ref: string, options?: { fetchOnMiss?: boolean }) => {
       state.events.push(
         options?.fetchOnMiss ? "synthesize(fetch-on-miss)" : "synthesize",
       );

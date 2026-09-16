@@ -20,6 +20,20 @@ import { useConsoleStore } from "./consoleStore";
 import { useUIStore } from "./uiStore";
 import type { PublicShareInfo } from "./shareStore";
 
+/** Repo-relative folder of an app; legacy rows sit at `apps/<slug>`. */
+export function appRootOf(app: Pick<AppMeta, "id" | "slug" | "path">): string {
+  return app.path ?? `apps/${app.slug ?? app.id}`;
+}
+
+/**
+ * What an app's URL uses: its slug when it sits at the top of the workspace
+ * tree (`/apps/report`, readable and stable), its id otherwise — a nested
+ * folder name may be shared by another app, and an id never is.
+ */
+export function appUrlRef(app: Pick<AppMeta, "id" | "slug" | "path">): string {
+  return app.slug && appRootOf(app) === `apps/${app.slug}` ? app.slug : app.id;
+}
+
 /**
  * After connect/disconnect the derived git index in Mongo has changed.
  * Explorers keep their last tree until something refetches — a full reload
@@ -51,9 +65,23 @@ function refreshGitDerivedExplorers(
 
 export interface AppMeta {
   id: string;
-  /** Folder name under `apps/` in the workspace repo — the app's real
-   *  identity, and what its URL uses. */
+  /** The app's own folder name — the last segment of `path`, and its URL
+   *  handle when the app sits at the top of the workspace tree. */
   slug?: string;
+  /**
+   * Repo-relative folder the app lives in: `apps/Sales/CH/report` or
+   * `users/<id>/apps/scratch`. The folders between the tree root and the app
+   * are the explorer's tree. Identity is `id`, which the manifest carries, so
+   * a move keeps everything.
+   */
+  path?: string;
+  /** Which tree: the workspace's, or one person's (`users/<id>/apps`). */
+  scope?: "workspace" | "private";
+  /**
+   * Set on a copied folder whose mako.json still declares another app's id:
+   * the server filed it under an id of its own and offers to stamp it.
+   */
+  duplicateOf?: string;
   title: string;
   description?: string;
   updatedAt?: string;
@@ -239,6 +267,12 @@ interface AppsStore {
    * everything else reads `apps`.
    */
   appsCacheByWorkspace: Record<string, AppMeta[]>;
+  /**
+   * Folders of the two app trees the caller can see (`apps/Sales`,
+   * `users/<me>/apps/Scratch`), empty ones included — real directories in
+   * the workspace repo, straight from the list endpoint.
+   */
+  folders: string[];
   appsLoading: boolean;
   error: string | null;
 
@@ -346,8 +380,29 @@ interface AppsStore {
     workspaceId: string,
     title: string,
     description?: string,
+    /** Destination folder path (`apps`, `apps/Sales`, `users/<me>/apps`). */
+    folder?: string,
   ) => Promise<AppMeta | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
+  /**
+   * File an app in another folder (and/or rename its folder). One commit on
+   * main; the app keeps its id so tabs, favourites and deployments follow.
+   */
+  moveApp: (
+    workspaceId: string,
+    appId: string,
+    folder: string,
+    name?: string,
+  ) => Promise<boolean>;
+  createAppFolder: (workspaceId: string, path: string) => Promise<boolean>;
+  moveAppFolder: (
+    workspaceId: string,
+    path: string,
+    to: string,
+  ) => Promise<boolean>;
+  deleteAppFolder: (workspaceId: string, path: string) => Promise<boolean>;
+  /** Give a copied app (duplicateOf set) an id of its own. */
+  stampAppId: (workspaceId: string, appId: string) => Promise<boolean>;
 
   /**
    * List an app's files.
@@ -562,6 +617,7 @@ export const useAppsStore = create<AppsStore>()(
       repos: [],
       apps: [],
       appsCacheByWorkspace: {},
+      folders: [],
       appsLoading: false,
       error: null,
       filesByApp: {},
@@ -804,10 +860,11 @@ export const useAppsStore = create<AppsStore>()(
             await api.GET("/api/workspaces/{workspaceId}/apps", {
               params: { path: { workspaceId } },
             }),
-          ) as { apps?: AppMeta[] };
+          ) as { apps?: AppMeta[]; folders?: string[] };
           const apps = body.apps ?? [];
           set(s => {
             s.apps = apps;
+            s.folders = body.folders ?? [];
             s.appsCacheByWorkspace[workspaceId] = apps;
             s.appsLoading = false;
           });
@@ -823,6 +880,7 @@ export const useAppsStore = create<AppsStore>()(
           if (githubRequired) {
             set(s => {
               s.apps = [];
+              s.folders = [];
               delete s.appsCacheByWorkspace[workspaceId];
               s.appsLoading = false;
               s.error = null;
@@ -858,12 +916,12 @@ export const useAppsStore = create<AppsStore>()(
         }
       },
 
-      createApp: async (workspaceId, title, description) => {
+      createApp: async (workspaceId, title, description, folder) => {
         try {
           const body = unwrapBody(
             await api.POST("/api/workspaces/{workspaceId}/apps", {
               params: { path: { workspaceId } },
-              body: { title, description },
+              body: { title, description, ...(folder ? { folder } : {}) },
             }),
           ) as { app?: AppMeta };
           if (body.app) {
@@ -878,6 +936,113 @@ export const useAppsStore = create<AppsStore>()(
             s.error = message(e, "Failed to create app");
           });
           return null;
+        }
+      },
+
+      moveApp: async (workspaceId, appId, folder, name) => {
+        try {
+          const body = unwrapBody(
+            await api.POST("/api/workspaces/{workspaceId}/apps/{id}/move", {
+              params: { path: { workspaceId, id: appId } },
+              body: { folder, ...(name ? { name } : {}) },
+            }),
+          ) as { to?: string; app?: AppMeta };
+          // Optimistic enough: the server answered with the new location, so
+          // the row moves now and the full list catches up right behind it.
+          set(s => {
+            const app = s.apps.find(a => a.id === appId);
+            if (app && body.to) {
+              app.path = body.to;
+              app.slug = body.to.split("/").pop();
+              app.scope = body.to.startsWith("users/")
+                ? "private"
+                : "workspace";
+            }
+          });
+          void get().fetchApps(workspaceId);
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to move app");
+          });
+          return false;
+        }
+      },
+
+      createAppFolder: async (workspaceId, path) => {
+        try {
+          unwrapBody(
+            await api.POST("/api/workspaces/{workspaceId}/apps/folders", {
+              params: { path: { workspaceId } },
+              body: { path },
+            }),
+          );
+          set(s => {
+            if (!s.folders.includes(path)) s.folders.push(path);
+          });
+          void get().fetchApps(workspaceId);
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to create folder");
+          });
+          return false;
+        }
+      },
+
+      moveAppFolder: async (workspaceId, path, to) => {
+        try {
+          unwrapBody(
+            await api.PATCH("/api/workspaces/{workspaceId}/apps/folders", {
+              params: { path: { workspaceId } },
+              body: { path, to },
+            }),
+          );
+          await get().fetchApps(workspaceId);
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to move folder");
+          });
+          return false;
+        }
+      },
+
+      deleteAppFolder: async (workspaceId, path) => {
+        try {
+          unwrapBody(
+            await api.DELETE("/api/workspaces/{workspaceId}/apps/folders", {
+              params: { path: { workspaceId }, query: { path } },
+            }),
+          );
+          set(s => {
+            s.folders = s.folders.filter(
+              f => f !== path && !f.startsWith(`${path}/`),
+            );
+          });
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to delete folder");
+          });
+          return false;
+        }
+      },
+
+      stampAppId: async (workspaceId, appId) => {
+        try {
+          unwrapBody(
+            await api.POST("/api/workspaces/{workspaceId}/apps/{id}/stamp-id", {
+              params: { path: { workspaceId, id: appId } },
+            }),
+          );
+          await get().fetchApps(workspaceId);
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to stamp the app id");
+          });
+          return false;
         }
       },
 
@@ -1848,7 +2013,7 @@ export const useAppsStore = create<AppsStore>()(
                 branchHead: prev?.branchHead ?? null,
                 ahead: state.ahead ?? prev?.ahead ?? 0,
                 changes: repoChanges.filter(c =>
-                  c.path.startsWith(`apps/${app.slug}/`),
+                  c.path.startsWith(`${appRootOf(app)}/`),
                 ),
                 repoChanges,
                 offline: false,

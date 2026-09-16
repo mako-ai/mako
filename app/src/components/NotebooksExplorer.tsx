@@ -1,10 +1,17 @@
-import { useCallback, useRef, type ChangeEvent } from "react";
-import { IconButton, Tooltip } from "@mui/material";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type ChangeEvent,
+} from "react";
+import { IconButton, ListItemIcon, MenuItem, Tooltip } from "@mui/material";
 import {
   Download,
   Notebook as NotebookIcon,
   Plus,
   RefreshCw as RefreshIcon,
+  Star as StarIcon,
   Upload,
 } from "lucide-react";
 
@@ -28,6 +35,23 @@ import {
   type Ipynb,
 } from "../notebook-runtime/ipynb";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { useAuth } from "../contexts/auth-context";
+import {
+  selectFavourites,
+  starredRefs,
+  useFavouritesStore,
+} from "../store/favouritesStore";
+import StarToggle from "./starred/StarToggle";
+import {
+  buildStarredSection,
+  entityIdFromStarredRow,
+  favouriteIdFromFolderRow,
+  flattenLeafRows,
+  isStarredRow,
+  realEntityId,
+} from "./starred/starred-section";
+import AccessIcon from "./AccessIcon";
+import { resolveAccessState } from "./access-state";
 
 export default function NotebooksExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -40,6 +64,43 @@ export default function NotebooksExplorer() {
     loading,
     fetchTree,
   } = tree;
+
+  const { user } = useAuth();
+  const userId = user?.id;
+  // Starred notebooks: a star is a SHORTCUT. Notebooks already have real
+  // shared folders their team created, so a starred notebook keeps its place
+  // in the tree below and is also pinned on top, in this person's own
+  // favourites folders.
+  const favourites = useFavouritesStore(selectFavourites(workspaceId));
+  const fetchFavourites = useFavouritesStore(s => s.fetch);
+  const toggleFavourite = useFavouritesStore(s => s.toggle);
+  const moveFavourite = useFavouritesStore(s => s.move);
+  const createFavouriteFolder = useFavouritesStore(s => s.createFolder);
+  const renameFavourite = useFavouritesStore(s => s.rename);
+  const removeFavourite = useFavouritesStore(s => s.remove);
+  const starred = useMemo(
+    () => starredRefs(favourites, "notebook"),
+    [favourites],
+  );
+  useEffect(() => {
+    if (workspaceId) void fetchFavourites(workspaceId);
+  }, [workspaceId, fetchFavourites]);
+  const handleToggleStar = useCallback(
+    (notebookId: string) => {
+      if (!workspaceId) return;
+      void toggleFavourite(
+        workspaceId,
+        "notebook",
+        notebookId,
+        !starred.has(notebookId),
+      );
+    },
+    [workspaceId, toggleFavourite, starred],
+  );
+  const allNotebooks = useMemo(
+    () => flattenLeafRows([...myNotebooks, ...workspaceNotebooks]),
+    [myNotebooks, workspaceNotebooks],
+  );
 
   const createNotebook = useNotebookStore(s => s.createNotebook);
   const getNotebook = useNotebookStore(s => s.getNotebook);
@@ -93,7 +154,8 @@ export default function NotebooksExplorer() {
 
   const handleItemClick = useCallback((node: ResourceTreeNode) => {
     if (node.isDirectory) return;
-    focusNotebookTab(node.id, node.name);
+    // A pinned row points at the same notebook as its real row below.
+    focusNotebookTab(realEntityId(node.id), node.name);
   }, []);
 
   const handleDuplicate = useCallback(
@@ -133,7 +195,168 @@ export default function NotebooksExplorer() {
     [getNotebook],
   );
 
-  const sectionsDef = tree.sections({ my: "My Notebooks" });
+  const sectionsDef = useMemo(() => {
+    const byId = new Map(allNotebooks.map(n => [n.id, n]));
+    return [
+      ...buildStarredSection(
+        favourites,
+        "notebook",
+        refId => {
+          const node = byId.get(refId);
+          return node
+            ? {
+                name: node.name,
+                path: node.path,
+                access: node.access,
+                owner_id: node.owner_id,
+              }
+            : undefined;
+        },
+        { droppable: true },
+      ),
+      ...tree.sections({ my: "My Notebooks" }),
+    ];
+  }, [favourites, allNotebooks, tree]);
+
+  /**
+   * Rows under Starred are views, not rows the notebook tree owns: their
+   * moves, renames and deletes go to the favourites store, never to the
+   * notebook store (which would act on an id it does not know).
+   */
+  const treeHandlers = useMemo(() => {
+    const { onMoveItem, onMoveFolder, onRenameItem, onDeleteItem, ...rest } =
+      tree.treeHandlers;
+    const moveStarred = (id: string, targetId: string | null) => {
+      if (!workspaceId) return;
+      const targetFav = targetId ? favouriteIdFromFolderRow(targetId) : null;
+      const pinnedTarget = targetId ? entityIdFromStarredRow(targetId) : null;
+      const dest =
+        targetFav ??
+        (pinnedTarget
+          ? (favourites.find(f => f.refId === pinnedTarget)?.parentId ?? null)
+          : null);
+      if (targetId && targetFav === null && pinnedTarget === null) return;
+      const pinned = entityIdFromStarredRow(id);
+      const favId = pinned
+        ? favourites.find(f => f.kind === "notebook" && f.refId === pinned)?.id
+        : favouriteIdFromFolderRow(id);
+      if (favId) void moveFavourite(workspaceId, favId, dest);
+    };
+    return {
+      ...rest,
+      onMoveItem: (id: string, folderId: string | null, access?: string) => {
+        if (isStarredRow(id)) moveStarred(id, folderId);
+        else if (folderId && isStarredRow(folderId)) {
+          // A real row dropped into a Starred folder: star it there.
+          const fav = favouriteIdFromFolderRow(folderId);
+          if (workspaceId) {
+            void toggleFavourite(workspaceId, "notebook", id, true, fav);
+          }
+        } else onMoveItem(id, folderId, access);
+      },
+      onMoveFolder: (id: string, parentId: string | null, access?: string) => {
+        if (isStarredRow(id)) moveStarred(id, parentId);
+        else if (!(parentId && isStarredRow(parentId))) {
+          onMoveFolder(id, parentId, access);
+        }
+      },
+      onRenameItem: (id: string, name: string, isDirectory: boolean) => {
+        const fav = favouriteIdFromFolderRow(id);
+        if (fav) {
+          if (workspaceId) void renameFavourite(workspaceId, fav, name);
+        } else if (!isStarredRow(id)) onRenameItem(id, name, isDirectory);
+      },
+      onDeleteItem: (node: ResourceTreeNode) => {
+        const pinned = entityIdFromStarredRow(node.id);
+        const fav = favouriteIdFromFolderRow(node.id);
+        if (pinned) handleToggleStar(pinned);
+        else if (fav) {
+          if (workspaceId) void removeFavourite(workspaceId, fav);
+        } else onDeleteItem(node);
+      },
+      onCreateFolder: async (parentId: string | null, access?: string) => {
+        const fav = parentId ? favouriteIdFromFolderRow(parentId) : null;
+        if (parentId && fav === null) {
+          return tree.treeHandlers.onCreateFolder(parentId, access);
+        }
+        if (!parentId) {
+          return tree.treeHandlers.onCreateFolder(parentId, access);
+        }
+        if (!workspaceId) return null;
+        const row = await createFavouriteFolder(workspaceId, "New folder", fav);
+        return row
+          ? { id: `__starfolder__${row.id}`, name: row.title ?? "" }
+          : null;
+      },
+    };
+  }, [
+    tree.treeHandlers,
+    workspaceId,
+    favourites,
+    moveFavourite,
+    toggleFavourite,
+    renameFavourite,
+    removeFavourite,
+    handleToggleStar,
+    createFavouriteFolder,
+  ]);
+
+  const handleSectionDrop = useCallback(
+    (sectionKey: string, nodeId: string): boolean => {
+      if (sectionKey !== "starred" || !workspaceId) return false;
+      const pinned = entityIdFromStarredRow(nodeId);
+      const fav = favouriteIdFromFolderRow(nodeId);
+      if (fav) void moveFavourite(workspaceId, fav, null);
+      else if (pinned) {
+        const row = favourites.find(
+          f => f.kind === "notebook" && f.refId === pinned,
+        );
+        if (row) void moveFavourite(workspaceId, row.id, null);
+      } else if (!isStarredRow(nodeId)) {
+        void toggleFavourite(workspaceId, "notebook", nodeId, true, null);
+      }
+      return true;
+    },
+    [workspaceId, favourites, moveFavourite, toggleFavourite],
+  );
+
+  const getContextMenuItems = useCallback(
+    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
+      const pinnedId = entityIdFromStarredRow(node.id);
+      // Only pinned rows get a bespoke menu; every other row keeps the
+      // tree's own rename/duplicate/delete entries (Starred folders too).
+      if (!pinnedId) return null;
+      return [
+        <MenuItem
+          key="unstar"
+          onClick={() => {
+            helpers.closeMenu();
+            handleToggleStar(pinnedId);
+          }}
+        >
+          <ListItemIcon>
+            <StarIcon size={16} fill="currentColor" />
+          </ListItemIcon>
+          Unstar
+        </MenuItem>,
+      ];
+    },
+    [handleToggleStar],
+  );
+
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      if (node.isDirectory) return null;
+      const notebookId = realEntityId(node.id);
+      return (
+        <StarToggle
+          starred={starred.has(notebookId)}
+          onToggle={() => handleToggleStar(notebookId)}
+        />
+      );
+    },
+    [starred, handleToggleStar],
+  );
 
   const activeNotebookTabId = (() => {
     if (!activeTabId) return null;
@@ -145,8 +368,23 @@ export default function NotebooksExplorer() {
   })();
 
   const getItemIcon = useCallback(
-    () => <NotebookIcon size={14} style={{ opacity: 0.75 }} />,
-    [],
+    (node: ResourceTreeNode) => {
+      if (node.isDirectory) return null;
+      // Only a PINNED row carries the access overlay: it has left the section
+      // that would otherwise say who can see it.
+      if (entityIdFromStarredRow(node.id)) {
+        return (
+          <AccessIcon
+            Glyph={NotebookIcon}
+            state={resolveAccessState(node, userId)}
+            kindLabel="Notebook"
+            size={14}
+          />
+        );
+      }
+      return <NotebookIcon size={14} style={{ opacity: 0.75 }} />;
+    },
+    [userId],
   );
 
   const actions = (
@@ -216,7 +454,10 @@ export default function NotebooksExplorer() {
             enableDelete
             enableNewFolder
             onItemClick={handleItemClick}
-            {...tree.treeHandlers}
+            {...treeHandlers}
+            onSectionDrop={handleSectionDrop}
+            getContextMenuItems={getContextMenuItems}
+            getRightAdornment={getRightAdornment}
             onDuplicateItem={handleDuplicate}
             isFolderExpanded={isNotebookFolderExpanded}
             onToggleFolder={toggleNotebookFolder}
