@@ -307,22 +307,27 @@ async function fetchAppDoc(
   id: string,
 ): Promise<FetchedDoc | null> {
   const folders = await visibleAppFolders(workspaceId, userId);
+  // A bare slug names one app only when unique, or the top-level apps/<slug>
+  // — the same rule as resolveProjectRef; a namesake must never be served.
+  const bySlug = folders.filter(f => f.slug === id);
   const folder =
     folders.find(f => f.id === id) ??
     folders.find(f => f.path === id) ??
     folders.find(f => f.path === `apps/${id}`) ??
-    folders.find(f => f.slug === id);
+    (bySlug.length === 1 ? bySlug[0] : undefined) ??
+    bySlug.find(f => f.path === `apps/${id}`);
   if (!folder) {
-    // Legacy fetch ids were Mongo ObjectIds.
+    // Legacy fetch ids were Mongo ObjectIds of a state row; its path is
+    // the folder, never its slug.
     if (Types.ObjectId.isValid(id)) {
       const app = await AppProject.findOne({
         _id: new Types.ObjectId(id),
         workspaceId: new Types.ObjectId(workspaceId),
       })
-        .select("slug")
+        .select("path")
         .lean();
-      if (app?.slug) {
-        return fetchAppDoc(workspaceId, userId, app.slug);
+      if (app?.path) {
+        return fetchAppDoc(workspaceId, userId, app.path);
       }
     }
     return null;

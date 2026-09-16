@@ -513,9 +513,10 @@ export async function readDeploymentAsset(
  * boot log uses.
  */
 export function buildLogPath(handle: WorktreeHandle): string {
-  const project = handleProject(handle);
-  const slug = project.slug || project._id.toString();
-  return `/tmp/mako-build-${slug.replace(/[^A-Za-z0-9_-]/g, "-")}.log`;
+  // By app id: slugs are not unique per workspace once apps nest, and two
+  // same-named apps building in the shared publish box would truncate and
+  // interleave one log.
+  return `/tmp/mako-build-${handleProject(handle)._id.toString()}.log`;
 }
 
 export async function buildApp(

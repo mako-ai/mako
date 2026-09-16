@@ -37,7 +37,6 @@ import {
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useAuth } from "../contexts/auth-context";
 import {
-  favouriteFor,
   selectFavourites,
   starredRefs,
   useFavouritesStore,
@@ -46,11 +45,10 @@ import StarToggle from "./starred/StarToggle";
 import {
   buildStarredSection,
   entityIdFromStarredRow,
-  favouriteIdFromFolderRow,
   flattenLeafRows,
-  isStarredRow,
   realEntityId,
 } from "./starred/starred-section";
+import { useStarredTree } from "./starred/use-starred-tree";
 import AccessIcon from "./AccessIcon";
 import { resolveAccessState } from "./access-state";
 
@@ -75,10 +73,6 @@ export default function NotebooksExplorer() {
   const favourites = useFavouritesStore(selectFavourites(workspaceId));
   const fetchFavourites = useFavouritesStore(s => s.fetch);
   const toggleFavourite = useFavouritesStore(s => s.toggle);
-  const moveFavourite = useFavouritesStore(s => s.move);
-  const createFavouriteFolder = useFavouritesStore(s => s.createFolder);
-  const renameFavourite = useFavouritesStore(s => s.rename);
-  const removeFavourite = useFavouritesStore(s => s.remove);
   const starred = useMemo(
     () => starredRefs(favourites, "notebook"),
     [favourites],
@@ -219,116 +213,21 @@ export default function NotebooksExplorer() {
     ];
   }, [favourites, allNotebooks, tree]);
 
-  /**
-   * Rows under Starred are views, not rows the notebook tree owns: their
-   * moves, renames and deletes go to the favourites store, never to the
-   * notebook store (which would act on an id it does not know).
-   */
-  const treeHandlers = useMemo(() => {
-    const { onMoveItem, onMoveFolder, onRenameItem, onDeleteItem, ...rest } =
-      tree.treeHandlers;
-    const moveStarred = (id: string, targetId: string | null) => {
-      if (!workspaceId) return;
-      const targetFav = targetId ? favouriteIdFromFolderRow(targetId) : null;
-      const pinnedTarget = targetId ? entityIdFromStarredRow(targetId) : null;
-      const dest =
-        targetFav ??
-        (pinnedTarget
-          ? (favourites.find(f => f.refId === pinnedTarget)?.parentId ?? null)
-          : null);
-      if (targetId && targetFav === null && pinnedTarget === null) return;
-      const pinned = entityIdFromStarredRow(id);
-      const favId = pinned
-        ? favourites.find(f => f.kind === "notebook" && f.refId === pinned)?.id
-        : favouriteIdFromFolderRow(id);
-      if (favId) void moveFavourite(workspaceId, favId, dest);
-    };
-    return {
-      ...rest,
-      onMoveItem: (id: string, folderId: string | null, access?: string) => {
-        if (isStarredRow(id)) moveStarred(id, folderId);
-        else if (folderId && isStarredRow(folderId)) {
-          // A real row dropped into a Starred folder: star it there — or,
-          // when it is already starred, MOVE the existing star (adding again
-          // is idempotent server-side and the row would snap back).
-          const fav = favouriteIdFromFolderRow(folderId);
-          if (!workspaceId) return;
-          const existing = favouriteFor(favourites, "notebook", id);
-          if (existing) void moveFavourite(workspaceId, existing.id, fav);
-          else void toggleFavourite(workspaceId, "notebook", id, true, fav);
-        } else onMoveItem(id, folderId, access);
-      },
-      onMoveFolder: (id: string, parentId: string | null, access?: string) => {
-        if (isStarredRow(id)) moveStarred(id, parentId);
-        else if (!(parentId && isStarredRow(parentId))) {
-          onMoveFolder(id, parentId, access);
-        }
-      },
-      onRenameItem: (id: string, name: string, isDirectory: boolean) => {
-        const fav = favouriteIdFromFolderRow(id);
-        if (fav) {
-          if (workspaceId) void renameFavourite(workspaceId, fav, name);
-        } else if (!isStarredRow(id)) onRenameItem(id, name, isDirectory);
-      },
-      onDeleteItem: (node: ResourceTreeNode) => {
-        const pinned = entityIdFromStarredRow(node.id);
-        const fav = favouriteIdFromFolderRow(node.id);
-        if (pinned) handleToggleStar(pinned);
-        else if (fav) {
-          if (workspaceId) void removeFavourite(workspaceId, fav);
-        } else onDeleteItem(node);
-      },
-      onCreateFolder: async (parentId: string | null, access?: string) => {
-        const fav = parentId ? favouriteIdFromFolderRow(parentId) : null;
-        if (parentId && fav === null) {
-          return tree.treeHandlers.onCreateFolder(parentId, access);
-        }
-        if (!parentId) {
-          return tree.treeHandlers.onCreateFolder(parentId, access);
-        }
-        if (!workspaceId) return null;
-        const row = await createFavouriteFolder(workspaceId, "New folder", fav);
-        return row
-          ? { id: `__starfolder__${row.id}`, name: row.title ?? "" }
-          : null;
-      },
-    };
-  }, [
-    tree.treeHandlers,
-    workspaceId,
-    favourites,
-    moveFavourite,
-    toggleFavourite,
-    renameFavourite,
-    removeFavourite,
-    handleToggleStar,
-    createFavouriteFolder,
-  ]);
-
-  const handleSectionDrop = useCallback(
-    (sectionKey: string, nodeId: string): boolean => {
-      if (sectionKey !== "starred" || !workspaceId) return false;
-      const pinned = entityIdFromStarredRow(nodeId);
-      const fav = favouriteIdFromFolderRow(nodeId);
-      if (fav) void moveFavourite(workspaceId, fav, null);
-      else if (pinned) {
-        const row = favourites.find(
-          f => f.kind === "notebook" && f.refId === pinned,
-        );
-        if (row) void moveFavourite(workspaceId, row.id, null);
-      } else if (
-        !isStarredRow(nodeId) &&
-        // Only a NOTEBOOK can be starred. A notebook folder dropped here
-        // would become an item row pointing at a folder id: invisible (no
-        // notebook resolves it) and impossible to remove from the UI.
-        allNotebooks.some(n => n.id === nodeId)
-      ) {
-        void toggleFavourite(workspaceId, "notebook", nodeId, true, null);
-      }
-      return true;
-    },
-    [workspaceId, favourites, allNotebooks, moveFavourite, toggleFavourite],
+  // Rows under Starred are views: their moves, renames and deletes go to
+  // the favourites store, never to the notebook store (use-starred-tree.tsx).
+  const starrable = useCallback(
+    (id: string) => allNotebooks.some(n => n.id === id),
+    [allNotebooks],
   );
+  const { treeHandlers, handleSectionDrop, getSectionContextMenuItems } =
+    useStarredTree({
+      kind: "notebook",
+      workspaceId,
+      favourites,
+      base: tree.treeHandlers,
+      isStarrable: starrable,
+      onToggleStar: handleToggleStar,
+    });
 
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
@@ -466,6 +365,7 @@ export default function NotebooksExplorer() {
             onItemClick={handleItemClick}
             {...treeHandlers}
             onSectionDrop={handleSectionDrop}
+            getSectionContextMenuItems={getSectionContextMenuItems}
             getContextMenuItems={getContextMenuItems}
             getRightAdornment={getRightAdornment}
             onDuplicateItem={handleDuplicate}

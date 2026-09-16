@@ -32,6 +32,7 @@ import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
+  decodeUrlSegment,
   tabUrlPath,
 } from "../lib/tab-routing";
 
@@ -233,7 +234,7 @@ export function UrlSync() {
       );
     } else if (appFileMatch) {
       // /a/:appId/file/:path — Apps file editor
-      const appId = decodeURIComponent(appFileMatch[1]);
+      const appId = decodeUrlSegment(appFileMatch[1]);
       const filePath = decodePathSegments(appFileMatch[2]);
       setLeftPane("apps");
       void useAppsStore
@@ -257,7 +258,7 @@ export function UrlSync() {
         });
     } else if (appMatch) {
       // /a/:appId — Apps (git-backed, experimental)
-      const appId = decodeURIComponent(appMatch[1]);
+      const appId = decodeUrlSegment(appMatch[1]);
       // The app's own query (a shared filtered view). Read NOW, synchronously:
       // the outgoing sync below rewrites the address bar to the tab's URL as
       // soon as hydration completes, and until the tab carries this search

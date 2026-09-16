@@ -105,10 +105,11 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
       // bring every workspace with a published app up to date first. One
       // throttled fetch + rev-parse per workspace per tick; a no-op when
       // main has not moved.
-      const publishedWorkspaces = await AppProject.distinct("workspaceId", {
-        publishedSha: { $exists: true, $nin: [null, ""] },
-      });
-      for (const ws of publishedWorkspaces) {
+      // Every workspace with a state row: restricted or shared apps are
+      // scheduled too (a row appears when an app is published, restricted
+      // or shared), not only published ones.
+      const workspacesWithApps = await AppProject.distinct("workspaceId");
+      for (const ws of workspacesWithApps) {
         try {
           await loadAppsIndex(ws.toString());
         } catch (error) {

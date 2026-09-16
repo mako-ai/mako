@@ -219,6 +219,13 @@ export interface ResourceTreeProps {
     access?: string,
   ) => void;
   onRenameItem?: (id: string, name: string, isDirectory: boolean) => void;
+  /**
+   * What the inline rename box starts from, when it is not the row's
+   * displayed name — an app row shows its TITLE but renames its folder
+   * (slug). Defaults to `node.name`; the commit compares against the seed,
+   * so an unchanged value is a resort, not a rename.
+   */
+  getRenameSeed?: (node: ResourceTreeNode) => string;
   onDeleteItem?: (node: ResourceTreeNode) => void;
   onDuplicateItem?: (node: ResourceTreeNode) => void;
   onCreateFolder?: (
@@ -279,6 +286,7 @@ function ResourceTreeInner(
     onMoveItem,
     onMoveFolder,
     onRenameItem,
+    getRenameSeed,
     onDeleteItem,
     onDuplicateItem,
     onCreateFolder,
@@ -666,10 +674,10 @@ function ResourceTreeInner(
     (item: ResourceTreeNode) => {
       if (!enableRename) return;
       setRenamingItemId(item.id);
-      setRenameValue(item.name);
+      setRenameValue(getRenameSeed?.(item) ?? item.name);
       setContextMenu(null);
     },
-    [enableRename],
+    [enableRename, getRenameSeed],
   );
 
   const cancelInlineRename = useCallback(() => {
@@ -686,7 +694,8 @@ function ResourceTreeInner(
         return;
       }
 
-      if (nextName && nextName !== location.node.name) {
+      const seed = getRenameSeed?.(location.node) ?? location.node.name;
+      if (nextName && nextName !== seed) {
         onRenameItem?.(itemId, nextName, location.node.isDirectory);
       } else {
         onResortItem?.(itemId);
@@ -697,6 +706,7 @@ function ResourceTreeInner(
     [
       cancelInlineRename,
       findNodeLocation,
+      getRenameSeed,
       onRenameItem,
       onResortItem,
       renameValue,

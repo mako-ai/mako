@@ -103,7 +103,10 @@ import {
   favouriteIdFromFolderRow,
   starredFolderId,
 } from "./starred/starred-section";
-import { FolderNameDialog } from "./apps-explorer/AppFolderDialogs";
+import {
+  FolderNameDialog,
+  isValidFolderName,
+} from "./apps-explorer/AppFolderDialogs";
 
 const AppIcon = TAB_KIND_ICONS["app"];
 
@@ -832,7 +835,13 @@ export default function AppsExplorer() {
       const parsed = parseNodeId(id);
       if (parsed.kind === "starfolder") {
         void renameFavourite(workspaceId, parsed.favId, name);
-      } else if (parsed.kind === "folder") {
+        return;
+      }
+      // Git folders and app folders: the same name rule as the server's
+      // isSafeSegment — a value it would refuse is dropped here, silently
+      // (the row simply keeps its name), rather than becoming a 400.
+      if (!isValidFolderName(name)) return;
+      if (parsed.kind === "folder") {
         const to = `${parentPathOf(parsed.folderPath)}/${name}`;
         if (to !== parsed.folderPath && mayWriteTo(parsed.folderPath)) {
           void moveAppFolder(workspaceId, parsed.folderPath, to);
@@ -1400,6 +1409,16 @@ export default function AppsExplorer() {
                     return handleCreateStarFolder(favId);
                   }}
                   onRenameItem={handleRename}
+                  // An app row displays its TITLE but renames its FOLDER
+                  // (the slug); editing the visible title must not git-mv
+                  // the directory to "Daily tracker v2".
+                  getRenameSeed={node => {
+                    const parsed = parseNodeId(node.id);
+                    if (parsed.kind === "app" && !parsed.pinned) {
+                      return appById.get(parsed.appId)?.slug ?? node.name;
+                    }
+                    return node.name;
+                  }}
                   onDeleteItem={handleDeleteNode}
                   // Rename, delete and drag act on folders and app rows. A
                   // file or directory INSIDE an app has no handler (the editor

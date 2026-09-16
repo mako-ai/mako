@@ -167,13 +167,17 @@ async function devPort(
         `if(Date.now()-t0>5000){try{fs.rmdirSync(lock)}catch{}continue}` +
         `const w=Date.now()+15;while(Date.now()<w);}}` +
         `try{let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
+        // A box that predates id-keyed registries holds this app under its
+        // old key (apps/<basename>): adopt that slot rather than start a
+        // second vite beside the first for the rest of the box's life.
+        `const legacy=process.argv[2];if(!m[app]&&legacy&&Number.isInteger(m[legacy])){m[app]=m[legacy];delete m[legacy];fs.writeFileSync(f,JSON.stringify(m));}` +
         `if(!m[app]){const used=new Set(Object.values(m));let p=${DEV_PORT_BASE};while(used.has(p))p++;m[app]=p;fs.writeFileSync(f,JSON.stringify(m));}` +
         `console.log(m[app]??"")}finally{try{fs.rmdirSync(lock)}catch{}}`
       : `let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
         `console.log(m[app]??"");`);
   const result = await provider.exec(
     ctx,
-    `node -e ${sh(script)} ${JSON.stringify(appSlug(handle))}`,
+    `node -e ${sh(script)} ${JSON.stringify(appSlug(handle))} ${JSON.stringify(handle.appRoot)}`,
     { timeoutMs: 30_000 },
   );
   const port = Number(result.stdout.trim());

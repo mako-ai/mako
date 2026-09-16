@@ -21,6 +21,19 @@ export function encodePathSegments(path: string): string {
   return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }
 
+/**
+ * Decode one URL segment, tolerating a malformed percent sequence: a
+ * hand-typed `/apps/100%` must not throw URIError into the root error
+ * boundary — the raw segment simply fails to resolve instead.
+ */
+export function decodeUrlSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Inverse of {@link encodePathSegments}. */
 export function decodePathSegments(encoded: string): string {
   return encoded.split("/").filter(Boolean).map(decodeURIComponent).join("/");

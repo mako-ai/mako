@@ -93,7 +93,7 @@ import {
   stampAppId,
   type AppFolderTarget,
 } from "../apps/worktree.service";
-import { resolveAppRef } from "../apps/app-index.service";
+import { loadAppsIndex, resolveAppRef } from "../apps/app-index.service";
 import { parseAppRepoPath } from "../apps/app-paths";
 import {
   authorizeAppMove,
@@ -949,6 +949,29 @@ appsRoutes.openapi(
         authorizeFolderTarget(from, userId, role) ??
         authorizeFolderTarget(target, userId, role);
       if (denied) return c.json({ success: false, error: denied }, 403);
+      // Moving a folder moves every app in it, and a move into a personal
+      // tree re-owns them: the caller must be allowed to write each one, as
+      // POST /{id}/move requires for a single app.
+      const fromPath = path.replace(/\/+$/, "");
+      const inside = (await loadAppsIndex(workspaceId)).apps.filter(
+        a => a.path === fromPath || a.path.startsWith(`${fromPath}/`),
+      );
+      if (inside.length > 0 && userId) {
+        const rows = await AppProject.find({
+          workspaceId: new Types.ObjectId(workspaceId),
+          _id: { $in: inside.map(a => new Types.ObjectId(a.appId)) },
+        });
+        const refused = rows.find(row => !canWriteResource(row, userId, role));
+        if (refused) {
+          return c.json(
+            {
+              success: false,
+              error: `You cannot move ${refused.path ?? refused.slug}: it is restricted and not shared with you for editing`,
+            },
+            403,
+          );
+        }
+      }
       const moved = await moveAppFolder(workspaceId, from, target, { userId });
       return c.json({ success: true as const, ...moved }, 200);
     } catch (error) {
@@ -2228,10 +2251,13 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      // Dev sessions, launchers and registry slots are keyed by the app's
+      // ID in the box (dev-server.service appSlug), never by the folder
+      // basename — a basename kills nothing once apps nest.
       await killAllTerminalSessions(
         loaded.project,
         loaded.userId ?? "api-key",
-        loaded.project.slug ?? null,
+        loaded.project._id.toString(),
       );
       // Free the dev-server port registration too — the kill stops the
       // process, but a dead registry entry would retire its port forever
@@ -2239,7 +2265,7 @@ appsRoutes.openapi(
       await releaseDevServerSlot(
         loaded.project.workspaceId.toString(),
         loaded.userId ?? "api-key",
-        loaded.project.slug ?? null,
+        loaded.project._id.toString(),
       );
       return c.json({ success: true as const }, 200);
     } catch (error) {

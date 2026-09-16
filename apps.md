@@ -3394,6 +3394,41 @@ the branch. The ones that change how the design works:
 - CI fails when `packages/app-sdk`'s version is not on npm (scaffolds pin
   `^<that version>`).
 
+A second review pass on the fixed branch confirmed ten more, also fixed:
+
+- A legacy app moved AND edited in one push is matched by git's rename
+  detection on its manifest (`renamedAppFolders`, `git diff -M` between the
+  previously indexed commit and the new one), where neither the path nor
+  the tree oid could.
+- The no-rebuild-backwards guard also covers an indexed commit this clone
+  has never seen: fetch once, and if it is still unknown, serve the rows.
+- Move writes (id stamps, and a pre-npm `file:` SDK dependency rewritten to
+  the registry package) are computed AFTER the pre-commit freshen, so a
+  laptop's manifest edit is never overwritten by a stale copy; the source
+  folder is re-checked against the freshened main.
+- `PATCH /apps/folders` requires write access to every row-backed app the
+  folder holds (a member could otherwise re-own a colleague's restricted
+  app by moving its folder into their personal tree).
+- Stop-dev, the dev terminal window, the build log and the port registry
+  are keyed by app id everywhere (the terminal waited forever on a socket
+  named by basename); a box that predates the change has its
+  `apps/<basename>` registry slot adopted rather than duplicated.
+- The scheduler warms the index for every workspace with a state row, not
+  only published ones. `stamp-id` on an already-stamped app is a no-op.
+  Scaffolding inside another app is refused. Bad folder paths are 400s.
+  A CAS rollback that did not apply is logged instead of swallowed.
+- `discoverApps` never promotes a manifest-less project's directories (or
+  its `src/`) to folders; a folder holds apps, folders and `.gitkeep` only.
+- The SDK's vite plugin and the CLI identify the app by its manifest id
+  when it has one (basename fallback) — this ships with the next SDK
+  publish; the API accepts both.
+- Client: the dev terminal id is `dev-<app id>`; inline rename of an app row
+  edits the folder name, never the title; malformed `/apps/<ref>` segments
+  no longer throw; Notebooks/Dashboards Starred headers create favourites
+  folders and starred rows dropped on other headers stay put (shared
+  `useStarredTree` hook); the folder name validator matches the server's
+  Unicode rule.
+
 **Previews cannot verify the write paths.** The preview job does not set
 `APPS_REQUIRE_CONNECTED_REPO`, so `commitOnMainDurably` commits only to that
 instance's local clone (no mirror push); a later request served by another

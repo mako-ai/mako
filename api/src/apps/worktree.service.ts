@@ -118,6 +118,7 @@ import {
   stampManifestId,
   type AppScope,
 } from "./app-paths";
+import { appSdkDependency } from "./app-sdk-package";
 
 // Identity helpers moved to app-paths.ts (pure); re-exported so existing
 // importers keep working.
@@ -744,7 +745,7 @@ export interface AppFolderTarget {
 export function folderTargetFromPath(folderPath: string): AppFolderTarget {
   const parsed = parseAppFolderPath(folderPath.replace(/\/+$/, ""));
   if (!parsed) {
-    throw new Error(
+    throw new AppFolderError(
       `Not an app folder: ${JSON.stringify(folderPath)} (expected apps/… or users/<id>/apps/…)`,
     );
   }
@@ -889,6 +890,15 @@ export async function createProject(input: {
   const slug =
     input.slug ?? (await uniqueSlug(input.workspaceId, title, target));
   const appPath = appRepoPath({ ...target, slug });
+  // Never scaffold inside another app: the outer folder would swallow it
+  // (the index files one app per outermost manifest) and the row would be
+  // orphaned while the parent redeploys with a stranger's files.
+  const parentApp = (await loadAppsIndex(input.workspaceId)).apps.find(a =>
+    isWithin(appPath, a.path),
+  );
+  if (parentApp) {
+    throw new AppFolderError(`${parentApp.path} is an app, not a folder`, 409);
+  }
   const project = await AppProject.create({
     workspaceId: new Types.ObjectId(input.workspaceId),
     title,
@@ -941,13 +951,21 @@ export async function createProject(input: {
       _id: project._id,
       workspaceId: project.workspaceId,
     });
-    // Roll the scaffold commit back so the repo matches the docs.
-    await updateRefCas(
+    // Roll the scaffold commit back so the repo matches the docs. The CAS
+    // returns false (it does not throw) when main moved on meanwhile; that
+    // leaves the scaffold on a tip the mirror never received — say so.
+    const rolledBack = await updateRefCas(
       repoDir,
       `refs/heads/${DEFAULT_BRANCH}`,
       scaffoldCommit.previousHead,
       scaffoldCommit.commitOid,
-    ).catch(() => undefined);
+    ).catch(() => false);
+    if (!rolledBack) {
+      logger.warn("Apps scaffold rollback skipped: main moved on", {
+        projectId: project._id.toString(),
+        commit: scaffoldCommit.commitOid,
+      });
+    }
     logger.error("Apps creation aborted: durable push failed", {
       projectId: project._id.toString(),
       error: error instanceof Error ? error.message : String(error),
@@ -1027,28 +1045,50 @@ function isWithin(candidate: string, root: string): boolean {
  * knows it by — so a move never changes an identity, even for an app that
  * predates manifest ids. Paths are the NEW ones (post-move).
  */
-async function idStampsUnder(
+async function moveWritesUnder(
   workspaceId: string,
   repoDir: string,
   moves: Array<{ from: string; to: string }>,
 ): Promise<Record<string, string>> {
   const snapshot = await loadAppsIndex(workspaceId, { freshen: false });
   const writes: Record<string, string> = {};
+  const readAt = async (rel: string): Promise<string | null> => {
+    try {
+      return (await readBlob(repoDir, DEFAULT_BRANCH, rel)).contents;
+    } catch {
+      return null;
+    }
+  };
   for (const app of snapshot.apps) {
-    if (app.hasManifestId) continue;
     const move = moves.find(m => isWithin(app.path, m.from));
     if (!move) continue;
     const newPath = `${move.to}${app.path.slice(move.from.length)}`;
-    let contents: string | null = null;
-    try {
-      contents = (
-        await readBlob(repoDir, DEFAULT_BRANCH, `${app.path}/${APP_MANIFEST}`)
-      ).contents;
-    } catch {
-      contents = null;
+    if (!app.hasManifestId) {
+      const stamped = stampManifestId(
+        await readAt(`${app.path}/${APP_MANIFEST}`),
+        app.appId,
+      );
+      if (stamped !== null) writes[`${newPath}/${APP_MANIFEST}`] = stamped;
     }
-    const stamped = stampManifestId(contents, app.appId);
-    if (stamped !== null) writes[`${newPath}/${APP_MANIFEST}`] = stamped;
+    // A pre-npm `file:../../packages/app-sdk` dependency is relative to the
+    // app's depth: it breaks the moment the folder moves. Point it at the
+    // registry package the scaffold uses.
+    const pkgRaw = await readAt(`${app.path}/package.json`);
+    if (pkgRaw) {
+      try {
+        const pkg = JSON.parse(pkgRaw) as {
+          dependencies?: Record<string, string>;
+        };
+        const dep = pkg.dependencies?.["@makoai/app-sdk"];
+        if (typeof dep === "string" && dep.startsWith("file:")) {
+          pkg.dependencies = { ...pkg.dependencies, ...appSdkDependency() };
+          writes[`${newPath}/package.json`] =
+            `${JSON.stringify(pkg, null, 2)}\n`;
+        }
+      } catch {
+        // Not JSON: leave it to the user.
+      }
+    }
   }
   return writes;
 }
@@ -1059,31 +1099,48 @@ async function idStampsUnder(
  * received would be a commit that never happened. Rolled back on failure,
  * as createProject does.
  */
+type MainMutation = Parameters<typeof commitFilesOnBranch>[2];
+
 async function commitOnMainDurably(
   workspaceId: string,
   repoDir: string,
-  mutation: Parameters<typeof commitFilesOnBranch>[2],
+  /**
+   * The change, or a function computing it. A function runs AFTER the
+   * freshen below, so anything it reads from main (a manifest to stamp, a
+   * package.json to rewrite) is the mirror's current content, not a copy
+   * a laptop push has since replaced.
+   */
+  mutation: MainMutation | (() => Promise<MainMutation>),
   options: { message: string; author?: GitAuthor },
 ): Promise<void> {
   const mirror = await resolveMirrorTarget(workspaceId);
   // Commit onto the mirror's main, not a stale local copy of it — a laptop
   // push this instance has not seen would make the result unmirrorable.
   await freshenBeforeMainWrite(workspaceId);
+  invalidateAppsIndexCache(workspaceId);
   const commit = await commitFilesOnBranch(
     repoDir,
     DEFAULT_BRANCH,
-    mutation,
+    typeof mutation === "function" ? await mutation() : mutation,
     options,
   );
   try {
     if (mirror) await mirrorPushNow(workspaceId);
   } catch (error) {
-    await updateRefCas(
+    // The CAS returns false (it does not throw) when main moved on
+    // meanwhile; the commit then stays on a local tip the mirror never got.
+    const rolledBack = await updateRefCas(
       repoDir,
       `refs/heads/${DEFAULT_BRANCH}`,
       commit.previousHead,
       commit.commitOid,
-    ).catch(() => undefined);
+    ).catch(() => false);
+    if (!rolledBack) {
+      logger.warn("Apps lifecycle commit rollback skipped: main moved on", {
+        workspaceId,
+        commit: commit.commitOid,
+      });
+    }
     throw new Error(
       `Could not store the change durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -1129,11 +1186,21 @@ export async function moveProject(
     throw new AppFolderError(`${parent.path} is an app, not a folder`, 409);
   }
   const moves = [{ from, to }];
-  const writes = await idStampsUnder(workspaceId, repoDir, moves);
   await commitOnMainDurably(
     workspaceId,
     repoDir,
-    { moves, writes },
+    async () => {
+      // Re-check against the freshened main: the folder may have moved or
+      // gone in a push this instance had not seen a moment ago.
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      if (!fresh.apps.some(a => a.path === from)) {
+        throw new AppFolderError(`App folder ${from} is not on main`, 404);
+      }
+      return {
+        moves,
+        writes: await moveWritesUnder(workspaceId, repoDir, moves),
+      };
+    },
     {
       message: `Move app "${project.title}" (${from} → ${to})`,
       author: options.author,
@@ -1229,12 +1296,20 @@ export async function moveAppFolder(
     throw new AppFolderError(`${parentApp.path} is an app, not a folder`, 409);
   }
   const moves = [{ from: fromPath, to: toPath }];
-  const writes = await idStampsUnder(workspaceId, repoDir, moves);
   const apps = snapshot.apps.filter(a => isWithin(a.path, fromPath));
   await commitOnMainDurably(
     workspaceId,
     repoDir,
-    { moves, writes },
+    async () => {
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      if (!fresh.folders.includes(fromPath)) {
+        throw new AppFolderError(`Folder ${fromPath} not found`, 404);
+      }
+      return {
+        moves,
+        writes: await moveWritesUnder(workspaceId, repoDir, moves),
+      };
+    },
     { message: `Move folder ${fromPath} → ${toPath}`, author: options.author },
   );
   pokeApp(workspaceId, null, "lifecycle", options.userId);
@@ -1296,6 +1371,8 @@ export async function stampAppId(
       `${app.path}/${APP_MANIFEST} is not valid JSON; fix it before stamping an id`,
     );
   }
+  // Already carries this id: nothing to write, no empty commit to push.
+  if (stamped === contents) return;
   await commitOnMainDurably(
     workspaceId,
     repoDir,

@@ -653,7 +653,11 @@ function TerminalTabs({
   // the box (pushed truth) but have no tab here: opened by the agent, another
   // browser, or a previous pageview. One tap attaches, history and all;
   // invisible sessions were how people collided with them.
-  const devTermId = `dev-${slug ?? ""}`;
+  // The dev session is named by the app's ID server-side (dev-server.service
+  // keys the dtach socket, history and launcher by it — folder basenames are
+  // not unique once apps nest), so the terminal id must be too; the label
+  // keeps the human-readable slug.
+  const devTermId = `dev-${appId}`;
   const sessionItems: {
     key: string;
     termId: string;

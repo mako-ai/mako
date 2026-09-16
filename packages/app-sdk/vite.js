@@ -85,12 +85,24 @@ export function resolveMakoContext(appDir, options = {}) {
     apiUrl,
     apiKey: options.apiKey ?? env("MAKO_API_KEY") ?? "",
     workspaceId: options.workspaceId ?? env("MAKO_WORKSPACE_ID") ?? ws.workspaceId ?? "",
-    slug: options.slug ?? path.basename(path.resolve(appDir)),
+    // The manifest id is the app's identity (apps.md §29); the folder
+    // basename is only a fallback for apps that predate ids — and is
+    // ambiguous once apps nest.
+    slug: options.slug ?? readManifestId(appDir) ?? path.basename(path.resolve(appDir)),
     bindingsDir: path.join(appDir, "bindings"),
     cacheDir: path.join(appDir, "node_modules", ".mako-data"),
     /** Preview the app as this viewer (email) — see makoData(). */
     viewAs: options.viewAs ?? env("MAKO_VIEWER_AS") ?? "",
   };
+}
+
+function readManifestId(appDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(appDir, "mako.json"), "utf8"));
+    return typeof raw.id === "string" && /^[0-9a-f]{24}$/i.test(raw.id) ? raw.id : null;
+  } catch {
+    return null;
+  }
 }
 
 function listBindings(bindingsDir) {

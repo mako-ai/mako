@@ -140,6 +140,29 @@ export function discoverApps(records: TreeRecord[]): Discovery {
     return null;
   };
 
+  // A folder holds apps and folders, nothing else: a directory with files
+  // of its own (a manifest-less project under apps/, or its src/) is not a
+  // folder, and neither is anything beneath it. `.gitkeep` is the one file
+  // a folder may hold (an empty folder is a commit of that marker).
+  // The tree roots (`apps`, `users/<id>/apps`) may hold stray files
+  // (a README) without disqualifying everything beneath them.
+  const withOwnFiles = new Set<string>();
+  for (const r of records) {
+    if (r.type !== "blob") continue;
+    const slash = r.path.lastIndexOf("/");
+    if (slash < 0 || r.path.slice(slash + 1) === ".gitkeep") continue;
+    const dir = r.path.slice(0, slash);
+    const parsed = parseAppFolderPath(dir);
+    if (!parsed || parsed.folderSegments.length === 0) continue;
+    withOwnFiles.add(dir);
+  }
+  const insideProject = (p: string): boolean => {
+    for (const dir of withOwnFiles) {
+      if (p === dir || p.startsWith(`${dir}/`)) return true;
+    }
+    return false;
+  };
+
   const treeOids = new Map<string, string>();
   const folders: string[] = [];
   for (const r of records) {
@@ -148,7 +171,7 @@ export function discoverApps(records: TreeRecord[]): Discovery {
       treeOids.set(r.path, r.oid);
       continue;
     }
-    if (insideApp(r.path)) continue;
+    if (insideApp(r.path) || insideProject(r.path)) continue;
     const folder = parseAppFolderPath(r.path);
     // The tree roots themselves (`apps`, `users/<id>/apps`) are implicit.
     if (folder && folder.folderSegments.length > 0) folders.push(r.path);
@@ -288,11 +311,22 @@ export function assignAppIds(
    * Each entry is consumed once, so a copy never inherits it too.
    */
   treeIncumbents: Map<string, string> = new Map(),
+  /**
+   * New path → old path for app folders git recognises as renamed between
+   * the previously indexed commit and this one (`git diff -M` on the
+   * manifests). Catches a legacy app moved AND edited in one push, which
+   * neither the path nor the tree oid can match.
+   */
+  renames: Map<string, string> = new Map(),
 ): Map<
   string,
   { appId: string; hasManifestId: boolean; duplicateOf?: string }
 > {
   const idByPath = new Map([...incumbents].map(([id, path]) => [path, id]));
+  for (const [to, from] of renames) {
+    const id = idByPath.get(from);
+    if (id && !idByPath.has(to)) idByPath.set(to, id);
+  }
   const byTree = new Map(treeIncumbents);
   const claims = new Map<string, string[]>();
   const wanted = new Map<string, { id: string; declared: boolean }>();
@@ -379,6 +413,67 @@ export function treeIncumbentsOf(
   }
   for (const oid of ambiguous) out.delete(oid);
   return out;
+}
+
+/**
+ * App folders git sees as RENAMED between two commits, by their manifests:
+ * new app path → old app path. `-M` matches on content similarity, so a
+ * manifest that moved untouched (or nearly) is found even when the rest of
+ * the app changed in the same commit. Empty when either commit is unknown.
+ */
+export async function renamedAppFolders(
+  repoDir: string,
+  from: string,
+  to: string,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!from || !to || from === to) return out;
+  let stdout: string;
+  try {
+    ({ stdout } = await runGit(
+      [
+        "-C",
+        repoDir,
+        "diff",
+        "--name-status",
+        "-M",
+        "-z",
+        "--diff-filter=R",
+        from,
+        to,
+        "--",
+        APPS_DIR,
+        USERS_DIR,
+      ],
+      { timeoutMs: 60_000 },
+    ));
+  } catch {
+    return out;
+  }
+  const fields = stdout.split("\0");
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const [status, oldPath, newPath] = [
+      fields[i],
+      fields[i + 1],
+      fields[i + 2],
+    ];
+    if (!status.startsWith("R")) continue;
+    const suffix = `/${APP_MANIFEST}`;
+    if (!oldPath.endsWith(suffix) || !newPath.endsWith(suffix)) continue;
+    const oldDir = oldPath.slice(0, -suffix.length);
+    const newDir = newPath.slice(0, -suffix.length);
+    if (parseAppRepoPath(oldDir) && parseAppRepoPath(newDir)) {
+      out.set(newDir, oldDir);
+    }
+  }
+  return out;
+}
+
+/** Is the commit in this repo's object store? */
+async function commitExists(repoDir: string, sha: string): Promise<boolean> {
+  return runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`])
+    .then(() => true)
+    .catch(() => false);
 }
 
 /** Is `ancestor` reachable from `descendant`? False when either is unknown here. */
@@ -487,7 +582,18 @@ async function syncNow(
     // freshen interval); an instance still on the older main must not
     // overwrite the rows — and flip a just-moved app's project path back —
     // with what its stale clone says. Serve what the index has instead.
-    if (await isAncestor(repoDir, sha, head.sha)) {
+    // An indexed commit this clone has never seen is the same case, only
+    // earlier: fetch once, and if it is still unknown, serve the rows.
+    let headKnown = await commitExists(repoDir, head.sha);
+    if (!headKnown) {
+      await freshenForServe(workspaceId, 0).catch(() => undefined);
+      headKnown = await commitExists(repoDir, head.sha);
+    }
+    const localSha = headKnown ? await resolveCommit(repoDir, MAIN) : sha;
+    if (
+      !headKnown ||
+      (localSha && (await isAncestor(repoDir, localSha, head.sha)))
+    ) {
       const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
       return {
         sha: head.sha,
@@ -549,6 +655,7 @@ async function syncNow(
     incumbents,
     unavailableIds,
     treeIncumbentsOf(existing, new Set(read.apps.map(a => a.path))),
+    head?.sha ? await renamedAppFolders(repoDir, head.sha, sha) : new Map(),
   );
 
   const rows: AppIndexRow[] = read.apps.map(app => {
@@ -823,6 +930,12 @@ export async function readIndexedAppsAt(
     // An unstamped app the current index files elsewhere: at this older
     // commit its folder sat at the old path with the same tree oid.
     treeIncumbentsOf(now.apps, new Set(read.apps.map(a => a.path))),
+    // …or under a name git recognises as the old one of a current folder.
+    new Map(
+      [...(await renamedAppFolders(repoDir, sha, now.sha))].map(
+        ([newPath, oldPath]) => [oldPath, newPath],
+      ),
+    ),
   );
   return read.apps.map(a => ({
     appId: ids.get(a.path)!.appId,

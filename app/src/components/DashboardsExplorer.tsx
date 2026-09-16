@@ -21,7 +21,6 @@ import {
   Star as StarIcon,
 } from "lucide-react";
 import {
-  favouriteFor,
   selectFavourites,
   starredRefs,
   useFavouritesStore,
@@ -35,6 +34,7 @@ import {
   isStarredRow,
   realEntityId,
 } from "./starred/starred-section";
+import { useStarredTree } from "./starred/use-starred-tree";
 import AccessIcon from "./AccessIcon";
 import { resolveAccessState } from "./access-state";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
@@ -123,10 +123,6 @@ export function DashboardsExplorer() {
   const favourites = useFavouritesStore(selectFavourites(workspaceId));
   const fetchFavourites = useFavouritesStore(s => s.fetch);
   const toggleFavourite = useFavouritesStore(s => s.toggle);
-  const moveFavourite = useFavouritesStore(s => s.move);
-  const createFavouriteFolder = useFavouritesStore(s => s.createFolder);
-  const renameFavourite = useFavouritesStore(s => s.rename);
-  const removeFavourite = useFavouritesStore(s => s.remove);
   const starred = useMemo(
     () => starredRefs(favourites, "dashboard"),
     [favourites],
@@ -376,119 +372,18 @@ export function DashboardsExplorer() {
     ];
   }, [favourites, allDashboards, tree, withDataSourceNodes]);
 
-  /**
-   * Rows under Starred are views, not rows the dashboard tree owns: their
-   * moves, renames and deletes go to the favourites store.
-   */
-  const treeHandlers = useMemo(() => {
-    const { onMoveItem, onMoveFolder, onRenameItem, onDeleteItem, ...rest } =
-      tree.treeHandlers;
-    const moveStarred = (id: string, targetId: string | null) => {
-      if (!workspaceId) return;
-      const targetFav = targetId ? favouriteIdFromFolderRow(targetId) : null;
-      const pinnedTarget = targetId ? entityIdFromStarredRow(targetId) : null;
-      if (targetId && targetFav === null && pinnedTarget === null) return;
-      const dest =
-        targetFav ??
-        (pinnedTarget
-          ? (favourites.find(f => f.refId === pinnedTarget)?.parentId ?? null)
-          : null);
-      const pinned = entityIdFromStarredRow(id);
-      const favId = pinned
-        ? favourites.find(f => f.kind === "dashboard" && f.refId === pinned)?.id
-        : favouriteIdFromFolderRow(id);
-      if (favId) void moveFavourite(workspaceId, favId, dest);
-    };
-    // A real row dropped into a Starred folder: star it there — or, when
-    // it is already starred, MOVE the existing star (adding again is
-    // idempotent server-side and the row would snap back).
-    const starInto = (id: string, folderId: string) => {
-      if (!workspaceId) return;
-      const fav = favouriteIdFromFolderRow(folderId);
-      const existing = favouriteFor(favourites, "dashboard", id);
-      if (existing) void moveFavourite(workspaceId, existing.id, fav);
-      else void toggleFavourite(workspaceId, "dashboard", id, true, fav);
-    };
-    return {
-      ...rest,
-      onMoveItem: (id: string, folderId: string | null, access?: string) => {
-        if (isStarredRow(id)) moveStarred(id, folderId);
-        else if (folderId && isStarredRow(folderId)) {
-          if (isDashboardEntryId(id)) starInto(id, folderId);
-        } else onMoveItem(id, folderId, access);
-      },
-      onMoveFolder: (id: string, parentId: string | null, access?: string) => {
-        if (isStarredRow(id)) moveStarred(id, parentId);
-        else if (parentId && isStarredRow(parentId)) {
-          // A dashboard row is a directory (its data sources): starring it.
-          // A dashboard FOLDER dropped here is refused — an item pointing at
-          // a folder id would be invisible and impossible to remove.
-          if (isDashboardEntryId(id)) starInto(id, parentId);
-        } else onMoveFolder(id, parentId, access);
-      },
-      onRenameItem: (id: string, name: string, isDirectory: boolean) => {
-        const fav = favouriteIdFromFolderRow(id);
-        if (fav) {
-          if (workspaceId) void renameFavourite(workspaceId, fav, name);
-        } else if (!isStarredRow(id)) onRenameItem(id, name, isDirectory);
-      },
-      onDeleteItem: (node: ResourceTreeNode) => {
-        const pinned = entityIdFromStarredRow(node.id);
-        const fav = favouriteIdFromFolderRow(node.id);
-        if (pinned) handleToggleStar(pinned);
-        else if (fav) {
-          if (workspaceId) void removeFavourite(workspaceId, fav);
-        } else onDeleteItem(node);
-      },
-      onCreateFolder: async (parentId: string | null, access?: string) => {
-        const fav = parentId ? favouriteIdFromFolderRow(parentId) : null;
-        if (!parentId || fav === null) {
-          return tree.treeHandlers.onCreateFolder(parentId, access);
-        }
-        if (!workspaceId) return null;
-        const row = await createFavouriteFolder(workspaceId, "New folder", fav);
-        return row
-          ? { id: `__starfolder__${row.id}`, name: row.title ?? "" }
-          : null;
-      },
-    };
-  }, [
-    tree.treeHandlers,
-    workspaceId,
-    favourites,
-    moveFavourite,
-    toggleFavourite,
-    renameFavourite,
-    removeFavourite,
-    handleToggleStar,
-    createFavouriteFolder,
-    isDashboardEntryId,
-  ]);
-
-  const handleSectionDrop = useCallback(
-    (sectionKey: string, nodeId: string): boolean => {
-      if (sectionKey !== "starred" || !workspaceId) return false;
-      const pinned = entityIdFromStarredRow(nodeId);
-      const fav = favouriteIdFromFolderRow(nodeId);
-      if (fav) void moveFavourite(workspaceId, fav, null);
-      else if (pinned) {
-        const row = favourites.find(
-          f => f.kind === "dashboard" && f.refId === pinned,
-        );
-        if (row) void moveFavourite(workspaceId, row.id, null);
-      } else if (isDashboardEntryId(nodeId)) {
-        void toggleFavourite(workspaceId, "dashboard", nodeId, true, null);
-      }
-      return true;
-    },
-    [
+  // Rows under Starred are views: their moves, renames and deletes go to
+  // the favourites store, never to the dashboard store (use-starred-tree.tsx).
+  const starrable = useCallback(isDashboardEntryId, [isDashboardEntryId]);
+  const { treeHandlers, handleSectionDrop, getSectionContextMenuItems } =
+    useStarredTree({
+      kind: "dashboard",
       workspaceId,
       favourites,
-      moveFavourite,
-      toggleFavourite,
-      isDashboardEntryId,
-    ],
-  );
+      base: tree.treeHandlers,
+      isStarrable: starrable,
+      onToggleStar: handleToggleStar,
+    });
 
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
@@ -607,6 +502,7 @@ export function DashboardsExplorer() {
             isLoadingChildren={node => !!loadingDashboards[node.id]}
             {...treeHandlers}
             onSectionDrop={handleSectionDrop}
+            getSectionContextMenuItems={getSectionContextMenuItems}
             getContextMenuItems={getContextMenuItems}
             getRightAdornment={getRightAdornment}
             onDuplicateItem={handleDuplicate}

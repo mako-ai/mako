@@ -147,6 +147,20 @@ async function treeOidOf(rel: string, ref = MAIN): Promise<string> {
 }
 
 describe("discoverApps", () => {
+  it("does not promote a manifest-less project's directories to folders", () => {
+    const out = discoverApps([
+      { type: "tree", oid: "t1", path: "apps" },
+      { type: "tree", oid: "t2", path: "apps/legacy" },
+      { type: "blob", oid: "b1", path: "apps/legacy/package.json" },
+      { type: "tree", oid: "t3", path: "apps/legacy/src" },
+      { type: "blob", oid: "b2", path: "apps/legacy/src/main.tsx" },
+      { type: "tree", oid: "t4", path: "apps/Sales" },
+      { type: "blob", oid: "b3", path: "apps/Sales/.gitkeep" },
+    ]);
+    expect(out.apps).toEqual([]);
+    expect(out.folders).toEqual(["apps/Sales"]);
+  });
+
   it("is pure over a tree listing: apps at any depth, folders, nothing inside an app", () => {
     const out = discoverApps([
       { type: "tree", oid: "t1", path: "apps" },
@@ -695,6 +709,80 @@ describe("identity across laptop moves", () => {
     expect((await AppIndexHead.findOne({ workspaceId: WS }))?.sha).toBe(
       fresh.sha,
     );
+  });
+});
+
+describe("identity across laptop moves, second round", () => {
+  it("follows an unstamped legacy app that was moved AND edited in one push (git rename detection)", async () => {
+    const aId = derivedAppId(WS, "a").toHexString();
+    await loadAppsIndex(WS);
+    await ensureProjectRow((await resolveProjectRef(WS, "a"))!, USER);
+    const before = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    await externalCommit(
+      {
+        "apps/Sales/a/mako.json": manifest("A"),
+        "apps/Sales/a/src/main.tsx": "export const edited = true;\n",
+        "apps/Sales/a/fixtures/mako.json": manifest("Not an app"),
+      },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "git mv apps/a apps/Sales/a + edit",
+    );
+    const snapshot = await loadAppsIndex(WS);
+    const moved = snapshot.apps.find(a => a.path === "apps/Sales/a");
+    expect(moved?.appId).toBe(aId);
+    expect((await AppProject.findById(aId))?.path).toBe("apps/Sales/a");
+    // Edited, so it IS changed — under the same id, never as a new app.
+    const after = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    expect(await appFolderChanged(WS, repoDirFor(WS), aId, before, after)).toBe(
+      true,
+    );
+  });
+
+  it("stamps an id once: a second stamp writes no commit", async () => {
+    await loadAppsIndex(WS);
+    await externalCommit({ "apps/b-copy/mako.json": manifest("B copy", B_ID) });
+    const copy = (await loadAppsIndex(WS)).apps.find(
+      a => a.path === "apps/b-copy",
+    )!;
+    await stampAppId(WS, copy, { userId: USER });
+    const once = await resolveCommit(repoDirFor(WS), MAIN);
+    const stamped = (await loadAppsIndex(WS)).apps.find(
+      a => a.path === "apps/b-copy",
+    )!;
+    await stampAppId(WS, stamped, { userId: USER });
+    expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(once);
+  });
+
+  it("refuses to scaffold inside another app", async () => {
+    await expect(
+      createProject({
+        workspaceId: WS,
+        title: "Inner",
+        userId: USER,
+        folder: { scope: "workspace", folderSegments: ["Sales", "CH", "b"] },
+      }),
+    ).rejects.toThrow(/is an app, not a folder/);
+  });
+
+  it("rewrites a pre-npm file: SDK dependency when the app moves deeper", async () => {
+    await externalCommit({
+      "apps/a/package.json": JSON.stringify(
+        {
+          name: "a",
+          dependencies: { "@makoai/app-sdk": "file:../../packages/app-sdk" },
+        },
+        null,
+        2,
+      ),
+    });
+    const a = (await resolveProjectRef(WS, "a"))!;
+    await moveProject(a, { scope: "workspace", folderSegments: ["Sales"] });
+    const pkg = JSON.parse(
+      (await fileAt("apps/Sales/a/package.json")) ?? "{}",
+    ) as {
+      dependencies: Record<string, string>;
+    };
+    expect(pkg.dependencies["@makoai/app-sdk"]).toMatch(/^\^\d/);
   });
 });
 
