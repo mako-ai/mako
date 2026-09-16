@@ -1,10 +1,17 @@
-import { useCallback, useRef, type ChangeEvent } from "react";
-import { IconButton, Tooltip } from "@mui/material";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type ChangeEvent,
+} from "react";
+import { IconButton, ListItemIcon, MenuItem, Tooltip } from "@mui/material";
 import {
   Download,
   Notebook as NotebookIcon,
   Plus,
   RefreshCw as RefreshIcon,
+  Star as StarIcon,
   Upload,
 } from "lucide-react";
 
@@ -19,6 +26,19 @@ import {
 } from "../store/explorerRevealStore";
 import { useNotebookStore } from "../store/notebookStore";
 import { useNotebookTreeStore } from "../store/notebookTreeStore";
+import {
+  NOTEBOOK_FOLDER_KIND,
+  selectPersonalFolders,
+  usePersonalFoldersStore,
+} from "../store/personalFoldersStore";
+import StarToggle from "./starred/StarToggle";
+import {
+  buildStarredSection,
+  entityIdFromStarredRow,
+  flattenLeafRows,
+  realEntityId,
+  starredKeys,
+} from "./starred/starred-section";
 import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
@@ -45,6 +65,23 @@ export default function NotebooksExplorer() {
   const getNotebook = useNotebookStore(s => s.getNotebook);
   const importNotebook = useNotebookStore(s => s.importNotebook);
 
+  // Starred notebooks. Unlike apps, a star here is a SHORTCUT: notebooks
+  // already have real shared folders their team created, so a starred
+  // notebook keeps its place in the tree below and is also pinned on top.
+  const personalFolders = usePersonalFoldersStore(
+    selectPersonalFolders(workspaceId, NOTEBOOK_FOLDER_KIND),
+  );
+  const fetchFolders = usePersonalFoldersStore(s => s.fetchFolders);
+  const toggleStar = usePersonalFoldersStore(s => s.toggleStar);
+  const starred = useMemo(
+    () => starredKeys(personalFolders),
+    [personalFolders],
+  );
+
+  useEffect(() => {
+    if (workspaceId) void fetchFolders(workspaceId, NOTEBOOK_FOLDER_KIND);
+  }, [workspaceId, fetchFolders]);
+
   const notebookExpandedFolders = useExplorerStore(
     s => s.notebook.expandedFolders,
   );
@@ -61,6 +98,11 @@ export default function NotebooksExplorer() {
   const { activeTabId, tabs } = useConsoleStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const allNotebooks = useMemo(
+    () => flattenLeafRows([...myNotebooks, ...workspaceNotebooks]),
+    [myNotebooks, workspaceNotebooks],
+  );
 
   const handleCreate = useCallback(async () => {
     const doc = await createNotebook();
@@ -93,7 +135,8 @@ export default function NotebooksExplorer() {
 
   const handleItemClick = useCallback((node: ResourceTreeNode) => {
     if (node.isDirectory) return;
-    focusNotebookTab(node.id, node.name);
+    // A pinned row points at the same notebook as its real row below.
+    focusNotebookTab(realEntityId(node.id), node.name);
   }, []);
 
   const handleDuplicate = useCallback(
@@ -133,7 +176,94 @@ export default function NotebooksExplorer() {
     [getNotebook],
   );
 
-  const sectionsDef = tree.sections({ my: "My Notebooks" });
+  const handleToggleStar = useCallback(
+    (notebookId: string) => {
+      if (!workspaceId) return;
+      void toggleStar(
+        workspaceId,
+        notebookId,
+        !starred.has(notebookId),
+        NOTEBOOK_FOLDER_KIND,
+      );
+    },
+    [workspaceId, toggleStar, starred],
+  );
+
+  const sectionsDef = useMemo(() => {
+    const byId = new Map(allNotebooks.map(n => [n.id, n]));
+    return [
+      ...buildStarredSection(personalFolders, key => {
+        const node = byId.get(key);
+        return node ? { name: node.name, path: node.path } : undefined;
+      }),
+      ...tree.sections({ my: "My Notebooks" }),
+    ];
+  }, [personalFolders, allNotebooks, tree]);
+
+  /**
+   * A pinned row is a view of a notebook, not a row the tree owns: moving,
+   * renaming or deleting one would act on an id no store knows. The context
+   * menu below never offers those on a pinned row, and these guards make the
+   * drag path safe too.
+   */
+  const treeHandlers = useMemo(() => {
+    const { onMoveItem, onMoveFolder, onRenameItem, onDeleteItem, ...rest } =
+      tree.treeHandlers;
+    const isPinned = (id: string) => entityIdFromStarredRow(id) !== null;
+    return {
+      ...rest,
+      onMoveItem: (id: string, folderId: string | null, access?: string) => {
+        if (!isPinned(id)) onMoveItem(id, folderId, access);
+      },
+      onMoveFolder: (id: string, parentId: string | null, access?: string) => {
+        if (!isPinned(id)) onMoveFolder(id, parentId, access);
+      },
+      onRenameItem: (id: string, name: string, isDirectory: boolean) => {
+        if (!isPinned(id)) onRenameItem(id, name, isDirectory);
+      },
+      onDeleteItem: (node: ResourceTreeNode) => {
+        if (!isPinned(node.id)) onDeleteItem(node);
+      },
+    };
+  }, [tree.treeHandlers]);
+
+  const getContextMenuItems = useCallback(
+    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
+      const pinnedId = entityIdFromStarredRow(node.id);
+      // Only the pinned rows get a bespoke menu; everything else keeps the
+      // tree's own rename/duplicate/delete entries.
+      if (!pinnedId) return null;
+      return [
+        <MenuItem
+          key="unstar"
+          onClick={() => {
+            helpers.closeMenu();
+            handleToggleStar(pinnedId);
+          }}
+        >
+          <ListItemIcon>
+            <StarIcon size={16} fill="currentColor" />
+          </ListItemIcon>
+          Unstar
+        </MenuItem>,
+      ];
+    },
+    [handleToggleStar],
+  );
+
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      if (node.isDirectory) return null;
+      const notebookId = realEntityId(node.id);
+      return (
+        <StarToggle
+          starred={starred.has(notebookId)}
+          onToggle={() => handleToggleStar(notebookId)}
+        />
+      );
+    },
+    [starred, handleToggleStar],
+  );
 
   const activeNotebookTabId = (() => {
     if (!activeTabId) return null;
@@ -166,12 +296,7 @@ export default function NotebooksExplorer() {
           <IconButton
             size="small"
             onClick={() => {
-              const node = [...myNotebooks, ...workspaceNotebooks]
-                .flatMap(function walk(n): ResourceTreeNode[] {
-                  if (!n.isDirectory) return [n as ResourceTreeNode];
-                  return (n.children ?? []).flatMap(walk);
-                })
-                .find(n => n.id === activeNotebookTabId);
+              const node = allNotebooks.find(n => n.id === activeNotebookTabId);
               if (node) void handleExport(node);
             }}
           >
@@ -210,13 +335,15 @@ export default function NotebooksExplorer() {
             revealNodeId={reveal?.nodeId}
             revealNonce={reveal?.nonce}
             getItemIcon={getItemIcon}
+            getRightAdornment={getRightAdornment}
+            getContextMenuItems={getContextMenuItems}
             enableDragDrop
             enableRename
             enableDuplicate
             enableDelete
             enableNewFolder
             onItemClick={handleItemClick}
-            {...tree.treeHandlers}
+            {...treeHandlers}
             onDuplicateItem={handleDuplicate}
             isFolderExpanded={isNotebookFolderExpanded}
             onToggleFolder={toggleNotebookFolder}

@@ -1,8 +1,10 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   Box,
   Chip,
   IconButton,
+  ListItemIcon,
+  MenuItem,
   Stack,
   Typography,
   Tooltip,
@@ -16,6 +18,7 @@ import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
   Database as DataSourceIcon,
+  Star as StarIcon,
 } from "lucide-react";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -41,6 +44,19 @@ import type { Dashboard } from "../dashboard-runtime/types";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
+import {
+  DASHBOARD_FOLDER_KIND,
+  selectPersonalFolders,
+  usePersonalFoldersStore,
+} from "../store/personalFoldersStore";
+import StarToggle from "./starred/StarToggle";
+import {
+  buildStarredSection,
+  entityIdFromStarredRow,
+  flattenLeafRows,
+  realEntityId,
+  starredKeys,
+} from "./starred/starred-section";
 
 const DATA_SOURCES_DIR = "__datasources";
 const DASHBOARD_DATA_SOURCE_DIR_SEP = "::dashboard-data-sources::";
@@ -96,6 +112,51 @@ export function DashboardsExplorer() {
     isFolder: (id, isDirectory) => isDirectory && !isDashboardEntryId(id),
   });
   const { loading, fetchTree } = tree;
+
+  // Starred dashboards. A star here is a SHORTCUT, not a move: dashboards
+  // already have real shared folders their team created, so a starred
+  // dashboard keeps its place in the tree below and is also pinned on top.
+  const personalFolders = usePersonalFoldersStore(
+    selectPersonalFolders(workspaceId, DASHBOARD_FOLDER_KIND),
+  );
+  const fetchFolders = usePersonalFoldersStore(s => s.fetchFolders);
+  const toggleStar = usePersonalFoldersStore(s => s.toggleStar);
+  const starred = useMemo(
+    () => starredKeys(personalFolders),
+    [personalFolders],
+  );
+
+  useEffect(() => {
+    if (workspaceId) void fetchFolders(workspaceId, DASHBOARD_FOLDER_KIND);
+  }, [workspaceId, fetchFolders]);
+
+  const handleToggleStar = useCallback(
+    (dashboardId: string) => {
+      if (!workspaceId) return;
+      void toggleStar(
+        workspaceId,
+        dashboardId,
+        !starred.has(dashboardId),
+        DASHBOARD_FOLDER_KIND,
+      );
+    },
+    [workspaceId, toggleStar, starred],
+  );
+
+  /**
+   * Every dashboard in the tree. Read from the RAW store entries, where a
+   * dashboard is a leaf and has no `entityType` — that is stamped on later by
+   * `withDataSourceNodes`, so matching on it here found nothing and left the
+   * Starred section empty.
+   */
+  const allDashboards = useMemo(
+    () =>
+      flattenLeafRows([
+        ...(tree.myItems as ResourceTreeNode[]),
+        ...(tree.workspaceItems as ResourceTreeNode[]),
+      ]),
+    [tree.myItems, tree.workspaceItems],
+  );
   const createDashboard = useDashboardStore(s => s.createDashboard);
   const duplicateDashboard = useDashboardStore(s => s.duplicateDashboard);
   const openDashboard = useDashboardStore(s => s.openDashboard);
@@ -149,7 +210,8 @@ export function DashboardsExplorer() {
     }
     if (node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)) return;
 
-    focusDashboardTab(node.id, node.name);
+    // A pinned row points at the same dashboard as its real row below.
+    focusDashboardTab(realEntityId(node.id), node.name);
   }, []);
 
   const handleDuplicate = useCallback(
@@ -166,6 +228,12 @@ export function DashboardsExplorer() {
 
   const canManageItem = useCallback(
     (node: ResourceTreeNode) => {
+      // NOTE: do not add a pinned-row case here. `canManage` feeds the row's
+      // `readOnly`, which renders it aria-disabled and strips its icon — and
+      // it also stops dnd-kit arming, which would silently "pass" the
+      // no-move requirement for the wrong reason. Pinned rows are made safe
+      // by `getContextMenuItems` (only "Unstar") and by the `treeHandlers`
+      // guards, not by pretending the row is unmanageable.
       if (
         node.id.includes(DASHBOARD_DATA_SOURCE_SEP) ||
         node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)
@@ -267,9 +335,84 @@ export function DashboardsExplorer() {
     [workspaceId, openDashboard, openDashboards, loadingDashboards],
   );
 
-  const sectionsDef = useMemo(
-    () => tree.sections({ my: "My Dashboards" }, withDataSourceNodes),
-    [tree, withDataSourceNodes],
+  const sectionsDef = useMemo(() => {
+    const byId = new Map(allDashboards.map(d => [d.id, d]));
+    return [
+      ...buildStarredSection(personalFolders, key => {
+        const node = byId.get(key);
+        // Raw entries carry no entityType; the pinned row needs the one
+        // getItemIcon looks for, which decoration would otherwise add.
+        return node
+          ? { name: node.name, path: node.path, entityType: "dashboard" }
+          : undefined;
+      }),
+      ...tree.sections({ my: "My Dashboards" }, withDataSourceNodes),
+    ];
+  }, [personalFolders, allDashboards, tree, withDataSourceNodes]);
+
+  /**
+   * The drag path needs the same guard `canManageItem` gives the menus: a
+   * pinned row has no real id to move.
+   */
+  const treeHandlers = useMemo(() => {
+    const { onMoveItem, onMoveFolder, onRenameItem, onDeleteItem, ...rest } =
+      tree.treeHandlers;
+    const isPinned = (id: string) => entityIdFromStarredRow(id) !== null;
+    return {
+      ...rest,
+      onMoveItem: (id: string, folderId: string | null, access?: string) => {
+        if (!isPinned(id)) onMoveItem(id, folderId, access);
+      },
+      onMoveFolder: (id: string, parentId: string | null, access?: string) => {
+        if (!isPinned(id)) onMoveFolder(id, parentId, access);
+      },
+      onRenameItem: (id: string, name: string, isDirectory: boolean) => {
+        if (!isPinned(id)) onRenameItem(id, name, isDirectory);
+      },
+      onDeleteItem: (node: ResourceTreeNode) => {
+        if (!isPinned(node.id)) onDeleteItem(node);
+      },
+    };
+  }, [tree.treeHandlers]);
+
+  const getContextMenuItems = useCallback(
+    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
+      const pinnedId = entityIdFromStarredRow(node.id);
+      // Only pinned rows get a bespoke menu; every other row keeps the tree's
+      // own rename/duplicate/move/info/delete entries.
+      if (!pinnedId) return null;
+      return [
+        <MenuItem
+          key="unstar"
+          onClick={() => {
+            helpers.closeMenu();
+            handleToggleStar(pinnedId);
+          }}
+        >
+          <ListItemIcon>
+            <StarIcon size={16} fill="currentColor" />
+          </ListItemIcon>
+          Unstar
+        </MenuItem>,
+      ];
+    },
+    [handleToggleStar],
+  );
+
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      const pinnedId = entityIdFromStarredRow(node.id);
+      const dashboardId =
+        pinnedId ?? (node.entityType === "dashboard" ? node.id : null);
+      if (!dashboardId) return null;
+      return (
+        <StarToggle
+          starred={starred.has(dashboardId)}
+          onToggle={() => handleToggleStar(dashboardId)}
+        />
+      );
+    },
+    [starred, handleToggleStar],
   );
 
   const folderOnlyNodes = useCallback(function onlyFolders(
@@ -338,6 +481,8 @@ export function DashboardsExplorer() {
             revealNodeId={reveal?.nodeId}
             revealNonce={reveal?.nonce}
             getItemIcon={getItemIcon}
+            getRightAdornment={getRightAdornment}
+            getContextMenuItems={getContextMenuItems}
             enableDragDrop
             enableRename
             enableDuplicate
@@ -347,7 +492,7 @@ export function DashboardsExplorer() {
             shouldFolderClickActivate={node => node.entityType === "dashboard"}
             onLoadChildren={handleLoadChildren}
             isLoadingChildren={node => !!loadingDashboards[node.id]}
-            {...tree.treeHandlers}
+            {...treeHandlers}
             onDuplicateItem={handleDuplicate}
             enableMove
             enableInfo

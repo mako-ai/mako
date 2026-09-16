@@ -240,7 +240,8 @@ describe("personalFoldersStore", () => {
     await usePersonalFoldersStore.getState().toggleStar(WS, "billing", true);
     expect(http.POST).toHaveBeenCalledWith(`${BASE}/star`, {
       params: { path: { workspaceId: WS } },
-      body: { key: "billing", starred: true },
+      // `kind` must ride along, or a notebook would star into the apps list.
+      body: { key: "billing", starred: true, kind: "app" },
     });
     const star = selectPersonalFolders(WS)(
       usePersonalFoldersStore.getState(),

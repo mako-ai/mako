@@ -1,18 +1,25 @@
 /**
- * Personal folders — one user's private organization of an explorer's list.
+ * Personal organization of an explorer's list — this user's Starred list and,
+ * where an explorer offers them, their own folders.
  *
- * **One home per entity**, the Slack-sections model: an entity sits in exactly
- * one of this user's lists — a folder, or Starred, or (in neither) its
- * access-based home section. Filing moves it; starring moves it. Starred is
- * just the system row (`system: "starred"`), created on first use and never
- * renamed or deleted.
+ * State is scoped per (workspace, KIND): apps, notebooks and dashboards each
+ * keep their own lists, and every action takes the kind, defaulting to apps.
+ * Without that dimension two explorers fetching at once would overwrite each
+ * other's lists and star into the wrong one.
+ *
+ * **One home per entity** where an explorer has folders (the Slack-sections
+ * model): an entity sits in exactly one of that kind's lists — a folder, or
+ * Starred, or (in neither) its access-based home section. Filing moves it;
+ * starring moves it. Where an explorer has NO personal folders, that sweep has
+ * nothing to pull from, so a star is simply a shortcut alongside the existing
+ * tree — the behaviour falls out rather than being special-cased.
  *
  * None of it can change an entity's sharing, identity or deployment — that is
  * the whole point, and why this shipped without touching the apps backend.
  *
  * Membership edits are optimistic because they come from a drag or a single
  * click, where a round trip feels broken; a failure restores the previous
- * list and surfaces the message. Create/rename/delete come from dialogs,
+ * lists and surfaces the message. Create/rename/delete come from dialogs,
  * where latency is expected, so those apply the server's answer directly.
  */
 import { create } from "zustand";
@@ -24,20 +31,25 @@ export interface PersonalFolder {
   id: string;
   kind: string;
   name: string;
-  /** Entity keys — for apps, the slug. May reference something long gone. */
+  /** Entity keys — an app's slug, a notebook's or dashboard's id. */
   items: string[];
   /** Present on the one auto-created Starred list; absent on user folders. */
   system?: "starred";
   updatedAt?: string;
 }
 
-/** The explorer this store is serving; apps are the first adopter. */
+/** Explorer kinds. The key each stores is whatever identifies its entity. */
 export const APP_FOLDER_KIND = "app";
+export const NOTEBOOK_FOLDER_KIND = "notebook";
+export const DASHBOARD_FOLDER_KIND = "dashboard";
 
 const BASE = "/api/workspaces/{workspaceId}/personal-folders" as const;
 
+/** Lists are per workspace AND per kind; this is the state key. */
+const scopeOf = (workspaceId: string, kind: string) => `${workspaceId}:${kind}`;
+
 interface PersonalFoldersState {
-  byWorkspace: Record<string, PersonalFolder[]>;
+  byScope: Record<string, PersonalFolder[]>;
   loading: Record<string, boolean>;
   error: string | null;
 }
@@ -53,8 +65,13 @@ interface PersonalFoldersActions {
     workspaceId: string,
     folderId: string,
     name: string,
+    kind?: string,
   ) => Promise<boolean>;
-  deleteFolder: (workspaceId: string, folderId: string) => Promise<boolean>;
+  deleteFolder: (
+    workspaceId: string,
+    folderId: string,
+    kind?: string,
+  ) => Promise<boolean>;
   /**
    * File an entity in a folder. One home per entity, so it leaves every other
    * list of this kind — Starred included.
@@ -63,17 +80,20 @@ interface PersonalFoldersActions {
     workspaceId: string,
     folderId: string,
     key: string,
+    kind?: string,
   ) => Promise<boolean>;
   removeItem: (
     workspaceId: string,
     folderId: string,
     key: string,
+    kind?: string,
   ) => Promise<boolean>;
   /** Star or unstar one entity. Idempotent. */
   toggleStar: (
     workspaceId: string,
     key: string,
     starred: boolean,
+    kind?: string,
   ) => Promise<boolean>;
   clearError: () => void;
   reset: () => void;
@@ -98,27 +118,27 @@ type SetState = (fn: (state: PersonalFoldersStore) => void) => void;
 type GetState = () => PersonalFoldersStore;
 
 /**
- * Apply a membership change locally first, then confirm with the server.
- * The whole workspace list is snapshotted, because a single change can touch
- * several folders (filing pulls from siblings). On failure the snapshot is
- * restored, so a rejected drag or click cannot leave the sidebar claiming a
- * membership the server does not have.
+ * Apply a membership change locally first, then confirm with the server. The
+ * whole scope's lists are snapshotted, because one change can touch several
+ * (filing pulls from siblings). On failure the snapshot is restored, so a
+ * rejected drag or click cannot leave the sidebar claiming a membership the
+ * server does not have.
  */
 async function optimistically(
   set: SetState,
   get: GetState,
-  workspaceId: string,
+  scope: string,
   apply: (folders: PersonalFolder[]) => void,
   request: () => Promise<{ folder?: PersonalFolder }>,
   failure: string,
 ): Promise<boolean> {
-  const snapshot = (get().byWorkspace[workspaceId] ?? []).map(f => ({
+  const snapshot = (get().byScope[scope] ?? []).map(f => ({
     ...f,
     items: [...f.items],
   }));
 
   set(state => {
-    const list = state.byWorkspace[workspaceId];
+    const list = state.byScope[scope];
     if (list) apply(list);
   });
 
@@ -127,15 +147,15 @@ async function optimistically(
     if (body.folder) {
       const folder = body.folder;
       set(state => {
-        const list = state.byWorkspace[workspaceId] ?? [];
+        const list = state.byScope[scope] ?? [];
         replaceFolder(list, folder);
-        state.byWorkspace[workspaceId] = list;
+        state.byScope[scope] = list;
       });
     }
     return true;
   } catch (e) {
     set(state => {
-      state.byWorkspace[workspaceId] = snapshot;
+      state.byScope[scope] = snapshot;
       state.error = toErrorMessage(e, failure);
     });
     return false;
@@ -149,13 +169,14 @@ const withKey = (items: string[], key: string) =>
 
 export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
   immer((set, get) => ({
-    byWorkspace: {},
+    byScope: {},
     loading: {},
     error: null,
 
     fetchFolders: async (workspaceId, kind = APP_FOLDER_KIND) => {
+      const scope = scopeOf(workspaceId, kind);
       set(state => {
-        state.loading[workspaceId] = true;
+        state.loading[scope] = true;
       });
       try {
         const body = unwrapBody(
@@ -164,12 +185,12 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
           }),
         ) as { folders?: PersonalFolder[] };
         set(state => {
-          state.byWorkspace[workspaceId] = body.folders ?? [];
-          state.loading[workspaceId] = false;
+          state.byScope[scope] = body.folders ?? [];
+          state.loading[scope] = false;
         });
       } catch (e) {
         set(state => {
-          state.loading[workspaceId] = false;
+          state.loading[scope] = false;
           state.error = toErrorMessage(e, "Failed to load your folders");
         });
       }
@@ -186,9 +207,10 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         const folder = body.folder;
         if (!folder) return null;
         set(state => {
-          const list = state.byWorkspace[workspaceId] ?? [];
+          const scope = scopeOf(workspaceId, kind);
+          const list = state.byScope[scope] ?? [];
           replaceFolder(list, folder);
-          state.byWorkspace[workspaceId] = list;
+          state.byScope[scope] = list;
         });
         return folder;
       } catch (e) {
@@ -199,7 +221,12 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
       }
     },
 
-    renameFolder: async (workspaceId, folderId, name) => {
+    renameFolder: async (
+      workspaceId,
+      folderId,
+      name,
+      kind = APP_FOLDER_KIND,
+    ) => {
       try {
         const body = unwrapBody(
           await api.PATCH(`${BASE}/{id}`, {
@@ -210,9 +237,10 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         if (body.folder) {
           const folder = body.folder;
           set(state => {
-            const list = state.byWorkspace[workspaceId] ?? [];
+            const scope = scopeOf(workspaceId, kind);
+            const list = state.byScope[scope] ?? [];
             replaceFolder(list, folder);
-            state.byWorkspace[workspaceId] = list;
+            state.byScope[scope] = list;
           });
         }
         return true;
@@ -224,7 +252,7 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
       }
     },
 
-    deleteFolder: async (workspaceId, folderId) => {
+    deleteFolder: async (workspaceId, folderId, kind = APP_FOLDER_KIND) => {
       try {
         unwrapBody(
           await api.DELETE(`${BASE}/{id}`, {
@@ -232,9 +260,10 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
           }),
         );
         set(state => {
-          state.byWorkspace[workspaceId] = (
-            state.byWorkspace[workspaceId] ?? []
-          ).filter(f => f.id !== folderId);
+          const scope = scopeOf(workspaceId, kind);
+          state.byScope[scope] = (state.byScope[scope] ?? []).filter(
+            f => f.id !== folderId,
+          );
         });
         return true;
       } catch (e) {
@@ -245,14 +274,14 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
       }
     },
 
-    addItem: (workspaceId, folderId, key) =>
+    addItem: (workspaceId, folderId, key, kind = APP_FOLDER_KIND) =>
       optimistically(
         set,
         get,
-        workspaceId,
+        scopeOf(workspaceId, kind),
         folders => {
-          // One home per app: filing it here takes it out of every other
-          // list, Starred included.
+          // One home per entity: filing it here takes it out of every other
+          // list of this kind, Starred included.
           for (const f of folders) {
             f.items =
               f.id === folderId ? withKey(f.items, key) : without(f.items, key);
@@ -268,11 +297,11 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         "Failed to update the folder",
       ),
 
-    removeItem: (workspaceId, folderId, key) =>
+    removeItem: (workspaceId, folderId, key, kind = APP_FOLDER_KIND) =>
       optimistically(
         set,
         get,
-        workspaceId,
+        scopeOf(workspaceId, kind),
         folders => {
           const f = folders.find(x => x.id === folderId);
           if (f) f.items = without(f.items, key);
@@ -287,15 +316,17 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         "Failed to update the folder",
       ),
 
-    toggleStar: (workspaceId, key, starred) =>
+    toggleStar: (workspaceId, key, starred, kind = APP_FOLDER_KIND) =>
       optimistically(
         set,
         get,
-        workspaceId,
+        scopeOf(workspaceId, kind),
         folders => {
-          // Starring is a move like any other, so it also leaves whatever
-          // folder the app was in. Until the first star there is no Starred
-          // list locally; the server creates it and the response inserts it.
+          // Where this kind has folders, starring is a move and pulls the
+          // entity out of them; where it has none, the loop below simply has
+          // nothing to pull from and a star is a plain shortcut. Until the
+          // first star there is no Starred list locally — the server creates
+          // it and the response inserts it.
           for (const f of folders) {
             if (f.system === "starred") {
               f.items = starred ? withKey(f.items, key) : without(f.items, key);
@@ -308,7 +339,7 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
           unwrapBody(
             await api.POST(`${BASE}/star`, {
               params: { path: { workspaceId } },
-              body: { key, starred },
+              body: { key, starred, kind },
             }),
           ) as { folder?: PersonalFolder },
         starred ? "Failed to star" : "Failed to unstar",
@@ -319,11 +350,13 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         state.error = null;
       }),
 
-    reset: () => set({ byWorkspace: {}, loading: {}, error: null }),
+    reset: () => set({ byScope: {}, loading: {}, error: null }),
   })),
 );
 
 export const selectPersonalFolders =
-  (workspaceId: string | undefined) =>
+  (workspaceId: string | undefined, kind: string = APP_FOLDER_KIND) =>
   (state: PersonalFoldersStore): PersonalFolder[] =>
-    workspaceId ? (state.byWorkspace[workspaceId] ?? NO_FOLDERS) : NO_FOLDERS;
+    workspaceId
+      ? (state.byScope[scopeOf(workspaceId, kind)] ?? NO_FOLDERS)
+      : NO_FOLDERS;
