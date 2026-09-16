@@ -32,7 +32,6 @@ import {
   FolderMinus as RemoveFromFolderIcon,
   FolderOpen as FolderOpenIcon,
   FolderPlus as NewFolderIcon,
-  Lock as LockIcon,
   Pencil as RenameIcon,
   Star as StarIcon,
   KeyRound as EnvIcon,
@@ -63,6 +62,8 @@ import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { useConfirm } from "./ConfirmDialog";
+import AccessIcon from "./AccessIcon";
+import { resolveAccessState } from "./access-state";
 import {
   buildPersonalSections,
   listIdFromSectionKey,
@@ -804,30 +805,10 @@ export default function AppsExplorer() {
         </Tooltip>
       );
 
-      // Inside Starred / a folder the section no longer tells you who can see
-      // the app, so the row does. This is the badge that replaces the signal
-      // the app lost when it moved out of My Apps / Workspace.
-      let badge: React.ReactNode = null;
-      if (parsed.kind === "personal-item" && app) {
-        const isWorkspace = (app.access ?? "workspace") === "workspace";
-        const isSharedWithMe =
-          !isWorkspace && !!app.owner_id && !!userId && app.owner_id !== userId;
-        const [Glyph, label] = isWorkspace
-          ? [GlobeIcon, "Visible to the whole workspace"]
-          : isSharedWithMe
-            ? [SharedIcon, "Shared with you"]
-            : [LockIcon, "Private — only you"];
-        badge = (
-          <Tooltip title={label}>
-            <Box
-              component="span"
-              sx={{ display: "inline-flex", color: "text.disabled" }}
-            >
-              <Glyph size={13} strokeWidth={1.75} />
-            </Box>
-          </Tooltip>
-        );
-      }
+      // No access badge here any more: it lived in a ~19px gutter on every
+      // row, and this sidebar is competing with the editor for width. Access
+      // is now folded into the row's own icon (see getItemIcon / AccessIcon),
+      // which costs nothing and says the same thing.
 
       // Tri-state dot: amber while a boot is in flight, green when the box
       // says it serves, red when the last start failed. Nothing → no dot.
@@ -865,12 +846,11 @@ export default function AppsExplorer() {
           sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}
         >
           {star}
-          {badge}
           {dot}
         </Box>
       );
     },
-    [apps, starred, handleToggleStar, userId, runningDevApps, previewByApp],
+    [apps, starred, handleToggleStar, runningDevApps, previewByApp],
   );
 
   const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
@@ -980,11 +960,23 @@ export default function AppsExplorer() {
                   revealNonce={reveal?.nonce}
                   getRightAdornment={rowAdornment}
                   getItemIcon={(node, ctx) => {
-                    const kind = parseNodeId(node.id).kind;
-                    if (kind === "app" || kind === "personal-item") {
-                      return <AppIcon size={16} strokeWidth={1.5} />;
+                    const parsed = parseNodeId(node.id);
+                    if (
+                      parsed.kind === "app" ||
+                      parsed.kind === "personal-item"
+                    ) {
+                      // Access is folded into this glyph rather than given its
+                      // own badge column — the sidebar cannot spare the width.
+                      const app = apps.find(a => a.id === parsed.appId);
+                      return (
+                        <AccessIcon
+                          Glyph={AppIcon}
+                          state={resolveAccessState(app ?? {}, userId)}
+                          kindLabel="App"
+                        />
+                      );
                     }
-                    if (kind === "file") {
+                    if (parsed.kind === "file") {
                       return fileIcon(node.name, node.path ?? node.name);
                     }
                     return ctx?.isExpanded ? (

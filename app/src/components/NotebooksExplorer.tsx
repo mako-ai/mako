@@ -48,10 +48,15 @@ import {
   type Ipynb,
 } from "../notebook-runtime/ipynb";
 import { ConfirmDialog } from "./ConfirmDialog";
+import AccessIcon from "./AccessIcon";
+import { resolveAccessState } from "./access-state";
+import { useAuth } from "../contexts/auth-context";
 
 export default function NotebooksExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
+  const { user } = useAuth();
+  const userId = user?.id;
 
   const tree = useResourceTreeExplorer(useNotebookTreeStore, workspaceId);
   const {
@@ -194,7 +199,15 @@ export default function NotebooksExplorer() {
     return [
       ...buildStarredSection(personalFolders, key => {
         const node = byId.get(key);
-        return node ? { name: node.name, path: node.path } : undefined;
+        // access/owner_id ride along so the pinned row tints like the real one.
+        return node
+          ? {
+              name: node.name,
+              path: node.path,
+              access: node.access,
+              owner_id: node.owner_id,
+            }
+          : undefined;
       }),
       ...tree.sections({ my: "My Notebooks" }),
     ];
@@ -275,8 +288,20 @@ export default function NotebooksExplorer() {
   })();
 
   const getItemIcon = useCallback(
-    () => <NotebookIcon size={14} style={{ opacity: 0.75 }} />,
-    [],
+    (node: ResourceTreeNode) => {
+      // Folders keep the tree's own chevron treatment; only notebooks carry
+      // the access tint, folded into the glyph instead of a badge column.
+      if (node.isDirectory) return <NotebookIcon size={14} opacity={0.75} />;
+      return (
+        <AccessIcon
+          Glyph={NotebookIcon}
+          state={resolveAccessState(node, userId)}
+          kindLabel="Notebook"
+          size={14}
+        />
+      );
+    },
+    [userId],
   );
 
   const actions = (

@@ -83,13 +83,15 @@ function toJson(doc: PersonalFolderDocLike): PersonalFolderJson {
 const USER_FOLDER = { system: { $exists: false } } as const;
 
 /**
- * ONE home per entity, the Slack-sections rule: an entity sits in exactly one
- * of this user's lists for a kind — a folder, or Starred, or (in none of them)
- * its access-based home section. Filing it anywhere therefore pulls it out of
- * every other list, Starred included: starring an app takes it out of its
- * folder, and filing a starred app unstars it.
+ * One FOLDER per entity: an entity is filed in at most one of this user's
+ * folders, so filing it pulls it out of the others.
+ *
+ * Starred is deliberately excluded on both sides. A star is an overlay, not a
+ * home: starring never moves anything, and filing never unstars. That keeps
+ * every explorer identical — notebooks and dashboards have only Starred, and
+ * it behaves there exactly as it does here.
  */
-async function pullFromOtherLists(
+async function pullFromOtherFolders(
   scope: PersonalFolderScope,
   kind: string,
   keepId: Types.ObjectId,
@@ -101,6 +103,7 @@ async function pullFromOtherLists(
       ...scopeFilter(scope),
       kind,
       _id: { $ne: keepId },
+      ...USER_FOLDER,
       items: { $in: keys },
     },
     { $pull: { items: { $in: keys } } },
@@ -300,15 +303,16 @@ export async function updatePersonalFolderItems(
   doc.items = [...next];
   await doc.save();
 
-  await pullFromOtherLists(scope, doc.kind, doc._id, add);
+  // Only other FOLDERS — a starred entity stays starred when you file it.
+  if (!doc.system) await pullFromOtherFolders(scope, doc.kind, doc._id, add);
 
   return { ok: true, value: toJson(doc as unknown as PersonalFolderDocLike) };
 }
 
 /**
- * Star or unstar one entity. Starred is a list like any other: starring moves
- * the entity there and out of any folder it was in; unstarring returns it to
- * its access-based home section.
+ * Star or unstar one entity. Starred is an OVERLAY, not a home: the entity
+ * stays wherever it lives — its folder, or its access section — and is also
+ * pinned on top. Identical in every explorer.
  *
  * The list is created on first use, once per (workspace, user, kind); the
  * partial unique index makes a racing second creation fail, and that failure
@@ -351,8 +355,7 @@ export async function setStarred(
   }
   doc.items = [...next];
   await doc.save();
-  // Starring is a move like any other: it takes the entity out of whatever
-  // folder it was in.
-  if (input.starred) await pullFromOtherLists(scope, kind, doc._id, [key]);
+  // Deliberately no sweep: a star is an overlay, so it leaves the entity
+  // exactly where it lives — in its folder, or in its access section.
   return { ok: true, value: toJson(doc as unknown as PersonalFolderDocLike) };
 }

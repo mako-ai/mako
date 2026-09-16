@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       );
     }
 
-    // ── starring: one system list per (user, kind), and a move like any other ──
+    // ── starring: one system list per (user, kind), and an overlay ──
     {
       await PersonalFolder.deleteMany({});
       const folder = ok(await createPersonalFolder(ALICE, { name: "Work" }));
@@ -263,13 +263,13 @@ async function main(): Promise<void> {
       assert.equal(starred.name, "Starred");
       assert.deepEqual(starred.items, ["billing"]);
 
-      // One home per app: starring PULLED it out of the folder.
+      // A star is an OVERLAY: it leaves the entity in its folder.
       const work = (await listPersonalFolders(ALICE)).find(
         f => f.name === "Work",
       );
-      assert.deepEqual(work?.items, [], "starring emptied Work");
+      assert.deepEqual(work?.items, ["billing"], "still filed in Work");
 
-      // …and filing it again unstars it — the same rule the other way round.
+      // …and filing it again does not unstar it — the same rule both ways.
       ok(
         await updatePersonalFolderItems(ALICE, {
           folderId: folder.id,
@@ -282,10 +282,9 @@ async function main(): Promise<void> {
       ]);
       assert.deepEqual(
         refiled.find(f => f.system === "starred")?.items,
-        [],
-        "filing unstarred it",
+        ["billing"],
+        "filing left the star alone",
       );
-      ok(await setStarred(ALICE, { key: "billing", starred: true }));
 
       // Idempotent both ways, and never a second list.
       ok(await setStarred(ALICE, { key: "billing", starred: true }));

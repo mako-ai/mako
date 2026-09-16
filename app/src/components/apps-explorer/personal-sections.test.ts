@@ -109,13 +109,19 @@ describe("placedKeys / starredKeys / listOfKey", () => {
     folder({ id: "f2", name: "B", items: ["seller"] }),
   ];
 
-  it("one home per app: starred AND filed keys both leave the home sections", () => {
-    expect([...placedKeys(folders)].sort()).toEqual([
-      "billing",
-      "churn",
-      "seller",
-    ]);
+  it("only FILED keys leave the home sections — a star is an overlay", () => {
+    // "billing" is starred AND filed; it is hidden because it is filed.
+    // "churn" and "seller" are filed. A key that were only starred would
+    // still show in its access section, which is what makes Apps behave like
+    // notebooks and dashboards.
+    expect([...placedKeys(folders)].sort()).toEqual(["churn", "seller"]);
     expect([...starredKeys(folders)]).toEqual(["billing"]);
+  });
+
+  it("a key that is ONLY starred is not hidden from its home section", () => {
+    const onlyStarred = [starred(["solo"])];
+    expect(placedKeys(onlyStarred).size).toBe(0);
+    expect([...starredKeys(onlyStarred)]).toEqual(["solo"]);
   });
 
   it("finds the one list a key lives in, Starred included", () => {

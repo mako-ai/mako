@@ -73,9 +73,16 @@ export function flattenLeafRows(
  */
 export function buildStarredSection(
   folders: PersonalFolder[],
-  resolve: (
-    key: string,
-  ) => { name: string; path?: string; entityType?: string } | undefined,
+  resolve: (key: string) =>
+    | {
+        name: string;
+        path?: string;
+        entityType?: string;
+        /** Carried so the pinned row can tint its icon like the real one. */
+        access?: "private" | "workspace";
+        owner_id?: string;
+      }
+    | undefined,
   icon?: ResourceTreeSection["icon"],
 ): ResourceTreeSection[] {
   const keys = folders.find(f => f.system === "starred")?.items ?? [];
@@ -93,6 +100,8 @@ export function buildStarredSection(
       // pinned copy renders iconless — the same trap that made the whole
       // section render empty when a lookup matched on entityType.
       ...(row.entityType ? { entityType: row.entityType } : {}),
+      ...(row.access ? { access: row.access } : {}),
+      ...(row.owner_id ? { owner_id: row.owner_id } : {}),
     });
   }
   if (nodes.length === 0) return [];

@@ -71,12 +71,17 @@ export function starredKeys(folders: PersonalFolder[]): Set<string> {
 }
 
 /**
- * Every key with a home in one of this user's lists — starred or filed — and
- * therefore HIDDEN from the access-based home sections in this user's view.
+ * Every key FILED in one of this user's folders, and therefore hidden from the
+ * access-based home sections in this user's view.
+ *
+ * Starred is excluded on purpose: a star is an overlay, so a starred app still
+ * appears in its folder or its access section as well as at the top. That is
+ * what keeps Apps behaving like notebooks and dashboards, where a star has
+ * always been a pure shortcut.
  */
 export function placedKeys(folders: PersonalFolder[]): Set<string> {
   const keys = new Set<string>();
-  for (const f of folders) for (const k of f.items) keys.add(k);
+  for (const f of userFolders(folders)) for (const k of f.items) keys.add(k);
   return keys;
 }
 

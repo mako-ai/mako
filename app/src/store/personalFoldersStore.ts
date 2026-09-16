@@ -280,9 +280,10 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         get,
         scopeOf(workspaceId, kind),
         folders => {
-          // One home per entity: filing it here takes it out of every other
-          // list of this kind, Starred included.
+          // One FOLDER per entity — but Starred is an overlay, so filing
+          // something never unstars it.
           for (const f of folders) {
+            if (f.system) continue;
             f.items =
               f.id === folderId ? withKey(f.items, key) : without(f.items, key);
           }
@@ -322,17 +323,15 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
         get,
         scopeOf(workspaceId, kind),
         folders => {
-          // Where this kind has folders, starring is a move and pulls the
-          // entity out of them; where it has none, the loop below simply has
-          // nothing to pull from and a star is a plain shortcut. Until the
-          // first star there is no Starred list locally — the server creates
-          // it and the response inserts it.
-          for (const f of folders) {
-            if (f.system === "starred") {
-              f.items = starred ? withKey(f.items, key) : without(f.items, key);
-            } else if (starred) {
-              f.items = without(f.items, key);
-            }
+          // A star is an overlay: only the Starred list changes, and whatever
+          // folder the entity sits in is left alone. Until the first star
+          // there is no Starred list locally — the server creates it and the
+          // response inserts it.
+          const star = folders.find(f => f.system === "starred");
+          if (star) {
+            star.items = starred
+              ? withKey(star.items, key)
+              : without(star.items, key);
           }
         },
         async () =>

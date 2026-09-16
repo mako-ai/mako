@@ -44,6 +44,8 @@ import type { Dashboard } from "../dashboard-runtime/types";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
+import AccessIcon from "./AccessIcon";
+import { resolveAccessState } from "./access-state";
 import {
   DASHBOARD_FOLDER_KIND,
   selectPersonalFolders,
@@ -255,20 +257,32 @@ export function DashboardsExplorer() {
     setInfoTarget(node);
   }, []);
 
-  const getItemIcon = useCallback((node: ResourceTreeNode) => {
-    // Data source leaves keep their database glyph.
-    if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
-      return <DataSourceIcon size={16} strokeWidth={1.5} />;
-    }
-    // Dashboards carry a dashboard glyph. Folders (both real folders and the
-    // synthetic "Data sources" folder) show no icon — matching the consoles
-    // explorer, where only leaves carry icons. Returning null lets ResourceTree
-    // collapse the icon column so the label sits right after the chevron.
-    if (node.entityType === "dashboard") {
-      return <DashboardIcon size={20} strokeWidth={1.5} />;
-    }
-    return null;
-  }, []);
+  const getItemIcon = useCallback(
+    (node: ResourceTreeNode) => {
+      // Data source leaves keep their database glyph.
+      if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
+        return <DataSourceIcon size={16} strokeWidth={1.5} />;
+      }
+      // Dashboards carry a dashboard glyph. Folders (both real folders and the
+      // synthetic "Data sources" folder) show no icon — matching the consoles
+      // explorer, where only leaves carry icons. Returning null lets ResourceTree
+      // collapse the icon column so the label sits right after the chevron.
+      if (node.entityType === "dashboard") {
+        // Access folded into the glyph rather than a badge column — the
+        // sidebar cannot spare the width.
+        return (
+          <AccessIcon
+            Glyph={DashboardIcon}
+            state={resolveAccessState(node, user?.id)}
+            kindLabel="Dashboard"
+            size={20}
+          />
+        );
+      }
+      return null;
+    },
+    [user?.id],
+  );
 
   const withDataSourceNodes = useCallback(
     (nodes: ResourceTreeNode[]): ResourceTreeNode[] =>
@@ -343,7 +357,14 @@ export function DashboardsExplorer() {
         // Raw entries carry no entityType; the pinned row needs the one
         // getItemIcon looks for, which decoration would otherwise add.
         return node
-          ? { name: node.name, path: node.path, entityType: "dashboard" }
+          ? {
+              name: node.name,
+              path: node.path,
+              entityType: "dashboard",
+              // Ride along so the pinned row tints like the real one.
+              access: node.access,
+              owner_id: node.owner_id,
+            }
           : undefined;
       }),
       ...tree.sections({ my: "My Dashboards" }, withDataSourceNodes),
