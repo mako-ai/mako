@@ -519,7 +519,14 @@ export async function installBoxAgent(ctx: SandboxExecContext): Promise<void> {
     ctx,
     [
       `mkdir -p ${sh(hooksDir)}`,
-      `if ! head -n 1 ${AGENT_PATH} 2>/dev/null | grep -qF ${sh(version)}; then cat > ${AGENT_PATH} <<'MAKO_AGENT_EOF'\n${source}\nMAKO_AGENT_EOF\nif ${alive}; then kill "$(cat ${AGENT_PID})" 2>/dev/null; sleep 0.3; fi; rm -f ${AGENT_PID}; fi`,
+      // On a version change, stop EVERY running copy of the old agent, not
+      // only the one the pid file names: a box resumed from before the pid
+      // file existed (or whose file went stale) kept its old agent running
+      // beside the new one, and the old code reaped every id-keyed dev
+      // server as a ghost within a minute of its start. The anchored
+      // pattern cannot match this installer's own shell (its command line
+      // starts with the shell, not with node).
+      `if ! head -n 1 ${AGENT_PATH} 2>/dev/null | grep -qF ${sh(version)}; then cat > ${AGENT_PATH} <<'MAKO_AGENT_EOF'\n${source}\nMAKO_AGENT_EOF\nif ${alive}; then kill "$(cat ${AGENT_PID})" 2>/dev/null; fi; for p in $(pgrep -f ${sh(`^node ${AGENT_PATH}$`)} 2>/dev/null); do kill "$p" 2>/dev/null; done; sleep 0.3; rm -f ${AGENT_PID}; fi`,
       hookWrites,
       `[ -f ${sh(boxEnvPath(ctx))} ] && echo env-ok || echo env-missing`,
       "echo installed",
