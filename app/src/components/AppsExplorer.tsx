@@ -29,7 +29,10 @@ import {
   FileCode as CodeFileIcon,
   FileText as TextFileIcon,
   Folder as FolderIcon,
+  FolderMinus as RemoveFromFolderIcon,
   FolderOpen as FolderOpenIcon,
+  FolderPlus as NewFolderIcon,
+  Pencil as RenameIcon,
   KeyRound as EnvIcon,
   Plus as AddIcon,
   Github as LinkIcon,
@@ -58,14 +61,29 @@ import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { useConfirm } from "./ConfirmDialog";
+import {
+  buildPersonalSections,
+  parsePersonalNodeId,
+} from "./apps-explorer/personal-sections";
+import {
+  selectPersonalFolders,
+  usePersonalFoldersStore,
+} from "../store/personalFoldersStore";
 
 const AppIcon = TAB_KIND_ICONS["app"];
 
 type ParsedNode =
   | { kind: "app"; appId: string; path: "" }
-  | { kind: "dir" | "file"; appId: string; path: string };
+  | { kind: "dir" | "file"; appId: string; path: string }
+  | { kind: "personal-folder"; folderId: string }
+  | { kind: "personal-item"; folderId: string; appId: string };
 
 function parseNodeId(id: string): ParsedNode {
+  // Personal-folder rows first: they are a view over the same apps, and their
+  // ids must never be mistaken for an app id — that is what would let a drop
+  // into a folder fall through to the sharing logic in handleMoveNode.
+  const personal = parsePersonalNodeId(id);
+  if (personal) return personal;
   if (id.includes(APP_FILE_SEP)) {
     const [appId, path] = id.split(APP_FILE_SEP);
     return { kind: "file", appId, path };
@@ -177,6 +195,19 @@ export default function AppsExplorer() {
   const fetchFiles = useAppsStore(s => s.fetchFiles);
   const createApp = useAppsStore(s => s.createApp);
   const deleteApp = useAppsStore(s => s.deleteApp);
+
+  // Personal folders: this user's private grouping of the same apps.
+  const personalFolders = usePersonalFoldersStore(
+    selectPersonalFolders(workspaceId),
+  );
+  const fetchFolders = usePersonalFoldersStore(s => s.fetchFolders);
+  const createFolder = usePersonalFoldersStore(s => s.createFolder);
+  const renameFolder = usePersonalFoldersStore(s => s.renameFolder);
+  const deletePersonalFolder = usePersonalFoldersStore(s => s.deleteFolder);
+  const addToFolder = usePersonalFoldersStore(s => s.addItem);
+  const removeFromFolder = usePersonalFoldersStore(s => s.removeItem);
+  const folderError = usePersonalFoldersStore(s => s.error);
+  const clearFolderError = usePersonalFoldersStore(s => s.clearError);
   const openGitHubSettings = useCallback(() => {
     const state = useConsoleStore.getState();
     const existing = selectTabBySettingsSection("github")(state);
@@ -236,6 +267,12 @@ export default function AppsExplorer() {
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [renameTarget, setRenameTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -247,6 +284,10 @@ export default function AppsExplorer() {
   useEffect(() => {
     if (workspaceId) void fetchApps(workspaceId);
   }, [workspaceId, fetchApps]);
+
+  useEffect(() => {
+    if (workspaceId) void fetchFolders(workspaceId);
+  }, [workspaceId, fetchFolders]);
 
   // Green dots for live dev servers — discovery, refreshed while the
   // explorer is on screen.
@@ -296,6 +337,9 @@ export default function AppsExplorer() {
     const sharedWithMe = appNodes.filter(n => isSharedWithMe(n.id));
     const shared = appNodes.filter(n => isWorkspace(n.id));
     return [
+      // Your own groupings sit above the shared structure: they are the
+      // shortlist you curated, and they are invisible to everyone else.
+      ...buildPersonalSections(personalFolders, apps),
       {
         key: "my",
         label: "My Apps",
@@ -325,7 +369,7 @@ export default function AppsExplorer() {
         defaultAccess: "workspace" as const,
       },
     ];
-  }, [apps, filesByApp, userId]);
+  }, [apps, filesByApp, userId, personalFolders]);
 
   // Drag an app onto the other section (or any node inside it) to flip its
   // sharing. Drops within the same section no-op.
@@ -333,6 +377,22 @@ export default function AppsExplorer() {
     (nodeId: string, targetId: string | null, access?: string) => {
       if (!workspaceId) return;
       const parsed = parseNodeId(nodeId);
+
+      // Dropping onto one of your folders files a shortcut there and stops.
+      // It must never reach the sharing logic below: putting an app in your
+      // own folder says nothing about who else may see it.
+      const personalTarget = targetId ? parsePersonalNodeId(targetId) : null;
+      if (personalTarget) {
+        const appId =
+          parsed.kind === "app" || parsed.kind === "personal-item"
+            ? parsed.appId
+            : null;
+        const slug = appId ? apps.find(a => a.id === appId)?.slug : undefined;
+        // Membership is keyed by slug — an app may have no row to reference.
+        if (slug) void addToFolder(workspaceId, personalTarget.folderId, slug);
+        return;
+      }
+
       if (parsed.kind !== "app") return;
       // Someone else's private app, shared with you: the API refuses to
       // change its sharing for anyone but the owner, so don't ask.
@@ -360,7 +420,7 @@ export default function AppsExplorer() {
       if (!next || accessOf(parsed.appId) === next) return;
       void setAppAccess(workspaceId, parsed.appId, next);
     },
-    [workspaceId, apps, setAppAccess, userId],
+    [workspaceId, apps, setAppAccess, userId, addToFolder],
   );
 
   const handleLoadChildren = useCallback(
@@ -381,8 +441,11 @@ export default function AppsExplorer() {
   const handleItemClick = useCallback(
     (node: ResourceTreeNode) => {
       const parsed = parseNodeId(node.id);
+      // A folder row only expands; the caret and the name do the same thing.
+      if (parsed.kind === "personal-folder") return;
       const slug = apps.find(a => a.id === parsed.appId)?.slug;
-      if (parsed.kind === "app") {
+      // A shortcut inside a folder opens the very same app as its home row.
+      if (parsed.kind === "app" || parsed.kind === "personal-item") {
         focusAppsTab(parsed.appId, node.name, slug);
         // Warm the file tree so expanding is instant.
         if (workspaceId && !filesByApp[parsed.appId]) {
@@ -434,9 +497,100 @@ export default function AppsExplorer() {
     [workspaceId, deleteApp, confirm],
   );
 
+  const handleCreateFolder = useCallback(async () => {
+    if (!workspaceId || !folderName.trim()) return;
+    const created = await createFolder(workspaceId, folderName.trim());
+    if (created) {
+      setNewFolderOpen(false);
+      setFolderName("");
+    }
+  }, [workspaceId, folderName, createFolder]);
+
+  const handleRenameFolder = useCallback(async () => {
+    if (!workspaceId || !renameTarget?.name.trim()) return;
+    const ok = await renameFolder(
+      workspaceId,
+      renameTarget.id,
+      renameTarget.name.trim(),
+    );
+    if (ok) setRenameTarget(null);
+  }, [workspaceId, renameTarget, renameFolder]);
+
+  const handleDeleteFolder = useCallback(
+    async (folderId: string, name: string) => {
+      if (!workspaceId) return;
+      if (
+        !(await confirm({
+          title: `Delete "${name}"?`,
+          body: "Only the folder goes away. The apps in it are untouched and stay where they are.",
+          confirmLabel: "Delete",
+          destructive: true,
+        }))
+      ) {
+        return;
+      }
+      await deletePersonalFolder(workspaceId, folderId);
+    },
+    [workspaceId, deletePersonalFolder, confirm],
+  );
+
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
       const parsed = parseNodeId(node.id);
+
+      if (parsed.kind === "personal-folder") {
+        const folder = personalFolders.find(f => f.id === parsed.folderId);
+        return [
+          <MenuItem
+            key="rename-folder"
+            onClick={() => {
+              helpers.closeMenu();
+              setRenameTarget({
+                id: parsed.folderId,
+                name: folder?.name ?? "",
+              });
+            }}
+          >
+            <ListItemIcon>
+              <RenameIcon size={16} />
+            </ListItemIcon>
+            Rename folder
+          </MenuItem>,
+          <MenuItem
+            key="delete-folder"
+            onClick={() => {
+              helpers.closeMenu();
+              void handleDeleteFolder(parsed.folderId, folder?.name ?? "");
+            }}
+          >
+            <ListItemIcon>
+              <DeleteIcon size={16} />
+            </ListItemIcon>
+            Delete folder
+          </MenuItem>,
+        ];
+      }
+
+      if (parsed.kind === "personal-item") {
+        const slug = apps.find(a => a.id === parsed.appId)?.slug;
+        return [
+          <MenuItem
+            key="remove-from-folder"
+            onClick={() => {
+              helpers.closeMenu();
+              if (workspaceId && slug) {
+                void removeFromFolder(workspaceId, parsed.folderId, slug);
+              }
+            }}
+          >
+            <ListItemIcon>
+              <RemoveFromFolderIcon size={16} />
+            </ListItemIcon>
+            Remove from this folder
+          </MenuItem>,
+        ];
+      }
+
       if (parsed.kind !== "app") return null;
       return [
         <MenuItem
@@ -477,7 +631,14 @@ export default function AppsExplorer() {
         </MenuItem>,
       ];
     },
-    [handleDelete],
+    [
+      handleDelete,
+      handleDeleteFolder,
+      personalFolders,
+      apps,
+      workspaceId,
+      removeFromFolder,
+    ],
   );
 
   const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
@@ -493,6 +654,17 @@ export default function AppsExplorer() {
             onClick={() => setCreateOpen(true)}
           >
             <AddIcon size={20} strokeWidth={2} />
+          </IconButton>
+        </span>
+      </Tooltip>
+      <Tooltip title="New folder (only you can see it)">
+        <span>
+          <IconButton
+            size="small"
+            disabled={!workspaceId}
+            onClick={() => setNewFolderOpen(true)}
+          >
+            <NewFolderIcon size={20} strokeWidth={2} />
           </IconButton>
         </span>
       </Tooltip>
@@ -514,8 +686,11 @@ export default function AppsExplorer() {
         title="Apps"
         actions={actions}
         searchPlaceholder="Search apps and files..."
-        error={error}
-        onErrorClose={clearError}
+        error={error ?? folderError}
+        onErrorClose={() => {
+          clearError();
+          clearFolderError();
+        }}
         loading={loading && apps.length === 0}
       >
         {({ searchQuery }) => (
@@ -606,7 +781,7 @@ export default function AppsExplorer() {
                   }}
                   getItemIcon={(node, ctx) => {
                     const kind = parseNodeId(node.id).kind;
-                    if (kind === "app") {
+                    if (kind === "app" || kind === "personal-item") {
                       return <AppIcon size={16} strokeWidth={1.5} />;
                     }
                     if (kind === "file") {
@@ -680,6 +855,78 @@ export default function AppsExplorer() {
             disabled={creating || !newTitle.trim()}
           >
             {creating ? "Creating..." : "Create"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={newFolderOpen}
+        onClose={() => setNewFolderOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>New folder</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            margin="dense"
+            label="Folder name"
+            value={folderName}
+            onChange={e => setFolderName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleCreateFolder();
+            }}
+          />
+          <Typography variant="caption" color="text.secondary">
+            Only you can see this folder. Drag apps into it to make a shortlist
+            — the apps themselves are not moved, renamed, or reshared.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNewFolderOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleCreateFolder()}
+            disabled={!folderName.trim()}
+          >
+            Create
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={!!renameTarget}
+        onClose={() => setRenameTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Rename folder</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            margin="dense"
+            label="Folder name"
+            value={renameTarget?.name ?? ""}
+            onChange={e =>
+              setRenameTarget(prev =>
+                prev ? { ...prev, name: e.target.value } : prev,
+              )
+            }
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleRenameFolder();
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenameTarget(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleRenameFolder()}
+            disabled={!renameTarget?.name.trim()}
+          >
+            Rename
           </Button>
         </DialogActions>
       </Dialog>
