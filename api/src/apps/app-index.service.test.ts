@@ -38,6 +38,7 @@ import {
   unbindTestWorkspaceRepo,
 } from "./bind-test-workspace-repo";
 import {
+  assignAppIds,
   discoverApps,
   invalidateAppsIndexCache,
   loadAppsIndex,
@@ -52,10 +53,14 @@ import {
   moveAppFolder,
   moveProject,
   resolveProjectRef,
+  readFile,
+  globFiles,
   stampAppId,
 } from "./worktree.service";
 import { appFolderChanged } from "./deploy-on-push";
 import { runGit } from "./git";
+import { canReadResource } from "../utils/resource-acl";
+import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -176,6 +181,114 @@ describe("discoverApps", () => {
 });
 
 describe("the index", () => {
+  it("rebuilds duplicate index identities without touching app state, and migrates twice", async () => {
+    const state = await AppProject.create({
+      workspaceId: WS,
+      slug: "a",
+      title: "A",
+      access: "private",
+      createdBy: USER,
+    });
+    await loadAppsIndex(WS);
+    await AppIndexEntry.collection.dropIndex("appId_1");
+    const original = await AppIndexEntry.findOne({ appId: B_ID }).lean();
+    if (!original || !mongoose.connection.db) {
+      throw new Error("Missing fixture");
+    }
+    await AppIndexEntry.collection.insertOne({
+      ...original,
+      _id: new Types.ObjectId(),
+      workspaceId: new Types.ObjectId(),
+    });
+    await isolateAppIds(mongoose.connection.db);
+    await isolateAppIds(mongoose.connection.db);
+    expect(await AppIndexEntry.countDocuments()).toBe(0);
+    expect(await AppIndexHead.countDocuments()).toBe(0);
+    expect((await AppProject.findById(state._id))?.access).toBe("private");
+    invalidateAppsIndexCache();
+    expect((await resolveProjectRef(WS, "a"))?._id).toEqual(state._id);
+  });
+
+  it("preserves a legacy private app's random id, permissions and deployment", async () => {
+    const legacy = await AppProject.create({
+      workspaceId: WS,
+      slug: "a",
+      title: "A",
+      access: "private",
+      owner_id: USER,
+      createdBy: USER,
+      publishedSha: "a".repeat(40),
+    });
+    const resolved = (await resolveProjectRef(WS, "a"))!;
+    expect(resolved._id.toString()).toBe(legacy._id.toString());
+    expect(resolved.publishedSha).toBe(legacy.publishedSha);
+    expect(canReadResource(resolved, "another-user", "member")).toBe(false);
+    expect((await ensureProjectRow(resolved, USER))._id).toEqual(legacy._id);
+    await moveProject(resolved, {
+      scope: "workspace",
+      folderSegments: ["Legacy"],
+    });
+    expect(
+      parseAppManifest(await fileAt("apps/Legacy/a/mako.json"), "a").id,
+    ).toBe(legacy.id);
+    expect((await resolveProjectRef(WS, legacy.id))?.access).toBe("private");
+  });
+
+  it("gives a manifest claiming another workspace's state a separate id", async () => {
+    const foreign = await AppProject.create({
+      _id: B_ID,
+      workspaceId: new Types.ObjectId(),
+      slug: "foreign",
+      title: "Foreign",
+      access: "private",
+      createdBy: "foreign-owner",
+    });
+    const resolved = (await resolveProjectRef(WS, "b"))!;
+    expect(resolved._id.toString()).not.toBe(B_ID);
+    const persisted = await ensureProjectRow(resolved, USER);
+    expect(persisted.workspaceId.toString()).toBe(WS);
+    expect((await AppProject.findById(B_ID))?.workspaceId).toEqual(
+      foreign.workspaceId,
+    );
+    // Defense in depth: even a stale/forged caller shape cannot return foreign state.
+    await expect(
+      ensureProjectRow({ ...resolved, _id: foreign._id }, USER),
+    ).rejects.toThrow();
+  });
+
+  it("arbitrates concurrent manifest claims from two workspaces atomically", async () => {
+    const otherWS = new Types.ObjectId().toString();
+    await initRepo(repoDirFor(otherWS), {
+      "apps/copy/mako.json": manifest("Copy", B_ID),
+    });
+    await bindTestWorkspaceRepo(otherWS);
+    try {
+      const [first, second] = await Promise.all([
+        loadAppsIndex(WS),
+        loadAppsIndex(otherWS),
+      ]);
+      const original = first.apps.find(a => a.slug === "b")!;
+      expect(original.appId).not.toBe(second.apps[0].appId);
+      expect([original.appId, second.apps[0].appId]).toContain(B_ID);
+    } finally {
+      await unbindTestWorkspaceRepo(otherWS);
+    }
+  });
+
+  it("does not give a duplicate fallback an id claimed by another app", () => {
+    const fallback = derivedAppId(WS, "copy").toHexString();
+    const ids = assignAppIds(
+      WS,
+      [
+        { path: "apps/original", declaredId: B_ID },
+        { path: "apps/copy", declaredId: B_ID },
+        { path: "apps/third", declaredId: fallback },
+      ],
+      new Map([[B_ID, "apps/original"]]),
+    );
+    expect(new Set([...ids.values()].map(a => a.appId)).size).toBe(3);
+  });
+
   it("lists every app folder with its identity, scope and schedules", async () => {
     const snapshot = await loadAppsIndex(WS);
     expect(snapshot.sha).toBe(await resolveCommit(repoDirFor(WS), MAIN));
@@ -326,18 +439,24 @@ describe("moves", () => {
       slug: "b-renamed",
     });
     expect(await treeOidOf("apps/Ops/b-renamed")).toBe(oid);
+    expect(
+      await globFiles(b, "bindings/*.sql", undefined, undefined, before!),
+    ).toEqual(["bindings/rows.sql"]);
+    expect(
+      (await readFile(b, "bindings/rows.sql", undefined, before!)).contents,
+    ).toContain("select 1");
     const after = await resolveCommit(repoDirFor(WS), MAIN);
     expect(
-      await appFolderChanged(
-        repoDirFor(WS),
-        "apps/Ops/b-renamed",
-        before!,
-        after!,
-      ),
+      await appFolderChanged(WS, repoDirFor(WS), B_ID, before!, after!),
+    ).toBe(false);
+    await externalCommit({ "apps/Ops/b-renamed/src/new.ts": "changed" });
+    const changed = await resolveCommit(repoDirFor(WS), MAIN);
+    expect(
+      await appFolderChanged(WS, repoDirFor(WS), B_ID, after!, changed!),
     ).toBe(true);
-    // ...but a deploy decides by comparing tree oids by APP, which changedApps
-    // does through the index; the raw folder check above is path-based and
-    // only meaningful for an app that did not move.
+    await expect(
+      appFolderChanged(WS, repoDirFor(WS), B_ID, "f".repeat(40), changed!),
+    ).rejects.toThrow();
     expect(
       (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID)?.slug,
     ).toBe("b-renamed");

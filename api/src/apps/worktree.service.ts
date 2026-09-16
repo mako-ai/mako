@@ -99,6 +99,7 @@ import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
 import {
   invalidateAppsIndexCache,
   loadAppsIndex,
+  readIndexedAppsAt,
   resolveAppRef,
   syncAppsIndexFromRepo,
   type AppIndexRow,
@@ -920,7 +921,10 @@ export async function createProject(input: {
     );
   } catch (error) {
     // Don't leave a content-less project behind.
-    await AppProject.deleteOne({ _id: project._id });
+    await AppProject.deleteOne({
+      _id: project._id,
+      workspaceId: project.workspaceId,
+    });
     throw error;
   }
   // Durable tier (§13.17): the connected repo. When one is bound, the
@@ -931,7 +935,10 @@ export async function createProject(input: {
       await mirrorPushNow(input.workspaceId);
     }
   } catch (error) {
-    await AppProject.deleteOne({ _id: project._id });
+    await AppProject.deleteOne({
+      _id: project._id,
+      workspaceId: project.workspaceId,
+    });
     // Roll the scaffold commit back so the repo matches the docs.
     await updateRefCas(
       repoDir,
@@ -972,7 +979,10 @@ export async function deleteProject(project: IAppProject): Promise<void> {
     );
     queueMirrorPush(project.workspaceId.toString());
   }
-  await AppProject.deleteOne({ _id: project._id });
+  await AppProject.deleteOne({
+    _id: project._id,
+    workspaceId: project.workspaceId,
+  });
   await syncAppsIndexFromRepo(project.workspaceId.toString()).catch(
     () => undefined,
   );
@@ -1131,7 +1141,7 @@ export async function moveProject(
   project.path = to;
   project.slug = slug;
   await AppProject.updateOne(
-    { _id: project._id },
+    { _id: project._id, workspaceId: project.workspaceId },
     { $set: { path: to, slug } },
   );
   pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
@@ -1498,7 +1508,7 @@ async function readSource(
   at?: string,
 ): Promise<
   | { kind: "box"; ctx: SandboxExecContext; handle: WorktreeHandle }
-  | { kind: "repo"; repoDir: string; ref: string }
+  | { kind: "repo"; repoDir: string; ref: string; appRoot?: string }
 > {
   const repoDir = await repoFor(project);
   // A pinned commit reads exactly that commit — no box, no actor branch.
@@ -1518,7 +1528,23 @@ async function readSource(
       at,
       project.defaultBranch || DEFAULT_BRANCH,
     );
-    return { kind: "repo", repoDir, ref: at };
+    // Most reads still use the same folder: avoid scanning the workspace
+    // for every binding request. Resolve history only after a move.
+    if (await pathExistsAtRef(repoDir, at, appRootFor(project))) {
+      return { kind: "repo", repoDir, ref: at };
+    }
+    const apps = await readIndexedAppsAt(
+      project.workspaceId.toString(),
+      repoDir,
+      at,
+    );
+    const historical = apps.find(a => a.appId === project._id.toString());
+    return {
+      kind: "repo",
+      repoDir,
+      ref: at,
+      appRoot: historical?.path ?? appRootFor(project),
+    };
   }
   const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
   if (!userId) return { kind: "repo", repoDir, ref: branchRef };
@@ -1642,7 +1668,7 @@ export async function readFile(
   const blob = await readBlob(
     source.repoDir,
     source.ref,
-    appPath(project, safe),
+    `${source.appRoot ?? appRootFor(project)}/${safe}`,
   );
   return { path: safe, ...blob };
 }
@@ -1681,7 +1707,10 @@ export async function globFiles(
   at?: string,
 ): Promise<string[]> {
   const source = await readSource(project, userId, at);
-  const root = appRootFor(project);
+  const root =
+    source.kind === "repo"
+      ? (source.appRoot ?? appRootFor(project))
+      : appRootFor(project);
   const matched =
     source.kind === "box"
       ? await boxGlob(source.ctx, `${root}/${glob}`, limit)
@@ -2683,16 +2712,28 @@ export async function ensureProjectRow(
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
   const owner = isUserActor(actorId) ? actorId : undefined;
-  const existing = await AppProject.findOne({ _id: project._id });
+  const existing = await AppProject.findOne({
+    _id: project._id,
+    workspaceId: project.workspaceId,
+  });
   if (existing) {
     // First human to act on an ownerless row claims it (resource-acl reads
     // owner_id, then createdBy).
     if (owner && !existing.owner_id && !existing.createdBy) {
       await AppProject.updateOne(
-        { _id: existing._id, owner_id: { $in: [null, ""] } },
+        {
+          _id: existing._id,
+          workspaceId: project.workspaceId,
+          owner_id: { $in: [null, ""] },
+        },
         { $set: { owner_id: owner, createdBy: owner } },
       );
-      return (await AppProject.findOne({ _id: existing._id })) ?? existing;
+      return (
+        (await AppProject.findOne({
+          _id: existing._id,
+          workspaceId: project.workspaceId,
+        })) ?? existing
+      );
     }
     return existing;
   }
@@ -2710,7 +2751,10 @@ export async function ensureProjectRow(
       defaultBranch: project.defaultBranch || DEFAULT_BRANCH,
     });
   } catch {
-    const winner = await AppProject.findOne({ _id: project._id });
+    const winner = await AppProject.findOne({
+      _id: project._id,
+      workspaceId: project.workspaceId,
+    });
     if (winner) return winner;
     throw new Error("Could not persist the app's project row");
   }

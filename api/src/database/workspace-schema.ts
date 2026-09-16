@@ -5559,6 +5559,7 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
   { collection: "app_index", timestamps: true },
 );
 
+AppIndexEntrySchema.index({ appId: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, appId: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, path: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, slug: 1 });

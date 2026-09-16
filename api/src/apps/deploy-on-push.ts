@@ -28,7 +28,7 @@ import {
   repoForWorkspace,
   resolveProjectRef,
 } from "./worktree.service";
-import { assignAppIds, loadAppsIndex, readAppsAt } from "./app-index.service";
+import { loadAppsIndex, readIndexedAppsAt } from "./app-index.service";
 import {
   buildApp,
   clearPublishedSha,
@@ -58,27 +58,6 @@ async function appFolderExistsAt(
     .catch(() => false);
 }
 
-/** The folder's tree oid at a commit, or null when it is not there. */
-async function treeOidAt(
-  repoDir: string,
-  sha: string,
-  appPath: string,
-): Promise<string | null> {
-  try {
-    const { stdout } = await runGit([
-      "-C",
-      repoDir,
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      `${sha}:${appPath}`,
-    ]);
-    return stdout.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Apps whose content differs between two commits, by id. An app that only
  * moved keeps its tree oid and is not listed; an app whose folder vanished IS
@@ -102,20 +81,12 @@ async function changedApps(
 
   // The same identity rules at `before` as the index applied at `after`, so
   // a moved app matches itself across the two commits.
-  const was = await readAppsAt(repoDir, range);
-  const ids = assignAppIds(
-    workspaceId,
-    was.apps.map(a => ({
-      path: a.path,
-      declaredId: was.manifests.get(a.path)?.id,
-    })),
-    new Map(now.apps.map(a => [a.appId, a.path])),
+  const oidBefore = new Map(
+    (await readIndexedAppsAt(workspaceId, repoDir, range)).map(a => [
+      a.appId,
+      a.treeOid,
+    ]),
   );
-  const oidBefore = new Map<string, string>();
-  for (const app of was.apps) {
-    const id = ids.get(app.path)?.appId;
-    if (id) oidBefore.set(id, app.treeOid);
-  }
   const changed = new Set<string>();
   for (const app of now.apps) {
     if (oidBefore.get(app.appId) !== app.treeOid) changed.add(app.appId);
@@ -133,16 +104,26 @@ async function changedApps(
  * reconcile ask.
  */
 export async function appFolderChanged(
+  workspaceId: string,
   repoDir: string,
-  appPath: string,
+  appId: string,
   from: string,
   to: string,
+  cache = new Map<string, Promise<Map<string, string>>>(),
 ): Promise<boolean> {
-  const [a, b] = await Promise.all([
-    treeOidAt(repoDir, from, appPath),
-    treeOidAt(repoDir, to, appPath),
-  ]);
-  return a !== b;
+  const treesAt = (sha: string) => {
+    const key = `${workspaceId}:${sha}`;
+    let trees = cache.get(key);
+    if (!trees) {
+      trees = readIndexedAppsAt(workspaceId, repoDir, sha).then(
+        apps => new Map(apps.map(a => [a.appId, a.treeOid])),
+      );
+      cache.set(key, trees);
+    }
+    return trees;
+  };
+  const [a, b] = await Promise.all([treesAt(from), treesAt(to)]);
+  return a.get(appId) !== b.get(appId);
 }
 
 /**

@@ -20,7 +20,7 @@ import {
   deployOneApp,
   appFolderChanged,
 } from "../../apps/deploy-on-push";
-import { appRootFor, repoForWorkspace } from "../../apps/worktree.service";
+import { repoForWorkspace } from "../../apps/worktree.service";
 import { resolveCommit } from "../../apps/repository.service";
 
 const log = loggers.inngest();
@@ -120,12 +120,18 @@ export const appsDeployReconcileFunction = inngest.createFunction(
     )) as Array<
       Pick<
         IAppProject,
-        "_id" | "workspaceId" | "slug" | "path" | "publishedSha" | "lastDeployError"
+        | "_id"
+        | "workspaceId"
+        | "slug"
+        | "path"
+        | "publishedSha"
+        | "lastDeployError"
       >
     >;
 
     const stale = await step.run("find-stale", async () => {
       const out: AppsDeployEventData[] = [];
+      const trees = new Map<string, Promise<Map<string, string>>>();
       const repos = new Map<string, { dir: string; head: string | null }>();
       for (const project of published) {
         const workspaceId = project.workspaceId.toString();
@@ -153,15 +159,16 @@ export const appsDeployReconcileFunction = inngest.createFunction(
         ) {
           continue;
         }
-        const appPath = appRootFor(project as IAppProject);
         const appId = project._id.toString();
         try {
           if (
             !(await appFolderChanged(
+              workspaceId,
               repo.dir,
-              appPath,
+              appId,
               project.publishedSha,
               repo.head,
+              trees,
             ))
           ) {
             continue;
@@ -171,10 +178,12 @@ export const appsDeployReconcileFunction = inngest.createFunction(
             const appChangedSinceFailure =
               failure.sha !== repo.head &&
               (await appFolderChanged(
+                workspaceId,
                 repo.dir,
-                appPath,
+                appId,
                 failure.sha,
                 repo.head,
+                trees,
               ).catch(
                 // The failed commit is unknown here (a rewritten branch):
                 // treat the app as changed rather than block it forever.
@@ -189,7 +198,7 @@ export const appsDeployReconcileFunction = inngest.createFunction(
               log.info("Apps reconcile: backing off a failed deploy", {
                 workspaceId,
                 appId,
-                app: appPath,
+                app: project.path,
                 failedSha: failure.sha,
                 stage: failure.stage,
                 failedAt: failure.at,

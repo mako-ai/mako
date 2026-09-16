@@ -8,9 +8,8 @@
  * and the binding scheduler never open the repo themselves. The rows are
  * disposable: drop the collection and the next read rebuilds it.
  *
- * Identity comes from the manifest's `id`; a manifest without one gets an id
- * derived from its path — the id every app already had before manifests
- * carried one, so nothing moves for them. Two folders declaring the same id
+ * Identity comes from the manifest's `id`; a manifest without one keeps its
+ * existing project id, or derives one from its path when it has no state. Two folders declaring the same id
  * (a copied app that kept its source's manifest) is a conflict the index
  * records rather than resolves: the incumbent keeps the id, the copy is filed
  * under a derived id with `duplicateOf` set, and the UI offers to stamp it.
@@ -192,27 +191,21 @@ export async function listAppTrees(
   repoDir: string,
   sha: string,
 ): Promise<TreeRecord[]> {
-  let stdout: string;
-  try {
-    ({ stdout } = await runGit(
-      [
-        "-C",
-        repoDir,
-        "ls-tree",
-        "-r",
-        "-t",
-        "-z",
-        sha,
-        "--",
-        APPS_DIR,
-        USERS_DIR,
-      ],
-      { timeoutMs: 60_000 },
-    ));
-  } catch {
-    // Neither tree exists yet: an empty workspace, not an error.
-    return [];
-  }
+  const { stdout } = await runGit(
+    [
+      "-C",
+      repoDir,
+      "ls-tree",
+      "-r",
+      "-t",
+      "-z",
+      sha,
+      "--",
+      APPS_DIR,
+      USERS_DIR,
+    ],
+    { timeoutMs: 60_000 },
+  );
   const out: TreeRecord[] = [];
   for (const record of stdout.split("\0")) {
     if (!record) continue;
@@ -283,15 +276,17 @@ export function assignAppIds(
   workspaceId: string,
   apps: Array<{ path: string; declaredId?: string }>,
   incumbents: Map<string, string>,
+  unavailableIds: ReadonlySet<string> = new Set(),
 ): Map<
   string,
   { appId: string; hasManifestId: boolean; duplicateOf?: string }
 > {
+  const idByPath = new Map([...incumbents].map(([id, path]) => [path, id]));
   const claims = new Map<string, string[]>();
   const wanted = new Map<string, { id: string; declared: boolean }>();
   for (const app of apps) {
     const derived = derivedAppId(workspaceId, appKeyOf(app.path)).toHexString();
-    const id = app.declaredId ?? derived;
+    const id = app.declaredId ?? idByPath.get(app.path) ?? derived;
     wanted.set(app.path, { id, declared: !!app.declaredId });
     const list = claims.get(id) ?? [];
     list.push(app.path);
@@ -301,10 +296,12 @@ export function assignAppIds(
     string,
     { appId: string; hasManifestId: boolean; duplicateOf?: string }
   >();
-  const taken = new Set<string>();
+  const taken = new Set<string>([...claims.keys(), ...unavailableIds]);
   for (const [id, paths] of claims) {
-    let winner: string;
-    if (paths.length === 1) {
+    let winner: string | undefined;
+    if (unavailableIds.has(id)) {
+      winner = undefined;
+    } else if (paths.length === 1) {
       winner = paths[0];
     } else {
       // The incumbent path keeps the id; failing that, a path that DECLARES
@@ -315,11 +312,12 @@ export function assignAppIds(
         paths.find(p => wanted.get(p)?.declared) ??
         [...paths].sort()[0];
     }
-    out.set(winner, {
-      appId: id,
-      hasManifestId: !!wanted.get(winner)?.declared,
-    });
-    taken.add(id);
+    if (winner) {
+      out.set(winner, {
+        appId: id,
+        hasManifestId: !!wanted.get(winner)?.declared,
+      });
+    }
     for (const loser of paths) {
       if (loser === winner) continue;
       // File the copy under an id of its own, derived from where it sits, so
@@ -390,7 +388,25 @@ export function syncAppsIndexFromRepo(
   workspaceId: string,
   options: { force?: boolean } = {},
 ): Promise<AppsIndexSnapshot | null> {
-  return serialized(workspaceId, () => syncNow(workspaceId, options));
+  return serialized(workspaceId, async () => {
+    try {
+      return await syncNow(workspaceId, options);
+    } catch (error) {
+      // Another workspace may have claimed a manifest id after our read.
+      // Re-read ownership and assign this copy its own id.
+      if (
+        !(
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === 11000
+        )
+      ) {
+        throw error;
+      }
+      return syncNow(workspaceId, { force: true });
+    }
+  });
 }
 
 async function syncNow(
@@ -412,19 +428,46 @@ async function syncNow(
     return snapshot;
   }
 
+  await AppIndexEntry.init();
   const read = await readAppsAt(repoDir, sha);
   const existing = await AppIndexEntry.find({ workspaceId: ws }).lean();
   const incumbents = new Map<string, string>();
   for (const row of existing) incumbents.set(row.appId, row.path);
-  // A project row is the older memory of where an id lived — it wins only
-  // when the index has never seen the id.
+  // Existing state owns the legacy identity, even before path was backfilled.
   const projectRows = await AppProject.find({ workspaceId: ws })
     .select("_id path slug title description")
     .lean();
   for (const p of projectRows) {
     const id = p._id.toString();
-    if (!incumbents.has(id) && p.path) incumbents.set(id, p.path);
+    incumbents.set(id, p.path ?? `${APPS_DIR}/${p.slug}`);
   }
+  const candidateIds = [
+    ...new Set([
+      ...incumbents.keys(),
+      ...read.apps.flatMap(app => {
+        const declaredId = read.manifests.get(app.path)?.id;
+        return [
+          derivedAppId(workspaceId, appKeyOf(app.path)).toHexString(),
+          ...(declaredId ? [declaredId] : []),
+        ];
+      }),
+    ]),
+  ];
+  const [foreignProjects, foreignEntries] = await Promise.all([
+    AppProject.find({ workspaceId: { $ne: ws }, _id: { $in: candidateIds } })
+      .select("_id")
+      .lean(),
+    AppIndexEntry.find({
+      workspaceId: { $ne: ws },
+      appId: { $in: candidateIds },
+    })
+      .select("appId")
+      .lean(),
+  ]);
+  const unavailableIds = new Set([
+    ...foreignProjects.map(p => p._id.toString()),
+    ...foreignEntries.map(p => p.appId),
+  ]);
   const ids = assignAppIds(
     workspaceId,
     read.apps.map(a => ({
@@ -432,6 +475,7 @@ async function syncNow(
       declaredId: read.manifests.get(a.path)?.id,
     })),
     incumbents,
+    unavailableIds,
   );
 
   const rows: AppIndexRow[] = read.apps.map(app => {
@@ -504,7 +548,7 @@ async function syncNow(
     await AppProject.bulkWrite(
       moves.map(row => ({
         updateOne: {
-          filter: { _id: new Types.ObjectId(row.appId) },
+          filter: { _id: new Types.ObjectId(row.appId), workspaceId: ws },
           update: {
             $set: { path: row.path, slug: row.slug, title: row.title },
           },
@@ -614,4 +658,40 @@ export async function resolveAppRef(
     );
   }
   return found;
+}
+
+/** Resolve historical folders using the same identities as the current index. */
+export async function readIndexedAppsAt(
+  workspaceId: string,
+  repoDir: string,
+  sha: string,
+): Promise<Array<{ appId: string; path: string; treeOid: string }>> {
+  const [read, now, projects] = await Promise.all([
+    readAppsAt(repoDir, sha),
+    loadAppsIndex(workspaceId),
+    AppProject.find({ workspaceId }).select("_id path slug").lean(),
+  ]);
+  const incumbents = new Map(now.apps.map(a => [a.appId, a.path]));
+  for (const p of projects) {
+    incumbents.set(p._id.toString(), p.path ?? `apps/${p.slug}`);
+  }
+  // Copies keep the derived identity assigned by the current index.
+  const ids = assignAppIds(
+    workspaceId,
+    read.apps.map(a => ({
+      path: a.path,
+      declaredId:
+        now.apps.find(
+          n =>
+            n.path === a.path &&
+            n.duplicateOf === read.manifests.get(a.path)?.id,
+        )?.appId ?? read.manifests.get(a.path)?.id,
+    })),
+    incumbents,
+  );
+  return read.apps.map(a => ({
+    appId: ids.get(a.path)!.appId,
+    path: a.path,
+    treeOid: a.treeOid,
+  }));
 }

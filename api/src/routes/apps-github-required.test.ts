@@ -39,7 +39,7 @@ assert.ok(
 
 assert.ok(
   apps.includes("List Apps projects") &&
-    apps.includes("{ success: true as const, apps: [] }"),
+    apps.includes("{ success: true as const, apps: [], folders: [] }"),
   "GET /apps must return 200 { apps: [] } when no GitHub repo is bound, not 412",
 );
 

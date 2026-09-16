@@ -223,7 +223,7 @@ export async function setPublishedSha(
   sha: string,
 ): Promise<void> {
   await AppProject.updateOne(
-    { _id: project._id },
+    { _id: project._id, workspaceId: project.workspaceId },
     {
       $set: { publishedSha: sha, publishedAt: new Date() },
       $unset: { lastDeployError: 1 },
@@ -238,7 +238,7 @@ export async function setPublishedSha(
  */
 export async function clearPublishedSha(project: IAppProject): Promise<void> {
   await AppProject.updateOne(
-    { _id: project._id },
+    { _id: project._id, workspaceId: project.workspaceId },
     { $unset: { publishedSha: 1, publishedAt: 1, lastDeployError: 1 } },
   );
 }
@@ -263,7 +263,7 @@ export async function recordDeployFailure(
       ? `…${full.slice(-DEPLOY_ERROR_MAX_CHARS)}`
       : full;
   await AppProject.updateOne(
-    { _id: project._id },
+    { _id: project._id, workspaceId: project.workspaceId },
     { $set: { lastDeployError: { sha, stage, message, at: new Date() } } },
   ).catch(err => {
     logger.warn("Could not record apps deploy failure", {
