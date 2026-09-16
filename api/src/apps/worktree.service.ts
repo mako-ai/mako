@@ -113,6 +113,7 @@ import {
   appTreeRoot,
   isSafeSegment,
   parseAppFolderPath,
+  parseAppManifest,
   stampManifestId,
   type AppScope,
 } from "./app-paths";
@@ -1530,7 +1531,15 @@ async function readSource(
     );
     // Most reads still use the same folder: avoid scanning the workspace
     // for every binding request. Resolve history only after a move.
-    if (await pathExistsAtRef(repoDir, at, appRootFor(project))) {
+    const manifest = await readBlob(
+      repoDir,
+      at,
+      `${appRootFor(project)}/${APP_MANIFEST}`,
+    ).catch(() => null);
+    const declaredId = manifest
+      ? parseAppManifest(manifest.contents, project.slug ?? "").id
+      : undefined;
+    if (manifest && (!declaredId || declaredId === project._id.toString())) {
       return { kind: "repo", repoDir, ref: at };
     }
     const apps = await readIndexedAppsAt(

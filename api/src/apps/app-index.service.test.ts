@@ -181,6 +181,29 @@ describe("discoverApps", () => {
 });
 
 describe("the index", () => {
+  it("rebuilds an older index at the same git sha before serving legacy permissions", async () => {
+    const legacy = await AppProject.create({
+      workspaceId: WS,
+      slug: "a",
+      title: "A",
+      access: "private",
+      createdBy: USER,
+    });
+    await loadAppsIndex(WS);
+    await AppIndexEntry.updateOne(
+      { workspaceId: WS, path: "apps/a" },
+      { $set: { appId: derivedAppId(WS, "a").toHexString() } },
+    );
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $unset: { schemaVersion: 1 } },
+    );
+    invalidateAppsIndexCache();
+    const resolved = (await resolveProjectRef(WS, "a"))!;
+    expect(resolved._id).toEqual(legacy._id);
+    expect(canReadResource(resolved, "someone-else", "member")).toBe(false);
+  });
+
   it("rebuilds duplicate index identities without touching app state, and migrates twice", async () => {
     const state = await AppProject.create({
       workspaceId: WS,

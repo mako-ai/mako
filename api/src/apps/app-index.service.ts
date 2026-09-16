@@ -49,6 +49,7 @@ import {
 const logger = loggers.api("apps-index");
 
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
+const INDEX_SCHEMA_VERSION = 1;
 
 export interface AppSchedule {
   binding: string;
@@ -419,7 +420,11 @@ async function syncNow(
   if (!sha) return null;
   const ws = new Types.ObjectId(workspaceId);
   const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
-  if (head?.sha === sha && !options.force) {
+  if (
+    head?.sha === sha &&
+    head.schemaVersion === INDEX_SCHEMA_VERSION &&
+    !options.force
+  ) {
     const cached = snapshotCache.get(workspaceId);
     if (cached?.sha === sha) return cached;
     const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
@@ -428,7 +433,9 @@ async function syncNow(
     return snapshot;
   }
 
-  await AppIndexEntry.init();
+  // Retryable after a migration repairs old collisions; Model.init() retains
+  // a rejected index-build promise for the lifetime of the API process.
+  await AppIndexEntry.collection.createIndex({ appId: 1 }, { unique: true });
   const read = await readAppsAt(repoDir, sha);
   const existing = await AppIndexEntry.find({ workspaceId: ws }).lean();
   const incumbents = new Map<string, string>();
@@ -560,7 +567,9 @@ async function syncNow(
 
   await AppIndexHead.updateOne(
     { workspaceId: ws },
-    { $set: { sha, folders: read.folders } },
+    {
+      $set: { sha, schemaVersion: INDEX_SCHEMA_VERSION, folders: read.folders },
+    },
     { upsert: true },
   );
   const snapshot: AppsIndexSnapshot = {

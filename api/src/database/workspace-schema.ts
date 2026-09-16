@@ -5578,6 +5578,7 @@ export interface IAppIndexHead extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   sha: string;
+  schemaVersion?: number;
   /** Every folder in the app trees, as repo-relative paths (`apps/sales`). */
   folders: string[];
   updatedAt: Date;
@@ -5592,6 +5593,7 @@ const AppIndexHeadSchema = new Schema<IAppIndexHead>(
       unique: true,
     },
     sha: { type: String, required: true },
+    schemaVersion: { type: Number },
     folders: { type: [String], default: [] },
   },
   { collection: "app_index_heads", timestamps: true },
