@@ -1,15 +1,22 @@
 /**
- * Personal folders — one user's private grouping of entities in an explorer.
+ * Personal folders — one user's private organization of an explorer's list.
  *
- * Purely an organization layer: a folder holds entity KEYS (an app's slug) and
- * can never change the entity itself. Nothing here touches an app's sharing,
- * identity or deployment — that is the whole point of the feature, and the
- * reason it could ship without changing the apps backend at all.
+ * Two concepts share one storage row:
  *
- * Membership edits are optimistic because they are driven by dragging a row,
- * where waiting on a round trip feels broken; a failure puts the previous
- * items back and surfaces the message. Create/rename/delete come from dialogs,
- * where the latency is expected, so those apply the server's answer directly.
+ * - A **folder** MOVES an entity within this user's view (the Slack-sections
+ *   model): it leaves My Apps / Workspace here and lives in the folder, and it
+ *   lives in at most one folder. Nobody else's view changes.
+ * - The **Starred** list is a SHORTCUT (the Drive / Notion model): the entity
+ *   stays where it is and is also pinned on top. It is a system row
+ *   (`system: "starred"`), created on first use, never renamed or deleted.
+ *
+ * Neither can change an entity's sharing, identity or deployment — that is
+ * the whole point, and why this shipped without touching the apps backend.
+ *
+ * Membership edits are optimistic because they come from a drag or a single
+ * click, where a round trip feels broken; a failure restores the previous
+ * list and surfaces the message. Create/rename/delete come from dialogs,
+ * where latency is expected, so those apply the server's answer directly.
  */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
@@ -22,6 +29,8 @@ export interface PersonalFolder {
   name: string;
   /** Entity keys — for apps, the slug. May reference something long gone. */
   items: string[];
+  /** Present on the one auto-created Starred list; absent on user folders. */
+  system?: "starred";
   updatedAt?: string;
 }
 
@@ -49,7 +58,10 @@ interface PersonalFoldersActions {
     name: string,
   ) => Promise<boolean>;
   deleteFolder: (workspaceId: string, folderId: string) => Promise<boolean>;
-  /** Add an entity key. Idempotent — the server stores membership as a set. */
+  /**
+   * File an entity in a folder. It leaves the user's other folders (a folder
+   * is a move); the Starred list is untouched (a star is a shortcut).
+   */
   addItem: (
     workspaceId: string,
     folderId: string,
@@ -59,6 +71,12 @@ interface PersonalFoldersActions {
     workspaceId: string,
     folderId: string,
     key: string,
+  ) => Promise<boolean>;
+  /** Star or unstar one entity. Idempotent. */
+  toggleStar: (
+    workspaceId: string,
+    key: string,
+    starred: boolean,
   ) => Promise<boolean>;
   clearError: () => void;
   reset: () => void;
@@ -78,6 +96,59 @@ function replaceFolder(list: PersonalFolder[], next: PersonalFolder): void {
   }
   list.sort((a, b) => a.name.localeCompare(b.name));
 }
+
+type SetState = (fn: (state: PersonalFoldersStore) => void) => void;
+type GetState = () => PersonalFoldersStore;
+
+/**
+ * Apply a membership change locally first, then confirm with the server.
+ * The whole workspace list is snapshotted, because a single change can touch
+ * several folders (filing pulls from siblings). On failure the snapshot is
+ * restored, so a rejected drag or click cannot leave the sidebar claiming a
+ * membership the server does not have.
+ */
+async function optimistically(
+  set: SetState,
+  get: GetState,
+  workspaceId: string,
+  apply: (folders: PersonalFolder[]) => void,
+  request: () => Promise<{ folder?: PersonalFolder }>,
+  failure: string,
+): Promise<boolean> {
+  const snapshot = (get().byWorkspace[workspaceId] ?? []).map(f => ({
+    ...f,
+    items: [...f.items],
+  }));
+
+  set(state => {
+    const list = state.byWorkspace[workspaceId];
+    if (list) apply(list);
+  });
+
+  try {
+    const body = await request();
+    if (body.folder) {
+      const folder = body.folder;
+      set(state => {
+        const list = state.byWorkspace[workspaceId] ?? [];
+        replaceFolder(list, folder);
+        state.byWorkspace[workspaceId] = list;
+      });
+    }
+    return true;
+  } catch (e) {
+    set(state => {
+      state.byWorkspace[workspaceId] = snapshot;
+      state.error = toErrorMessage(e, failure);
+    });
+    return false;
+  }
+}
+
+const without = (items: string[], key: string) =>
+  items.filter(item => item !== key);
+const withKey = (items: string[], key: string) =>
+  items.includes(key) ? items : [...items, key];
 
 export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
   immer((set, get) => ({
@@ -177,14 +248,70 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
       }
     },
 
-    addItem: async (workspaceId, folderId, key) =>
-      updateItems(set, get, workspaceId, folderId, { add: [key] }, items =>
-        items.includes(key) ? items : [...items, key],
+    addItem: (workspaceId, folderId, key) =>
+      optimistically(
+        set,
+        get,
+        workspaceId,
+        folders => {
+          for (const f of folders) {
+            if (f.system) continue; // a star is a shortcut; leave it
+            f.items =
+              f.id === folderId ? withKey(f.items, key) : without(f.items, key);
+          }
+        },
+        async () =>
+          unwrapBody(
+            await api.PATCH(`${BASE}/{id}/items`, {
+              params: { path: { workspaceId, id: folderId } },
+              body: { add: [key] },
+            }),
+          ) as { folder?: PersonalFolder },
+        "Failed to update the folder",
       ),
 
-    removeItem: async (workspaceId, folderId, key) =>
-      updateItems(set, get, workspaceId, folderId, { remove: [key] }, items =>
-        items.filter(item => item !== key),
+    removeItem: (workspaceId, folderId, key) =>
+      optimistically(
+        set,
+        get,
+        workspaceId,
+        folders => {
+          const f = folders.find(x => x.id === folderId);
+          if (f) f.items = without(f.items, key);
+        },
+        async () =>
+          unwrapBody(
+            await api.PATCH(`${BASE}/{id}/items`, {
+              params: { path: { workspaceId, id: folderId } },
+              body: { remove: [key] },
+            }),
+          ) as { folder?: PersonalFolder },
+        "Failed to update the folder",
+      ),
+
+    toggleStar: (workspaceId, key, starred) =>
+      optimistically(
+        set,
+        get,
+        workspaceId,
+        folders => {
+          // Until the first star there is no list to update locally; the
+          // server creates it and the response inserts it.
+          const star = folders.find(f => f.system === "starred");
+          if (star) {
+            star.items = starred
+              ? withKey(star.items, key)
+              : without(star.items, key);
+          }
+        },
+        async () =>
+          unwrapBody(
+            await api.POST(`${BASE}/star`, {
+              params: { path: { workspaceId } },
+              body: { key, starred },
+            }),
+          ) as { folder?: PersonalFolder },
+        starred ? "Failed to star" : "Failed to unstar",
       ),
 
     clearError: () =>
@@ -195,60 +322,6 @@ export const usePersonalFoldersStore = create<PersonalFoldersStore>()(
     reset: () => set({ byWorkspace: {}, loading: {}, error: null }),
   })),
 );
-
-type SetState = (fn: (state: PersonalFoldersStore) => void) => void;
-type GetState = () => PersonalFoldersStore;
-
-/**
- * Apply an item change locally first, then confirm with the server. On failure
- * the previous items are restored, so a rejected drag cannot leave the sidebar
- * claiming a membership the server does not have.
- */
-async function updateItems(
-  set: SetState,
-  get: GetState,
-  workspaceId: string,
-  folderId: string,
-  payload: { add?: string[]; remove?: string[] },
-  optimistic: (items: string[]) => string[],
-): Promise<boolean> {
-  const before = get().byWorkspace[workspaceId]?.find(
-    f => f.id === folderId,
-  )?.items;
-  if (!before) return false;
-
-  set(state => {
-    const folder = state.byWorkspace[workspaceId]?.find(f => f.id === folderId);
-    if (folder) folder.items = optimistic(folder.items);
-  });
-
-  try {
-    const body = unwrapBody(
-      await api.PATCH(`${BASE}/{id}/items`, {
-        params: { path: { workspaceId, id: folderId } },
-        body: payload,
-      }),
-    ) as { folder?: PersonalFolder };
-    if (body.folder) {
-      const folder = body.folder;
-      set(state => {
-        const list = state.byWorkspace[workspaceId] ?? [];
-        replaceFolder(list, folder);
-        state.byWorkspace[workspaceId] = list;
-      });
-    }
-    return true;
-  } catch (e) {
-    set(state => {
-      const folder = state.byWorkspace[workspaceId]?.find(
-        f => f.id === folderId,
-      );
-      if (folder) folder.items = before;
-      state.error = toErrorMessage(e, "Failed to update the folder");
-    });
-    return false;
-  }
-}
 
 export const selectPersonalFolders =
   (workspaceId: string | undefined) =>

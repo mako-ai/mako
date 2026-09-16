@@ -19,6 +19,7 @@ import {
   deletePersonalFolder,
   listPersonalFolders,
   renamePersonalFolder,
+  setStarred,
   updatePersonalFolderItems,
   MAX_FOLDERS_PER_KIND,
   MAX_FOLDER_NAME_LENGTH,
@@ -209,6 +210,118 @@ async function main(): Promise<void> {
 
       const stored = (await listPersonalFolders(ALICE))[0];
       assert.deepEqual(stored.items, [], "a rejected add writes nothing");
+    }
+
+    // ── a user folder MOVES: an app lives in at most one of them ──
+    {
+      await PersonalFolder.deleteMany({});
+      const a = ok(await createPersonalFolder(ALICE, { name: "A" }));
+      const b = ok(await createPersonalFolder(ALICE, { name: "B" }));
+      ok(
+        await updatePersonalFolderItems(ALICE, { folderId: a.id, add: ["x"] }),
+      );
+      ok(
+        await updatePersonalFolderItems(ALICE, { folderId: b.id, add: ["x"] }),
+      );
+
+      const byName = Object.fromEntries(
+        (await listPersonalFolders(ALICE)).map(f => [f.name, f.items]),
+      );
+      assert.deepEqual(byName.A, [], "filing into B pulled it from A");
+      assert.deepEqual(byName.B, ["x"]);
+
+      // Bob's folders are not touched by Alice's moves, even with the same key.
+      const bobs = ok(await createPersonalFolder(BOB, { name: "Bob's" }));
+      ok(
+        await updatePersonalFolderItems(BOB, { folderId: bobs.id, add: ["x"] }),
+      );
+      ok(
+        await updatePersonalFolderItems(ALICE, { folderId: a.id, add: ["x"] }),
+      );
+      assert.deepEqual(
+        (await listPersonalFolders(BOB))[0].items,
+        ["x"],
+        "another user's membership is not a sibling to pull from",
+      );
+    }
+
+    // ── starring: one system list per (user, kind), a shortcut not a move ──
+    {
+      await PersonalFolder.deleteMany({});
+      const folder = ok(await createPersonalFolder(ALICE, { name: "Work" }));
+      ok(
+        await updatePersonalFolderItems(ALICE, {
+          folderId: folder.id,
+          add: ["billing"],
+        }),
+      );
+
+      const starred = ok(
+        await setStarred(ALICE, { key: "billing", starred: true }),
+      );
+      assert.equal(starred.system, "starred");
+      assert.equal(starred.name, "Starred");
+      assert.deepEqual(starred.items, ["billing"]);
+
+      // Starring did NOT pull it from the folder: a star is a shortcut.
+      const work = (await listPersonalFolders(ALICE)).find(
+        f => f.name === "Work",
+      );
+      assert.deepEqual(work?.items, ["billing"], "still filed in Work");
+
+      // Idempotent both ways, and never a second list.
+      ok(await setStarred(ALICE, { key: "billing", starred: true }));
+      ok(await setStarred(ALICE, { key: "churn", starred: true }));
+      const unstarred = ok(
+        await setStarred(ALICE, { key: "billing", starred: false }),
+      );
+      assert.deepEqual(unstarred.items, ["churn"]);
+      assert.equal(
+        await PersonalFolder.countDocuments({ system: "starred" }),
+        1,
+        "exactly one Starred list",
+      );
+
+      // The list is visible in the listing (the client renders it on top)…
+      assert.ok(
+        (await listPersonalFolders(ALICE)).some(f => f.system === "starred"),
+      );
+      // …but cannot be renamed or deleted, and is invisible to others.
+      const rename = await renamePersonalFolder(ALICE, {
+        folderId: unstarred.id,
+        name: "Mine",
+      });
+      assert.equal(rename.ok === false && rename.status, 400);
+      const del = await deletePersonalFolder(ALICE, unstarred.id);
+      assert.equal(del.ok === false && del.status, 400);
+      const bobDel = await deletePersonalFolder(BOB, unstarred.id);
+      assert.equal(bobDel.ok === false && bobDel.status, 404);
+      assert.deepEqual(await listPersonalFolders(BOB), []);
+
+      // A blank key is rejected before anything is created for it.
+      const blank = await setStarred(ALICE, { key: "   ", starred: true });
+      assert.equal(blank.ok === false && blank.status, 400);
+    }
+
+    // ── the Starred list is exempt from the folder cap ──
+    {
+      await PersonalFolder.deleteMany({});
+      await PersonalFolder.insertMany(
+        Array.from({ length: MAX_FOLDERS_PER_KIND }, (_, i) => ({
+          workspaceId: new Types.ObjectId(WS),
+          userId: "alice",
+          kind: "app",
+          name: `folder-${i}`,
+          items: [],
+        })),
+      );
+      const capped = await createPersonalFolder(ALICE, { name: "one more" });
+      assert.equal(capped.ok === false && capped.status, 409);
+      assert.equal(
+        (await setStarred(ALICE, { key: "billing", starred: true })).ok,
+        true,
+        "starring still works at the cap",
+      );
     }
 
     console.log("personal-folders service tests passed");

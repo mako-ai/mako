@@ -32,7 +32,9 @@ import {
   FolderMinus as RemoveFromFolderIcon,
   FolderOpen as FolderOpenIcon,
   FolderPlus as NewFolderIcon,
+  Lock as LockIcon,
   Pencil as RenameIcon,
+  Star as StarIcon,
   KeyRound as EnvIcon,
   Plus as AddIcon,
   Github as LinkIcon,
@@ -63,8 +65,15 @@ import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { useConfirm } from "./ConfirmDialog";
 import {
   buildPersonalSections,
+  folderOfKey,
+  folderedKeys,
   parsePersonalNodeId,
+  personalItemNodeId,
+  starredKeys,
 } from "./apps-explorer/personal-sections";
+import PersonalFolderDialogs, {
+  type RenameTarget,
+} from "./apps-explorer/PersonalFolderDialogs";
 import {
   selectPersonalFolders,
   usePersonalFoldersStore,
@@ -206,8 +215,20 @@ export default function AppsExplorer() {
   const deletePersonalFolder = usePersonalFoldersStore(s => s.deleteFolder);
   const addToFolder = usePersonalFoldersStore(s => s.addItem);
   const removeFromFolder = usePersonalFoldersStore(s => s.removeItem);
+  const toggleStar = usePersonalFoldersStore(s => s.toggleStar);
   const folderError = usePersonalFoldersStore(s => s.error);
   const clearFolderError = usePersonalFoldersStore(s => s.clearError);
+  // Which slugs are starred, and which are filed in a folder (and therefore
+  // hidden from their home section in this user's view).
+  const starred = useMemo(
+    () => starredKeys(personalFolders),
+    [personalFolders],
+  );
+  const filed = useMemo(() => folderedKeys(personalFolders), [personalFolders]);
+  const slugOf = useCallback(
+    (appId: string) => apps.find(a => a.id === appId)?.slug,
+    [apps],
+  );
   const openGitHubSettings = useCallback(() => {
     const state = useConsoleStore.getState();
     const existing = selectTabBySettingsSection("github")(state);
@@ -229,13 +250,17 @@ export default function AppsExplorer() {
   );
   const activeItemId = useMemo(() => {
     if (activeTab?.kind === "app") {
-      return (activeTab.metadata?.appId as string) ?? null;
+      const appId = (activeTab.metadata?.appId as string) ?? null;
+      if (!appId) return null;
+      // A filed app's only row is inside its folder; highlight that one.
+      const folder = folderOfKey(personalFolders, slugOf(appId));
+      return folder ? personalItemNodeId(folder.id, appId) : appId;
     }
     if (activeTab?.kind === "app-file") {
       return `${activeTab.metadata?.appId}${APP_FILE_SEP}${activeTab.metadata?.path}`;
     }
     return null;
-  }, [activeTab]);
+  }, [activeTab, personalFolders, slugOf]);
 
   // The app whose version control this sidebar shows — whichever app tab
   // (or one of its files) is currently focused, same as Transforms' single
@@ -269,10 +294,7 @@ export default function AppsExplorer() {
   const [creating, setCreating] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
-  const [renameTarget, setRenameTarget] = useState<{
-    id: string;
-    name: string;
-  } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -331,14 +353,21 @@ export default function AppsExplorer() {
       const owner = byId.get(id)?.owner_id;
       return !isWorkspace(id) && !!owner && !!userId && owner !== userId;
     };
-    const mine = appNodes.filter(
-      n => !isWorkspace(n.id) && !isSharedWithMe(n.id),
-    );
-    const sharedWithMe = appNodes.filter(n => isSharedWithMe(n.id));
-    const shared = appNodes.filter(n => isWorkspace(n.id));
+    // An app filed in one of your folders has MOVED there in your view, so it
+    // leaves its home section (a star, by contrast, is a shortcut and leaves
+    // the home row in place). Everyone else still sees it exactly where the
+    // access rules put it.
+    const isFiled = (id: string) => {
+      const slug = byId.get(id)?.slug;
+      return !!slug && filed.has(slug);
+    };
+    const home = appNodes.filter(n => !isFiled(n.id));
+    const mine = home.filter(n => !isWorkspace(n.id) && !isSharedWithMe(n.id));
+    const sharedWithMe = home.filter(n => isSharedWithMe(n.id));
+    const shared = home.filter(n => isWorkspace(n.id));
     return [
-      // Your own groupings sit above the shared structure: they are the
-      // shortlist you curated, and they are invisible to everyone else.
+      // Your own organization sits above the shared structure: Starred, then
+      // your folders. Both are invisible to everyone else.
       ...buildPersonalSections(personalFolders, apps),
       {
         key: "my",
@@ -369,7 +398,7 @@ export default function AppsExplorer() {
         defaultAccess: "workspace" as const,
       },
     ];
-  }, [apps, filesByApp, userId, personalFolders]);
+  }, [apps, filesByApp, userId, personalFolders, filed]);
 
   // Drag an app onto the other section (or any node inside it) to flip its
   // sharing. Drops within the same section no-op.
@@ -377,19 +406,30 @@ export default function AppsExplorer() {
     (nodeId: string, targetId: string | null, access?: string) => {
       if (!workspaceId) return;
       const parsed = parseNodeId(nodeId);
+      const draggedAppId =
+        parsed.kind === "app" || parsed.kind === "personal-item"
+          ? parsed.appId
+          : null;
+      // Membership is keyed by slug — an app may have no row to reference.
+      const slug = draggedAppId ? slugOf(draggedAppId) : undefined;
 
-      // Dropping onto one of your folders files a shortcut there and stops.
-      // It must never reach the sharing logic below: putting an app in your
-      // own folder says nothing about who else may see it.
+      // Dropping onto one of your folders files the app there and stops. It
+      // must never reach the sharing logic below: putting an app in your own
+      // folder says nothing about who else may see it.
       const personalTarget = targetId ? parsePersonalNodeId(targetId) : null;
       if (personalTarget) {
-        const appId =
-          parsed.kind === "app" || parsed.kind === "personal-item"
-            ? parsed.appId
-            : null;
-        const slug = appId ? apps.find(a => a.id === appId)?.slug : undefined;
-        // Membership is keyed by slug — an app may have no row to reference.
         if (slug) void addToFolder(workspaceId, personalTarget.folderId, slug);
+        return;
+      }
+
+      // Dragging a row OUT of one of your folders (onto a home section or a
+      // home row) sends it back home — and nothing more. A drag that starts
+      // inside your own organization is never a sharing change.
+      if (parsed.kind === "personal-item") {
+        const from = personalFolders.find(f => f.id === parsed.folderId);
+        if (from && !from.system && slug) {
+          void removeFromFolder(workspaceId, from.id, slug);
+        }
         return;
       }
 
@@ -420,7 +460,16 @@ export default function AppsExplorer() {
       if (!next || accessOf(parsed.appId) === next) return;
       void setAppAccess(workspaceId, parsed.appId, next);
     },
-    [workspaceId, apps, setAppAccess, userId, addToFolder],
+    [
+      workspaceId,
+      apps,
+      setAppAccess,
+      userId,
+      addToFolder,
+      removeFromFolder,
+      personalFolders,
+      slugOf,
+    ],
   );
 
   const handleLoadChildren = useCallback(
@@ -522,7 +571,7 @@ export default function AppsExplorer() {
       if (
         !(await confirm({
           title: `Delete "${name}"?`,
-          body: "Only the folder goes away. The apps in it are untouched and stay where they are.",
+          body: "Only the folder goes away. The apps in it go back to My Apps / Workspace; nothing about them changes.",
           confirmLabel: "Delete",
           destructive: true,
         }))
@@ -532,6 +581,38 @@ export default function AppsExplorer() {
       await deletePersonalFolder(workspaceId, folderId);
     },
     [workspaceId, deletePersonalFolder, confirm],
+  );
+
+  const handleToggleStar = useCallback(
+    (appId: string) => {
+      const slug = slugOf(appId);
+      if (!workspaceId || !slug) return;
+      void toggleStar(workspaceId, slug, !starred.has(slug));
+    },
+    [workspaceId, slugOf, toggleStar, starred],
+  );
+
+  /** The Star / Unstar entry, offered on every row that is an app. */
+  const starMenuItem = useCallback(
+    (appId: string, helpers: { closeMenu: () => void }) => {
+      const slug = slugOf(appId);
+      const isStarred = !!slug && starred.has(slug);
+      return (
+        <MenuItem
+          key="star"
+          onClick={() => {
+            helpers.closeMenu();
+            handleToggleStar(appId);
+          }}
+        >
+          <ListItemIcon>
+            <StarIcon size={16} fill={isStarred ? "currentColor" : "none"} />
+          </ListItemIcon>
+          {isStarred ? "Unstar" : "Star"}
+        </MenuItem>
+      );
+    },
+    [slugOf, starred, handleToggleStar],
   );
 
   const getContextMenuItems = useCallback(
@@ -572,27 +653,36 @@ export default function AppsExplorer() {
       }
 
       if (parsed.kind === "personal-item") {
-        const slug = apps.find(a => a.id === parsed.appId)?.slug;
-        return [
-          <MenuItem
-            key="remove-from-folder"
-            onClick={() => {
-              helpers.closeMenu();
-              if (workspaceId && slug) {
-                void removeFromFolder(workspaceId, parsed.folderId, slug);
-              }
-            }}
-          >
-            <ListItemIcon>
-              <RemoveFromFolderIcon size={16} />
-            </ListItemIcon>
-            Remove from this folder
-          </MenuItem>,
-        ];
+        const slug = slugOf(parsed.appId);
+        const inStarred =
+          personalFolders.find(f => f.id === parsed.folderId)?.system ===
+          "starred";
+        // A row in the Starred list only offers Unstar; a row in a folder
+        // offers both leaving the folder and starring.
+        return inStarred
+          ? [starMenuItem(parsed.appId, helpers)]
+          : [
+              <MenuItem
+                key="remove-from-folder"
+                onClick={() => {
+                  helpers.closeMenu();
+                  if (workspaceId && slug) {
+                    void removeFromFolder(workspaceId, parsed.folderId, slug);
+                  }
+                }}
+              >
+                <ListItemIcon>
+                  <RemoveFromFolderIcon size={16} />
+                </ListItemIcon>
+                Remove from this folder
+              </MenuItem>,
+              starMenuItem(parsed.appId, helpers),
+            ];
       }
 
       if (parsed.kind !== "app") return null;
       return [
+        starMenuItem(parsed.appId, helpers),
         <MenuItem
           key="share"
           onClick={() => {
@@ -635,10 +725,125 @@ export default function AppsExplorer() {
       handleDelete,
       handleDeleteFolder,
       personalFolders,
-      apps,
       workspaceId,
       removeFromFolder,
+      slugOf,
+      starMenuItem,
     ],
+  );
+
+  /**
+   * What sits at the right edge of a row: the star toggle (every app row,
+   * quiet until hovered unless starred), an access badge on rows inside your
+   * own sections (whose position no longer says who can see the app), and the
+   * dev-server dot.
+   */
+  const rowAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      const parsed = parseNodeId(node.id);
+      if (parsed.kind !== "app" && parsed.kind !== "personal-item") return null;
+      const appId = parsed.appId;
+      const app = apps.find(a => a.id === appId);
+      const slug = app?.slug;
+      const isStarred = !!slug && starred.has(slug);
+
+      const star = (
+        <Tooltip title={isStarred ? "Unstar" : "Star"}>
+          <IconButton
+            size="small"
+            aria-label={isStarred ? "Unstar" : "Star"}
+            aria-pressed={isStarred}
+            // A click here must neither open the app (row click) nor begin a
+            // drag (dnd-kit arms on pointerdown on the draggable ancestor).
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => {
+              e.stopPropagation();
+              handleToggleStar(appId);
+            }}
+            sx={{
+              p: 0.25,
+              color: isStarred ? "warning.main" : "text.disabled",
+              opacity: isStarred ? 1 : 0,
+              ".MuiListItemButton-root:hover &, &:focus-visible": {
+                opacity: 1,
+              },
+            }}
+          >
+            <StarIcon
+              size={14}
+              strokeWidth={2}
+              fill={isStarred ? "currentColor" : "none"}
+            />
+          </IconButton>
+        </Tooltip>
+      );
+
+      // Inside Starred / a folder the section no longer tells you who can see
+      // the app, so the row does.
+      let badge: React.ReactNode = null;
+      if (parsed.kind === "personal-item" && app) {
+        const isWorkspace = (app.access ?? "workspace") === "workspace";
+        const isSharedWithMe =
+          !isWorkspace && !!app.owner_id && !!userId && app.owner_id !== userId;
+        const [Glyph, label] = isWorkspace
+          ? [GlobeIcon, "Visible to the whole workspace"]
+          : isSharedWithMe
+            ? [SharedIcon, "Shared with you"]
+            : [LockIcon, "Private — only you"];
+        badge = (
+          <Tooltip title={label}>
+            <Box
+              component="span"
+              sx={{ display: "inline-flex", color: "text.disabled" }}
+            >
+              <Glyph size={13} strokeWidth={1.75} />
+            </Box>
+          </Tooltip>
+        );
+      }
+
+      // Tri-state dot: amber while a boot is in flight, green when the box
+      // says it serves, red when the last start failed. Nothing → no dot.
+      const running = !!slug && runningDevApps.includes(slug);
+      const p = previewByApp[appId];
+      const booting = !!p?.building;
+      const failed = !running && !booting && !!p?.error;
+      let dot: React.ReactNode = null;
+      if (running || booting || failed) {
+        const [color, title] = booting
+          ? ["warning.main", "Dev server starting…"]
+          : running
+            ? ["success.main", "Dev server running"]
+            : ["error.main", "Last dev start failed"];
+        dot = (
+          <Tooltip title={title}>
+            <Box
+              component="span"
+              sx={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                bgcolor: color,
+                display: "inline-block",
+                flexShrink: 0,
+              }}
+            />
+          </Tooltip>
+        );
+      }
+
+      return (
+        <Box
+          component="span"
+          sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}
+        >
+          {star}
+          {badge}
+          {dot}
+        </Box>
+      );
+    },
+    [apps, starred, handleToggleStar, userId, runningDevApps, previewByApp],
   );
 
   const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
@@ -746,39 +951,7 @@ export default function AppsExplorer() {
                   activeItemId={activeItemId}
                   revealNodeId={reveal?.nodeId}
                   revealNonce={reveal?.nonce}
-                  getRightAdornment={node => {
-                    const parsed = parseNodeId(node.id);
-                    if (parsed.kind !== "app") return null;
-                    const slug = apps.find(a => a.id === parsed.appId)?.slug;
-                    const running = !!slug && runningDevApps.includes(slug);
-                    const p = previewByApp[parsed.appId];
-                    // Tri-state dot: amber while a boot is in flight, green
-                    // when the box says it serves, red when the last start
-                    // failed. Nothing → no dot.
-                    const booting = !!p?.building;
-                    const failed = !running && !booting && !!p?.error;
-                    if (!running && !booting && !failed) return null;
-                    const [color, title] = booting
-                      ? ["warning.main", "Dev server starting…"]
-                      : running
-                        ? ["success.main", "Dev server running"]
-                        : ["error.main", "Last dev start failed"];
-                    return (
-                      <Tooltip title={title}>
-                        <Box
-                          component="span"
-                          sx={{
-                            width: 7,
-                            height: 7,
-                            borderRadius: "50%",
-                            bgcolor: color,
-                            display: "inline-block",
-                            flexShrink: 0,
-                          }}
-                        />
-                      </Tooltip>
-                    );
-                  }}
+                  getRightAdornment={rowAdornment}
                   getItemIcon={(node, ctx) => {
                     const kind = parseNodeId(node.id).kind;
                     if (kind === "app" || kind === "personal-item") {
@@ -859,77 +1032,16 @@ export default function AppsExplorer() {
         </DialogActions>
       </Dialog>
 
-      <Dialog
-        open={newFolderOpen}
-        onClose={() => setNewFolderOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>New folder</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            margin="dense"
-            label="Folder name"
-            value={folderName}
-            onChange={e => setFolderName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleCreateFolder();
-            }}
-          />
-          <Typography variant="caption" color="text.secondary">
-            Only you can see this folder. Drag apps into it to make a shortlist
-            — the apps themselves are not moved, renamed, or reshared.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setNewFolderOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            onClick={() => void handleCreateFolder()}
-            disabled={!folderName.trim()}
-          >
-            Create
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={!!renameTarget}
-        onClose={() => setRenameTarget(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Rename folder</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            margin="dense"
-            label="Folder name"
-            value={renameTarget?.name ?? ""}
-            onChange={e =>
-              setRenameTarget(prev =>
-                prev ? { ...prev, name: e.target.value } : prev,
-              )
-            }
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleRenameFolder();
-            }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRenameTarget(null)}>Cancel</Button>
-          <Button
-            variant="contained"
-            onClick={() => void handleRenameFolder()}
-            disabled={!renameTarget?.name.trim()}
-          >
-            Rename
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <PersonalFolderDialogs
+        newFolderOpen={newFolderOpen}
+        folderName={folderName}
+        onFolderNameChange={setFolderName}
+        onCloseNewFolder={() => setNewFolderOpen(false)}
+        onCreateFolder={() => void handleCreateFolder()}
+        renameTarget={renameTarget}
+        onRenameTargetChange={setRenameTarget}
+        onRenameFolder={() => void handleRenameFolder()}
+      />
 
       {shareApp && (
         <ShareDialog

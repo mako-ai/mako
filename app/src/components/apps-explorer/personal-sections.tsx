@@ -1,23 +1,31 @@
 /**
- * The "My Folders" section of the Apps explorer — a user's private groupings
- * rendered above My Apps / Workspace.
+ * The personal sections of the Apps explorer — this user's Starred list and
+ * their own folders — rendered above My Apps / Workspace.
  *
- * This is a pure view over the app list. A folder stores app SLUGS, so nothing
- * here can change an app's identity, sharing or deployment; the section simply
- * offers a second place to reach an app you already have.
+ * Both are views over the same app list; a row here stores an app SLUG and can
+ * never change the app's identity, sharing or deployment. They differ in one
+ * way that matters:
  *
- * Rows inside a folder are **leaf shortcuts**, not the drill-down directory
- * rows the home sections use. Two reasons: a folder is a shortcut list, not a
- * second file browser; and the ids must differ from the home row's so the
- * context menu can tell which copy was clicked and offer "Remove from this
- * folder" on it.
+ * - **Starred** is a shortcut. The app stays in its home section and is also
+ *   pinned on top.
+ * - A **folder** is a move within this user's view. The app leaves its home
+ *   section here (see `folderedKeys`) and lives in exactly one folder. Other
+ *   users' views are untouched.
+ *
+ * Rows inside these sections are **leaf shortcuts**, not the drill-down
+ * directory rows the home sections use: a shortlist is not a second file
+ * browser, and the ids must differ from the home row's so the context menu can
+ * tell which copy was clicked.
  */
-import { Folder as FolderIcon } from "lucide-react";
+import { Folder as FolderIcon, Star as StarIcon } from "lucide-react";
 
 import type { ResourceTreeNode, ResourceTreeSection } from "../ResourceTree";
 import type { PersonalFolder } from "../../store/personalFoldersStore";
 
-/** Marks a node as belonging to the personal-folders section. */
+export const STARRED_SECTION_KEY = "starred";
+export const FOLDERS_SECTION_KEY = "my-folders";
+
+/** Marks a node as belonging to a personal section. */
 const PF_PREFIX = "__pf__";
 /** Separates the folder id from the app id on a shortcut row. */
 const PF_ITEM_SEP = "::pfapp::";
@@ -33,7 +41,7 @@ export type ParsedPersonalNode =
   | { kind: "personal-item"; folderId: string; appId: string };
 
 /**
- * Recognize a personal-folders node id. Returns `null` for every other id, so
+ * Recognize a personal-section node id. Returns `null` for every other id, so
  * callers can fall through to the app/file parsing.
  */
 export function parsePersonalNodeId(id: string): ParsedPersonalNode | null {
@@ -48,6 +56,37 @@ export function parsePersonalNodeId(id: string): ParsedPersonalNode | null {
   };
 }
 
+export const starredFolder = (folders: PersonalFolder[]) =>
+  folders.find(f => f.system === "starred");
+
+export const userFolders = (folders: PersonalFolder[]) =>
+  folders.filter(f => !f.system);
+
+/** Keys the user has starred. */
+export function starredKeys(folders: PersonalFolder[]): Set<string> {
+  return new Set(starredFolder(folders)?.items ?? []);
+}
+
+/**
+ * Keys filed in one of the user's folders — and therefore HIDDEN from the
+ * home sections in this user's view. Starred keys are not included: a star
+ * never moves anything.
+ */
+export function folderedKeys(folders: PersonalFolder[]): Set<string> {
+  const keys = new Set<string>();
+  for (const f of userFolders(folders)) for (const k of f.items) keys.add(k);
+  return keys;
+}
+
+/** The user folder holding `key`, if any (a key lives in at most one). */
+export function folderOfKey(
+  folders: PersonalFolder[],
+  key: string | undefined,
+): PersonalFolder | undefined {
+  if (!key) return undefined;
+  return userFolders(folders).find(f => f.items.includes(key));
+}
+
 export interface PersonalSectionApp {
   id: string;
   title: string;
@@ -55,58 +94,71 @@ export interface PersonalSectionApp {
 }
 
 /**
- * Build the "My Folders" section, or nothing at all when the user has no
- * folders — an empty section would be a permanent empty header in the rail.
+ * Build the Starred and My Folders sections. Each is omitted when it would be
+ * empty — a permanent empty header in the rail is worse than none.
  *
- * A key that no longer resolves to an app (deleted, renamed, or never visible
- * to this user) is dropped rather than rendered as a broken row. The stored
- * membership is deliberately left alone: the app may simply be missing from
- * this particular listing.
+ * A key that no longer resolves to an app (deleted, renamed, or not visible to
+ * this user) is dropped rather than rendered as a broken row. The stored
+ * membership is left alone: the app may simply be missing from this listing.
  */
 export function buildPersonalSections(
   folders: PersonalFolder[],
   apps: PersonalSectionApp[],
 ): ResourceTreeSection[] {
-  if (folders.length === 0) return [];
-
   const bySlug = new Map<string, PersonalSectionApp>();
   for (const app of apps) {
     if (app.slug) bySlug.set(app.slug, app);
   }
 
-  const nodes: ResourceTreeNode[] = folders.map(folder => {
-    const children: ResourceTreeNode[] = [];
+  const shortcuts = (folder: PersonalFolder): ResourceTreeNode[] => {
+    const rows: ResourceTreeNode[] = [];
     for (const key of folder.items) {
       const app = bySlug.get(key);
       if (!app) continue;
-      children.push({
+      rows.push({
         id: personalItemNodeId(folder.id, app.id),
         name: app.title,
         path: app.slug ?? app.id,
         isDirectory: false,
       });
     }
-    children.sort((a, b) => a.name.localeCompare(b.name));
-    return {
-      id: personalFolderNodeId(folder.id),
-      name: folder.name,
-      path: personalFolderNodeId(folder.id),
-      isDirectory: true,
-      // Always a real array: `undefined` would make ResourceTree treat the
-      // folder as lazily loaded and fire onLoadChildren forever.
-      children,
-    };
-  });
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return rows;
+  };
 
-  return [
-    {
-      key: "my-folders",
+  const sections: ResourceTreeSection[] = [];
+
+  const star = starredFolder(folders);
+  const starredRows = star ? shortcuts(star) : [];
+  if (starredRows.length > 0) {
+    sections.push({
+      key: STARRED_SECTION_KEY,
+      label: "Starred",
+      icon: <StarIcon size={16} strokeWidth={1.5} />,
+      // Flat: stars are a list, not a tree.
+      nodes: starredRows,
+    });
+  }
+
+  const mine = userFolders(folders);
+  if (mine.length > 0) {
+    sections.push({
+      key: FOLDERS_SECTION_KEY,
       label: "My Folders",
       icon: <FolderIcon size={16} strokeWidth={1.5} />,
-      nodes,
-      // No droppableId/defaultAccess on purpose: dropping on this section
-      // header must never be read as a sharing change the way the My Apps and
-      // Workspace headers are.
-    },
-  ];
+      nodes: mine.map(folder => ({
+        id: personalFolderNodeId(folder.id),
+        name: folder.name,
+        path: personalFolderNodeId(folder.id),
+        isDirectory: true,
+        // Always a real array: `undefined` would make ResourceTree treat the
+        // folder as lazily loaded and fire onLoadChildren forever.
+        children: shortcuts(folder),
+      })),
+      // No droppableId/defaultAccess on purpose: a drop on this header must
+      // never be read as a sharing change the way My Apps / Workspace are.
+    });
+  }
+
+  return sections;
 }

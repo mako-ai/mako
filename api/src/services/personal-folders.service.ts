@@ -39,8 +39,13 @@ export interface PersonalFolderJson {
   kind: string;
   name: string;
   items: string[];
+  /** Present on the auto-created Starred list; absent on a user's folders. */
+  system?: "starred";
   updatedAt?: string;
 }
+
+/** The display name of the one system list per (user, kind). */
+export const STARRED_LIST_NAME = "Starred";
 
 /** Mirrors `FolderOpResult` in `routes/lib/folder-routes.ts`. */
 export type PersonalFolderResult<T> =
@@ -56,7 +61,8 @@ interface PersonalFolderDocLike {
   _id: Types.ObjectId;
   kind: string;
   name: string;
-  items: string[];
+  items?: string[];
+  system?: "starred";
   updatedAt?: Date;
 }
 
@@ -65,10 +71,14 @@ function toJson(doc: PersonalFolderDocLike): PersonalFolderJson {
     id: doc._id.toString(),
     kind: doc.kind,
     name: doc.name,
-    items: [...doc.items],
+    items: [...(doc.items ?? [])],
+    ...(doc.system ? { system: doc.system } : {}),
     updatedAt: doc.updatedAt?.toISOString(),
   };
 }
+
+/** Ordinary (user-made) folders only — the Starred list is a system row. */
+const USER_FOLDER = { system: { $exists: false } } as const;
 
 /** The scope filter every query starts from — workspace AND user, always. */
 function scopeFilter(scope: PersonalFolderScope) {
@@ -125,9 +135,11 @@ export async function createPersonalFolder(
   }
   const kind = input.kind?.trim() || DEFAULT_PERSONAL_FOLDER_KIND;
 
+  // The Starred list is not a folder the user made, so it is not counted.
   const existing = await PersonalFolder.countDocuments({
     ...scopeFilter(scope),
     kind,
+    ...USER_FOLDER,
   });
   if (existing >= MAX_FOLDERS_PER_KIND) {
     return {
@@ -165,13 +177,38 @@ export async function renamePersonalFolder(
     return { ok: false, status: 404, error: "Folder not found" };
   }
 
+  const id = new Types.ObjectId(input.folderId);
   const doc = await PersonalFolder.findOneAndUpdate(
-    { ...scopeFilter(scope), _id: new Types.ObjectId(input.folderId) },
+    { ...scopeFilter(scope), _id: id, ...USER_FOLDER },
     { $set: { name } },
     { new: true },
   ).lean();
-  if (!doc) return { ok: false, status: 404, error: "Folder not found" };
+  if (!doc) return notFoundOrSystem(scope, id, "renamed");
   return { ok: true, value: toJson(doc as unknown as PersonalFolderDocLike) };
+}
+
+/**
+ * A write that matched no user folder is either a folder that isn't yours
+ * (404 — it must look nonexistent, never merely forbidden) or the Starred
+ * list, which the user may empty but never rename or delete (400).
+ */
+async function notFoundOrSystem(
+  scope: PersonalFolderScope,
+  id: Types.ObjectId,
+  verb: "renamed" | "deleted",
+): Promise<PersonalFolderResult<never>> {
+  const isSystem = await PersonalFolder.exists({
+    ...scopeFilter(scope),
+    _id: id,
+    system: { $exists: true },
+  });
+  return isSystem
+    ? {
+        ok: false,
+        status: 400,
+        error: `The ${STARRED_LIST_NAME} list cannot be ${verb}`,
+      }
+    : { ok: false, status: 404, error: "Folder not found" };
 }
 
 export async function deletePersonalFolder(
@@ -181,12 +218,14 @@ export async function deletePersonalFolder(
   if (!Types.ObjectId.isValid(folderId)) {
     return { ok: false, status: 404, error: "Folder not found" };
   }
+  const id = new Types.ObjectId(folderId);
   const result = await PersonalFolder.deleteOne({
     ...scopeFilter(scope),
-    _id: new Types.ObjectId(folderId),
+    _id: id,
+    ...USER_FOLDER,
   });
   if (result.deletedCount === 0) {
-    return { ok: false, status: 404, error: "Folder not found" };
+    return notFoundOrSystem(scope, id, "deleted");
   }
   // Deleting a folder removes the grouping and nothing else — the apps it
   // listed are untouched and stay exactly where they were in My Apps /
@@ -231,6 +270,70 @@ export async function updatePersonalFolderItems(
     };
   }
 
+  doc.items = [...next];
+  await doc.save();
+
+  // A user folder MOVES an entity within that user's view (Slack sections),
+  // so it lives in at most one of them: filing it here pulls it from the
+  // user's other folders of this kind. The Starred list is a shortcut and
+  // is left alone — an app can be both starred and filed.
+  if (!doc.system && add.length > 0) {
+    await PersonalFolder.updateMany(
+      {
+        ...scopeFilter(scope),
+        kind: doc.kind,
+        _id: { $ne: doc._id },
+        ...USER_FOLDER,
+        items: { $in: add },
+      },
+      { $pull: { items: { $in: add } } },
+    );
+  }
+
+  return { ok: true, value: toJson(doc as unknown as PersonalFolderDocLike) };
+}
+
+/**
+ * Star or unstar one entity. The Starred list is created on first use, once
+ * per (workspace, user, kind); the partial unique index makes a racing second
+ * creation fail, and that failure is simply resolved by reading the winner.
+ * Idempotent in both directions.
+ */
+export async function setStarred(
+  scope: PersonalFolderScope,
+  input: { kind?: string; key: string; starred: boolean },
+): Promise<PersonalFolderResult<PersonalFolderJson>> {
+  const [key] = normalizeKeys([input.key]);
+  if (!key) return { ok: false, status: 400, error: "An item key is required" };
+  const kind = input.kind?.trim() || DEFAULT_PERSONAL_FOLDER_KIND;
+  const filter = { ...scopeFilter(scope), kind, system: "starred" as const };
+
+  let doc = await PersonalFolder.findOne(filter);
+  if (!doc) {
+    try {
+      doc = await PersonalFolder.create({
+        ...filter,
+        name: STARRED_LIST_NAME,
+        items: [],
+      });
+    } catch (error) {
+      const code = (error as { code?: number }).code;
+      if (code !== 11000) throw error;
+      doc = await PersonalFolder.findOne(filter);
+      if (!doc) throw error;
+    }
+  }
+
+  const next = new Set(doc.items);
+  if (input.starred) next.add(key);
+  else next.delete(key);
+  if (next.size > MAX_ITEMS_PER_FOLDER) {
+    return {
+      ok: false,
+      status: 409,
+      error: `You can star at most ${MAX_ITEMS_PER_FOLDER} items`,
+    };
+  }
   doc.items = [...next];
   await doc.save();
   return { ok: true, value: toJson(doc as unknown as PersonalFolderDocLike) };

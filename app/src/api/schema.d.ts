@@ -4907,6 +4907,26 @@ export interface paths {
         patch: operations["patch_api_workspaces_workspaceId_personal_folders_id_items"];
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/personal-folders/star": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Star or unstar an item
+         * @description Toggles an entity key in the caller's Starred list for an explorer kind, creating the list on first use. A star is a shortcut: the entity stays where it is and is also pinned on top. Idempotent.
+         */
+        post: operations["post_api_workspaces_workspaceId_personal_folders_star"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {
         parameters: {
             query?: never;
@@ -6062,6 +6082,11 @@ export interface components {
         UpdatePersonalFolderItemsRequest: {
             add?: string[];
             remove?: string[];
+        };
+        SetStarredRequest: {
+            key: string;
+            starred: boolean;
+            kind?: string;
         };
         ConnectorMetadata: {
             type: string;
@@ -21648,6 +21673,50 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["UpdatePersonalFolderItemsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_personal_folders_star: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetStarredRequest"];
             };
         };
         responses: {

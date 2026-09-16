@@ -4598,6 +4598,14 @@ export interface IPersonalFolder extends Document {
   name: string;
   /** Entity keys; for apps, the slug. Unresolvable keys are ignored on read. */
   items: string[];
+  /**
+   * Set on the ONE system list per (user, kind) that the star toggle fills.
+   * A starred entity is a shortcut — it stays where it is and is also pinned
+   * on top — whereas a user-made folder moves it within that user's view.
+   * System lists cannot be renamed or deleted and do not count toward the
+   * folder cap.
+   */
+  system?: "starred";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4613,12 +4621,20 @@ const PersonalFolderSchema = new Schema<IPersonalFolder>(
     kind: { type: String, required: true, trim: true },
     name: { type: String, required: true, trim: true },
     items: { type: [String], default: [] },
+    system: { type: String, enum: ["starred"] },
   },
   { collection: "personal_folders", timestamps: true },
 );
 
 // Every read is "this user's folders of this kind in this workspace".
 PersonalFolderSchema.index({ workspaceId: 1, userId: 1, kind: 1 });
+// Exactly one system list per (workspace, user, kind): two first-star clicks
+// racing must not create two "Starred" lists. Partial, so ordinary folders
+// (no `system`) are unconstrained.
+PersonalFolderSchema.index(
+  { workspaceId: 1, userId: 1, kind: 1, system: 1 },
+  { unique: true, partialFilterExpression: { system: { $exists: true } } },
+);
 
 export const PersonalFolder = mongoose.model<IPersonalFolder>(
   "PersonalFolder",

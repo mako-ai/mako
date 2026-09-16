@@ -182,6 +182,116 @@ describe("personalFoldersStore", () => {
     ).toBe("Renamed");
   });
 
+  it("filing an app moves it: it leaves the user's other folders, not Starred", async () => {
+    http.GET.mockResolvedValueOnce(
+      ok({
+        success: true,
+        folders: [
+          folder({
+            id: "s1",
+            name: "Starred",
+            system: "starred",
+            items: ["x"],
+          }),
+          folder({ id: "f1", name: "A", items: ["x"] }),
+          folder({ id: "f2", name: "B", items: [] }),
+        ],
+      }),
+    );
+    http.PATCH.mockResolvedValueOnce(
+      ok({
+        success: true,
+        folder: folder({ id: "f2", name: "B", items: ["x"] }),
+      }),
+    );
+    await usePersonalFoldersStore.getState().fetchFolders(WS);
+
+    const pending = usePersonalFoldersStore.getState().addItem(WS, "f2", "x");
+    const byId = () =>
+      Object.fromEntries(
+        selectPersonalFolders(WS)(usePersonalFoldersStore.getState()).map(f => [
+          f.id,
+          f.items,
+        ]),
+      );
+    // Optimistically, before the server answers.
+    expect(byId()).toEqual({ s1: ["x"], f1: [], f2: ["x"] });
+    await pending;
+    expect(byId()).toEqual({ s1: ["x"], f1: [], f2: ["x"] });
+  });
+
+  it("stars optimistically and inserts the list when the server creates it", async () => {
+    http.GET.mockResolvedValueOnce(ok({ success: true, folders: [folder()] }));
+    http.POST.mockResolvedValueOnce(
+      ok({
+        success: true,
+        folder: folder({
+          id: "s1",
+          name: "Starred",
+          system: "starred",
+          items: ["billing"],
+        }),
+      }),
+    );
+    await usePersonalFoldersStore.getState().fetchFolders(WS);
+
+    // No Starred list yet: nothing to update locally, the server makes it.
+    await usePersonalFoldersStore.getState().toggleStar(WS, "billing", true);
+    expect(http.POST).toHaveBeenCalledWith(`${BASE}/star`, {
+      params: { path: { workspaceId: WS } },
+      body: { key: "billing", starred: true },
+    });
+    const star = selectPersonalFolders(WS)(
+      usePersonalFoldersStore.getState(),
+    ).find(f => f.system === "starred");
+    expect(star?.items).toEqual(["billing"]);
+
+    // With the list present, unstarring shows before the round trip.
+    http.POST.mockResolvedValueOnce(
+      ok({
+        success: true,
+        folder: folder({ id: "s1", name: "Starred", system: "starred" }),
+      }),
+    );
+    const pending = usePersonalFoldersStore
+      .getState()
+      .toggleStar(WS, "billing", false);
+    expect(
+      selectPersonalFolders(WS)(usePersonalFoldersStore.getState()).find(
+        f => f.system === "starred",
+      )?.items,
+    ).toEqual([]);
+    await pending;
+  });
+
+  it("restores every folder when a move is rejected", async () => {
+    http.GET.mockResolvedValueOnce(
+      ok({
+        success: true,
+        folders: [
+          folder({ id: "f1", name: "A", items: ["x"] }),
+          folder({ id: "f2", name: "B", items: [] }),
+        ],
+      }),
+    );
+    http.PATCH.mockResolvedValueOnce(fail(409, "A folder holds at most 500"));
+    await usePersonalFoldersStore.getState().fetchFolders(WS);
+
+    const accepted = await usePersonalFoldersStore
+      .getState()
+      .addItem(WS, "f2", "x");
+
+    expect(accepted).toBe(false);
+    const byId = Object.fromEntries(
+      selectPersonalFolders(WS)(usePersonalFoldersStore.getState()).map(f => [
+        f.id,
+        f.items,
+      ]),
+    );
+    // The sibling it was optimistically pulled from gets it back too.
+    expect(byId).toEqual({ f1: ["x"], f2: [] });
+  });
+
   it("surfaces a load failure instead of throwing", async () => {
     http.GET.mockResolvedValueOnce(fail(500, "boom"));
 

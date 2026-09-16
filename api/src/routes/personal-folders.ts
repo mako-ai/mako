@@ -35,6 +35,7 @@ import {
   deletePersonalFolder,
   listPersonalFolders,
   renamePersonalFolder,
+  setStarred,
   updatePersonalFolderItems,
   DEFAULT_PERSONAL_FOLDER_KIND,
   type PersonalFolderResult,
@@ -255,6 +256,43 @@ personalFolderRoutes.openapi(
           remove: body.remove,
         }),
       "Failed to update personal folder",
+    );
+  },
+);
+
+personalFolderRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/star",
+    summary: "Star or unstar an item",
+    description:
+      "Toggles an entity key in the caller's Starred list for an explorer kind, creating the list on first use. A star is a shortcut: the entity stays where it is and is also pinned on top. Idempotent.",
+    ...routeBase,
+    request: {
+      params: wsParams,
+      body: jsonBody(
+        z
+          .object({
+            key: z.string(),
+            starred: z.boolean(),
+            kind: z.string().optional(),
+          })
+          .openapi("SetStarredRequest"),
+      ),
+    },
+  }),
+  async c => {
+    const body = c.req.valid("json");
+    return run(
+      c,
+      "folder",
+      () =>
+        setStarred(scopeOf(c), {
+          kind: body.kind,
+          key: body.key,
+          starred: body.starred,
+        }),
+      "Failed to update starred items",
     );
   },
 );
