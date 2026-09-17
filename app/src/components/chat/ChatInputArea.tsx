@@ -11,6 +11,7 @@ import {
 import { ArrowUp, ImagePlus, X } from "lucide-react";
 import type { FileUIPart } from "ai";
 import { ModelSelector } from "../ModelSelector";
+import { SessionUsageBadge } from "./SessionUsageBadge";
 import { useRenderCount, useWhyChanged } from "../../utils/renderDebug";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
 import type { QueuedPrompt } from "./QueuedPrompts";
@@ -36,6 +37,10 @@ interface ChatInputAreaProps {
   /** A submitted plan is awaiting review — sent messages become plan
    * feedback (Cursor-style), so the placeholder reflects that. */
   planFeedbackMode?: boolean;
+  /** Chat whose cumulative token/cost total is shown beside the model picker. */
+  chatId: string;
+  /** Selected model runs locally, so its turns are not metered. */
+  isLocalAgent?: boolean;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -58,6 +63,8 @@ export const ChatInputArea = React.memo(
     editingPrompt,
     onCancelEdit,
     planFeedbackMode = false,
+    chatId,
+    isLocalAgent = false,
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -445,6 +452,7 @@ export const ChatInputArea = React.memo(
               }}
             >
               <ModelSelector />
+              <SessionUsageBadge chatId={chatId} isLocalAgent={isLocalAgent} />
             </Box>
 
             <Tooltip title="Attach image" placement="top">

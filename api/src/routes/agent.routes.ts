@@ -1272,11 +1272,18 @@ agentRoutes.openapi(
                 metadataPricingRows.length > 0
                   ? computeCostFromTokens(tokens, metadataPricingRows)
                   : undefined;
+              // Cache and reasoning counts ride along so the client's session
+              // total can break them out live. They are SUBSETS (cache of
+              // input, reasoning of output) — the client must not add them on
+              // top, and `totalTokens` deliberately excludes them.
               return {
                 costUsd,
                 modelId: resolvedModelId,
                 inputTokens: tokens.inputTokens,
                 outputTokens: tokens.outputTokens,
+                cacheReadTokens: tokens.cacheReadTokens,
+                cacheWriteTokens: tokens.cacheWriteTokens,
+                reasoningTokens: tokens.reasoningTokens,
               };
             },
             // Replace the SDK's raw error text (for gateway auth failures a

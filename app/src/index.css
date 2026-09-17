@@ -149,8 +149,86 @@
   padding: 0 !important;
 }
 
+/* The wrapper is `display: flex`; its inner div is the real `overflow-x: auto`
+   scroll container. A wide table already scrolls there — the problem is that
+   macOS overlay scrollbars are invisible at rest, so a scrollable table looks
+   identical to a truncated one. Two affordances, no restructuring:
+     1. a right-edge fade that says "there is more to the right" at rest, and
+     2. scrollbar styling for platforms that reserve space for a bar.
+   The fade is the load-bearing one. VERIFIED in Chrome on macOS: with the OS
+   set to show scroll bars "automatically" (the default) the bar stays an
+   overlay and reserves no height, so the styling below changes nothing there —
+   it only pays off on Windows/Linux and when the user forces bars always-on.
+   Do not drop the fade on the assumption the scrollbar covers it.
+   `--bui-line-strong` flips with the theme, so both are dark-mode correct. */
 [data-streamdown="table-wrapper"] > div {
   border: none !important;
+  /* Never let a horizontal table flick trigger browser back-navigation. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bui-line-strong) transparent;
+  --bui-table-fade: 28px;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - var(--bui-table-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - var(--bui-table-fade)),
+    transparent 100%
+  );
+}
+
+/* Styling the bar makes it permanent only where the platform reserves space
+   for one; macOS overlay scrollbars ignore this (see the note above). */
+[data-streamdown="table-wrapper"] > div::-webkit-scrollbar {
+  height: 8px;
+}
+
+[data-streamdown="table-wrapper"] > div::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-streamdown="table-wrapper"] > div::-webkit-scrollbar-thumb {
+  background-color: var(--bui-line-strong);
+  border-radius: 4px;
+}
+
+[data-streamdown="table-wrapper"] > div::-webkit-scrollbar-thumb:hover {
+  background-color: var(--bui-ink-3);
+}
+
+/* Registering the property makes the length interpolate rather than flip at
+   50%; the literal declaration above is the fallback where @property is not
+   supported (the fade then simply stays on). */
+@property --bui-table-fade {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 28px;
+}
+
+@keyframes bui-table-edge-fade {
+  0% {
+    --bui-table-fade: 28px;
+  }
+  75% {
+    --bui-table-fade: 28px;
+  }
+  100% {
+    --bui-table-fade: 0px;
+  }
+}
+
+/* Where scroll-driven animations exist, retire the fade once the reader has
+   actually reached the last column, so it never dims real content at rest. */
+@supports (animation-timeline: scroll(self inline)) {
+  [data-streamdown="table-wrapper"] > div {
+    animation: bui-table-edge-fade linear both;
+    animation-timeline: scroll(self inline);
+  }
 }
 
 [data-streamdown="table"] {
@@ -295,7 +373,8 @@
   --bui-red: oklch(62.1% 0.192 23.042);
   --bui-red-tint: oklch(95.6% 0.017 17.462);
   --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
-  --bui-shadow-btn: 0 0 0 1px var(--bui-line-strong), 0 1px 2px oklch(0% 0 0 / 0.05);
+  --bui-shadow-btn:
+    0 0 0 1px var(--bui-line-strong), 0 1px 2px oklch(0% 0 0 / 0.05);
   --bui-shadow-card:
     0 0 0 1px var(--bui-line), 0 1px 2px oklch(0% 0 0 / 0.05),
     0 2px 6px oklch(0% 0 0 / 0.04);
@@ -322,7 +401,8 @@
   --bui-red: oklch(66.6% 0.18 21.433);
   --bui-red-tint: oklch(66.6% 0.18 21.433 / 0.14);
   --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
-  --bui-shadow-btn: 0 0 0 1px oklch(100% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.3);
+  --bui-shadow-btn:
+    0 0 0 1px oklch(100% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.3);
   --bui-shadow-card:
     0 0 0 1px oklch(100% 0 0 / 0.11), 0 1px 2px oklch(0% 0 0 / 0.2),
     0 2px 6px oklch(0% 0 0 / 0.2);
