@@ -21,7 +21,7 @@ vi.hoisted(() => {
 });
 
 import { useConsoleStore } from "../store/consoleStore";
-import { focusAppsTab } from "./shell";
+import { focusAppsTab, healAppsTabs } from "./shell";
 
 /**
  * A shared app link carries the app's query string, and it has to reach the
@@ -121,5 +121,71 @@ describe("focusAppsTab carries a link's query to the tab", () => {
     focusAppsTab("app1", "Seller Media", "seller-media");
     focusAppsTab("app1", "Seller Media", "seller-media", "");
     expect(searchOf(id)).toBe("?chart.breakdown=device");
+  });
+});
+
+/**
+ * A move changes what an app's link should say (slug for a top-level app, id
+ * for a nested one). The app tab heals itself while mounted; file and diff
+ * tabs never re-read their handle, so a file opened before a move produced
+ * `/apps/<old-slug>/file/…` — a link that no longer resolves.
+ */
+describe("healAppsTabs keeps every Apps tab's URL handle current", () => {
+  beforeEach(() => {
+    useConsoleStore.setState({
+      tabs: {},
+      tabOrder: [],
+      activeTabId: null,
+      loading: {},
+      error: {},
+    });
+    localStorage.clear();
+  });
+
+  const slugOf = (id: string) =>
+    useConsoleStore.getState().tabs[id]?.metadata?.appSlug;
+
+  it("rewrites app, app-file and app-diff tabs of a moved app and leaves others alone", () => {
+    // Seeded directly: opening tabs through the shell would preview-replace
+    // one another (at most one preview tab at a time), and the point is
+    // three tabs healed in one pass.
+    const tab = (
+      id: string,
+      kind: "app" | "app-file" | "app-diff",
+      metadata: Record<string, unknown>,
+    ) => ({ id, title: id, content: "", isSaved: true, kind, metadata });
+    useConsoleStore.setState({
+      tabs: {
+        app: tab("app", "app", { appId: "app1", appSlug: "report" }),
+        file: tab("file", "app-file", {
+          appId: "app1",
+          appSlug: "report",
+          path: "src/App.tsx",
+        }),
+        diff: tab("diff", "app-diff", {
+          appId: "app1",
+          appSlug: "report",
+          path: "src/App.tsx",
+          mode: "working",
+        }),
+        other: tab("other", "app-file", {
+          appId: "app2",
+          appSlug: "other",
+          path: "index.html",
+        }),
+      } as never,
+      tabOrder: ["app", "file", "diff", "other"],
+    });
+    // app1 moved into a folder: nested, so it is addressed by id now.
+    healAppsTabs(new Map([["app1", undefined]]));
+    expect(slugOf("app")).toBeUndefined();
+    expect(slugOf("file")).toBeUndefined();
+    expect(slugOf("diff")).toBeUndefined();
+    expect(slugOf("other")).toBe("other");
+    // Back to the top level: the slug returns.
+    healAppsTabs(new Map([["app1", "report"]]));
+    expect(slugOf("app")).toBe("report");
+    expect(slugOf("file")).toBe("report");
+    expect(slugOf("diff")).toBe("report");
   });
 });

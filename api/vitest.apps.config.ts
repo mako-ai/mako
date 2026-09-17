@@ -50,6 +50,9 @@ export default defineConfig({
       "src/apps/app-viewer.service.test.ts",
       "src/services/auto-join.service.test.ts",
       "src/apps/deploy-on-push.test.ts",
+      // Apps in real folders: the index over the tree at main, manifest
+      // identity, moves that keep it, and the folder commits.
+      "src/apps/app-index.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       "src/services/bigquery-poll-budget.test.ts",

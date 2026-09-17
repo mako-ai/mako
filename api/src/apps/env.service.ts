@@ -25,7 +25,6 @@
  * Values reach processes as plain env at launch time only — nothing here is
  * ever written into the working tree, committed, or served.
  */
-import { Types } from "mongoose";
 import {
   AppProject,
   type IAppEnvVar,
@@ -117,14 +116,10 @@ export function validateAppEnvInput(input: AppEnvVarInput): void {
  * predate any number of env edits; env must reflect the vault, not the cache.
  */
 async function freshEnv(project: IAppProject): Promise<IAppEnvVar[]> {
-  const row =
-    (await AppProject.findById(project._id).select("env")) ??
-    (project.slug
-      ? await AppProject.findOne({
-          workspaceId: new Types.ObjectId(project.workspaceId.toString()),
-          slug: project.slug,
-        }).select("env")
-      : null);
+  const row = await AppProject.findOne({
+    _id: project._id,
+    workspaceId: project.workspaceId,
+  }).select("env");
   return row?.env ?? [];
 }
 
@@ -148,7 +143,10 @@ export async function setAppEnvVar(
   input: AppEnvVarInput,
 ): Promise<AppEnvVarView[]> {
   validateAppEnvInput(input);
-  const row = await AppProject.findById(project._id);
+  const row = await AppProject.findOne({
+    _id: project._id,
+    workspaceId: project.workspaceId,
+  });
   if (!row) throw new Error("App project row not found");
   const vars = row.env ?? [];
   const next: IAppEnvVar = {
@@ -177,7 +175,10 @@ export async function deleteAppEnvVar(
   project: IAppProject,
   key: string,
 ): Promise<boolean> {
-  const row = await AppProject.findById(project._id);
+  const row = await AppProject.findOne({
+    _id: project._id,
+    workspaceId: project.workspaceId,
+  });
   if (!row?.env?.some(v => v.key === key)) return false;
   row.env = row.env.filter(v => v.key !== key);
   await row.save();

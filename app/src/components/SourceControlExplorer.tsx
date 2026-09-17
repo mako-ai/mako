@@ -54,6 +54,8 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
+  appRootOf,
+  appUrlSlug,
   useAppsStore,
   type AppChange,
   type AppCommit,
@@ -311,8 +313,9 @@ export default function SourceControlExplorer() {
   const ownerOf = useCallback(
     (path: string) => {
       for (const app of apps) {
-        if (app.slug && path.startsWith(`apps/${app.slug}/`)) {
-          return { app, rel: path.slice(`apps/${app.slug}/`.length) };
+        const root = `${appRootOf(app)}/`;
+        if (path.startsWith(root)) {
+          return { app, rel: path.slice(root.length) };
         }
       }
       return null;
@@ -325,7 +328,9 @@ export default function SourceControlExplorer() {
   const openFile = useCallback(
     (path: string) => {
       const owner = ownerOf(path);
-      if (owner) focusAppsFileTab(owner.app.id, owner.rel, owner.app.slug);
+      if (owner) {
+        focusAppsFileTab(owner.app.id, owner.rel, appUrlSlug(owner.app));
+      }
     },
     [ownerOf],
   );

@@ -39,7 +39,7 @@ export const RECONCILE_FAILED_DEPLOY_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Should the reconcile skip an app whose last deploy failed? Yes while the
- * failure is recent and nothing under `apps/<slug>/` changed since the commit
+ * failure is recent and nothing in the app's folder changed since the commit
  * that failed — the same content would fail the same way.
  */
 export function shouldBackOffFromFailedDeploy(input: {
@@ -57,7 +57,9 @@ export function shouldBackOffFromFailedDeploy(input: {
 
 export interface AppsDeployEventData {
   workspaceId: string;
-  slug: string;
+  /** The app's id. Older events in flight carried `slug`; both resolve. */
+  appId: string;
+  slug?: string;
   /** The commit of `main` to build and publish. */
   sha: string;
   /** Why: "push" (webhook), "reconcile" (hourly sweep), "manual". */
@@ -76,7 +78,10 @@ export const appsDeployFunction = inngest.createFunction(
     // A per-app concurrency limit queued them instead — behind a failing
     // deploy that queue only grew (25 events for one app in a day).
     singleton: {
-      key: "event.data.workspaceId + '/' + event.data.slug",
+      // CEL, not JS: `??` is not an operator there, and Inngest ignores an
+      // expression it cannot evaluate — silently, with the dedupe off. Every
+      // producer goes through requestAppDeploys, which always sends appId.
+      key: "event.data.workspaceId + '/' + event.data.appId",
       mode: "cancel",
     },
     retries: 2,
@@ -84,9 +89,10 @@ export const appsDeployFunction = inngest.createFunction(
   },
   async ({ event, step }) => {
     const data = event.data as AppsDeployEventData;
+    const ref = data.appId ?? data.slug ?? "";
     const result = await step.run("deploy", async () => {
       try {
-        return await deployOneApp(data.workspaceId, data.slug, data.sha);
+        return await deployOneApp(data.workspaceId, ref, data.sha);
       } catch (error) {
         // A binding that could not be materialized is a warehouse failure
         // (a broken or too slow query), not a flaky build: retrying runs the
@@ -112,52 +118,60 @@ export const appsDeployReconcileFunction = inngest.createFunction(
   async ({ step }) => {
     const published = (await step.run("list-published", async () =>
       AppProject.find({ publishedSha: { $ne: null } })
-        .select("_id workspaceId slug publishedSha lastDeployError")
+        .select("_id workspaceId slug path publishedSha lastDeployError")
         .lean(),
     )) as Array<
       Pick<
         IAppProject,
-        "_id" | "workspaceId" | "slug" | "publishedSha" | "lastDeployError"
+        | "_id"
+        | "workspaceId"
+        | "slug"
+        | "path"
+        | "publishedSha"
+        | "lastDeployError"
       >
     >;
 
     const stale = await step.run("find-stale", async () => {
       const out: AppsDeployEventData[] = [];
-      const heads = new Map<string, string | null>();
+      const trees = new Map<string, Promise<Map<string, string>>>();
+      const repos = new Map<string, { dir: string; head: string | null }>();
       for (const project of published) {
         const workspaceId = project.workspaceId.toString();
-        if (!heads.has(workspaceId)) {
+        if (!repos.has(workspaceId)) {
           try {
-            const repoDir = await repoForWorkspace(workspaceId);
-            heads.set(
-              workspaceId,
-              await resolveCommit(repoDir, "refs/heads/main"),
-            );
+            const dir = await repoForWorkspace(workspaceId);
+            repos.set(workspaceId, {
+              dir,
+              head: await resolveCommit(dir, "refs/heads/main"),
+            });
           } catch (error) {
             log.warn("Apps reconcile: repo unavailable", {
               workspaceId,
               error: error instanceof Error ? error.message : String(error),
             });
-            heads.set(workspaceId, null);
+            repos.set(workspaceId, { dir: "", head: null });
           }
         }
-        const head = heads.get(workspaceId);
-        const slug = project.slug;
+        const repo = repos.get(workspaceId);
         if (
-          !slug ||
-          !head ||
+          !repo?.head ||
+          (!project.path && !project.slug) ||
           !project.publishedSha ||
-          head === project.publishedSha
+          repo.head === project.publishedSha
         ) {
           continue;
         }
+        const appId = project._id.toString();
         try {
           if (
             !(await appFolderChanged(
               workspaceId,
-              slug,
+              repo.dir,
+              appId,
               project.publishedSha,
-              head,
+              repo.head,
+              trees,
             ))
           ) {
             continue;
@@ -165,12 +179,14 @@ export const appsDeployReconcileFunction = inngest.createFunction(
           const failure = project.lastDeployError;
           if (failure) {
             const appChangedSinceFailure =
-              failure.sha !== head &&
+              failure.sha !== repo.head &&
               (await appFolderChanged(
                 workspaceId,
-                slug,
+                repo.dir,
+                appId,
                 failure.sha,
-                head,
+                repo.head,
+                trees,
               ).catch(
                 // The failed commit is unknown here (a rewritten branch):
                 // treat the app as changed rather than block it forever.
@@ -184,7 +200,8 @@ export const appsDeployReconcileFunction = inngest.createFunction(
             ) {
               log.info("Apps reconcile: backing off a failed deploy", {
                 workspaceId,
-                slug,
+                appId,
+                app: project.path,
                 failedSha: failure.sha,
                 stage: failure.stage,
                 failedAt: failure.at,
@@ -192,11 +209,11 @@ export const appsDeployReconcileFunction = inngest.createFunction(
               continue;
             }
           }
-          out.push({ workspaceId, slug, sha: head, reason: "reconcile" });
+          out.push({ workspaceId, appId, sha: repo.head, reason: "reconcile" });
         } catch (error) {
           log.warn("Apps reconcile: diff failed", {
             workspaceId,
-            slug: project.slug,
+            appId,
             error: error instanceof Error ? error.message : String(error),
           });
         }
@@ -221,15 +238,15 @@ export const appsDeployReconcileFunction = inngest.createFunction(
 /** Enqueue deploys for a set of apps at a commit (one event per app). */
 export async function requestAppDeploys(
   workspaceId: string,
-  slugs: string[],
+  appIds: string[],
   sha: string,
   reason: AppsDeployEventData["reason"],
 ): Promise<void> {
-  if (slugs.length === 0) return;
+  if (appIds.length === 0) return;
   await inngest.send(
-    slugs.map(slug => ({
+    appIds.map(appId => ({
       name: APPS_DEPLOY_EVENT,
-      data: { workspaceId, slug, sha, reason } satisfies AppsDeployEventData,
+      data: { workspaceId, appId, sha, reason } satisfies AppsDeployEventData,
     })),
   );
 }

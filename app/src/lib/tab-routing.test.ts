@@ -204,3 +204,16 @@ describe("app tabs carry the app's query string", () => {
     expect(withSearch("?")).toBe("/apps/s");
   });
 });
+
+describe("decodeUrlSegment", () => {
+  it("decodes a percent-encoded app slug", async () => {
+    const { decodeUrlSegment } = await import("./tab-routing");
+    expect(decodeUrlSegment("caf%C3%A9")).toBe("café");
+  });
+
+  it("falls back to the raw segment on a malformed sequence instead of throwing", async () => {
+    const { decodeUrlSegment } = await import("./tab-routing");
+    expect(decodeUrlSegment("100%")).toBe("100%");
+    expect(decodeUrlSegment("%E0%A4%A")).toBe("%E0%A4%A");
+  });
+});

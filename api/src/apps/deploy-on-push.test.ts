@@ -27,6 +27,9 @@ vi.mock("./cloud-repo.service", () => ({
 vi.mock("./git", () => ({
   runGit: vi.fn(async (args: string[]) => {
     const spec = args[args.length - 1];
+    // `merge-base --is-ancestor <sha> <publishedSha>`: never an ancestor
+    // here — every test deploys a commit newer than what is published.
+    if (args.includes("merge-base")) throw new Error("not an ancestor");
     if (spec.endsWith("^{commit}")) {
       if (!state.commitPresent) throw new Error("fatal: Not a valid object");
       return { stdout: "", stderr: "" };
@@ -41,6 +44,7 @@ vi.mock("./git", () => ({
 
 vi.mock("./worktree.service", () => ({
   PUBLISH_ACTOR: "publish",
+  appRootFor: vi.fn((p: { slug: string }) => `apps/${p.slug}`),
   checkoutInBox: vi.fn(async () => state.events.push("checkout")),
   ensureProjectRow: vi.fn(async project => project),
   ensureWorktree: vi.fn(async () => {
@@ -52,9 +56,31 @@ vi.mock("./worktree.service", () => ({
     stdout: "",
     stderr: "",
   })),
-  listAppFolders: vi.fn(async () => []),
   repoForWorkspace: vi.fn(async () => "/repo"),
-  synthesizeProjectFromFolder: vi.fn(async () => null),
+  resolveProjectRef: vi.fn(async () => state.project),
+}));
+
+vi.mock("./app-index.service", () => ({
+  assignAppIds: vi.fn(() => new Map()),
+  loadAppsIndex: vi.fn(async () => ({ sha: "", apps: [], folders: [] })),
+  // The app's folder at the deployed commit: present, or gone.
+  readIndexedAppsAt: vi.fn(async () =>
+    state.folderPresent
+      ? [
+          {
+            appId: "6a9411eb4c8b33609a65e665",
+            path: "apps/sales",
+            treeOid: "t",
+          },
+        ]
+      : [],
+  ),
+  readAppsAt: vi.fn(async () => ({
+    apps: [],
+    folders: [],
+    manifests: new Map(),
+    schedules: new Map(),
+  })),
 }));
 
 vi.mock("./deployment.service", () => ({

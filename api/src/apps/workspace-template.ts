@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 14;
+export const WORKSPACE_TEMPLATE_VERSION = 16;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -53,11 +53,16 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 
 ## Layout
 
-- \`apps/<slug>/\` — one app per folder: a real Vite + React + TypeScript
-  project. \`mako.json\` (title, entry), \`bindings/<name>.sql\` (data),
-  \`src/\`, \`package.json\` + \`package-lock.json\` (commit the lockfile).
+- \`apps/<folder>/…/<slug>/\` — one app per folder holding a \`mako.json\`:
+  a real Vite + React + TypeScript project. \`mako.json\` (\`id\`, title,
+  entry), \`bindings/<name>.sql\` (data), \`src/\`, \`package.json\` +
+  \`package-lock.json\` (commit the lockfile). Folders between \`apps/\` and
+  the app are plain organisation — move an app with \`git mv\` and it keeps
+  its identity, which is the \`id\` in its manifest, never its path.
+  \`users/<userId>/apps/…\` are personal apps.
 - \`packages/app-sdk/\` — \`@makoai/app-sdk\` (managed by Mako, do not edit).
-  Apps depend on it via \`file:../../packages/app-sdk\`.
+  Apps depend on the published package (\`"@makoai/app-sdk": "^2"\`); older
+  apps may still reference it via \`file:../../packages/app-sdk\`.
 - \`consoles/<folder>/<name>.sql\` — saved consoles (\`.js\`, \`.mongodb.js\`
   for the other languages); \`users/<userId>/consoles/…\` are private ones.
   Leading \`-- key: value\` lines are metadata (\`connection\`, \`database\`,

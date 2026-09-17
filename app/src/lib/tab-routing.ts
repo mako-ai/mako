@@ -21,6 +21,19 @@ export function encodePathSegments(path: string): string {
   return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }
 
+/**
+ * Decode one URL segment, tolerating a malformed percent sequence: a
+ * hand-typed `/apps/100%` must not throw URIError into the root error
+ * boundary — the raw segment simply fails to resolve instead.
+ */
+export function decodeUrlSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Inverse of {@link encodePathSegments}. */
 export function decodePathSegments(encoded: string): string {
   return encoded.split("/").filter(Boolean).map(decodeURIComponent).join("/");
@@ -40,9 +53,12 @@ export const TAB_DEEP_LINK_PATTERNS = {
   dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
   "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
-  // Apps live at /apps/:slug (the folder name in the workspace repo).
-  app: /^\/apps\/([a-zA-Z0-9-]+)\/?$/,
-  "app-file": /^\/apps\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
+  // Apps live at /apps/:slug (the folder name in the workspace repo) or
+  // /apps/:id (nested apps). Folder names are Unicode, so the segment is
+  // "anything but a slash", percent-encoded on the way out and decoded by
+  // the consumer.
+  app: /^\/apps\/([^/?#]+)\/?$/,
+  "app-file": /^\/apps\/([^/?#]+)\/file\/(.+)$/,
   "app-diff": null,
   "console-diff": null,
   "repo-diff": null,
@@ -117,7 +133,7 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
             ? search
             : `?${search}`
           : "";
-      return ref ? `/apps/${ref}${query}` : null;
+      return ref ? `/apps/${encodeURIComponent(ref)}${query}` : null;
     }
     case "app-file": {
       const appId = tab.metadata?.appId as string | undefined;
@@ -125,7 +141,7 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const ref = slug || appId;
       const path = tab.metadata?.path as string | undefined;
       return ref && path
-        ? `/apps/${ref}/file/${encodePathSegments(path)}`
+        ? `/apps/${encodeURIComponent(ref)}/file/${encodePathSegments(path)}`
         : null;
     }
     case "app-diff":

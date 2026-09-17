@@ -159,6 +159,22 @@ export interface ResourceTreeProps {
     node: ResourceTreeNode,
     helpers: { closeMenu: () => void },
   ) => ReactNode[] | null;
+  /**
+   * The same override for a SECTION header's menu. When it returns a non-null
+   * array those items replace the default "New Folder" entry — for an explorer
+   * whose sections ARE its folders, so rename/delete belong on the header.
+   */
+  getSectionContextMenuItems?: (
+    sectionKey: string,
+    helpers: { closeMenu: () => void },
+  ) => ReactNode[] | null;
+  /**
+   * Fires when a row is dropped on a section header, BEFORE the normal
+   * move/access handling. Return `true` to claim the drop and stop there —
+   * for sections that are a grouping of their own rather than an access
+   * bucket (Starred, a real folder tree).
+   */
+  onSectionDrop?: (sectionKey: string, nodeId: string) => boolean | void;
   showFiles?: boolean;
   /**
    * When true, folder rows render only a chevron + name (no folder icon), and
@@ -203,6 +219,13 @@ export interface ResourceTreeProps {
     access?: string,
   ) => void;
   onRenameItem?: (id: string, name: string, isDirectory: boolean) => void;
+  /**
+   * What the inline rename box starts from, when it is not the row's
+   * displayed name — an app row shows its TITLE but renames its folder
+   * (slug). Defaults to `node.name`; the commit compares against the seed,
+   * so an unchanged value is a resort, not a rename.
+   */
+  getRenameSeed?: (node: ResourceTreeNode) => string;
   onDeleteItem?: (node: ResourceTreeNode) => void;
   onDuplicateItem?: (node: ResourceTreeNode) => void;
   onCreateFolder?: (
@@ -241,6 +264,8 @@ function ResourceTreeInner(
     onLoadChildren,
     isLoadingChildren,
     getContextMenuItems,
+    getSectionContextMenuItems,
+    onSectionDrop,
     showFiles = true,
     hideFolderIcon = false,
     enableDragDrop = true,
@@ -261,6 +286,7 @@ function ResourceTreeInner(
     onMoveItem,
     onMoveFolder,
     onRenameItem,
+    getRenameSeed,
     onDeleteItem,
     onDuplicateItem,
     onCreateFolder,
@@ -648,10 +674,10 @@ function ResourceTreeInner(
     (item: ResourceTreeNode) => {
       if (!enableRename) return;
       setRenamingItemId(item.id);
-      setRenameValue(item.name);
+      setRenameValue(getRenameSeed?.(item) ?? item.name);
       setContextMenu(null);
     },
-    [enableRename],
+    [enableRename, getRenameSeed],
   );
 
   const cancelInlineRename = useCallback(() => {
@@ -668,7 +694,8 @@ function ResourceTreeInner(
         return;
       }
 
-      if (nextName && nextName !== location.node.name) {
+      const seed = getRenameSeed?.(location.node) ?? location.node.name;
+      if (nextName && nextName !== seed) {
         onRenameItem?.(itemId, nextName, location.node.isDirectory);
       } else {
         onResortItem?.(itemId);
@@ -679,6 +706,7 @@ function ResourceTreeInner(
     [
       cancelInlineRename,
       findNodeLocation,
+      getRenameSeed,
       onRenameItem,
       onResortItem,
       renameValue,
@@ -752,6 +780,9 @@ function ResourceTreeInner(
       if (!target) return;
 
       if (target.kind === "section") {
+        // A section that is its own grouping claims the drop; an access
+        // bucket (My X / Workspace) falls through to the move below.
+        if (onSectionDrop?.(target.sectionKey, activeId) === true) return;
         if (activeLocation.node.isDirectory) {
           onMoveFolder?.(activeId, null, target.access);
         } else {
@@ -782,7 +813,7 @@ function ResourceTreeInner(
         onMoveItem?.(activeId, target.targetFolderId);
       }
     },
-    [findNodeLocation, onMoveFolder, onMoveItem, sections],
+    [findNodeLocation, onMoveFolder, onMoveItem, onSectionDrop, sections],
   );
 
   useEffect(() => {
@@ -1717,20 +1748,31 @@ function ResourceTreeInner(
         anchorReference="anchorPosition"
         anchorPosition={sectionContextMenu?.anchorPosition}
       >
-        {sectionContextMenu && enableNewFolder && onCreateFolder && (
-          <MenuItem
-            onClick={async () => {
-              const section = sections.find(
-                entry => entry.key === sectionContextMenu.sectionKey,
-              );
-              setSectionContextMenu(null);
-              await triggerCreateFolder(null, section?.defaultAccess);
-            }}
-          >
-            <FolderPlus size={14} style={{ marginRight: 8 }} />
-            New Folder
-          </MenuItem>
-        )}
+        {sectionContextMenu &&
+          (() => {
+            const customItems = getSectionContextMenuItems?.(
+              sectionContextMenu.sectionKey,
+              { closeMenu: () => setSectionContextMenu(null) },
+            );
+            if (customItems !== undefined && customItems !== null) {
+              return customItems;
+            }
+            if (!enableNewFolder || !onCreateFolder) return null;
+            return (
+              <MenuItem
+                onClick={async () => {
+                  const section = sections.find(
+                    entry => entry.key === sectionContextMenu.sectionKey,
+                  );
+                  setSectionContextMenu(null);
+                  await triggerCreateFolder(null, section?.defaultAccess);
+                }}
+              >
+                <FolderPlus size={14} style={{ marginRight: 8 }} />
+                New Folder
+              </MenuItem>
+            );
+          })()}
       </Menu>
     </>
   );

@@ -49,7 +49,11 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useRealtimeStore } from "../store/realtimeStore";
-import { useAppsStore } from "../store/appsStore";
+import {
+  appUrlRef,
+  devServerKeyMatches,
+  useAppsStore,
+} from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -612,7 +616,9 @@ function TerminalTabs({
   // never on mount for a stopped app, which used to spawn a "[waiting for the
   // dev server]" attach with nothing behind it (apps.md §13.11).
   const runningDevApps = useAppsStore(st => st.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
   const isMobile = useIsMobile();
   // One writer ref per terminal id, handed to its TerminalPanel; the mobile
   // key bar writes through the active one. Refs, not state: a socket coming
@@ -647,7 +653,11 @@ function TerminalTabs({
   // the box (pushed truth) but have no tab here: opened by the agent, another
   // browser, or a previous pageview. One tap attaches, history and all;
   // invisible sessions were how people collided with them.
-  const devTermId = `dev-${slug ?? ""}`;
+  // The dev session is named by the app's ID server-side (dev-server.service
+  // keys the dtach socket, history and launcher by it — folder basenames are
+  // not unique once apps nest), so the terminal id must be too; the label
+  // keeps the human-readable slug.
+  const devTermId = `dev-${appId}`;
   const sessionItems: {
     key: string;
     termId: string;
@@ -1126,7 +1136,9 @@ export default function AppWorkspace({
   // Every "running" affordance derives from this, so they cannot disagree
   // (apps.md §13.11).
   const runningDevApps = useAppsStore(s => s.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
   const viewUrl = useAppsStore(s => s.viewUrlByApp[appId]);
   const hiddenPaused = useHiddenPause();
   // Durable, session-authorized URL for the published app — for normal tabs.
@@ -1182,16 +1194,18 @@ export default function AppWorkspace({
       void fetchViewUrl(workspaceId, appId);
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
-  // Older tabs were opened before slugs rode in tab metadata; heal them so
-  // the URL upgrades from /apps/<id> to /apps/<slug>.
+  // Keep the tab's URL handle honest: a top-level app is addressed by its
+  // slug (/apps/<slug>), a nested one by its id (a nested folder name may
+  // be shared by another app; an id never is). A move updates it in place.
   useEffect(() => {
-    const slug = app?.slug;
-    if (!slug) return;
+    if (!app) return;
+    const ref = appUrlRef(app);
+    const slug = ref === app.id ? undefined : ref;
     useConsoleStore.setState(state => {
       const t = state.tabs[_tabId];
-      if (t?.metadata && !t.metadata.appSlug) t.metadata.appSlug = slug;
+      if (t?.metadata && t.metadata.appSlug !== slug) t.metadata.appSlug = slug;
     });
-  }, [app?.slug, _tabId]);
+  }, [app, _tabId]);
 
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {

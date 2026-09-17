@@ -100,6 +100,43 @@ describe("validateAppEnvInput", () => {
 });
 
 describe("set / list / delete", () => {
+  it("never reads or changes a foreign workspace's vault through a reused id", async () => {
+    const foreign = await makeProject();
+    await setAppEnvVar(foreign, {
+      key: "SECRET",
+      value: "foreign-secret",
+      secret: true,
+    });
+    const forged = {
+      ...foreign.toObject(),
+      workspaceId: new Types.ObjectId(),
+    } as IAppProject;
+    expect(await listAppEnvVars(forged)).toEqual([]);
+    expect(await resolveAppEnv(forged, "dev")).toEqual({});
+    await expect(
+      setAppEnvVar(forged, { key: "SECRET", value: "overwrite", secret: true }),
+    ).rejects.toThrow(/not found/);
+    expect(await deleteAppEnvVar(forged, "SECRET")).toBe(false);
+    expect(await resolveAppEnv(foreign, "dev")).toEqual({
+      SECRET: "foreign-secret",
+    });
+  });
+
+  it("does not inherit the vault of another nested app with the same slug", async () => {
+    const existing = await makeProject();
+    await setAppEnvVar(existing, {
+      key: "SECRET",
+      value: "private",
+      secret: true,
+    });
+    const folderOnly = {
+      ...existing.toObject(),
+      _id: new Types.ObjectId(),
+      path: `apps/nested/${existing.slug}`,
+    } as IAppProject;
+    expect(await resolveAppEnv(folderOnly, "dev")).toEqual({});
+  });
+
   it("stores values encrypted at rest and lists non-secret values back", async () => {
     const project = await makeProject();
     await setAppEnvVar(project, {

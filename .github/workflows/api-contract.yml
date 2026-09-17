@@ -120,6 +120,21 @@ jobs:
           pnpm --filter @mako/schemas run build
           pnpm --filter @mako/agent-tools run build
 
+      - name: App SDK version is published to npm
+        # Scaffolds depend on `@makoai/app-sdk@^<vendored version>` (from
+        # packages/app-sdk/package.json). An unpublished bump makes every
+        # new app's `npm install` fail, so the version must be on the
+        # registry before it can ship — 2.3.0 sat in git unpublished for
+        # five days once.
+        run: |
+          version=$(node -p "require('./packages/app-sdk/package.json').version")
+          status=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/@makoai/app-sdk/$version")
+          if [ "$status" != "200" ]; then
+            echo "::error::@makoai/app-sdk@$version is not on npm (HTTP $status). Publish it (publish-npm.yml) before merging."
+            exit 1
+          fi
+          echo "@makoai/app-sdk@$version is published"
+
       - name: API tsx suites + apps vitest config
         # api/package.json "test": the hand-rolled tsx + node:assert chain,
         # then `vitest run --config vitest.apps.config.ts` (apps, consoles,
