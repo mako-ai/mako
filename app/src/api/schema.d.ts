@@ -3974,6 +3974,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/{id}/publish-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What is live: the published commit, its age, and what main has that is not live
+         * @description The published sha with its commit (author, time, subject), when it was published, whether the default branch has app changes that are not live (and how many commits), and the last deploy error. Read from the repository — starts no sandbox.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_publish_state"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps/{id}/commit": {
         parameters: {
             query?: never;
@@ -19269,6 +19289,47 @@ export interface operations {
                 ref?: string;
                 scope?: "app" | "repo";
             };
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_id_publish_state: {
+        parameters: {
+            query?: never;
             header?: never;
             path: {
                 workspaceId: string;

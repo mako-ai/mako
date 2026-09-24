@@ -55,6 +55,7 @@ import {
   useAppsStore,
 } from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
+import AppPublishedChip from "./AppPublishedChip";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
@@ -1428,35 +1429,15 @@ export default function AppWorkspace({
             variant="outlined"
           />
         )}
-        <Tooltip
-          title={
-            publishedSha
-              ? `Deployed from commit ${publishedSha.slice(0, 7)} — click to open the live app.`
-              : "Nobody can see this app yet. Click to publish it from main."
-          }
-        >
-          <Chip
-            label={
-              publishedSha
-                ? `published · ${publishedSha.slice(0, 7)}`
-                : "not published"
-            }
-            size="small"
-            color={publishedSha ? "default" : "warning"}
-            variant="outlined"
-            // Dead chips become navigation: published → open the live app;
-            // not published → this IS the call to action, publish.
-            onClick={
-              publishedSha
-                ? liveUrl
-                  ? () => window.open(liveUrl, "_blank", "noopener")
-                  : undefined
-                : preview?.building
-                  ? undefined
-                  : () => void publishApp(workspaceId, appId)
-            }
-          />
-        </Tooltip>
+        <AppPublishedChip
+          workspaceId={workspaceId}
+          appId={appId}
+          publishedSha={publishedSha}
+          publishedAt={app?.publishedAt}
+          liveUrl={liveUrl}
+          building={preview?.building}
+          onPublish={() => void publishApp(workspaceId, appId)}
+        />
         <Box sx={{ flex: 1 }} />
         {/* ONE dev toggle in the query-runner's language: blue Play →
             "Start dev" when stopped, red Stop → "Stop dev" while running.
