@@ -25544,6 +25544,84 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_history"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/publish-state": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "What is live: the published commit, its age, and what main has that is not live",
+        "description": "The published sha with its commit (author, time, subject), when it was published, whether the default branch has app changes that are not live (and how many commits), and the last deploy error. Read from the repository — starts no sandbox.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_publish_state"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/commit": {
       "post": {
         "tags": [

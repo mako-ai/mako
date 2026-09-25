@@ -211,6 +211,24 @@ export interface AppCommit {
   subject: string;
 }
 
+/** What is live for an app (GET /publish-state). */
+export interface AppPublishState {
+  publishedSha: string | null;
+  publishedAt: string | null;
+  /** The deployed commit; null when the server could not read it. */
+  publishedCommit: Omit<AppCommit, "oid"> | null;
+  branch: string;
+  upToDate: boolean;
+  /** App commits on the branch that are not live; null when unknown. */
+  pendingCommits: number | null;
+  lastDeployError: {
+    sha: string;
+    stage: "bindings" | "build" | "publish";
+    message: string;
+    at: string;
+  } | null;
+}
+
 /** One file a commit touched, app-relative (from GET /git/commit). */
 export interface AppCommitFile {
   path: string;
@@ -344,6 +362,8 @@ interface AppsStore {
    */
   viewUrlByApp: Record<string, string | undefined>;
   historyByApp: Record<string, AppCommit[]>;
+  /** The published chip's context: commit, age, what main has that is not live. */
+  publishStateByApp: Record<string, AppPublishState | undefined>;
   /** Files per commit, per app — the History panel's "View changes". */
   commitFilesByApp: Record<string, Record<string, AppCommitFile[]>>;
   /** Repo-wide graph (Source Control panel) — same repo, no app pathspec. */
@@ -455,6 +475,7 @@ interface AppsStore {
 
   fetchStatus: (workspaceId: string, appId: string) => Promise<void>;
   fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
+  fetchPublishState: (workspaceId: string, appId: string) => Promise<void>;
   fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
   /**
    * Refetch an app's cached state, but only if a workspace change marked it
@@ -659,6 +680,7 @@ export const useAppsStore = create<AppsStore>()(
       editingByApp: {},
       viewUrlByApp: {},
       historyByApp: {},
+      publishStateByApp: {},
       commitFilesByApp: {},
       runningDevApps: [],
       boxStatus: undefined,
@@ -1093,6 +1115,7 @@ export const useAppsStore = create<AppsStore>()(
             delete s.filesByApp[appId];
             delete s.statusByApp[appId];
             delete s.historyByApp[appId];
+            delete s.publishStateByApp[appId];
             delete s.terminalByApp[appId];
             delete s.previewByApp[appId];
           });
@@ -1285,6 +1308,24 @@ export const useAppsStore = create<AppsStore>()(
           });
         } catch {
           // Status is advisory; stale data is acceptable.
+        }
+      },
+
+      fetchPublishState: async (workspaceId, appId) => {
+        try {
+          const body = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/apps/{id}/publish-state",
+              { params: { path: { workspaceId, id: appId } } },
+            ),
+          ) as { state?: AppPublishState };
+          if (!body.state) return;
+          set(s => {
+            s.publishStateByApp[appId] = body.state;
+          });
+        } catch {
+          // Context for a tooltip: the chip still shows the sha and date
+          // without it, so a failure here is not worth an error banner.
         }
       },
 

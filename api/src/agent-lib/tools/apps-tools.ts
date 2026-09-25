@@ -68,8 +68,8 @@ import {
   resolveCommit,
 } from "../../apps/repository.service";
 import { freshenForServe } from "../../apps/cloud-repo.service";
-import { runGit } from "../../apps/git";
 import { buildLogPath } from "../../apps/deployment.service";
+import { publishState } from "../../apps/publish-state";
 import { getSandboxProvider } from "../../apps/sandbox/provider";
 import {
   devConsolePath,
@@ -579,75 +579,11 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const project = loaded.project;
-          const branch = project.defaultBranch || DEFAULT_BRANCH;
-          // Pull the cloud mirror first: the serving instance may not have
-          // seen the push this status call is asking about (#894's race).
-          await freshenForServe(project.workspaceId.toString(), 0);
-          const repoDir = repoDirFor(project.workspaceId.toString());
-          const branchSha = await resolveCommit(
-            repoDir,
-            `refs/heads/${branch}`,
-          );
-          // The commit that last TOUCHED this app's folder — commits to other
-          // apps or non-app files must not read as "this app is stale".
-          let branchAppSha: string | null = null;
-          if (branchSha) {
-            try {
-              const { stdout } = await runGit([
-                "-C",
-                repoDir,
-                "log",
-                "-1",
-                "--pretty=%H",
-                `refs/heads/${branch}`,
-                "--",
-                `${appRootFor(project)}/`,
-              ]);
-              branchAppSha = stdout.trim() || null;
-            } catch {
-              branchAppSha = null;
-            }
-          }
-          const publishedSha = project.publishedSha ?? null;
-          // Up to date when the published deployment contains the app's last
-          // change: either shas match, or the published commit is a
-          // descendant of the last app-touching commit.
-          let upToDate =
-            !!publishedSha && !!branchSha && publishedSha === branchSha;
-          if (!upToDate && publishedSha && branchAppSha) {
-            if (publishedSha === branchAppSha) upToDate = true;
-            else {
-              try {
-                await runGit([
-                  "-C",
-                  repoDir,
-                  "merge-base",
-                  "--is-ancestor",
-                  branchAppSha,
-                  publishedSha,
-                ]);
-                upToDate = true;
-              } catch {
-                /* not an ancestor — genuinely stale */
-              }
-            }
-          }
-          return {
-            success: true,
-            status: {
-              published: !!publishedSha,
-              publishedSha,
-              publishedAt: project.publishedAt ?? null,
-              branch,
-              branchSha,
-              branchAppSha,
-              upToDate,
-              // Why the newest commit is not live, when it is not: recorded by
-              // the deploy worker and the publish route, cleared on success.
-              lastDeployError: project.lastDeployError ?? null,
-            },
-          };
+          // Pull the cloud mirror first (interval 0): the serving instance
+          // may not have seen the push this status call is asking about
+          // (#894's race).
+          const status = await publishState(loaded.project, 0);
+          return { success: true, status };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
         }

@@ -130,6 +130,7 @@ import {
   mirrorPushNow,
 } from "../apps/cloud-repo.service";
 import { updateRefCas } from "../apps/repository.service";
+import { publishState } from "../apps/publish-state";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps/box";
 import { mintPreviewGrant, mintPublishedGrant } from "../apps/preview.service";
@@ -1391,6 +1392,31 @@ appsRoutes.openapi(
         scope ?? "app",
       );
       return c.json({ success: true as const, commits }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/publish-state",
+    tags: ["Apps"],
+    summary:
+      "What is live: the published commit, its age, and what main has that is not live",
+    description:
+      "The published sha with its commit (author, time, subject), when it was published, whether the default branch has app changes that are not live (and how many commits), and the last deploy error. Read from the repository — starts no sandbox.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const state = await publishState(loaded.project);
+      return c.json({ success: true as const, state }, 200);
     } catch (error) {
       return handleError(c, error);
     }
