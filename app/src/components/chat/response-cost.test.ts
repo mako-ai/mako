@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildCostByAssistantOrdinal,
   formatCostUsd,
   formatTokenCount,
   getResponseCostMetadata,
 } from "./response-cost";
-import { convertStoredMessages } from "./convert-stored-messages";
 
 describe("formatCostUsd", () => {
   it("uses 2 decimals from a cent up, 4 below", () => {
@@ -25,72 +23,34 @@ describe("formatTokenCount", () => {
 });
 
 describe("getResponseCostMetadata", () => {
-  it("requires a finite numeric costUsd", () => {
+  it("rejects metadata carrying neither a cost nor token counts", () => {
     expect(getResponseCostMetadata({})).toBeNull();
     expect(getResponseCostMetadata({ metadata: { costUsd: "x" } })).toBeNull();
     expect(getResponseCostMetadata({ metadata: { costUsd: NaN } })).toBeNull();
+    expect(getResponseCostMetadata({ metadata: { modelId: "m" } })).toBeNull();
+  });
+
+  it("accepts a priced turn", () => {
     expect(
       getResponseCostMetadata({ metadata: { costUsd: 0.01, modelId: "m" } }),
     ).toEqual({ costUsd: 0.01, modelId: "m" });
   });
-});
 
-describe("buildCostByAssistantOrdinal", () => {
-  it("maps usage.history entries by messageIndex", () => {
-    const map = buildCostByAssistantOrdinal({
-      history: [
-        {
-          messageIndex: 0,
-          costUsd: 0.002,
-          model: "openai/gpt-5.4-mini",
-          promptTokens: 1200,
-          completionTokens: 300,
-        },
-        { messageIndex: 2, costUsd: 0.01 },
-        { messageIndex: 3 }, // no cost — skipped
-      ],
-    });
-    expect(map.get(0)).toEqual({
-      costUsd: 0.002,
-      modelId: "openai/gpt-5.4-mini",
-      inputTokens: 1200,
-      outputTokens: 300,
-    });
-    expect(map.get(2)?.costUsd).toBe(0.01);
-    expect(map.has(3)).toBe(false);
+  it("accepts a turn with tokens but no price", () => {
+    // Server-side pricing lookup can fail while the token counts stay good;
+    // the session total should still advance by the volume it saw.
+    expect(
+      getResponseCostMetadata({
+        metadata: { inputTokens: 900, outputTokens: 100 },
+      }),
+    ).toEqual({ inputTokens: 900, outputTokens: 100 });
   });
 
-  it("tolerates missing/invalid usage", () => {
-    expect(buildCostByAssistantOrdinal(undefined).size).toBe(0);
-    expect(buildCostByAssistantOrdinal({}).size).toBe(0);
-    expect(buildCostByAssistantOrdinal({ history: "nope" }).size).toBe(0);
-  });
-});
-
-describe("convertStoredMessages cost attachment", () => {
-  it("attaches metadata to assistant messages by ordinal, skipping users", () => {
-    const messages = [
-      { id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
-      { id: "a1", role: "assistant", parts: [{ type: "text", text: "yo" }] },
-      { id: "u2", role: "user", parts: [{ type: "text", text: "more" }] },
-      { id: "a2", role: "assistant", parts: [{ type: "text", text: "sure" }] },
-    ];
-    const converted = convertStoredMessages(messages, {
-      costByAssistantOrdinal: new Map([
-        [0, { costUsd: 0.001 }],
-        [1, { costUsd: 0.002 }],
-      ]),
-    });
-    expect(converted[0].metadata).toBeUndefined();
-    expect(converted[1].metadata).toEqual({ costUsd: 0.001 });
-    expect(converted[2].metadata).toBeUndefined();
-    expect(converted[3].metadata).toEqual({ costUsd: 0.002 });
-  });
-
-  it("leaves messages untouched without a cost map", () => {
-    const converted = convertStoredMessages([
-      { id: "a1", role: "assistant", parts: [{ type: "text", text: "yo" }] },
-    ]);
-    expect(converted[0].metadata).toBeUndefined();
+  it("carries the cache and reasoning fields the stream now sends", () => {
+    expect(
+      getResponseCostMetadata({
+        metadata: { costUsd: 0.2, cacheReadTokens: 700, reasoningTokens: 40 },
+      }),
+    ).toEqual({ costUsd: 0.2, cacheReadTokens: 700, reasoningTokens: 40 });
   });
 });
