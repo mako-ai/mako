@@ -929,6 +929,25 @@ export interface ISyncStateMeta {
 }
 
 /**
+ * One cron row of a flow's unified schedule list.
+ */
+export interface IFlowSchedule {
+  /** Stable id so a run can stamp `lastRunAt` on the right row. */
+  id: string;
+  enabled: boolean;
+  cron: string;
+  timezone: string;
+  /**
+   * Entities this cadence syncs. Empty = every entity enabled in the flow's
+   * entity selection (`entityLayouts` / `entityFilter`).
+   */
+  entities?: string[];
+  /** "poll" honors `syncMode`; "reconcile" always does a full re-pull. */
+  kind: "poll" | "reconcile";
+  lastRunAt?: Date;
+}
+
+/**
  * Flow model interface (data sync flow configuration)
  */
 export interface IFlow extends Document {
@@ -979,14 +998,23 @@ export interface IFlow extends Document {
   destinationDatabaseName?: string;
   tableDestination?: ITableDestination; // For writing to SQL tables instead of MongoDB collections
 
+  /**
+   * Unified cron trigger list. Each row is one cadence with its own entity
+   * scope and run kind ("poll" = a normal run honoring `syncMode`,
+   * "reconcile" = a full re-pull of the scoped entities). This supersedes the
+   * `schedule` / `backfillSchedule` pair below, which is still written as a
+   * back-compat mirror (first poll row / first reconcile row) and is the only
+   * source for flows created before the list existed.
+   */
+  schedules?: IFlowSchedule[];
   schedule?: {
     enabled: boolean;
     cron?: string;
     timezone?: string;
   };
   /**
-   * Optional periodic full backfill cadence for CDC flows. Independent of
-   * `schedule` (which only drives `type: scheduled` batch runs). When enabled,
+   * Back-compat mirror of the first `kind: "reconcile"` schedule (and the
+   * only reconcile source for pre-`schedules[]` flows). When enabled,
    * `cdcScheduledBackfillFunction` triggers `cdcBackfillService.startBackfill`
    * on the cron cadence so a streaming CDC flow gets a periodic full
    * reconciliation while the live stream stays active between runs.
@@ -2372,6 +2400,38 @@ const FlowSchema = new Schema<IFlow>(
         fields: [String],
       },
     },
+    schedules: {
+      type: [
+        new Schema(
+          {
+            id: { type: String, required: true },
+            enabled: { type: Boolean, default: true },
+            cron: {
+              type: String,
+              required: true,
+              validate: {
+                validator: function (v: string) {
+                  if (!v) return false;
+                  const fields = v.trim().split(/\s+/);
+                  return fields.length === 5 || fields.length === 6;
+                },
+                message: "Invalid cron expression",
+              },
+            },
+            timezone: { type: String, default: "UTC" },
+            entities: { type: [String], default: undefined },
+            kind: {
+              type: String,
+              enum: ["poll", "reconcile"],
+              default: "poll",
+            },
+            lastRunAt: Date,
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
     schedule: {
       enabled: {
         type: Boolean,
@@ -2632,6 +2692,7 @@ FlowSchema.index({ "tableDestination.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ nextRunAt: 1 });
 FlowSchema.index({ workspaceId: 1, syncEngine: 1 });
 FlowSchema.index({ syncEngine: 1, "backfillSchedule.enabled": 1 });
+FlowSchema.index({ "schedules.enabled": 1, "schedules.kind": 1 });
 
 /**
  * FlowExecution Schema (binds to 'flow_executions' collection)

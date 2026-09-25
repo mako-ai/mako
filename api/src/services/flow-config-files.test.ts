@@ -298,6 +298,92 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   );
 }
 
+// ── the unified `schedules:` list round-trips, and wins over the pair ──
+{
+  const listed = {
+    _id: new Types.ObjectId("00aabbccddeeff0011223348"),
+    name: "Listed schedules",
+    workspaceId: new Types.ObjectId(),
+    type: "scheduled",
+    sourceType: "connector",
+    dataSourceId: connectorId,
+    destinationDatabaseId: destId,
+    createdBy: "u1",
+    schedules: [
+      {
+        id: "poll-row",
+        enabled: true,
+        cron: "0 * * * *",
+        timezone: "UTC",
+        kind: "poll",
+        // A scheduler claim: it must never reach the file.
+        lastRunAt: new Date("2026-01-02T03:04:05.000Z"),
+      },
+      {
+        id: "reconcile-row",
+        enabled: true,
+        cron: "0 3 * * 0",
+        timezone: "Europe/Zurich",
+        kind: "reconcile",
+        entities: ["customers", "invoices"],
+      },
+      // Disabled rows are definition noise; they are not committed.
+      { id: "off-row", enabled: false, cron: "0 5 * * *", kind: "poll" },
+    ],
+    // Stale mirrors must not be written alongside the list.
+    schedule: { enabled: true, cron: "*/5 * * * *", timezone: "UTC" },
+    backfillSchedule: { enabled: true, cron: "0 9 * * *", timezone: "UTC" },
+  } as unknown as IFlow;
+
+  const text = serializeFlowFile(flowToFile(listed));
+  assert.match(text, /schedules:/);
+  assert.doesNotMatch(text, /backfill_schedule:/);
+  assert.doesNotMatch(text, /\*\/5 \* \* \* \*/, "no legacy mirror in the file");
+  assert.doesNotMatch(text, /2026-01-02/, "lastRunAt is a claim, not definition");
+
+  const parsed = parseFlowFile(text);
+  assert.ok(parsed);
+  assert.equal(parsed.schedules?.length, 2, "the disabled row is not written");
+  assert.deepEqual(parsed.schedules?.[0], {
+    id: "poll-row",
+    cron: "0 * * * *",
+    timezone: "UTC",
+    kind: "poll",
+  });
+  assert.deepEqual(parsed.schedules?.[1], {
+    id: "reconcile-row",
+    cron: "0 3 * * 0",
+    timezone: "Europe/Zurich",
+    kind: "reconcile",
+    entities: ["customers", "invoices"],
+  });
+  assert.equal(parsed.schedule, null);
+  assert.equal(parsed.backfillSchedule, null);
+}
+
+// A hand-written row without `kind:` is a poll; a row without a cron is skipped.
+{
+  const parsed = parseFlowFile(
+    [
+      "name: Hand written",
+      "type: scheduled",
+      "source:",
+      "  type: connector",
+      "  connection_id: 6a2bd881b6f8c41ea17e9bc7",
+      "destination:",
+      "  connection_id: 69c2719490eb18199aafa882",
+      "schedules:",
+      "  - cron: '0 * * * *'",
+      "  - timezone: UTC",
+      "",
+    ].join("\n"),
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.schedules?.length, 1);
+  assert.equal(parsed.schedules?.[0].kind, "poll");
+  assert.equal(parsed.schedules?.[0].timezone, "UTC");
+}
+
 // ── malformed input is rejected, not half-parsed ──
 assert.equal(parseFlowFile("this: [is: not: valid"), null);
 assert.equal(parseFlowFile("just a string"), null);
