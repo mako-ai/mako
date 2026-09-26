@@ -360,6 +360,7 @@ Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps 
 | `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:name/materialize`    | Build/rebuild a binding's Parquet artifact                 |
 | `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:name/artifact`       | Stream the materialized Parquet artifact                   |
 | `POST`   | `/api/workspaces/:wid/apps/:id/publish` / `…/rollback`        | Build & publish a `main` commit / repoint the deployment   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/publish-state`                | Read the live commit, publication time, pending app commits, and last deploy error |
 | `POST`   | `/api/workspaces/:wid/apps/:id/preview` / `…/dev-preview`     | Published-build preview / live dev server preview          |
 | `POST`   | `/api/workspaces/:wid/apps/:id/public-share`                  | Manage the anonymous public link (also `PATCH`/`DELETE`)   |
 | `GET`    | `/api/workspaces/:wid/apps/:id/sandbox`                       | Sandbox status (also `POST …/sandbox/recycle`)             |

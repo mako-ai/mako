@@ -211,9 +211,11 @@ The mode is resolved in three layers: probed capabilities persisted in the model
 
 Users pick their preferred model in the chat UI. The model is persisted per-user in workspace settings. If a user's saved model becomes unavailable (e.g. billing downgrade), Mako falls back to the best available model for their plan.
 
-### Per-Response Cost
+### Session Usage and Cost
 
-Each assistant turn shows a small cost tag (e.g. `$0.0132`) once the response settles — hover for the model name and input/output token counts. This is a **display estimate**: it prices the turn's total usage against the resolved model's current Gateway pricing, computed client-side in `messageMetadata` on the stream's finish part. Authoritative billing happens separately (`onFinish` → `computeInvocationCost`, which prices per-step models individually) — the two only diverge on multi-model turns (e.g. a turn that switches models mid-stream via retries). If Gateway pricing lookup fails, the tag is omitted rather than shown wrong; token counts still land in history.
+The chat composer shows cumulative usage for the current session (for example, `2.1M · $0.92`) after a completed turn. Hover for the input/output token breakdown, including cache-read and reasoning counts where available. The token total is input plus output; cache reads are already included in input, and reasoning tokens are already included in output, so they are not added again.
+
+Totals are seeded from the persisted chat usage when a session loads and advanced by each completed turn. Reloading, switching chats, or refreshing during a turn therefore does not double-count usage. If Gateway pricing is unavailable, the cost is omitted rather than shown incorrectly. Local ACP turns (Claude Code, Codex, and Cursor Agent) do not currently record usage in this counter.
 
 ### Utility / Fast Model
 
