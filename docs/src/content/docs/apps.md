@@ -72,6 +72,7 @@ Use distinct **paths** for separate views and **query params** for filters and s
 - **Publishing** builds a commit on `main` into an immutable deployment; public and shared links serve the **published** build, never a draft, so viewers never see a half-finished edit.
 - **Rollback** repoints the published deployment at an earlier build.
 - History is git history: every commit, by person or agent, is browsable in Source Control.
+- **Live status:** the published chip and `GET /api/workspaces/:wid/apps/:id/publish-state` show the deployed commit (author, time, and subject), publication time, whether app changes on the default branch are still pending, and the most recent deploy error. Reading this status does not start a sandbox.
 
 ## Access Control
 
