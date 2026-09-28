@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 16;
+export const WORKSPACE_TEMPLATE_VERSION = 17;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -137,11 +137,15 @@ You are an ordinary developer in an ordinary checkout.
 Each app's \`vite.config.ts\` includes \`makoData()\` from
 \`@makoai/app-sdk/vite\`. During \`vite dev\` it answers
 \`__data/index.json\` (the app's \`bindings/*.sql\`) and
-\`__data/<name>.parquet\` by streaming the binding's materialized artifact
-from the Mako API with your login (or the key in \`.env\`); a binding that was never
-materialized is built on first request, and the SDK's \`refresh()\`
-(\`POST __data/<name>/refresh\`) rebuilds one on demand. Results are cached under
-\`node_modules/.mako-data/\` for 5 minutes (\`?refresh\` bypasses).
+\`__data/<name>.parquet\` from the Mako API with your login (or the key in
+\`.env\`), built from your LOCAL \`bindings/<name>.sql\`: unchanged text is the
+committed artifact, edited text is a draft built from your SQL and never
+stored — edit a binding and reload to see its data before committing. The
+SDK's \`refresh()\` (\`POST __data/<name>/refresh\`) rebuilds on demand. Results
+are cached under \`node_modules/.mako-data/\` per binding text (5 minutes;
+\`?refresh\` bypasses). \`MAKO_DBT_ENV=<env>\` in \`.env\` (or
+\`makoData({ dbtEnvironment })\`) renders \`{{ dbt_schema }}\` against that dbt
+environment, e.g. your personal one, instead of production.
 
 Not signed in (and no key) → the app still runs, and every \`useQuery\` /
 \`useDuckDB\` surfaces a "not connected: run \`npx @makoai/cli login\`" error

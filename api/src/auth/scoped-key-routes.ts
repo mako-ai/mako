@@ -38,6 +38,15 @@ const BINDING_ROUTES: ReadonlyArray<{
       /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/materialize\/?$/,
     scope: "query:read",
   },
+  // The laptop dev loop: the local binding file's text, built read-only
+  // through the same gate — the arbitrary read-only query `query:read`
+  // already grants over MCP, answered as parquet.
+  {
+    method: "POST",
+    pattern:
+      /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/dev-build\/?$/,
+    scope: "query:read",
+  },
   // `__data/viewer.json` on a laptop: the Vite plugin asks who the login
   // belongs to with the same token it reads bindings with (apps.md §28).
   {

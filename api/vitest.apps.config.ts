@@ -31,6 +31,8 @@ export default defineConfig({
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
+      // The laptop dev loop: uncommitted binding text built as a draft.
+      "src/apps/binding-dev-build.test.ts",
       // Real git + mongo: the pre-push flow-file check reads the workspace
       // repo at main and plans against live rows.
       "src/agent-lib/tools/flow-file-tools.test.ts",

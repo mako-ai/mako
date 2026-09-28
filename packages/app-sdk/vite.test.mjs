@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { makoData, resolveMakoContext } from "./vite.js";
+import { bindingFingerprint, makoData, normalizeBindingSource, resolveMakoContext } from "./vite.js";
 
 function repo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-test-"));
@@ -79,7 +79,7 @@ test("index.json lists valid bindings from disk; other paths fall through", asyn
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("parquet: fetched from the API with the key, materialized on 404, cached", async () => {
+test("an API without dev builds: committed artifact, materialized on 404, cached", async () => {
   const { app } = repo();
   const calls = [];
   const realFetch = globalThis.fetch;
@@ -87,7 +87,15 @@ test("parquet: fetched from the API with the key, materialized on 404, cached", 
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), method: init.method ?? "GET", auth: init.headers?.authorization });
     if (String(url).endsWith("/materialize")) { artifactMissing = false; return new Response("{}", { status: 200 }); }
-    if (artifactMissing) return new Response("nope", { status: 404 });
+    // An older API answers the unknown dev-build route with its JSON
+    // not-found handler (api/src/index.ts app.notFound).
+    if (String(url).endsWith("/dev-build")) {
+      return new Response(JSON.stringify({ success: false, error: "Not Found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (artifactMissing) return new Response(JSON.stringify({ success: false, error: 'Binding "sales" is not materialized' }), { status: 404 });
     return new Response(Buffer.from("PAR1data"), { status: 200 });
   };
   try {
@@ -99,6 +107,7 @@ test("parquet: fetched from the API with the key, materialized on 404, cached", 
     assert.equal(r1.headers["x-mako-data"], "api");
     assert.equal(r1.body.toString(), "PAR1data");
     assert.deepEqual(calls.map(c => c.method + " " + c.url.split("/apps/")[1]), [
+      "POST my-app/bindings/sales/dev-build",
       "GET my-app/bindings/sales/artifact",
       "POST my-app/bindings/sales/materialize",
       "GET my-app/bindings/sales/artifact",
@@ -106,9 +115,219 @@ test("parquet: fetched from the API with the key, materialized on 404, cached", 
     assert.ok(calls.every(c => c.auth === "Bearer k-1"));
     assert.ok(calls[0].url.startsWith("https://api.test/api/workspaces/ws1/apps/my-app/"));
     assert.ok(fs.existsSync(path.join(app, "node_modules", ".mako-data", "sales.parquet")));
+    // Cached by age, and the unsupported route is not asked again.
+    const r2 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r2.status, 200);
+    assert.equal(calls.length, 4);
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// A fake API that builds whatever text it is sent, so a test can see which
+// text reached it.
+function devBuildApi(calls, { failWith } = {}) {
+  return async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    calls.push({ url: String(url), method: init.method ?? "GET", body });
+    if (failWith) return failWith();
+    return new Response(Buffer.from(`PAR1:${body.source}`), {
+      status: 200,
+      headers: {
+        "x-mako-build": "draft",
+        "x-mako-row-count": "4",
+        "x-mako-materialized-at": "2026-09-28T10:00:00.000Z",
+      },
+    });
+  };
+}
+
+test("parquet: built from the LOCAL binding text, cached by that text", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = devBuildApi(calls);
+  try {
+    const { server, handlers } = fakeServer(app);
+    // Infinity: the setting apps use to avoid re-downloading big files.
+    makoData({ revalidateMs: Infinity }).configureServer(server);
+    const r1 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r1.status, 200);
+    assert.equal(r1.headers["x-mako-data"], "api");
+    assert.equal(r1.body.toString(), "PAR1:select 1");
+    assert.equal(calls[0].method + " " + calls[0].url.split("/apps/")[1], "POST my-app/bindings/sales/dev-build");
+    assert.deepEqual(calls[0].body, { source: "select 1" });
+
+    const r2 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r2.headers["x-mako-data"], "cache");
+    assert.equal(calls.length, 1);
+
+    // Editing the binding invalidates the cache, however long it may live.
+    fs.writeFileSync(path.join(app, "bindings", "sales.sql"), "select 1 as connected");
+    const r3 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r3.headers["x-mako-data"], "api");
+    assert.equal(r3.body.toString(), "PAR1:select 1 as connected");
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].body, { source: "select 1 as connected" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("offline: stale data only when it was built from the same text", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = devBuildApi(calls);
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    assert.equal((await request(handlers[0], "/__data/sales.parquet")).status, 200);
+
+    globalThis.fetch = async () => { throw new TypeError("fetch failed", { cause: { code: "ENOTFOUND" } }); };
+    // ?refresh skips the fresh cache, so the API is asked (and unreachable).
+    const stale = await request(handlers[0], "/__data/sales.parquet?refresh=1");
+    assert.equal(stale.status, 200);
+    assert.equal(stale.headers["x-mako-data"], "stale");
+    assert.equal(stale.body.toString(), "PAR1:select 1");
+
+    // After an edit, the old query's parquet is not a stale copy of the new one.
+    fs.writeFileSync(path.join(app, "bindings", "sales.sql"), "select 2");
+    const refused = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(refused.status, 502);
+    assert.match(JSON.parse(refused.body.toString()).error, /cannot reach the Mako API/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a failed build relays the API's status and message", async () => {
+  const { app } = repo();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = devBuildApi([], {
+    failWith: () =>
+      new Response(JSON.stringify({ success: false, error: "Unrecognized name: connected" }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      }),
+  });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r.status, 502);
+    assert.equal(JSON.parse(r.body.toString()).error, "Unrecognized name: connected");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("dbtEnvironment (option or MAKO_DBT_ENV) is sent and keys the cache", async () => {
+  const { app, root } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = devBuildApi(calls);
+  try {
+    fs.appendFileSync(path.join(root, ".env"), "MAKO_DBT_ENV=joan\n");
+    assert.equal(resolveMakoContext(app).dbtEnvironment, "joan");
+    assert.equal(resolveMakoContext(app, { dbtEnvironment: "ci" }).dbtEnvironment, "ci");
+
+    const { server, handlers, logs } = fakeServer(app);
+    makoData({ revalidateMs: Infinity }).configureServer(server);
+    assert.match(logs.info[0], /dbt environment "joan"/);
+    await request(handlers[0], "/__data/sales.parquet");
+    assert.deepEqual(calls[0].body, { source: "select 1", dbtEnvironment: "joan" });
+
+    // Same text, another environment: not the same data.
+    const other = fakeServer(app);
+    makoData({ revalidateMs: Infinity, dbtEnvironment: "prod" }).configureServer(other.server);
+    const r = await request(other.handlers[0], "/__data/sales.parquet");
+    assert.equal(r.headers["x-mako-data"], "api");
+    assert.deepEqual(calls[1].body, { source: "select 1", dbtEnvironment: "prod" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a scoped credential refused by an older API falls back to committed artifacts", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    if (String(url).endsWith("/dev-build")) {
+      return new Response(
+        JSON.stringify({ error: "MCP OAuth tokens are restricted to the /api/mcp endpoint (plus read-only app binding routes)" }),
+        { status: 403 },
+      );
+    }
+    return new Response(Buffer.from("PAR1data"), { status: 200 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r.status, 200);
+    assert.deepEqual(calls, ["POST my-app/bindings/sales/dev-build", "GET my-app/bindings/sales/artifact"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a plain-text 404 (a proxy in front of an older API) also falls back", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    if (String(url).endsWith("/dev-build")) return new Response("404 Not Found", { status: 404 });
+    return new Response(Buffer.from("PAR1data"), { status: 200 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    assert.equal((await request(handlers[0], "/__data/sales.parquet")).status, 200);
+    assert.deepEqual(calls, ["POST my-app/bindings/sales/dev-build", "GET my-app/bindings/sales/artifact"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("refresh against an older API (JSON 404) falls back to materialize", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    if (String(url).endsWith("/dev-build")) {
+      return new Response(JSON.stringify({ success: false, error: "Not Found" }), { status: 404 });
+    }
+    return new Response(
+      JSON.stringify({ success: true, rowCount: 7, byteSize: 99, materializedAt: "2026-09-02T10:00:00.000Z" }),
+      { status: 200 },
+    );
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 200);
+    assert.equal(JSON.parse(r.body.toString()).rowCount, 7);
+    assert.deepEqual(calls, ["POST my-app/bindings/sales/dev-build", "POST my-app/bindings/sales/materialize"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("bindingFingerprint ignores line endings and trailing whitespace", () => {
+  assert.equal(bindingFingerprint("-- connection: c\r\nselect 1\r\n"), bindingFingerprint("-- connection: c\nselect 1"));
+  assert.equal(normalizeBindingSource("a\r\nb\rc  \n\n"), "a\nb\nc");
+});
+
+test("bindingFingerprint depends on the text and the dbt environment", () => {
+  assert.equal(bindingFingerprint("select 1"), bindingFingerprint("select 1", ""));
+  assert.notEqual(bindingFingerprint("select 1"), bindingFingerprint("select 2"));
+  assert.notEqual(bindingFingerprint("select 1", "joan"), bindingFingerprint("select 1"));
 });
 
 test("no credentials → 503 with a hint, never index.html", async () => {
@@ -122,28 +341,15 @@ test("no credentials → 503 with a hint, never index.html", async () => {
   assert.match(JSON.parse(r.body.toString()).hint, /MAKO_API_KEY/);
 });
 
-test("POST __data/<name>/refresh materializes through the API and drops the cache", async () => {
+test("POST __data/<name>/refresh rebuilds the local text through the API and caches it", async () => {
   const { app } = repo();
   const calls = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url, init = {}) => {
-    calls.push({ url: String(url), method: init.method ?? "GET" });
-    if (String(url).endsWith("/materialize")) {
-      return new Response(
-        JSON.stringify({ success: true, rowCount: 7, byteSize: 99, materializedAt: "2026-09-02T10:00:00.000Z" }),
-        { status: 200 },
-      );
-    }
-    return new Response(Buffer.from("PAR1data"), { status: 200 });
-  };
+  globalThis.fetch = devBuildApi(calls);
   try {
     const { server, handlers } = fakeServer(app);
-    makoData().configureServer(server);
-    // Warm the cache, then refresh: the cached copy must go so the next read
-    // is the rebuilt artifact, not the five-minute-old one.
+    makoData({ revalidateMs: Infinity }).configureServer(server);
     assert.equal((await request(handlers[0], "/__data/sales.parquet")).status, 200);
-    const cached = path.join(app, "node_modules", ".mako-data", "sales.parquet");
-    assert.ok(fs.existsSync(cached));
 
     const r = await request(handlers[0], "/__data/sales/refresh", "POST");
     assert.equal(r.status, 200);
@@ -151,20 +357,38 @@ test("POST __data/<name>/refresh materializes through the API and drops the cach
       success: true,
       binding: "sales",
       materialization: "parquet",
-      rowCount: 7,
-      byteSize: 99,
-      materializedAt: "2026-09-02T10:00:00.000Z",
+      rowCount: 4,
+      byteSize: Buffer.byteLength("PAR1:select 1"),
+      materializedAt: "2026-09-28T10:00:00.000Z",
     });
-    assert.ok(!fs.existsSync(cached), "cache dropped");
-    assert.deepEqual(calls.map(c => c.method + " " + c.url.split("/apps/")[1]), [
-      "GET my-app/bindings/sales/artifact",
-      "POST my-app/bindings/sales/materialize",
-    ]);
+    assert.deepEqual(calls[1].body, { source: "select 1", refresh: true });
+    // The rebuilt parquet is what the next read serves, from the cache.
+    const next = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(next.headers["x-mako-data"], "cache");
+    assert.equal(calls.length, 2);
 
     // Not a POST → 405; a bad name → 400; both before any API call.
     assert.equal((await request(handlers[0], "/__data/sales/refresh")).status, 405);
     assert.equal((await request(handlers[0], "/__data/..%2Fx/refresh", "POST")).status, 400);
     assert.equal(calls.length, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("materialize: false never builds: committed artifacts only", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    return new Response(Buffer.from("PAR1data"), { status: 200 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ materialize: false }).configureServer(server);
+    assert.equal((await request(handlers[0], "/__data/sales.parquet")).status, 200);
+    assert.deepEqual(calls, ["GET my-app/bindings/sales/artifact"]);
   } finally {
     globalThis.fetch = realFetch;
   }

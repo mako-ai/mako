@@ -21,6 +21,19 @@ for (const app of ["latest-sales", "68b0c0ffee0000000000abcd"]) {
     scopedKeyMayAccess("POST", `${base}/latest_sales/materialize`, read),
     true,
   );
+  // The laptop dev loop builds the local binding text (POST only).
+  assert.equal(
+    scopedKeyMayAccess("POST", `${base}/latest_sales/dev-build`, read),
+    true,
+  );
+  assert.equal(
+    scopedKeyMayAccess("GET", `${base}/latest_sales/dev-build`, read),
+    false,
+  );
+  assert.equal(
+    scopedKeyMayAccess("POST", `${base}/latest_sales/dev-build`, mcpOnly),
+    false,
+  );
   // The viewer lookup behind `__data/viewer.json` in a laptop `vite dev`.
   assert.equal(
     scopedKeyMayAccess("GET", `/api/workspaces/${WS}/apps/${app}/viewer`, read),
