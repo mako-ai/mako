@@ -5384,6 +5384,13 @@ export interface IAppProject extends Document {
     at: Date;
   };
   /**
+   * The commit whose GitHub deploy status was last set to "pending" and not
+   * yet resolved (deploy-commit-status). A newer push cancels a running
+   * deploy, and a cancelled run never reports back: the next run resolves
+   * this one instead of leaving the older commit pending forever.
+   */
+  deployStatusPendingSha?: string;
+  /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
    * protected. Same primitive dashboards and v1 apps use, so the management
    * routes and the /api/share/:token consumption side are shared verbatim.
@@ -5449,6 +5456,7 @@ const AppProjectSchema = new Schema<IAppProject>(
       ),
       default: undefined,
     },
+    deployStatusPendingSha: { type: String },
     publicShare: { type: PublicShareSchema, default: undefined },
     env: { type: [AppEnvVarSchema], default: undefined },
   },

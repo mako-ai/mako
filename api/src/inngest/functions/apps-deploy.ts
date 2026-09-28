@@ -20,7 +20,15 @@ import {
   deployOneApp,
   appFolderChanged,
 } from "../../apps/deploy-on-push";
-import { repoForWorkspace } from "../../apps/worktree.service";
+import {
+  repoForWorkspace,
+  resolveProjectRef,
+} from "../../apps/worktree.service";
+import {
+  describeDeployFailure,
+  describeDeployOutcome,
+  reportAppDeployStatus,
+} from "../../apps/deploy-commit-status";
 import { resolveCommit } from "../../apps/repository.service";
 
 const log = loggers.inngest();
@@ -85,11 +93,34 @@ export const appsDeployFunction = inngest.createFunction(
       mode: "cancel",
     },
     retries: 2,
+    // Every retry exhausted, or a NonRetriableError: the deploy is final and
+    // failed. Say so on the commit — the app silently kept its previous
+    // build otherwise, and lastDeployError is on a row nobody opens.
+    onFailure: async ({ event, error }) => {
+      const data = (
+        event as { data?: { event?: { data?: Partial<AppsDeployEventData> } } }
+      )?.data?.event?.data;
+      const ref = data?.appId ?? data?.slug;
+      if (!data?.workspaceId || !ref || !data.sha) return;
+      await reportDeployFailure(
+        { workspaceId: data.workspaceId, appRef: ref, sha: data.sha },
+        error,
+      );
+    },
     triggers: { event: APPS_DEPLOY_EVENT },
   },
   async ({ event, step }) => {
     const data = event.data as AppsDeployEventData;
     const ref = data.appId ?? data.slug ?? "";
+    await step.run("report-pending", () =>
+      reportAppDeployStatus({
+        workspaceId: data.workspaceId,
+        appRef: ref,
+        sha: data.sha,
+        state: "pending",
+        description: "Deploying this commit",
+      }),
+    );
     const result = await step.run("deploy", async () => {
       try {
         return await deployOneApp(data.workspaceId, ref, data.sha);
@@ -104,10 +135,47 @@ export const appsDeployFunction = inngest.createFunction(
         throw error;
       }
     });
+    await step.run("report-outcome", () =>
+      reportAppDeployStatus({
+        workspaceId: data.workspaceId,
+        appRef: ref,
+        sha: data.sha,
+        ...describeDeployOutcome(result.outcome),
+      }),
+    );
     log.info("Apps deploy event handled", { ...data, ...result });
     return result;
   },
 );
+
+/**
+ * The failure status for a deploy that will not be retried. The stage and
+ * message come from lastDeployError when it is about this commit (it has
+ * the stage: "bindings", "build"), else from the error Inngest reports.
+ */
+export async function reportDeployFailure(
+  target: { workspaceId: string; appRef: string; sha: string },
+  error: unknown,
+): Promise<void> {
+  const project = await resolveProjectRef(
+    target.workspaceId,
+    target.appRef,
+  ).catch(() => null);
+  const recorded =
+    project?.lastDeployError?.sha === target.sha
+      ? project.lastDeployError
+      : null;
+  const message = recorded
+    ? recorded.message
+    : error instanceof Error
+      ? error.message
+      : String(error ?? "deploy failed");
+  await reportAppDeployStatus({
+    ...target,
+    state: "failure",
+    description: describeDeployFailure(recorded?.stage ?? "deploy", message),
+  });
+}
 
 export const appsDeployReconcileFunction = inngest.createFunction(
   {
