@@ -31,6 +31,7 @@ import {
   type NavigationView,
 } from "../lib/explorer-nav";
 import { tabRevealTarget } from "../lib/explorer-reveal";
+import { railButtonColors } from "./sidebar-rail";
 
 /**
  * The rail answers TWO questions, and conflating them is confusing.
@@ -41,34 +42,32 @@ import { tabRevealTarget } from "../lib/explorer-reveal";
  * workflow, and a reload deliberately restores the panel you had rather than
  * the one the URL implies (see UrlSync's isReload note).
  *
- * With only the selected-background state, a rail showing Settings while the
- * address bar said /apps/ubiflow read as "Settings is the active app". So the
- * two facts now look different: selected background for the open panel, brand
- * colour for the explorer holding the open tab.
+ * The highlight (brand colour + selected background) always follows the open
+ * panel; the explorer holding the open tab gets only a quieter hint. See
+ * `railButtonColors` for why the emphasis is that way round.
  */
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive" && prop !== "ownsActiveTab",
-})<{ isActive?: boolean; ownsActiveTab?: boolean }>(
-  ({ theme, isActive, ownsActiveTab }) => ({
+})<{ isActive?: boolean; ownsActiveTab?: boolean }>(({
+  theme,
+  isActive,
+  ownsActiveTab,
+}) => {
+  const colors = railButtonColors(theme, { isActive, ownsActiveTab });
+  return {
     minWidth: 40,
     width: 40,
     height: 40,
     padding: 0,
     borderRadius: 8,
-    backgroundColor: isActive ? theme.palette.action.selected : "transparent",
-    color: isActive
-      ? theme.palette.text.primary
-      : ownsActiveTab
-        ? theme.palette.primary.main
-        : theme.palette.text.secondary,
+    backgroundColor: colors.backgroundColor,
+    color: colors.color,
     "&:hover": {
-      backgroundColor: isActive
-        ? theme.palette.action.selected
-        : theme.palette.action.hover,
+      backgroundColor: colors.hoverBackgroundColor,
     },
     transition: "all 0.2s ease",
-  }),
-);
+  };
+});
 
 // Views that can appear in the sidebar navigation. Extends the core AppView
 // union with additional sidebar-specific entries that don't directly map to
