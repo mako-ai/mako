@@ -321,9 +321,37 @@ export async function resolveDbtBoundCode(params: {
   workspaceId: string | Types.ObjectId;
   dbtProjectId?: string;
   code: string;
+  /**
+   * Render against this environment instead of the prod-like one — the
+   * laptop dev loop only (`makoData({ dbtEnvironment })`), whose builds are
+   * never stored as an app's artifact. `userId` is the caller: a personal
+   * environment renders only for its owner.
+   */
+  environment?: { name: string; userId?: string };
 }): Promise<string> {
   if (!params.dbtProjectId || !containsDbtSchemaToken(params.code)) {
     return params.code;
+  }
+  if (params.environment) {
+    const project = Types.ObjectId.isValid(params.dbtProjectId)
+      ? await DbtProject.findOne({
+          _id: new Types.ObjectId(params.dbtProjectId),
+          workspaceId: new Types.ObjectId(params.workspaceId.toString()),
+        })
+          .select("environments")
+          .lean()
+      : null;
+    if (!project) {
+      throw new DbtEnvironmentUnavailableError(
+        "The dbt project linked to this data source is unavailable — cannot resolve {{ dbt_schema }}",
+      );
+    }
+    const schema = devDbtEnvironmentSchema(
+      project,
+      params.environment.name,
+      params.environment.userId,
+    );
+    return resolveDbtSchemaToken(params.code, schema);
   }
   const resolved = await resolveDbtSchemaForBinding({
     workspaceId: params.workspaceId,
@@ -335,4 +363,41 @@ export async function resolveDbtBoundCode(params: {
     );
   }
   return resolveDbtSchemaToken(params.code, resolved.schema);
+}
+
+/** A requested dbt environment that does not exist or is not the caller's. */
+export class DbtEnvironmentUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DbtEnvironmentUnavailableError";
+  }
+}
+
+/**
+ * The schema a developer's requested environment builds into. A personal
+ * environment is its owner's scratch space — refused to anyone else (and to
+ * API keys, which have no user), for the same reason personal environments
+ * can never be the default or the prod target: one developer's half-built
+ * models must not show up in someone else's app.
+ */
+export function devDbtEnvironmentSchema(
+  project: Pick<IDbtProject, "environments">,
+  environmentName: string,
+  userId: string | undefined,
+): string {
+  const environment = project.environments.find(
+    env => env.name === environmentName,
+  );
+  if (!environment) {
+    const names = project.environments.map(env => env.name).join(", ");
+    throw new DbtEnvironmentUnavailableError(
+      `No dbt environment named "${environmentName}" in the linked dbt project (environments: ${names || "none"})`,
+    );
+  }
+  if (environment.ownerUserId && environment.ownerUserId !== userId) {
+    throw new DbtEnvironmentUnavailableError(
+      `dbt environment "${environmentName}" is another developer's personal environment`,
+    );
+  }
+  return environment.targetSchema;
 }

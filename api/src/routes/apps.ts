@@ -156,6 +156,7 @@ import {
 import { getBoxState, markBoxOffline } from "../apps/box-state.service";
 import { getSandboxProvider } from "../apps/sandbox/provider";
 import { Readable } from "node:stream";
+import { createReadStream } from "node:fs";
 import {
   bindingArtifactKeyByName,
   getBindingState,
@@ -163,6 +164,7 @@ import {
   readBindings,
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
+import { DevBuildError, devBuildAppBinding } from "../apps/binding-dev-build";
 import {
   AppEnvValidationError,
   deleteAppEnvVar,
@@ -1754,6 +1756,101 @@ appsRoutes.openapi(
       );
       return c.json({ success: true as const, ...result }, 200);
     } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/bindings/{name}/dev-build",
+    tags: ["Apps"],
+    summary: "Build a binding from local (uncommitted) SQL for `vite dev`",
+    description:
+      "The laptop dev loop behind `makoData()`: send the local " +
+      "`bindings/<name>.sql` text and get back the parquet of exactly that " +
+      "query, run read-only through the workspace connection its front " +
+      "matter names. Text identical to the committed binding is served from " +
+      "(or materialized into) the app's stored artifact; anything else — an " +
+      "uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` " +
+      "against a dev dbt environment — is built, streamed back and never " +
+      "stored, so published viewers never see it. May redirect to a " +
+      "short-lived signed artifact URL; follow redirects.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              source: z
+                .string()
+                .min(1)
+                .max(512 * 1024),
+              dbtEnvironment: z.string().min(1).max(64).optional(),
+              refresh: z.boolean().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      ...OPEN_RESPONSES,
+      302: { description: "Redirect to a short-lived signed artifact URL" },
+    },
+  }),
+  async c => {
+    try {
+      const { name } = c.req.valid("param");
+      const { source, dbtEnvironment, refresh } = c.req.valid("json");
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const writer = await loadProject(c, { write: true });
+      const result = await devBuildAppBinding({
+        project: loaded.project,
+        name,
+        actorId: loaded.userId ?? "api-key",
+        userId: loaded.userId,
+        canWrite: !("errorResponse" in writer),
+        source,
+        dbtEnvironment,
+        refresh,
+      });
+      if (result.kind === "artifact") {
+        const response = await serveParquetArtifact(
+          getDashboardArtifactStore(),
+          result.artifactKey,
+          {
+            cacheControl: "no-store",
+            extraHeaders: { "x-mako-build": "artifact" },
+          },
+        );
+        if (response) return response;
+        return c.json(
+          { success: false, error: `Binding "${name}" is not materialized` },
+          404,
+        );
+      }
+      const stream = createReadStream(result.filePath);
+      stream.on("close", () => void fs.rm(result.filePath, { force: true }));
+      return new Response(Readable.toWeb(stream) as ReadableStream, {
+        status: 200,
+        headers: {
+          "content-type": "application/vnd.apache.parquet",
+          "cache-control": "no-store",
+          "x-mako-build": result.kind,
+          "x-mako-row-count": String(result.rowCount),
+          "x-mako-materialized-at": result.builtAt.toISOString(),
+        },
+      });
+    } catch (error) {
+      if (error instanceof DevBuildError) {
+        return c.json({ success: false, error: error.message }, error.status);
+      }
       return handleError(c, error);
     }
   },

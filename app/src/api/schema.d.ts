@@ -4162,6 +4162,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/dev-build": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Build a binding from local (uncommitted) SQL for `vite dev`
+         * @description The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment — is built, streamed back and never stored, so published viewers never see it. May redirect to a short-lived signed artifact URL; follow redirects.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps/{id}/git/commit": {
         parameters: {
             query?: never;
@@ -19747,6 +19767,63 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    source: string;
+                    dbtEnvironment?: string;
+                    refresh?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Redirect to a short-lived signed artifact URL */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Successful response */
             "2XX": {
                 headers: {

@@ -26459,6 +26459,123 @@
         "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_materialize"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/dev-build": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Build a binding from local (uncommitted) SQL for `vite dev`",
+        "description": "The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment — is built, streamed back and never stored, so published viewers never see it. May redirect to a short-lived signed artifact URL; follow redirects.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 524288
+                  },
+                  "dbtEnvironment": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "refresh": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to a short-lived signed artifact URL"
+          },
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/git/commit": {
       "get": {
         "tags": [

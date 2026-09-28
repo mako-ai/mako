@@ -148,14 +148,19 @@ npx @makoai/cli dev <app>   # or: cd apps/<app> && npm install && npm run dev
 
 The app renders with **real data**: the scaffold's `vite.config.ts` includes
 `makoData()` from `@makoai/app-sdk/vite`, which serves `__data/<binding>.parquet`
-by streaming the binding's materialized artifact from your Mako host with that
-login (a binding that was never materialized is built on first request;
-results are cached for five minutes under `node_modules/.mako-data/`,
-`?refresh` bypasses). This is the one place MCP credentials — OAuth tokens and
-scoped keys alike — are accepted outside `/api/mcp`: with `query:read` they may
-call the three read-only binding routes (`GET …/bindings`,
-`GET …/bindings/<name>/artifact`, `POST …/bindings/<name>/materialize`) and
-nothing else.
+from your Mako host with that login, built from your **local**
+`bindings/<binding>.sql`: unchanged text is the committed artifact (built on
+first request if it never was), edited text is a draft built from your SQL and
+never stored, so you see real data for a query before committing it. Results
+are cached under `node_modules/.mako-data/` next to a fingerprint of the text
+they came from (five minutes; `?refresh` bypasses). `MAKO_DBT_ENV=<env>` (or
+`makoData({ dbtEnvironment })`) renders `{{ dbt_schema }}` against that dbt
+environment, such as your personal one, instead of production. This is the one
+place MCP credentials — OAuth tokens and scoped keys alike — are accepted
+outside `/api/mcp`: with `query:read` they may call the read-only binding
+routes (`GET …/bindings`, `GET …/bindings/<name>/artifact`,
+`POST …/bindings/<name>/materialize`, `POST …/bindings/<name>/dev-build`,
+`GET …/viewer`) and nothing else.
 
 Headless / CI: put a workspace API key in the repo's gitignored `.env`
 (`MAKO_API_KEY=revops_…`, scopes `mcp` + `query:read`) and register the server

@@ -96,13 +96,37 @@ export default defineConfig({ plugins: [react(), makoData()] });
 ```
 
 `makoData()` answers `__data/index.json` (the app's `bindings/*.sql`) and
-`__data/<name>.parquet` during `vite dev` by streaming each binding's
-materialized artifact from the Mako API — a binding that was never
-materialized is built on first request, and `POST __data/<name>/refresh`
-(the SDK's `refresh()`) rebuilds one on demand. Results are cached under
-`node_modules/.mako-data/` for five minutes (`?refresh` bypasses; a stale
-copy is served if the API is unreachable). It is `apply: "serve"` only —
+`__data/<name>.parquet` during `vite dev` from the Mako API, and what it asks
+for is **your local binding file**: it sends the text of
+`bindings/<name>.sql` and gets back the parquet of exactly that query, run
+read-only through the workspace connection its front matter names. When the
+text is the committed binding, that is the app's stored artifact (built on
+first request if it never was); when you have edited it, Mako builds a draft
+from your text and hands it back without storing it — nobody else, and no
+published viewer, ever sees uncommitted SQL. Building needs edit access to the
+app; read-only members get committed artifacts. `POST __data/<name>/refresh`
+(the SDK's `refresh()`) rebuilds from the local text on demand.
+
+Results are cached under `node_modules/.mako-data/` for five minutes
+(`revalidateMs`; `?refresh` bypasses), next to a fingerprint of the text they
+were built from: after an edit the cache is never served, however long
+`revalidateMs` is, and while the API is unreachable a stale copy is served
+only if it was built from the same text. It is `apply: "serve"` only —
 production builds never load it.
+
+### dbt models you are still building
+
+A binding linked to dbt (`-- dbt_project: <id>`) writes `{{ dbt_schema }}`,
+which renders to the production schema. To preview models you built into
+your own dbt environment, point the dev server at it:
+
+```ts
+makoData({ dbtEnvironment: "joan" }) // or MAKO_DBT_ENV=joan in the repo's .env
+```
+
+The environment must exist in the linked dbt project (`dbt/environments.yml`),
+and a personal environment (`owner_user_id`) renders only for its owner.
+These builds are drafts too: never stored, never what a published app reads.
 
 It also answers `__data/viewer.json` (you, as Mako sees you), and
 `MAKO_VIEWER_AS=<email>` — in the environment or the repo's `.env` —
