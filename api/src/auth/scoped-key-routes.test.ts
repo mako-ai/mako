@@ -34,6 +34,13 @@ for (const app of ["latest-sales", "68b0c0ffee0000000000abcd"]) {
     scopedKeyMayAccess("POST", `${base}/latest_sales/dev-build`, mcpOnly),
     false,
   );
+  // Async builds: status and result, GET only.
+  const jobs = `/api/workspaces/${WS}/apps/${app}/binding-jobs/66f0c0ffee0000000000abcd`;
+  assert.equal(scopedKeyMayAccess("GET", jobs, read), true);
+  assert.equal(scopedKeyMayAccess("GET", `${jobs}/artifact`, read), true);
+  assert.equal(scopedKeyMayAccess("DELETE", jobs, read), false);
+  assert.equal(scopedKeyMayAccess("GET", `${jobs}/other`, read), false);
+  assert.equal(scopedKeyMayAccess("GET", jobs, mcpOnly), false);
   // The viewer lookup behind `__data/viewer.json` in a laptop `vite dev`.
   assert.equal(
     scopedKeyMayAccess("GET", `/api/workspaces/${WS}/apps/${app}/viewer`, read),

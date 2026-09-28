@@ -206,19 +206,93 @@ export function makoData(options = {}) {
         }
       }
 
+      // Long builds run as jobs: the API answers 202 + a job id (it would
+      // otherwise hit the edge's 100 s limit and fail with a 524 while the
+      // build carried on), and this polls the job until it lands. An API
+      // without jobs just answers synchronously, which works as before.
+      const pollMs = options.pollIntervalMs ?? 1000;
+      const buildTimeoutMs = options.buildTimeoutMs ?? 30 * 60 * 1000;
+      // A poll that fails transiently — the network, a 429, a 5xx, the
+      // edge's 524 — is retried with backoff until the overall deadline; only
+      // a definitive 4xx (the job is gone, access was revoked) ends the wait.
+      const isTransient = (status) => status === 429 || status >= 500;
+      async function awaitJob(name, jobId) {
+        const url = `${appBase()}/binding-jobs/${encodeURIComponent(jobId)}`;
+        const deadline = Date.now() + buildTimeoutMs;
+        let wait = pollMs;
+        let lastProblem = "";
+        for (;;) {
+          let res = null;
+          try {
+            res = await apiFetch(url, { headers: await headers() });
+          } catch (error) {
+            lastProblem = error instanceof Error ? error.message : String(error);
+          }
+          if (res) {
+            const body = await res.json().catch(() => ({}));
+            if (res.ok) {
+              if (body.status === "ready") return body;
+              if (body.status === "error") {
+                const error = new Error(body.error || `build ${name} failed`);
+                error.status = body.errorStatus ?? 502;
+                throw error;
+              }
+              lastProblem = "";
+            } else if (isTransient(res.status)) {
+              lastProblem = `job HTTP ${res.status}`;
+            } else {
+              const error = new Error(body.error || `build ${name}: job HTTP ${res.status}`);
+              error.status = res.status;
+              throw error;
+            }
+          }
+          if (Date.now() > deadline) {
+            const error = new Error(
+              `build ${name} still running after ${Math.round(buildTimeoutMs / 1000)} s (job ${jobId})` +
+                (lastProblem ? `; last poll: ${lastProblem}` : ""),
+            );
+            error.status = 504;
+            throw error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          wait = Math.min(wait * 2, pollMs * 5);
+        }
+      }
+      async function jobArtifact(name, jobId) {
+        const res = await apiFetch(`${appBase()}/binding-jobs/${encodeURIComponent(jobId)}/artifact`, {
+          headers: await headers(),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          const error = new Error(`build ${name}: result HTTP ${res.status} ${text.slice(0, 300)}`);
+          error.status = res.status;
+          throw error;
+        }
+        return Buffer.from(await res.arrayBuffer());
+      }
+      // POST …/materialize, asynchronously when the API supports it.
+      // Resolves to the materialize answer ({ rowCount, byteSize, materializedAt }).
+      async function materialize(name) {
+        const res = await apiFetch(
+          `${appBase()}/bindings/${encodeURIComponent(name)}/materialize?async=1`,
+          { method: "POST", headers: await headers() },
+        );
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 202 && body.jobId) return awaitJob(name, body.jobId);
+        if (!res.ok) {
+          const error = new Error(body.error || `materialize ${name}: HTTP ${res.status}`);
+          error.status = res.status;
+          throw error;
+        }
+        return body;
+      }
+
       async function fetchArtifact(name) {
         const url = `${appBase()}/bindings/${encodeURIComponent(name)}/artifact`;
         let res = await apiFetch(url, { headers: await headers() });
         if (res.status === 404 && options.materialize !== false) {
           // Never materialized (or a live binding): build it now, then read.
-          const built = await apiFetch(
-            `${appBase()}/bindings/${encodeURIComponent(name)}/materialize`,
-            { method: "POST", headers: await headers() },
-          );
-          if (!built.ok) {
-            const text = await built.text().catch(() => "");
-            throw new Error(`materialize ${name}: HTTP ${built.status} ${text.slice(0, 300)}`);
-          }
+          await materialize(name);
           res = await apiFetch(url, { headers: await headers() });
         }
         if (!res.ok) {
@@ -291,9 +365,16 @@ export function makoData(options = {}) {
               source,
               ...(ctx.dbtEnvironment ? { dbtEnvironment: ctx.dbtEnvironment } : {}),
               ...(refresh ? { refresh: true } : {}),
+              async: true,
             }),
           });
-          if (!res.ok) {
+          let jobDone = null;
+          if (res.status === 202) {
+            const queued = await res.json().catch(() => ({}));
+            if (!queued.jobId) throw new Error(`build ${name}: HTTP 202 without a job id`);
+            jobDone = await awaitJob(name, queued.jobId);
+          }
+          if (!jobDone && !res.ok) {
             const text = await res.text().catch(() => "");
             let body = null;
             try {
@@ -323,16 +404,26 @@ export function makoData(options = {}) {
             error.status = res.status;
             throw error;
           }
-          const buf = Buffer.from(await res.arrayBuffer());
-          const meta = {
-            fingerprint,
-            dbtEnvironment: ctx.dbtEnvironment || null,
-            // A redirect to the stored artifact loses the API's headers; that
-            // answer is always the committed artifact.
-            build: res.headers.get("x-mako-build") ?? "artifact",
-            rowCount: Number(res.headers.get("x-mako-row-count") ?? "") || null,
-            builtAt: res.headers.get("x-mako-materialized-at") ?? new Date().toISOString(),
-          };
+          const buf = jobDone
+            ? await jobArtifact(name, jobDone.jobId)
+            : Buffer.from(await res.arrayBuffer());
+          const meta = jobDone
+            ? {
+                fingerprint,
+                dbtEnvironment: ctx.dbtEnvironment || null,
+                build: jobDone.build ?? "artifact",
+                rowCount: jobDone.rowCount ?? null,
+                builtAt: jobDone.materializedAt ?? new Date().toISOString(),
+              }
+            : {
+                fingerprint,
+                dbtEnvironment: ctx.dbtEnvironment || null,
+                // A redirect to the stored artifact loses the API's headers;
+                // that answer is always the committed artifact.
+                build: res.headers.get("x-mako-build") ?? "artifact",
+                rowCount: Number(res.headers.get("x-mako-row-count") ?? "") || null,
+                builtAt: res.headers.get("x-mako-materialized-at") ?? new Date().toISOString(),
+              };
           writeCache(name, buf, meta);
           return { buf, meta };
         })().finally(() => inflight.delete(key));
@@ -357,15 +448,13 @@ export function makoData(options = {}) {
               materializedAt: built.meta.builtAt,
             });
           }
-          const materialized = await apiFetch(
-            `${appBase()}/bindings/${encodeURIComponent(name)}/materialize`,
-            { method: "POST", headers: await headers() },
-          );
-          const body = await materialized.json().catch(() => ({}));
-          if (!materialized.ok) {
-            return json(res, materialized.status, {
+          let body;
+          try {
+            body = await materialize(name);
+          } catch (error) {
+            return json(res, error?.status ?? 502, {
               success: false,
-              error: body.error || `materialize ${name}: HTTP ${materialized.status}`,
+              error: error instanceof Error ? error.message : String(error),
             });
           }
           fs.rmSync(cachePath(name), { force: true });

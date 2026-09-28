@@ -164,7 +164,13 @@ import {
   readBindings,
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
-import { DevBuildError, devBuildAppBinding } from "../apps/binding-dev-build";
+import { DevBuildError, planDevBuild } from "../apps/binding-dev-build";
+import {
+  getBindingJob,
+  serializeBindingJob,
+  type BindingJobDoc,
+} from "../apps/binding-jobs";
+import { enqueueBindingJob } from "../inngest/functions/apps-binding-job";
 import {
   AppEnvValidationError,
   deleteAppEnvVar,
@@ -1736,19 +1742,50 @@ appsRoutes.openapi(
     path: "/{id}/bindings/{name}/materialize",
     tags: ["Apps"],
     summary: "Materialize a data binding (bindings-as-files) to parquet",
+    description:
+      "Synchronous by default. With `?async=1` it answers 202 with a " +
+      "`jobId` at once and builds in the background — for builds longer " +
+      "than the edge's 100 s request limit; poll " +
+      "`GET …/binding-jobs/{jobId}`.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam.extend({
         name: z.string().openapi({ param: { name: "name", in: "path" } }),
       }),
+      query: z.object({
+        async: z.enum(["0", "1", "true", "false"]).optional(),
+      }),
     },
-    responses: OPEN_RESPONSES,
+    responses: {
+      ...OPEN_RESPONSES,
+      202: { description: "Queued: poll the returned binding job" },
+    },
   }),
   async c => {
     try {
       const { name } = c.req.valid("param");
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { async: asyncFlag } = c.req.valid("query");
+      if (asyncFlag === "1" || asyncFlag === "true") {
+        if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
+          return c.json({ success: false, error: "Invalid binding name" }, 400);
+        }
+        const job = await enqueueBindingJob({
+          workspaceId: loaded.project.workspaceId.toString(),
+          projectId: loaded.project._id.toString(),
+          name,
+          kind: "materialize",
+          actorId: loaded.userId ?? "api-key",
+          userId: loaded.userId,
+          canWrite: true,
+          request: {},
+        });
+        return c.json(
+          { success: true as const, ...serializeBindingJob(job) },
+          202,
+        );
+      }
       const result = await materializeAppBinding(
         loaded.project,
         name,
@@ -1780,7 +1817,9 @@ appsRoutes.openapi(
       "rendered SQL) unless `refresh`, never stored as the app's artifact, " +
       "so published viewers never see it. A draft that keeps failing " +
       "answers 503 with Retry-After instead of re-running. May redirect to " +
-      "a short-lived signed artifact URL; follow redirects.",
+      "a short-lived signed artifact URL; follow redirects. With " +
+      "`async: true`, a build (not a stored artifact) answers 202 with a " +
+      "`jobId` to poll at `GET …/binding-jobs/{jobId}` instead.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam.extend({
@@ -1798,6 +1837,7 @@ appsRoutes.openapi(
               dbtEnvironment: z.string().min(1).max(64).optional(),
               dbtDefer: z.boolean().optional(),
               refresh: z.boolean().optional(),
+              async: z.boolean().optional(),
             }),
           },
         },
@@ -1805,17 +1845,24 @@ appsRoutes.openapi(
     },
     responses: {
       ...OPEN_RESPONSES,
+      202: { description: "Queued: poll the returned binding job" },
       302: { description: "Redirect to a short-lived signed artifact URL" },
     },
   }),
   async c => {
     try {
       const { name } = c.req.valid("param");
-      const { source, dbtEnvironment, dbtDefer, refresh } = c.req.valid("json");
+      const {
+        source,
+        dbtEnvironment,
+        dbtDefer,
+        refresh,
+        async: asyncBuild,
+      } = c.req.valid("json");
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const writer = await loadProject(c, { write: true });
-      const result = await devBuildAppBinding({
+      const request = {
         project: loaded.project,
         name,
         actorId: loaded.userId ?? "api-key",
@@ -1825,7 +1872,27 @@ appsRoutes.openapi(
         dbtEnvironment,
         dbtDefer,
         refresh,
-      });
+      };
+      // Refusals and a stored artifact answer at once either way; only an
+      // actual build is handed to a job when the caller can poll for it.
+      const plan = await planDevBuild(request);
+      if (plan.kind === "build" && asyncBuild) {
+        const job = await enqueueBindingJob({
+          workspaceId: loaded.project.workspaceId.toString(),
+          projectId: loaded.project._id.toString(),
+          name,
+          kind: "dev-build",
+          actorId: request.actorId,
+          userId: request.userId,
+          canWrite: request.canWrite,
+          request: { source, dbtEnvironment, dbtDefer, refresh },
+        });
+        return c.json(
+          { success: true as const, ...serializeBindingJob(job) },
+          202,
+        );
+      }
+      const result = plan.kind === "build" ? await plan.run() : plan;
       if (result.kind === "artifact") {
         const response = await serveParquetArtifact(
           getDashboardArtifactStore(),
@@ -1872,6 +1939,108 @@ appsRoutes.openapi(
             : undefined,
         );
       }
+      return handleError(c, error);
+    }
+  },
+);
+
+const BindingJobParam = ProjectParam.extend({
+  jobId: z.string().openapi({ param: { name: "jobId", in: "path" } }),
+});
+
+/** The caller's job on this app, or an error response. */
+async function loadBindingJob(
+  c: AuthenticatedContext,
+  jobId: string,
+): Promise<{ job: BindingJobDoc } | { errorResponse: Response }> {
+  const loaded = await loadProject(c, { write: false });
+  if ("errorResponse" in loaded) return loaded;
+  const job = await getBindingJob(loaded.project._id.toString(), jobId);
+  // Another member's job is as good as missing: a draft job's result is
+  // their uncommitted SQL.
+  if (!job || job.actorId !== (loaded.userId ?? "api-key")) {
+    return {
+      errorResponse: c.json(
+        { success: false, error: "No such binding job" },
+        404,
+      ),
+    };
+  }
+  return { job };
+}
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/binding-jobs/{jobId}",
+    tags: ["Apps"],
+    summary: "Status of an asynchronous binding build",
+    description:
+      "`queued` → `running` → `ready` (fetch `…/artifact`) or `error` " +
+      "(`error`, and `errorStatus`: what the synchronous call would have " +
+      "answered). Jobs are kept for an hour.",
+    security: AUTH_SECURITY,
+    request: { params: BindingJobParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { jobId } = c.req.valid("param");
+      const loaded = await loadBindingJob(c, jobId);
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      return c.json(
+        { success: true as const, ...serializeBindingJob(loaded.job) },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/binding-jobs/{jobId}/artifact",
+    tags: ["Apps"],
+    summary: "The parquet an asynchronous binding build produced",
+    security: AUTH_SECURITY,
+    request: { params: BindingJobParam },
+    responses: {
+      ...OPEN_RESPONSES,
+      302: { description: "Redirect to a short-lived signed artifact URL" },
+    },
+  }),
+  async c => {
+    try {
+      const { jobId } = c.req.valid("param");
+      const loaded = await loadBindingJob(c, jobId);
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { job } = loaded;
+      if (job.status !== "ready" || !job.result) {
+        return c.json(
+          {
+            success: false,
+            error: `Binding job is ${job.status}`,
+            status: job.status,
+          },
+          409,
+        );
+      }
+      const response = await serveParquetArtifact(
+        getDashboardArtifactStore(),
+        job.result.artifactKey,
+        {
+          cacheControl: "no-store",
+          extraHeaders: { "x-mako-build": job.result.build },
+        },
+      );
+      if (response) return response;
+      return c.json(
+        { success: false, error: "The build's artifact is gone" },
+        404,
+      );
+    } catch (error) {
       return handleError(c, error);
     }
   },

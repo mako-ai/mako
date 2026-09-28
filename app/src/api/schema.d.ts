@@ -4154,7 +4154,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Materialize a data binding (bindings-as-files) to parquet */
+        /**
+         * Materialize a data binding (bindings-as-files) to parquet
+         * @description Synchronous by default. With `?async=1` it answers 202 with a `jobId` at once and builds in the background — for builds longer than the edge's 100 s request limit; poll `GET …/binding-jobs/{jobId}`.
+         */
         post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_materialize"];
         delete?: never;
         options?: never;
@@ -4173,9 +4176,46 @@ export interface paths {
         put?: never;
         /**
          * Build a binding from local (uncommitted) SQL for `vite dev`
-         * @description The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is a draft: built and streamed back, reused for 30 minutes (same connection + rendered SQL) unless `refresh`, never stored as the app's artifact, so published viewers never see it. A draft that keeps failing answers 503 with Retry-After instead of re-running. May redirect to a short-lived signed artifact URL; follow redirects.
+         * @description The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is a draft: built and streamed back, reused for 30 minutes (same connection + rendered SQL) unless `refresh`, never stored as the app's artifact, so published viewers never see it. A draft that keeps failing answers 503 with Retry-After instead of re-running. May redirect to a short-lived signed artifact URL; follow redirects. With `async: true`, a build (not a stored artifact) answers 202 with a `jobId` to poll at `GET …/binding-jobs/{jobId}` instead.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Status of an asynchronous binding build
+         * @description `queued` → `running` → `ready` (fetch `…/artifact`) or `error` (`error`, and `errorStatus`: what the synchronous call would have answered). Jobs are kept for an hour.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The parquet an asynchronous binding build produced */
+        get: operations["get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId_artifact"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -19756,7 +19796,9 @@ export interface operations {
     };
     post_api_workspaces_workspaceId_apps_id_bindings_name_materialize: {
         parameters: {
-            query?: never;
+            query?: {
+                async?: "0" | "1" | "true" | "false";
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -19814,9 +19856,101 @@ export interface operations {
                     dbtEnvironment?: string;
                     dbtDefer?: boolean;
                     refresh?: boolean;
+                    async?: boolean;
                 };
             };
         };
+        responses: {
+            /** @description Redirect to a short-lived signed artifact URL */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId_artifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Redirect to a short-lived signed artifact URL */
             302: {

@@ -23,6 +23,10 @@ import {
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
 import {
+  appsBindingJobFunction,
+  appsBindingJobSweeperFunction,
+} from "./functions/apps-binding-job";
+import {
   appsDeployFunction,
   appsDeployReconcileFunction,
 } from "./functions/apps-deploy";
@@ -57,6 +61,7 @@ const baseFunctions = [
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
+  appsBindingJobFunction,
   appsDeployFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
@@ -101,6 +106,7 @@ export function getFunctions() {
         cdcScheduledBackfillFunction,
         dashboardSchedulerFunction,
         appsBindingSchedulerFunction,
+        appsBindingJobSweeperFunction,
         appsDeployReconcileFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
@@ -151,6 +157,8 @@ export {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
+  appsBindingJobFunction,
+  appsBindingJobSweeperFunction,
   appsBindingSchedulerFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,

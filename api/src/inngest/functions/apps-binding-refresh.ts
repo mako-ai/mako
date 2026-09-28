@@ -35,6 +35,8 @@ import {
 } from "../../apps/bindings.service";
 import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
 
+import { APPS_BINDING_BUILD_CONCURRENCY } from "./apps-binding-concurrency";
+
 const log = loggers.inngest();
 
 export const APPS_BINDING_MATERIALIZE_EVENT = "apps/binding.materialize";
@@ -189,12 +191,9 @@ export const appsBindingMaterializeFunction = inngest.createFunction(
   {
     id: "apps-binding-materialize",
     name: "Materialize Apps Data Binding",
-    concurrency: [
-      // A workspace's warehouse sees at most this many builds at once.
-      { scope: "fn", key: "event.data.workspaceId", limit: 4 },
-      // Never two builds of the same binding at once.
-      { scope: "fn", key: "event.data.key", limit: 1 },
-    ],
+    // A workspace's warehouse sees at most 4 builds at once and a binding is
+    // never built twice concurrently — shared with on-demand async builds.
+    concurrency: APPS_BINDING_BUILD_CONCURRENCY,
     // materializeAppBinding records the failure in the binding's state and
     // the next due check backs off from it; retrying here would re-run a
     // broken warehouse query for nothing.

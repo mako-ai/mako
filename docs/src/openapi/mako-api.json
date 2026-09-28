@@ -26380,6 +26380,7 @@
           "Apps"
         ],
         "summary": "Materialize a data binding (bindings-as-files) to parquet",
+        "description": "Synchronous by default. With `?async=1` it answers 202 with a `jobId` at once and builds in the background — for builds longer than the edge's 100 s request limit; poll `GET …/binding-jobs/{jobId}`.",
         "security": [
           {
             "cookieAuth": []
@@ -26412,6 +26413,20 @@
             "required": true,
             "name": "name",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1",
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "async",
+            "in": "query"
           }
         ],
         "responses": {
@@ -26465,7 +26480,7 @@
           "Apps"
         ],
         "summary": "Build a binding from local (uncommitted) SQL for `vite dev`",
-        "description": "The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is a draft: built and streamed back, reused for 30 minutes (same connection + rendered SQL) unless `refresh`, never stored as the app's artifact, so published viewers never see it. A draft that keeps failing answers 503 with Retry-After instead of re-running. May redirect to a short-lived signed artifact URL; follow redirects.",
+        "description": "The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is a draft: built and streamed back, reused for 30 minutes (same connection + rendered SQL) unless `refresh`, never stored as the app's artifact, so published viewers never see it. A draft that keeps failing answers 503 with Retry-After instead of re-running. May redirect to a short-lived signed artifact URL; follow redirects. With `async: true`, a build (not a stored artifact) answers 202 with a `jobId` to poll at `GET …/binding-jobs/{jobId}` instead.",
         "security": [
           {
             "cookieAuth": []
@@ -26522,6 +26537,9 @@
                   },
                   "refresh": {
                     "type": "boolean"
+                  },
+                  "async": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -26577,6 +26595,180 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Status of an asynchronous binding build",
+        "description": "`queued` → `running` → `ready` (fetch `…/artifact`) or `error` (`error`, and `errorStatus`: what the synchronous call would have answered). Jobs are kept for an hour.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "jobId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}/artifact": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "The parquet an asynchronous binding build produced",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "jobId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to a short-lived signed artifact URL"
+          },
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId_artifact"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}/git/commit": {

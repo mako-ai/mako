@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { bindingFingerprint, makoData, normalizeBindingSource, resolveMakoContext } from "./vite.js";
+// Hermetic: never read the developer's real ~/.mako/credentials.json (a
+// `mako login` on this machine would make "no credentials" tests connect).
+// Set before the module loads — the path is resolved at import.
+process.env.MAKO_CREDENTIALS_FILE = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-creds-")),
+  "credentials.json",
+);
+const { bindingFingerprint, makoData, normalizeBindingSource, resolveMakoContext } = await import("./vite.js");
 
 function repo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-test-"));
@@ -86,7 +93,7 @@ test("an API without dev builds: committed artifact, materialized on 404, cached
   let artifactMissing = true;
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), method: init.method ?? "GET", auth: init.headers?.authorization });
-    if (String(url).endsWith("/materialize")) { artifactMissing = false; return new Response("{}", { status: 200 }); }
+    if (String(url).includes("/materialize")) { artifactMissing = false; return new Response("{}", { status: 200 }); }
     // An older API answers the unknown dev-build route with its JSON
     // not-found handler (api/src/index.ts app.notFound).
     if (String(url).endsWith("/dev-build")) {
@@ -109,7 +116,7 @@ test("an API without dev builds: committed artifact, materialized on 404, cached
     assert.deepEqual(calls.map(c => c.method + " " + c.url.split("/apps/")[1]), [
       "POST my-app/bindings/sales/dev-build",
       "GET my-app/bindings/sales/artifact",
-      "POST my-app/bindings/sales/materialize",
+      "POST my-app/bindings/sales/materialize?async=1",
       "GET my-app/bindings/sales/artifact",
     ]);
     assert.ok(calls.every(c => c.auth === "Bearer k-1"));
@@ -156,7 +163,7 @@ test("parquet: built from the LOCAL binding text, cached by that text", async ()
     assert.equal(r1.headers["x-mako-data"], "api");
     assert.equal(r1.body.toString(), "PAR1:select 1");
     assert.equal(calls[0].method + " " + calls[0].url.split("/apps/")[1], "POST my-app/bindings/sales/dev-build");
-    assert.deepEqual(calls[0].body, { source: "select 1" });
+    assert.deepEqual(calls[0].body, { source: "select 1", async: true });
 
     const r2 = await request(handlers[0], "/__data/sales.parquet");
     assert.equal(r2.headers["x-mako-data"], "cache");
@@ -168,7 +175,7 @@ test("parquet: built from the LOCAL binding text, cached by that text", async ()
     assert.equal(r3.headers["x-mako-data"], "api");
     assert.equal(r3.body.toString(), "PAR1:select 1 as connected");
     assert.equal(calls.length, 2);
-    assert.deepEqual(calls[1].body, { source: "select 1 as connected" });
+    assert.deepEqual(calls[1].body, { source: "select 1 as connected", async: true });
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -236,14 +243,14 @@ test("dbtEnvironment (option or MAKO_DBT_ENV) is sent and keys the cache", async
     makoData({ revalidateMs: Infinity }).configureServer(server);
     assert.match(logs.info[0], /dbt environment "joan"/);
     await request(handlers[0], "/__data/sales.parquet");
-    assert.deepEqual(calls[0].body, { source: "select 1", dbtEnvironment: "joan" });
+    assert.deepEqual(calls[0].body, { source: "select 1", dbtEnvironment: "joan", async: true });
 
     // Same text, another environment: not the same data.
     const other = fakeServer(app);
     makoData({ revalidateMs: Infinity, dbtEnvironment: "prod" }).configureServer(other.server);
     const r = await request(other.handlers[0], "/__data/sales.parquet");
     assert.equal(r.headers["x-mako-data"], "api");
-    assert.deepEqual(calls[1].body, { source: "select 1", dbtEnvironment: "prod" });
+    assert.deepEqual(calls[1].body, { source: "select 1", dbtEnvironment: "prod", async: true });
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -313,7 +320,165 @@ test("refresh against an older API (JSON 404) falls back to materialize", async 
     const r = await request(handlers[0], "/__data/sales/refresh", "POST");
     assert.equal(r.status, 200);
     assert.equal(JSON.parse(r.body.toString()).rowCount, 7);
-    assert.deepEqual(calls, ["POST my-app/bindings/sales/dev-build", "POST my-app/bindings/sales/materialize"]);
+    assert.deepEqual(calls, ["POST my-app/bindings/sales/dev-build", "POST my-app/bindings/sales/materialize?async=1"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// A fake API that answers dev-build with a job (202) and makes the caller
+// poll it `pending` times before it is ready.
+function jobApi(calls, { pending = 2, fail } = {}) {
+  let polls = 0;
+  return async (url, init = {}) => {
+    const u = String(url);
+    calls.push((init.method ?? "GET") + " " + u.split("/apps/")[1]);
+    if (u.endsWith("/dev-build") || u.includes("/materialize")) {
+      return new Response(JSON.stringify({ success: true, jobId: "j1", status: "queued" }), { status: 202 });
+    }
+    if (u.endsWith("/binding-jobs/j1")) {
+      polls++;
+      if (polls <= pending) return new Response(JSON.stringify({ success: true, jobId: "j1", status: "running" }));
+      if (fail) {
+        return new Response(
+          JSON.stringify({ success: true, jobId: "j1", status: "error", error: fail, errorStatus: 502 }),
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          success: true,
+          jobId: "j1",
+          status: "ready",
+          build: "draft",
+          rowCount: 12,
+          byteSize: 9,
+          materializedAt: "2026-09-28T11:00:00.000Z",
+        }),
+      );
+    }
+    if (u.endsWith("/binding-jobs/j1/artifact")) return new Response(Buffer.from("PAR1:job"));
+    return new Response("unexpected", { status: 500 });
+  };
+}
+
+test("a long build answered with a job (202) is polled until ready, then fetched", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi(calls);
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r.status, 200);
+    assert.equal(r.body.toString(), "PAR1:job");
+    assert.deepEqual(calls, [
+      "POST my-app/bindings/sales/dev-build",
+      "GET my-app/binding-jobs/j1",
+      "GET my-app/binding-jobs/j1",
+      "GET my-app/binding-jobs/j1",
+      "GET my-app/binding-jobs/j1/artifact",
+    ]);
+    const meta = JSON.parse(fs.readFileSync(path.join(app, "node_modules", ".mako-data", "sales.parquet.json"), "utf8"));
+    assert.equal(meta.build, "draft");
+    assert.equal(meta.rowCount, 12);
+
+    // refresh() over a job reports the job's numbers.
+    const refreshed = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(refreshed.status, 200);
+    assert.equal(JSON.parse(refreshed.body.toString()).materializedAt, "2026-09-28T11:00:00.000Z");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a failed job relays its error and status", async () => {
+  const { app } = repo();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi([], { pending: 0, fail: "Query exceeded resource limits" });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 502);
+    assert.equal(JSON.parse(r.body.toString()).error, "Query exceeded resource limits");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("transient poll failures (network, 429, 5xx, 524) are retried; a 404 ends the wait", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  const jobs = jobApi(calls, { pending: 0 });
+  const hiccups = [
+    () => { throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } }); },
+    () => new Response("{}", { status: 524 }),
+    () => new Response("{}", { status: 429 }),
+    () => new Response("{}", { status: 503 }),
+  ];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith("/binding-jobs/j1") && hiccups.length) return hiccups.shift()();
+    return jobs(url, init);
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r.status, 200);
+    assert.equal(r.body.toString(), "PAR1:job");
+    assert.equal(hiccups.length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith("/binding-jobs/j1")) {
+      return new Response(JSON.stringify({ success: false, error: "No such binding job" }), { status: 404 });
+    }
+    return jobApi([])(url, init);
+  };
+  try {
+    const { app: app2 } = repo();
+    const { server, handlers } = fakeServer(app2);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 404);
+    assert.equal(JSON.parse(r.body.toString()).error, "No such binding job");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("materialize answered with a job is polled (committed artifacts path)", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  const jobs = jobApi(calls, { pending: 1 });
+  let built = false;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/bindings/sales/artifact")) {
+      calls.push("GET " + u.split("/apps/")[1]);
+      return built ? new Response(Buffer.from("PAR1committed")) : new Response("{}", { status: 404 });
+    }
+    const r = await jobs(url, init);
+    if (u.endsWith("/binding-jobs/j1") && (await r.clone().json()).status === "ready") built = true;
+    return r;
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ materialize: false, pollIntervalMs: 1 }).configureServer(server);
+    // materialize: false skips dev builds, so refresh() goes to materialize.
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 200);
+    assert.equal(JSON.parse(r.body.toString()).rowCount, 12);
+    assert.deepEqual(calls, [
+      "POST my-app/bindings/sales/materialize?async=1",
+      "GET my-app/binding-jobs/j1",
+      "GET my-app/binding-jobs/j1",
+    ]);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -361,7 +526,7 @@ test("POST __data/<name>/refresh rebuilds the local text through the API and cac
       byteSize: Buffer.byteLength("PAR1:select 1"),
       materializedAt: "2026-09-28T10:00:00.000Z",
     });
-    assert.deepEqual(calls[1].body, { source: "select 1", refresh: true });
+    assert.deepEqual(calls[1].body, { source: "select 1", refresh: true, async: true });
     // The rebuilt parquet is what the next read serves, from the cache.
     const next = await request(handlers[0], "/__data/sales.parquet");
     assert.equal(next.headers["x-mako-data"], "cache");
