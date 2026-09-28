@@ -49,7 +49,7 @@ function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
       return { binding, connection };
     }),
     committedBinding: vi.fn(async () => committedBinding),
-    render: vi.fn(async (_p, binding, environment) =>
+    render: vi.fn(async (_p, binding, _connection, environment) =>
       binding.code.replace(
         "{{ dbt_schema }}",
         environment ? `dbt_${environment.name}` : "dbt_prod",
@@ -136,10 +136,13 @@ describe("devBuildAppBinding", () => {
       d,
     );
     expect(result.kind).toBe("draft");
-    expect(d.render).toHaveBeenCalledWith(project, expect.anything(), {
-      name: "joan",
-      userId: "u1",
-    });
+    // Defer to prod is the default with an environment.
+    expect(d.render).toHaveBeenCalledWith(
+      project,
+      expect.anything(),
+      connection,
+      { name: "joan", userId: "u1", defer: true },
+    );
     expect(d.build).toHaveBeenCalledWith(
       project,
       expect.anything(),
@@ -148,6 +151,20 @@ describe("devBuildAppBinding", () => {
     );
     // A personal schema must never reach the app's stored artifact.
     expect(d.materialize).not.toHaveBeenCalled();
+  });
+
+  it("passes dbtDefer: false through as an opt-out", async () => {
+    const d = deps();
+    await devBuildAppBinding(
+      input({ dbtEnvironment: "joan", dbtDefer: false }),
+      d,
+    );
+    expect(d.render).toHaveBeenCalledWith(
+      project,
+      expect.anything(),
+      connection,
+      { name: "joan", userId: "u1", defer: false },
+    );
   });
 
   it("treats an environment that renders like prod as the committed binding", async () => {

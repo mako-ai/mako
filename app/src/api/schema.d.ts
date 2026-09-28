@@ -4173,7 +4173,7 @@ export interface paths {
         put?: never;
         /**
          * Build a binding from local (uncommitted) SQL for `vite dev`
-         * @description The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment — is built, streamed back and never stored, so published viewers never see it. May redirect to a short-lived signed artifact URL; follow redirects.
+         * @description The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is built, streamed back and never stored, so published viewers never see it. May redirect to a short-lived signed artifact URL; follow redirects.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"];
         delete?: never;
@@ -19812,6 +19812,7 @@ export interface operations {
                 "application/json": {
                     source: string;
                     dbtEnvironment?: string;
+                    dbtDefer?: boolean;
                     refresh?: boolean;
                 };
             };

@@ -29,6 +29,11 @@ import {
 } from "../database/workspace-schema";
 import { getUserDisplayName } from "../services/entity-version.service";
 import { isWarehouseWriteCommand, type ParsedDbtCommand } from "./commands";
+import {
+  dbtSchemaReferences,
+  renderDbtSchemaWithDefer,
+  type DevRelationLister,
+} from "./dbt-defer";
 
 type ProjectEnvFields = Pick<
   IDbtProject,
@@ -327,7 +332,17 @@ export async function resolveDbtBoundCode(params: {
    * never stored as an app's artifact. `userId` is the caller: a personal
    * environment renders only for its owner.
    */
-  environment?: { name: string; userId?: string };
+  environment?: {
+    name: string;
+    userId?: string;
+    /**
+     * Defer to prod per relation (`dbt --defer`): a reference whose relation
+     * the dev schema lacks renders to the prod-like schema. Given only when
+     * deferring; returns null when existence cannot be told (then every
+     * reference renders to dev, as without defer).
+     */
+    listDevRelations?: DevRelationLister;
+  };
 }): Promise<string> {
   if (!params.dbtProjectId || !containsDbtSchemaToken(params.code)) {
     return params.code;
@@ -338,7 +353,7 @@ export async function resolveDbtBoundCode(params: {
           _id: new Types.ObjectId(params.dbtProjectId),
           workspaceId: new Types.ObjectId(params.workspaceId.toString()),
         })
-          .select("environments")
+          .select("environments defaultEnvironment prodEnvironment")
           .lean()
       : null;
     if (!project) {
@@ -351,7 +366,25 @@ export async function resolveDbtBoundCode(params: {
       params.environment.name,
       params.environment.userId,
     );
-    return resolveDbtSchemaToken(params.code, schema);
+    const prodSchema = project.environments.find(
+      env => env.name === resolveProdLikeEnvironmentName(project),
+    )?.targetSchema;
+    if (
+      !params.environment.listDevRelations ||
+      !prodSchema ||
+      prodSchema === schema
+    ) {
+      return resolveDbtSchemaToken(params.code, schema);
+    }
+    const devRelations = await params.environment.listDevRelations(
+      schema,
+      dbtSchemaReferences(params.code),
+    );
+    return renderDbtSchemaWithDefer(params.code, {
+      devSchema: schema,
+      prodSchema,
+      devRelations,
+    }).code;
   }
   const resolved = await resolveDbtSchemaForBinding({
     workspaceId: params.workspaceId,

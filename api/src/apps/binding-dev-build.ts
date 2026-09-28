@@ -41,6 +41,7 @@ import {
   type AppBinding,
 } from "./bindings.service";
 import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
+import { devRelationListerFor } from "../dbt/dbt-defer";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { loggers } from "../logging";
 
@@ -61,6 +62,12 @@ export interface DevBuildInput {
   source: string;
   /** Render `{{ dbt_schema }}` against this dbt environment instead of prod. */
   dbtEnvironment?: string;
+  /**
+   * With `dbtEnvironment`: relations the environment has not built render
+   * to prod (`dbt --defer`). Default true; false renders every reference to
+   * the environment.
+   */
+  dbtDefer?: boolean;
   /** Rebuild even when a stored artifact would answer. */
   refresh?: boolean;
 }
@@ -108,10 +115,12 @@ export interface DevBuildDeps {
     name: string,
     actorId: string,
   ) => Promise<AppBinding | null>;
+  /** binding.code with `{{ dbt_schema }}` rendered (prod without `environment`). */
   render: (
     project: IAppProject,
     binding: AppBinding,
-    environment?: { name: string; userId?: string },
+    connection: IDatabaseConnection,
+    environment?: { name: string; userId?: string; defer: boolean },
   ) => Promise<string>;
   artifactExists: (key: string) => Promise<boolean>;
   /** Materialize exactly `resolved` — never a re-read of the repo. */
@@ -136,12 +145,18 @@ export interface DevBuildDeps {
 const defaultDeps: DevBuildDeps = {
   resolveDraft: resolveDraftBinding,
   committedBinding: readCommittedBinding,
-  render: (project, binding, environment) =>
+  render: (project, binding, connection, environment) =>
     resolveDbtBoundCode({
       workspaceId: project.workspaceId,
       dbtProjectId: binding.dbtProjectId,
       code: binding.code,
-      environment,
+      environment: environment && {
+        name: environment.name,
+        userId: environment.userId,
+        listDevRelations: environment.defer
+          ? devRelationListerFor(connection)
+          : undefined,
+      },
     }),
   artifactExists: key => getDashboardArtifactStore().exists(key),
   materialize: (project, resolved, actorId) =>
@@ -175,8 +190,13 @@ export async function devBuildAppBinding(
     code = await deps.render(
       project,
       draft.binding,
+      draft.connection,
       input.dbtEnvironment
-        ? { name: input.dbtEnvironment, userId: input.userId }
+        ? {
+            name: input.dbtEnvironment,
+            userId: input.userId,
+            defer: input.dbtDefer !== false,
+          }
         : undefined,
     );
     // A dev environment that renders to the same SQL as prod (it IS the
@@ -185,7 +205,9 @@ export async function devBuildAppBinding(
     asPublished =
       !input.dbtEnvironment ||
       code ===
-        (await deps.render(project, draft.binding).catch(() => undefined));
+        (await deps
+          .render(project, draft.binding, draft.connection)
+          .catch(() => undefined));
   } catch (error) {
     // No connection, a connection outside this workspace, an unknown or
     // someone else's dbt environment: the request is wrong, nothing ran.
