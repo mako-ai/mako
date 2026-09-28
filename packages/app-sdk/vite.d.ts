@@ -31,6 +31,14 @@ export interface MakoDataOptions {
    */
   dbtEnvironment?: string;
   /**
+   * A build longer than the API answers synchronously comes back as a job;
+   * the plugin polls it starting at this interval (ms, backing off to 5×).
+   * Default: 1000.
+   */
+  pollIntervalMs?: number;
+  /** Give up waiting for one build after this long (ms). Default: 30 minutes. */
+  buildTimeoutMs?: number;
+  /**
    * Preview the app as this member (an email): `__data/viewer.json` answers
    * as Mako would for them. Default: MAKO_VIEWER_AS, else yourself.
    */

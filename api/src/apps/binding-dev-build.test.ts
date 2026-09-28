@@ -27,6 +27,7 @@ import { draftHash } from "./binding-draft-cache";
 import {
   DevBuildError,
   devBuildAppBinding,
+  planDevBuild,
   type DevBuildDeps,
   type DevBuildInput,
 } from "./binding-dev-build";
@@ -454,6 +455,25 @@ describe("devBuildAppBinding", () => {
       message: /failed 2 time\(s\).*Unrecognized name/,
     });
     expect(d.build).not.toHaveBeenCalled();
+  });
+
+  it("planDevBuild decides without running the query (the async path)", async () => {
+    const d = deps();
+    const plan = await planDevBuild(
+      input({ source: `${COMMITTED}\nwhere connected` }),
+      d,
+    );
+    expect(plan.kind).toBe("build");
+    expect(d.build).not.toHaveBeenCalled();
+    expect(d.materialize).not.toHaveBeenCalled();
+    if (plan.kind === "build") {
+      expect((await plan.run()).kind).toBe("draft");
+      expect(d.build).toHaveBeenCalledTimes(1);
+    }
+    // Refusals happen at planning time, before any job would be queued.
+    await expect(
+      planDevBuild(input({ canWrite: false, source: `${COMMITTED} x` }), d),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it("reports a failed query as a 502 with its message", async () => {

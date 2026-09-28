@@ -22,6 +22,7 @@ import {
   appsBindingMaterializeFunction,
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
+import { appsBindingJobFunction } from "./functions/apps-binding-job";
 import {
   appsDeployFunction,
   appsDeployReconcileFunction,
@@ -57,6 +58,7 @@ const baseFunctions = [
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
+  appsBindingJobFunction,
   appsDeployFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
@@ -151,6 +153,7 @@ export {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
+  appsBindingJobFunction,
   appsBindingSchedulerFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,

@@ -53,6 +53,14 @@ const BINDING_ROUTES: ReadonlyArray<{
       /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/dev-build\/?$/,
     scope: "query:read",
   },
+  // Polling an asynchronous build (`?async=1` / `async: true` above) and
+  // fetching what it produced.
+  {
+    method: "GET",
+    pattern:
+      /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/binding-jobs\/[^/]+(\/artifact)?\/?$/,
+    scope: "query:read",
+  },
   // `__data/viewer.json` on a laptop: the Vite plugin asks who the login
   // belongs to with the same token it reads bindings with (apps.md §28).
   {

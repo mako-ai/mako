@@ -106,6 +106,8 @@ export type DevBuildResult =
       kind: "materialized" | "draft";
       /** Local temp file; the caller streams it and deletes it. */
       filePath: string;
+      /** "materialized" only: where the committed build was stored. */
+      artifactKey?: string;
       rowCount: number;
       byteSize: number;
       builtAt: Date;
@@ -155,6 +157,7 @@ export interface DevBuildDeps {
     resolved: { binding: AppBinding; connection: IDatabaseConnection },
     actorId: string,
   ) => Promise<{
+    artifactKey?: string;
     rowCount: number;
     byteSize: number;
     materializedAt: Date;
@@ -226,10 +229,32 @@ const defaultDeps: DevBuildDeps = {
   },
 };
 
+/**
+ * What a dev build will do, decided without running a query: answer from a
+ * stored artifact, or build (`run`). Everything that can be refused (bad
+ * input, no access, a draft cooling down after failures) is refused here, so
+ * a caller that runs the build later — the async path (binding-jobs.ts) —
+ * rejects the same requests up front.
+ */
+export type DevBuildPlan =
+  | Extract<DevBuildResult, { kind: "artifact" }>
+  | {
+      kind: "build";
+      run: () => Promise<Exclude<DevBuildResult, { kind: "artifact" }>>;
+    };
+
 export async function devBuildAppBinding(
   input: DevBuildInput,
   deps: DevBuildDeps = defaultDeps,
 ): Promise<DevBuildResult> {
+  const plan = await planDevBuild(input, deps);
+  return plan.kind === "build" ? plan.run() : plan;
+}
+
+export async function planDevBuild(
+  input: DevBuildInput,
+  deps: DevBuildDeps = defaultDeps,
+): Promise<DevBuildPlan> {
   const { project, name, actorId } = input;
   if (!NAME_RE.test(name)) {
     throw new DevBuildError("Invalid binding name", 400);
@@ -342,65 +367,72 @@ export async function devBuildAppBinding(
     }
   }
 
-  try {
-    if (isCommitted && committed) {
-      const result = await deps.materialize(
-        project,
-        { binding: committed, connection: draft.connection },
-        actorId,
-      );
-      if (!result.filePath) throw new Error("Materialize kept no file");
-      return {
-        kind: "materialized",
-        filePath: result.filePath,
-        rowCount: result.rowCount,
-        byteSize: result.byteSize,
-        builtAt: result.materializedAt,
-      };
-    }
-    let built: { filePath: string; rowCount: number; byteSize: number };
+  return { kind: "build", run: () => runDevBuild() };
+
+  async function runDevBuild(): Promise<
+    Exclude<DevBuildResult, { kind: "artifact" }>
+  > {
     try {
-      built = await deps.build(
-        project,
-        draft.binding,
-        draft.connection,
-        rendered.code,
-      );
-    } catch (error) {
-      await deps.drafts
-        .failed({
+      if (isCommitted && committed) {
+        const result = await deps.materialize(
+          project,
+          { binding: committed, connection: draft.connection },
+          actorId,
+        );
+        if (!result.filePath) throw new Error("Materialize kept no file");
+        return {
+          kind: "materialized",
+          filePath: result.filePath,
+          artifactKey: result.artifactKey,
+          rowCount: result.rowCount,
+          byteSize: result.byteSize,
+          builtAt: result.materializedAt,
+        };
+      }
+      let built: { filePath: string; rowCount: number; byteSize: number };
+      try {
+        built = await deps.build(
+          project,
+          draft.binding,
+          draft.connection,
+          rendered.code,
+        );
+      } catch (error) {
+        await deps.drafts
+          .failed({
+            projectId,
+            name,
+            hash,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          .catch(() => undefined);
+        throw error;
+      }
+      try {
+        await deps.drafts.built({ projectId, name, hash, ...built });
+      } catch (error) {
+        // Not keeping it only costs the next request a rebuild.
+        logger.warn("Could not keep draft build", {
           projectId,
-          name,
-          hash,
+          binding: name,
           error: error instanceof Error ? error.message : String(error),
-        })
-        .catch(() => undefined);
-      throw error;
-    }
-    try {
-      await deps.drafts.built({ projectId, name, hash, ...built });
-    } catch (error) {
-      // Not keeping it only costs the next request a rebuild.
-      logger.warn("Could not keep draft build", {
-        projectId,
+        });
+      }
+      logger.info("Apps binding dev build", {
+        projectId: project._id.toString(),
         binding: name,
-        error: error instanceof Error ? error.message : String(error),
+        rowCount: built.rowCount,
+        dbtEnvironment: input.dbtEnvironment,
       });
+      return { kind: "draft", ...built, builtAt: new Date() };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("Apps binding dev build failed", {
+        projectId: project._id.toString(),
+        binding: name,
+        error: message,
+      });
+      throw new DevBuildError(message, 502);
     }
-    logger.info("Apps binding dev build", {
-      projectId: project._id.toString(),
-      binding: name,
-      rowCount: built.rowCount,
-      dbtEnvironment: input.dbtEnvironment,
-    });
-    return { kind: "draft", ...built, builtAt: new Date() };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn("Apps binding dev build failed", {
-      projectId: project._id.toString(),
-      binding: name,
-      error: message,
-    });
-    throw new DevBuildError(message, 502);
   }
 }

@@ -107,6 +107,11 @@ published viewer, ever sees uncommitted SQL. Building needs edit access to the
 app; read-only members get committed artifacts. `POST __data/<name>/refresh`
 (the SDK's `refresh()`) rebuilds from the local text on demand.
 
+Builds run as jobs: the plugin asks for one (`async`), gets a job id back at
+once, and polls it until the parquet is ready — so a query that runs for
+minutes is waited for instead of failing when a proxy cuts the request at
+100 s. `pollIntervalMs` / `buildTimeoutMs` tune the wait (1 s, 30 min).
+
 Results are cached under `node_modules/.mako-data/` for five minutes
 (`revalidateMs`; `?refresh` bypasses), next to a fingerprint of the text they
 were built from: after an edit the cache is never served, however long

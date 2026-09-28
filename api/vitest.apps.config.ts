@@ -31,6 +31,8 @@ export default defineConfig({
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
+      // Asynchronous binding builds (202 + poll): job rows in real Mongo.
+      "src/apps/binding-jobs.test.ts",
       // The laptop dev loop: uncommitted binding text built as a draft.
       "src/apps/binding-dev-build.test.ts",
       // Draft reuse + failure backoff: real Mongo, filesystem artifact store.

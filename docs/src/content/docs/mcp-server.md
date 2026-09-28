@@ -163,7 +163,10 @@ place MCP credentials — OAuth tokens and scoped keys alike — are accepted
 outside `/api/mcp`: with `query:read` they may call the read-only binding
 routes (`GET …/bindings`, `GET …/bindings/<name>/artifact`,
 `POST …/bindings/<name>/materialize`, `POST …/bindings/<name>/dev-build`,
-`GET …/viewer`) and nothing else — except `mako dbt`, below.
+`GET …/binding-jobs/<jobId>[/artifact]`, `GET …/viewer`) and nothing else —
+except `mako dbt`, below. Builds longer than a proxy's request limit run as
+jobs: `?async=1` on materialize (or `"async": true` on dev-build) answers 202
+with a `jobId` to poll; the plugin does this for you.
 
 **dbt from your checkout.** `npx @makoai/cli dbt run -s <selector>` (also
 `build` and `test`; `--full-refresh`, `--no-defer`) runs dbt in Mako's runner
