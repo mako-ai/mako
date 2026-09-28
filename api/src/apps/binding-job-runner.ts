@@ -8,6 +8,8 @@ import { resolveProjectRef } from "./worktree.service";
 import { materializeAppBinding } from "./bindings.service";
 import { DevBuildError, planDevBuild } from "./binding-dev-build";
 import {
+  JOB_HEARTBEAT_MS,
+  heartbeatBindingJob,
   markBindingJob,
   storeJobDraft,
   type BindingJobDoc,
@@ -27,6 +29,8 @@ export interface BindingJobRunnerDeps {
   plan: typeof planDevBuild;
   mark: typeof markBindingJob;
   storeDraft: typeof storeJobDraft;
+  heartbeat: (jobId: string) => Promise<void>;
+  heartbeatMs: number;
 }
 
 const defaultDeps: BindingJobRunnerDeps = {
@@ -36,6 +40,8 @@ const defaultDeps: BindingJobRunnerDeps = {
   plan: planDevBuild,
   mark: markBindingJob,
   storeDraft: storeJobDraft,
+  heartbeat: jobId => heartbeatBindingJob(jobId),
+  heartbeatMs: JOB_HEARTBEAT_MS,
 };
 
 export async function runBindingJob(
@@ -53,6 +59,11 @@ export async function runBindingJob(
     return "error";
   }
   await deps.mark(jobId, { status: "running" });
+  // The lease: while this beats, the stale sweep leaves the job alone; if
+  // the process dies, the beat stops and pollers get a terminal error.
+  const beat = setInterval(() => {
+    deps.heartbeat(jobId).catch(() => undefined);
+  }, deps.heartbeatMs);
   try {
     const result = await build(job, project, deps);
     await deps.mark(jobId, { status: "ready", result });
@@ -72,6 +83,8 @@ export async function runBindingJob(
       errorStatus: error instanceof DevBuildError ? error.status : 502,
     });
     return "error";
+  } finally {
+    clearInterval(beat);
   }
 }
 

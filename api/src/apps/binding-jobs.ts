@@ -24,12 +24,18 @@
 import fs from "node:fs/promises";
 import mongoose, { Schema, Types } from "mongoose";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { loggers } from "../logging";
 
-const logger = loggers.api("apps");
-
-/** A finished job's result stays fetchable this long. */
+/**
+ * A job's row lives this long past its last state change or heartbeat; a
+ * finished job's result stays fetchable that long. Queued and running jobs
+ * are never pruned — only finished ones.
+ */
 export const JOB_TTL_MS = 60 * 60_000;
+
+/** A running job's worker proves it is alive this often… */
+export const JOB_HEARTBEAT_MS = 30_000;
+/** …and a running job silent for longer than this is presumed dead. */
+export const JOB_LEASE_MS = 3 * 60_000;
 
 export type BindingJobKind = "materialize" | "dev-build";
 export type BindingJobStatus = "queued" | "running" | "ready" | "error";
@@ -67,6 +73,8 @@ export interface BindingJobDoc {
   error?: string | null;
   /** HTTP status the synchronous route would have answered the failure with. */
   errorStatus?: number | null;
+  /** Last proof of life from the worker (running jobs). */
+  heartbeatAt?: Date | null;
   expiresAt: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -94,10 +102,13 @@ const AppBindingJob =
         result: { type: Schema.Types.Mixed },
         error: { type: String },
         errorStatus: { type: Number },
+        heartbeatAt: { type: Date },
         expiresAt: { type: Date, required: true },
       },
       { collection: "app_binding_jobs", timestamps: true },
-    ).index({ projectId: 1, expiresAt: 1 }),
+    )
+      .index({ projectId: 1, expiresAt: 1 })
+      .index({ status: 1, heartbeatAt: 1 }),
   );
 
 export function jobDraftKey(projectId: string, jobId: string): string {
@@ -131,8 +142,118 @@ export async function getBindingJob(
     _id: new Types.ObjectId(jobId),
     projectId,
   }).lean()) as BindingJobDoc | null;
-  if (!doc || doc.expiresAt <= now) return null;
-  return doc;
+  if (!doc) return null;
+  // An unfinished job never disappears under its poller.
+  if (isFinished(doc) && doc.expiresAt <= now) return null;
+  return expireIfStale(doc, now);
+}
+
+function isFinished(job: Pick<BindingJobDoc, "status">): boolean {
+  return job.status === "ready" || job.status === "error";
+}
+
+const STALE_ERROR =
+  "The build stopped reporting progress (its worker was restarted or " +
+  "timed out); refresh to try again";
+
+/**
+ * A running job whose worker went silent past the lease is failed, so the
+ * poller gets a terminal answer instead of `running` forever (the worker does
+ * not retry: re-running a warehouse query nobody is waiting for would only
+ * bill it twice). Returns the job as it now stands.
+ */
+export async function expireIfStale(
+  job: BindingJobDoc,
+  now: Date = new Date(),
+): Promise<BindingJobDoc> {
+  if (job.status !== "running") return job;
+  const alive = job.heartbeatAt ?? job.updatedAt ?? job.createdAt;
+  if (alive && now.getTime() - alive.getTime() <= JOB_LEASE_MS) return job;
+  const failed = await failStaleJob(job, now);
+  return failed ?? job;
+}
+
+async function failStaleJob(
+  job: Pick<BindingJobDoc, "_id" | "projectId" | "heartbeatAt">,
+  now: Date,
+): Promise<BindingJobDoc | null> {
+  // Conditional on the heartbeat still being the stale one: a worker that
+  // just checked in keeps its job.
+  const updated = (await AppBindingJob.findOneAndUpdate(
+    {
+      _id: job._id,
+      status: "running",
+      $or: [
+        { heartbeatAt: { $lte: new Date(now.getTime() - JOB_LEASE_MS) } },
+        { heartbeatAt: null },
+      ],
+    },
+    {
+      $set: {
+        status: "error",
+        error: STALE_ERROR,
+        errorStatus: 502,
+        expiresAt: new Date(now.getTime() + JOB_TTL_MS),
+      },
+    },
+    { new: true },
+  ).lean()) as BindingJobDoc | null;
+  if (updated) {
+    // A worker that died between uploading its draft and recording it
+    // leaves the object behind; nothing will ever point at it.
+    await deleteQuietly(jobDraftKey(job.projectId, job._id.toString()));
+  }
+  return updated;
+}
+
+/**
+ * The periodic sweep behind expireIfStale, for jobs nobody is polling any
+ * more. Returns how many were failed.
+ */
+export async function sweepStaleBindingJobs(
+  now: Date = new Date(),
+): Promise<number> {
+  const stale = (await AppBindingJob.find({
+    status: "running",
+    $or: [
+      { heartbeatAt: { $lte: new Date(now.getTime() - JOB_LEASE_MS) } },
+      { heartbeatAt: null },
+    ],
+  })
+    .select("_id projectId heartbeatAt")
+    .limit(500)
+    .lean()) as unknown as Array<
+    Pick<BindingJobDoc, "_id" | "projectId" | "heartbeatAt">
+  >;
+  let failed = 0;
+  for (const job of stale) {
+    if (await failStaleJob(job, now)) failed++;
+  }
+  return failed;
+}
+
+/** The worker is alive: extend the lease (and the row's life). */
+export async function heartbeatBindingJob(
+  jobId: string,
+  now: Date = new Date(),
+): Promise<void> {
+  await AppBindingJob.updateOne(
+    { _id: new Types.ObjectId(jobId), status: "running" },
+    {
+      $set: {
+        heartbeatAt: now,
+        expiresAt: new Date(now.getTime() + JOB_TTL_MS),
+      },
+    },
+  );
+}
+
+async function deleteQuietly(key: string): Promise<void> {
+  try {
+    await getDashboardArtifactStore().delete(key);
+  } catch {
+    // Missing already, or the store is unreachable: the prune retries.
+  }
 }
 
 /** The worker's read: by id alone (the event carries only the id). */
@@ -150,15 +271,16 @@ export async function markBindingJob(
     | { status: "ready"; result: BindingJobResult }
     | { status: "error"; error: string; errorStatus: number },
 ): Promise<void> {
+  const now = new Date();
   await AppBindingJob.updateOne(
     { _id: new Types.ObjectId(jobId) },
     {
       $set: {
         ...update,
-        // The result stays fetchable for a full TTL after it lands.
-        ...(update.status !== "running"
-          ? { expiresAt: new Date(Date.now() + JOB_TTL_MS) }
-          : {}),
+        // Every state change extends the row: a result stays fetchable for
+        // a full TTL after it lands, and a running job starts its lease.
+        expiresAt: new Date(now.getTime() + JOB_TTL_MS),
+        ...(update.status === "running" ? { heartbeatAt: now } : {}),
       },
     },
   );
@@ -202,27 +324,26 @@ export function serializeBindingJob(job: BindingJobDoc) {
 }
 
 async function pruneExpiredJobs(projectId: string, now: Date) {
+  // Finished jobs only: a queued or running job's row is its poller's only
+  // way to the result, and its worker's only place to put one.
   const expired = (await AppBindingJob.find({
     projectId,
+    status: { $in: ["ready", "error"] },
     expiresAt: { $lte: now },
   })
     .select("_id result")
     .limit(200)
     .lean()) as unknown as Array<Pick<BindingJobDoc, "_id" | "result">>;
   if (expired.length === 0) return;
-  const store = getDashboardArtifactStore();
   for (const job of expired) {
+    // The job's own draft object, if it ever wrote one — never the app's
+    // artifact a committed build points at.
+    const own = jobDraftKey(projectId, job._id.toString());
     const key = job.result?.artifactKey;
-    // Only job-owned drafts; a committed build's artifact is the app's.
-    if (!key || !key.startsWith(`apps/jobs/${projectId}/`)) continue;
-    try {
-      await store.delete(key);
-    } catch (error) {
-      logger.warn("Could not delete expired binding job artifact", {
-        key,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    if (key && key !== own && key.startsWith(`apps/jobs/${projectId}/`)) {
+      await deleteQuietly(key);
     }
+    await deleteQuietly(own);
   }
   await AppBindingJob.deleteMany({
     _id: { $in: expired.map(job => job._id) },

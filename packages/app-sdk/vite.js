@@ -212,26 +212,45 @@ export function makoData(options = {}) {
       // without jobs just answers synchronously, which works as before.
       const pollMs = options.pollIntervalMs ?? 1000;
       const buildTimeoutMs = options.buildTimeoutMs ?? 30 * 60 * 1000;
+      // A poll that fails transiently — the network, a 429, a 5xx, the
+      // edge's 524 — is retried with backoff until the overall deadline; only
+      // a definitive 4xx (the job is gone, access was revoked) ends the wait.
+      const isTransient = (status) => status === 429 || status >= 500;
       async function awaitJob(name, jobId) {
         const url = `${appBase()}/binding-jobs/${encodeURIComponent(jobId)}`;
         const deadline = Date.now() + buildTimeoutMs;
         let wait = pollMs;
+        let lastProblem = "";
         for (;;) {
-          const res = await apiFetch(url, { headers: await headers() });
-          const body = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            const error = new Error(body.error || `build ${name}: job HTTP ${res.status}`);
-            error.status = res.status;
-            throw error;
+          let res = null;
+          try {
+            res = await apiFetch(url, { headers: await headers() });
+          } catch (error) {
+            lastProblem = error instanceof Error ? error.message : String(error);
           }
-          if (body.status === "ready") return body;
-          if (body.status === "error") {
-            const error = new Error(body.error || `build ${name} failed`);
-            error.status = body.errorStatus ?? 502;
-            throw error;
+          if (res) {
+            const body = await res.json().catch(() => ({}));
+            if (res.ok) {
+              if (body.status === "ready") return body;
+              if (body.status === "error") {
+                const error = new Error(body.error || `build ${name} failed`);
+                error.status = body.errorStatus ?? 502;
+                throw error;
+              }
+              lastProblem = "";
+            } else if (isTransient(res.status)) {
+              lastProblem = `job HTTP ${res.status}`;
+            } else {
+              const error = new Error(body.error || `build ${name}: job HTTP ${res.status}`);
+              error.status = res.status;
+              throw error;
+            }
           }
           if (Date.now() > deadline) {
-            const error = new Error(`build ${name} still running after ${Math.round(buildTimeoutMs / 1000)} s (job ${jobId})`);
+            const error = new Error(
+              `build ${name} still running after ${Math.round(buildTimeoutMs / 1000)} s (job ${jobId})` +
+                (lastProblem ? `; last poll: ${lastProblem}` : ""),
+            );
             error.status = 504;
             throw error;
           }

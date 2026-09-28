@@ -22,7 +22,10 @@ import {
   appsBindingMaterializeFunction,
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
-import { appsBindingJobFunction } from "./functions/apps-binding-job";
+import {
+  appsBindingJobFunction,
+  appsBindingJobSweeperFunction,
+} from "./functions/apps-binding-job";
 import {
   appsDeployFunction,
   appsDeployReconcileFunction,
@@ -103,6 +106,7 @@ export function getFunctions() {
         cdcScheduledBackfillFunction,
         dashboardSchedulerFunction,
         appsBindingSchedulerFunction,
+        appsBindingJobSweeperFunction,
         appsDeployReconcileFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
@@ -154,6 +158,7 @@ export {
   cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
+  appsBindingJobSweeperFunction,
   appsBindingSchedulerFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,

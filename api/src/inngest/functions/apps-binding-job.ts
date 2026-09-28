@@ -7,9 +7,11 @@ import { inngest } from "../client";
 import {
   createBindingJob,
   getBindingJobById,
+  sweepStaleBindingJobs,
   type BindingJobDoc,
 } from "../../apps/binding-jobs";
 import { runBindingJob } from "../../apps/binding-job-runner";
+import { APPS_BINDING_BUILD_CONCURRENCY } from "./apps-binding-concurrency";
 
 export const APPS_BINDING_JOB_EVENT = "apps/binding.job";
 
@@ -24,11 +26,8 @@ export const appsBindingJobFunction = inngest.createFunction(
   {
     id: "apps-binding-job",
     name: "Apps Binding Build (async)",
-    concurrency: [
-      // Shares the workspace's warehouse with the scheduled builds.
-      { scope: "fn", key: "event.data.workspaceId", limit: 4 },
-      { scope: "fn", key: "event.data.key", limit: 1 },
-    ],
+    // One budget with the scheduled builds (see the constant).
+    concurrency: APPS_BINDING_BUILD_CONCURRENCY,
     // The job records the failure for the caller polling it; re-running a
     // broken warehouse query would only bill it twice.
     retries: 0,
@@ -58,3 +57,19 @@ export async function enqueueBindingJob(
   await inngest.send({ name: APPS_BINDING_JOB_EVENT, data });
   return job;
 }
+
+/**
+ * Fails running jobs whose worker went silent past the lease, for jobs nobody
+ * is polling (a poll fails its own job on the spot — see expireIfStale).
+ */
+export const appsBindingJobSweeperFunction = inngest.createFunction(
+  {
+    id: "apps-binding-job-sweeper",
+    name: "Sweep Stale Apps Binding Builds",
+    retries: 0,
+    concurrency: { limit: 1 },
+    triggers: { cron: "*/5 * * * *" },
+  },
+  async ({ step }) =>
+    step.run("sweep", async () => ({ failed: await sweepStaleBindingJobs() })),
+);

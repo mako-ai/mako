@@ -29,7 +29,10 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import type { IAppProject } from "../database/workspace-schema";
 import {
+  JOB_LEASE_MS,
   JOB_TTL_MS,
+  heartbeatBindingJob,
+  sweepStaleBindingJobs,
   createBindingJob,
   getBindingJob,
   getBindingJobById,
@@ -119,6 +122,8 @@ function deps(
     })),
     mark: markBindingJob,
     storeDraft: storeJobDraft,
+    heartbeat: vi.fn(async () => undefined),
+    heartbeatMs: 60_000,
     ...overrides,
   };
 }
@@ -213,16 +218,20 @@ describe("binding jobs", () => {
     });
   });
 
-  it("is visible only within its project and until it expires", async () => {
-    const t0 = new Date();
-    const job = await newJob({}, t0);
+  it("is visible only within its project, and a finished job until it expires", async () => {
+    const job = await newJob();
     const id = job._id.toString();
     expect(await getBindingJob(PROJECT, id)).not.toBeNull();
     expect(await getBindingJob(new Types.ObjectId().toString(), id)).toBeNull();
     expect(await getBindingJob(PROJECT, "not-an-id")).toBeNull();
-    expect(
-      await getBindingJob(PROJECT, id, new Date(t0.getTime() + JOB_TTL_MS + 1)),
-    ).toBeNull();
+    // Queued past the TTL: still there for its poller.
+    const later = new Date(Date.now() + JOB_TTL_MS + 60_000);
+    expect(await getBindingJob(PROJECT, id, later)).not.toBeNull();
+    await markBindingJob(id, {
+      status: "ready",
+      result: { artifactKey: "apps/bindings/c/x.parquet", build: "artifact" },
+    });
+    expect(await getBindingJob(PROJECT, id, later)).toBeNull();
   });
 
   it("prunes expired jobs and their draft objects, never the app's artifact", async () => {
@@ -260,5 +269,91 @@ describe("binding jobs", () => {
     expect(await store.exists(committedKey)).toBe(true);
     expect(await getBindingJobById(draftJob._id.toString())).toBeNull();
     expect(await getBindingJobById(committedJob._id.toString())).toBeNull();
+  });
+});
+
+describe("leases and expiry", () => {
+  it("beats while a build runs and stops after", async () => {
+    const job = await newJob({ kind: "materialize", request: {} });
+    const heartbeat = vi.fn(async () => undefined);
+    await runBindingJob(
+      job,
+      deps({
+        heartbeat,
+        heartbeatMs: 5,
+        materialize: vi.fn(async () => {
+          await new Promise(resolve => setTimeout(resolve, 40));
+          return {
+            artifactKey: "apps/bindings/c/abc.parquet",
+            rowCount: 1,
+            byteSize: 1,
+            materializedAt: new Date(),
+          };
+        }),
+      }),
+    );
+    const beats = heartbeat.mock.calls.length;
+    expect(beats).toBeGreaterThan(1);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(heartbeat.mock.calls.length).toBe(beats);
+  });
+
+  it("a running job never expires under its poller, and a heartbeat extends it", async () => {
+    const job = await newJob();
+    const id = job._id.toString();
+    await markBindingJob(id, { status: "running" });
+    const later = new Date(Date.now() + JOB_TTL_MS + 60_000);
+    await heartbeatBindingJob(id, new Date(later.getTime() - 1000));
+    expect((await getBindingJob(PROJECT, id, later))?.status).toBe("running");
+    const row = await getBindingJobById(id);
+    expect(row?.expiresAt.getTime()).toBeGreaterThan(later.getTime());
+  });
+
+  it("fails a running job whose worker went silent, and deletes its orphaned draft", async () => {
+    const job = await newJob();
+    const id = job._id.toString();
+    await markBindingJob(id, { status: "running" });
+    // The worker uploaded its draft, then died before recording it.
+    const orphan = await storeJobDraft(job, await localFile());
+    const store = getDashboardArtifactStore();
+    expect(await store.exists(orphan)).toBe(true);
+
+    const soon = new Date(Date.now() + JOB_LEASE_MS / 2);
+    expect((await getBindingJob(PROJECT, id, soon))?.status).toBe("running");
+
+    const stale = new Date(Date.now() + JOB_LEASE_MS + 60_000);
+    const polled = await getBindingJob(PROJECT, id, stale);
+    expect(serializeBindingJob(polled as BindingJobDoc)).toMatchObject({
+      status: "error",
+      errorStatus: 502,
+    });
+    expect(await store.exists(orphan)).toBe(false);
+  });
+
+  it("the sweep fails stale running jobs nobody polls, and leaves live ones", async () => {
+    const dead = await newJob();
+    const alive = await newJob({ name: "other" });
+    await markBindingJob(dead._id.toString(), { status: "running" });
+    await markBindingJob(alive._id.toString(), { status: "running" });
+    const now = new Date(Date.now() + JOB_LEASE_MS + 60_000);
+    await heartbeatBindingJob(alive._id.toString(), now);
+    expect(await sweepStaleBindingJobs(now)).toBe(1);
+    expect((await reload(dead)).status).toBe("error");
+    expect((await reload(alive)).status).toBe("running");
+  });
+
+  it("pruning never removes queued or running jobs", async () => {
+    const t0 = new Date(Date.now() - 3 * JOB_TTL_MS);
+    const queued = await newJob({}, t0);
+    const running = await newJob({ name: "r" }, t0);
+    await mongoose.connection
+      .collection("app_binding_jobs")
+      .updateOne(
+        { _id: running._id },
+        { $set: { status: "running", heartbeatAt: new Date() } },
+      );
+    await newJob({ name: "trigger" });
+    expect(await getBindingJobById(queued._id.toString())).not.toBeNull();
+    expect(await getBindingJobById(running._id.toString())).not.toBeNull();
   });
 });

@@ -400,6 +400,50 @@ test("a failed job relays its error and status", async () => {
   }
 });
 
+test("transient poll failures (network, 429, 5xx, 524) are retried; a 404 ends the wait", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  const jobs = jobApi(calls, { pending: 0 });
+  const hiccups = [
+    () => { throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } }); },
+    () => new Response("{}", { status: 524 }),
+    () => new Response("{}", { status: 429 }),
+    () => new Response("{}", { status: 503 }),
+  ];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith("/binding-jobs/j1") && hiccups.length) return hiccups.shift()();
+    return jobs(url, init);
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r.status, 200);
+    assert.equal(r.body.toString(), "PAR1:job");
+    assert.equal(hiccups.length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith("/binding-jobs/j1")) {
+      return new Response(JSON.stringify({ success: false, error: "No such binding job" }), { status: 404 });
+    }
+    return jobApi([])(url, init);
+  };
+  try {
+    const { app: app2 } = repo();
+    const { server, handlers } = fakeServer(app2);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 404);
+    assert.equal(JSON.parse(r.body.toString()).error, "No such binding job");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("materialize answered with a job is polled (committed artifacts path)", async () => {
   const { app } = repo();
   const calls = [];

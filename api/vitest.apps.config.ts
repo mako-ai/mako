@@ -33,6 +33,7 @@ export default defineConfig({
       "src/apps/binding-refresh.test.ts",
       // Asynchronous binding builds (202 + poll): job rows in real Mongo.
       "src/apps/binding-jobs.test.ts",
+      "src/inngest/functions/apps-binding-concurrency.test.ts",
       // The laptop dev loop: uncommitted binding text built as a draft.
       "src/apps/binding-dev-build.test.ts",
       // Draft reuse + failure backoff: real Mongo, filesystem artifact store.
