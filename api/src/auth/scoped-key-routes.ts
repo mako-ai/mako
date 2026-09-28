@@ -10,6 +10,12 @@
  * call the binding READ routes below — each executes the binding's query
  * read-only (or not at all), exactly what `query:read` already grants over
  * MCP. Nothing else is opened; the list is the policy.
+ *
+ * `mako dbt run` is the second exception: it uploads the laptop's dbt/ files
+ * and streams the run's log, neither of which fits a tool result either. Its
+ * routes open to `warehouse:write` only — the uploaded code runs with the
+ * environment's warehouse credentials. Which ENVIRONMENT may be built is
+ * decided in the route (local-run.service), not here.
  */
 import {
   hasWorkspaceApiKeyScope,
@@ -56,6 +62,26 @@ const BINDING_ROUTES: ReadonlyArray<{
   },
 ];
 
+/** The `mako dbt run|build|test` wire: start, follow, cancel your own run. */
+const DBT_LOCAL_RUN_SCOPES: readonly WorkspaceApiKeyScope[] = [
+  "warehouse:write",
+];
+
+const DBT_LOCAL_RUN_ROUTES: ReadonlyArray<{
+  method: string;
+  pattern: RegExp;
+}> = [
+  { method: "POST", pattern: /^\/api\/workspaces\/[^/]+\/dbt\/local-runs\/?$/ },
+  {
+    method: "GET",
+    pattern: /^\/api\/workspaces\/[^/]+\/dbt\/local-runs\/[^/]+\/?$/,
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/workspaces\/[^/]+\/dbt\/local-runs\/[^/]+\/cancel\/?$/,
+  },
+];
+
 export function isMcpEndpoint(path: string): boolean {
   return /^\/api\/mcp\/?$/.test(path);
 }
@@ -71,6 +97,15 @@ export function scopedKeyMayAccess(
 ): boolean {
   if (isMcpEndpoint(path)) return true;
   const verb = method.toUpperCase();
+  if (
+    DBT_LOCAL_RUN_ROUTES.some(
+      route => route.method === verb && route.pattern.test(path),
+    )
+  ) {
+    return DBT_LOCAL_RUN_SCOPES.some(scope =>
+      hasWorkspaceApiKeyScope(scopes, scope),
+    );
+  }
   return BINDING_ROUTES.some(
     route =>
       route.method === verb &&

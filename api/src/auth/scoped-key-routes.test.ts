@@ -98,4 +98,43 @@ assert.equal(
   false,
 );
 
+// `mako dbt run`: start, follow and cancel a laptop run — with
+// warehouse:write only (the uploaded code runs with the environment's
+// warehouse credentials), never with a read-only login. Which ENVIRONMENT
+// may be built is the route's decision (local-run.service), not this one.
+const warehouse = ["mcp", "query:read", "warehouse:write"] as const;
+const localRuns = `/api/workspaces/${WS}/dbt/local-runs`;
+const RUN = "68b0c0ffee0000000000abcd";
+assert.equal(scopedKeyMayAccess("POST", localRuns, warehouse), true);
+assert.equal(scopedKeyMayAccess("GET", `${localRuns}/${RUN}`, warehouse), true);
+assert.equal(
+  scopedKeyMayAccess("POST", `${localRuns}/${RUN}/cancel`, warehouse),
+  true,
+);
+// Wrong verbs, and the rest of the dbt surface, stay closed.
+assert.equal(scopedKeyMayAccess("GET", localRuns, warehouse), false);
+assert.equal(
+  scopedKeyMayAccess("DELETE", `${localRuns}/${RUN}`, warehouse),
+  false,
+);
+for (const path of [
+  `/api/workspaces/${WS}/dbt/projects`,
+  `/api/workspaces/${WS}/dbt/projects/${RUN}/runs`,
+  `/api/workspaces/${WS}/dbt/projects/${RUN}/jobs/${RUN}/trigger`,
+  `/api/workspaces/${WS}/dbt/projects/${RUN}/files/models/a.sql`,
+  `/api/workspaces/${WS}/dbt/projects/${RUN}/command`,
+]) {
+  assert.equal(scopedKeyMayAccess("GET", path, warehouse), false, path);
+  assert.equal(scopedKeyMayAccess("POST", path, warehouse), false, path);
+}
+// Review finding (#1013): no narrower scope opens these routes.
+for (const scopes of [read, mcpOnly]) {
+  assert.equal(scopedKeyMayAccess("POST", localRuns, scopes), false);
+  assert.equal(scopedKeyMayAccess("GET", `${localRuns}/${RUN}`, scopes), false);
+  assert.equal(
+    scopedKeyMayAccess("POST", `${localRuns}/${RUN}/cancel`, scopes),
+    false,
+  );
+}
+
 console.log("scoped-key-routes: ok");

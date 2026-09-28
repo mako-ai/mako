@@ -90,6 +90,15 @@ function awaitCallback(server, expectedState, timeoutMs) {
   });
 }
 
+/**
+ * What the CLI asks for: read-only MCP, plus `warehouse:write` with
+ * `--warehouse-write` (what `mako dbt run` needs — the consent screen shows
+ * it as its own, unticked box).
+ */
+export function loginScopes(flags = {}) {
+  return ["mcp", "query:read", ...(flags["warehouse-write"] ? ["warehouse:write"] : [])];
+}
+
 export async function login(ctx, flags, io = { log: console.log }) {
   const apiUrl = normalizeApiUrl(ctx.apiUrl);
   const meta = await discover(apiUrl);
@@ -111,6 +120,7 @@ export async function login(ctx, flags, io = { log: console.log }) {
     code_challenge_method: "S256",
     state,
     resource: `${apiUrl}/api/mcp`,
+    scope: loginScopes(flags).join(" "),
   }).toString();
 
   io.log(`Signing in to ${apiUrl}${ctx.workspaceId ? ` (workspace ${ctx.workspaceId})` : ""}…`);
@@ -144,6 +154,7 @@ export async function login(ctx, flags, io = { log: console.log }) {
     scopes: typeof tokens.scope === "string" ? tokens.scope.split(" ") : undefined,
   });
   io.log(`Signed in. Credentials saved for ${apiUrl}${ctx.workspaceId ? ` / workspace ${ctx.workspaceId}` : ""}.`);
+  if (typeof tokens.scope === "string") io.log(`Granted: ${tokens.scope}.`);
   if (!ctx.workspaceId) {
     io.log("Tip: run `mako login` inside a workspace checkout so the credential is tied to that workspace.");
   }

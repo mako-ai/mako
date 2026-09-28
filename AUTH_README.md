@@ -501,8 +501,15 @@ would fall through to the SPA fallback and poison client discovery.
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
 - Scopes default to the read-only set (`mcp`, `query:read`). OAuth clients may
   request `warehouse:write`; the authorize page shows a separate, unchecked
-  warehouse-mutation approval. Raw `query:write`, membership, and other
-  administrative scopes are never available through browser OAuth.
+  warehouse-mutation approval. `warehouse:write` is also what `mako dbt run`
+  needs to build a laptop checkout through `/api/workspaces/:id/dbt/local-runs`
+  (the caller's own environment by default; never another person's, never
+  the prod-like one): the uploaded dbt code runs with the environment's
+  warehouse credentials, so no narrower scope is offered. Raw `query:write`,
+  membership, and other administrative scopes are never available through
+  browser OAuth.
+- An MCP OAuth token on the dbt routes acts with its user's LIVE workspace
+  role, not the owner role a workspace API key gets.
 - Redirect URIs accepted at registration: `https` anywhere, `http` on
   loopback only (RFC 8252), or a custom app scheme (e.g. `cursor://`).
   Max 10 per client.

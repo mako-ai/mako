@@ -8,7 +8,10 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * `warehouse:write` is narrower than a query-write scope would be: it does
  * not unlock arbitrary DML — it maps to the `warehouse-write` capability
  * grant, whose only external-MCP tools are governed dbt executions
- * (dbt_run_model / dbt_run_job / dbt_cancel_run). `git:write` maps to the
+ * (dbt_run_model / dbt_run_job / dbt_cancel_run) — and it is what `mako dbt
+ * run` needs to build a laptop checkout (the `/dbt/local-runs` routes):
+ * uploaded dbt code runs with the environment's warehouse credentials, so
+ * no narrower scope could honestly promise less. `git:write` maps to the
  * `git-write` grant behind the dbt Git mutations (commit, branch, PR).
  *
  * `query:write` is double-gated: the scope alone only yields
