@@ -59,6 +59,9 @@ export default defineConfig({
       "src/apps/app-index.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
+      // A deploy's outcome as a GitHub commit status on the pushed sha.
+      "src/apps/deploy-commit-status.test.ts",
+      "src/inngest/functions/apps-deploy-status.test.ts",
       "src/services/bigquery-poll-budget.test.ts",
       // These two were written as vitest suites but listed in no vitest
       // config, so neither runner could execute them: tsx dies on them

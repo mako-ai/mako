@@ -17,7 +17,7 @@
  * app's id, which the manifest carries along.
  */
 import { loggers } from "../logging";
-import { runGit } from "./git";
+import { isAncestorCommit, runGit } from "./git";
 import {
   PUBLISH_ACTOR,
   appRootFor,
@@ -105,24 +105,6 @@ async function changedApps(
   return [...changed];
 }
 
-/** Is `ancestor` reachable from `descendant`? False when either is unknown. */
-async function isAncestor(
-  repoDir: string,
-  ancestor: string,
-  descendant: string,
-): Promise<boolean> {
-  return runGit([
-    "-C",
-    repoDir,
-    "merge-base",
-    "--is-ancestor",
-    ancestor,
-    descendant,
-  ])
-    .then(() => true)
-    .catch(() => false);
-}
-
 /**
  * Did the app's folder change between two commits? Tree oids, so a move
  * reads as unchanged. The one question both the webhook and the hourly
@@ -205,7 +187,7 @@ export async function deployOneApp(
   if (
     discovered.publishedSha &&
     discovered.publishedSha !== sha &&
-    (await isAncestor(repoDir, sha, discovered.publishedSha))
+    (await isAncestorCommit(repoDir, sha, discovered.publishedSha))
   ) {
     return { app: appRef, sha, outcome: "superseded" };
   }
@@ -301,6 +283,24 @@ export async function deployOneApp(
 }
 
 /**
+ * The commit a push's deploys should build: the push itself, unless main
+ * has already moved PAST it. A delivery that arrives late (redelivered, or
+ * handled after a newer push) would otherwise enqueue an OLDER sha — and the
+ * per-app singleton cancels the running deploy of the newer commit in its
+ * favour. Main's head holds the same content for every app the old push
+ * changed that nothing changed since, and the newer content for any app that
+ * did change, so building head is never wrong; building the old sha is.
+ */
+export async function deployTargetForPush(
+  repoDir: string,
+  after: string,
+): Promise<string> {
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!head || head === after) return after;
+  return (await isAncestorCommit(repoDir, after, head)) ? head : after;
+}
+
+/**
  * A push to `main` arrived: decide which apps it touched and hand each one to
  * the `apps-deploy` Inngest function. Returns the app ids enqueued. Nothing is
  * built here — the webhook delivery must return quickly, and on Cloud Run
@@ -316,13 +316,15 @@ export async function deployAppsForPush(input: {
   await ensureCommitLocally(workspaceId, after);
   const appIds = await changedApps(workspaceId, repoDir, before, after);
   if (appIds.length === 0) return [];
+  const sha = await deployTargetForPush(repoDir, after);
   const { requestAppDeploys } = await import(
     "../inngest/functions/apps-deploy"
   );
-  await requestAppDeploys(workspaceId, appIds, after, "push");
+  await requestAppDeploys(workspaceId, appIds, sha, "push");
   logger.info("Apps deploys requested from push", {
     workspaceId,
-    sha: after,
+    sha,
+    ...(sha !== after ? { staleDelivery: after } : {}),
     apps: appIds.length,
   });
   return appIds;

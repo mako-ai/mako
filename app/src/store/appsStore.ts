@@ -2288,6 +2288,15 @@ onRealtimeEvent("app.updated", "appsStore", (event, ctx) => {
   // Explorer list (titles, new/deleted apps).
   void v2.fetchApps(workspaceId);
   if (event.origin === "lifecycle") return;
+  // A deploy from main changes what is live, not the files: refresh the
+  // published chip (a failed deploy leaves the sha alone, so nothing else
+  // would refetch the error it now carries).
+  if (event.origin === "deploy") {
+    if (event.appId && v2.publishStateByApp[event.appId]) {
+      void v2.fetchPublishState(workspaceId, event.appId);
+    }
+    return;
+  }
 
   // A NAMED app is refreshed immediately — one app, three requests, which is
   // what the event is for.
