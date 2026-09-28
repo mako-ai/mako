@@ -32,10 +32,12 @@ import type {
 } from "../database/workspace-schema";
 import {
   bindingArtifactKey,
-  bindingArtifactKeyByName,
   buildResolvedBindingParquet,
   materializeAppBinding,
+  normalizeBindingText,
+  readCommittedBinding,
   resolveDraftBinding,
+  sameBindingDefinition,
   type AppBinding,
 } from "./bindings.service";
 import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
@@ -100,21 +102,22 @@ export interface DevBuildDeps {
     source: string,
     actorId: string,
   ) => Promise<{ binding: AppBinding; connection: IDatabaseConnection }>;
-  /** The committed binding's artifact key, or null when there is none. */
-  committedKey: (
+  /** The committed binding (actor's view), or null when there is none. */
+  committedBinding: (
     project: IAppProject,
     name: string,
     actorId: string,
-  ) => Promise<string | null>;
+  ) => Promise<AppBinding | null>;
   render: (
     project: IAppProject,
     binding: AppBinding,
     environment?: { name: string; userId?: string },
   ) => Promise<string>;
   artifactExists: (key: string) => Promise<boolean>;
+  /** Materialize exactly `resolved` — never a re-read of the repo. */
   materialize: (
     project: IAppProject,
-    name: string,
+    resolved: { binding: AppBinding; connection: IDatabaseConnection },
     actorId: string,
   ) => Promise<{
     rowCount: number;
@@ -132,14 +135,7 @@ export interface DevBuildDeps {
 
 const defaultDeps: DevBuildDeps = {
   resolveDraft: resolveDraftBinding,
-  committedKey: async (project, name, actorId) => {
-    try {
-      return await bindingArtifactKeyByName(project, name, actorId);
-    } catch {
-      // A committed file without a connection has no artifact to share.
-      return null;
-    }
-  },
+  committedBinding: readCommittedBinding,
   render: (project, binding, environment) =>
     resolveDbtBoundCode({
       workspaceId: project.workspaceId,
@@ -148,8 +144,11 @@ const defaultDeps: DevBuildDeps = {
       environment,
     }),
   artifactExists: key => getDashboardArtifactStore().exists(key),
-  materialize: (project, name, actorId) =>
-    materializeAppBinding(project, name, actorId, { keepFile: true }),
+  materialize: (project, resolved, actorId) =>
+    materializeAppBinding(project, resolved.binding.name, actorId, {
+      keepFile: true,
+      resolved,
+    }),
   build: buildResolvedBindingParquet,
 };
 
@@ -166,7 +165,13 @@ export async function devBuildAppBinding(
   let code: string;
   let asPublished: boolean;
   try {
-    draft = await deps.resolveDraft(project, name, input.source, actorId);
+    // A CRLF checkout of the committed file is the committed file.
+    draft = await deps.resolveDraft(
+      project,
+      name,
+      normalizeBindingText(input.source),
+      actorId,
+    );
     code = await deps.render(
       project,
       draft.binding,
@@ -188,14 +193,27 @@ export async function devBuildAppBinding(
     throw new DevBuildError(message, 400);
   }
 
-  const draftKey = bindingArtifactKey(draft.binding);
+  // Committed = the whole definition matches (connection, database, dbt
+  // link, materialization, query), not just the artifact key, which ignores
+  // the dbt link and the mode. From here on the COMMITTED binding is what is
+  // served or built: its key is the one published readers resolve, and
+  // materializing it as read here (not re-read by name) means a commit
+  // landing mid-request cannot put other SQL under this caller's text.
+  const committed = asPublished
+    ? await deps.committedBinding(project, name, actorId)
+    : null;
   const isCommitted =
-    asPublished &&
-    draft.binding.materialization === "parquet" &&
-    (await deps.committedKey(project, name, actorId)) === draftKey;
+    committed !== null &&
+    committed.materialization === "parquet" &&
+    sameBindingDefinition(committed, draft.binding);
+  const committedKey = isCommitted ? bindingArtifactKey(committed) : null;
 
-  if (isCommitted && !input.refresh && (await deps.artifactExists(draftKey))) {
-    return { kind: "artifact", artifactKey: draftKey };
+  if (
+    committedKey &&
+    !input.refresh &&
+    (await deps.artifactExists(committedKey))
+  ) {
+    return { kind: "artifact", artifactKey: committedKey };
   }
   if (!input.canWrite) {
     throw new DevBuildError(
@@ -207,8 +225,12 @@ export async function devBuildAppBinding(
   }
 
   try {
-    if (isCommitted) {
-      const result = await deps.materialize(project, name, actorId);
+    if (isCommitted && committed) {
+      const result = await deps.materialize(
+        project,
+        { binding: committed, connection: draft.connection },
+        actorId,
+      );
       if (!result.filePath) throw new Error("Materialize kept no file");
       return {
         kind: "materialized",

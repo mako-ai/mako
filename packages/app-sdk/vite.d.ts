@@ -61,6 +61,9 @@ export function resolveMakoContext(
  * What a cached parquet was built from: a hash of the binding file's text and
  * the dbt environment. The plugin serves a cache entry only for a match.
  */
+/** CRLF/CR → LF and no trailing whitespace — what bindingFingerprint hashes. */
+export function normalizeBindingSource(source: string): string;
+
 export function bindingFingerprint(source: string, dbtEnvironment?: string): string;
 
 /**

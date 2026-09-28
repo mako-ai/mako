@@ -106,14 +106,22 @@ export function resolveMakoContext(appDir, options = {}) {
   };
 }
 
+/** CRLF/CR → LF, no trailing whitespace at the end of the file. */
+export function normalizeBindingSource(source) {
+  return source.replace(/\r\n?/g, "\n").trimEnd();
+}
+
 /**
  * What a cached parquet was built from: the binding file's exact text plus
  * the dbt environment it was rendered against. A cache entry is only ever
  * served for the same fingerprint, whatever its age.
  */
 export function bindingFingerprint(source, dbtEnvironment = "") {
+  // Line endings and trailing whitespace are not the query: a Windows
+  // checkout (core.autocrlf) must not look like an edit. The API normalises
+  // the text it compares the same way.
   return createHash("sha256")
-    .update(source)
+    .update(normalizeBindingSource(source))
     .update("\0")
     .update(dbtEnvironment)
     .digest("hex")
@@ -257,11 +265,14 @@ export function makoData(options = {}) {
         else fs.rmSync(metaPath(name), { force: true });
       }
 
-      // An API that predates dev builds answers the route with its plain-text
-      // 404 — or, for a `mako login` token or scoped key, with the scoped-
-      // credential refusal, since the route is not on its allowlist yet.
-      // Remembered, so the rest of the session asks for the committed
-      // artifact directly (the behaviour before dev builds existed).
+      // An API that predates dev builds answers the route with its not-found
+      // handler (`{"success":false,"error":"Not Found"}`, or plain text from
+      // a proxy) — or, for a `mako login` token or scoped key, with the
+      // scoped-credential refusal, since the route is not on its allowlist
+      // yet. Remembered, so the rest of the session asks for the committed
+      // artifact directly (the behaviour before dev builds existed). Any
+      // other 404 (no such app) falls back for that request only, so the
+      // artifact route reports it.
       let devBuildUnsupported = false;
       const inflight = new Map();
 
@@ -291,9 +302,10 @@ export function makoData(options = {}) {
               // Not the API's JSON error envelope.
             }
             const predatesDevBuild =
-              (res.status === 404 && !body) ||
+              (res.status === 404 && (!body || body.error === "Not Found")) ||
               (res.status === 403 && /restricted to the (\/api\/mcp|Mako MCP) endpoint/.test(body?.error ?? ""));
-            if (predatesDevBuild) {
+            if (predatesDevBuild || res.status === 404) {
+              if (!predatesDevBuild) return null;
               devBuildUnsupported = true;
               server.config.logger.warn?.(
                 `  mako-data: ${ctx.apiUrl} does not build local binding edits yet; serving committed bindings`,

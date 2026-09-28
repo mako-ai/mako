@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { bindingFingerprint, makoData, resolveMakoContext } from "./vite.js";
+import { bindingFingerprint, makoData, normalizeBindingSource, resolveMakoContext } from "./vite.js";
 
 function repo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-test-"));
@@ -87,8 +87,15 @@ test("an API without dev builds: committed artifact, materialized on 404, cached
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), method: init.method ?? "GET", auth: init.headers?.authorization });
     if (String(url).endsWith("/materialize")) { artifactMissing = false; return new Response("{}", { status: 200 }); }
-    // An older API answers the unknown dev-build route with its plain 404.
-    if (artifactMissing || String(url).endsWith("/dev-build")) return new Response("404 Not Found", { status: 404 });
+    // An older API answers the unknown dev-build route with its JSON
+    // not-found handler (api/src/index.ts app.notFound).
+    if (String(url).endsWith("/dev-build")) {
+      return new Response(JSON.stringify({ success: false, error: "Not Found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (artifactMissing) return new Response(JSON.stringify({ success: false, error: 'Binding "sales" is not materialized' }), { status: 404 });
     return new Response(Buffer.from("PAR1data"), { status: 200 });
   };
   try {
@@ -267,9 +274,59 @@ test("a scoped credential refused by an older API falls back to committed artifa
   }
 });
 
+test("a plain-text 404 (a proxy in front of an older API) also falls back", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    if (String(url).endsWith("/dev-build")) return new Response("404 Not Found", { status: 404 });
+    return new Response(Buffer.from("PAR1data"), { status: 200 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    assert.equal((await request(handlers[0], "/__data/sales.parquet")).status, 200);
+    assert.deepEqual(calls, ["POST my-app/bindings/sales/dev-build", "GET my-app/bindings/sales/artifact"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("refresh against an older API (JSON 404) falls back to materialize", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    if (String(url).endsWith("/dev-build")) {
+      return new Response(JSON.stringify({ success: false, error: "Not Found" }), { status: 404 });
+    }
+    return new Response(
+      JSON.stringify({ success: true, rowCount: 7, byteSize: 99, materializedAt: "2026-09-02T10:00:00.000Z" }),
+      { status: 200 },
+    );
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST");
+    assert.equal(r.status, 200);
+    assert.equal(JSON.parse(r.body.toString()).rowCount, 7);
+    assert.deepEqual(calls, ["POST my-app/bindings/sales/dev-build", "POST my-app/bindings/sales/materialize"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("bindingFingerprint ignores line endings and trailing whitespace", () => {
+  assert.equal(bindingFingerprint("-- connection: c\r\nselect 1\r\n"), bindingFingerprint("-- connection: c\nselect 1"));
+  assert.equal(normalizeBindingSource("a\r\nb\rc  \n\n"), "a\nb\nc");
+});
+
 test("bindingFingerprint depends on the text and the dbt environment", () => {
   assert.equal(bindingFingerprint("select 1"), bindingFingerprint("select 1", ""));
-  assert.notEqual(bindingFingerprint("select 1"), bindingFingerprint("select 1 "));
+  assert.notEqual(bindingFingerprint("select 1"), bindingFingerprint("select 2"));
   assert.notEqual(bindingFingerprint("select 1", "joan"), bindingFingerprint("select 1"));
 });
 

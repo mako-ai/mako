@@ -38,9 +38,8 @@ const CONN = new Types.ObjectId().toString();
 const connection = { type: "bigquery" } as unknown as IDatabaseConnection;
 
 const COMMITTED = `-- connection: ${CONN}\n-- dbt_project: p1\nselect * from {{ dbt_schema }}.leads`;
-const committedKey = bindingArtifactKey(
-  bindingFromSource("leads", COMMITTED) as AppBinding,
-);
+const committedBinding = bindingFromSource("leads", COMMITTED) as AppBinding;
+const committedKey = bindingArtifactKey(committedBinding);
 
 function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
   return {
@@ -49,7 +48,7 @@ function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
       if (!binding) throw new Error(`Binding "${name}" has no connection`);
       return { binding, connection };
     }),
-    committedKey: vi.fn(async () => committedKey),
+    committedBinding: vi.fn(async () => committedBinding),
     render: vi.fn(async (_p, binding, environment) =>
       binding.code.replace(
         "{{ dbt_schema }}",
@@ -105,7 +104,12 @@ describe("devBuildAppBinding", () => {
         filePath: "/tmp/materialized.parquet",
         rowCount: 5,
       });
-      expect(d.materialize).toHaveBeenCalledWith(project, "leads", "u1");
+      // The binding it compared, as read — not a second read by name.
+      expect(d.materialize).toHaveBeenCalledWith(
+        project,
+        { binding: committedBinding, connection },
+        "u1",
+      );
       expect(d.build).not.toHaveBeenCalled();
     }
   });
@@ -156,10 +160,73 @@ describe("devBuildAppBinding", () => {
   });
 
   it("builds a draft when nothing is committed under that name", async () => {
-    const d = deps({ committedKey: vi.fn(async () => null) });
+    const d = deps({ committedBinding: vi.fn(async () => null) });
     const result = await devBuildAppBinding(input(), d);
     expect(result.kind).toBe("draft");
     expect(d.materialize).not.toHaveBeenCalled();
+  });
+
+  it("treats a CRLF checkout of the committed file as the committed binding", async () => {
+    const d = deps();
+    const result = await devBuildAppBinding(
+      input({
+        canWrite: false,
+        source: `${COMMITTED.replace(/\n/g, "\r\n")}\r\n`,
+      }),
+      d,
+    );
+    expect(result).toEqual({ kind: "artifact", artifactKey: committedKey });
+  });
+
+  it("a changed dbt_project alone is a draft, not the committed artifact", async () => {
+    const d = deps();
+    const source = COMMITTED.replace(
+      "-- dbt_project: p1",
+      "-- dbt_project: p2",
+    );
+    const result = await devBuildAppBinding(input({ source }), d);
+    expect(result.kind).toBe("draft");
+    expect(d.artifactExists).not.toHaveBeenCalled();
+    expect(d.materialize).not.toHaveBeenCalled();
+  });
+
+  it("a committed LIVE binding copied locally as parquet is never materialized", async () => {
+    const d = deps({
+      committedBinding: vi.fn(async () =>
+        bindingFromSource(
+          "leads",
+          COMMITTED.replace(
+            "-- dbt_project",
+            "-- materialization: live\n-- dbt_project",
+          ),
+        ),
+      ),
+    });
+    const result = await devBuildAppBinding(input(), d);
+    expect(result.kind).toBe("draft");
+    expect(d.materialize).not.toHaveBeenCalled();
+  });
+
+  it("materializes what it compared even if the repo moves on meanwhile", async () => {
+    // The first (and only) read is the comparison; a commit landing after it
+    // must not change what is built under this caller's text.
+    let reads = 0;
+    const d = deps({
+      artifactExists: vi.fn(async () => false),
+      committedBinding: vi.fn(async () => {
+        reads++;
+        return reads === 1
+          ? committedBinding
+          : bindingFromSource("leads", `${COMMITTED} where other`);
+      }),
+    });
+    await devBuildAppBinding(input(), d);
+    expect(reads).toBe(1);
+    expect(d.materialize).toHaveBeenCalledWith(
+      project,
+      { binding: committedBinding, connection },
+      "u1",
+    );
   });
 
   it("builds a live binding as a draft (it has no artifact)", async () => {
