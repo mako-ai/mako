@@ -15,9 +15,19 @@ import { postCommitStatus } from "../integrations/github/github-api";
 import { resolveRepoToken } from "../integrations/github/app-auth";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { loggers } from "../logging";
-import { AppProject } from "../database/workspace-schema";
+import { Types } from "mongoose";
+import {
+  AppDeployCommitStatus,
+  AppProject,
+  type AppDeployCommitState,
+} from "../database/workspace-schema";
+import { isAncestorCommit } from "./git";
 import { resolveMirrorTarget } from "./cloud-repo.service";
-import { appRootFor, resolveProjectRef } from "./worktree.service";
+import {
+  appRootFor,
+  repoForWorkspace,
+  resolveProjectRef,
+} from "./worktree.service";
 
 const logger = loggers.api("apps-deploy-status");
 
@@ -118,6 +128,78 @@ export interface ReportAppDeployStatusInput {
   description: string;
 }
 
+type PostStatus = (
+  commit: string,
+  state: AppDeployStatusState,
+  text: string,
+) => Promise<void>;
+
+/**
+ * Resolve commits of this app that an earlier run left "pending" — runs
+ * cancelled by a newer event (singleton "cancel") never report back.
+ *
+ *  - the pending commit is what is LIVE (the run was cancelled after going
+ *    live, before its final report): it gets "Live", not "Skipped";
+ *  - the new commit descends from it: it was genuinely superseded;
+ *  - anything else (the pending commit is NEWER, or unrelated — a stale or
+ *    redelivered event started this run) is left alone: its own run, or the
+ *    next one for a descendant, resolves it.
+ *
+ * Each resolution is a compare-and-set on "pending", so it can never
+ * overwrite the failure or success a run's own outcome recorded meanwhile.
+ */
+async function resolveAbandonedPending(input: {
+  workspaceId: string;
+  appId: string;
+  newSha: string;
+  key: { workspaceId: Types.ObjectId; appId: string };
+  post: PostStatus;
+}): Promise<void> {
+  const { workspaceId, appId, newSha, key, post } = input;
+  const abandoned = await AppDeployCommitStatus.find({
+    ...key,
+    state: "pending",
+    sha: { $ne: newSha },
+  })
+    .select("sha")
+    .lean();
+  if (abandoned.length === 0) return;
+  const row = Types.ObjectId.isValid(appId)
+    ? await AppProject.findOne({
+        _id: new Types.ObjectId(appId),
+        workspaceId: key.workspaceId,
+      })
+        .select("publishedSha")
+        .lean()
+    : null;
+  const repoDir = await repoForWorkspace(workspaceId);
+  for (const { sha: previous } of abandoned) {
+    let resolution: { state: AppDeployCommitState; text: string } | null = null;
+    if (row?.publishedSha === previous) {
+      resolution = { state: "success", text: "Live: this commit is deployed" };
+    } else if (await isAncestorCommit(repoDir, previous, newSha)) {
+      resolution = {
+        state: "superseded",
+        text: `Skipped: superseded by ${newSha.slice(0, 7)}`,
+      };
+    }
+    if (!resolution) continue;
+    const won = await AppDeployCommitStatus.findOneAndUpdate(
+      { ...key, sha: previous, state: "pending" },
+      { $set: { state: resolution.state } },
+    );
+    if (!won) continue;
+    await post(previous, "success", resolution.text).catch(error =>
+      logger.info("Could not resolve an abandoned deploy status", {
+        workspaceId,
+        appId,
+        sha: previous,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
 /**
  * Post the deploy status for one app on one commit, and poke open windows
  * so the app's published chip refetches. Never throws.
@@ -144,7 +226,7 @@ export async function reportAppDeployStatus(
     if (!target) return { posted: false, reason: "no-connected-repo" };
     const token = await resolveRepoToken(target.installationId);
     if (!token) return { posted: false, reason: "no-token" };
-    const post = (commit: string, state: AppDeployStatusState, text: string) =>
+    const post: PostStatus = (commit, state, text) =>
       postCommitStatus(
         target.owner,
         target.repo,
@@ -157,38 +239,39 @@ export async function reportAppDeployStatus(
         },
         token,
       );
-    const filter = { _id: project._id, workspaceId: project.workspaceId };
+    const key = {
+      workspaceId: new Types.ObjectId(workspaceId),
+      appId,
+    };
 
     if (state === "pending") {
-      // A newer push cancels the running deploy (singleton "cancel"), and a
-      // cancelled run never reports: resolve its commit here.
-      const previous = project.deployStatusPendingSha;
-      if (previous && previous !== sha) {
-        await post(
-          previous,
-          "success",
-          `Skipped: superseded by ${sha.slice(0, 7)}`,
-        ).catch(error =>
-          logger.info("Could not resolve a superseded deploy status", {
-            workspaceId,
-            appId,
-            sha: previous,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      }
-      await post(sha, state, input.description);
-      await AppProject.updateOne(filter, {
-        $set: { deployStatusPendingSha: sha },
+      await resolveAbandonedPending({
+        workspaceId,
+        appId,
+        newSha: sha,
+        key,
+        post,
       });
+      // A new attempt at this commit: it is pending again, whatever an
+      // earlier attempt recorded.
+      await AppDeployCommitStatus.updateOne(
+        { ...key, sha },
+        { $set: { state: "pending" } },
+        { upsert: true },
+      );
+      await post(sha, state, input.description);
       return { posted: true };
     }
 
-    await post(sha, state, input.description);
-    await AppProject.updateOne(
-      { ...filter, deployStatusPendingSha: sha },
-      { $unset: { deployStatusPendingSha: 1 } },
+    // The deploy's own outcome is authoritative for its commit. Record it
+    // BEFORE posting, so a concurrent resolver's compare-and-set on
+    // "pending" loses and can never post "superseded" over it.
+    await AppDeployCommitStatus.updateOne(
+      { ...key, sha },
+      { $set: { state } },
+      { upsert: true },
     );
+    await post(sha, state, input.description);
     return { posted: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -5384,13 +5384,6 @@ export interface IAppProject extends Document {
     at: Date;
   };
   /**
-   * The commit whose GitHub deploy status was last set to "pending" and not
-   * yet resolved (deploy-commit-status). A newer push cancels a running
-   * deploy, and a cancelled run never reports back: the next run resolves
-   * this one instead of leaving the older commit pending forever.
-   */
-  deployStatusPendingSha?: string;
-  /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
    * protected. Same primitive dashboards and v1 apps use, so the management
    * routes and the /api/share/:token consumption side are shared verbatim.
@@ -5456,7 +5449,6 @@ const AppProjectSchema = new Schema<IAppProject>(
       ),
       default: undefined,
     },
-    deployStatusPendingSha: { type: String },
     publicShare: { type: PublicShareSchema, default: undefined },
     env: { type: [AppEnvVarSchema], default: undefined },
   },
@@ -5486,6 +5478,61 @@ AppProjectSchema.index({ workspaceId: 1, slug: 1 });
 export const AppProject = mongoose.model<IAppProject>(
   "AppProject",
   AppProjectSchema,
+);
+
+/**
+ * What Mako last said on GitHub about one app's deploy of one commit
+ * (deploy-commit-status). Keyed by the app's id, NOT its row: an app that
+ * only exists as a folder on main has no row until its first deploy, and
+ * its first commit must be resolvable all the same.
+ *
+ * `pending` is the only state anything but the deploy's own outcome may
+ * change, and only by compare-and-set: resolving a commit a cancelled run
+ * left pending must never overwrite the failure (or success) that run's
+ * own outcome already recorded.
+ */
+export type AppDeployCommitState =
+  | "pending"
+  | "success"
+  | "failure"
+  | "superseded";
+
+export interface IAppDeployCommitStatus extends Document {
+  workspaceId: Types.ObjectId;
+  appId: string;
+  sha: string;
+  state: AppDeployCommitState;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppDeployCommitStatusSchema = new Schema<IAppDeployCommitStatus>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    sha: { type: String, required: true },
+    state: {
+      type: String,
+      enum: ["pending", "success", "failure", "superseded"],
+      required: true,
+    },
+  },
+  { collection: "app_deploy_commit_statuses", timestamps: true },
+);
+
+AppDeployCommitStatusSchema.index(
+  { workspaceId: 1, appId: 1, sha: 1 },
+  { unique: true },
+);
+AppDeployCommitStatusSchema.index({ workspaceId: 1, appId: 1, state: 1 });
+
+export const AppDeployCommitStatus = mongoose.model<IAppDeployCommitStatus>(
+  "AppDeployCommitStatus",
+  AppDeployCommitStatusSchema,
 );
 
 // ---------------------------------------------------------------------------

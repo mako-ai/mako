@@ -7,6 +7,10 @@ const state = vi.hoisted(() => ({
   commitPresent: true,
   folderPresent: true,
   events: [] as string[],
+  /** Head of main in the (mocked) bare repo; null = unknown. */
+  mainHead: null as string | null,
+  /** "ancestor>descendant" pairs the mocked history knows. */
+  ancestry: new Set<string>(),
   project: {
     _id: { toString: () => "6a9411eb4c8b33609a65e665" },
     workspaceId: { toString: () => "6a9411eb4c8b33609a65e666" },
@@ -25,6 +29,9 @@ vi.mock("./cloud-repo.service", () => ({
 }));
 
 vi.mock("./git", () => ({
+  isAncestorCommit: vi.fn(async (_dir: string, a: string, b: string) =>
+    state.ancestry.has(`${a}>${b}`),
+  ),
   runGit: vi.fn(async (args: string[]) => {
     const spec = args[args.length - 1];
     // `merge-base --is-ancestor <sha> <publishedSha>`: never an ancestor
@@ -40,6 +47,11 @@ vi.mock("./git", () => ({
     }
     return { stdout: "", stderr: "" };
   }),
+}));
+
+vi.mock("./repository.service", () => ({
+  DEFAULT_BRANCH: "main",
+  resolveCommit: vi.fn(async () => state.mainHead),
 }));
 
 vi.mock("./worktree.service", () => ({
@@ -105,7 +117,7 @@ vi.mock("./deployment.service", () => ({
   setPublishedSha: vi.fn(async () => state.events.push("publish")),
 }));
 
-import { deployOneApp } from "./deploy-on-push";
+import { deployOneApp, deployTargetForPush } from "./deploy-on-push";
 import {
   clearPublishedSha,
   deployBuild,
@@ -227,5 +239,41 @@ describe("an app whose folder left main", () => {
 
     expect(clearPublishedSha).not.toHaveBeenCalled();
     expect(setPublishedSha).not.toHaveBeenCalled();
+  });
+});
+
+// Review finding 3: a late or redelivered push must not enqueue an OLDER
+// commit — the per-app singleton would cancel the newer deploy for it.
+describe("deployTargetForPush", () => {
+  const OLD = "1".repeat(40);
+  const NEW = "2".repeat(40);
+  const SIDE = "3".repeat(40);
+
+  beforeEach(() => {
+    state.mainHead = null;
+    state.ancestry = new Set();
+  });
+
+  it("builds main's head when main already moved past the delivered push", async () => {
+    state.mainHead = NEW;
+    state.ancestry.add(`${OLD}>${NEW}`);
+    expect(await deployTargetForPush("/repo", OLD)).toBe(NEW);
+  });
+
+  it("builds the push itself when it is main's head", async () => {
+    state.mainHead = OLD;
+    expect(await deployTargetForPush("/repo", OLD)).toBe(OLD);
+  });
+
+  it("builds the push when the local head is behind it (stale mirror)", async () => {
+    state.mainHead = OLD;
+    state.ancestry.add(`${OLD}>${NEW}`);
+    expect(await deployTargetForPush("/repo", NEW)).toBe(NEW);
+  });
+
+  it("builds the push when main's head is unknown or unrelated", async () => {
+    expect(await deployTargetForPush("/repo", OLD)).toBe(OLD);
+    state.mainHead = SIDE;
+    expect(await deployTargetForPush("/repo", OLD)).toBe(OLD);
   });
 });

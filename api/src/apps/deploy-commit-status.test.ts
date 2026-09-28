@@ -1,12 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+/**
+ * Deploy outcomes as GitHub commit statuses. Real Mongo (the per-commit
+ * ledger's compare-and-set is the point) and a real git repo (ancestry
+ * decides what "superseded" means); GitHub, auth and realtime are stubbed.
+ */
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import mongoose, { Types } from "mongoose";
+import { MongoMemoryServer } from "mongodb-memory-server";
 
 const state = vi.hoisted(() => ({
-  target: {
-    kind: "connected",
-    owner: "realadvisor",
-    repo: "mako-workspace",
-    installationId: 42,
-  } as null | {
+  repoDir: "",
+  target: null as null | {
     kind: "connected";
     owner: string;
     repo: string;
@@ -14,16 +29,10 @@ const state = vi.hoisted(() => ({
   },
   token: "ghs_token" as string | undefined,
   postError: null as Error | null,
-  project: {
-    _id: { toString: () => "6a9411eb4c8b33609a65e665" },
-    workspaceId: { toString: () => "6a9411eb4c8b33609a65e666" },
-    path: "apps/sales/calls",
-    deployStatusPendingSha: undefined as string | undefined,
-  } as null | {
+  project: null as null | {
     _id: { toString(): string };
     workspaceId: { toString(): string };
     path: string;
-    deployStatusPendingSha?: string;
   },
   posts: [] as Array<{
     owner: string;
@@ -37,7 +46,6 @@ const state = vi.hoisted(() => ({
     };
     token?: string;
   }>,
-  updates: [] as Array<{ filter: unknown; update: unknown }>,
   events: [] as Array<{ workspaceId: string; event: unknown }>,
 }));
 
@@ -72,18 +80,14 @@ vi.mock("./cloud-repo.service", () => ({
 
 vi.mock("./worktree.service", () => ({
   appRootFor: vi.fn((p: { path: string }) => p.path),
+  repoForWorkspace: vi.fn(async () => state.repoDir),
   resolveProjectRef: vi.fn(async () => state.project),
 }));
 
-vi.mock("../database/workspace-schema", () => ({
-  AppProject: {
-    updateOne: vi.fn(async (filter: unknown, update: unknown) => {
-      state.updates.push({ filter, update });
-      return { matchedCount: 1 };
-    }),
-  },
-}));
-
+import {
+  AppDeployCommitStatus,
+  AppProject,
+} from "../database/workspace-schema";
 import {
   appDeployStatusContext,
   describeDeployFailure,
@@ -92,12 +96,53 @@ import {
   resetDeployStatusWarningsForTest,
 } from "./deploy-commit-status";
 
-const WS = "6a9411eb4c8b33609a65e666";
-const APP = "6a9411eb4c8b33609a65e665";
-const SHA = "a".repeat(40);
-const OLDER = "b".repeat(40);
+const WS = new Types.ObjectId().toString();
+const APP = new Types.ObjectId().toString();
 
-beforeEach(() => {
+let mongo: MongoMemoryServer;
+let tmp: string;
+/** main: C1 → C2 → C3; SIDE forks from C1 (neither ancestor nor descendant of C3). */
+const commits = { C1: "", C2: "", C3: "", SIDE: "" };
+
+function git(...args: string[]): string {
+  return execFileSync("git", ["-C", state.repoDir, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "t",
+      GIT_AUTHOR_EMAIL: "t@example.com",
+      GIT_COMMITTER_NAME: "t",
+      GIT_COMMITTER_EMAIL: "t@example.com",
+    },
+  }).trim();
+}
+
+function commit(message: string): string {
+  git("commit", "-q", "--allow-empty", "-m", message);
+  return git("rev-parse", "HEAD");
+}
+
+beforeAll(async () => {
+  mongo = await MongoMemoryServer.create();
+  await mongoose.connect(mongo.getUri());
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "deploy-status-"));
+  state.repoDir = tmp;
+  git("init", "-q", "-b", "main");
+  commits.C1 = commit("c1");
+  commits.C2 = commit("c2");
+  commits.C3 = commit("c3");
+  git("checkout", "-q", "-b", "side", commits.C1);
+  commits.SIDE = commit("side");
+  git("checkout", "-q", "main");
+});
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongo.stop();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+beforeEach(async () => {
   state.target = {
     kind: "connected",
     owner: "realadvisor",
@@ -112,11 +157,39 @@ beforeEach(() => {
     path: "apps/sales/calls",
   };
   state.posts = [];
-  state.updates = [];
   state.events = [];
   process.env.CLIENT_URL = "https://app.mako.ai/";
   resetDeployStatusWarningsForTest();
+  await Promise.all([
+    AppDeployCommitStatus.deleteMany({}),
+    AppProject.deleteMany({}),
+  ]);
 });
+
+function report(
+  sha: string,
+  status: "pending" | "success" | "failure",
+  description = status,
+) {
+  return reportAppDeployStatus({
+    workspaceId: WS,
+    appRef: APP,
+    sha,
+    state: status,
+    description,
+  });
+}
+
+async function ledger(sha: string) {
+  return (
+    await AppDeployCommitStatus.findOne({ workspaceId: WS, appId: APP, sha })
+      .select("state")
+      .lean()
+  )?.state;
+}
+
+const posted = () =>
+  state.posts.map(p => [p.sha, p.params.state, p.params.description]);
 
 describe("describeDeployFailure", () => {
   it("leads with the stage and the error line — the bindings failure that went unnoticed", () => {
@@ -167,19 +240,17 @@ describe("describeDeployOutcome", () => {
 
 describe("reportAppDeployStatus", () => {
   it("posts one status per app on the pushed sha, linking to the app", async () => {
-    const result = await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "failure",
-      description: "bindings failed: Name call_source not found",
-    });
+    const result = await report(
+      commits.C1,
+      "failure",
+      "bindings failed: Name call_source not found",
+    );
     expect(result).toEqual({ posted: true });
     expect(state.posts).toEqual([
       {
         owner: "realadvisor",
         repo: "mako-workspace",
-        sha: SHA,
+        sha: commits.C1,
         params: {
           state: "failure",
           description: "bindings failed: Name call_source not found",
@@ -194,14 +265,10 @@ describe("reportAppDeployStatus", () => {
     );
   });
 
-  it("pokes open windows on a final outcome so the published chip shows the error", async () => {
-    await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "failure",
-      description: "build failed",
-    });
+  it("pokes open windows on a final outcome, not on pending", async () => {
+    await report(commits.C1, "pending");
+    expect(state.events).toEqual([]);
+    await report(commits.C1, "failure");
     expect(state.events).toEqual([
       {
         workspaceId: WS,
@@ -210,121 +277,160 @@ describe("reportAppDeployStatus", () => {
     ]);
   });
 
-  it("does not poke windows for pending (nothing they show changed yet)", async () => {
-    await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "pending",
-      description: "Deploying this commit",
-    });
-    expect(state.events).toEqual([]);
+  it("records pending, then the outcome, per commit", async () => {
+    await report(commits.C1, "pending");
+    expect(await ledger(commits.C1)).toBe("pending");
+    await report(commits.C1, "success");
+    expect(await ledger(commits.C1)).toBe("success");
   });
 
-  it("remembers the pending commit and clears it once resolved", async () => {
-    await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "pending",
-      description: "Deploying this commit",
-    });
-    expect(state.updates.at(-1)?.update).toEqual({
-      $set: { deployStatusPendingSha: SHA },
-    });
-    await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "success",
-      description: "Live",
-    });
-    expect(state.updates.at(-1)).toEqual({
-      filter: expect.objectContaining({ deployStatusPendingSha: SHA }),
-      update: { $unset: { deployStatusPendingSha: 1 } },
-    });
-  });
-
-  it("resolves the commit a cancelled run left pending when a newer deploy starts", async () => {
-    if (state.project) state.project.deployStatusPendingSha = OLDER;
-    await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "pending",
-      description: "Deploying this commit",
-    });
-    expect(state.posts.map(p => [p.sha, p.params.state])).toEqual([
-      [OLDER, "success"],
-      [SHA, "pending"],
+  it("resolves a commit a cancelled run left pending once a DESCENDANT deploys", async () => {
+    await report(commits.C1, "pending");
+    state.posts = [];
+    await report(commits.C3, "pending");
+    expect(posted()).toEqual([
+      [
+        commits.C1,
+        "success",
+        `Skipped: superseded by ${commits.C3.slice(0, 7)}`,
+      ],
+      [commits.C3, "pending", "pending"],
     ]);
-    expect(state.posts[0].params.description).toBe(
-      `Skipped: superseded by ${SHA.slice(0, 7)}`,
+    expect(await ledger(commits.C1)).toBe("superseded");
+  });
+
+  // Review finding 1: a folder-only app has no row when its first deploy
+  // starts; the ledger does not need one.
+  it("resolves the first commit of an app that has no row yet", async () => {
+    expect(await AppProject.countDocuments({})).toBe(0);
+    await report(commits.C1, "pending");
+    state.posts = [];
+    await report(commits.C2, "pending");
+    expect(posted()[0]).toEqual([
+      commits.C1,
+      "success",
+      `Skipped: superseded by ${commits.C2.slice(0, 7)}`,
+    ]);
+  });
+
+  // Review finding 2: onFailure runs separately; the next run must never
+  // turn a failed commit green.
+  it("never marks a commit superseded after its own failure was recorded", async () => {
+    await report(commits.C1, "pending");
+    await report(commits.C1, "failure", "bindings failed: x");
+    state.posts = [];
+    await report(commits.C2, "pending");
+    expect(posted()).toEqual([[commits.C2, "pending", "pending"]]);
+    expect(await ledger(commits.C1)).toBe("failure");
+  });
+
+  it("loses the race to a failure recorded while it was resolving (compare-and-set)", async () => {
+    await report(commits.C1, "pending");
+    state.posts = [];
+    // The failure lands between the resolver reading "pending" and its CAS.
+    const find = AppDeployCommitStatus.findOneAndUpdate.bind(
+      AppDeployCommitStatus,
     );
+    const spy = vi
+      .spyOn(AppDeployCommitStatus, "findOneAndUpdate")
+      .mockImplementationOnce(((...args: Parameters<typeof find>) =>
+        AppDeployCommitStatus.updateOne(
+          { workspaceId: WS, appId: APP, sha: commits.C1 },
+          { $set: { state: "failure" } },
+        ).then(() => find(...args))) as unknown as typeof find);
+    await report(commits.C2, "pending");
+    spy.mockRestore();
+    expect(posted()).toEqual([[commits.C2, "pending", "pending"]]);
+    expect(await ledger(commits.C1)).toBe("failure");
+  });
+
+  it("lets a run's own failure win over a superseded mark that got there first", async () => {
+    await report(commits.C1, "pending");
+    await report(commits.C2, "pending");
+    expect(await ledger(commits.C1)).toBe("superseded");
+    state.posts = [];
+    await report(commits.C1, "failure", "build failed: x");
+    expect(posted()).toEqual([[commits.C1, "failure", "build failed: x"]]);
+    expect(await ledger(commits.C1)).toBe("failure");
+  });
+
+  // Review finding 3: a stale or redelivered event for an OLDER commit must
+  // not mark the newer pending commit superseded.
+  it("leaves a NEWER pending commit alone when an older commit's deploy starts", async () => {
+    await report(commits.C3, "pending");
+    state.posts = [];
+    await report(commits.C1, "pending");
+    expect(posted()).toEqual([[commits.C1, "pending", "pending"]]);
+    expect(await ledger(commits.C3)).toBe("pending");
+  });
+
+  it("leaves an unrelated pending commit alone (not an ancestor)", async () => {
+    await report(commits.SIDE, "pending");
+    state.posts = [];
+    await report(commits.C3, "pending");
+    expect(posted()).toEqual([[commits.C3, "pending", "pending"]]);
+    expect(await ledger(commits.SIDE)).toBe("pending");
+  });
+
+  // Review finding 4: cancelled after going live, before its final report.
+  it("calls a pending commit that is LIVE 'Live', not 'Skipped'", async () => {
+    await AppProject.collection.insertOne({
+      _id: new Types.ObjectId(APP),
+      workspaceId: new Types.ObjectId(WS),
+      publishedSha: commits.C1,
+    });
+    await report(commits.C1, "pending");
+    state.posts = [];
+    await report(commits.C2, "pending");
+    expect(posted()[0]).toEqual([
+      commits.C1,
+      "success",
+      "Live: this commit is deployed",
+    ]);
+    expect(await ledger(commits.C1)).toBe("success");
   });
 
   it("never writes to a repo when connected-repo writes are off (previews, laptops)", async () => {
     state.target = null;
-    const result = await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "failure",
-      description: "build failed",
+    expect(await report(commits.C1, "failure")).toEqual({
+      posted: false,
+      reason: "no-connected-repo",
     });
-    expect(result).toEqual({ posted: false, reason: "no-connected-repo" });
     expect(state.posts).toEqual([]);
   });
 
   it("skips quietly without a token", async () => {
     state.token = undefined;
-    const result = await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "pending",
-      description: "Deploying this commit",
+    expect(await report(commits.C1, "pending")).toEqual({
+      posted: false,
+      reason: "no-token",
     });
-    expect(result).toEqual({ posted: false, reason: "no-token" });
   });
 
   it("never throws when the GitHub App lacks Commit statuses permission", async () => {
     state.postError = new Error(
       'GitHub 403 on /repos/realadvisor/mako-workspace/statuses/aaa (no write access — the token/installation lacks permission): {"message":"Resource not accessible by integration"}',
     );
-    const result = await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "failure",
-      description: "build failed",
+    expect(await report(commits.C1, "failure")).toEqual({
+      posted: false,
+      reason: "permission",
     });
-    expect(result).toEqual({ posted: false, reason: "permission" });
   });
 
   it("never throws on any other failure either", async () => {
     state.postError = new Error("fetch failed");
-    await expect(
-      reportAppDeployStatus({
-        workspaceId: WS,
-        appRef: APP,
-        sha: SHA,
-        state: "success",
-        description: "Live",
-      }),
-    ).resolves.toEqual({ posted: false, reason: "error" });
+    await expect(report(commits.C1, "success")).resolves.toEqual({
+      posted: false,
+      reason: "error",
+    });
   });
 
   it("reports nothing for an app it cannot resolve", async () => {
     state.project = null;
-    const result = await reportAppDeployStatus({
-      workspaceId: WS,
-      appRef: APP,
-      sha: SHA,
-      state: "success",
-      description: "Live",
+    expect(await report(commits.C1, "success")).toEqual({
+      posted: false,
+      reason: "app-not-found",
     });
-    expect(result).toEqual({ posted: false, reason: "app-not-found" });
     expect(state.posts).toEqual([]);
   });
 });
