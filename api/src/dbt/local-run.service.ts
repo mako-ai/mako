@@ -94,7 +94,7 @@ export const LOCAL_RUN_SCOPE_HINT =
   "Running dbt from your checkout needs the warehouse:write scope: the " +
   "uploaded dbt code runs with the environment's warehouse credentials " +
   "(macros, hooks and schema configs can reach beyond your schema). Run " +
-  '`mako login --warehouse-write` and tick "Allow warehouse execution".';
+  '`mako login --warehouse-write` and keep "Allow warehouse execution" ticked.';
 
 /** `build --select x+ --full-refresh`, validated by the one command parser. */
 export function buildLocalRunCommand(input: {

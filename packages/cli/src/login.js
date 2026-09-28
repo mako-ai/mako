@@ -93,10 +93,30 @@ function awaitCallback(server, expectedState, timeoutMs) {
 /**
  * What the CLI asks for: read-only MCP, plus `warehouse:write` with
  * `--warehouse-write` (what `mako dbt run` needs — the consent screen shows
- * it as its own, unticked box).
+ * it as its own option, pre-ticked because it was asked for; untickable).
  */
 export function loginScopes(flags = {}) {
   return ["mcp", "query:read", ...(flags["warehouse-write"] ? ["warehouse:write"] : [])];
+}
+
+/**
+ * The browser's authorize URL. `scope` carries what `loginScopes` asks for;
+ * the consent page shows (and pre-ticks) exactly the optional scopes named
+ * here, so `--warehouse-write` must reach it.
+ */
+export function authorizeUrl(meta, { apiUrl, clientId, redirectUri, challenge, state, flags = {} }) {
+  const url = new URL(meta.authorization_endpoint);
+  url.search = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    state,
+    resource: `${normalizeApiUrl(apiUrl)}/api/mcp`,
+    scope: loginScopes(flags).join(" "),
+  }).toString();
+  return url;
 }
 
 export async function login(ctx, flags, io = { log: console.log }) {
@@ -111,17 +131,7 @@ export async function login(ctx, flags, io = { log: console.log }) {
   const clientId = await registerClient(meta, redirectUri);
   const { verifier, challenge } = pkcePair();
   const state = crypto.randomBytes(16).toString("base64url");
-  const authorize = new URL(meta.authorization_endpoint);
-  authorize.search = new URLSearchParams({
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state,
-    resource: `${apiUrl}/api/mcp`,
-    scope: loginScopes(flags).join(" "),
-  }).toString();
+  const authorize = authorizeUrl(meta, { apiUrl, clientId, redirectUri, challenge, state, flags });
 
   io.log(`Signing in to ${apiUrl}${ctx.workspaceId ? ` (workspace ${ctx.workspaceId})` : ""}…`);
   if (flags.browser === false || !openInBrowser(authorize.toString())) {

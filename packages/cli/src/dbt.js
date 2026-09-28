@@ -8,7 +8,7 @@
 // Authority: this runs YOUR uploaded dbt code with the target environment's
 // warehouse credentials — and dbt code (macros, hooks, schema configs) can
 // reach beyond your schema. So it needs `warehouse:write`
-// (`mako login --warehouse-write`, a separate unticked consent box), targets
+// (`mako login --warehouse-write`, its own consent option), targets
 // your own environment unless you pass --env, and never production. The
 // server enforces all of it — the CLI only explains.
 import { getAccessToken, findCredential } from "@makoai/app-sdk/credentials";
@@ -33,7 +33,7 @@ export function loginCanRunDbt(entry) {
 export const NEEDS_WAREHOUSE_WRITE =
   "running dbt from your checkout needs the warehouse:write scope — the uploaded dbt code runs " +
   "with the environment's warehouse credentials, and macros, hooks and schema configs can reach " +
-  'beyond your schema. Run `mako login --warehouse-write` and tick "Allow warehouse execution".';
+  'beyond your schema. Run `mako login --warehouse-write` and keep "Allow warehouse execution" ticked.';
 
 async function request(ctx, token, method, pathname, body) {
   const res = await fetch(`${ctx.apiUrl}/api/workspaces/${ctx.workspaceId}/dbt${pathname}`, {

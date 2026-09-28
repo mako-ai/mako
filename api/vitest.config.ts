@@ -16,6 +16,8 @@ export default defineConfig({
     include: [
       "src/dbt/**/*.test.ts",
       "src/auth/mcp-oauth.service.test.ts",
+      // MCP sign-in pages: consent pre-ticks requested scopes; CLI parity.
+      "src/auth/auth-page.test.ts",
       "src/integrations/github/**/*.test.ts",
       "src/routes/dbt.routes.integration.test.ts",
       "src/routes/connector-reveal-secret.test.ts",

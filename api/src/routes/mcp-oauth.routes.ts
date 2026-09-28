@@ -31,11 +31,11 @@ import {
 } from "../auth/mcp-oauth.service";
 import { hasMinimumWorkspaceRole } from "@mako/agent-tools";
 import { workspaceService } from "../services/workspace.service";
+import { authMessagePage } from "../auth/auth-page";
+import { AUTHORIZE_PATH, consentPage } from "../auth/mcp-consent-page";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
-
-const AUTHORIZE_PATH = "/api/oauth/mcp/authorize";
 
 /**
  * Public origin clients use to reach Mako (the Vite dev server proxy or the
@@ -59,15 +59,6 @@ function publicBaseUrl(c: Context): string {
 
 export function mcpResourceMetadataUrl(c: Context): string {
   return `${publicBaseUrl(c)}/.well-known/oauth-protected-resource/api/mcp`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +267,18 @@ async function parseAuthorizeParams(
   };
 }
 
+/** Any refusal of the authorize request, in the same card as the consent. */
+function cannotConnectPage(message: string): string {
+  return authMessagePage({
+    heading: "Can’t connect",
+    message,
+    next: {
+      title: "Start again from your client",
+      body: "Retry the sign-in from the app or terminal that opened this page (for the Mako CLI: mako login).",
+    },
+  });
+}
+
 async function sessionUser(c: Context) {
   const sessionId = getCookie(c, sessionManager.sessionCookieName);
   if (!sessionId) return null;
@@ -284,173 +287,12 @@ async function sessionUser(c: Context) {
   return user;
 }
 
-function consentPage(input: {
-  clientName: string;
-  params: AuthorizeParams;
-  workspaces: { id: string; name: string; role: string }[];
-}): string {
-  const { clientName, params, workspaces } = input;
-  const warehouseWrite = params.scopes.includes("warehouse:write");
-  const options = workspaces
-    .map(
-      (ws, i) => `
-      <label class="ws">
-        <input type="radio" name="workspace_id" value="${escapeHtml(ws.id)}" ${i === 0 ? "checked" : ""} />
-        <span>${escapeHtml(ws.name)}</span>
-        <em>${escapeHtml(ws.role)}</em>
-      </label>`,
-    )
-    .join("");
-  const hidden = (name: string, value?: string) =>
-    value
-      ? `<input type="hidden" name="${name}" value="${escapeHtml(value)}" />`
-      : "";
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Connect ${escapeHtml(clientName)} — Mako</title>
-<script>
-  // Match the app's explicit preference before paint; otherwise CSS follows the OS.
-  (function () {
-    function syncTheme() {
-      try {
-        var mode = localStorage.getItem("themeMode");
-        if (mode === "light" || mode === "dark") {
-          document.documentElement.dataset.theme = mode;
-        } else {
-          delete document.documentElement.dataset.theme;
-        }
-      } catch (_) { /* System theme still works when storage is unavailable. */ }
-    }
-    syncTheme();
-    window.addEventListener("storage", syncTheme);
-  })();
-</script>
-<style>
-  :root { color-scheme: light; --page: #f6f5f1; --surface: #fff;
-          --ink: #1a1a1a; --muted: #555; --border: #d8d5cc;
-          --shadow: #e3e0d7; --accent: #6c4fd8; }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) { color-scheme: dark; --page: #161513;
-      --surface: #201e1a; --ink: #edeae3; --muted: #b8b3a9;
-      --border: #55504a; --shadow: #302c26; --accent: #b7a5ff; }
-  }
-  :root[data-theme="dark"] { color-scheme: dark; --page: #161513;
-    --surface: #201e1a; --ink: #edeae3; --muted: #b8b3a9;
-    --border: #55504a; --shadow: #302c26; --accent: #b7a5ff; }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: var(--page); color: var(--ink); display: flex;
-         min-height: 100vh; min-height: 100svh; padding: 32px 24px;
-         align-items: center; justify-content: center; margin: 0; }
-  .card { background: var(--surface); border: 1px solid var(--border); padding: 32px;
-          max-width: 486px; width: 100%; overflow-wrap: anywhere;
-          box-shadow: 6px 6px 0 0 var(--shadow); }
-  .brand { font: 600 12px ui-monospace, monospace; letter-spacing: 0.14em;
-           margin-bottom: 28px; }
-  h1 { font-size: 22px; letter-spacing: -0.025em; margin: 0 0 4px; }
-  p { color: var(--muted); font-size: 14px; line-height: 1.6; }
-  fieldset { border: 0; padding: 0; margin: 24px 0 0; min-width: 0; }
-  legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 8px; }
-  .ws { display: flex; align-items: center; gap: 10px; padding: 12px;
-        border: 1px solid var(--border); margin-bottom: 8px; cursor: pointer;
-        font-size: 14px; }
-  .ws:has(input:checked) { border-color: var(--accent); background: var(--page); }
-  .ws:hover { background: var(--page); }
-  .ws span { min-width: 0; }
-  .ws em { margin-left: auto; color: var(--muted); font-style: normal;
-           font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-  input { accent-color: var(--accent); flex-shrink: 0; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  .scopes { background: var(--page); border: 1px solid var(--border); padding: 12px;
-            font-size: 13px; line-height: 1.6; color: var(--muted); margin: 16px 0; }
-  .scopes strong { color: var(--ink); }
-  .scope-option { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px;
-                  cursor: pointer; }
-  .scope-option input { margin-top: 4px; }
-  .actions { display: flex; gap: 8px; margin-top: 24px; }
-  button { flex: 1; padding: 12px 16px; font: inherit; font-size: 14px;
-           font-weight: 500; cursor: pointer; border: 1px solid var(--ink);
-           display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-  .allow { background: var(--ink); color: var(--surface); }
-  .deny { background: var(--surface); color: var(--ink); }
-  button:hover { opacity: 0.8; }
-  button[disabled] { cursor: default; opacity: 0.65; }
-  .spinner { width: 14px; height: 14px; border-radius: 50%; flex: none;
-             border: 2px solid currentColor; border-top-color: transparent;
-             animation: spin 0.7s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
-  @media (max-width: 480px) { .card { padding: 24px; } }
-</style>
-</head>
-<body>
-<main class="card">
-  <div class="brand">MAKO / CONNECT</div>
-  <h1>Connect ${escapeHtml(clientName)}</h1>
-  <p><strong>${escapeHtml(clientName)}</strong> wants to access a Mako workspace over MCP.</p>
-  <form method="post" action="${AUTHORIZE_PATH}">
-    ${hidden("client_id", params.clientId)}
-    ${hidden("redirect_uri", params.redirectUri)}
-    ${hidden("state", params.state)}
-    ${hidden("code_challenge", params.codeChallenge)}
-    ${hidden("scope", params.scopes.join(" "))}
-    <fieldset>
-      <legend>Choose a workspace</legend>
-      ${options}
-    </fieldset>
-    <div class="scopes">
-      <strong>Workspace authoring:</strong> explore schemas, run read-only
-      queries, and create or edit Mako apps and dbt files.
-      ${
-        warehouseWrite
-          ? `<label class="scope-option"><input type="checkbox" name="grant_warehouse_write" value="yes" /><span><strong>Allow warehouse execution</strong><br />Run and cancel dbt models and jobs. These operations can create, replace, or modify relations in your warehouse.</span></label>`
-          : `<br /><br />Warehouse execution is not requested. This connection cannot run dbt models or jobs.`
-      }
-    </div>
-    <div class="actions">
-      <button class="deny" type="submit" name="decision" value="deny">Deny</button>
-      <button class="allow" type="submit" name="decision" value="allow"><span class="label">Allow</span></button>
-    </div>
-  </form>
-</main>
-<script>
-  // Approving mints the code and round-trips back to the MCP client, which
-  // can take a moment — show a spinner and lock the form so the user knows
-  // the click registered and can't double-submit. The disable is deferred a
-  // tick so the clicked button's name/value is still serialized into the
-  // POST body (disabling synchronously would drop it in some browsers).
-  (function () {
-    var form = document.querySelector("form");
-    form.addEventListener("submit", function (e) {
-      var decision = e.submitter && e.submitter.value;
-      setTimeout(function () {
-        form.querySelectorAll("button").forEach(function (b) {
-          b.disabled = true;
-        });
-        if (decision === "allow") {
-          form.querySelector(".allow").innerHTML =
-            '<span class="spinner"></span><span>Connecting…</span>';
-        }
-      }, 0);
-    });
-  })();
-</script>
-</body>
-</html>`;
-}
-
 mcpOAuthRoutes.get("/authorize", async c => {
   const query = c.req.query();
   const parsed = await parseAuthorizeParams(query);
   if (!parsed.ok) {
     if ("redirect" in parsed) return c.redirect(parsed.redirect, 302);
-    return c.html(
-      `<h1>Cannot connect</h1><p>${escapeHtml(parsed.message)}</p>`,
-      parsed.status,
-    );
+    return c.html(cannotConnectPage(parsed.message), parsed.status);
   }
 
   const user = await sessionUser(c);
@@ -467,7 +309,15 @@ mcpOAuthRoutes.get("/authorize", async c => {
   );
   if (memberships.length === 0) {
     return c.html(
-      "<h1>No workspace</h1><p>Create a workspace in Mako first, then retry from your MCP client.</p>",
+      authMessagePage({
+        heading: "No workspace yet",
+        message:
+          "This account is not a member of any Mako workspace, so there is nothing to connect to.",
+        next: {
+          title: "Create or join a workspace",
+          body: "Create a workspace in Mako (or accept an invitation), then start the connection again from your MCP client.",
+        },
+      }),
       400,
     );
   }
@@ -502,10 +352,7 @@ mcpOAuthRoutes.post("/authorize", async c => {
   const parsed = await parseAuthorizeParams(params);
   if (!parsed.ok) {
     if ("redirect" in parsed) return c.redirect(parsed.redirect, 302);
-    return c.html(
-      `<h1>Cannot connect</h1><p>${escapeHtml(parsed.message)}</p>`,
-      parsed.status,
-    );
+    return c.html(cannotConnectPage(parsed.message), parsed.status);
   }
 
   const user = await sessionUser(c);
@@ -528,7 +375,7 @@ mcpOAuthRoutes.post("/authorize", async c => {
   const member = await workspaceService.getMember(workspaceId, String(user.id));
   if (!member) {
     return c.html(
-      "<h1>Cannot connect</h1><p>You are not a member of that workspace.</p>",
+      cannotConnectPage("You are not a member of that workspace."),
       403,
     );
   }
@@ -541,7 +388,9 @@ mcpOAuthRoutes.post("/authorize", async c => {
     !hasMinimumWorkspaceRole(member.role, "member")
   ) {
     return c.html(
-      "<h1>Cannot connect</h1><p>Warehouse execution requires at least the member workspace role.</p>",
+      cannotConnectPage(
+        "Running dbt in the warehouse needs at least the member role in this workspace. Untick it to connect read-only, or ask an admin for access.",
+      ),
       403,
     );
   }
