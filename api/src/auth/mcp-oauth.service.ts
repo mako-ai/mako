@@ -6,7 +6,9 @@
  * client (Claude, Cursor, Codex) implement. Tokens are opaque `mcpat_`/
  * `mcprt_` strings. OAuth grants default to the read-only MCP set; clients
  * may explicitly request the narrower `warehouse:write` scope for governed
- * dbt execution, which is shown prominently on the consent screen.
+ * dbt execution, which is shown prominently on the consent screen, and
+ * `dbt:personal` (the `mako` CLI does) to build the user's own dbt
+ * environment — each is its own checkbox on that screen.
  */
 import * as crypto from "crypto";
 
@@ -40,6 +42,7 @@ export const MCP_OAUTH_SCOPES = [
   "mcp",
   "query:read",
   "warehouse:write",
+  "dbt:personal",
 ] as const satisfies readonly WorkspaceApiKeyScope[];
 
 const MCP_OAUTH_SCOPE_SET = new Set<string>(MCP_OAUTH_SCOPES);
@@ -68,16 +71,23 @@ export function parseMcpOAuthScopes(value?: string): WorkspaceApiKeyScope[] {
     ...(requested.includes("warehouse:write")
       ? (["warehouse:write"] as const)
       : []),
+    ...(requested.includes("dbt:personal") ? (["dbt:personal"] as const) : []),
   ];
 }
 
-/** Never turn a client request into warehouse authority without user opt-in. */
+/**
+ * Never turn a client request into warehouse authority without user opt-in:
+ * each optional scope survives only when its own box was ticked.
+ */
 export function resolveMcpOAuthConsentScopes(
   requested: readonly WorkspaceApiKeyScope[],
   warehouseWriteApproved: boolean,
+  dbtPersonalApproved = false,
 ): WorkspaceApiKeyScope[] {
   return requested.filter(
-    scope => scope !== "warehouse:write" || warehouseWriteApproved,
+    scope =>
+      (scope !== "warehouse:write" || warehouseWriteApproved) &&
+      (scope !== "dbt:personal" || dbtPersonalApproved),
   );
 }
 

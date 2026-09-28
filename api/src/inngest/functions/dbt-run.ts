@@ -26,6 +26,7 @@ import {
 import { loggers } from "../../logging";
 import { parseDbtCommand } from "../../dbt/commands";
 import { loadDbtProjectSnapshot } from "../../dbt/dbt-project.service";
+import { loadLocalOverlay } from "../../dbt/local-overlay";
 import {
   parseSourceFreshness,
   parseStepResults,
@@ -232,6 +233,10 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         commands: run.commands,
         gitBranch: run.gitBranch ?? null,
         workingTreeUserId: run.workingTreeUserId ?? null,
+        localOverlayKey: run.localOverlay?.key ?? null,
+        // A laptop run builds in its owner's own warm dir, like a
+        // working-tree build: never the shared committed-deploy dir.
+        triggeredBy: run.triggeredBy,
         jobId: run.jobId?.toString(),
         restoreArtifactKeys: run.restoreArtifactKeys
           ? {
@@ -288,6 +293,10 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             // user's draft overlay. Default: the project default branch.
             branch: runInfo.gitBranch ?? undefined,
             userId: runInfo.workingTreeUserId ?? undefined,
+            // `mako dbt run`: the developer's uploaded files over their base.
+            overlay: runInfo.localOverlayKey
+              ? await loadLocalOverlay(runInfo.localOverlayKey)
+              : undefined,
           });
           // Stash BigQuery credentials so a cancel can stop in-flight warehouse
           // jobs (best-effort; no-op for non-BigQuery adapters).
@@ -378,7 +387,11 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                     // user's draft overlay — isolate them in a per-user dir so
                     // they can never reconcile the shared committed-deploy dir
                     // into a draft state.
-                    userId: runInfo.workingTreeUserId ?? undefined,
+                    userId:
+                      runInfo.workingTreeUserId ??
+                      (runInfo.localOverlayKey
+                        ? `local:${runInfo.triggeredBy}`
+                        : undefined),
                   },
                   dir => runOnce(dir),
                 );

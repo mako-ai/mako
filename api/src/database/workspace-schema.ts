@@ -4780,6 +4780,20 @@ export interface IDbtRun extends Document {
    */
   deferToProduction?: boolean;
   /**
+   * `mako dbt run` from a laptop checkout: the run builds the tree at
+   * `baseSha` (a commit of the workspace repo) with the developer's local
+   * files laid over it — uncommitted edits included, never committed
+   * anywhere. The overlay itself is a JSON blob in the artifact store at
+   * `key`; without `baseSha` it is the whole dbt/ tree. Never set together
+   * with `gitBranch` / `workingTreeUserId`.
+   */
+  localOverlay?: {
+    key: string;
+    baseSha?: string;
+    files: number;
+    deletes: number;
+  };
+  /**
    * Pull-request CI context (trigger === "ci"). Drives the GitHub commit
    * status posted back to the PR head on completion.
    */
@@ -4861,6 +4875,18 @@ const DbtRunSchema = new Schema<IDbtRun>(
     workingTreeUserId: { type: String },
     sourceBranch: { type: String },
     deferToProduction: { type: Boolean },
+    localOverlay: {
+      type: new Schema(
+        {
+          key: { type: String, required: true },
+          baseSha: { type: String },
+          files: { type: Number, required: true },
+          deletes: { type: Number, required: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     ci: {
       type: new Schema(
         {

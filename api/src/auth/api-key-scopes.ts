@@ -17,6 +17,13 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * so raw DML/DDL requires BOTH a deliberately-scoped key AND a
  * deliberately-flagged connection.
  *
+ * `dbt:personal` is narrower still: it maps to no capability grant and no
+ * MCP tool. It lets `mako dbt run` build the caller's OWN dbt environment
+ * (`ownerUserId` = the caller) from a laptop checkout — a schema only that
+ * person reads. Shared and prod-like environments still need
+ * `warehouse:write`, and the prod-like one refuses ad-hoc builds whatever
+ * the scope (assertAdhocDbtRunAllowed).
+ *
  * `members:write` maps to the `members-write` grant behind workspace
  * invitations. It is the one scope that can widen who holds every other
  * scope, so it is gated twice over: the key must carry it AND the key's
@@ -32,6 +39,7 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "query:read",
   "query:write",
   "warehouse:write",
+  "dbt:personal",
   "git:write",
   "members:write",
 ] as const;

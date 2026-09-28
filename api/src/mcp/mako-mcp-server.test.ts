@@ -125,6 +125,24 @@ async function main() {
     ),
     ["mcp", "query:read", "warehouse:write"],
   );
+  // `mako login` asks for dbt:personal; it too survives only its own box.
+  assert.deepEqual(parseMcpOAuthScopes("mcp query:read dbt:personal"), [
+    "mcp",
+    "query:read",
+    "dbt:personal",
+  ]);
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(
+      ["mcp", "query:read", "warehouse:write", "dbt:personal"],
+      false,
+      true,
+    ),
+    ["mcp", "query:read", "dbt:personal"],
+  );
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(["mcp", "query:read", "dbt:personal"], true),
+    ["mcp", "query:read"],
+  );
   const oauthMetadataResponse = await mcpOAuthWellKnownRoutes.request(
     "http://localhost/.well-known/oauth-authorization-server",
   );
@@ -136,6 +154,7 @@ async function main() {
     "mcp",
     "query:read",
     "warehouse:write",
+    "dbt:personal",
   ]);
   // query:write is double-gated: the scope alone yields "write-opt-in",
   // which resolves to write ONLY against connections a workspace admin

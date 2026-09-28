@@ -16,6 +16,8 @@ import {
   type IDbtProject,
 } from "../database/workspace-schema";
 import { loadWorkingTreeContents } from "./dbt-working-tree.service";
+import { applyLocalOverlay, type LocalOverlay } from "./local-overlay";
+import { ensureCommitLocally } from "../apps/cloud-repo.service";
 import { renderDbtProfile, type RenderedProfile } from "./adapter-map";
 import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
 import { parseDbtCommand, type ParsedDbtCommand } from "./commands";
@@ -62,6 +64,12 @@ export async function loadDbtProjectSnapshot(params: {
   userId?: string;
   /** Explicit branch (CI runs building a PR head). */
   branch?: string;
+  /**
+   * A laptop checkout (`mako dbt run`): the tree at `overlay.baseSha` with
+   * the uploaded files laid over it, or the uploaded tree alone. Wins over
+   * `userId` / `branch`.
+   */
+  overlay?: LocalOverlay;
 }): Promise<DbtProjectSnapshot> {
   const project = await DbtProject.findOne({
     _id: new Types.ObjectId(params.projectId),
@@ -98,10 +106,21 @@ export async function loadDbtProjectSnapshot(params: {
   // session branch (apps.md §20). A missing dbt_project.yml means the folder
   // is not there (pre-cutover, or someone deleted it) — fail with a message
   // that says so instead of handing dbt an empty tree.
-  const files = await loadWorkingTreeContents(project, {
-    userId: params.userId,
-    branch: params.branch,
-  });
+  const overlay = params.overlay;
+  if (overlay?.baseSha) {
+    await ensureCommitLocally(params.workspaceId, overlay.baseSha);
+  }
+  const files = overlay
+    ? applyLocalOverlay(
+        overlay.baseSha
+          ? await loadWorkingTreeContents(project, { commit: overlay.baseSha })
+          : [],
+        overlay,
+      )
+    : await loadWorkingTreeContents(project, {
+        userId: params.userId,
+        branch: params.branch,
+      });
   if (!files.some(f => f.path === "dbt_project.yml")) {
     throw new Error(
       "No dbt project found: the workspace repo has no dbt/dbt_project.yml on this branch",

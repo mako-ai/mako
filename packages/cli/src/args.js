@@ -1,4 +1,4 @@
-/** Tiny argv parser: `mako <command> [positional…] [--flag[=value]]`. */
+/** Tiny argv parser: `mako <command> [positional…] [--flag[=value]] [-f value]`. */
 export function parseArgs(argv) {
   const out = { command: null, positional: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -17,6 +17,15 @@ export function parseArgs(argv) {
         } else {
           out.flags[arg.slice(2)] = true;
         }
+      }
+    } else if (/^-[A-Za-z]$/.test(arg)) {
+      // Short flag (`-s stg_orders`): same rules as its long form.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        out.flags[arg.slice(1)] = next;
+        i++;
+      } else {
+        out.flags[arg.slice(1)] = true;
       }
     } else if (out.command === null) {
       out.command = arg;

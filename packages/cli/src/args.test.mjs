@@ -14,6 +14,14 @@ test("parseArgs", () => {
   assert.equal(parseArgs([]).command, null);
 });
 
+test("parseArgs: short flags, as `mako dbt run -s <selector>` needs", () => {
+  assert.deepEqual(parseArgs(["dbt", "run", "-s", "stg_orders+", "--full-refresh"]), {
+    command: "dbt", positional: ["run"], flags: { s: "stg_orders+", "full-refresh": true },
+  });
+  // A selector never starts with "-", so a following flag is not its value.
+  assert.deepEqual(parseArgs(["dbt", "run", "-s", "--env", "dev"]).flags, { s: true, env: "dev" });
+});
+
 test("pkce challenge is S256 of the verifier", () => {
   const { verifier, challenge } = pkcePair();
   assert.equal(crypto.createHash("sha256").update(verifier).digest("base64url"), challenge);

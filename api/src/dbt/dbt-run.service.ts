@@ -203,6 +203,18 @@ export async function triggerDbtRun(params: {
    * instead of here.
    */
   deferToProduction?: boolean;
+  /**
+   * A laptop checkout (`mako dbt run`): build the stored overlay over its
+   * base commit instead of any branch. `label` is the display-only source
+   * ("local checkout on feat/x").
+   */
+  localOverlay?: {
+    key: string;
+    baseSha?: string;
+    files: number;
+    deletes: number;
+    label: string;
+  };
   /** PR context for CI runs (trigger === "ci"). */
   ci?: DbtRunCiContext;
   /**
@@ -238,6 +250,7 @@ export async function triggerDbtRun(params: {
   // branch; explicit-branch runs record it directly; everything else (jobs,
   // deploys) builds the default branch of the workspace repo.
   const sourceBranch =
+    params.localOverlay?.label ??
     params.gitBranch ??
     (project
       ? await getCheckoutBranch(project, params.workingTreeUserId)
@@ -264,6 +277,16 @@ export async function triggerDbtRun(params: {
     workingTreeUserId: params.workingTreeUserId,
     sourceBranch,
     deferToProduction: params.deferToProduction,
+    ...(params.localOverlay
+      ? {
+          localOverlay: {
+            key: params.localOverlay.key,
+            baseSha: params.localOverlay.baseSha,
+            files: params.localOverlay.files,
+            deletes: params.localOverlay.deletes,
+          },
+        }
+      : {}),
     ci: params.ci,
   });
 
