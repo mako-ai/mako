@@ -9,11 +9,11 @@ Where [MCP Connectors](/mcp-connectors/) let Mako's agent use _other_ systems' t
 
 Want Claude Code or Codex **inside** the Mako UI instead? See [Coding Agents (ACP)](/coding-agents-acp/).
 
-**Data access over MCP is read-only by default, everywhere.** A client may request `warehouse:write` during OAuth sign-in to run governed dbt models and jobs; the consent screen presents a separate, unchecked approval for that permission and warns that it can modify warehouse relations. Raw SQL writes remain a narrower, double-gated API-key opt-in requiring **both** a key with `query:write` and a connection explicitly marked _Allow agent writes_. Neither write permission is granted by default.
+**Data access over MCP is read-only by default, everywhere.** A client may request `warehouse:write` during OAuth sign-in to run governed dbt models and jobs; the consent screen shows that permission as its own option — ticked because the client asked for it, and yours to untick — and warns that it can modify warehouse relations. A client that does not request it never gets the option. Raw SQL writes remain a narrower, double-gated API-key opt-in requiring **both** a key with `query:write` and a connection explicitly marked _Allow agent writes_. Neither write permission is granted by default.
 
 ## Connect by signing in (no API key)
 
-Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, and approve the requested access. Normal connections are read-only against warehouse data; clients requesting dbt execution show a separate, unchecked `warehouse:write` approval.
+Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, and approve the requested access. Normal connections are read-only against warehouse data; clients requesting dbt execution show a separate `warehouse:write` option, pre-ticked because they asked for it; untick it to connect read-only.
 
 Inside the app, everything lives at **Settings → Connect Agents**: per-client setup with one-click **Add to Claude** / **Add to Cursor** buttons, plus a **Connected agents** list showing every agent with access (who connected it, when it was last used) with one-click disconnect.
 
@@ -172,7 +172,7 @@ the files that differ from where your branch forked from `main` along with the
 run request, nothing is committed or pushed, and the log streams to your
 terminal (Ctrl-C cancels the run; the exit code is dbt's). No warehouse
 credentials on your laptop. It needs the `warehouse:write` scope
-(`mako login --warehouse-write`, the separate unchecked approval): your dbt
+(`mako login --warehouse-write`, which asks for it; the consent screen shows it as its own option, pre-ticked and yours to untick): your dbt
 code runs with the target environment's warehouse credentials, and macros,
 hooks and schema configs can write beyond your own schema — personal
 environments currently share the production connection, so this is not a

@@ -500,8 +500,10 @@ would fall through to the SPA fallback and poison client discovery.
 - `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
 - Scopes default to the read-only set (`mcp`, `query:read`). OAuth clients may
-  request `warehouse:write`; the authorize page shows a separate, unchecked
-  warehouse-mutation approval. `warehouse:write` is also what `mako dbt run`
+  request `warehouse:write`; the authorize page then shows a separate
+  warehouse-mutation option, pre-ticked because the client asked for it and
+  untickable (only what is still ticked is granted). A client that does not
+  request it never sees the option. `warehouse:write` is also what `mako dbt run`
   needs to build a laptop checkout through `/api/workspaces/:id/dbt/local-runs`
   (the caller's own environment by default; never another person's, never
   the prod-like one): the uploaded dbt code runs with the environment's
