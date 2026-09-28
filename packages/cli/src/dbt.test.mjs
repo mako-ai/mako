@@ -13,7 +13,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { collectLocalDbtChanges, projectPath } from "./dbt-files.js";
-import { dbt, loginCanRunDbt } from "./dbt.js";
+import { dbt, loginCanRunDbt, NEEDS_WAREHOUSE_WRITE } from "./dbt.js";
+import { loginScopes } from "./login.js";
 
 function sh(cwd, ...args) {
   return execFileSync("git", args, {
@@ -137,12 +138,18 @@ test("a checkout without dbt/dbt_project.yml is refused before any request", () 
   }
 });
 
-test("logins from before dbt runs are caught locally", () => {
+// Review finding (#1013, HIGH): running uploaded dbt code needs
+// warehouse:write — nothing narrower is honest about what that code can do.
+test("only a warehouse:write login may run dbt, and the CLI says why", async () => {
   assert.equal(loginCanRunDbt({ scopes: ["mcp", "query:read"] }), false);
-  assert.equal(loginCanRunDbt({ scopes: ["mcp", "query:read", "dbt:personal"] }), true);
+  assert.equal(loginCanRunDbt({ scopes: ["mcp", "query:read", "dbt:personal"] }), false);
   assert.equal(loginCanRunDbt({ scopes: ["mcp", "warehouse:write"] }), true);
   // Unknown scopes (a server that never reported them): let the server decide.
   assert.equal(loginCanRunDbt({}), true);
+  assert.deepEqual(loginScopes({}), ["mcp", "query:read"]);
+  assert.deepEqual(loginScopes({ "warehouse-write": true }), ["mcp", "query:read", "warehouse:write"]);
+  assert.match(NEEDS_WAREHOUSE_WRITE, /mako login --warehouse-write/);
+  assert.match(NEEDS_WAREHOUSE_WRITE, /warehouse credentials/);
 });
 
 /** Stub the dbt REST routes: the POST answer, then GET answers in order. */
@@ -261,4 +268,18 @@ test("bad invocations never reach the server", async () => {
     assert.equal(code, 2);
     assert.equal(calls.length, 0);
   }
+});
+
+// Review finding (#1013): the server caps stored log lines; a follower that
+// fell behind is told how many it missed instead of silently skipping them.
+test("a log gap reported by the server is shown, not swallowed", async () => {
+  const server = stubServer({
+    start: { success: true, runId: "r3", projectId: "p1", environment: "joan", commands: ["run --select m"] },
+    polls: [
+      { status: "success", environment: "joan", logs: [{ line: "tail line" }], logCursor: 7001, logsSkipped: 2000 },
+    ],
+  });
+  const { code, output } = await runDbt(["run"], { s: "m" }, server);
+  assert.equal(code, 0);
+  assert.match(output, /… 2000 log lines not retained …\ntail line/);
 });

@@ -5,17 +5,27 @@
  *
  * Why it exists: a `mako login` token could read dbt but not run it, so
  * developers ran dbt on their laptops with their own cloud credentials —
- * against prod, too. This gives them the runner instead, with a narrower
- * authority than `warehouse:write`:
+ * against prod, too. This moves those runs onto the runner: logged, in the
+ * run history, cancellable, and without warehouse keys on laptops.
  *
- *   - `dbt:personal` builds only an environment the caller OWNS
- *     (`ownerUserId` = caller) — their own `dbt_<user>` schema, provisioned
- *     on first use exactly as the agent's dbt_run_model does.
- *   - a shared environment needs `warehouse:write`, which the OAuth consent
- *     screen only grants on an explicit, unticked-by-default checkbox.
+ * What it does NOT do is sandbox them. The uploaded files are dbt code, and
+ * dbt code can override `generate_schema_name`, set `schema=` / `database=`
+ * configs, add `on-run-start` hooks, or read `env_var()`. It runs with the
+ * target environment's connection — and a personal environment clones the
+ * prod-like one's connection. So:
+ *
+ *   - a token needs `warehouse:write` (the unticked-by-default, separately
+ *     consented scope) for ANY local run; no narrower scope could honestly
+ *     promise less. Real isolation needs a per-personal-environment
+ *     connection with a dataset-scoped service account (follow-up).
+ *   - the default target is still the caller's own environment (created on
+ *     first use), so ordinary work lands in their `dbt_<user>` schema;
+ *     another person's personal environment is refused.
  *   - the prod-like environment refuses ad-hoc warehouse writes whatever
  *     the scope (assertAdhocDbtRunAllowed, via triggerDbtRun): prod is
  *     built from main by jobs.
+ *   - known connection secrets are redacted from the run's log
+ *     (log-redaction.ts), so a model cannot print them to the terminal.
  *
  * Browser sessions are full members acting as themselves: they may target
  * any non-prod environment, as the IDE's Run button can.
@@ -68,24 +78,23 @@ export type LocalRunAuthority =
   | { kind: "session" }
   | { kind: "token"; scopes: readonly WorkspaceApiKeyScope[] };
 
-export function mayBuildSharedEnvironment(
-  authority: LocalRunAuthority,
-): boolean {
+/**
+ * May this caller run dbt code it uploaded? A session is a member acting as
+ * themselves; a token needs warehouse:write — see the module doc for why
+ * nothing narrower is offered.
+ */
+export function mayRunLocalCheckout(authority: LocalRunAuthority): boolean {
   return (
     authority.kind === "session" ||
     hasWorkspaceApiKeyScope(authority.scopes, "warehouse:write")
   );
 }
 
-export function mayBuildPersonalEnvironment(
-  authority: LocalRunAuthority,
-): boolean {
-  return (
-    mayBuildSharedEnvironment(authority) ||
-    (authority.kind === "token" &&
-      hasWorkspaceApiKeyScope(authority.scopes, "dbt:personal"))
-  );
-}
+export const LOCAL_RUN_SCOPE_HINT =
+  "Running dbt from your checkout needs the warehouse:write scope: the " +
+  "uploaded dbt code runs with the environment's warehouse credentials " +
+  "(macros, hooks and schema configs can reach beyond your schema). Run " +
+  '`mako login --warehouse-write` and tick "Allow warehouse execution".';
 
 /** `build --select x+ --full-refresh`, validated by the one command parser. */
 export function buildLocalRunCommand(input: {
@@ -143,31 +152,26 @@ export function authorizeLocalRunEnvironment(input: {
       404,
     );
   }
-  if (environment.ownerUserId === userId) {
-    if (mayBuildPersonalEnvironment(authority)) return;
-    throw new LocalRunError(
-      "This sign-in cannot run dbt. Run `mako login` again and allow " +
-        '"Build dbt in your personal environment".',
-      403,
-    );
+  if (!mayRunLocalCheckout(authority)) {
+    throw new LocalRunError(LOCAL_RUN_SCOPE_HINT, 403);
   }
-  if (environment.ownerUserId) {
+  if (environment.ownerUserId && environment.ownerUserId !== userId) {
     throw new LocalRunError(
       `Environment "${environmentName}" is another person's personal environment`,
       403,
     );
   }
-  if (mayBuildSharedEnvironment(authority)) return;
-  const prodLike = resolveProdLikeEnvironmentName(project) === environmentName;
-  throw new LocalRunError(
-    `"${environmentName}" is a ${prodLike ? "production" : "shared"} environment; ` +
-      "this sign-in may only build your personal environment (omit --env). " +
-      "Building shared environments needs `mako login --warehouse-write`" +
-      (prodLike
-        ? ", and production is only ever built from main by a job."
-        : "."),
-    403,
-  );
+  // Not only builds: `dbt test` runs uploaded hooks and macros too, with
+  // prod's credentials. triggerDbtRun's guard (writes only) stays as the
+  // backstop; a laptop checkout never runs against production at all.
+  if (resolveProdLikeEnvironmentName(project) === environmentName) {
+    throw new LocalRunError(
+      `"${environmentName}" is the production environment: it is only built ` +
+        "from main by a job, never from a checkout. Use your personal " +
+        "environment (omit --env) or a shared development one.",
+      403,
+    );
+  }
 }
 
 /** The workspace's dbt project: the one named, or the only one there is. */
@@ -243,7 +247,7 @@ export async function startLocalDbtRun(
     if (personal) {
       environmentName = personal.name;
     } else {
-      if (!mayBuildPersonalEnvironment(input.authority)) {
+      if (!mayRunLocalCheckout(input.authority)) {
         // Fall through to the authorization message below.
         environmentName = project.defaultEnvironment;
       } else {
@@ -325,4 +329,25 @@ export async function findOwnLocalRun(input: {
     triggeredBy: input.userId,
     localOverlay: { $exists: true },
   });
+}
+
+/**
+ * The log lines a follower has not seen. `since` is an ABSOLUTE line number
+ * (the `logCursor` of the previous answer); the stored array keeps only the
+ * last lines, starting at `total - logs.length`. A cursor that fell behind
+ * that window gets everything retained plus how many lines it missed.
+ */
+export function sliceRunLogs<T>(
+  logs: readonly T[],
+  total: number | undefined,
+  since: number,
+): { logs: T[]; logCursor: number; logsSkipped: number } {
+  const logCursor = Math.max(total ?? logs.length, logs.length);
+  const windowStart = logCursor - logs.length;
+  const from = Math.min(Math.max(since, windowStart), logCursor);
+  return {
+    logs: logs.slice(from - windowStart),
+    logCursor,
+    logsSkipped: Math.max(0, windowStart - Math.max(since, 0)),
+  };
 }

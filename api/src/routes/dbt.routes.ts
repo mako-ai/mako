@@ -21,6 +21,7 @@ import { resolveWorkspaceApiKeyScopes } from "../auth/api-key-scopes";
 import {
   LocalRunError,
   findOwnLocalRun,
+  sliceRunLogs,
   startLocalDbtRun,
   type LocalRunAuthority,
 } from "../dbt/local-run.service";
@@ -1426,9 +1427,13 @@ dbtRoutes.get("/local-runs/:runId", async (c: AuthenticatedContext) => {
     const run = await reconcileStaleQueuedRun(found.toObject(), {
       persist: false,
     });
-    // logsSince = number of log lines the client already has (cursor).
-    const logsSince = Number(c.req.query("logsSince")) || 0;
-    const logs = run.logs ?? [];
+    // logsSince = the absolute line number the client has read up to (the
+    // previous answer's logCursor) — it survives the executor's log cap.
+    const page = sliceRunLogs(
+      run.logs ?? [],
+      run.logTotal,
+      Number(c.req.query("logsSince")) || 0,
+    );
     return c.json({
       success: true,
       run: {
@@ -1443,8 +1448,9 @@ dbtRoutes.get("/local-runs/:runId", async (c: AuthenticatedContext) => {
         durationMs: run.durationMs,
         error: run.error,
         stepResults: run.stepResults ?? [],
-        logs: logs.slice(logsSince),
-        logCursor: logs.length,
+        logs: page.logs,
+        logCursor: page.logCursor,
+        ...(page.logsSkipped ? { logsSkipped: page.logsSkipped } : {}),
       },
     });
   } catch (error) {

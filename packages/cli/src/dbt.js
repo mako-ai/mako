@@ -5,10 +5,12 @@
 // (dbt-files.js). Nothing is committed or pushed: the files ride along with
 // the run request. The log streams here; the exit code is dbt's outcome.
 //
-// Authority: a `mako login` token carrying `dbt:personal` builds only your
-// own environment (created on first use; omit --env). Shared environments
-// need `mako login --warehouse-write`; production is only built from main by
-// a job. The server enforces all of it — the CLI only explains.
+// Authority: this runs YOUR uploaded dbt code with the target environment's
+// warehouse credentials — and dbt code (macros, hooks, schema configs) can
+// reach beyond your schema. So it needs `warehouse:write`
+// (`mako login --warehouse-write`, a separate unticked consent box), targets
+// your own environment unless you pass --env, and never production. The
+// server enforces all of it — the CLI only explains.
 import { getAccessToken, findCredential } from "@makoai/app-sdk/credentials";
 import { collectLocalDbtChanges } from "./dbt-files.js";
 
@@ -22,11 +24,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const USAGE =
   "usage: mako dbt <run|build|test> -s <selector> [--env <name>] [--full-refresh] [--no-defer] [--project <id>]";
 
-/** Can this stored login run dbt at all? Old logins predate the scope. */
+/** Can this stored login run dbt at all? */
 export function loginCanRunDbt(entry) {
   if (!entry || !Array.isArray(entry.scopes)) return true; // unknown: let the server decide
-  return entry.scopes.includes("dbt:personal") || entry.scopes.includes("warehouse:write");
+  return entry.scopes.includes("warehouse:write");
 }
+
+export const NEEDS_WAREHOUSE_WRITE =
+  "running dbt from your checkout needs the warehouse:write scope — the uploaded dbt code runs " +
+  "with the environment's warehouse credentials, and macros, hooks and schema configs can reach " +
+  'beyond your schema. Run `mako login --warehouse-write` and tick "Allow warehouse execution".';
 
 async function request(ctx, token, method, pathname, body) {
   const res = await fetch(`${ctx.apiUrl}/api/workspaces/${ctx.workspaceId}/dbt${pathname}`, {
@@ -56,9 +63,9 @@ async function request(ctx, token, method, pathname, body) {
 
 function explainRefusal(error) {
   // The scoped-route gate answers before the dbt route can: a login without
-  // dbt:personal (or warehouse:write) never reaches it.
+  // warehouse:write never reaches it.
   if (error.status === 403 && /restricted to the \/api\/mcp endpoint/.test(error.serverMessage ?? "")) {
-    return "this sign-in cannot run dbt — run `mako login` again and allow \"Build dbt in your personal environment\".";
+    return NEEDS_WAREHOUSE_WRITE;
   }
   return error.serverMessage ?? error.message;
 }
@@ -114,10 +121,7 @@ export async function dbt(ctx, positional, flags, io = { log: console.log }, dep
       return 1;
     }
     if (!loginCanRunDbt(entry)) {
-      io.log(
-        "this sign-in predates dbt runs — run `mako login` again and allow " +
-          '"Build dbt in your personal environment".',
-      );
+      io.log(NEEDS_WAREHOUSE_WRITE);
       return 1;
     }
     token = await getAccessToken(ctx.apiUrl, ctx.workspaceId);
@@ -196,6 +200,8 @@ export async function dbt(ctx, positional, flags, io = { log: console.log }, dep
         continue;
       }
       const run = body.run;
+      // The server keeps the last lines only; say so rather than skip silently.
+      if (run.logsSkipped) io.log(`… ${run.logsSkipped} log lines not retained …`);
       for (const entry of run.logs ?? []) io.log(entry.line);
       cursor = run.logCursor ?? cursor;
       if (TERMINAL.has(run.status)) {

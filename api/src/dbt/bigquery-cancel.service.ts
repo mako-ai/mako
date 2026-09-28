@@ -99,7 +99,9 @@ export async function cancelBigQueryJobs(params: {
   await Promise.all(
     params.jobs.map(async ({ jobId, location }) => {
       try {
-        await bq.job(jobId, { location: location ?? params.defaultLocation }).cancel();
+        await bq
+          .job(jobId, { location: location ?? params.defaultLocation })
+          .cancel();
         params.onLog?.({
           ts: new Date(),
           level: "warn",

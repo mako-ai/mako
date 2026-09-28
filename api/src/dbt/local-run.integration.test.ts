@@ -5,11 +5,13 @@
  * git repo, the artifact store and Inngest are stubbed. Pins the authority
  * model:
  *
- *  - `dbt:personal` builds the caller's OWN environment (created on first
- *    use) and nothing else;
- *  - shared environments need `warehouse:write` (or a browser session);
- *  - the prod-like environment refuses ad-hoc builds whatever the scope —
- *    the existing triggerDbtRun guard, reused, not re-implemented;
+ *  - any local run needs `warehouse:write` (or a browser session): the
+ *    uploaded code runs with the environment's credentials, so no narrower
+ *    scope is offered (a `dbt:personal`-style scope is refused);
+ *  - the default target is the caller's OWN environment (created on first
+ *    use); another person's is refused;
+ *  - the prod-like environment is refused for every command, and the
+ *    existing triggerDbtRun guard stays underneath as the backstop;
  *  - the run carries the uploaded overlay and never a branch to build.
  */
 import {
@@ -69,10 +71,11 @@ vi.mock("./dbt-working-tree.service", () => ({
 
 import { inngest } from "../inngest/client";
 import { DbtProject, DbtRun } from "../database/workspace-schema";
-import { DbtProtectedEnvironmentError } from "./dbt-environments.service";
+import { promotesProdManifest, triggerDbtRunRetry } from "./dbt-run.service";
 import {
   LocalRunError,
   findOwnLocalRun,
+  sliceRunLogs,
   startLocalDbtRun,
   type LocalRunAuthority,
   type StartLocalRunInput,
@@ -87,10 +90,6 @@ const JOAN = new Types.ObjectId().toString();
 const ALEX = new Types.ObjectId().toString();
 const BASE = "b".repeat(40);
 
-const PERSONAL: LocalRunAuthority = {
-  kind: "token",
-  scopes: ["mcp", "query:read", "dbt:personal"],
-};
 const WAREHOUSE: LocalRunAuthority = {
   kind: "token",
   scopes: ["mcp", "query:read", "warehouse:write"],
@@ -156,7 +155,7 @@ function input(
   return {
     workspaceId: WS.toString(),
     userId: JOAN,
-    authority: PERSONAL,
+    authority: WAREHOUSE,
     command: "build",
     select: "stg_orders+",
     sourceLabel: "feat/calls",
@@ -215,15 +214,17 @@ describe("startLocalDbtRun", () => {
     ).toBe(JOAN);
   });
 
-  it("refuses a shared environment to dbt:personal, pointing at --warehouse-write", async () => {
+  // Review finding (#1013, HIGH): no scope narrower than warehouse:write
+  // may run uploaded dbt code — not even against the caller's own schema.
+  it("refuses a login without warehouse:write, explaining why", async () => {
     await seedProject({ joanHasEnv: true });
     const error = await refusal(
-      startLocalDbtRun(input({ environment: "dev" })),
+      startLocalDbtRun(input({ authority: READ_ONLY })),
     );
     expect(error).toBeInstanceOf(LocalRunError);
     expect(error.status).toBe(403);
-    expect(error.message).toMatch(/shared environment/);
     expect(error.message).toMatch(/mako login --warehouse-write/);
+    expect(error.message).toMatch(/warehouse credentials/);
     expect(await DbtRun.countDocuments({})).toBe(0);
     expect(sendMock).not.toHaveBeenCalled();
   });
@@ -253,15 +254,17 @@ describe("startLocalDbtRun", () => {
     expect(result.run.environment).toBe("dev");
   });
 
-  it("keeps prod out of reach of ad-hoc builds whatever the scope (the existing guard)", async () => {
+  it("keeps a checkout away from prod for every command, whatever the scope", async () => {
     await seedProject({ joanHasEnv: true });
-    await expect(
-      startLocalDbtRun(input({ environment: "prod", authority: WAREHOUSE })),
-    ).rejects.toThrow(DbtProtectedEnvironmentError);
-    const error = await refusal(
-      startLocalDbtRun(input({ environment: "prod" })),
-    );
-    expect(error.message).toMatch(/production environment/);
+    for (const command of ["build", "run", "test"]) {
+      for (const authority of [WAREHOUSE, { kind: "session" } as const]) {
+        const error = await refusal(
+          startLocalDbtRun(input({ environment: "prod", command, authority })),
+        );
+        expect(error.status).toBe(403);
+        expect(error.message).toMatch(/production environment/);
+      }
+    }
     expect(await DbtRun.countDocuments({})).toBe(0);
   });
 
@@ -339,5 +342,88 @@ describe("findOwnLocalRun", () => {
         runId,
       }),
     ).toBeNull();
+  });
+});
+
+// Review finding (#1013): the executor keeps the last 5000 lines; the cursor
+// is an absolute line number so following survives the cap.
+describe("sliceRunLogs", () => {
+  const retained = ["l7000", "l7001", "l7002"]; // lines 7000..7002 of 7003
+
+  it("returns only lines after the cursor, inside the retained window", () => {
+    expect(sliceRunLogs(retained, 7003, 7001)).toEqual({
+      logs: ["l7001", "l7002"],
+      logCursor: 7003,
+      logsSkipped: 0,
+    });
+    expect(sliceRunLogs(retained, 7003, 7003).logs).toEqual([]);
+  });
+
+  it("reports the gap when the cursor fell out of the window", () => {
+    expect(sliceRunLogs(retained, 7003, 5000)).toEqual({
+      logs: retained,
+      logCursor: 7003,
+      logsSkipped: 2000,
+    });
+  });
+
+  it("treats runs without a counter as uncapped", () => {
+    expect(sliceRunLogs(["a", "b"], undefined, 1)).toEqual({
+      logs: ["b"],
+      logCursor: 2,
+      logsSkipped: 0,
+    });
+  });
+});
+
+// Review finding (#1013): a retry must rebuild the SAME uploaded tree.
+describe("triggerDbtRunRetry of a laptop run", () => {
+  it("carries the overlay and its label over", async () => {
+    await seedProject({ joanHasEnv: true });
+    const { run } = await startLocalDbtRun(input());
+    await DbtRun.updateOne(
+      { _id: run._id },
+      {
+        $set: {
+          status: "error",
+          "artifactKeys.runResults": "k/run_results.json",
+          "artifactKeys.manifest": "k/manifest.json",
+        },
+      },
+    );
+    const retry = await triggerDbtRunRetry({
+      workspaceId: WS.toString(),
+      runId: run._id.toString(),
+      triggeredBy: JOAN,
+    });
+    const stored = await DbtRun.findById(retry?._id).lean();
+    expect(stored?.localOverlay).toEqual(
+      (await DbtRun.findById(run._id).lean())?.localOverlay,
+    );
+    expect(stored?.sourceBranch).toBe("local checkout on feat/calls");
+    expect(stored?.gitBranch).toBeUndefined();
+  });
+});
+
+// Review finding (#1013): only committed main may become prod state.
+describe("promotesProdManifest", () => {
+  it("promotes a prod-environment build of main (jobs)", () => {
+    expect(promotesProdManifest({}, true)).toBe(true);
+    expect(promotesProdManifest({ gitBranch: "main" }, true)).toBe(true);
+  });
+
+  it("never promotes a laptop overlay, a working tree or a PR head", () => {
+    expect(
+      promotesProdManifest(
+        { localOverlay: { key: "k", files: 1, deletes: 0 } },
+        true,
+      ),
+    ).toBe(false);
+    expect(promotesProdManifest({ workingTreeUserId: JOAN }, true)).toBe(false);
+    expect(promotesProdManifest({ gitBranch: "feat/x" }, true)).toBe(false);
+  });
+
+  it("never promotes outside the prod-like environment", () => {
+    expect(promotesProdManifest({}, false)).toBe(false);
   });
 });

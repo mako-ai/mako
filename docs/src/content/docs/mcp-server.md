@@ -168,15 +168,18 @@ on your checkout's `dbt/` folder, uncommitted edits included: the CLI sends
 the files that differ from where your branch forked from `main` along with the
 run request, nothing is committed or pushed, and the log streams to your
 terminal (Ctrl-C cancels the run; the exit code is dbt's). No warehouse
-credentials on your laptop. `mako login` asks for the `dbt:personal` scope (its
-own checkbox on the consent screen), which builds **only your personal
-environment** — created on first use in your own `dbt_<you>` schema, and what
-an omitted `--env` means. A shared environment (`--env dev`) needs
-`mako login --warehouse-write` and its separate, unchecked approval; the
-production environment is never built ad hoc, whatever the scope — it is built
-from `main` by a job. These runs appear in the project's run history as
-`local checkout on <branch>`. The routes: `POST /api/workspaces/:id/dbt/local-runs`,
-`GET …/local-runs/:runId`, `POST …/local-runs/:runId/cancel` (your own runs only).
+credentials on your laptop. It needs the `warehouse:write` scope
+(`mako login --warehouse-write`, the separate unchecked approval): your dbt
+code runs with the target environment's warehouse credentials, and macros,
+hooks and schema configs can write beyond your own schema — personal
+environments currently share the production connection, so this is not a
+sandbox. It builds your **personal environment** by default (created on first
+use, schema `dbt_<you>`; `--env` picks a shared development one), never
+another person's, and never production — production is built from `main` by a
+job. Known connection secrets are redacted from the streamed log. Runs appear
+in the project's run history as `local checkout on <branch>`. The routes:
+`POST /api/workspaces/:id/dbt/local-runs`, `GET …/local-runs/:runId`,
+`POST …/local-runs/:runId/cancel` (your own runs only).
 
 Headless / CI: put a workspace API key in the repo's gitignored `.env`
 (`MAKO_API_KEY=revops_…`, scopes `mcp` + `query:read`) and register the server

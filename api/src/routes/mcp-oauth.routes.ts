@@ -291,7 +291,6 @@ function consentPage(input: {
 }): string {
   const { clientName, params, workspaces } = input;
   const warehouseWrite = params.scopes.includes("warehouse:write");
-  const dbtPersonal = params.scopes.includes("dbt:personal");
   const options = workspaces
     .map(
       (ws, i) => `
@@ -409,11 +408,6 @@ function consentPage(input: {
         warehouseWrite
           ? `<label class="scope-option"><input type="checkbox" name="grant_warehouse_write" value="yes" /><span><strong>Allow warehouse execution</strong><br />Run and cancel dbt models and jobs. These operations can create, replace, or modify relations in your warehouse.</span></label>`
           : `<br /><br />Warehouse execution is not requested. This connection cannot run dbt models or jobs.`
-      }
-      ${
-        dbtPersonal
-          ? `<label class="scope-option"><input type="checkbox" name="grant_dbt_personal" value="yes" checked /><span><strong>Build dbt in your personal environment</strong><br />Run, build and test dbt models from your local checkout into your own development schema only. Shared and production environments stay out of reach.</span></label>`
-          : ""
       }
     </div>
     <div class="actions">
@@ -541,7 +535,6 @@ mcpOAuthRoutes.post("/authorize", async c => {
   const scopes = resolveMcpOAuthConsentScopes(
     parsed.value.scopes,
     form.grant_warehouse_write === "yes",
-    form.grant_dbt_personal === "yes",
   );
   if (
     scopes.includes("warehouse:write") &&
@@ -551,14 +544,6 @@ mcpOAuthRoutes.post("/authorize", async c => {
       "<h1>Cannot connect</h1><p>Warehouse execution requires at least the member workspace role.</p>",
       403,
     );
-  }
-  // A viewer has no dbt environment to build: drop the optional scope
-  // rather than refuse the whole (otherwise read-only) connection.
-  if (
-    scopes.includes("dbt:personal") &&
-    !hasMinimumWorkspaceRole(member.role, "member")
-  ) {
-    scopes.splice(scopes.indexOf("dbt:personal"), 1);
   }
 
   const code = await createAuthorizationCode({

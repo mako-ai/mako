@@ -4815,6 +4815,13 @@ export interface IDbtRun extends Document {
   cancelledBy?: string;
   /** Capped, batch-written log lines (parsed from --log-format json). */
   logs: IDbtRunLogLine[];
+  /**
+   * Log lines EVER written, including those the cap has dropped from the
+   * front of `logs`: `logs[0]` is line number `logTotal - logs.length`. A
+   * follower's cursor is this absolute number, so it keeps working once the
+   * cap starts slicing. Absent on runs that predate it (= logs.length).
+   */
+  logTotal?: number;
   /** Parsed from run_results.json after each command. */
   stepResults: IDbtRunStepResult[];
   /** Structured bounded output for commands whose result is not run_results. */
@@ -4920,6 +4927,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
       ],
       default: [],
     },
+    logTotal: { type: Number },
     stepResults: {
       type: [
         new Schema<IDbtRunStepResult>(

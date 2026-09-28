@@ -22,6 +22,22 @@ test("parseArgs: short flags, as `mako dbt run -s <selector>` needs", () => {
   assert.deepEqual(parseArgs(["dbt", "run", "-s", "--env", "dev"]).flags, { s: true, env: "dev" });
 });
 
+test("parseArgs: boolean flags never swallow the next token (review #1013)", () => {
+  assert.deepEqual(parseArgs(["dbt", "run", "--full-refresh", "-s", "stg_orders"]), {
+    command: "dbt", positional: ["run"], flags: { "full-refresh": true, s: "stg_orders" },
+  });
+  // Not even a positional-looking one: `--open` is boolean, `app` is an argument.
+  assert.deepEqual(parseArgs(["dev", "--open", "sales"]), {
+    command: "dev", positional: ["sales"], flags: { open: true },
+  });
+  assert.deepEqual(parseArgs(["login", "--warehouse-write", "--api-url", "http://x"]).flags, {
+    "warehouse-write": true, "api-url": "http://x",
+  });
+  // A value flag followed by a single-dash flag gets no value either.
+  assert.deepEqual(parseArgs(["dbt", "run", "--env", "-s", "m"]).flags, { env: true, s: "m" });
+  assert.deepEqual(parseArgs(["dbt", "run", "--no-defer", "-s", "m"]).flags, { defer: false, s: "m" });
+});
+
 test("pkce challenge is S256 of the verifier", () => {
   const { verifier, challenge } = pkcePair();
   assert.equal(crypto.createHash("sha256").update(verifier).digest("base64url"), challenge);

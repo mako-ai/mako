@@ -91,18 +91,12 @@ function awaitCallback(server, expectedState, timeoutMs) {
 }
 
 /**
- * What the CLI asks for. Read-only MCP plus `dbt:personal` (`mako dbt run`
- * in your own environment); `--warehouse-write` also asks for shared
- * environments. Each optional scope is its own box on the consent screen,
- * and a server that does not know one simply leaves it out.
+ * What the CLI asks for: read-only MCP, plus `warehouse:write` with
+ * `--warehouse-write` (what `mako dbt run` needs — the consent screen shows
+ * it as its own, unticked box).
  */
 export function loginScopes(flags = {}) {
-  return [
-    "mcp",
-    "query:read",
-    ...(flags.dbt === false ? [] : ["dbt:personal"]),
-    ...(flags["warehouse-write"] ? ["warehouse:write"] : []),
-  ];
+  return ["mcp", "query:read", ...(flags["warehouse-write"] ? ["warehouse:write"] : [])];
 }
 
 export async function login(ctx, flags, io = { log: console.log }) {

@@ -28,6 +28,10 @@ import { parseDbtCommand } from "../../dbt/commands";
 import { loadDbtProjectSnapshot } from "../../dbt/dbt-project.service";
 import { loadLocalOverlay } from "../../dbt/local-overlay";
 import {
+  collectProfileSecrets,
+  createSecretRedactor,
+} from "../../dbt/log-redaction";
+import {
   parseSourceFreshness,
   parseStepResults,
   runDbt,
@@ -35,6 +39,7 @@ import {
 } from "../../dbt/runner.service";
 import {
   finalizeCancelledDbtRun,
+  promotesProdManifest,
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
 import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
@@ -99,6 +104,9 @@ function createLogWriter(runId: Types.ObjectId) {
               $slice: -MAX_LOG_LINES,
             },
           },
+          // The absolute line count, so a follower's cursor survives the
+          // $slice above (GET /dbt/local-runs/:id).
+          $inc: { logTotal: lines.length },
         },
       ).catch(error => {
         logger.warn("dbt log flush failed", { error, runId: runId.toString() });
@@ -315,10 +323,16 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           }
           const parsed = parseDbtCommand(commandText);
           const logWriter = createLogWriter(runObjectId);
+          // What the runner injects (DBT_SECRET_* values, keyfile secrets)
+          // never reaches the stored log — dbt code, a laptop's included,
+          // could otherwise print it straight back to whoever started the run.
+          const redact = createSecretRedactor(
+            collectProfileSecrets(snapshot.profile),
+          );
           // Tee the log stream to both the DB writer and the BQ job scraper.
           const onLog = (line: DbtLogLine) => {
             captureBigQueryJobs(cancelState, line.line);
-            logWriter.onLog(line);
+            logWriter.onLog({ ...line, line: redact(line.line) });
           };
 
           onLog({
@@ -442,7 +456,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             const stepResults = [
               ...parseStepResults(commandResult?.runResults),
               ...parseSourceFreshness(result.artifacts.sources),
-            ];
+            ].map(step =>
+              step.message ? { ...step, message: redact(step.message) } : step,
+            );
 
             // Upload artifacts after every command — the last successful
             // upload wins, which matches dbt's own target/ behavior.
@@ -637,7 +653,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       // --defer / state:modified+ (Slim CI, later phase).
       if (!failed) {
         const finishedRun = await DbtRun.findById(runObjectId)
-          .select("artifactKeys environment")
+          .select(
+            "artifactKeys environment gitBranch workingTreeUserId localOverlay",
+          )
           .lean();
         if (finishedRun?.artifactKeys?.manifest) {
           const project = await DbtProject.findById(
@@ -650,7 +668,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           const prodLike =
             project != null &&
             finishedRun.environment === resolveProdLikeEnvironmentName(project);
-          if (prodLike) {
+          // Only a build of committed main is prod state: never a laptop
+          // overlay, a working tree or a PR head (promotesProdManifest).
+          if (promotesProdManifest(finishedRun, prodLike)) {
             await DbtProject.updateOne(
               { _id: new Types.ObjectId(data.projectId) },
               {

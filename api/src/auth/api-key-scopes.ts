@@ -8,7 +8,10 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * `warehouse:write` is narrower than a query-write scope would be: it does
  * not unlock arbitrary DML — it maps to the `warehouse-write` capability
  * grant, whose only external-MCP tools are governed dbt executions
- * (dbt_run_model / dbt_run_job / dbt_cancel_run). `git:write` maps to the
+ * (dbt_run_model / dbt_run_job / dbt_cancel_run) — and it is what `mako dbt
+ * run` needs to build a laptop checkout (the `/dbt/local-runs` routes):
+ * uploaded dbt code runs with the environment's warehouse credentials, so
+ * no narrower scope could honestly promise less. `git:write` maps to the
  * `git-write` grant behind the dbt Git mutations (commit, branch, PR).
  *
  * `query:write` is double-gated: the scope alone only yields
@@ -16,13 +19,6 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * except those a workspace admin explicitly marked `allowAgentWrites` —
  * so raw DML/DDL requires BOTH a deliberately-scoped key AND a
  * deliberately-flagged connection.
- *
- * `dbt:personal` is narrower still: it maps to no capability grant and no
- * MCP tool. It lets `mako dbt run` build the caller's OWN dbt environment
- * (`ownerUserId` = the caller) from a laptop checkout — a schema only that
- * person reads. Shared and prod-like environments still need
- * `warehouse:write`, and the prod-like one refuses ad-hoc builds whatever
- * the scope (assertAdhocDbtRunAllowed).
  *
  * `members:write` maps to the `members-write` grant behind workspace
  * invitations. It is the one scope that can widen who holds every other
@@ -39,7 +35,6 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "query:read",
   "query:write",
   "warehouse:write",
-  "dbt:personal",
   "git:write",
   "members:write",
 ] as const;

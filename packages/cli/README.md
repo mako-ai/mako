@@ -8,8 +8,7 @@ npx @makoai/cli dev <app>  # run apps/<app> locally with real workspace data
 ```
 
 Run inside a clone of your Mako workspace repository. `login` is the same
-OAuth sign-in every MCP client does against Mako — read-only, plus
-building dbt in your own environment (PKCE, loopback
+read-only OAuth sign-in every MCP client does against Mako (PKCE, loopback
 redirect, no key to paste); the credential is tied to the workspace of the
 checkout you ran it in and refreshed automatically. `dev` installs the app if
 needed and starts its Vite dev server; the app's `makoData()` plugin
@@ -28,9 +27,10 @@ a flow lands it in the warehouse.
 dbt: `mako dbt run -s <selector>` (also `build` / `test`, `--env <name>`,
 `--full-refresh`, `--no-defer`) runs dbt in Mako's runner on this checkout's
 `dbt/` folder — uncommitted edits included, nothing committed — and streams the
-log; the exit code is dbt's. It builds your personal environment (created on
-first use) with a plain `mako login`; shared environments need
-`mako login --warehouse-write`; production is only built from `main` by a job.
+log; the exit code is dbt's. It needs `mako login --warehouse-write`: your dbt
+code runs with the environment's warehouse credentials. It builds your personal
+environment (created on first use) unless you pass `--env`; production is only
+built from `main` by a job.
 
 Also: `mako whoami` (says when the token expired, and refreshes it when it
 can), `mako logout`, `--api-url <host>` for self-hosted Mako

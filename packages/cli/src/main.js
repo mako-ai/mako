@@ -22,7 +22,8 @@ const HELP = `mako — Mako from your terminal
   mako connector probe <id|name> [--entity <e>]   run a configured connector live: check + one page, written nowhere
   mako dbt run|build|test -s <selector> [--env <name>] [--full-refresh] [--no-defer]
                                                   run dbt in Mako's runner on this checkout's dbt/ (uncommitted
-                                                  edits included); default: your personal environment
+                                                  edits included); default: your personal environment;
+                                                  needs \`mako login --warehouse-write\`
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env

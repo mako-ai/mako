@@ -28,6 +28,22 @@ const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
   "cancelled",
 ]);
 
+/**
+ * May this finished run's manifest become the project's prod state (the
+ * `--defer` / Slim CI baseline)? Only when it built the COMMITTED default
+ * branch into the prod-like environment. A laptop overlay, an agent's
+ * working tree or a PR head is not what prod runs, even when it ran against
+ * the prod environment (a read-only `dbt test --env prod` is allowed).
+ */
+export function promotesProdManifest(
+  run: Pick<IDbtRun, "gitBranch" | "workingTreeUserId" | "localOverlay">,
+  ranInProdLikeEnvironment: boolean,
+): boolean {
+  if (!ranInProdLikeEnvironment) return false;
+  if (run.localOverlay || run.workingTreeUserId) return false;
+  return !run.gitBranch || run.gitBranch === "main";
+}
+
 export function isTerminalDbtRunStatus(status: DbtRunStatus): boolean {
   return TERMINAL_DBT_RUN_STATUSES.has(status);
 }
@@ -420,10 +436,22 @@ export async function triggerDbtRunRetry(params: {
     status: "queued",
     trigger: "manual",
     triggeredBy: params.triggeredBy,
-    // Resume the same source tree the failed run built.
+    // Resume the same source tree the failed run built — a laptop run's
+    // uploaded overlay included (without it the retry would build the
+    // default branch under a "local checkout" label).
     gitBranch: source.gitBranch,
     workingTreeUserId: source.workingTreeUserId,
     sourceBranch: source.sourceBranch,
+    ...(source.localOverlay
+      ? {
+          localOverlay: {
+            key: source.localOverlay.key,
+            baseSha: source.localOverlay.baseSha,
+            files: source.localOverlay.files,
+            deletes: source.localOverlay.deletes,
+          },
+        }
+      : {}),
     deferToProduction: source.deferToProduction,
     retryOfRunId: source._id,
     restoreArtifactKeys: {
