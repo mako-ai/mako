@@ -50,12 +50,12 @@ function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
       return { binding, connection };
     }),
     committedBinding: vi.fn(async () => committedBinding),
-    render: vi.fn(async (_p, binding, _connection, environment) =>
-      binding.code.replace(
+    render: vi.fn(async (_p, binding, _connection, environment) => ({
+      code: binding.code.replace(
         "{{ dbt_schema }}",
         environment ? `dbt_${environment.name}` : "dbt_prod",
       ),
-    ),
+    })),
     artifactExists: vi.fn(async () => true),
     materialize: vi.fn(async () => ({
       rowCount: 5,
@@ -70,8 +70,9 @@ function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
     })),
     drafts: {
       lookup: vi.fn(async () => ({ kind: "miss" as const })),
-      built: vi.fn(async () => undefined),
+      built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
       failed: vi.fn(async () => 60_000),
+      forget: vi.fn(async () => undefined),
     },
     ...overrides,
   };
@@ -323,11 +324,59 @@ describe("devBuildAppBinding", () => {
       hash: draftHash({
         connectionId: CONN,
         renderedCode: "select * from dbt_prod.leads\nwhere connected",
+        devModifiedAt: null,
       }),
       filePath: "/tmp/draft.parquet",
       rowCount: 3,
       byteSize: 30,
     });
+  });
+
+  it("keys a dev-environment draft on when its dev relations were last written", async () => {
+    const hashes: string[] = [];
+    for (const devModifiedAt of [1759000000000, 1759000999000]) {
+      const d = deps({
+        render: vi.fn(async (_p, binding, _c, environment) => ({
+          code: binding.code.replace(
+            "{{ dbt_schema }}",
+            environment ? "dbt_joan" : "dbt_prod",
+          ),
+          devModifiedAt: environment ? devModifiedAt : null,
+        })),
+      });
+      await devBuildAppBinding(input({ dbtEnvironment: "joan" }), d);
+      const call = vi.mocked(d.drafts.lookup).mock.calls[0];
+      hashes.push(call[1]);
+    }
+    // A `dbt run` into the dev schema is a different draft: no stale reuse.
+    expect(hashes[0]).not.toBe(hashes[1]);
+  });
+
+  it("rebuilds when a kept draft's object is gone", async () => {
+    const d = deps({
+      artifactExists: vi.fn(async () => false),
+      drafts: {
+        lookup: vi.fn(async () => ({
+          kind: "hit" as const,
+          key: "apps/drafts/p/h-gone.parquet",
+          rowCount: 3,
+          builtAt: new Date(),
+        })),
+        built: vi.fn(async () => "apps/drafts/p/h-new.parquet"),
+        failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
+      },
+    });
+    const result = await devBuildAppBinding(
+      input({ source: `${COMMITTED}\nwhere connected` }),
+      d,
+    );
+    expect(result.kind).toBe("draft");
+    expect(d.drafts.forget).toHaveBeenCalledWith(
+      project._id.toString(),
+      "apps/drafts/p/h-gone.parquet",
+    );
+    expect(d.build).toHaveBeenCalledTimes(1);
   });
 
   it("serves a kept draft without re-running it; refresh rebuilds", async () => {
@@ -339,8 +388,9 @@ describe("devBuildAppBinding", () => {
           rowCount: 3,
           builtAt: new Date(),
         })),
-        built: vi.fn(async () => undefined),
+        built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
         failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
       },
     });
     const source = `${COMMITTED}\nwhere connected`;
@@ -368,8 +418,9 @@ describe("devBuildAppBinding", () => {
           rowCount: 3,
           builtAt: new Date(),
         })),
-        built: vi.fn(async () => undefined),
+        built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
         failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
       },
     });
     await expect(
@@ -390,8 +441,9 @@ describe("devBuildAppBinding", () => {
           failures: 2,
           error: "Unrecognized name: connected",
         })),
-        built: vi.fn(async () => undefined),
+        built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
         failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
       },
     });
     await expect(

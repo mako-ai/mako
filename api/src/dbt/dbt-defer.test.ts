@@ -9,6 +9,7 @@ import { resolveDbtBoundCode } from "./dbt-environments.service";
 import {
   dbtSchemaReferences,
   devRelationListerFor,
+  latestDevModification,
   relationKey,
   renderDbtSchemaWithDefer,
 } from "./dbt-defer";
@@ -113,6 +114,29 @@ describe("renderDbtSchemaWithDefer", () => {
   });
 });
 
+describe("latestDevModification", () => {
+  it("is the newest write among referenced relations built in dev", async () => {
+    const lister = devRelationListerFor(bigquery, async () => ({
+      success: true,
+      data: [
+        { table_name: "dim_team", last_modified_time: "1759000000000" },
+        { table_name: "fct_deals", last_modified_time: 1759000500000 },
+        { table_name: "unrelated", last_modified_time: 1759999999999 },
+        { table_name: "a_view", last_modified_time: null },
+      ],
+    }));
+    const refs = [
+      { relation: "dim_team" },
+      { relation: "fct_deals" },
+      { relation: "not_built" },
+    ];
+    const listing = await lister("dbt_joan", refs);
+    expect(latestDevModification(listing, refs)).toBe(1759000500000);
+    expect(latestDevModification(listing, [{ relation: "a_view" }])).toBeNull();
+    expect(latestDevModification(null, refs)).toBeNull();
+  });
+});
+
 describe("devRelationListerFor", () => {
   it("asks BigQuery once per qualifying project, tables and views alike", async () => {
     const runQuery = vi.fn(async (_c: IDatabaseConnection, sql: string) =>
@@ -126,13 +150,16 @@ describe("devRelationListerFor", () => {
     );
     expect(runQuery).toHaveBeenCalledTimes(2);
     expect(runQuery.mock.calls.map(c => c[1])).toEqual([
-      "SELECT table_name FROM `realadvisor-prod.dbt_joan`.INFORMATION_SCHEMA.TABLES",
-      "SELECT table_name FROM `dbt_joan`.INFORMATION_SCHEMA.TABLES",
+      "SELECT t.table_name, s.last_modified_time FROM `realadvisor-prod.dbt_joan`.INFORMATION_SCHEMA.TABLES t LEFT JOIN `realadvisor-prod.dbt_joan.__TABLES__` s ON s.table_id = t.table_name",
+      "SELECT t.table_name, s.last_modified_time FROM `dbt_joan`.INFORMATION_SCHEMA.TABLES t LEFT JOIN `dbt_joan.__TABLES__` s ON s.table_id = t.table_name",
     ]);
     expect(found).toEqual(
-      new Set([
-        relationKey({ project: "realadvisor-prod", relation: "dim_team" }),
-        relationKey({ relation: "fct_deals" }),
+      new Map([
+        [
+          relationKey({ project: "realadvisor-prod", relation: "dim_team" }),
+          null,
+        ],
+        [relationKey({ relation: "fct_deals" }), null],
       ]),
     );
   });
@@ -142,7 +169,7 @@ describe("devRelationListerFor", () => {
       success: false,
       error: "Not found: Dataset realadvisor-prod:dbt_joan was not found",
     }))("dbt_joan", [{ project: "realadvisor-prod", relation: "x" }]);
-    expect(found).toEqual(new Set());
+    expect(found).toEqual(new Map());
   });
 
   it("returns unknown on other failures, other engines and unsafe names", async () => {
@@ -206,7 +233,7 @@ describe("resolveDbtBoundCode with a dev environment (real Mongo)", () => {
 
   it("defers relations the environment lacks to the prod-like schema", async () => {
     const listDevRelations = vi.fn(
-      async () => new Set([relationKey({ relation: "built_here" })]),
+      async () => new Map([[relationKey({ relation: "built_here" }), null]]),
     );
     const out = await resolveDbtBoundCode({
       workspaceId: WS,

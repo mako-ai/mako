@@ -44,10 +44,16 @@ import {
   type AppBinding,
 } from "./bindings.service";
 import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
-import { devRelationListerFor } from "../dbt/dbt-defer";
+import {
+  dbtSchemaReferences,
+  devRelationListerFor,
+  latestDevModification,
+  type DevRelationListing,
+} from "../dbt/dbt-defer";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
   draftHash,
+  forgetDraftBuild,
   lookupDraft,
   recordDraftBuilt,
   recordDraftFailed,
@@ -131,13 +137,17 @@ export interface DevBuildDeps {
     name: string,
     actorId: string,
   ) => Promise<AppBinding | null>;
-  /** binding.code with `{{ dbt_schema }}` rendered (prod without `environment`). */
+  /**
+   * binding.code with `{{ dbt_schema }}` rendered (prod without
+   * `environment`), and — with one — when the newest dev relation it reads
+   * was last written (the draft cache's freshness signal).
+   */
   render: (
     project: IAppProject,
     binding: AppBinding,
     connection: IDatabaseConnection,
     environment?: { name: string; userId?: string; defer: boolean },
-  ) => Promise<string>;
+  ) => Promise<{ code: string; devModifiedAt?: number | null }>;
   artifactExists: (key: string) => Promise<boolean>;
   /** Materialize exactly `resolved` — never a re-read of the repo. */
   materialize: (
@@ -160,25 +170,47 @@ export interface DevBuildDeps {
     lookup: typeof lookupDraft;
     built: typeof recordDraftBuilt;
     failed: typeof recordDraftFailed;
+    forget: typeof forgetDraftBuild;
   };
 }
 
 const defaultDeps: DevBuildDeps = {
   resolveDraft: resolveDraftBinding,
   committedBinding: readCommittedBinding,
-  render: (project, binding, connection, environment) =>
-    resolveDbtBoundCode({
+  render: async (project, binding, connection, environment) => {
+    if (!environment) {
+      return {
+        code: await resolveDbtBoundCode({
+          workspaceId: project.workspaceId,
+          dbtProjectId: binding.dbtProjectId,
+          code: binding.code,
+        }),
+      };
+    }
+    // One listing serves both defer (when on) and freshness (always).
+    const lister = devRelationListerFor(connection);
+    let listing: DevRelationListing | null = null;
+    const code = await resolveDbtBoundCode({
       workspaceId: project.workspaceId,
       dbtProjectId: binding.dbtProjectId,
       code: binding.code,
-      environment: environment && {
+      environment: {
         name: environment.name,
         userId: environment.userId,
-        listDevRelations: environment.defer
-          ? devRelationListerFor(connection)
-          : undefined,
+        listDevRelations: async (schema, refs) => {
+          listing = await lister(schema, refs);
+          return environment.defer ? listing : null;
+        },
       },
-    }),
+    });
+    return {
+      code,
+      devModifiedAt: latestDevModification(
+        listing,
+        dbtSchemaReferences(binding.code),
+      ),
+    };
+  },
   artifactExists: key => getDashboardArtifactStore().exists(key),
   materialize: (project, resolved, actorId) =>
     materializeAppBinding(project, resolved.binding.name, actorId, {
@@ -190,6 +222,7 @@ const defaultDeps: DevBuildDeps = {
     lookup: lookupDraft,
     built: recordDraftBuilt,
     failed: recordDraftFailed,
+    forget: forgetDraftBuild,
   },
 };
 
@@ -203,7 +236,7 @@ export async function devBuildAppBinding(
   }
 
   let draft: { binding: AppBinding; connection: IDatabaseConnection };
-  let code: string;
+  let rendered: { code: string; devModifiedAt?: number | null };
   let asPublished: boolean;
   try {
     // A CRLF checkout of the committed file is the committed file.
@@ -213,7 +246,7 @@ export async function devBuildAppBinding(
       normalizeBindingText(input.source),
       actorId,
     );
-    code = await deps.render(
+    rendered = await deps.render(
       project,
       draft.binding,
       draft.connection,
@@ -230,10 +263,12 @@ export async function devBuildAppBinding(
     // nothing, so it must not demote a committed binding to a draft.
     asPublished =
       !input.dbtEnvironment ||
-      code ===
-        (await deps
-          .render(project, draft.binding, draft.connection)
-          .catch(() => undefined));
+      rendered.code ===
+        (
+          await deps
+            .render(project, draft.binding, draft.connection)
+            .catch(() => undefined)
+        )?.code;
   } catch (error) {
     // No connection, a connection outside this workspace, an unknown or
     // someone else's dbt environment: the request is wrong, nothing ran.
@@ -277,12 +312,20 @@ export async function devBuildAppBinding(
     connectionId: draft.binding.connectionId,
     databaseId: draft.binding.databaseId,
     databaseName: draft.binding.databaseName,
-    renderedCode: code,
+    renderedCode: rendered.code,
+    devModifiedAt: rendered.devModifiedAt ?? null,
   });
   if (!isCommitted && !input.refresh) {
     // An explicit refresh skips both: it rebuilds, and a person clicking it
     // is not the reload loop the backoff exists for.
-    const cached = await deps.drafts.lookup(projectId, hash);
+    let cached = await deps.drafts.lookup(projectId, hash);
+    if (cached.kind === "hit" && !(await deps.artifactExists(cached.key))) {
+      // Its object is gone: forget the row and decide again (a miss, or the
+      // backoff if this draft has been failing).
+      await deps.drafts.forget(projectId, cached.key);
+      cached = await deps.drafts.lookup(projectId, hash);
+      if (cached.kind === "hit") cached = { kind: "miss" };
+    }
     if (cached.kind === "hit") {
       return {
         kind: "artifact",
@@ -317,7 +360,12 @@ export async function devBuildAppBinding(
     }
     let built: { filePath: string; rowCount: number; byteSize: number };
     try {
-      built = await deps.build(project, draft.binding, draft.connection, code);
+      built = await deps.build(
+        project,
+        draft.binding,
+        draft.connection,
+        rendered.code,
+      );
     } catch (error) {
       await deps.drafts
         .failed({
