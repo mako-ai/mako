@@ -33,6 +33,8 @@ export default defineConfig({
       "src/apps/binding-refresh.test.ts",
       // The laptop dev loop: uncommitted binding text built as a draft.
       "src/apps/binding-dev-build.test.ts",
+      // Draft reuse + failure backoff: real Mongo, filesystem artifact store.
+      "src/apps/binding-draft-cache.test.ts",
       // Real git + mongo: the pre-push flow-file check reads the workspace
       // repo at main and plans against live rows.
       "src/agent-lib/tools/flow-file-tools.test.ts",

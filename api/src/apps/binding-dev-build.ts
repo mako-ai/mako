@@ -17,10 +17,13 @@
  *     or materialized exactly as `POST …/materialize` would (stored, run
  *     recorded) when there is none or the caller asked to refresh;
  *   - anything else — an uncommitted edit, or `{{ dbt_schema }}` rendered
- *     against a developer's environment — is a DRAFT: built, streamed back
- *     and deleted. Never stored, never recorded, so no artifact key, no run
- *     history and no published viewer can ever see uncommitted SQL or a
- *     personal schema. The laptop caches drafts itself, keyed by the text.
+ *     against a developer's environment — is a DRAFT: built and streamed
+ *     back. Never stored as the app's artifact and never recorded as a run,
+ *     so no published viewer can ever see uncommitted SQL or a personal
+ *     schema. A draft is kept for half an hour under its own
+ *     `apps/drafts/<project>/…` key (binding-draft-cache.ts) so a cold
+ *     laptop cache does not re-run it, and a draft that keeps failing is
+ *     refused for a growing window instead of re-run on every reload.
  *
  * Reading an already-built committed artifact needs read access (what `GET
  * …/artifact` needs); building anything needs write access (what
@@ -43,6 +46,12 @@ import {
 import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
 import { devRelationListerFor } from "../dbt/dbt-defer";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import {
+  draftHash,
+  lookupDraft,
+  recordDraftBuilt,
+  recordDraftFailed,
+} from "./binding-draft-cache";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -74,14 +83,19 @@ export interface DevBuildInput {
 
 export type DevBuildResult =
   | {
-      /** The committed binding's stored artifact answers as-is. */
+      /**
+       * A stored artifact answers as-is: the committed binding's, or a
+       * recent build of this exact draft (binding-draft-cache.ts).
+       */
       kind: "artifact";
       artifactKey: string;
+      source: "committed" | "draft-cache";
     }
   | {
       /**
        * "materialized": the committed binding, rebuilt and stored.
-       * "draft": uncommitted text or a dev dbt schema — built, not stored.
+       * "draft": uncommitted text or a dev dbt schema — built now; kept only
+       * as a short-lived draft, never as the app's artifact.
        */
       kind: "materialized" | "draft";
       /** Local temp file; the caller streams it and deletes it. */
@@ -94,7 +108,9 @@ export type DevBuildResult =
 export class DevBuildError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 403 | 404 | 502,
+    readonly status: 400 | 403 | 404 | 502 | 503,
+    /** 503 only: when the same draft may be tried again. */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "DevBuildError";
@@ -140,6 +156,11 @@ export interface DevBuildDeps {
     connection: IDatabaseConnection,
     code: string,
   ) => Promise<{ filePath: string; rowCount: number; byteSize: number }>;
+  drafts: {
+    lookup: typeof lookupDraft;
+    built: typeof recordDraftBuilt;
+    failed: typeof recordDraftFailed;
+  };
 }
 
 const defaultDeps: DevBuildDeps = {
@@ -165,6 +186,11 @@ const defaultDeps: DevBuildDeps = {
       resolved,
     }),
   build: buildResolvedBindingParquet,
+  drafts: {
+    lookup: lookupDraft,
+    built: recordDraftBuilt,
+    failed: recordDraftFailed,
+  },
 };
 
 export async function devBuildAppBinding(
@@ -235,7 +261,7 @@ export async function devBuildAppBinding(
     !input.refresh &&
     (await deps.artifactExists(committedKey))
   ) {
-    return { kind: "artifact", artifactKey: committedKey };
+    return { kind: "artifact", artifactKey: committedKey, source: "committed" };
   }
   if (!input.canWrite) {
     throw new DevBuildError(
@@ -244,6 +270,33 @@ export async function devBuildAppBinding(
         : `Your bindings/${name}.sql differs from the committed one; building uncommitted SQL needs edit access to this app`,
       403,
     );
+  }
+
+  const projectId = project._id.toString();
+  const hash = draftHash({
+    connectionId: draft.binding.connectionId,
+    databaseId: draft.binding.databaseId,
+    databaseName: draft.binding.databaseName,
+    renderedCode: code,
+  });
+  if (!isCommitted && !input.refresh) {
+    // An explicit refresh skips both: it rebuilds, and a person clicking it
+    // is not the reload loop the backoff exists for.
+    const cached = await deps.drafts.lookup(projectId, hash);
+    if (cached.kind === "hit") {
+      return {
+        kind: "artifact",
+        artifactKey: cached.key,
+        source: "draft-cache",
+      };
+    }
+    if (cached.kind === "cooling") {
+      throw new DevBuildError(
+        `This query failed ${cached.failures} time(s) in a row and is not being re-run yet: ${cached.error}`,
+        503,
+        cached.retryAfterMs,
+      );
+    }
   }
 
   try {
@@ -262,12 +315,30 @@ export async function devBuildAppBinding(
         builtAt: result.materializedAt,
       };
     }
-    const built = await deps.build(
-      project,
-      draft.binding,
-      draft.connection,
-      code,
-    );
+    let built: { filePath: string; rowCount: number; byteSize: number };
+    try {
+      built = await deps.build(project, draft.binding, draft.connection, code);
+    } catch (error) {
+      await deps.drafts
+        .failed({
+          projectId,
+          name,
+          hash,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        .catch(() => undefined);
+      throw error;
+    }
+    try {
+      await deps.drafts.built({ projectId, name, hash, ...built });
+    } catch (error) {
+      // Not keeping it only costs the next request a rebuild.
+      logger.warn("Could not keep draft build", {
+        projectId,
+        binding: name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     logger.info("Apps binding dev build", {
       projectId: project._id.toString(),
       binding: name,
