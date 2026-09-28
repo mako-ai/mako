@@ -32,8 +32,26 @@ export interface DbtSchemaReference {
 
 // `project.` / `` `project`.` `` right before the token, quoted or not.
 const PROJECT_BEFORE_RE = /([A-Za-z0-9_-]+)[`"]?\.[`"]?$/;
-// `.relation` / `` `.`relation` `` right after it.
-const RELATION_AFTER_RE = /^[`"]?\.[`"]?([A-Za-z0-9_]+)/;
+// `.relation` / `` `.`relation` `` right after it, and whether a `*`
+// (wildcard table) follows the name.
+const RELATION_AFTER_RE = /^[`"]?\.[`"]?([A-Za-z0-9_]+)(\*?)/;
+
+/**
+ * The relation a token qualifies — or undefined when it is not one a
+ * relation listing can answer for: the dataset's metadata views
+ * (`INFORMATION_SCHEMA.…`, `__TABLES__`) and wildcard tables (`events_*`)
+ * never appear in INFORMATION_SCHEMA.TABLES, so looking them up would defer
+ * them to prod every time. Like a bare token, they stay on the dev schema.
+ */
+function relationAfter(rest: string): string | undefined {
+  const m = RELATION_AFTER_RE.exec(rest);
+  if (!m) return undefined;
+  const [, name, wildcard] = m;
+  if (wildcard) return undefined;
+  if (name.toUpperCase() === "INFORMATION_SCHEMA") return undefined;
+  if (name.startsWith("__")) return undefined;
+  return name;
+}
 
 function locatedReferences(
   code: string,
@@ -45,7 +63,7 @@ function locatedReferences(
       index: m.index,
       length: m[0].length,
       project: PROJECT_BEFORE_RE.exec(code.slice(0, m.index))?.[1],
-      relation: RELATION_AFTER_RE.exec(code.slice(m.index + m[0].length))?.[1],
+      relation: relationAfter(code.slice(m.index + m[0].length)),
     });
   }
   return out;

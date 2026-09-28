@@ -32,6 +32,46 @@ describe("dbtSchemaReferences", () => {
   });
 });
 
+describe("references a listing cannot answer for", () => {
+  it("keeps metadata views and wildcard tables on the dev schema", () => {
+    const code = [
+      "select * from `p.{{ dbt_schema }}.INFORMATION_SCHEMA.TABLES`",
+      "union all select * from `p.{{ dbt_schema }}.__TABLES__`",
+      "union all select * from `p.{{ dbt_schema }}.events_*`",
+      "union all select * from `p.{{ dbt_schema }}.information_schema.columns`",
+    ].join("\n");
+    expect(dbtSchemaReferences(code).map(r => r.relation)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    // Even with an empty dev listing (which defers everything it can), none
+    // of these silently switch to prod.
+    const { code: out, deferred } = renderDbtSchemaWithDefer(code, {
+      devSchema: "dbt_joan",
+      prodSchema: "dbt_prod",
+      devRelations: new Set(),
+    });
+    expect(out).not.toContain("dbt_prod");
+    expect(deferred).toEqual([]);
+  });
+
+  it("still defers a table whose name merely contains those words", () => {
+    const { code } = renderDbtSchemaWithDefer(
+      "select * from {{ dbt_schema }}.events_2026 join {{ dbt_schema }}.stg__x using (id)",
+      {
+        devSchema: "dbt_joan",
+        prodSchema: "dbt_prod",
+        devRelations: new Set(),
+      },
+    );
+    expect(code).toBe(
+      "select * from dbt_prod.events_2026 join dbt_prod.stg__x using (id)",
+    );
+  });
+});
+
 describe("renderDbtSchemaWithDefer", () => {
   it("renders relations built in dev to dev and the rest to prod", () => {
     const devRelations = new Set([

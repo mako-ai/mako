@@ -29,11 +29,14 @@ import {
 } from "../database/workspace-schema";
 import { getUserDisplayName } from "../services/entity-version.service";
 import { isWarehouseWriteCommand, type ParsedDbtCommand } from "./commands";
+import { loggers } from "../logging";
 import {
   dbtSchemaReferences,
   renderDbtSchemaWithDefer,
   type DevRelationLister,
 } from "./dbt-defer";
+
+const logger = loggers.api("dbt-environments");
 
 type ProjectEnvFields = Pick<
   IDbtProject,
@@ -380,11 +383,22 @@ export async function resolveDbtBoundCode(params: {
       schema,
       dbtSchemaReferences(params.code),
     );
-    return renderDbtSchemaWithDefer(params.code, {
+    const rendered = renderDbtSchemaWithDefer(params.code, {
       devSchema: schema,
       prodSchema,
       devRelations,
-    }).code;
+    });
+    if (rendered.deferred.length > 0) {
+      // Which references read prod instead of the developer's schema — the
+      // first thing to check when dev data "doesn't change".
+      logger.info("dbt defer: references read the prod-like schema", {
+        environment: params.environment.name,
+        devSchema: schema,
+        prodSchema,
+        deferred: rendered.deferred,
+      });
+    }
+    return rendered.code;
   }
   const resolved = await resolveDbtSchemaForBinding({
     workspaceId: params.workspaceId,
