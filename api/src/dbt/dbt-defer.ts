@@ -93,7 +93,7 @@ export function renderDbtSchemaWithDefer(
   params: {
     devSchema: string;
     prodSchema: string;
-    devRelations: Set<string> | null;
+    devRelations: { has(key: string): boolean } | null;
   },
 ): { code: string; deferred: string[] } {
   const deferred: string[] = [];
@@ -112,11 +112,43 @@ export function renderDbtSchemaWithDefer(
   return { code: out + code.slice(last), deferred };
 }
 
+/**
+ * The relations that exist in the dev schema (by relationKey), each with when
+ * it was last written (epoch ms; null when the warehouse does not say, e.g. a
+ * view without storage metadata).
+ */
+export type DevRelationListing = Map<string, number | null>;
+
 /** Lists which referenced relations exist in the dev schema; null = unknown. */
 export type DevRelationLister = (
   devSchema: string,
   refs: DbtSchemaReference[],
-) => Promise<Set<string> | null>;
+) => Promise<DevRelationListing | null>;
+
+/**
+ * When the newest dev relation these references read was last written —
+ * a freshness signal for anything built from them (the draft cache keys on
+ * it, so a `dbt run` into the dev schema is never answered with data built
+ * before it). Null when none of them is in the dev schema, or nobody knows.
+ */
+export function latestDevModification(
+  listing: DevRelationListing | null,
+  refs: DbtSchemaReference[],
+): number | null {
+  if (!listing) return null;
+  let latest: number | null = null;
+  for (const ref of refs) {
+    if (!ref.relation) continue;
+    const modified = listing.get(relationKey(ref));
+    if (
+      typeof modified === "number" &&
+      (latest === null || modified > latest)
+    ) {
+      latest = modified;
+    }
+  }
+  return latest;
+}
 
 type RunQuery = (
   connection: IDatabaseConnection,
@@ -131,8 +163,9 @@ const SAFE_DATASET = /^[A-Za-z0-9_]+$/;
 
 /**
  * The lister for a binding's connection: BigQuery asks each qualifying
- * project's `<dev dataset>.INFORMATION_SCHEMA.TABLES` (one query per distinct
- * project, normally one). Other engines: null (no defer).
+ * project's `<dev dataset>.INFORMATION_SCHEMA.TABLES` (existence, views
+ * included) joined to its `__TABLES__` (last write time) — one query per
+ * distinct project, normally one. Other engines: null (no defer).
  */
 export function devRelationListerFor(
   connection: IDatabaseConnection,
@@ -143,12 +176,13 @@ export function devRelationListerFor(
     if (!SAFE_DATASET.test(devSchema)) return null;
     const projects = [...new Set(refs.map(ref => ref.project ?? ""))];
     if (projects.some(p => p && !SAFE_PROJECT.test(p))) return null;
-    const found = new Set<string>();
+    const found: DevRelationListing = new Map();
     for (const project of projects) {
       const dataset = project ? `${project}.${devSchema}` : devSchema;
       const result = await runQuery(
         connection,
-        `SELECT table_name FROM \`${dataset}\`.INFORMATION_SCHEMA.TABLES`,
+        `SELECT t.table_name, s.last_modified_time FROM \`${dataset}\`.INFORMATION_SCHEMA.TABLES t ` +
+          `LEFT JOIN \`${dataset}.__TABLES__\` s ON s.table_id = t.table_name`,
       );
       if (!result.success) {
         // No dev dataset yet: nothing was built there, all of it defers.
@@ -160,9 +194,18 @@ export function devRelationListerFor(
         return null;
       }
       const rows = Array.isArray(result.data) ? result.data : [];
-      for (const row of rows as Array<{ table_name?: unknown }>) {
+      for (const row of rows as Array<{
+        table_name?: unknown;
+        last_modified_time?: unknown;
+      }>) {
         if (typeof row.table_name !== "string") continue;
-        found.add(relationKey({ project, relation: row.table_name }));
+        const modified = Number(row.last_modified_time);
+        found.set(
+          relationKey({ project, relation: row.table_name }),
+          row.last_modified_time != null && Number.isFinite(modified)
+            ? modified
+            : null,
+        );
       }
     }
     return found;

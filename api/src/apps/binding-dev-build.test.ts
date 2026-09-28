@@ -23,6 +23,7 @@ import {
   bindingFromSource,
   type AppBinding,
 } from "./bindings.service";
+import { draftHash } from "./binding-draft-cache";
 import {
   DevBuildError,
   devBuildAppBinding,
@@ -49,12 +50,12 @@ function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
       return { binding, connection };
     }),
     committedBinding: vi.fn(async () => committedBinding),
-    render: vi.fn(async (_p, binding, _connection, environment) =>
-      binding.code.replace(
+    render: vi.fn(async (_p, binding, _connection, environment) => ({
+      code: binding.code.replace(
         "{{ dbt_schema }}",
         environment ? `dbt_${environment.name}` : "dbt_prod",
       ),
-    ),
+    })),
     artifactExists: vi.fn(async () => true),
     materialize: vi.fn(async () => ({
       rowCount: 5,
@@ -67,6 +68,12 @@ function deps(overrides: Partial<DevBuildDeps> = {}): DevBuildDeps {
       rowCount: 3,
       byteSize: 30,
     })),
+    drafts: {
+      lookup: vi.fn(async () => ({ kind: "miss" as const })),
+      built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
+      failed: vi.fn(async () => 60_000),
+      forget: vi.fn(async () => undefined),
+    },
     ...overrides,
   };
 }
@@ -87,7 +94,11 @@ describe("devBuildAppBinding", () => {
   it("serves the committed artifact for unchanged text, even read-only", async () => {
     const d = deps();
     const result = await devBuildAppBinding(input({ canWrite: false }), d);
-    expect(result).toEqual({ kind: "artifact", artifactKey: committedKey });
+    expect(result).toEqual({
+      kind: "artifact",
+      artifactKey: committedKey,
+      source: "committed",
+    });
     expect(d.build).not.toHaveBeenCalled();
     expect(d.materialize).not.toHaveBeenCalled();
   });
@@ -173,7 +184,11 @@ describe("devBuildAppBinding", () => {
       input({ dbtEnvironment: "prod" }),
       d,
     );
-    expect(result).toEqual({ kind: "artifact", artifactKey: committedKey });
+    expect(result).toEqual({
+      kind: "artifact",
+      artifactKey: committedKey,
+      source: "committed",
+    });
   });
 
   it("builds a draft when nothing is committed under that name", async () => {
@@ -192,7 +207,11 @@ describe("devBuildAppBinding", () => {
       }),
       d,
     );
-    expect(result).toEqual({ kind: "artifact", artifactKey: committedKey });
+    expect(result).toEqual({
+      kind: "artifact",
+      artifactKey: committedKey,
+      source: "committed",
+    });
   });
 
   it("a changed dbt_project alone is a draft, not the committed artifact", async () => {
@@ -295,6 +314,148 @@ describe("devBuildAppBinding", () => {
     expect(d.build).not.toHaveBeenCalled();
   });
 
+  it("keeps a draft build under its rendered-SQL hash", async () => {
+    const d = deps();
+    const source = `${COMMITTED}\nwhere connected`;
+    await devBuildAppBinding(input({ source }), d);
+    expect(d.drafts.built).toHaveBeenCalledWith({
+      projectId: project._id.toString(),
+      name: "leads",
+      hash: draftHash({
+        connectionId: CONN,
+        renderedCode: "select * from dbt_prod.leads\nwhere connected",
+        devModifiedAt: null,
+      }),
+      filePath: "/tmp/draft.parquet",
+      rowCount: 3,
+      byteSize: 30,
+    });
+  });
+
+  it("keys a dev-environment draft on when its dev relations were last written", async () => {
+    const hashes: string[] = [];
+    for (const devModifiedAt of [1759000000000, 1759000999000]) {
+      const d = deps({
+        render: vi.fn(async (_p, binding, _c, environment) => ({
+          code: binding.code.replace(
+            "{{ dbt_schema }}",
+            environment ? "dbt_joan" : "dbt_prod",
+          ),
+          devModifiedAt: environment ? devModifiedAt : null,
+        })),
+      });
+      await devBuildAppBinding(input({ dbtEnvironment: "joan" }), d);
+      const call = vi.mocked(d.drafts.lookup).mock.calls[0];
+      hashes.push(call[1]);
+    }
+    // A `dbt run` into the dev schema is a different draft: no stale reuse.
+    expect(hashes[0]).not.toBe(hashes[1]);
+  });
+
+  it("rebuilds when a kept draft's object is gone", async () => {
+    const d = deps({
+      artifactExists: vi.fn(async () => false),
+      drafts: {
+        lookup: vi.fn(async () => ({
+          kind: "hit" as const,
+          key: "apps/drafts/p/h-gone.parquet",
+          rowCount: 3,
+          builtAt: new Date(),
+        })),
+        built: vi.fn(async () => "apps/drafts/p/h-new.parquet"),
+        failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
+      },
+    });
+    const result = await devBuildAppBinding(
+      input({ source: `${COMMITTED}\nwhere connected` }),
+      d,
+    );
+    expect(result.kind).toBe("draft");
+    expect(d.drafts.forget).toHaveBeenCalledWith(
+      project._id.toString(),
+      "apps/drafts/p/h-gone.parquet",
+    );
+    expect(d.build).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves a kept draft without re-running it; refresh rebuilds", async () => {
+    const d = deps({
+      drafts: {
+        lookup: vi.fn(async () => ({
+          kind: "hit" as const,
+          key: "apps/drafts/p/h.parquet",
+          rowCount: 3,
+          builtAt: new Date(),
+        })),
+        built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
+        failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
+      },
+    });
+    const source = `${COMMITTED}\nwhere connected`;
+    expect(await devBuildAppBinding(input({ source }), d)).toEqual({
+      kind: "artifact",
+      artifactKey: "apps/drafts/p/h.parquet",
+      source: "draft-cache",
+    });
+    expect(d.build).not.toHaveBeenCalled();
+
+    const refreshed = await devBuildAppBinding(
+      input({ source, refresh: true }),
+      d,
+    );
+    expect(refreshed.kind).toBe("draft");
+    expect(d.build).toHaveBeenCalledTimes(1);
+  });
+
+  it("a kept draft is never served to a read-only caller", async () => {
+    const d = deps({
+      drafts: {
+        lookup: vi.fn(async () => ({
+          kind: "hit" as const,
+          key: "apps/drafts/p/h.parquet",
+          rowCount: 3,
+          builtAt: new Date(),
+        })),
+        built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
+        failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
+      },
+    });
+    await expect(
+      devBuildAppBinding(
+        input({ canWrite: false, source: `${COMMITTED} limit 1` }),
+        d,
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(d.drafts.lookup).not.toHaveBeenCalled();
+  });
+
+  it("refuses a draft that is cooling down after failures, with a retry hint", async () => {
+    const d = deps({
+      drafts: {
+        lookup: vi.fn(async () => ({
+          kind: "cooling" as const,
+          retryAfterMs: 90_000,
+          failures: 2,
+          error: "Unrecognized name: connected",
+        })),
+        built: vi.fn(async () => "apps/drafts/p/h-1.parquet"),
+        failed: vi.fn(async () => 60_000),
+        forget: vi.fn(async () => undefined),
+      },
+    });
+    await expect(
+      devBuildAppBinding(input({ source: `${COMMITTED} where connected` }), d),
+    ).rejects.toMatchObject({
+      status: 503,
+      retryAfterMs: 90_000,
+      message: /failed 2 time\(s\).*Unrecognized name/,
+    });
+    expect(d.build).not.toHaveBeenCalled();
+  });
+
   it("reports a failed query as a 502 with its message", async () => {
     const d = deps({
       build: vi.fn(async () => {
@@ -310,5 +471,13 @@ describe("devBuildAppBinding", () => {
       status: 502,
       message: "Unrecognized name: connected",
     });
+    // Counted towards the backoff, and nothing kept.
+    expect(d.drafts.failed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "leads",
+        error: "Unrecognized name: connected",
+      }),
+    );
+    expect(d.drafts.built).not.toHaveBeenCalled();
   });
 });

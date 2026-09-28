@@ -1775,10 +1775,12 @@ appsRoutes.openapi(
       "(or materialized into) the app's stored artifact; anything else — an " +
       "uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` " +
       "against a dev dbt environment (per relation: ones the environment " +
-      "has not built read prod, unless `dbtDefer: false`) — is built, " +
-      "streamed back and never " +
-      "stored, so published viewers never see it. May redirect to a " +
-      "short-lived signed artifact URL; follow redirects.",
+      "has not built read prod, unless `dbtDefer: false`) — is a draft: " +
+      "built and streamed back, reused for 30 minutes (same connection + " +
+      "rendered SQL) unless `refresh`, never stored as the app's artifact, " +
+      "so published viewers never see it. A draft that keeps failing " +
+      "answers 503 with Retry-After instead of re-running. May redirect to " +
+      "a short-lived signed artifact URL; follow redirects.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam.extend({
@@ -1830,7 +1832,10 @@ appsRoutes.openapi(
           result.artifactKey,
           {
             cacheControl: "no-store",
-            extraHeaders: { "x-mako-build": "artifact" },
+            extraHeaders: {
+              "x-mako-build":
+                result.source === "draft-cache" ? "draft-cache" : "artifact",
+            },
           },
         );
         if (response) return response;
@@ -1853,7 +1858,19 @@ appsRoutes.openapi(
       });
     } catch (error) {
       if (error instanceof DevBuildError) {
-        return c.json({ success: false, error: error.message }, error.status);
+        return c.json(
+          {
+            success: false,
+            error: error.message,
+            ...(error.retryAfterMs !== undefined
+              ? { retryAfterMs: error.retryAfterMs }
+              : {}),
+          },
+          error.status,
+          error.retryAfterMs !== undefined
+            ? { "retry-after": String(Math.ceil(error.retryAfterMs / 1000)) }
+            : undefined,
+        );
       }
       return handleError(c, error);
     }
