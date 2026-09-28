@@ -318,7 +318,12 @@ describe("devBuildAppBinding", () => {
   it("keeps a draft build under its rendered-SQL hash", async () => {
     const d = deps();
     const source = `${COMMITTED}\nwhere connected`;
-    await devBuildAppBinding(input({ source }), d);
+    const result = await devBuildAppBinding(input({ source }), d);
+    // The kept key travels with the result (the async job serves it).
+    expect(result).toMatchObject({
+      kind: "draft",
+      artifactKey: "apps/drafts/p/h-1.parquet",
+    });
     expect(d.drafts.built).toHaveBeenCalledWith({
       projectId: project._id.toString(),
       name: "leads",

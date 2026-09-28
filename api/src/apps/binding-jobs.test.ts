@@ -175,6 +175,36 @@ describe("binding jobs", () => {
     expect(await getDashboardArtifactStore().exists(key)).toBe(true);
   });
 
+  it("uses the draft cache's per-build key when the build was kept there", async () => {
+    const job = await newJob();
+    const file = await localFile("PAR1-kept");
+    const storeDraft = vi.fn(storeJobDraft);
+    await runBindingJob(
+      job,
+      deps({
+        storeDraft,
+        plan: vi.fn(async () => ({
+          kind: "build" as const,
+          run: async () => ({
+            kind: "draft" as const,
+            filePath: file,
+            artifactKey: `apps/drafts/${PROJECT}/h-abc123.parquet`,
+            rowCount: 4,
+            byteSize: 10,
+            builtAt: new Date("2026-09-28T10:00:00Z"),
+          }),
+        })),
+      }),
+    );
+    expect((await reload(job)).result).toMatchObject({
+      artifactKey: `apps/drafts/${PROJECT}/h-abc123.parquet`,
+      build: "draft",
+    });
+    // No second upload, and the local copy is gone.
+    expect(storeDraft).not.toHaveBeenCalled();
+    await expect(fs.access(file)).rejects.toThrow();
+  });
+
   it("answers from a stored artifact without building", async () => {
     const job = await newJob();
     const d = deps({

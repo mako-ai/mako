@@ -106,7 +106,11 @@ export type DevBuildResult =
       kind: "materialized" | "draft";
       /** Local temp file; the caller streams it and deletes it. */
       filePath: string;
-      /** "materialized" only: where the committed build was stored. */
+      /**
+       * Where the build was stored: the app's artifact ("materialized"), or
+       * this draft's own per-build key in the draft cache ("draft", when it
+       * could be kept).
+       */
       artifactKey?: string;
       rowCount: number;
       byteSize: number;
@@ -408,8 +412,9 @@ export async function planDevBuild(
           .catch(() => undefined);
         throw error;
       }
+      let keptKey: string | undefined;
       try {
-        await deps.drafts.built({ projectId, name, hash, ...built });
+        keptKey = await deps.drafts.built({ projectId, name, hash, ...built });
       } catch (error) {
         // Not keeping it only costs the next request a rebuild.
         logger.warn("Could not keep draft build", {
@@ -424,7 +429,12 @@ export async function planDevBuild(
         rowCount: built.rowCount,
         dbtEnvironment: input.dbtEnvironment,
       });
-      return { kind: "draft", ...built, builtAt: new Date() };
+      return {
+        kind: "draft",
+        ...built,
+        artifactKey: keptKey,
+        builtAt: new Date(),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("Apps binding dev build failed", {

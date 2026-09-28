@@ -125,11 +125,14 @@ async function build(
     byteSize: built.byteSize,
     materializedAt: built.builtAt.toISOString(),
   };
-  if (built.kind === "materialized" && built.artifactKey) {
-    // Stored as the app's artifact already; the local copy is not needed.
+  if (built.artifactKey) {
+    // Stored already — as the app's artifact, or (a draft) under its own
+    // per-build key in the draft cache, which also serves the next reload of
+    // the same SQL. The local copy is not needed.
     await fs.rm(built.filePath, { force: true }).catch(() => undefined);
-    return { artifactKey: built.artifactKey, build: "materialized", ...common };
+    return { artifactKey: built.artifactKey, build: built.kind, ...common };
   }
+  // A draft the cache could not keep: the job keeps it itself.
   const artifactKey = await deps.storeDraft(job, built.filePath);
   return { artifactKey, build: "draft", ...common };
 }

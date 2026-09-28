@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { bindingFingerprint, makoData, normalizeBindingSource, resolveMakoContext } from "./vite.js";
+// Hermetic: never read the developer's real ~/.mako/credentials.json (a
+// `mako login` on this machine would make "no credentials" tests connect).
+// Set before the module loads — the path is resolved at import.
+process.env.MAKO_CREDENTIALS_FILE = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-creds-")),
+  "credentials.json",
+);
+const { bindingFingerprint, makoData, normalizeBindingSource, resolveMakoContext } = await import("./vite.js");
 
 function repo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-test-"));
