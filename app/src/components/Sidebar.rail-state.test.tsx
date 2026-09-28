@@ -17,7 +17,8 @@
  * and the explorer that holds the open tab. This pins that they are reported
  * independently, which is the property the single-highlight version lacked.
  */
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { createTheme } from "@mui/material";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/analytics", () => ({
@@ -38,6 +39,7 @@ vi.mock("../contexts/workspace-context", () => ({
 import Sidebar from "./Sidebar";
 import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { railButtonColors } from "./sidebar-rail";
 
 /** The rail button for a view, by its stable data-view hook. */
 const rail = (container: HTMLElement, view: string) =>
@@ -128,4 +130,142 @@ describe("sidebar rail: open panel vs the explorer holding the open tab", () => 
     // …but the app tab is still open, so the rail still says where it lives.
     expect(state(rail(container, "apps")).ownsActiveTab).toBe("true");
   });
+});
+
+/**
+ * Reported by Joan: a console tab open, Flows in the explorer, and the rail lit
+ * Consoles in blue. The highlight must name the panel on screen, the explorer
+ * holding the tab gets only a quieter hint, and the rail carries no brand
+ * colour ("no blue effect at all").
+ */
+describe("sidebar rail: the highlight follows the explorer, not the tab", () => {
+  const consoleTab = {
+    t1: {
+      id: "t1",
+      kind: "console",
+      title: "Revenue",
+      content: "",
+      metadata: {},
+    },
+  } as never;
+
+  beforeEach(() => {
+    useUIStore.setState({ leftPane: "flows", leftPaneOpen: true });
+    useConsoleStore.setState({ activeTabId: "t1", tabs: consoleTab });
+  });
+  afterEach(cleanup);
+
+  /** Let the DOM normalise a theme colour (hex → rgb) for comparison. */
+  const normalizeColor = (value: string) => {
+    const probe = document.createElement("span");
+    probe.style.color = value;
+    document.body.appendChild(probe);
+    const normalized = getComputedStyle(probe).color;
+    probe.remove();
+    return normalized;
+  };
+
+  const highlighted = (container: HTMLElement) =>
+    [...container.querySelectorAll('[data-open-explorer="true"]')].map(el =>
+      el.getAttribute("data-view"),
+    );
+
+  const current = (container: HTMLElement) =>
+    [...container.querySelectorAll('[aria-current="true"]')].map(el =>
+      el.getAttribute("data-view"),
+    );
+
+  it("highlights exactly the explorer on screen while a console tab is focused", () => {
+    const { container } = render(<Sidebar />);
+
+    expect(highlighted(container)).toEqual(["flows"]);
+    expect(current(container)).toEqual(["flows"]);
+    expect(state(rail(container, "consoles"))).toEqual({
+      openExplorer: "false",
+      ownsActiveTab: "true",
+    });
+
+    // The rendered styles, not just the data hooks: the selected background
+    // sits on Flows, and no rail button is tinted with the brand colour —
+    // the tab owner (Consoles) least of all.
+    const theme = createTheme();
+    const style = (view: string) => {
+      const el = rail(container, view);
+      if (!el) throw new Error(`${view} rail button missing`);
+      return getComputedStyle(el);
+    };
+    const selectedBg = normalizeColor(theme.palette.action.selected);
+    expect(style("flows").backgroundColor).toBe(selectedBg);
+    expect(style("consoles").backgroundColor).not.toBe(selectedBg);
+
+    const brand = normalizeColor(theme.palette.primary.main);
+    const tinted = [...container.querySelectorAll("[data-view]")].filter(
+      el => getComputedStyle(el).color === brand,
+    );
+    expect(tinted).toEqual([]);
+  });
+
+  it("moves the highlight when switching sections, the tab staying focused", () => {
+    const { container } = render(<Sidebar />);
+
+    const dbt = rail(container, "dbt");
+    if (!dbt) throw new Error("dbt rail button missing");
+    act(() => {
+      fireEvent.click(dbt);
+    });
+
+    expect(useConsoleStore.getState().activeTabId).toBe("t1");
+    expect(highlighted(container)).toEqual(["dbt"]);
+    expect(current(container)).toEqual(["dbt"]);
+    expect(state(rail(container, "flows")).openExplorer).toBe("false");
+    expect(state(rail(container, "consoles")).ownsActiveTab).toBe("true");
+  });
+
+  it("follows an explorer switch made elsewhere (e.g. opening an entity)", () => {
+    const { container } = render(<Sidebar />);
+
+    act(() => {
+      useUIStore.getState().setLeftPane("consoles");
+    });
+
+    expect(highlighted(container)).toEqual(["consoles"]);
+  });
+});
+
+describe("railButtonColors", () => {
+  for (const mode of ["light", "dark"] as const) {
+    const theme = createTheme({ palette: { mode } });
+    const open = railButtonColors(theme, { isActive: true });
+    const holdsTab = railButtonColors(theme, { ownsActiveTab: true });
+    const idle = railButtonColors(theme, {});
+
+    it(`uses no brand colour in any state, hover and focus included (${mode})`, () => {
+      const brand = [
+        theme.palette.primary.main,
+        theme.palette.primary.light,
+        theme.palette.primary.dark,
+      ];
+      for (const colors of [open, holdsTab, idle]) {
+        for (const value of Object.values(colors)) {
+          expect(brand).not.toContain(value);
+        }
+      }
+    });
+
+    it(`marks the open explorer with the neutral selected state (${mode})`, () => {
+      expect(open.color).toBe(theme.palette.text.primary);
+      expect(open.backgroundColor).toBe(theme.palette.action.selected);
+    });
+
+    it(`keeps the tab-owner hint quieter than the highlight (${mode})`, () => {
+      expect(holdsTab.backgroundColor).toBe("transparent");
+      expect(holdsTab.color).not.toBe(idle.color);
+    });
+
+    it(`an explorer that is open AND holds the tab is plainly highlighted (${mode})`, () => {
+      expect(
+        railButtonColors(theme, { isActive: true, ownsActiveTab: true }),
+      ).toEqual(open);
+    });
+  }
 });
