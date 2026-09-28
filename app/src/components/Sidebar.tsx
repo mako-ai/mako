@@ -42,8 +42,9 @@ import { railButtonColors } from "./sidebar-rail";
  * workflow, and a reload deliberately restores the panel you had rather than
  * the one the URL implies (see UrlSync's isReload note).
  *
- * The highlight (brand colour + selected background) always follows the open
- * panel; the explorer holding the open tab gets only a quieter hint. See
+ * The highlight (full-contrast icon on the selected background, neutral — no
+ * brand colour anywhere on the rail) always follows the open panel; the
+ * explorer holding the open tab gets only a quieter hint. See
  * `railButtonColors` for why the emphasis is that way round.
  */
 const NavButton = styled(Button, {
@@ -64,6 +65,12 @@ const NavButton = styled(Button, {
     color: colors.color,
     "&:hover": {
       backgroundColor: colors.hoverBackgroundColor,
+    },
+    // Ripples are disabled app-wide, so keyboard focus needs its own ring;
+    // neutral like everything else on the rail.
+    "&.Mui-focusVisible": {
+      outline: `2px solid ${colors.focusOutlineColor}`,
+      outlineOffset: -2,
     },
     transition: "all 0.2s ease",
   };
@@ -309,6 +316,7 @@ function Sidebar() {
                   // Stable hooks for tests: the two states are otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
+                  aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
                   data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
@@ -399,6 +407,7 @@ function Sidebar() {
                   // Stable hooks for tests: the two states are otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
+                  aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
                   data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}

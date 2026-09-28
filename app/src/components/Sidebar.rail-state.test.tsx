@@ -134,8 +134,9 @@ describe("sidebar rail: open panel vs the explorer holding the open tab", () => 
 
 /**
  * Reported by Joan: a console tab open, Flows in the explorer, and the rail lit
- * Consoles in blue. The blue highlight must name the panel on screen; the
- * explorer holding the tab gets only a quieter hint.
+ * Consoles in blue. The highlight must name the panel on screen, the explorer
+ * holding the tab gets only a quieter hint, and the rail carries no brand
+ * colour ("no blue effect at all").
  */
 describe("sidebar rail: the highlight follows the explorer, not the tab", () => {
   const consoleTab = {
@@ -169,25 +170,39 @@ describe("sidebar rail: the highlight follows the explorer, not the tab", () => 
       el.getAttribute("data-view"),
     );
 
+  const current = (container: HTMLElement) =>
+    [...container.querySelectorAll('[aria-current="true"]')].map(el =>
+      el.getAttribute("data-view"),
+    );
+
   it("highlights exactly the explorer on screen while a console tab is focused", () => {
     const { container } = render(<Sidebar />);
 
     expect(highlighted(container)).toEqual(["flows"]);
+    expect(current(container)).toEqual(["flows"]);
     expect(state(rail(container, "consoles"))).toEqual({
       openExplorer: "false",
       ownsActiveTab: "true",
     });
 
-    // And it is the rendered colour, not just the data hook: the brand colour
-    // (what reads as "highlighted in blue") is on Flows, not on Consoles.
-    const brand = normalizeColor(createTheme().palette.primary.main);
-    const color = (view: string) => {
+    // The rendered styles, not just the data hooks: the selected background
+    // sits on Flows, and no rail button is tinted with the brand colour —
+    // the tab owner (Consoles) least of all.
+    const theme = createTheme();
+    const style = (view: string) => {
       const el = rail(container, view);
       if (!el) throw new Error(`${view} rail button missing`);
-      return getComputedStyle(el).color;
+      return getComputedStyle(el);
     };
-    expect(color("flows")).toBe(brand);
-    expect(color("consoles")).not.toBe(brand);
+    const selectedBg = normalizeColor(theme.palette.action.selected);
+    expect(style("flows").backgroundColor).toBe(selectedBg);
+    expect(style("consoles").backgroundColor).not.toBe(selectedBg);
+
+    const brand = normalizeColor(theme.palette.primary.main);
+    const tinted = [...container.querySelectorAll("[data-view]")].filter(
+      el => getComputedStyle(el).color === brand,
+    );
+    expect(tinted).toEqual([]);
   });
 
   it("moves the highlight when switching sections, the tab staying focused", () => {
@@ -201,6 +216,7 @@ describe("sidebar rail: the highlight follows the explorer, not the tab", () => 
 
     expect(useConsoleStore.getState().activeTabId).toBe("t1");
     expect(highlighted(container)).toEqual(["dbt"]);
+    expect(current(container)).toEqual(["dbt"]);
     expect(state(rail(container, "flows")).openExplorer).toBe("false");
     expect(state(rail(container, "consoles")).ownsActiveTab).toBe("true");
   });
@@ -219,17 +235,29 @@ describe("sidebar rail: the highlight follows the explorer, not the tab", () => 
 describe("railButtonColors", () => {
   for (const mode of ["light", "dark"] as const) {
     const theme = createTheme({ palette: { mode } });
+    const open = railButtonColors(theme, { isActive: true });
+    const holdsTab = railButtonColors(theme, { ownsActiveTab: true });
+    const idle = railButtonColors(theme, {});
 
-    it(`gives the brand colour only to the open explorer (${mode})`, () => {
-      const open = railButtonColors(theme, { isActive: true });
-      const holdsTab = railButtonColors(theme, { ownsActiveTab: true });
-      const idle = railButtonColors(theme, {});
+    it(`uses no brand colour in any state, hover and focus included (${mode})`, () => {
+      const brand = [
+        theme.palette.primary.main,
+        theme.palette.primary.light,
+        theme.palette.primary.dark,
+      ];
+      for (const colors of [open, holdsTab, idle]) {
+        for (const value of Object.values(colors)) {
+          expect(brand).not.toContain(value);
+        }
+      }
+    });
 
-      expect(open.color).toBe(theme.palette.primary.main);
+    it(`marks the open explorer with the neutral selected state (${mode})`, () => {
+      expect(open.color).toBe(theme.palette.text.primary);
       expect(open.backgroundColor).toBe(theme.palette.action.selected);
+    });
 
-      // The tab-owner hint must never look like the highlight.
-      expect(holdsTab.color).not.toBe(theme.palette.primary.main);
+    it(`keeps the tab-owner hint quieter than the highlight (${mode})`, () => {
       expect(holdsTab.backgroundColor).toBe("transparent");
       expect(holdsTab.color).not.toBe(idle.color);
     });
@@ -237,7 +265,7 @@ describe("railButtonColors", () => {
     it(`an explorer that is open AND holds the tab is plainly highlighted (${mode})`, () => {
       expect(
         railButtonColors(theme, { isActive: true, ownsActiveTab: true }),
-      ).toEqual(railButtonColors(theme, { isActive: true }));
+      ).toEqual(open);
     });
   }
 });
