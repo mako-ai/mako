@@ -1774,7 +1774,9 @@ appsRoutes.openapi(
       "matter names. Text identical to the committed binding is served from " +
       "(or materialized into) the app's stored artifact; anything else — an " +
       "uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` " +
-      "against a dev dbt environment — is built, streamed back and never " +
+      "against a dev dbt environment (per relation: ones the environment " +
+      "has not built read prod, unless `dbtDefer: false`) — is built, " +
+      "streamed back and never " +
       "stored, so published viewers never see it. May redirect to a " +
       "short-lived signed artifact URL; follow redirects.",
     security: AUTH_SECURITY,
@@ -1792,6 +1794,7 @@ appsRoutes.openapi(
                 .min(1)
                 .max(512 * 1024),
               dbtEnvironment: z.string().min(1).max(64).optional(),
+              dbtDefer: z.boolean().optional(),
               refresh: z.boolean().optional(),
             }),
           },
@@ -1806,7 +1809,7 @@ appsRoutes.openapi(
   async c => {
     try {
       const { name } = c.req.valid("param");
-      const { source, dbtEnvironment, refresh } = c.req.valid("json");
+      const { source, dbtEnvironment, dbtDefer, refresh } = c.req.valid("json");
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const writer = await loadProject(c, { write: true });
@@ -1818,6 +1821,7 @@ appsRoutes.openapi(
         canWrite: !("errorResponse" in writer),
         source,
         dbtEnvironment,
+        dbtDefer,
         refresh,
       });
       if (result.kind === "artifact") {

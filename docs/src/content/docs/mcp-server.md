@@ -155,7 +155,10 @@ never stored, so you see real data for a query before committing it. Results
 are cached under `node_modules/.mako-data/` next to a fingerprint of the text
 they came from (five minutes; `?refresh` bypasses). `MAKO_DBT_ENV=<env>` (or
 `makoData({ dbtEnvironment })`) renders `{{ dbt_schema }}` against that dbt
-environment, such as your personal one, instead of production. This is the one
+environment, such as your personal one, instead of production — per relation,
+like `dbt --defer`: a `{{ dbt_schema }}.<model>` your environment has not built
+reads the production schema instead (BigQuery; other warehouses render every
+reference to the environment). This is the one
 place MCP credentials — OAuth tokens and scoped keys alike — are accepted
 outside `/api/mcp`: with `query:read` they may call the read-only binding
 routes (`GET …/bindings`, `GET …/bindings/<name>/artifact`,
