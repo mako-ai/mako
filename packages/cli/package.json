@@ -1,6 +1,6 @@
 {
   "name": "@makoai/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Mako from your terminal: sign in once (mako login), run a workspace app locally with real data (mako dev), run dbt from your checkout (mako dbt run).",
   "license": "MIT",
   "repository": {
