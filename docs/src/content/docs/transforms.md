@@ -69,6 +69,29 @@ Three ways to execute dbt, all routed through the same validated runner:
 
 The command bar accepts a free-form command (an optional leading `dbt` is stripped), but every command is tokenized and validated against the same allowlist as saved jobs before it reaches the runner. The subcommand must be on the allowlist (`run`, `build`, `test`, `seed`, `snapshot`, `compile`, `parse`, `source freshness`, `docs generate`, `deps`, `retry`, `show`), and unknown flags are rejected. Commands are executed with `spawn` (no shell), and `--select` selectors on compile / run-select are pattern-checked.
 
+## Local CLI runs
+
+The `@makoai/cli` can run dbt from a local checkout, including uncommitted files:
+
+```bash
+mako login --warehouse-write
+mako dbt run -s orders
+mako dbt build -s +orders --env staging
+mako dbt test -s orders --full-refresh --no-defer
+```
+
+`run`, `build`, and `test` upload the checkout to Mako and stream the run log. The
+command exits with dbt's exit code. Runs use your personal environment by
+default (created on first use); use `--env <name>` to select another environment.
+Production is not selected by this command. `--no-defer` disables deferral to
+production, and `--full-refresh` is passed through to dbt. Local runs require the
+`warehouse:write` scope because the uploaded project executes with the selected
+environment's warehouse credentials.
+
+The API equivalent is `POST /api/workspaces/:workspaceId/dbt/local-runs`, followed
+by polling `GET /api/workspaces/:workspaceId/dbt/local-runs/:runId`; cancel with
+`POST .../:runId/cancel`. A local run is scoped to the requesting user.
+
 ## Jobs & schedules
 
 A **job** is a saved list of dbt commands (`build`, `test`, `seed`, `snapshot`, `source freshness`, `docs generate`, with `--select` / `--exclude` / `--full-refresh` flags) bound to an environment. Jobs can run:
