@@ -20,6 +20,8 @@ import {
   normalizeSubmitPlanOutput,
   usePlanStore,
 } from "../store/planStore";
+import { useIsMobile } from "../hooks/useIsMobile";
+import { useUIStore } from "../store/uiStore";
 
 /** BUI tint pill colors for each plan decision (chip replacement). */
 const DECISION_PILL_SX: Record<
@@ -69,6 +71,7 @@ export const PlanCard: React.FC<PlanCardProps> = ({
 }) => {
   const plan = usePlanStore(s => s.plans[toolCallId]);
   const resolvePlan = usePlanStore(s => s.resolvePlan);
+  const isMobile = useIsMobile();
 
   // Hydrate the store from message history (idempotent; registerPlan never
   // clobbers an existing draft and markResolved skips already-resolved plans).
@@ -120,6 +123,9 @@ export const PlanCard: React.FC<PlanCardProps> = ({
   const openTab = () => {
     if (!toolCallId) return;
     focusPlanTab(toolCallId, chatId ?? plan?.chatId ?? "", title);
+    // On mobile the plan tab lives behind the View tab — surface it so the
+    // tap visibly opens the plan instead of silently focusing a hidden tab.
+    if (isMobile) useUIStore.getState().setMobileTab("view");
   };
 
   // Discard (Cursor-style "not now"): resolves the deferred tool with a
@@ -157,13 +163,25 @@ export const PlanCard: React.FC<PlanCardProps> = ({
         "&:hover": { backgroundColor: "var(--bui-hover)" },
       }}
     >
-      <Stack direction="row" spacing={1} alignItems="center">
+      <Stack
+        direction="row"
+        alignItems="center"
+        // Phones: the title row keeps the full width and the chip + actions
+        // wrap onto their own row (inline they squeezed the title to ~0px).
+        sx={{ flexWrap: isMobile ? "wrap" : "nowrap", columnGap: 1, rowGap: 1 }}
+      >
         {isStreaming ? (
           <CircularProgress size={15} thickness={5} />
         ) : (
           <ClipboardList size={15} style={{ color: "var(--bui-ink-2)" }} />
         )}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            ...(isMobile ? { flexBasis: "calc(100% - 23px)" } : {}),
+          }}
+        >
           <Typography
             variant="subtitle2"
             noWrap
@@ -199,7 +217,15 @@ export const PlanCard: React.FC<PlanCardProps> = ({
             title={`Approval grants this task: ${requiredCapabilities.join(", ")}`}
             placement="top"
           >
-            <Box component="span" sx={BUI_META_CHIP_SX}>
+            <Box
+              component="span"
+              sx={{
+                ...BUI_META_CHIP_SX,
+                ...(isMobile ? { display: "block", lineHeight: "18px" } : {}),
+                minWidth: 0,
+                flexShrink: 1,
+              }}
+            >
               {requiredCapabilities.join(" · ")}
             </Box>
           </Tooltip>
@@ -228,6 +254,7 @@ export const PlanCard: React.FC<PlanCardProps> = ({
               <IconButton
                 size="small"
                 aria-label="Discard plan"
+                sx={{ ml: "auto" }}
                 onClick={e => {
                   e.stopPropagation();
                   discardPlan();
@@ -246,6 +273,8 @@ export const PlanCard: React.FC<PlanCardProps> = ({
               }}
               sx={{
                 textTransform: "none",
+                flexShrink: 0,
+                whiteSpace: "nowrap",
                 fontSize: 12.5,
                 fontWeight: 500,
                 borderRadius: "8px",

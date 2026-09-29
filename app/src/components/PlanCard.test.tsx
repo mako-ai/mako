@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubmitPlanInput, SubmitPlanOutput } from "@mako/agent-tools";
 import { PlanCard } from "./PlanCard";
 import { usePlanStore } from "../store/planStore";
+import { useUIStore } from "../store/uiStore";
+
+const mobile = vi.hoisted(() => ({ value: false }));
+vi.mock("../hooks/useIsMobile", () => ({
+  useIsMobile: () => mobile.value,
+  default: () => mobile.value,
+}));
 
 describe("PlanCard with unvalidated ACP input", () => {
   beforeEach(() => {
@@ -39,5 +46,39 @@ describe("PlanCard with unvalidated ACP input", () => {
     expect(screen.getByText(/0 steps/)).toBeTruthy();
     // Garbage decision → still treated as pending (approve action visible).
     expect(screen.getByText(/Approve/)).toBeTruthy();
+  });
+});
+
+describe("PlanCard on mobile", () => {
+  beforeEach(() => {
+    usePlanStore.setState({ plans: {} });
+    useUIStore.getState().setMobileTab("ask");
+  });
+  afterEach(() => {
+    mobile.value = false;
+    cleanup();
+  });
+
+  const input = {
+    title: "Add PL market",
+    planMarkdown: "# Plan",
+    todos: [],
+  } as unknown as SubmitPlanInput;
+
+  it("surfaces the View tab when the card is tapped", () => {
+    mobile.value = true;
+    render(<PlanCard toolCallId="tc-m" chatId="chat-1" input={input} />);
+
+    fireEvent.click(screen.getByText("Add PL market"));
+
+    expect(useUIStore.getState().mobileTab).toBe("view");
+  });
+
+  it("does not touch the mobile tab on desktop", () => {
+    render(<PlanCard toolCallId="tc-d" chatId="chat-1" input={input} />);
+
+    fireEvent.click(screen.getByText("Add PL market"));
+
+    expect(useUIStore.getState().mobileTab).toBe("ask");
   });
 });
