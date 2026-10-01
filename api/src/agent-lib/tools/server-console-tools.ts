@@ -56,7 +56,7 @@ import {
   QUERY_STATUS_POLL_WAIT_MS,
   QUERY_STATUS_POLL_INTERVAL_MS,
 } from "../../config/long-running-queries";
-import { pollRunStatus } from "./check-query-status-poll";
+import { consoleRowsForModel, pollRunStatus } from "./check-query-status-poll";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
@@ -740,7 +740,12 @@ export function createServerConsoleTools({
             success: true,
             status: "success" as const,
             rowCount: outcome.rowCount,
-            preview: outcome.rows.slice(0, RUN_PREVIEW_MAX_ROWS),
+            ...consoleRowsForModel(
+              outcome.rows,
+              outcome.fields,
+              RUN_PREVIEW_MAX_ROWS,
+              outcome.rowCount,
+            ),
             durationMs: outcome.durationMs,
             message: `Query executed successfully. ${outcome.rowCount} row(s) returned.`,
           };
@@ -752,7 +757,7 @@ export function createServerConsoleTools({
 
     check_query_status: tool({
       description:
-        'Poll the status of a console query started with run_console (DB-backed, works across server instances). Returns { status: "running", elapsedMs } while it runs, { status: "success", rowCount, preview } when it finishes, { status: "error", error }, or { status: "cancelled" }. ' +
+        'Poll the status of a console query started with run_console (DB-backed, works across server instances). Returns { status: "running", elapsedMs } while it runs, { status: "success", rowCount, columns, table (markdown, up to 50 rows within a size budget), note } when it finishes, { status: "error", error }, or { status: "cancelled" }. ' +
         `This call BLOCKS server-side for up to ~${Math.round(QUERY_STATUS_POLL_WAIT_MS / 1000)}s, returning the instant the query settles — so you do NOT need to (and must NOT) add your own delay or spam rapid calls. After run_console returns status="running", just call this again; if it returns status="running" again, call it once more to keep waiting. ` +
         `The query is automatically aborted server-side at a hard cap (~${Math.round(QUERY_HARD_MAX_EXECUTION_MS / 60_000)} min); if that happens, rewrite it into smaller/narrower queries rather than retrying as-is. Never silently re-run the query while it is still running.`,
       inputSchema: checkQueryStatusSchema,

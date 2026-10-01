@@ -53,10 +53,16 @@ import {
 import type { KernelOutput } from "../../services/kernel-provider";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
+import {
+  formatRowsForModel,
+  isTabularRows,
+} from "./shared/query-result-format";
 
 const logger = loggers.api("notebook-server-tools");
 
-const MAX_SQL_ROWS = 200; // persisted with the cell + returned to the model
+const MAX_SQL_ROWS = 200; // persisted with the cell for the notebook UI
+/** Rows of a SQL cell's result returned to the model. */
+const NOTEBOOK_SQL_PREVIEW_ROWS = 20;
 const MAX_STREAM_CHARS = 50_000;
 const SAVE_CONFLICT = "conflict" as const;
 
@@ -674,12 +680,27 @@ export function createNotebookServerTools({
               "Confirm the notebook still exists and you can edit it, then rerun the cell.",
           };
         }
+        // The cell keeps up to MAX_SQL_ROWS for the notebook UI; the model
+        // gets a small markdown preview (query-result-format.ts).
+        if (!isTabularRows(rows as unknown)) {
+          return {
+            success: true,
+            cellId: input.cellId,
+            rowCount: rows.length,
+            columns,
+            sampleRows: rows.slice(0, NOTEBOOK_SQL_PREVIEW_ROWS),
+          };
+        }
         return {
           success: true,
           cellId: input.cellId,
           rowCount: rows.length,
-          columns,
-          sampleRows: rows.slice(0, 20),
+          ...formatRowsForModel(rows, {
+            fields: columns,
+            maxRows: NOTEBOOK_SQL_PREVIEW_ROWS,
+            moreHint:
+              "The cell holds the full result for the user; aggregate or filter in the query to bring more into view here.",
+          }),
         };
       },
     }),

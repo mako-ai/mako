@@ -14,6 +14,7 @@ import type { ConsoleDataV2 } from "../types";
 import {
   inferBsonType,
   truncateSamples,
+  truncateDocument,
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
   MAX_TOTAL_OUTPUT_SIZE,
@@ -23,6 +24,11 @@ import {
   isAgentToolAbortError,
   withAgentTimeout,
 } from "./shared/truncation";
+import {
+  QUERY_RESULT_DEFAULT_ROWS,
+  QUERY_RESULT_MAX_ROWS,
+  budgetDocumentsForModel,
+} from "./shared/query-result-format";
 
 // Define schemas separately to avoid inline inference overhead
 const emptySchema = z.object({});
@@ -42,6 +48,14 @@ const executeQuerySchema = z.object({
   query: z.string().describe("The MongoDB query to execute"),
   connectionId: z.string().describe("The target connection ID"),
   databaseName: z.string().describe("The target database name"),
+  maxRows: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      `Documents to show (default ${QUERY_RESULT_DEFAULT_ROWS}, at most ${QUERY_RESULT_MAX_ROWS}). Prefer $group/$project/limit in the query over raising this.`,
+    ),
 });
 
 // Helper implementations (exported for the unified discovery tools in
@@ -268,6 +282,7 @@ async function executeQueryImpl(
   workspaceId: string,
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
+  maxRows?: number,
 ) {
   const startTime = Date.now();
 
@@ -398,6 +413,26 @@ async function executeQueryImpl(
     });
   }
 
+  if (result && result.success && Array.isArray(result.data)) {
+    // Documents keep their nested shape (values still capped per field by
+    // truncateDocument) but stop once the size budget is spent. Slice before
+    // truncating: a Mongo query has no automatic LIMIT.
+    const total = result.data.length;
+    const documents = result.data
+      .slice(0, QUERY_RESULT_MAX_ROWS)
+      .map((doc: unknown) => truncateDocument(doc));
+    const budgeted = budgetDocumentsForModel(documents, { maxRows });
+    return {
+      ...result,
+      data: budgeted.documents,
+      ...(budgeted.shown < total
+        ? {
+            _warning: `Showing ${budgeted.shown} of ${total} documents. Use $group/$project/.limit() in the query to narrow it, or pass maxRows (up to ${QUERY_RESULT_MAX_ROWS}).`,
+          }
+        : {}),
+    };
+  }
+
   if (result && result.success && result.data) {
     const truncatedData = truncateQueryResults(result.data);
     const outputSize = JSON.stringify(truncatedData).length;
@@ -525,7 +560,7 @@ export const createMongoToolsV2 = (
       description:
         "Execute a MongoDB query and return results. Write queries in JavaScript using MongoDB Node.js driver syntax (e.g., db.collection('users').find({}).limit(10).toArray()).",
       inputSchema: executeQuerySchema,
-      execute: async ({ query, connectionId, databaseName }) => {
+      execute: async ({ query, connectionId, databaseName, maxRows }) => {
         try {
           return await executeQueryImpl(
             query,
@@ -534,6 +569,7 @@ export const createMongoToolsV2 = (
             workspaceId,
             userId,
             toolExecutionContext,
+            maxRows,
           );
         } catch (error) {
           return {
