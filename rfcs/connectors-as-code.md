@@ -1,6 +1,7 @@
 # RFC: Connectors as code — a folder anyone can write, run in the workspace's sandbox
 
-**Status:** proposed
+**Status:** accepted; iteration 1 shipped in #948 (2026-09-02), iterations 2–6
+open — see "Where this landed" at the end
 **Continues:** RFC #936 (agent-authored flows), RFC #904 (flows as code)
 **Sources:** the code at `ce70274d`, a production census of 2026-09-01, the
 unmerged `cursor/connector-builder-system-b06c` branch, all 509 reachable
@@ -586,3 +587,16 @@ a ceiling.
 - `docs/connector-builder-prd.md`, the March 2026 design this replaces
 - apps.md §12 (one substrate), §18 (Parquet through the bucket), §19 (repo
   doctrine), §25 (false-completion discipline)
+
+## Where this landed (2026-10-01)
+
+| Item | PR | What shipped |
+| --- | --- | --- |
+| Iteration 1 — workspace connector folder, discovered, used in a flow | #948 (2026-09-02) | `connectors/<slug>/` with the `node` runtime and `@makoai/connector-sdk`; the sync box copies folders and never clones the repo (§6.3, §6.4, `api/src/connectors/workspace/sync-box.ts`); `ws:<slug>` resolution. |
+| Author documentation | #964 (2026-09-03) | `connectors.md` documents workspace-authored connectors. |
+| Vocabulary | #954, #960 (2026-09-02) | What this RFC calls a "data source" is now a **connection** (`source.connection_id` in flow files); a live `probe_connection` exists. |
+| Iterations 2–6 | — | Not started. |
+
+The text above is kept as written against `ce70274d`; line references into
+`api/src` have drifted since.
+
