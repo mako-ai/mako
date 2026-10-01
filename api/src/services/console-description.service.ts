@@ -1,6 +1,10 @@
 import { generateText } from "ai";
 import { propagateAttributes } from "@langfuse/tracing";
-import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import {
+  getModel,
+  buildProviderOptions,
+  systemProviderOptions,
+} from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { getUtilityModelIds } from "./model-catalog.service";
 import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
@@ -21,7 +25,9 @@ function processDescriptionResult(
   modelId: string,
   trackingCtx?: DescriptionTrackingContext | null,
 ): string | null {
-  if (trackingCtx) {
+  // Usage rows belong to a user; system-triggered runs are attributed at the
+  // gateway (workspace tag) instead.
+  if (trackingCtx?.userId) {
     const { inputTokens, outputTokens } = extractTokenCounts(usage);
     void trackUsage({
       workspaceId: trackingCtx.workspaceId,
@@ -74,7 +80,8 @@ export interface ConsoleDescriptionContext {
 
 export interface DescriptionTrackingContext {
   workspaceId: string;
-  userId: string;
+  /** Absent when no person triggered the run (bulk requeue, sync, backfill). */
+  userId?: string;
   /** User email, used as the Langfuse user identifier when present. */
   userEmail?: string;
 }
@@ -122,13 +129,18 @@ export async function generateConsoleDescription(
 
     const failoverModels = await getUtilityModelIds(3);
 
-    const baseOpts = trackingCtx
+    // Always attributed: to the person when one triggered it, otherwise to
+    // the system bucket under the workspace tag.
+    const baseOpts = trackingCtx?.userId
       ? buildProviderOptions({
           userId: trackingCtx.userId,
           workspaceId: trackingCtx.workspaceId,
           invocationType: "description_generation",
         })
-      : {};
+      : systemProviderOptions(
+          "description_generation",
+          trackingCtx?.workspaceId,
+        );
     const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
     const { text, usage, response } = await propagateAttributes(
       {
@@ -197,7 +209,10 @@ export async function generateDescriptionAndEmbedding(
 
   if (description && isEmbeddingAvailable()) {
     try {
-      embedding = await embedText(description);
+      embedding = await embedText(description, {
+        workspaceId: trackingCtx?.workspaceId,
+        userId: trackingCtx?.userId,
+      });
       embeddingModel = getEmbeddingModelName();
     } catch (err) {
       logger.error("Console embedding generation failed", { error: err });

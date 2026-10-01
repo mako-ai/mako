@@ -27,7 +27,11 @@
  */
 
 import { generateText, type UIMessage } from "ai";
-import { getModel } from "../ai-gateway";
+import {
+  getModel,
+  systemProviderOptions,
+  type GatewayAttribution,
+} from "../ai-gateway";
 import { getUtilityModelId } from "../ai-models";
 import { loggers } from "../../logging";
 import {
@@ -572,6 +576,7 @@ Rules: preserve concrete identifiers (table names, column names, IDs, file paths
 async function summarizeMessages(
   messages: UIMessage[],
   abortSignal?: AbortSignal,
+  attribution?: Omit<GatewayAttribution, "invocationType">,
 ): Promise<string | null> {
   const rendered = messages
     .map(renderMessageForSummary)
@@ -588,6 +593,21 @@ async function summarizeMessages(
       prompt: `Summarize this earlier conversation:\n\n${transcript}`,
       maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
       abortSignal,
+      // The summary is billed like any other call; attribute it to the chat
+      // it compacts rather than leaving an untagged row in Vercel's report.
+      providerOptions: attribution?.userId
+        ? {
+            gateway: {
+              user: attribution.userId,
+              tags: [
+                ...(attribution.workspaceId
+                  ? [`ws:${attribution.workspaceId}`]
+                  : []),
+                "type:compaction",
+              ],
+            },
+          }
+        : systemProviderOptions("compaction", attribution?.workspaceId),
     });
     const trimmed = text.trim();
     return trimmed.length > 0 ? trimmed : null;
@@ -640,6 +660,8 @@ export interface CompactionOptions {
   /** Whether to summarize older turns (vs. elide+drop only). */
   summarize?: boolean;
   abortSignal?: AbortSignal;
+  /** Who the summary call is billed to (Vercel spend attribution). */
+  attribution?: Omit<GatewayAttribution, "invocationType">;
 }
 
 export type CompactionStrategy =
@@ -701,7 +723,11 @@ export async function compactUiMessagesForBudget(
 
     let summary: string | null = null;
     if (summarize) {
-      summary = await summarizeMessages(older, opts.abortSignal);
+      summary = await summarizeMessages(
+        older,
+        opts.abortSignal,
+        opts.attribution,
+      );
     }
 
     working = summary ? injectSummary(recent, summary) : recent;

@@ -816,9 +816,7 @@ export async function deriveConsoleDescription(
         conversationExcerpt: options.context?.conversationExcerpt,
         resultSample: options.context?.resultSample,
       },
-      options.tracking
-        ? { workspaceId: row.workspaceId.toString(), ...options.tracking }
-        : undefined,
+      { workspaceId: row.workspaceId.toString(), ...options.tracking },
     );
     description = generated.description;
     if (!description) return "unavailable";
@@ -842,7 +840,9 @@ export async function deriveConsoleDescription(
   };
   if (isEmbeddingAvailable() && description) {
     try {
-      const embedding = await embedText(description);
+      const embedding = await embedText(description, {
+        workspaceId: row.workspaceId.toString(),
+      });
       if (embedding) {
         set.descriptionEmbedding = embedding;
         set.embeddingModel = currentModel;
