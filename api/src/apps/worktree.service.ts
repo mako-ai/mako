@@ -1602,7 +1602,9 @@ export async function writeWorktreeScratchFile(
     provider.scratch(ctx),
     assertSafeRelPath(relPath),
   );
-  await provider.writeFile(ctx, remotePath, Buffer.from(contents, "utf8"));
+  // TextEncoder, not Buffer.from: a Buffer can be a view into Node's shared
+  // pool, and the E2B provider uploads `bytes.buffer` — the whole pool.
+  await provider.writeFile(ctx, remotePath, new TextEncoder().encode(contents));
   return remotePath;
 }
 
