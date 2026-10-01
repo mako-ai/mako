@@ -223,6 +223,11 @@ export const useAcpStore = create<AcpState>()(
             makoWorkspaceId:
               existingById.get(session.id)?.makoWorkspaceId ??
               session.makoWorkspaceId,
+            // Older Local Agents don't echo the token expiry; keep the value
+            // Chat recorded at mint time so stale-session checks still work.
+            makoMcpTokenExpiresAt:
+              session.makoMcpTokenExpiresAt ??
+              existingById.get(session.id)?.makoMcpTokenExpiresAt,
           }));
         });
       } catch (error) {
@@ -481,6 +486,7 @@ export const useAcpStore = create<AcpState>()(
           mcpServerName: creds.mcpServerName,
           makoAgentSessionId: creds.agentSessionId,
           makoWorkspaceId: workspaceId,
+          mcpTokenExpiresAt: creds.expiresAt ?? undefined,
           systemPromptAppend,
           model: options?.model?.trim() || undefined,
         });
@@ -504,6 +510,8 @@ export const useAcpStore = create<AcpState>()(
           makoAgentSessionId:
             session.makoAgentSessionId ?? creds.agentSessionId,
           makoWorkspaceId: session.makoWorkspaceId ?? workspaceId,
+          makoMcpTokenExpiresAt:
+            session.makoMcpTokenExpiresAt ?? creds.expiresAt ?? undefined,
         };
         set(s => {
           s.sessions = [

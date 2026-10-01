@@ -69,7 +69,7 @@ import { loader } from "@monaco-editor/react";
 import Console, { ConsoleRef } from "./Console";
 import ResultsTable from "./ResultsTable";
 import Settings from "../pages/Settings";
-import ConnectorTab from "./ConnectorTab";
+import SourceConnectionTab from "./SourceConnectionTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
@@ -2896,7 +2896,7 @@ function Editor({
                   ) : tab.kind === "members" ? (
                     <WorkspaceMembers />
                   ) : tab.kind === "connectors" ? (
-                    <ConnectorTab
+                    <SourceConnectionTab
                       tabId={tab.id}
                       sourceId={
                         typeof tab.content === "string"

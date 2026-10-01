@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
+import { reconcileSourceConnectionTabs } from "../lib/source-connection-tabs";
 
-interface ConnectorEntity {
+interface SourceConnectionEntity {
   _id: string;
   name: string;
   description?: string;
@@ -23,26 +24,26 @@ interface ApiResponse<T> {
 }
 
 interface EntitiesState {
-  entities: Record<string, ConnectorEntity>; // key = `${workspaceId}:${connectorId}`
+  entities: Record<string, SourceConnectionEntity>; // key = `${workspaceId}:${connectorId}`
   loading: Record<string, boolean>; // key same as entities key
   fetchOne: (
     workspaceId: string,
     connectorId: string,
-  ) => Promise<ConnectorEntity | null>;
-  fetchAll: (workspaceId: string) => Promise<ConnectorEntity[]>;
-  upsert: (entity: ConnectorEntity) => void;
+  ) => Promise<SourceConnectionEntity | null>;
+  fetchAll: (workspaceId: string) => Promise<SourceConnectionEntity[]>;
+  upsert: (entity: SourceConnectionEntity) => void;
   remove: (workspaceId: string, connectorId: string) => void;
   init: (workspaceId: string) => Promise<void>;
-  refresh: (workspaceId: string) => Promise<ConnectorEntity[]>;
+  refresh: (workspaceId: string) => Promise<SourceConnectionEntity[]>;
   create: (
     workspaceId: string,
     payload: Record<string, any>,
-  ) => Promise<{ data: ConnectorEntity | null; error: string | null }>;
+  ) => Promise<{ data: SourceConnectionEntity | null; error: string | null }>;
   update: (
     workspaceId: string,
     connectorId: string,
     payload: Record<string, any>,
-  ) => Promise<{ data: ConnectorEntity | null; error: string | null }>;
+  ) => Promise<{ data: SourceConnectionEntity | null; error: string | null }>;
   delete: (
     workspaceId: string,
     connectorId: string,
@@ -53,13 +54,13 @@ function makeKey(workspaceId: string, connectorId: string) {
   return `${workspaceId}:${connectorId}`;
 }
 
-export const useConnectorEntitiesStore = create<EntitiesState>()(
+export const useSourceConnectionEntitiesStore = create<EntitiesState>()(
   immer((set, get) => ({
     entities: {},
     loading: {},
     fetchOne: async (workspaceId, connectorId) => {
       const key = makeKey(workspaceId, connectorId);
-      let entity: ConnectorEntity | undefined;
+      let entity: SourceConnectionEntity | undefined;
       set(state => {
         entity = state.entities[key];
         if (!entity) state.loading[key] = true;
@@ -67,12 +68,15 @@ export const useConnectorEntitiesStore = create<EntitiesState>()(
       if (entity) return entity;
       try {
         const data = unwrapBody(
-          await api.GET("/api/workspaces/{workspaceId}/connectors/{id}", {
-            params: { path: { workspaceId, id: connectorId } },
-          }),
-        ) as ApiResponse<ConnectorEntity>;
+          await api.GET(
+            "/api/workspaces/{workspaceId}/connections/sources/{id}",
+            {
+              params: { path: { workspaceId, id: connectorId } },
+            },
+          ),
+        ) as ApiResponse<SourceConnectionEntity>;
         if (data.success) {
-          const entity: ConnectorEntity = { ...data.data, workspaceId };
+          const entity: SourceConnectionEntity = { ...data.data, workspaceId };
           set(state => {
             state.entities[key] = entity;
             delete state.loading[key];
@@ -95,10 +99,10 @@ export const useConnectorEntitiesStore = create<EntitiesState>()(
 
       try {
         const data = unwrapBody(
-          await api.GET("/api/workspaces/{workspaceId}/connectors", {
+          await api.GET("/api/workspaces/{workspaceId}/connections/sources", {
             params: { path: { workspaceId } },
           }),
-        ) as ApiResponse<ConnectorEntity[]>;
+        ) as ApiResponse<SourceConnectionEntity[]>;
         if (data.success) {
           set(state => {
             data.data.forEach(ds => {
@@ -106,10 +110,13 @@ export const useConnectorEntitiesStore = create<EntitiesState>()(
               state.entities[key] = { ...ds, workspaceId };
             });
           });
+          // Persisted tabs outlive the row. Only after a successful list —
+          // an empty set from a failed request would close every tab.
+          reconcileSourceConnectionTabs(new Set(data.data.map(ds => ds._id)));
           return data.data;
         }
       } catch (err) {
-        console.error("Failed to fetch connectors list", err);
+        console.error("Failed to fetch source connections list", err);
       } finally {
         set(state => {
           delete state.loading[workspaceId];
@@ -146,16 +153,19 @@ export const useConnectorEntitiesStore = create<EntitiesState>()(
     create: async (
       workspaceId: string,
       payload: Record<string, any>,
-    ): Promise<{ data: ConnectorEntity | null; error: string | null }> => {
+    ): Promise<{
+      data: SourceConnectionEntity | null;
+      error: string | null;
+    }> => {
       try {
         const data = unwrapBody(
-          await api.POST("/api/workspaces/{workspaceId}/connectors", {
+          await api.POST("/api/workspaces/{workspaceId}/connections/sources", {
             params: { path: { workspaceId } },
             body: payload,
           }),
-        ) as ApiResponse<ConnectorEntity>;
+        ) as ApiResponse<SourceConnectionEntity>;
         if (data.success) {
-          const entity: ConnectorEntity = {
+          const entity: SourceConnectionEntity = {
             ...data.data,
             workspaceId,
           };
@@ -178,16 +188,22 @@ export const useConnectorEntitiesStore = create<EntitiesState>()(
       workspaceId: string,
       connectorId: string,
       payload: Record<string, any>,
-    ): Promise<{ data: ConnectorEntity | null; error: string | null }> => {
+    ): Promise<{
+      data: SourceConnectionEntity | null;
+      error: string | null;
+    }> => {
       try {
         const data = unwrapBody(
-          await api.PUT("/api/workspaces/{workspaceId}/connectors/{id}", {
-            params: { path: { workspaceId, id: connectorId } },
-            body: payload,
-          }),
-        ) as ApiResponse<ConnectorEntity>;
+          await api.PUT(
+            "/api/workspaces/{workspaceId}/connections/sources/{id}",
+            {
+              params: { path: { workspaceId, id: connectorId } },
+              body: payload,
+            },
+          ),
+        ) as ApiResponse<SourceConnectionEntity>;
         if (data.success) {
-          const entity: ConnectorEntity = {
+          const entity: SourceConnectionEntity = {
             ...data.data,
             workspaceId,
           };
@@ -212,9 +228,12 @@ export const useConnectorEntitiesStore = create<EntitiesState>()(
     ): Promise<{ success: boolean; error: string | null }> => {
       try {
         const data = unwrapBody(
-          await api.DELETE("/api/workspaces/{workspaceId}/connectors/{id}", {
-            params: { path: { workspaceId, id: connectorId } },
-          }),
+          await api.DELETE(
+            "/api/workspaces/{workspaceId}/connections/sources/{id}",
+            {
+              params: { path: { workspaceId, id: connectorId } },
+            },
+          ),
         ) as ApiResponse<null>;
         if (data.success) {
           set(state => {
@@ -237,3 +256,6 @@ export const useConnectorEntitiesStore = create<EntitiesState>()(
     },
   })),
 );
+
+/** @deprecated use useSourceConnectionEntitiesStore */
+export const useConnectorEntitiesStore = useSourceConnectionEntitiesStore;

@@ -3,7 +3,7 @@
  *
  * Wire format `<iv_hex>:<ciphertext_hex>` with the ENCRYPTION_KEY env var
  * (32-byte hex). There used to be four copies of this (workspace-schema,
- * routes/sources, sync/destination-manager, sync/database-data-source-
+ * routes/source-connections, sync/destination-manager, sync/database-data-source-
  * manager) with different guards: one double-encrypted on round-trips, one
  * rejected any plaintext containing ":", one swallowed the error. They all
  * delegate here now; `encryptString`/`decryptString` are tolerant (a value

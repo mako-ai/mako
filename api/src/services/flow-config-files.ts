@@ -62,9 +62,9 @@ export interface FlowFile {
   source: /**
    * A source connection (a credential configured with a connector). On
    * disk this is `source.connection_id`; `connector_id` is the older key
-   * and is still read. The field keeps its historical name in the API.
+   * and is still read.
    */
-  | { type: "connector"; connectorId: string }
+  | { type: "connector"; connectionId: string }
     | {
         type: "database";
         connectionId?: string;
@@ -148,6 +148,14 @@ function plain<T>(value: unknown): T | undefined {
           depopulate: true,
         })
       : value;
+  // A nested path (`tableDestination.partitioning`, `.clustering`) is not a
+  // subdocument: Mongoose hands back a getter object whose `toObject()` is
+  // `undefined` when nothing is set — which is the state after the update
+  // route reassigns `tableDestination` from a form payload that never
+  // carries either. `JSON.stringify(undefined)` is `undefined`, and
+  // `JSON.parse(undefined)` throws `"undefined" is not valid JSON`, which
+  // reached the user as the save error for every edit of a CDC flow.
+  if (source === null || source === undefined) return undefined;
   // The round-trip also normalises ObjectIds and Dates to strings, which is
   // what the file wants anyway.
   return JSON.parse(JSON.stringify(source)) as T;
@@ -200,7 +208,7 @@ export function serializeFlowFile(flow: FlowFile): string {
         })
       : omitEmpty({
           type: "connector",
-          connection_id: flow.source.connectorId,
+          connection_id: flow.source.connectionId,
         });
 
   const table = flow.destination.table;
@@ -351,7 +359,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
           type: "connector",
           // `connection_id` is the key; `connector_id` is what files written
           // before the vocabulary settled carry, and they must keep parsing.
-          connectorId:
+          connectionId:
             str(srcDoc.connection_id) ?? str(srcDoc.connector_id) ?? "",
         };
 
@@ -460,7 +468,7 @@ export function flowToFile(flow: IFlow): FlowFile {
         }
       : {
           type: "connector",
-          connectorId: flow.dataSourceId?.toString() ?? "",
+          connectionId: flow.dataSourceId?.toString() ?? "",
         };
 
   const t = flow.tableDestination;

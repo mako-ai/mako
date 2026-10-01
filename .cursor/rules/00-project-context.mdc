@@ -9,7 +9,7 @@ description: Mako monorepo essentials — entry points, env, key directories, an
 
 - API (Hono + TS): [api/src/index.ts](mdc:api/src/index.ts) → port `WEB_API_PORT=8080`
 - App (Vite + React): [app/src/main.tsx](mdc:app/src/main.tsx) → port 5173, proxy `/api` → `http://localhost:8080`
-- Sync CLI: `pnpm run sync` → [api/src/sync/cli.ts](mdc:api/src/sync/cli.ts)
+- Sync engine: [api/src/sync/sync-orchestrator.ts](mdc:api/src/sync/sync-orchestrator.ts) (no CLI; flows run on Inngest)
 - Inngest: `GET|PUT|POST /api/inngest` → [api/src/inngest/](mdc:api/src/inngest)
 
 ## Environment (local)

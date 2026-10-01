@@ -14,7 +14,7 @@ import type { LoadError } from "../api/result";
 
 export const TAB_KIND_ENTITY_LABELS = {
   console: "console",
-  connectors: "connector",
+  connectors: "source connection",
   "flow-editor": "flow",
   dashboard: "dashboard",
   "dashboard-data-source": "data source",

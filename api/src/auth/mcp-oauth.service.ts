@@ -4,8 +4,9 @@
  * Public clients only (token_endpoint_auth_method "none") with mandatory
  * PKCE S256 — exactly what the MCP spec's auth profile and every major MCP
  * client (Claude, Cursor, Codex) implement. Tokens are opaque `mcpat_`/
- * `mcprt_` strings; scopes are always the read-only MCP set, so an OAuth
- * grant can never do more than a freshly-created MCP API key.
+ * `mcprt_` strings. OAuth grants default to the read-only MCP set; clients
+ * may explicitly request the narrower `warehouse:write` scope for governed
+ * dbt execution, which is shown prominently on the consent screen.
  */
 import * as crypto from "crypto";
 
@@ -26,11 +27,59 @@ const CLIENT_ID_PREFIX = "mcpc_";
 
 const AUTH_CODE_TTL_MS = 10 * 60 * 1000;
 const ACCESS_TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// Only session-minted Desktop ACP grants expire; browser-authorized grants
+// remain renewable until explicitly revoked.
+const ACP_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Avoid a write per MCP request: bump lastUsedAt at most once a minute. */
 const LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
 
 const MAX_REDIRECT_URIS = 10;
+
+/** Public scopes the browser OAuth flow may grant to an MCP client. */
+export const MCP_OAUTH_SCOPES = [
+  "mcp",
+  "query:read",
+  "warehouse:write",
+] as const satisfies readonly WorkspaceApiKeyScope[];
+
+const MCP_OAUTH_SCOPE_SET = new Set<string>(MCP_OAUTH_SCOPES);
+
+/**
+ * Parse the OAuth `scope` parameter. Baseline MCP/read scopes are always
+ * present so a client asking only for the optional dbt execution permission
+ * still receives a useful MCP grant. Omitted scope preserves the historical
+ * read-only default.
+ *
+ * Scopes Mako does not know (`offline_access`, `openid`, a client's own
+ * defaults — the reference MCP SDK sends some of these) are dropped rather
+ * than rejected: RFC 6749 §3.3 lets the server narrow the grant, the token
+ * response reports the scope actually issued, and refusing the whole flow
+ * would break clients that connected fine before scopes were parsed at all.
+ */
+export function parseMcpOAuthScopes(value?: string): WorkspaceApiKeyScope[] {
+  if (!value?.trim()) return [...DEFAULT_WORKSPACE_API_KEY_SCOPES];
+
+  const requested = [...new Set(value.trim().split(/\s+/))].filter(scope =>
+    MCP_OAUTH_SCOPE_SET.has(scope),
+  );
+
+  return [
+    ...DEFAULT_WORKSPACE_API_KEY_SCOPES,
+    ...(requested.includes("warehouse:write")
+      ? (["warehouse:write"] as const)
+      : []),
+  ];
+}
+
+/** Never turn a client request into warehouse authority without user opt-in. */
+export function resolveMcpOAuthConsentScopes(
+  requested: readonly WorkspaceApiKeyScope[],
+  warehouseWriteApproved: boolean,
+): WorkspaceApiKeyScope[] {
+  return requested.filter(
+    scope => scope !== "warehouse:write" || warehouseWriteApproved,
+  );
+}
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -99,6 +148,7 @@ export async function createAuthorizationCode(input: {
   workspaceId: string;
   redirectUri: string;
   codeChallenge: string;
+  scopes: WorkspaceApiKeyScope[];
 }): Promise<string> {
   const code = randomToken("mcpac_");
   await McpOAuthCode.create({
@@ -108,7 +158,7 @@ export async function createAuthorizationCode(input: {
     workspaceId: input.workspaceId,
     redirectUri: input.redirectUri,
     codeChallenge: input.codeChallenge,
-    scopes: [...DEFAULT_WORKSPACE_API_KEY_SCOPES],
+    scopes: input.scopes,
     expiresAt: new Date(Date.now() + AUTH_CODE_TTL_MS),
   });
   return code;
@@ -140,7 +190,9 @@ async function issueTokens(grant: {
     agentSessionId: grant.agentSessionId,
     scopes: grant.scopes,
     accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
-    refreshExpiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    ...(grant.clientId === ACP_MCP_CLIENT_ID
+      ? { refreshExpiresAt: new Date(Date.now() + ACP_GRANT_TTL_MS) }
+      : {}),
   });
   return {
     accessToken,
@@ -248,28 +300,46 @@ export async function refreshAccessToken(input: {
   refreshToken: string;
   clientId: string;
 }): Promise<IssuedTokens> {
-  // Rotation: the old grant is deleted and a fresh pair is issued.
-  const record = await McpOAuthToken.findOneAndDelete({
-    refreshTokenHash: sha256(input.refreshToken),
-    refreshExpiresAt: { $gt: new Date() },
-  });
-  if (!record) throw new Error("invalid_grant: unknown or expired token");
-  if (record.clientId !== input.clientId) {
-    throw new Error("invalid_grant: token was issued to a different client");
+  if (input.clientId === ACP_MCP_CLIENT_ID) {
+    throw new Error("invalid_grant: session-minted tokens cannot be refreshed");
   }
-  return issueTokens({
-    clientId: record.clientId,
-    userId: record.userId,
-    workspaceId: record.workspaceId,
+  const accessToken = randomToken(MCP_ACCESS_TOKEN_PREFIX);
+  const refreshToken = randomToken(MCP_REFRESH_TOKEN_PREFIX);
+  // Rotate atomically in place: a failed write or wrong client must not
+  // destroy a valid grant. Only one caller may consume each refresh token.
+  const record = await McpOAuthToken.findOneAndUpdate(
+    {
+      refreshTokenHash: sha256(input.refreshToken),
+      clientId: input.clientId,
+      $or: [
+        { refreshExpiresAt: { $exists: false } },
+        { refreshExpiresAt: { $gt: new Date() } },
+      ],
+    },
+    {
+      $set: {
+        accessTokenHash: sha256(accessToken),
+        refreshTokenHash: sha256(refreshToken),
+        accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
+      },
+      $unset: { refreshExpiresAt: "" },
+    },
+    { new: true },
+  );
+  if (!record) throw new Error("invalid_grant: unknown or expired token");
+  return {
+    accessToken,
+    refreshToken,
+    expiresInSeconds: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
     scopes: record.scopes,
     agentSessionId: record.agentSessionId,
-  });
+  };
 }
 
 /**
  * One row per connected agent: a (client × user) pair that holds at least one
- * live grant in the workspace. Grants are token documents; refresh rotation
- * replaces them, so `connectedAt` is the oldest surviving grant's creation.
+ * live grant in the workspace. Rotation preserves the grant, so connectedAt
+ * remains the original authorization time.
  */
 export interface McpConnectionSummary {
   clientId: string;
@@ -289,7 +359,15 @@ export async function listMcpConnections(
     lastUsedAt?: Date;
     accessExpiresAt: Date;
   }>([
-    { $match: { workspaceId, refreshExpiresAt: { $gt: new Date() } } },
+    {
+      $match: {
+        workspaceId,
+        $or: [
+          { refreshExpiresAt: { $exists: false } },
+          { refreshExpiresAt: { $gt: new Date() } },
+        ],
+      },
+    },
     {
       $group: {
         _id: { clientId: "$clientId", userId: "$userId" },

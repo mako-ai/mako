@@ -6,21 +6,53 @@
 import { useConsoleStore } from "../store/consoleStore";
 import { basename } from "../utils/path";
 
+/**
+ * `slug` is the app's URL handle — its folder name when it sits at the top
+ * of the workspace tree, otherwise leave it out and the id is used (see
+ * appsStore.appUrlRef). It is metadata, not identity: the id is.
+ */
 export function focusAppsTab(
   appId: string,
   title: string,
   slug?: string,
+  /** The app's own query string ("?..."), from a shared link. Carried on
+   *  the tab so the address bar shows it and the published iframe boots
+   *  with it — see tabUrlPath and AppWorkspace. */
+  search?: string,
 ): string {
-  return useConsoleStore.getState().focusOrOpenTab(
+  const id = useConsoleStore.getState().focusOrOpenTab(
     { kind: "app", metadata: { appId } },
     () => ({
       title: title || "App",
       content: "",
       kind: "app",
-      metadata: { appId: appId, appSlug: slug },
+      metadata: { appId: appId, appSlug: slug, appSearch: search || undefined },
     }),
     { title: title || undefined },
   ) as string;
+  // A link that carries a query applies to the tab whether it was just
+  // created or already open. The create callback above only runs for a new
+  // tab; for an existing one — everyone who has opened the app before — the
+  // stored search would otherwise win, the address bar would be rewritten
+  // to it, and the shared view would never arrive. A plain link (no query)
+  // leaves the tab as it was.
+  //
+  // appSearchSeed counts the times a DIFFERENT query landed on an existing
+  // tab. AppWorkspace seeds the published iframe once per boot and must not
+  // follow every navigate(), so this is the one signal that says "reload the
+  // app with this query": measured on the live shell after the tab kept the
+  // query on the address bar but the app inside still showed "All countries".
+  if (search && id) {
+    useConsoleStore.setState(state => {
+      const t = state.tabs[id];
+      if (t?.metadata && t.metadata.appSearch !== search) {
+        t.metadata.appSearch = search;
+        t.metadata.appSearchSeed =
+          ((t.metadata.appSearchSeed as number | undefined) ?? 0) + 1;
+      }
+    });
+  }
+  return id;
 }
 
 /** Open (or focus) a file of an Apps project in its own editor tab. */
@@ -127,6 +159,37 @@ export function closeAppsTabsFor(appId: string): boolean {
   );
   for (const tab of doomed) store.closeTab(tab.id);
   return doomed.length > 0;
+}
+
+/**
+ * Keep every Apps tab's URL handle honest after a listing or a move: a
+ * top-level app is addressed by its slug, a nested one by its id. The app
+ * tab heals itself while it is mounted (AppWorkspace), but `app-file` and
+ * `app-diff` tabs carry the same handle and never re-read it — so a file
+ * opened before a move kept producing `/apps/<old-slug>/file/…`, a link that
+ * no longer resolves. `slugs` maps app id → URL slug (undefined = use the id).
+ */
+export function healAppsTabs(slugs: Map<string, string | undefined>): void {
+  useConsoleStore.setState(state => {
+    for (const tab of Object.values(state.tabs) as Array<{
+      kind?: string;
+      metadata?: Record<string, unknown>;
+    }>) {
+      if (
+        tab.kind !== "app" &&
+        tab.kind !== "app-file" &&
+        tab.kind !== "app-diff"
+      ) {
+        continue;
+      }
+      const appId = tab.metadata?.appId;
+      if (typeof appId !== "string" || !slugs.has(appId) || !tab.metadata) {
+        continue;
+      }
+      const slug = slugs.get(appId);
+      if (tab.metadata.appSlug !== slug) tab.metadata.appSlug = slug;
+    }
+  });
 }
 
 /**

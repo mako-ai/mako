@@ -1,3 +1,7 @@
+/**
+ * Catalog of connector *code* (built-in + workspace types), not
+ * configured source connections. Keep this filename.
+ */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";

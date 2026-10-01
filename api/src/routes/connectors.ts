@@ -24,14 +24,17 @@ import {
 } from "../openapi/core";
 
 /**
- * Connector catalog endpoints. Intentionally public (no authentication) — they
- * expose only static metadata and config-field schemas for the BUILT-IN
- * connectors, which are the same for every tenant.
+ * Connector catalog (code) endpoints. Intentionally public (no authentication)
+ * — they expose only static metadata and config-field schemas for the BUILT-IN
+ * connectors, which are the same for every tenant. OpenAPI tag: "Connectors".
  *
  * A workspace's own connectors are not that. Their slugs, entity names,
  * credential field names and `blockedReason` (which carries the workspace's
  * own stderr) belong to one tenant, so they are served only to a caller who
  * has authenticated AND is a member — see `memberWorkspaceId`.
+ *
+ * Source *connections* (credentials) live on
+ * `/api/workspaces/:workspaceId/connections/sources`.
  */
 export const connectorRoutes = createRouter();
 
@@ -179,7 +182,7 @@ connectorRoutes.openapi(
     tags: ["Connectors"],
     summary: "List connector types",
     description:
-      "Returns metadata for every available connector type. Public — no authentication required.",
+      "Returns metadata for every available connector type (code, not a credential). Public — no authentication required.",
     security: [],
     responses: {
       200: jsonContent(

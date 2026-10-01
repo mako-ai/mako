@@ -28,6 +28,22 @@ const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
   "cancelled",
 ]);
 
+/**
+ * May this finished run's manifest become the project's prod state (the
+ * `--defer` / Slim CI baseline)? Only when it built the COMMITTED default
+ * branch into the prod-like environment. A laptop overlay, an agent's
+ * working tree or a PR head is not what prod runs, even when it ran against
+ * the prod environment (a read-only `dbt test --env prod` is allowed).
+ */
+export function promotesProdManifest(
+  run: Pick<IDbtRun, "gitBranch" | "workingTreeUserId" | "localOverlay">,
+  ranInProdLikeEnvironment: boolean,
+): boolean {
+  if (!ranInProdLikeEnvironment) return false;
+  if (run.localOverlay || run.workingTreeUserId) return false;
+  return !run.gitBranch || run.gitBranch === "main";
+}
+
 export function isTerminalDbtRunStatus(status: DbtRunStatus): boolean {
   return TERMINAL_DBT_RUN_STATUSES.has(status);
 }
@@ -203,6 +219,18 @@ export async function triggerDbtRun(params: {
    * instead of here.
    */
   deferToProduction?: boolean;
+  /**
+   * A laptop checkout (`mako dbt run`): build the stored overlay over its
+   * base commit instead of any branch. `label` is the display-only source
+   * ("local checkout on feat/x").
+   */
+  localOverlay?: {
+    key: string;
+    baseSha?: string;
+    files: number;
+    deletes: number;
+    label: string;
+  };
   /** PR context for CI runs (trigger === "ci"). */
   ci?: DbtRunCiContext;
   /**
@@ -238,6 +266,7 @@ export async function triggerDbtRun(params: {
   // branch; explicit-branch runs record it directly; everything else (jobs,
   // deploys) builds the default branch of the workspace repo.
   const sourceBranch =
+    params.localOverlay?.label ??
     params.gitBranch ??
     (project
       ? await getCheckoutBranch(project, params.workingTreeUserId)
@@ -264,6 +293,16 @@ export async function triggerDbtRun(params: {
     workingTreeUserId: params.workingTreeUserId,
     sourceBranch,
     deferToProduction: params.deferToProduction,
+    ...(params.localOverlay
+      ? {
+          localOverlay: {
+            key: params.localOverlay.key,
+            baseSha: params.localOverlay.baseSha,
+            files: params.localOverlay.files,
+            deletes: params.localOverlay.deletes,
+          },
+        }
+      : {}),
     ci: params.ci,
   });
 
@@ -397,10 +436,22 @@ export async function triggerDbtRunRetry(params: {
     status: "queued",
     trigger: "manual",
     triggeredBy: params.triggeredBy,
-    // Resume the same source tree the failed run built.
+    // Resume the same source tree the failed run built — a laptop run's
+    // uploaded overlay included (without it the retry would build the
+    // default branch under a "local checkout" label).
     gitBranch: source.gitBranch,
     workingTreeUserId: source.workingTreeUserId,
     sourceBranch: source.sourceBranch,
+    ...(source.localOverlay
+      ? {
+          localOverlay: {
+            key: source.localOverlay.key,
+            baseSha: source.localOverlay.baseSha,
+            files: source.localOverlay.files,
+            deletes: source.localOverlay.deletes,
+          },
+        }
+      : {}),
     deferToProduction: source.deferToProduction,
     retryOfRunId: source._id,
     restoreArtifactKeys: {

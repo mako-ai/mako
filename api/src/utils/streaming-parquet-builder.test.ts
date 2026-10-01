@@ -279,6 +279,66 @@ async function testBuildParquetStripsNulBytesInVarcharColumns() {
 }
 
 // ---------------------------------------------------------------------------
+// Integration test: zero rows keep the probed schema
+// ---------------------------------------------------------------------------
+
+async function describeParquet(filePath: string): Promise<string[][]> {
+  const instance = await DuckDBInstance.create(":memory:");
+  const conn = await instance.connect();
+  try {
+    const result = await conn.run(
+      `DESCRIBE SELECT * FROM read_parquet('${filePath.replace(/'/g, "''")}')`,
+    );
+    return (await result.getRows()).map(row => [
+      String(row[0]),
+      String(row[1]),
+    ]);
+  } finally {
+    conn.closeSync();
+  }
+}
+
+async function testEmptyResultKeepsProbedSchema() {
+  console.log(
+    "  buildParquetFromBatches: zero rows are written with the probed schema",
+  );
+  const typed = await buildParquetFromBatches({
+    filenameBase: "test-empty-typed",
+    fields: [
+      { name: "country", type: "STRING" },
+      { name: "deals", type: "INT64" },
+      { name: "closed_at", type: "TIMESTAMP" },
+    ],
+    streamBatches: async insertBatch => {
+      await insertBatch([]);
+    },
+  });
+  try {
+    assert.equal(typed.rowCount, 0);
+    assert.deepEqual(await describeParquet(typed.filePath), [
+      ["country", "VARCHAR"],
+      ["deals", "BIGINT"],
+      ["closed_at", "TIMESTAMP"],
+    ]);
+  } finally {
+    await fsPromises.rm(typed.filePath, { force: true });
+  }
+
+  console.log("  buildParquetFromBatches: no schema at all → _empty");
+  const unknown = await buildParquetFromBatches({
+    filenameBase: "test-empty-unknown",
+    streamBatches: async () => undefined,
+  });
+  try {
+    assert.deepEqual(await describeParquet(unknown.filePath), [
+      ["_empty", "VARCHAR"],
+    ]);
+  } finally {
+    await fsPromises.rm(unknown.filePath, { force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -297,6 +357,8 @@ async function main() {
   await testBuildParquetPreservesNullsInTypedColumns();
   console.log("  PASSED");
   await testBuildParquetStripsNulBytesInVarcharColumns();
+  console.log("  PASSED");
+  await testEmptyResultKeepsProbedSchema();
   console.log("  PASSED\n");
 
   console.log("All tests passed.");

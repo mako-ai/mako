@@ -8,7 +8,7 @@ import { loggers } from "../logging";
 
 dotenv.config();
 
-const logger = loggers.sync("data-source-manager");
+const logger = loggers.sync("source-connection-manager");
 
 // Import connector schemas to determine which fields should be encrypted
 type ConnectorFieldSchema = {
@@ -21,8 +21,11 @@ type ConnectorFieldSchema = {
 
 type ConnectorSchema = { fields: ConnectorFieldSchema[] };
 
-// Data source interface matching the database schema
-export interface DataSourceConfig {
+/**
+ * Decrypted runtime config for a source connection (a credential configured
+ * with a connector). Not a DuckDB dashboard data source.
+ */
+export interface SourceConnectionConfig {
   id: string;
   name: string;
   description?: string;
@@ -44,7 +47,10 @@ export interface DataSourceConfig {
   };
 }
 
-class DatabaseDataSourceManager {
+/** @deprecated use SourceConnectionConfig */
+export type DataSourceConfig = SourceConnectionConfig;
+
+class SourceConnectionManager {
   private schemaCache: Map<string, ConnectorSchema> = new Map();
   private databaseName: string = "";
   private initialized = false;
@@ -127,11 +133,18 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Get all active data sources
+   * Get all active source connections
    */
+  async getActiveSourceConnections(
+    workspaceId?: string,
+  ): Promise<SourceConnectionConfig[]> {
+    return this.getActiveDataSources(workspaceId);
+  }
+
+  /** @deprecated use getActiveSourceConnections */
   async getActiveDataSources(
     workspaceId?: string,
-  ): Promise<DataSourceConfig[]> {
+  ): Promise<SourceConnectionConfig[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
 
@@ -172,9 +185,16 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Get a specific data source by ID or name
+   * Get a specific source connection by ID
    */
-  async getDataSource(id: string): Promise<DataSourceConfig | null> {
+  async getSourceConnection(
+    id: string,
+  ): Promise<SourceConnectionConfig | null> {
+    return this.getDataSource(id);
+  }
+
+  /** @deprecated use getSourceConnection */
+  async getDataSource(id: string): Promise<SourceConnectionConfig | null> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
 
@@ -212,9 +232,16 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Get data sources by type
+   * Get source connections by connector type
    */
-  async getDataSourcesByType(type: string): Promise<DataSourceConfig[]> {
+  async getSourceConnectionsByType(
+    type: string,
+  ): Promise<SourceConnectionConfig[]> {
+    return this.getDataSourcesByType(type);
+  }
+
+  /** @deprecated use getSourceConnectionsByType */
+  async getDataSourcesByType(type: string): Promise<SourceConnectionConfig[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
 
@@ -249,9 +276,12 @@ class DatabaseDataSourceManager {
     return results;
   }
 
-  /**
-   * List all data source IDs
-   */
+  /** List all source-connection IDs */
+  async listSourceConnectionIds(): Promise<string[]> {
+    return this.listDataSourceIds();
+  }
+
+  /** @deprecated use listSourceConnectionIds */
   async listDataSourceIds(): Promise<string[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
@@ -263,9 +293,12 @@ class DatabaseDataSourceManager {
     return sources.map(s => `${s.name} (${s._id})`);
   }
 
-  /**
-   * List active data source IDs
-   */
+  /** List active source-connection IDs */
+  async listActiveSourceConnectionIds(): Promise<string[]> {
+    return this.listActiveDataSourceIds();
+  }
+
+  /** @deprecated use listActiveSourceConnectionIds */
   async listActiveDataSourceIds(): Promise<string[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
@@ -278,7 +311,8 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Validate configuration (always returns valid for database sources)
+   * Validate configuration (always returns valid — source connections are
+   * stored rows, not a file-based config).
    */
   validateConfig(): { valid: boolean; errors: string[] } {
     // Don't initialize here, just return valid
@@ -412,39 +446,71 @@ class DatabaseDataSourceManager {
 }
 
 // Export singleton instance with lazy initialization
-let _databaseDataSourceManager: DatabaseDataSourceManager | null = null;
-export function getDatabaseDataSourceManager(): DatabaseDataSourceManager {
-  if (!_databaseDataSourceManager) {
-    _databaseDataSourceManager = new DatabaseDataSourceManager();
+let _sourceConnectionManager: SourceConnectionManager | null = null;
+export function getSourceConnectionManager(): SourceConnectionManager {
+  if (!_sourceConnectionManager) {
+    _sourceConnectionManager = new SourceConnectionManager();
   }
-  return _databaseDataSourceManager;
+  return _sourceConnectionManager;
 }
 
-// For backward compatibility, export a getter that returns the instance
-export const databaseDataSourceManager = {
-  get instance() {
-    return getDatabaseDataSourceManager();
-  },
-  // Proxy all methods to the singleton
-  async getActiveDataSources(workspaceId?: string) {
-    return getDatabaseDataSourceManager().getActiveDataSources(workspaceId);
-  },
-  async getDataSource(id: string) {
-    return getDatabaseDataSourceManager().getDataSource(id);
-  },
-  async getDataSourcesByType(type: string) {
-    return getDatabaseDataSourceManager().getDataSourcesByType(type);
-  },
-  async listDataSourceIds() {
-    return getDatabaseDataSourceManager().listDataSourceIds();
-  },
-  async listActiveDataSourceIds() {
-    return getDatabaseDataSourceManager().listActiveDataSourceIds();
-  },
-  validateConfig() {
-    return getDatabaseDataSourceManager().validateConfig();
-  },
-};
+/** @deprecated use getSourceConnectionManager */
+export function getDatabaseDataSourceManager(): SourceConnectionManager {
+  return getSourceConnectionManager();
+}
 
-// Export class for custom instances
-export { DatabaseDataSourceManager };
+function proxyManager() {
+  return {
+    get instance() {
+      return getSourceConnectionManager();
+    },
+    async getActiveSourceConnections(workspaceId?: string) {
+      return getSourceConnectionManager().getActiveSourceConnections(
+        workspaceId,
+      );
+    },
+    /** @deprecated use getActiveSourceConnections */
+    async getActiveDataSources(workspaceId?: string) {
+      return getSourceConnectionManager().getActiveDataSources(workspaceId);
+    },
+    async getSourceConnection(id: string) {
+      return getSourceConnectionManager().getSourceConnection(id);
+    },
+    /** @deprecated use getSourceConnection */
+    async getDataSource(id: string) {
+      return getSourceConnectionManager().getDataSource(id);
+    },
+    async getSourceConnectionsByType(type: string) {
+      return getSourceConnectionManager().getSourceConnectionsByType(type);
+    },
+    /** @deprecated use getSourceConnectionsByType */
+    async getDataSourcesByType(type: string) {
+      return getSourceConnectionManager().getDataSourcesByType(type);
+    },
+    async listSourceConnectionIds() {
+      return getSourceConnectionManager().listSourceConnectionIds();
+    },
+    /** @deprecated use listSourceConnectionIds */
+    async listDataSourceIds() {
+      return getSourceConnectionManager().listDataSourceIds();
+    },
+    async listActiveSourceConnectionIds() {
+      return getSourceConnectionManager().listActiveSourceConnectionIds();
+    },
+    /** @deprecated use listActiveSourceConnectionIds */
+    async listActiveDataSourceIds() {
+      return getSourceConnectionManager().listActiveDataSourceIds();
+    },
+    validateConfig() {
+      return getSourceConnectionManager().validateConfig();
+    },
+  };
+}
+
+export const sourceConnectionManager = proxyManager();
+/** @deprecated use sourceConnectionManager */
+export const databaseDataSourceManager = sourceConnectionManager;
+
+export { SourceConnectionManager };
+/** @deprecated use SourceConnectionManager */
+export const DatabaseDataSourceManager = SourceConnectionManager;

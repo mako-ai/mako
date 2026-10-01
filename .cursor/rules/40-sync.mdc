@@ -7,17 +7,17 @@ description: Flows, chunked sync architecture, and Inngest usage
 
 - Architecture: [docs/Chunked-Sync-Architecture.md](mdc:docs/Chunked-Sync-Architecture.md), [SYNC_WORKER_ARCHITECTURE.md](mdc:SYNC_WORKER_ARCHITECTURE.md).
 - Migration and refactors: [SYNC_INNGEST_MIGRATION.md](mdc:SYNC_INNGEST_MIGRATION.md), [SYNC_REFACTORING_SUMMARY.md](mdc:SYNC_REFACTORING_SUMMARY.md), [SYNC_SCHEDULING_IMPLEMENTATION.md](mdc:SYNC_SCHEDULING_IMPLEMENTATION.md).
-- CLI entry point: [api/src/sync/cli.ts](mdc:api/src/sync/cli.ts) (run with `pnpm run sync`).
-- Connector registry (CLI): [api/src/sync/connector-registry.ts](mdc:api/src/sync/connector-registry.ts) with lazy imports.
+- Engine entry point: [api/src/sync/sync-orchestrator.ts](mdc:api/src/sync/sync-orchestrator.ts). There is no sync CLI (`api/src/sync/cli.ts` was deleted); flows run on Inngest and are configured in the UI or as `flows/<slug>.yml`.
+- Connector registry: [api/src/sync/connector-registry.ts](mdc:api/src/sync/connector-registry.ts) with lazy imports.
 - Inngest integration: [api/src/inngest](mdc:api/src/inngest).
 
 ## Connector vs Flow Responsibilities
 
-- **Connectors** store only credentials and connection settings (endpoint, API key, auth headers).
+- **Connections** store only credentials and connection settings (endpoint, API key, auth headers). A **connector** is the code that uses them.
 - **Flows** define what data to sync:
   - `entityFilter`: which entities to sync (for connectors with fixed entities like Stripe, Close)
   - `queries`: GraphQL/PostHog query definitions (for query-based connectors)
-- For GraphQL/PostHog connectors, queries are injected into the connector at sync time via `dataSource.connection.queries`.
+- For GraphQL/PostHog connectors, queries are injected into the connector at sync time via `sourceConnection.connection.queries`.
 
 Rules:
 

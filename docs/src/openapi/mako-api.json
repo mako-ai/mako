@@ -4256,6 +4256,173 @@
         "operationId": "delete_api_workspaces_id_members_userId"
       }
     },
+    "/api/workspaces/{id}/auto-join": {
+      "get": {
+        "tags": [
+          "Workspaces"
+        ],
+        "summary": "Domain auto-join settings",
+        "description": "Email domains whose signed-in users become members on first contact (no invitation), and the access role they get (viewer or member). `null` when off. How someone opens a published app's link, signs in, and is simply in (apps.md §28).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_id_auto_join"
+      },
+      "put": {
+        "tags": [
+          "Workspaces"
+        ],
+        "summary": "Set domain auto-join",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "domains": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 20
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "member",
+                      "viewer"
+                    ],
+                    "default": "viewer"
+                  }
+                },
+                "required": [
+                  "domains"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_id_auto_join"
+      }
+    },
     "/api/workspaces/{id}/invites": {
       "post": {
         "tags": [
@@ -10862,6 +11029,9 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "pinned": {
+                    "type": "boolean"
                   }
                 }
               }
@@ -11080,12 +11250,938 @@
         "operationId": "post_api_workspaces_workspaceId_skills_id_suppress"
       }
     },
+    "/api/workspaces/{workspaceId}/skills/{id}/pin": {
+      "post": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "Pin or unpin a skill (full body in every prompt)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pinned": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_skills_id_pin"
+      }
+    },
+    "/api/workspaces/{workspaceId}/connections/sources": {
+      "get": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "List source connections",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_connections_sources"
+      },
+      "post": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Create a source connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_connections_sources"
+      }
+    },
+    "/api/workspaces/{workspaceId}/connections/sources/{id}": {
+      "get": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Get a source connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_connections_sources_id"
+      },
+      "put": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Update a source connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_workspaceId_connections_sources_id"
+      },
+      "delete": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Delete a source connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_connections_sources_id"
+      }
+    },
+    "/api/workspaces/{workspaceId}/connections/sources/{id}/test": {
+      "post": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Test a source connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_connections_sources_id_test"
+      }
+    },
+    "/api/workspaces/{workspaceId}/connections/sources/{id}/probe": {
+      "post": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Probe a source connection live: check its credential and read one page of an entity",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "string",
+                    "description": "Entity to read one page of. Omit to check the credential only."
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "description": "Maximum records to return (default 20)."
+                  },
+                  "fields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Keep only these top-level fields of each record."
+                  },
+                  "since": {
+                    "type": "string",
+                    "description": "ISO 8601 instant: records changed since then, where the connector supports it."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_connections_sources_id_probe"
+      }
+    },
+    "/api/workspaces/{workspaceId}/connections/sources/{id}/enable": {
+      "patch": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Enable or disable a source connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_connections_sources_id_enable"
+      }
+    },
+    "/api/workspaces/{workspaceId}/connections/sources/{id}/entities": {
+      "get": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "List entities for a source connection",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_connections_sources_id_entities"
+      }
+    },
+    "/api/workspaces/{workspaceId}/connections/sources/{id}/reveal-secret": {
+      "post": {
+        "tags": [
+          "Source Connections"
+        ],
+        "summary": "Reveal one stored secret of a source connection (admin/owner only)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Top-level config field name declared encrypted by the connector's schema."
+                  }
+                },
+                "required": [
+                  "field"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_connections_sources_id_reveal_secret"
+      }
+    },
     "/api/workspaces/{workspaceId}/connectors": {
       "get": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "List workspace connectors",
+        "summary": "List source connections",
         "security": [
           {
             "cookieAuth": []
@@ -11150,9 +12246,9 @@
       },
       "post": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "Create a workspace connector",
+        "summary": "Create a source connection",
         "security": [
           {
             "cookieAuth": []
@@ -11230,9 +12326,9 @@
     "/api/workspaces/{workspaceId}/connectors/{id}": {
       "get": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "Get a workspace connector",
+        "summary": "Get a source connection",
         "security": [
           {
             "cookieAuth": []
@@ -11305,9 +12401,9 @@
       },
       "put": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "Update a workspace connector",
+        "summary": "Update a source connection",
         "security": [
           {
             "cookieAuth": []
@@ -11391,9 +12487,9 @@
       },
       "delete": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "Delete a workspace connector",
+        "summary": "Delete a source connection",
         "security": [
           {
             "cookieAuth": []
@@ -11468,9 +12564,9 @@
     "/api/workspaces/{workspaceId}/connectors/{id}/test": {
       "post": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "Test a connector connection",
+        "summary": "Test a source connection",
         "security": [
           {
             "cookieAuth": []
@@ -11545,7 +12641,7 @@
     "/api/workspaces/{workspaceId}/connectors/{id}/probe": {
       "post": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
         "summary": "Probe a source connection live: check its credential and read one page of an entity",
         "security": [
@@ -11655,9 +12751,9 @@
     "/api/workspaces/{workspaceId}/connectors/{id}/enable": {
       "patch": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "Enable or disable a connector",
+        "summary": "Enable or disable a source connection",
         "security": [
           {
             "cookieAuth": []
@@ -11743,9 +12839,9 @@
     "/api/workspaces/{workspaceId}/connectors/{id}/entities": {
       "get": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "List connector entities",
+        "summary": "List entities for a source connection",
         "security": [
           {
             "cookieAuth": []
@@ -11820,9 +12916,9 @@
     "/api/workspaces/{workspaceId}/connectors/{id}/reveal-secret": {
       "post": {
         "tags": [
-          "Connectors"
+          "Source Connections"
         ],
-        "summary": "Reveal one stored secret of a connector (admin/owner only)",
+        "summary": "Reveal one stored secret of a source connection (admin/owner only)",
         "security": [
           {
             "cookieAuth": []
@@ -23237,6 +24333,9 @@
                   },
                   "description": {
                     "type": "string"
+                  },
+                  "folder": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -23289,6 +24388,441 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/folders": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Create an empty app folder",
+        "description": "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<me>/apps/…`) are the caller's own.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_folders"
+      },
+      "patch": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Rename or move an app folder (its apps keep their identity)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "to": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "path",
+                  "to"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_apps_folders"
+      },
+      "delete": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Delete an empty app folder",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "path",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_apps_folders"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/move": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "File the app in another folder (and/or rename its folder)",
+        "description": "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it, and nothing is rebuilt. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "folder": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "folder"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_move"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/stamp-id": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Give a copied app its own id",
+        "description": "For a folder whose mako.json declares an id another app already holds (a copy that kept its source's manifest). Writes the id the index filed it under into its manifest, as one commit on main.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_stamp_id"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}": {
@@ -24010,6 +25544,84 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_history"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/publish-state": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "What is live: the published commit, its age, and what main has that is not live",
+        "description": "The published sha with its commit (author, time, subject), when it was published, whether the default branch has app changes that are not live (and how many commits), and the last deploy error. Read from the repository — starts no sandbox.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_publish_state"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/commit": {
       "post": {
         "tags": [
@@ -24587,6 +26199,92 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_bindings"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/viewer": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Who the caller is to this app (what `useViewer()` sees)",
+        "description": "What `__data/viewer.json` says for the caller: their id and email, the workspace (id, name, their access role) and their role on this app (owner / editor / viewer). Nothing else — an app looks up what it needs about the person in the warehouse by email (apps.md §28). Editors of the app may pass `?as=<email>` to see another member's resolution; a laptop `vite dev` uses this for MAKO_VIEWER_AS.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "as",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_viewer"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/artifact": {
       "get": {
         "tags": [
@@ -24682,6 +26380,7 @@
           "Apps"
         ],
         "summary": "Materialize a data binding (bindings-as-files) to parquet",
+        "description": "Synchronous by default. With `?async=1` it answers 202 with a `jobId` at once and builds in the background — for builds longer than the edge's 100 s request limit; poll `GET …/binding-jobs/{jobId}`.",
         "security": [
           {
             "cookieAuth": []
@@ -24714,6 +26413,20 @@
             "required": true,
             "name": "name",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1",
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "async",
+            "in": "query"
           }
         ],
         "responses": {
@@ -24759,6 +26472,303 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_materialize"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/dev-build": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Build a binding from local (uncommitted) SQL for `vite dev`",
+        "description": "The laptop dev loop behind `makoData()`: send the local `bindings/<name>.sql` text and get back the parquet of exactly that query, run read-only through the workspace connection its front matter names. Text identical to the committed binding is served from (or materialized into) the app's stored artifact; anything else — an uncommitted edit, or `dbtEnvironment` rendering `{{ dbt_schema }}` against a dev dbt environment (per relation: ones the environment has not built read prod, unless `dbtDefer: false`) — is a draft: built and streamed back, reused for 30 minutes (same connection + rendered SQL) unless `refresh`, never stored as the app's artifact, so published viewers never see it. A draft that keeps failing answers 503 with Retry-After instead of re-running. May redirect to a short-lived signed artifact URL; follow redirects. With `async: true`, a build (not a stored artifact) answers 202 with a `jobId` to poll at `GET …/binding-jobs/{jobId}` instead.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 524288
+                  },
+                  "dbtEnvironment": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "dbtDefer": {
+                    "type": "boolean"
+                  },
+                  "refresh": {
+                    "type": "boolean"
+                  },
+                  "async": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to a short-lived signed artifact URL"
+          },
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Status of an asynchronous binding build",
+        "description": "`queued` → `running` → `ready` (fetch `…/artifact`) or `error` (`error`, and `errorStatus`: what the synchronous call would have answered). Jobs are kept for an hour.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "jobId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}/artifact": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "The parquet an asynchronous binding build produced",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "jobId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to a short-lived signed artifact URL"
+          },
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_binding_jobs_jobId_artifact"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}/git/commit": {
@@ -26155,7 +28165,7 @@
           "Apps"
         ],
         "summary": "Publish the app: merge to main, build, and deploy",
-        "description": "Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
+        "description": "Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, prepares every required parquet binding at that exact commit, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build or binding leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing code and data artifacts instead of rebuilding them.",
         "security": [
           {
             "cookieAuth": []
@@ -26248,7 +28258,7 @@
           "Apps"
         ],
         "summary": "Point the app at a previously published deployment",
-        "description": "Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no rebuild and no sandbox. The target sha must still have a stored deployment.",
+        "description": "Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no code rebuild and no sandbox. The target sha must still have a stored deployment, and every parquet binding required by that commit is verified or rematerialized before the pointer moves.",
         "security": [
           {
             "cookieAuth": []
@@ -28792,6 +30802,544 @@
         "operationId": "get_api_workspaces_workspaceId_repo_github_branches"
       }
     },
+    "/api/workspaces/{workspaceId}/favourites": {
+      "get": {
+        "tags": [
+          "Favourites"
+        ],
+        "summary": "List the caller's favourites (folders and items, all kinds)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_favourites"
+      }
+    },
+    "/api/workspaces/{workspaceId}/favourites/folders": {
+      "post": {
+        "tags": [
+          "Favourites"
+        ],
+        "summary": "Create a favourites folder",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "parentId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_favourites_folders"
+      }
+    },
+    "/api/workspaces/{workspaceId}/favourites/items/{kind}/{refId}": {
+      "put": {
+        "tags": [
+          "Favourites"
+        ],
+        "summary": "Star an entity (idempotent), optionally into a folder",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "app",
+                "console",
+                "notebook",
+                "dashboard"
+              ]
+            },
+            "required": true,
+            "name": "kind",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "refId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "parentId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_workspaceId_favourites_items_kind_refId"
+      },
+      "delete": {
+        "tags": [
+          "Favourites"
+        ],
+        "summary": "Unstar an entity",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "app",
+                "console",
+                "notebook",
+                "dashboard"
+              ]
+            },
+            "required": true,
+            "name": "kind",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "refId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_favourites_items_kind_refId"
+      }
+    },
+    "/api/workspaces/{workspaceId}/favourites/{id}": {
+      "patch": {
+        "tags": [
+          "Favourites"
+        ],
+        "summary": "Move, reorder or rename a favourite",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "parentId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_favourites_id"
+      },
+      "delete": {
+        "tags": [
+          "Favourites"
+        ],
+        "summary": "Delete a favourite (a folder takes its subtree with it)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_favourites_id"
+      }
+    },
     "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {
       "get": {
         "tags": [
@@ -30503,6 +33051,110 @@
         "operationId": "get_api_agent_agents"
       }
     },
+    "/api/agent/client-tool-failure": {
+      "post": {
+        "tags": [
+          "Agent"
+        ],
+        "summary": "Report a browser-executed agent tool failure",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string"
+                  },
+                  "chatId": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "toolName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "toolCallId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "error": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "code": {
+                    "type": "string",
+                    "maxLength": 128
+                  }
+                },
+                "required": [
+                  "workspaceId",
+                  "chatId",
+                  "toolName",
+                  "toolCallId",
+                  "error"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_agent_client_tool_failure"
+      }
+    },
     "/api/agent/chat": {
       "post": {
         "tags": [
@@ -30966,7 +33618,7 @@
           "Connectors"
         ],
         "summary": "List connector types",
-        "description": "Returns metadata for every available connector type. Public — no authentication required.",
+        "description": "Returns metadata for every available connector type (code, not a credential). Public — no authentication required.",
         "security": [],
         "responses": {
           "200": {

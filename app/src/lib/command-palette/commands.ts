@@ -41,7 +41,7 @@ const EXPLORER_VIEWS: Array<{ view: LeftPaneView; label: string }> = [
   { view: "apps", label: "Apps" },
   { view: "dbt", label: "Transforms" },
   { view: "flows", label: "Flows" },
-  { view: "connectors", label: "Connectors" },
+  { view: "connectors", label: "Sources" },
   { view: "settings", label: "Settings" },
 ];
 

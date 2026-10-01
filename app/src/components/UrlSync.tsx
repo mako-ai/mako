@@ -3,7 +3,8 @@ import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
-import { useAppsStore } from "../store/appsStore";
+import { appUrlSlug, useAppsStore } from "../store/appsStore";
+import { resolveAppRef } from "../lib/apps-explorer-tree";
 import {
   closeAppsTabsFor,
   focusAppsFileTab,
@@ -20,6 +21,8 @@ import {
 } from "../dbt-runtime/shell";
 import { useDbtStore } from "../store/dbtStore";
 import { useMcpStore } from "../store/mcpStore";
+import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import { closeSourceConnectionTabsFor } from "../lib/source-connection-tabs";
 import {
   focusDashboardDataSourceTab,
   focusDashboardTab,
@@ -29,6 +32,7 @@ import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
+  decodeUrlSegment,
   tabUrlPath,
 } from "../lib/tab-routing";
 
@@ -143,16 +147,32 @@ export function UrlSync() {
       const connectorId = connectorMatch[1];
       setLeftPane("connectors");
 
-      // A connector tab keeps its id in `content`; the name is fetched by
-      // ConnectorTab, so the title is a placeholder until it loads.
-      focusOrOpenTab(
-        { kind: "connectors", where: t => t.content === connectorId },
-        () => ({
-          title: "Connector",
-          content: connectorId,
-          kind: "connectors",
-        }),
-      );
+      // Opening a tab before we know the row exists left a 404 editor on
+      // screen, and persist restored the same dead id on every reload — the
+      // page looked stuck. Apps already refuse a dead /apps/:slug; do the
+      // same here. fetchOne 404s (or a cache miss after delete) is "gone".
+      void useSourceConnectionEntitiesStore
+        .getState()
+        .fetchOne(currentWorkspace.id, connectorId)
+        .then(entity => {
+          if (!entity) {
+            closeSourceConnectionTabsFor(connectorId);
+            window.history.replaceState(null, "", "/");
+            setDeadLinkNotice(
+              "That source connection link doesn't resolve anymore — it may have been deleted.",
+            );
+            return;
+          }
+          // A source-connection tab keeps its id in `content`.
+          focusOrOpenTab(
+            { kind: "connectors", where: t => t.content === connectorId },
+            () => ({
+              title: entity.name || "Source connection",
+              content: connectorId,
+              kind: "connectors",
+            }),
+          );
+        });
     } else if (flowMatch) {
       // /f/:flowId
       const flowId = flowMatch[1];
@@ -214,16 +234,18 @@ export function UrlSync() {
       );
     } else if (appFileMatch) {
       // /a/:appId/file/:path — Apps file editor
-      const appId = appFileMatch[1];
+      const appId = decodeUrlSegment(appFileMatch[1]);
       const filePath = decodePathSegments(appFileMatch[2]);
       setLeftPane("apps");
       void useAppsStore
         .getState()
         .fetchApps(currentWorkspace.id)
         .then(() => {
-          const app = useAppsStore
-            .getState()
-            .apps.find(a => a.id === appId || a.slug === appId);
+          // Resolve exactly as the server does: id, repo path, or a slug
+          // that names ONE app (else the top-level one). Guessing a nested
+          // app from a bare name would open one app while the address bar
+          // named another.
+          const app = resolveAppRef(useAppsStore.getState().apps, appId);
           if (!app) {
             closeAppsTabsFor(appId);
             window.history.replaceState(null, "", "/");
@@ -232,20 +254,23 @@ export function UrlSync() {
             );
             return;
           }
-          focusAppsFileTab(app.id, filePath, app.slug);
+          focusAppsFileTab(app.id, filePath, appUrlSlug(app));
         });
     } else if (appMatch) {
       // /a/:appId — Apps (git-backed, experimental)
-      const appId = appMatch[1];
+      const appId = decodeUrlSegment(appMatch[1]);
+      // The app's own query (a shared filtered view). Read NOW, synchronously:
+      // the outgoing sync below rewrites the address bar to the tab's URL as
+      // soon as hydration completes, and until the tab carries this search
+      // that URL has none — reading it after the fetch would find it gone.
+      const appSearch = window.location.search;
       setLeftPane("apps");
       const store = useAppsStore.getState();
       void store.fetchApps(currentWorkspace.id).then(() => {
         // The path segment may be a slug (the app's folder in the repo) or a
         // legacy Mongo id. Resolve either; the outgoing sync then rewrites the
         // URL to the slug form, so old links upgrade themselves.
-        const app = useAppsStore
-          .getState()
-          .apps.find(a => a.id === appId || a.slug === appId);
+        const app = resolveAppRef(useAppsStore.getState().apps, appId);
         if (!app) {
           // The link points at an app that is gone, or lives in another
           // workspace. Opening a tab anyway rendered the whole workspace view
@@ -259,7 +284,7 @@ export function UrlSync() {
           );
           return;
         }
-        focusAppsTab(app.id, app.title, app.slug);
+        focusAppsTab(app.id, app.title, appUrlSlug(app), appSearch);
       });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path

@@ -13,6 +13,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { resolveDbtRulesBlockForTurn } from "./dbt-rules-turn.service";
 import { DbtProject } from "../database/workspace-schema";
 import { seedDbtGitTree } from "./test-support/git-tree";
+import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -39,6 +40,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await DbtProject.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await bindTestWorkspaceRepo(WS.toString());
 });
 
 async function seedProject(name: string, workspaceId = WS, rules?: string) {
@@ -56,9 +58,12 @@ async function seedProject(name: string, workspaceId = WS, rules?: string) {
     defaultEnvironment: "dev",
     createdBy: "tester",
   });
-  if (rules !== undefined) {
-    await seedDbtGitTree(workspaceId, { ".makorules.md": rules });
-  }
+  await seedDbtGitTree(
+    workspaceId,
+    rules === undefined
+      ? { "README.md": "dbt project\n" }
+      : { ".makorules.md": rules },
+  );
   return project._id.toString();
 }
 

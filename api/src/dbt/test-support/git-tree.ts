@@ -14,6 +14,7 @@ import {
   updateRefCas,
 } from "../../apps/repository.service";
 import { ZERO_OID } from "../../apps/git";
+import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 
 /** Ensure the workspace repo exists and commit dbt/<path> files on a branch. */
 export async function seedDbtGitTree(
@@ -25,6 +26,7 @@ export async function seedDbtGitTree(
   if (!(await repoExists(repoDir))) {
     await initRepo(repoDir, { "README.md": "workspace\n" });
   }
+  await bindTestWorkspaceRepo(workspaceId.toString());
   const branch = options.branch ?? DEFAULT_BRANCH;
   if (branch !== DEFAULT_BRANCH) {
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);

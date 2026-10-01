@@ -22,15 +22,18 @@ import {
 } from "./flow-config-files";
 import type { IFlow } from "../database/workspace-schema";
 
-const connectorId = new Types.ObjectId();
-const destId = new Types.ObjectId();
-const tableConnId = new Types.ObjectId();
+// Fixed hex — `new Types.ObjectId()` embeds a timestamp, and around
+// 2026-09-02 those ids contain `987`, which this file uses as a trap for
+// `runCount`. A substring assertion then fails the whole API contract job.
+const connectorId = new Types.ObjectId("6a2bd881b6f8c41ea17e9bc7");
+const destId = new Types.ObjectId("69c2719490eb18199aafa882");
+const tableConnId = new Types.ObjectId("69c2719490eb18199aafa883");
 
 /** A flow with EVERY runtime trap populated with a traceable value. */
 function flowWithTraps(): IFlow {
   return {
-    _id: new Types.ObjectId(),
-    workspaceId: new Types.ObjectId(),
+    _id: new Types.ObjectId("00aabbccddeeff0011223347"),
+    workspaceId: new Types.ObjectId("00aabbccddeeff0011223348"),
     type: "webhook",
     name: "Stripe → Warehouse",
     slug: "stripe-warehouse",
@@ -135,8 +138,14 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
     "backfill_state",
   ];
   for (const needle of forbidden) {
+    // Short digits ("987", "1234") also appear inside time-prefixed ObjectIds
+    // (`6a9877…` in Sep 2026). Treat a numeric trap as a YAML scalar, not a
+    // substring of a hex id.
+    const found = /^\d+$/.test(needle)
+      ? new RegExp(`(^|[\\s:])${needle}(?![0-9a-fA-F])`, "m").test(yamlText)
+      : yamlText.includes(needle);
     assert.ok(
-      !yamlText.includes(needle),
+      !found,
       `serialized file must not contain ${needle}:\n${yamlText}`,
     );
   }
@@ -168,7 +177,7 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   assert.equal(parsed.type, "webhook");
   assert.deepEqual(parsed.source, {
     type: "connector",
-    connectorId: connectorId.toString(),
+    connectionId: connectorId.toString(),
   });
   assert.equal(parsed.destination.connectionId, destId.toString());
   assert.equal(parsed.destination.table?.tableName, "stripe_charges");
@@ -309,7 +318,7 @@ console.log("flow-config-files tests passed");
   assert.ok(legacy && "file" in legacy ? legacy.file : legacy);
   const legacyFile = (legacy as { file?: unknown }).file ?? legacy;
   assert.equal(
-    (legacyFile as { source: { connectorId: string } }).source.connectorId,
+    (legacyFile as { source: { connectionId: string } }).source.connectionId,
     "6a2bd881b6f8c41ea17e9bc7",
   );
 
@@ -318,7 +327,7 @@ console.log("flow-config-files tests passed");
   );
   const currentFile = (current as { file?: unknown }).file ?? current;
   assert.equal(
-    (currentFile as { source: { connectorId: string } }).source.connectorId,
+    (currentFile as { source: { connectionId: string } }).source.connectionId,
     "6a2bd881b6f8c41ea17e9bc7",
   );
 

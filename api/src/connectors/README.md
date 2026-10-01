@@ -30,17 +30,22 @@ Where the vocabulary is already applied:
 | Agent / MCP tools | `list_connectors`, `inspect_connector({ connector })` | `list_connections` (both kinds, `kind` + `connector` on every row), `inspect_connection`, `probe_connection` |
 | Flow files | `source.type: connector` | `source.connection_id`, `destination.connection_id` (`connector_id` is the pre-2026-09 key and still parses) |
 | CLI | `mako connector test <path>` | `mako connection probe <id\|name>` |
+| REST | `/api/connectors` catalog | `/api/workspaces/:wid/connections/sources` (source connections); `/api/workspaces/:wid/connectors` is the deprecated alias. Database connections stay under `/databases`. |
 | Docs / skills | `docs/connectors.md` (Vocabulary note), `flows-as-code` skill, the workspace `AGENTS.md` template, the MCP handshake instructions | same |
+| TypeScript models | `ConnectorDefinition`, `connectorRegistry`, `connectorCatalogStore` | `SourceConnection` / `ISourceConnection` (Mongo collection still `connectors`); `SourceConnectionConfig` / `sourceConnectionManager`; UI `SourceConnectionExplorer` / `Form` / `Tab` |
 
-Where it is **not yet** applied — stage two, to be moved with aliases and
-never a hard rename:
+Where it is **not yet** applied — left with a reason:
 
-- REST: `/api/workspaces/:wid/connectors` manages source connections
-  (`routes/sources.ts`); database connections are under `/databases`.
-- Mongoose: the `Connector` model (aliased `SourceConnection` / `DataSource`
-  in code) is a source connection; `ConnectorDefinition` is workspace
-  connector code. **Collection names are never renamed.**
-- UI labels ("Sources → Add", the connector tab) and analytics event names.
+- **Mongo collection names** (`connectors`, `databaseconnections`, `connectordefinitions`) — never renamed.
+- **Mongoose model name** `"Connector"` (the string passed to `mongoose.model`) — other schemas `ref: "Connector"`; changing it would be a migration.
+- **`IFlow.dataSourceId`** — persisted field; TypeScript keeps the stored name with a comment. CDC destination columns `_dataSourceId` / `_dataSourceName` are the same.
+- **Tab kind / URL** `"connectors"` and `/cx/:id` — public deep-link contract; visible labels say Sources / source connection.
+- **Zustand persist key** `connector-draft-store` — renaming would wipe in-progress drafts.
+- **`this.dataSource` on `BaseConnector` and vendor connectors** — aliased as `this.sourceConnection`; vendor folders still read `this.dataSource.config` so we do not churn every Stripe/Close/… implementation in this pass.
+- **Flow YAML discriminant** `source.type: connector` — public on-disk key; means "this source is a source connection", not connector code.
+- **Analytics** `connector_created` still fires; `source_connection_created` is dual-fired alongside.
+- **File path** `sync/database-data-source-manager.ts` — exports are `SourceConnectionConfig` / `sourceConnectionManager`; the filename is historical.
+- **DuckDB dashboard data sources** (`list_data_sources`, `DashboardDataSourceEditor`, `/api/workspaces/:wid/data-sources`) — correctly named; not this vocabulary.
 
 When touching any of those, move them toward this vocabulary; when writing
 prompts, skills or tool descriptions, use these words from the start.
@@ -135,7 +140,7 @@ Naming conventions are simplified; each connector exports a class named `XxxConn
 
 ## Configuration
 
-Data sources are stored in the database with encrypted credentials. Each data source has:
+Source connections are stored in the database with encrypted credentials. Each source connection has:
 
 - **config**: Connection configuration (API keys, endpoints, etc.)
 - **settings**: Sync settings (batch size, rate limits, etc.)

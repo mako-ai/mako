@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -95,6 +96,10 @@ export default function DbtJobView({
   const triggerJob = useDbtStore(s => s.triggerJob);
   const cancelRun = useDbtStore(s => s.cancelRun);
   const saveJob = useDbtStore(s => s.saveJob);
+  // The store records failures under error[`jobs:…`] / error[`runs:…`] but
+  // nothing in this view rendered them, so a 404 on Run/Save (a job that
+  // exists only in git until the push lands) failed in silence.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const job = useMemo(
     () => (jobs ?? []).find(j => j._id === jobId),
@@ -194,8 +199,16 @@ export default function DbtJobView({
 
   const handleRunNow = useCallback(async () => {
     if (!workspaceId) return;
+    setActionError(null);
     const runId = await triggerJob(workspaceId, projectId, jobId);
-    if (runId) setSelectedRunId(runId);
+    if (runId) {
+      setSelectedRunId(runId);
+    } else {
+      setActionError(
+        useDbtStore.getState().error[`runs:${projectId}`] ??
+          "Failed to trigger job",
+      );
+    }
   }, [workspaceId, projectId, jobId, triggerJob]);
 
   const handleStop = useCallback(async () => {
@@ -212,7 +225,8 @@ export default function DbtJobView({
     if (!job) return;
     setFormName(job.name);
     setFormEnvironment(job.environment);
-    setFormCommands(job.commands.length > 0 ? [...job.commands] : ["build"]);
+    const commands = job.commands ?? [];
+    setFormCommands(commands.length > 0 ? [...commands] : ["build"]);
     setFormScheduleEnabled(!!job.schedule?.cron);
     const cron = job.schedule?.cron ?? PRESET_CRONS.daily;
     setFormCron(cron);
@@ -267,9 +281,17 @@ export default function DbtJobView({
       enabled: formEnabled,
       deferToProduction: formDefer,
     };
+    setActionError(null);
     const saved = await saveJob(workspaceId, projectId, payload, jobId);
     setSaving(false);
-    if (saved) setEditing(false);
+    if (saved) {
+      setEditing(false);
+    } else {
+      setActionError(
+        useDbtStore.getState().error[`jobs:${projectId}`] ??
+          "Failed to save job",
+      );
+    }
   }, [
     workspaceId,
     projectId,
@@ -309,9 +331,11 @@ export default function DbtJobView({
     return <EntityLoadingState label="Loading job…" />;
   }
 
-  const commandSummary = job.commands
+  // An invalid git-only definition carries no commands at all.
+  const commandSummary = (job.commands ?? [])
     .map(command => `dbt ${command}`)
     .join(" → ");
+  const invalid = job.definitionInvalid;
   const scheduleSummary = job.schedule?.cron
     ? `${job.schedule.cron} ${job.schedule.timezone}`
     : "manual";
@@ -391,6 +415,7 @@ export default function DbtJobView({
               variant="contained"
               startIcon={<RunIcon size={14} />}
               onClick={handleRunNow}
+              disabled={!!invalid}
             >
               Run now
             </Button>
@@ -429,6 +454,22 @@ export default function DbtJobView({
             </Typography>
           </Tooltip>
         </Box>
+      )}
+      {invalid && (
+        <Alert severity="warning" sx={{ mx: 1.5, mb: 1 }}>
+          The job file in git is invalid ({invalid.reason}). Fix{" "}
+          <code>{invalid.path}</code> on main; until then this shows the last
+          valid version and cannot run.
+        </Alert>
+      )}
+      {actionError && (
+        <Alert
+          severity="error"
+          onClose={() => setActionError(null)}
+          sx={{ mx: 1.5, mb: 1 }}
+        >
+          {actionError}
+        </Alert>
       )}
     </Box>
   );

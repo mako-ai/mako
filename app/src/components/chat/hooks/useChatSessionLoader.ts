@@ -8,7 +8,8 @@ import { isLocalAcpModelId } from "../../../lib/local-acp-models";
 import { useConsoleStore } from "../../../store/consoleStore";
 import { useSettingsStore } from "../../../store/settingsStore";
 import { convertStoredMessages } from "../convert-stored-messages";
-import { buildCostByAssistantOrdinal } from "../response-cost";
+import { readPersistedUsageTotals } from "../session-usage";
+import { useChatUsageStore } from "../../../store/chatUsageStore";
 import type { ToolDispatchGate } from "../tool-dispatch-gate";
 
 type ChatHelpers = UseChatHelpers<UIMessage>;
@@ -262,11 +263,16 @@ export function useChatSessionLoader({
         {
           turnActive:
             Boolean(data.activeStreamId) || Boolean(localAcpBusyRef.current),
-          // Attach per-response cost from the persisted usage.history so
-          // historical assistant messages show their cost tag too.
-          costByAssistantOrdinal: buildCostByAssistantOrdinal(data.usage),
         },
       );
+
+      // Seed the session's cumulative token/cost counter from the server's
+      // running totals. `GET /chats/{id}` returns the whole chat document, so
+      // `usage` is already in hand. Seeding REPLACES rather than adds, which is
+      // what keeps a reload after a live turn from double counting.
+      useChatUsageStore
+        .getState()
+        .seedSessionUsage(targetChatId, readPersistedUsageTotals(data.usage));
 
       // Restored tool parts must not re-trigger the in-band console
       // opener (only LIVE streamed results should); the consoles-restore

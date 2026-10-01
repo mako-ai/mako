@@ -16,6 +16,7 @@ import { queryExecutionService } from "../../services/query-execution.service";
 import { loggers } from "../../logging";
 import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-schedule.service";
 import { emitScheduledQueryTerminalEvent } from "../../services/flow-run-notification.emit";
+import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 
 const logger = loggers.inngest();
 
@@ -132,6 +133,10 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         const savedConsole = savedConsoleDoc.toObject({
           getters: true,
         }) as ISavedConsole;
+        // Git is the definition: run the file at main, not the row's last
+        // pushed copy.
+        const liveCode = await liveConsoleCode(workspaceId, consoleId);
+        if (liveCode) savedConsole.code = liveCode.code;
 
         const connectionMongooseDoc = savedConsole.connectionId
           ? await DatabaseConnection.findById(savedConsole.connectionId)

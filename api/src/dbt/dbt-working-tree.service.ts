@@ -113,7 +113,7 @@ export async function listWorkingFiles(
   userId: string,
 ): Promise<WorkingFileMeta[]> {
   const repoDir = await repoDirIfExists(project);
-  if (!repoDir) return [];
+  if (repoDir == null) return [];
   const branch = await resolveBranchOrDefault(
     repoDir,
     await getCheckoutBranch(project, userId),
@@ -136,7 +136,7 @@ export async function readWorkingFile(
 ): Promise<WorkingFile | null> {
   assertSafeDbtPath(path);
   const repoDir = await repoDirIfExists(project);
-  if (!repoDir) return null;
+  if (repoDir == null) return null;
   const branch = await resolveBranchOrDefault(
     repoDir,
     await getCheckoutBranch(project, userId),
@@ -273,22 +273,37 @@ export async function renameWorkingFile(
  *    build exactly what the user sees — which is committed, because every
  *    save commits).
  *  - `branch` set → that branch (CI-style runs).
+ *  - `commit` set → exactly that commit (a laptop run's base, which must
+ *    never silently become another tree: a missing commit throws).
  *  - neither → the default branch (deploy jobs).
  * Binary files and files over the size cap are skipped — dbt trees are text.
  */
 export async function loadWorkingTreeContents(
   project: IDbtProject,
-  opts: { userId?: string; branch?: string } = {},
+  opts: { userId?: string; branch?: string; commit?: string } = {},
 ): Promise<Array<{ path: string; content: string }>> {
   const repoDir = await repoDirIfExists(project);
-  if (!repoDir) return [];
-  const wanted =
-    opts.branch ??
-    (opts.userId
-      ? await getCheckoutBranch(project, opts.userId)
-      : DEFAULT_BRANCH);
-  const branch = await resolveBranchOrDefault(repoDir, wanted);
-  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  if (repoDir == null) {
+    if (opts.commit) throw new RepoRequiredError();
+    return [];
+  }
+  let head: string | null;
+  if (opts.commit) {
+    head = await resolveCommit(repoDir, opts.commit);
+    if (!head) {
+      throw new Error(
+        `Commit ${opts.commit.slice(0, 7)} is not in the workspace repo — push it (or fetch main) and retry`,
+      );
+    }
+  } else {
+    const wanted =
+      opts.branch ??
+      (opts.userId
+        ? await getCheckoutBranch(project, opts.userId)
+        : DEFAULT_BRANCH);
+    const branch = await resolveBranchOrDefault(repoDir, wanted);
+    head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  }
   if (!head) return [];
   const entries = await listTree(repoDir, head);
   const paths = entries.map(e => e.path).filter(p => projectPathOf(p) !== null);

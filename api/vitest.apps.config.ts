@@ -18,6 +18,7 @@ export default defineConfig({
       "src/apps/worktree.service.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
+      "src/migrations/2026-09-02-110000_workspace_self_directive_to_git.test.ts",
       "src/services/skills.service.test.ts",
       "src/notebooks/notebook-git.service.test.ts",
       "src/apps/bindings.service.test.ts",
@@ -30,15 +31,43 @@ export default defineConfig({
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
+      // Asynchronous binding builds (202 + poll): job rows in real Mongo.
+      "src/apps/binding-jobs.test.ts",
+      "src/inngest/functions/apps-binding-concurrency.test.ts",
+      // The laptop dev loop: uncommitted binding text built as a draft.
+      "src/apps/binding-dev-build.test.ts",
+      // Draft reuse + failure backoff: real Mongo, filesystem artifact store.
+      "src/apps/binding-draft-cache.test.ts",
       // Real git + mongo: the pre-push flow-file check reads the workspace
       // repo at main and plans against live rows.
       "src/agent-lib/tools/flow-file-tools.test.ts",
+      // GET/list from git at main; leftover local git without a binding
+      // must not populate the list (issue #956).
+      "src/services/flow-sync.repo.test.ts",
       // The live connector probe: its service (bounded, read-only, secrets
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",
       "src/agent-lib/tools/connector-tools.test.ts",
+      "src/agent-lib/tools/apps-tools-consistency.test.ts",
+      "src/agent-lib/capabilities/runtime.test.ts",
       "src/apps/preview.service.test.ts",
+      "src/apps/deployment.service.test.ts",
+      // Viewer identity (apps.md §28): who an app is talking to, and the
+      // domain auto-join that lets a link-clicker become a member.
+      "src/apps/app-viewer.service.test.ts",
+      "src/services/auto-join.service.test.ts",
+      "src/apps/deploy-on-push.test.ts",
+      // What is live for an app: the published chip and app_publish_status.
+      "src/apps/publish-state.test.ts",
+      // Apps in real folders: the index over the tree at main, manifest
+      // identity, moves that keep it, and the folder commits.
+      "src/apps/app-index.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
+      "src/inngest/functions/apps-deploy.test.ts",
+      // A deploy's outcome as a GitHub commit status on the pushed sha.
+      "src/apps/deploy-commit-status.test.ts",
+      "src/inngest/functions/apps-deploy-status.test.ts",
+      "src/services/bigquery-poll-budget.test.ts",
       // These two were written as vitest suites but listed in no vitest
       // config, so neither runner could execute them: tsx dies on them
       // with "Vitest failed to access its internal state", and vitest

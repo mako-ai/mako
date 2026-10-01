@@ -23,8 +23,9 @@ import {
 import { isEntityEnabledForFlow } from "./entity-selection";
 import { cdcSyncStateService } from "./sync-state";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
+import { ensureFlowDerivedCache } from "../services/flow-sync.service";
 
 const log = loggers.sync("cdc.consumer");
 
@@ -35,7 +36,18 @@ export class CdcConsumerService {
     entity: string;
     maxEvents?: number;
   }) {
-    const flow = await Flow.findById(params.flowId).lean();
+    const loaded = await Flow.findById(params.flowId).lean();
+    if (!loaded) {
+      throw new Error("Flow not found");
+    }
+    const freshness = await ensureFlowDerivedCache(loaded);
+    if (freshness === "invalid" || freshness === "missing") {
+      return { skipped: true, reason: "definition_invalid" as const };
+    }
+    const flow =
+      freshness === "resynced"
+        ? await Flow.findById(params.flowId).lean()
+        : loaded;
     if (!flow) {
       throw new Error("Flow not found");
     }
@@ -79,10 +91,12 @@ export class CdcConsumerService {
     let connectorSchema: ConnectorEntitySchema | null = null;
     if (flow.dataSourceId) {
       try {
-        const ds = await databaseDataSourceManager.getDataSource(
+        const ds = await sourceConnectionManager.getSourceConnection(
           String(flow.dataSourceId),
         );
-        const conn = ds ? await syncConnectorRegistry.getConnector(ds) : null;
+        const conn = ds
+          ? await syncConnectorRegistry.getConnectorFor(ds)
+          : null;
         if (conn) {
           connectorSchema = await conn.resolveSchema(params.entity);
         }

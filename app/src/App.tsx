@@ -59,7 +59,7 @@ import DatabaseExplorer, {
   type CollectionInfo,
 } from "./components/DatabaseExplorer";
 import ConsoleExplorer from "./components/ConsoleExplorer";
-import DataSourceExplorer from "./components/ConnectorExplorer";
+import SourceConnectionExplorer from "./components/SourceConnectionExplorer";
 import Editor from "./components/Editor";
 import DbtProjectDrawersHost from "./components/DbtProjectDrawersHost";
 import { FlowsExplorer } from "./components/FlowsExplorer";
@@ -541,7 +541,7 @@ function MainApp() {
       case "consoles":
         return <ConsoleExplorer onConsoleSelect={handleConsoleSelect} />;
       case "connectors":
-        return <DataSourceExplorer />;
+        return <SourceConnectionExplorer />;
       case "flows":
         return <FlowsExplorer />;
       case "dashboards":

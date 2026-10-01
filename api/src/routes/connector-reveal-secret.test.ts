@@ -71,7 +71,7 @@ vi.mock("../sync/connector-registry", () => ({
   },
 }));
 
-import { dataSourceRoutes } from "./sources";
+import { sourceConnectionRoutes } from "./source-connections";
 import { Connector } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 
@@ -81,7 +81,11 @@ const WS_THEIRS = new Types.ObjectId().toString();
 const SECRET = "sk_live_theirs_do_not_leak";
 
 const app = new Hono();
-app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
+app.route(
+  "/api/workspaces/:workspaceId/connections/sources",
+  sourceConnectionRoutes,
+);
+app.route("/api/workspaces/:workspaceId/connectors", sourceConnectionRoutes);
 
 function req(
   workspaceId: string,

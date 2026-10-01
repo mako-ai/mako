@@ -51,22 +51,24 @@ const elapsedSx = {
   fontVariantNumeric: "tabular-nums",
 } as const;
 
-function formatElapsed(deciseconds: number): string {
-  const total = deciseconds / 10;
-  if (total < 60) return `${total.toFixed(1)}s`;
-  return `${Math.floor(total / 60)}m ${(total % 60).toFixed(1)}s`;
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 export const StreamingIndicator = React.memo(function StreamingIndicator() {
-  const [deciseconds, setDeciseconds] = React.useState(0);
+  // Whole seconds: a 100ms tick re-rendered this ten times a second to move a
+  // decimal nobody reads. One tick per second keeps the display honest at a
+  // tenth of the render cost.
+  const [seconds, setSeconds] = React.useState(0);
 
   React.useEffect(() => {
-    const timer = setInterval(() => setDeciseconds(d => d + 1), 100);
+    const timer = setInterval(() => setSeconds(s => s + 1), 1000);
     return () => clearInterval(timer);
   }, []);
 
   return (
-    <Box component="span" role="status" sx={containerSx}>
+    <Box component="span" role="status" aria-live="polite" sx={containerSx}>
       <Box component="span" aria-hidden sx={gridSx}>
         {PIXEL_DELAYS.map((delay, index) => (
           <Box
@@ -82,8 +84,10 @@ export const StreamingIndicator = React.memo(function StreamingIndicator() {
       <Box component="span" sx={labelSx}>
         Working
       </Box>
-      <Box component="span" sx={elapsedSx}>
-        {formatElapsed(deciseconds)}
+      {/* The ticking timer is decoration: announcing it would re-read the
+          live region every second. Only the "Working" label is announced. */}
+      <Box component="span" aria-hidden sx={elapsedSx}>
+        {formatElapsed(seconds)}
       </Box>
     </Box>
   );

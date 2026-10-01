@@ -17,8 +17,10 @@ import {
 } from "../base/BaseConnector";
 import {
   resolveCloseEntitySchema,
-  buildCloseSearchFieldSelection,
+  closeCustomFieldSelectors,
+  splitCloseSearchFieldSelection,
   type CloseCustomField,
+  type CloseSearchFieldSelectionPlan,
 } from "./schema";
 import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
@@ -27,6 +29,28 @@ import { loggers } from "../../logging";
 const logger = loggers.connector("close");
 
 const MAX_CLOSE_ERROR_RESPONSE_LENGTH = 2_000;
+
+/**
+ * How many `custom.cf_*` selectors one Search API request may name.
+ *
+ * Close returns HTTP 400 when `_fields` grows past an undocumented ceiling:
+ * ~80 total selectors are known to work, ~140 are known to fail. 60 custom
+ * selectors plus the ~30 base fields stays under the known-good mark; the
+ * rest of the custom fields are fetched for the same page with follow-up
+ * by-id requests. If Close still rejects a request the batch is halved
+ * (down to the minimum) and the page is retried, so a tighter ceiling
+ * degrades into more requests rather than a failed sync.
+ */
+export const CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH = 60;
+const CLOSE_SEARCH_MIN_CUSTOM_SELECTOR_BATCH = 5;
+
+function isCloseSearchCursorError(error: unknown): boolean {
+  return (
+    axios.isAxiosError(error) &&
+    error.response?.status === 400 &&
+    Boolean(error.response?.data?.["field-errors"]?.cursor)
+  );
+}
 
 export function formatCloseApiErrorResponse(
   error: unknown,
@@ -244,6 +268,13 @@ function throttledRequest<T>(
 export class CloseConnector extends BaseConnector {
   private customFieldSchemaCache = new Map<string, CloseCustomField[]>();
 
+  /**
+   * Current per-request budget of `custom.cf_*` selectors for the Search
+   * API. Starts at CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH and only ever shrinks,
+   * when Close answers a field selection with HTTP 400.
+   */
+  private customSelectorBatchSize = CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH;
+
   private static readonly ENTITY_TO_CUSTOM_FIELD_OBJECT_TYPE: Record<
     string,
     string
@@ -274,6 +305,20 @@ export class CloseConnector extends BaseConnector {
       CloseConnector.ENTITY_TO_CUSTOM_FIELD_OBJECT_TYPE[entity];
     if (!objectType) return [];
 
+    return this.fetchCustomFieldsViaSchema(objectType);
+  }
+
+  /**
+   * Re-read the custom-field schema from Close, bypassing the per-instance
+   * cache. Used when a Search request is rejected mid-run: a field deleted
+   * in Close after the schema was cached leaves a dangling `custom.cf_*`
+   * selector that Close refuses, and the fix is to re-plan with the current
+   * schema — not to shrink the batch.
+   */
+  private async refreshCustomFieldsViaSchema(
+    objectType: string,
+  ): Promise<CloseCustomField[]> {
+    this.customFieldSchemaCache.delete(objectType);
     return this.fetchCustomFieldsViaSchema(objectType);
   }
 
@@ -1159,7 +1204,6 @@ export class CloseConnector extends BaseConnector {
         "opportunities",
         "tasks",
         "integration_links",
-        "custom",
         "primary_email",
         "primary_phone",
       ],
@@ -1179,7 +1223,6 @@ export class CloseConnector extends BaseConnector {
         "updated_by",
         "integration_links",
         "timezone",
-        "custom",
       ],
       opportunity: [
         "id",
@@ -1217,7 +1260,6 @@ export class CloseConnector extends BaseConnector {
         "attachments",
         "is_stalled",
         "stall_status",
-        "custom",
       ],
     };
 
@@ -1303,21 +1345,27 @@ export class CloseConnector extends BaseConnector {
 
     // Core objects: enumerate every custom field as an explicit
     // `custom.cf_<id>` selector so values come back as flat keys (matching the
-    // schema's `custom_cf_*` columns) instead of relying solely on the
-    // aggregate `custom` blob. Resolved once per chunk; the custom-field
-    // schema lookup is cached per connector instance.
-    let coreFieldSelection: string[] | null = null;
+    // schema's `custom_cf_*` columns and the shape webhooks deliver) instead
+    // of the deprecated aggregate `custom` blob. The selection is split so no
+    // single request exceeds the per-request selector budget; see
+    // CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH. The custom-field schema lookup is
+    // cached per connector instance.
+    let coreCustomFields: CloseCustomField[] | null = null;
     if (
       objectType === "lead" ||
       objectType === "contact" ||
       objectType === "opportunity"
     ) {
-      const customFields = await this.fetchCustomFieldsViaSchema(objectType);
-      coreFieldSelection = buildCloseSearchFieldSelection(
-        fieldsMap[objectType] || [],
-        customFields,
-      );
+      coreCustomFields = await this.fetchCustomFieldsViaSchema(objectType);
     }
+    const planFieldSelection = (): CloseSearchFieldSelectionPlan | null =>
+      coreCustomFields
+        ? splitCloseSearchFieldSelection(
+            fieldsMap[objectType] || [],
+            coreCustomFields,
+            this.customSelectorBatchSize,
+          )
+        : null;
 
     // Forward-scanning ASC date windows avoid the non-deterministic row drops
     // that occur with DESC sort + cursor resets.  Close's Search API cursor is
@@ -1501,8 +1549,9 @@ export class CloseConnector extends BaseConnector {
           ],
         };
 
-        if (coreFieldSelection) {
-          body._fields = { [objectType]: coreFieldSelection };
+        const fieldPlan = planFieldSelection();
+        if (fieldPlan) {
+          body._fields = { [objectType]: fieldPlan.primary };
         } else if (fieldsMap[objectType]) {
           body._fields = { [objectType]: fieldsMap[objectType] };
         }
@@ -1511,8 +1560,17 @@ export class CloseConnector extends BaseConnector {
         }
 
         const response = await api.post("/data/search/", body);
-        const data = response.data.data || [];
+        let data: any[] = response.data.data || [];
         pageCursor = response.data.cursor || null;
+
+        if (fieldPlan && fieldPlan.supplemental.length > 0 && data.length > 0) {
+          data = await this.fetchSupplementalCustomFields(
+            api,
+            objectType,
+            data,
+            fieldPlan.supplemental,
+          );
+        }
 
         if (data.length > 0) {
           const records =
@@ -1646,6 +1704,32 @@ export class CloseConnector extends BaseConnector {
             ).toISOString();
           }
           pageCursor = null;
+        } else if (
+          coreCustomFields &&
+          axios.isAxiosError(error) &&
+          error.response?.status === 400
+        ) {
+          // Close rejected the field selection. Two causes, checked in order:
+          // the custom-field schema changed under us (a selector now names a
+          // deleted field) — re-plan with the fresh schema; or the list is
+          // simply too long — retry with a smaller per-request budget. The
+          // cursor is unchanged either way, so the same page is retried.
+          const refreshed = await this.refreshCustomFieldsViaSchema(objectType);
+          if (
+            this.customFieldSelectionChanged(
+              entity,
+              coreCustomFields,
+              refreshed,
+              error,
+            )
+          ) {
+            coreCustomFields = refreshed;
+            continue;
+          }
+          if (this.shrinkCustomSelectorBatch(error, entity, coreCustomFields)) {
+            continue;
+          }
+          throw error;
         } else {
           throw error;
         }
@@ -1664,6 +1748,216 @@ export class CloseConnector extends BaseConnector {
         windowField,
       },
     };
+  }
+
+  /**
+   * True when a re-read of the custom-field schema yields a different set of
+   * selectors than the one a rejected request was built from — i.e. the
+   * schema changed mid-run. Logs what changed so the sync log explains the
+   * retry.
+   */
+  private customFieldSelectionChanged(
+    entity: string,
+    previous: readonly CloseCustomField[],
+    refreshed: readonly CloseCustomField[],
+    error: unknown,
+  ): boolean {
+    const before = closeCustomFieldSelectors(previous);
+    const after = new Set(closeCustomFieldSelectors(refreshed));
+    const beforeSet = new Set(before);
+    const removed = before.filter(selector => !after.has(selector));
+    const added = [...after].filter(selector => !beforeSet.has(selector));
+    if (removed.length === 0 && added.length === 0) return false;
+
+    const details = {
+      entity,
+      removed,
+      added,
+      responseBody: formatCloseApiErrorResponse(error),
+    };
+    this.emitSyncLog(
+      "warn",
+      "Close custom-field schema changed during the run, re-planning the field selection",
+      details,
+    );
+    logger.warn("Close custom-field schema changed mid-run", details);
+    return true;
+  }
+
+  /**
+   * Decide whether an HTTP 400 from the Search API should be treated as
+   * "too many `_fields` selectors" and, if so, halve the per-request budget.
+   * Returns true when the caller should retry with the smaller budget.
+   *
+   * Close does not document the ceiling, and the error text is not stable
+   * enough to match on, so any 400 that is not the known cursor error, on a
+   * request that carried custom selectors, shrinks the budget — until the
+   * minimum is reached, at which point the error propagates.
+   */
+  private shrinkCustomSelectorBatch(
+    error: unknown,
+    entity: string,
+    customFields: readonly CloseCustomField[] | null,
+  ): boolean {
+    if (!axios.isAxiosError(error) || error.response?.status !== 400) {
+      return false;
+    }
+    if (isCloseSearchCursorError(error)) return false;
+    if (!customFields || closeCustomFieldSelectors(customFields).length === 0) {
+      return false;
+    }
+    if (
+      this.customSelectorBatchSize <= CLOSE_SEARCH_MIN_CUSTOM_SELECTOR_BATCH
+    ) {
+      return false;
+    }
+
+    const previous = this.customSelectorBatchSize;
+    this.customSelectorBatchSize = Math.max(
+      CLOSE_SEARCH_MIN_CUSTOM_SELECTOR_BATCH,
+      Math.floor(previous / 2),
+    );
+    const details = {
+      entity,
+      previousBatchSize: previous,
+      newBatchSize: this.customSelectorBatchSize,
+      responseBody: formatCloseApiErrorResponse(error),
+    };
+    this.emitSyncLog(
+      "warn",
+      "Close rejected the field selection, retrying with fewer custom selectors per request",
+      details,
+    );
+    logger.warn(
+      "Close rejected Search API field selection, shrinking batch",
+      details,
+    );
+    return true;
+  }
+
+  /**
+   * Re-fetch one already-paged set of rows by id, one request per selector
+   * batch, and merge the returned `custom.cf_*` keys into the rows.
+   *
+   * This is what lets every custom field be requested explicitly on orgs
+   * with more fields than Close accepts in a single `_fields` list: the paged
+   * request carries the base fields plus the first batch, and each remaining
+   * batch is fetched here for exactly the ids of that page. Row order and
+   * the page cursor are untouched.
+   */
+  private async fetchSupplementalCustomFields(
+    api: AxiosInstance,
+    objectType: string,
+    rows: any[],
+    supplemental: string[][],
+  ): Promise<any[]> {
+    const ids = rows
+      .map(row => (typeof row?.id === "string" ? row.id : ""))
+      .filter(id => id.length > 0);
+    if (ids.length === 0) return rows;
+
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const row of rows) {
+      if (row && typeof row.id === "string") byId.set(row.id, row);
+    }
+
+    const idQuery = {
+      negate: false,
+      type: "and",
+      queries: [
+        { negate: false, type: "object_type", object_type: objectType },
+        {
+          negate: false,
+          type: "or",
+          queries: ids.map(id => ({ negate: false, type: "id", value: id })),
+        },
+      ],
+    };
+
+    // Work through the batches; a batch that Close rejects is re-split with
+    // the (now smaller) budget instead of being dropped.
+    let pending: string[][] = supplemental.map(batch => [...batch]);
+    while (pending.length > 0) {
+      const batch = pending[0];
+      try {
+        const response = await api.post("/data/search/", {
+          query: idQuery,
+          _limit: ids.length,
+          _fields: { [objectType]: batch },
+        });
+        const extra: any[] = response.data?.data || [];
+        for (const row of extra) {
+          if (!row || typeof row.id !== "string") continue;
+          const target = byId.get(row.id);
+          if (!target) continue;
+          for (const [key, value] of Object.entries(row)) {
+            if (key === "id" || key === "__object_type") continue;
+            target[key] = value;
+          }
+        }
+        pending.shift();
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          this.emitSyncLog("warn", "Close API rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+            objectType,
+          });
+          await this.sleep(retryAfter * 1000);
+          continue;
+        }
+        const remainingFields: CloseCustomField[] = pending
+          .flatMap(b => b.filter(field => field !== "id"))
+          .map(selector => ({
+            id: selector.replace(/^custom\./, ""),
+            name: selector,
+            type: "text",
+            appliesTo: objectType,
+          }));
+        const replan = (fields: readonly CloseCustomField[]) => {
+          const plan = splitCloseSearchFieldSelection(
+            [],
+            fields,
+            this.customSelectorBatchSize,
+          );
+          // `primary` is `id` + the first batch; the rest are already
+          // shaped as supplemental batches.
+          pending = plan.supplemental;
+          if (plan.primary.length > 1) pending.unshift(plan.primary);
+        };
+
+        if (axios.isAxiosError(error) && error.response?.status === 400) {
+          const refreshed = await this.refreshCustomFieldsViaSchema(objectType);
+          const current = new Set(closeCustomFieldSelectors(refreshed));
+          const stillValid = remainingFields.filter(field =>
+            current.has(`custom.${field.id}`),
+          );
+          if (
+            stillValid.length !== remainingFields.length &&
+            this.customFieldSelectionChanged(
+              objectType,
+              remainingFields,
+              stillValid,
+              error,
+            )
+          ) {
+            replan(stillValid);
+            continue;
+          }
+          if (
+            this.shrinkCustomSelectorBatch(error, objectType, remainingFields)
+          ) {
+            replan(remainingFields);
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+
+    return rows;
   }
 
   /**

@@ -18,7 +18,7 @@ import type {
  * A field in the credential form.
  *
  * Structurally the shape `app/src/components/ConnectorForm.tsx` renders and
- * `routes/sources.ts` encrypts by. Declared here rather than imported because
+ * `routes/source-connections.ts` encrypts by. Declared here rather than imported because
  * the API cannot import from the app.
  */
 export interface FormFieldSchema {

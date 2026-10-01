@@ -66,12 +66,31 @@ navigate("/customers/42");
 
 Use distinct **paths** for separate views and **query params** for filters and sort within a view.
 
+## Local binding builds
+
+During `vite dev`, the app SDK sends the local contents of
+`bindings/<name>.sql` to Mako so uncommitted edits can be previewed. The
+`POST /api/workspaces/:wid/apps/:id/bindings/:name/dev-build` endpoint builds
+exactly that SQL with the connection named in its front matter; it does not
+store the draft as a committed binding. Identical text can reuse the committed
+artifact.
+
+For long-running builds, add `?async=1` to the materialize endpoint, or send
+`"async": true` in the dev-build request body (the SDK's dev flow does). When a
+build is needed the API returns `202` with a job id (a stored artifact is served
+directly); poll
+`GET /api/workspaces/:wid/apps/:id/binding-jobs/:jobId` until the job is
+`ready` or `error`, then fetch the parquet from
+`GET .../binding-jobs/:jobId/artifact`. Jobs are retained for one hour. See also
+[Working from a local checkout](/mcp-server/#working-from-a-local-checkout).
+
 ## Publishing & Sharing
 
 - The **dev preview** is your branch's working copy, live (vite + HMR) — visible to you while you build.
 - **Publishing** builds a commit on `main` into an immutable deployment; public and shared links serve the **published** build, never a draft, so viewers never see a half-finished edit.
 - **Rollback** repoints the published deployment at an earlier build.
 - History is git history: every commit, by person or agent, is browsable in Source Control.
+- **Live status:** the published chip and `GET /api/workspaces/:wid/apps/:id/publish-state` show the deployed commit (author, time, and subject), publication time, whether app changes on the default branch are still pending, and the most recent deploy error. Reading this status does not start a sandbox.
 
 ## Access Control
 
@@ -81,6 +100,43 @@ Apps follow the same model as dashboards (see [Sharing & Collaborators](/dashboa
 - **`workspace`**: visible and editable by any workspace member.
 
 Public links (optionally password-protected) render the published deployment for anonymous viewers.
+
+## Identity: `useViewer()`
+
+Apps can ask who's looking. `@makoai/app-sdk` (v2.4+) exports a `useViewer()`
+hook:
+
+```ts
+const { viewer, loading, error } = useViewer();
+```
+
+`viewer` is `null` for an anonymous visitor on a public share link.
+Otherwise it resolves to:
+
+```ts
+{
+  id: string;
+  email: string; // lowercased
+  workspace: { id: string; name: string; role: "owner" | "admin" | "member" | "viewer" | null };
+  app: { id: string; slug: string; role: "owner" | "editor" | "viewer" | null };
+}
+```
+
+`workspace.role` is the person's access role on the workspace itself;
+`app.role` is their role on this specific app (owner/editor/viewer). Mako
+resolves both server-side from the session or a signed token — the app's
+own code cannot forge them. A standalone `getViewer()` promise is also
+available for non-React contexts.
+
+This is UI-shaping data, not access control: every binding an app can read
+is downloaded whole to the browser regardless of who's viewing, so don't
+rely on `useViewer()` to hide data — gate what a binding *contains*
+instead if that's the goal. Team, seniority, quota, or any other business
+attribute isn't part of the viewer shape by design; join a roster binding
+on `lower(viewer.email)` if the app needs it.
+
+For local development, set `MAKO_VIEWER_AS=<email>` in the app's `.env` to
+preview the app as a specific workspace member during `npm run dev`.
 
 ## Security Model
 

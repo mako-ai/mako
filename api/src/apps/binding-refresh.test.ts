@@ -28,6 +28,7 @@ function deps(overrides: Partial<RefreshBindingDeps> = {}): RefreshBindingDeps {
   return {
     readMaterialization: vi.fn(async () => "parquet" as const),
     materialize: vi.fn(async () => ({
+      artifactKey: "apps/bindings/c/h.parquet",
       rowCount: 3,
       byteSize: 1024,
       materializedAt: new Date("2026-09-02T10:00:00Z"),
@@ -98,7 +99,12 @@ describe("refreshAppBinding", () => {
     const d = deps({
       materialize: vi.fn(async () => {
         await gate;
-        return { rowCount: 1, byteSize: 10, materializedAt: new Date() };
+        return {
+          artifactKey: "apps/bindings/c/h.parquet",
+          rowCount: 1,
+          byteSize: 10,
+          materializedAt: new Date(),
+        };
       }),
     });
     const input = {

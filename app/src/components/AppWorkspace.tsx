@@ -39,6 +39,7 @@ import {
   Play as PlayIcon,
   Plus as PlusIcon,
   RefreshCw as RefreshIcon,
+  Share2 as ShareIcon,
   Square as StopIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
@@ -46,15 +47,23 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import { useRealtimeStore } from "../store/realtimeStore";
-import { useAppsStore } from "../store/appsStore";
+import {
+  appUrlRef,
+  devServerKeyMatches,
+  useAppsStore,
+} from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
+import AppPublishedChip from "./AppPublishedChip";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useUIStore } from "../store/uiStore";
 import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
+import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import ShareDialog from "./ShareDialog";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -608,7 +617,9 @@ function TerminalTabs({
   // never on mount for a stopped app, which used to spawn a "[waiting for the
   // dev server]" attach with nothing behind it (apps.md §13.11).
   const runningDevApps = useAppsStore(st => st.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
   const isMobile = useIsMobile();
   // One writer ref per terminal id, handed to its TerminalPanel; the mobile
   // key bar writes through the active one. Refs, not state: a socket coming
@@ -643,7 +654,11 @@ function TerminalTabs({
   // the box (pushed truth) but have no tab here: opened by the agent, another
   // browser, or a previous pageview. One tap attaches, history and all;
   // invisible sessions were how people collided with them.
-  const devTermId = `dev-${slug ?? ""}`;
+  // The dev session is named by the app's ID server-side (dev-server.service
+  // keys the dtach socket, history and launcher by it — folder basenames are
+  // not unique once apps nest), so the terminal id must be too; the label
+  // keeps the human-readable slug.
+  const devTermId = `dev-${appId}`;
   const sessionItems: {
     key: string;
     termId: string;
@@ -1091,7 +1106,9 @@ export default function AppWorkspace({
   appId: string;
 }) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
 
   const app = useAppsStore(s => s.apps.find(a => a.id === appId));
   const status = useAppsStore(s => s.statusByApp[appId]);
@@ -1120,7 +1137,9 @@ export default function AppWorkspace({
   // Every "running" affordance derives from this, so they cannot disagree
   // (apps.md §13.11).
   const runningDevApps = useAppsStore(s => s.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
   const viewUrl = useAppsStore(s => s.viewUrlByApp[appId]);
   const hiddenPaused = useHiddenPause();
   // Durable, session-authorized URL for the published app — for normal tabs.
@@ -1176,16 +1195,18 @@ export default function AppWorkspace({
       void fetchViewUrl(workspaceId, appId);
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
-  // Older tabs were opened before slugs rode in tab metadata; heal them so
-  // the URL upgrades from /apps/<id> to /apps/<slug>.
+  // Keep the tab's URL handle honest: a top-level app is addressed by its
+  // slug (/apps/<slug>), a nested one by its id (a nested folder name may
+  // be shared by another app; an id never is). A move updates it in place.
   useEffect(() => {
-    const slug = app?.slug;
-    if (!slug) return;
+    if (!app) return;
+    const ref = appUrlRef(app);
+    const slug = ref === app.id ? undefined : ref;
     useConsoleStore.setState(state => {
       const t = state.tabs[_tabId];
-      if (t?.metadata && !t.metadata.appSlug) t.metadata.appSlug = slug;
+      if (t?.metadata && t.metadata.appSlug !== slug) t.metadata.appSlug = slug;
     });
-  }, [app?.slug, _tabId]);
+  }, [app, _tabId]);
 
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {
@@ -1222,8 +1243,68 @@ export default function AppWorkspace({
   const stopDev = useAppsStore(s => s.stopDev);
 
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   // Bumping this remounts the preview iframe — a plain page refresh.
   const [previewNonce, setPreviewNonce] = useState(0);
+
+  // THE APP'S QUERY STRING, PROJECTED ONTO THE ADDRESS BAR.
+  //
+  // The published app is a sandboxed iframe with an opaque origin: its own
+  // URL is invisible and unshareable, so the SDK posts the query on every
+  // navigate() and the tab carries it (metadata.appSearch). tabUrlPath puts
+  // it on the address bar, UrlSync captures it from a shared link into the
+  // tab, and the iframe boots from it below. Only the published iframe is
+  // trusted as a source, and only the query is taken — never a path.
+  const pubIframeRef = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const frame = pubIframeRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
+      const data = event.data as { type?: unknown; search?: unknown } | null;
+      if (
+        !data ||
+        data.type !== "mako-app:navigate" ||
+        typeof data.search !== "string"
+      ) {
+        return;
+      }
+      const search =
+        data.search === "" || data.search.startsWith("?")
+          ? data.search
+          : `?${data.search}`;
+      useConsoleStore.setState(state => {
+        const t = state.tabs[_tabId];
+        if (t?.metadata && t.metadata.appSearch !== search) {
+          t.metadata.appSearch = search;
+        }
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [_tabId]);
+  // Seeded once per boot — re-read only when the key below remounts the
+  // iframe: on an explicit rebuild (previewNonce), or when a shared link
+  // lands a DIFFERENT query on this already-open tab (appSearchSeed, bumped
+  // by focusAppsTab). It must NOT follow every navigate(): a src that changed
+  // on each filter would reload the app and throw away exactly the state
+  // being kept. Without the seed, a deep link into an open tab kept the
+  // query on the address bar while the app inside still showed its old view.
+  const appSearchSeed = useConsoleStore(
+    s => (s.tabs[_tabId]?.metadata?.appSearchSeed as number | undefined) ?? 0,
+  );
+  const seedKey = `${previewNonce}:${appSearchSeed}`;
+  const seededSearchRef = useRef<{ key: string; search: string } | null>(null);
+  if (
+    seededSearchRef.current === null ||
+    seededSearchRef.current.key !== seedKey
+  ) {
+    const s = useConsoleStore.getState().tabs[_tabId]?.metadata?.appSearch;
+    seededSearchRef.current = {
+      key: seedKey,
+      search: typeof s === "string" && s.length > 1 ? s : "",
+    };
+  }
+  const seededSearch = seededSearchRef.current.search;
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -1348,35 +1429,15 @@ export default function AppWorkspace({
             variant="outlined"
           />
         )}
-        <Tooltip
-          title={
-            publishedSha
-              ? `Deployed from commit ${publishedSha.slice(0, 7)} — click to open the live app.`
-              : "Nobody can see this app yet. Click to publish it from main."
-          }
-        >
-          <Chip
-            label={
-              publishedSha
-                ? `published · ${publishedSha.slice(0, 7)}`
-                : "not published"
-            }
-            size="small"
-            color={publishedSha ? "default" : "warning"}
-            variant="outlined"
-            // Dead chips become navigation: published → open the live app;
-            // not published → this IS the call to action, publish.
-            onClick={
-              publishedSha
-                ? liveUrl
-                  ? () => window.open(liveUrl, "_blank", "noopener")
-                  : undefined
-                : preview?.building
-                  ? undefined
-                  : () => void publishApp(workspaceId, appId)
-            }
-          />
-        </Tooltip>
+        <AppPublishedChip
+          workspaceId={workspaceId}
+          appId={appId}
+          publishedSha={publishedSha}
+          publishedAt={app?.publishedAt}
+          liveUrl={liveUrl}
+          building={preview?.building}
+          onPublish={() => void publishApp(workspaceId, appId)}
+        />
         <Box sx={{ flex: 1 }} />
         {/* ONE dev toggle in the query-runner's language: blue Play →
             "Start dev" when stopped, red Stop → "Stop dev" while running.
@@ -1437,6 +1498,36 @@ export default function AppWorkspace({
             >
               {preview?.building ? "Working..." : "Publish"}
             </Button>
+          </span>
+        </Tooltip>
+        <Tooltip
+          title={
+            app?.publishedSha
+              ? "Share the fullscreen published app"
+              : "Publish the app before sharing it"
+          }
+        >
+          <span>
+            {isMobile ? (
+              <IconButton
+                size="small"
+                aria-label="Share app"
+                disabled={!app?.publishedSha}
+                onClick={() => setShareOpen(true)}
+              >
+                <ShareIcon size={16} />
+              </IconButton>
+            ) : (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ShareIcon size={15} />}
+                disabled={!app?.publishedSha}
+                onClick={() => setShareOpen(true)}
+              >
+                Share
+              </Button>
+            )}
           </span>
         </Tooltip>
         {!isMobile && (
@@ -1521,9 +1612,20 @@ export default function AppWorkspace({
             // granting it would hand app code our origin and let it out of
             // the sandbox entirely.
             <iframe
-              key={`pub-${previewNonce}`}
+              key={`pub-${seedKey}`}
+              ref={pubIframeRef}
               title={`${app?.title ?? "App"} (published)`}
-              src={viewUrl}
+              // The view URL never carries a query of its own; the app's
+              // rides on it so the SDK reads it at mount (the preview route
+              // resolves the asset from the path alone).
+              src={
+                seededSearch
+                  ? viewUrl +
+                    (viewUrl.includes("?")
+                      ? `&${seededSearch.slice(1)}`
+                      : seededSearch)
+                  : viewUrl
+              }
               sandbox="allow-scripts allow-forms"
               style={{ border: 0, width: "100%", height: "100%" }}
             />
@@ -1621,6 +1723,35 @@ export default function AppWorkspace({
         branch={status?.branch ?? "main"}
         publishedSha={app?.publishedSha}
       />
+      {app && (
+        <ShareDialog
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          resourceType="app"
+          resourceId={app.id}
+          resourceName={app.title}
+          ownerId={app.owner_id}
+          access={app.access ?? "workspace"}
+          workspaceRole={app.workspaceRole ?? "viewer"}
+          publicShare={app.publicShare}
+          canManage={
+            !app.owner_id || app.owner_id === user?.id || isWorkspaceAdmin
+          }
+          onSharingChanged={changes => {
+            useAppsStore.setState(state => {
+              const currentApp = state.apps.find(item => item.id === app.id);
+              if (!currentApp) return;
+              if (changes.access) currentApp.access = changes.access;
+              if (changes.workspaceRole) {
+                currentApp.workspaceRole = changes.workspaceRole;
+              }
+              if (changes.publicShare) {
+                currentApp.publicShare = changes.publicShare;
+              }
+            });
+          }}
+        />
+      )}
     </Box>
   );
 }

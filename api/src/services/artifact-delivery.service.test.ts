@@ -30,6 +30,7 @@ function fakeStore(
     getSignedUrl: async () => "https://bucket.example/signed?sig=abc",
     openReadStream: async () => Readable.from([Buffer.from("PAR1-bytes")]),
     getSize: async () => 10,
+    getLastModified: async () => null,
     delete: async () => undefined,
     ...overrides,
   };

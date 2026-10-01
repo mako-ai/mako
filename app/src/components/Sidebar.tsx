@@ -17,7 +17,7 @@ import { useAuth } from "../contexts/auth-context";
 import { startTransition, useEffect, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
-import { useConnectorStore } from "../store/connectorStore";
+import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
@@ -31,6 +31,7 @@ import {
   type NavigationView,
 } from "../lib/explorer-nav";
 import { tabRevealTarget } from "../lib/explorer-reveal";
+import { railButtonColors } from "./sidebar-rail";
 
 /**
  * The rail answers TWO questions, and conflating them is confusing.
@@ -41,34 +42,39 @@ import { tabRevealTarget } from "../lib/explorer-reveal";
  * workflow, and a reload deliberately restores the panel you had rather than
  * the one the URL implies (see UrlSync's isReload note).
  *
- * With only the selected-background state, a rail showing Settings while the
- * address bar said /apps/ubiflow read as "Settings is the active app". So the
- * two facts now look different: selected background for the open panel, brand
- * colour for the explorer holding the open tab.
+ * The highlight (full-contrast icon on the selected background, neutral — no
+ * brand colour anywhere on the rail) always follows the open panel; the
+ * explorer holding the open tab gets only a quieter hint. See
+ * `railButtonColors` for why the emphasis is that way round.
  */
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive" && prop !== "ownsActiveTab",
-})<{ isActive?: boolean; ownsActiveTab?: boolean }>(
-  ({ theme, isActive, ownsActiveTab }) => ({
+})<{ isActive?: boolean; ownsActiveTab?: boolean }>(({
+  theme,
+  isActive,
+  ownsActiveTab,
+}) => {
+  const colors = railButtonColors(theme, { isActive, ownsActiveTab });
+  return {
     minWidth: 40,
     width: 40,
     height: 40,
     padding: 0,
     borderRadius: 8,
-    backgroundColor: isActive ? theme.palette.action.selected : "transparent",
-    color: isActive
-      ? theme.palette.text.primary
-      : ownsActiveTab
-        ? theme.palette.primary.main
-        : theme.palette.text.secondary,
+    backgroundColor: colors.backgroundColor,
+    color: colors.color,
     "&:hover": {
-      backgroundColor: isActive
-        ? theme.palette.action.selected
-        : theme.palette.action.hover,
+      backgroundColor: colors.hoverBackgroundColor,
+    },
+    // Ripples are disabled app-wide, so keyboard focus needs its own ring;
+    // neutral like everything else on the rail.
+    "&.Mui-focusVisible": {
+      outline: `2px solid ${colors.focusOutlineColor}`,
+      outlineOffset: -2,
     },
     transition: "all 0.2s ease",
-  }),
-);
+  };
+});
 
 // Views that can appear in the sidebar navigation. Extends the core AppView
 // union with additional sidebar-specific entries that don't directly map to
@@ -140,7 +146,7 @@ export function SidebarUserMenu({
 
       // Clear all store data from memory before logout
       useConnectorCatalogStore.getState().clearTypes();
-      useConnectorStore.getState().clearDrafts();
+      useSourceConnectionStore.getState().clearDrafts();
       useConsoleStore.getState().clearAllConsoles();
 
       // Full store resets
@@ -310,6 +316,7 @@ function Sidebar() {
                   // Stable hooks for tests: the two states are otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
+                  aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
                   data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
@@ -400,6 +407,7 @@ function Sidebar() {
                   // Stable hooks for tests: the two states are otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
+                  aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
                   data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}

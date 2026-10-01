@@ -1,7 +1,11 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { Workspace } from "../../database/workspace-schema";
 import { saveSkill, skillExists } from "../../services/skills.service";
+import {
+  commitWorkspaceSelfDirective,
+  readWorkspaceSelfDirectiveFile,
+} from "../../apps/workspace-prompt";
+import { RepoRequiredError } from "../../apps/config";
 
 export const MAX_SELF_DIRECTIVE_LENGTH = 10000;
 
@@ -365,9 +369,8 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
       inputSchema: readSelfDirectiveSchema,
       execute: async () => {
         try {
-          const ws =
-            await Workspace.findById(workspaceId).select("selfDirective");
-          const content = ws?.selfDirective || "";
+          const content =
+            (await readWorkspaceSelfDirectiveFile(workspaceId)) ?? "";
           return {
             content: content || "(empty -- no self-directive set yet)",
             ...selfDirectiveUsage(content.length),
@@ -400,10 +403,8 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
       inputSchema: updateSelfDirectiveSchema,
       execute: async input => {
         try {
-          const ws =
-            await Workspace.findById(workspaceId).select("selfDirective");
-          if (!ws) return { success: false, error: "Workspace not found" };
-          const current = ws.selfDirective || "";
+          const current =
+            (await readWorkspaceSelfDirectiveFile(workspaceId)) ?? "";
           const { operation, content, find, replace, after } = input;
 
           if (operation === "archive_section") {
@@ -455,9 +456,11 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
             }
 
             try {
-              await Workspace.findByIdAndUpdate(workspaceId, {
-                $set: { selfDirective: plan.newValue },
-              });
+              await commitWorkspaceSelfDirective(
+                workspaceId,
+                plan.newValue,
+                authorId,
+              );
             } catch (error) {
               return {
                 success: false,
@@ -489,9 +492,11 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
           });
           if (!result.ok) return { success: false, error: result.error };
 
-          await Workspace.findByIdAndUpdate(workspaceId, {
-            $set: { selfDirective: result.value },
-          });
+          await commitWorkspaceSelfDirective(
+            workspaceId,
+            result.value,
+            authorId,
+          );
 
           const warning = selfDirectiveCompactionWarning(result.value.length);
           return {
@@ -500,6 +505,12 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
             ...(warning ? { warning } : {}),
           };
         } catch (error) {
+          if (error instanceof RepoRequiredError) {
+            return {
+              success: false,
+              error: error.message,
+            };
+          }
           return {
             success: false,
             error:

@@ -1,7 +1,12 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { api, unwrapBody, toErrorMessage as normalizeError } from "../api";
+import {
+  api,
+  unwrapBody,
+  ApiError,
+  toErrorMessage as normalizeError,
+} from "../api";
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
 
@@ -112,6 +117,18 @@ const flowSchema = z.object({
   createdBy: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /**
+   * Set when `flows/<slug>.yml` at main does not parse or apply. The rest
+   * of the item is the last valid version (or a stub for a git-only file).
+   */
+  definitionInvalid: z
+    .object({
+      reason: z.string(),
+      at: z.string().optional(),
+      path: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
   // Database-to-database sync fields
   sourceType: z.enum(["connector", "database"]).optional(),
   databaseSource: z
@@ -642,7 +659,17 @@ export const useFlowStore = create<FlowStore>()(
           } else {
             throw new Error(response.error || "Failed to fetch flows");
           }
-        } catch (error: any) {
+        } catch (error: unknown) {
+          // Writes 412 without GitHub; GET/list is an empty explorer
+          // (disconnect or never linked). A sticky error left the sidebar
+          // populated after unlink until a full reload.
+          if (error instanceof ApiError && error.status === 412) {
+            set(state => {
+              state.flows[workspaceId] = [];
+              state.error[workspaceId] = null;
+            });
+            return [];
+          }
           set(state => {
             state.error[workspaceId] = normalizeError(error);
           });
@@ -1466,7 +1493,7 @@ export const useFlowStore = create<FlowStore>()(
 
         try {
           const response = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/connectors", {
+            await api.GET("/api/workspaces/{workspaceId}/connections/sources", {
               params: { path: { workspaceId } },
             }),
           ) as {

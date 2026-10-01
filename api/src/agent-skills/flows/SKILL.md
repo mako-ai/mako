@@ -1,11 +1,13 @@
 ---
 name: flows
-description: Load when creating, editing, configuring, validating, or debugging database sync flows, connector flows, pagination, incremental sync, destination mappings, and flow form fields.
+description: Load when creating, editing, configuring, validating, or debugging database sync flows, source-connection flows, pagination, incremental sync, destination mappings, and flow form fields.
 entities:
   - flow
   - flows
   - sync
   - connector
+  - connection
+  - source connection
   - pagination
   - incremental
   - typeCoercions

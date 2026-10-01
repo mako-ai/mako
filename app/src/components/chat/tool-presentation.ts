@@ -40,6 +40,15 @@ export function isApprovalPendingState(state: unknown): boolean {
   return state === "approval-requested" || state === "approval-responded";
 }
 
+/**
+ * True for the two shapes a tool call takes in a message's parts: a typed
+ * `tool-<name>` part, or the SDK's `dynamic-tool`. Reimplemented inline in
+ * several places before this existed.
+ */
+export function isToolPartType(partType: string | undefined): boolean {
+  return Boolean(partType?.startsWith("tool-")) || partType === "dynamic-tool";
+}
+
 export function toolNameFromPartType(partType: string): string {
   return partType.startsWith("tool-")
     ? partType.slice("tool-".length)
@@ -144,7 +153,7 @@ export function hasPendingAssistantToolCalls(
 
   return last.parts.some(part => {
     const partType = part.type as string;
-    if (!partType.startsWith("tool-") && partType !== "dynamic-tool") {
+    if (!isToolPartType(partType)) {
       return false;
     }
     const state = (part as { state?: string }).state;

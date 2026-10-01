@@ -38,7 +38,9 @@ function fakeConnection(type: string): any {
     _id: "6577f0f0f0f0f0f0f0f0f0f0",
     type,
     name: `${type}-conn`,
-    connection: {},
+    // An empty Mongo config connects to localhost:27017, which may be a
+    // real developer database. Fail URI parsing before opening a socket.
+    connection: type === "mongodb" ? { connectionString: "mongodb://" } : {},
   };
 }
 
@@ -135,7 +137,7 @@ async function main() {
   //    core must NOT force read-only for Mongo — the binding's JS-shell code
   //    (e.g. `db.client.db('x').collection('y').aggregate([...])`) can never
   //    pass the SQL read-only analyzer. Without read-only, the streaming path
-  //    reaches the Mongo driver (and fails on the credential-less connection),
+  //    reaches the Mongo driver (and fails on the deliberately invalid URI),
   //    rather than being rejected by the SELECT/WITH gate.
   const mongoStream = await databaseConnectionService.executeStreamingQuery(
     fakeConnection("mongodb"),

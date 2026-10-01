@@ -3,7 +3,7 @@ title: Transforms (dbt)
 description: Build, run, and schedule dbt Core projects inside Mako — a dbt Cloud replica with a file IDE, jobs, run history, lineage, and an AI Transform Agent.
 ---
 
-The **Transforms** section runs [dbt Core](https://docs.getdbt.com) projects directly inside your Mako workspace — a self-hosted dbt Cloud replica. Project files live in the workspace database (one document per file) and execute as `dbt` subprocesses against your existing [database connections](/databases/connect-databases/).
+The **Transforms** section runs [dbt Core](https://docs.getdbt.com) projects directly inside your Mako workspace — a self-hosted dbt Cloud replica. Project files live in the workspace's git repo (a `dbt/` folder, same repo as consoles, notebooks, and apps) and execute as `dbt` subprocesses against your existing [database connections](/databases/connect-databases/). Job definitions (`dbt/jobs/*.yml`) and environments (`dbt/environments.yml`) are authoritative in git; Mongo holds only a derived, SHA-checked index for fast reads.
 
 You get a file IDE, saved jobs with cron schedules, run history with artifacts, a DAG lineage view, and the AI agent's [Transforms mode](/ai-agent/#expertise-modes) that writes and verifies models for you.
 
@@ -44,16 +44,7 @@ snapshots/             # SCD2 snapshots
 tests/                 # singular SQL tests
 ```
 
-Files are unique per path (`{projectId, path}`), deletes are soft (`is_deleted`) so history is preserved, and every write is also captured in the shared [version history](/version-history/).
-
-## GitHub integration
-
-Projects can be **imported from GitHub** and kept in sync via Mako's multi-tenant GitHub App.
-
-- **Install flow** is HMAC-state protected — the signed `state` pins the initiating workspace + user, and binding an installation requires that same user with **admin** access (prevents install IDOR/CSRF).
-- **Browse & import** — list repos, check a repo's dbt layout, and import a project.
-- **Continuous branch sync** — pushes to the tracked branch flow back into the in-app project.
-- **Slim CI on PRs** (opt-in per project, off by default) — `state:modified+` builds with prod-manifest `defer`, posting commit statuses back to the PR.
+Reads come from the workspace repo at your session branch (git `listTree`/`readBlob`); writes are commits on that branch, and every write is also captured in the shared [version history](/version-history/). There's one dbt project per workspace, scaffolded into `dbt/` on first use — or imported by pointing at an existing `dbt/dbt_project.yml` in the repo.
 
 ## Studio-style editor
 
@@ -78,6 +69,35 @@ Three ways to execute dbt, all routed through the same validated runner:
 
 The command bar accepts a free-form command (an optional leading `dbt` is stripped), but every command is tokenized and validated against the same allowlist as saved jobs before it reaches the runner. The subcommand must be on the allowlist (`run`, `build`, `test`, `seed`, `snapshot`, `compile`, `parse`, `source freshness`, `docs generate`, `deps`, `retry`, `show`), and unknown flags are rejected. Commands are executed with `spawn` (no shell), and `--select` selectors on compile / run-select are pattern-checked.
 
+## Local CLI runs
+
+The `@makoai/cli` can run dbt from a local checkout, including uncommitted files:
+
+```bash
+mako login --warehouse-write
+mako dbt run -s orders
+mako dbt build -s +orders --env staging
+mako dbt build -s orders --full-refresh --no-defer
+mako dbt test -s orders
+```
+
+`run`, `build`, and `test` upload the checkout's `dbt/` folder to Mako and stream
+the run log; with git, only the files that differ from `git merge-base HEAD
+origin/main` are sent (staged, unstaged, untracked and deleted), laid over that
+commit on the server. The command exits with dbt's exit code. Runs use your
+personal environment by default (created on first use); use `--env <name>` to
+select a shared development environment. The production environment is refused
+(`403`) even with `--env` — it is only built from `main` by a job — and so is
+another person's personal environment. `--no-defer` disables deferral to
+production; `--full-refresh` applies to `run` and `build` (not `test`). Local runs
+require the `warehouse:write` scope because the uploaded project executes with the
+selected environment's warehouse credentials. See also
+[Working from a local checkout](/mcp-server/#working-from-a-local-checkout).
+
+The API equivalent is `POST /api/workspaces/:workspaceId/dbt/local-runs`, followed
+by polling `GET /api/workspaces/:workspaceId/dbt/local-runs/:runId`; cancel with
+`POST .../:runId/cancel`. A local run is scoped to the requesting user.
+
 ## Jobs & schedules
 
 A **job** is a saved list of dbt commands (`build`, `test`, `seed`, `snapshot`, `source freshness`, `docs generate`, with `--select` / `--exclude` / `--full-refresh` flags) bound to an environment. Jobs can run:
@@ -100,9 +120,9 @@ Every execution produces a **run** record with per-node status, timing, and logs
 
 Transforms access is enforced by a pure policy (`api/src/dbt/rbac.ts`):
 
-- **Reads (GET)** — open to any member, including viewers (GitHub repo discovery is member+).
-- **File/run mutations** (edit files, trigger runs, repo sync) — require **member** or above (viewers excluded).
-- **Deployment-config changes** (GitHub connect/import, repo writes, job create/edit/delete, project create/delete) — require **admin** or **owner**.
+- **Reads (GET)** — open to any member, including viewers.
+- **File/run mutations** (edit files, trigger runs, ad-hoc compile/run) — require **member** or above (viewers excluded).
+- **Deployment-config changes** (job create/edit/delete, project create/delete, PR merges) — require **admin** or **owner**. Connecting the workspace's GitHub repo is workspace-level infrastructure now (`/workspaces/:workspaceId/github/*`), not a dbt-specific route.
 
 ## Runner security
 
@@ -138,8 +158,6 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `POST` | `/projects/:projectId/preview` | `dbt show --select` — bounded read-only row preview |
 | `POST` | `/projects/:projectId/command` | Run an allow-listed free-form command |
 | `GET` | `/projects/:projectId/lineage` | DAG nodes + edges from the latest manifest |
-
-GitHub connect/import and in-IDE git operations (status, diff, commit, branch, pull request) are exposed under the same `/dbt` prefix.
 
 ## Project rules (`.makorules.md`)
 

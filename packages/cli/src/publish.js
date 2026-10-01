@@ -2,6 +2,7 @@
 // MCP app_publish tool (enqueue-and-poll: the same build+deploy the push
 // webhook runs, single-build concurrency per app), then polls
 // app_publish_status until the enqueued sha is live.
+import fs from "node:fs";
 import path from "node:path";
 import { findRepoRoot, resolveAppDir } from "./context.js";
 import { callMcpTool } from "./status.js";
@@ -11,10 +12,21 @@ const TIMEOUT_MS = 5 * 60 * 1000;
 const short = sha => (typeof sha === "string" ? sha.slice(0, 7) : "?");
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+function readManifestId(appDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(appDir, "mako.json"), "utf8"));
+    return typeof raw.id === "string" && /^[0-9a-f]{24}$/i.test(raw.id) ? raw.id : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function publish(ctx, positional, io = { log: console.log }) {
   const repoRoot = findRepoRoot();
   const appDir = resolveAppDir(repoRoot, positional[0]);
-  const slug = path.basename(appDir);
+  // The manifest id is the app's identity; the basename is only a fallback
+  // for apps that predate ids (and is ambiguous once apps nest).
+  const slug = readManifestId(appDir) ?? path.basename(appDir);
 
   const out = await callMcpTool(ctx, "app_publish", { appId: slug });
   if (!out?.success) {
