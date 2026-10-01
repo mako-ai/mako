@@ -146,6 +146,24 @@ export function runGitBuffer(
 
 const OID_RE = /^[0-9a-f]{40}$/;
 
+/** Is `ancestor` reachable from `descendant`? False when either is unknown. */
+export async function isAncestorCommit(
+  repoDir: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  return runGit([
+    "-C",
+    repoDir,
+    "merge-base",
+    "--is-ancestor",
+    ancestor,
+    descendant,
+  ])
+    .then(() => true)
+    .catch(() => false);
+}
+
 export function isOid(value: string): boolean {
   return OID_RE.test(value);
 }

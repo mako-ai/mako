@@ -12,11 +12,13 @@
  * mirror is reset to it with its commits parked under `refs/mako/diverged/*`
  * (`fetchFromCloud`).
  *
- * The connected tier only engages on production (APPS_REQUIRE_CONNECTED_REPO)
- * or under the explicit APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and
- * dev run on prod-cloned databases that carry REAL customer bindings, and a
- * test commit must never land in a customer repo — gated environments treat
- * the binding as inert metadata and keep local-only bare repos.
+ * Reads always use a connected repo when one is bound: serverless preview
+ * instances have an empty filesystem and must be able to rebuild their local
+ * cache. Writes to that repo only engage on production
+ * (APPS_REQUIRE_CONNECTED_REPO) or under the explicit
+ * APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and dev can therefore read
+ * real workspace content without a test commit ever landing in a customer
+ * repo.
  *
  * The local bare repo remains the working store the API reads from; the
  * mirror is the durable replica. Mirror pushes run after commits/merges
@@ -34,6 +36,7 @@ import {
   initRepo,
   repoDirFor,
   repoExists,
+  resolveCommit,
   type GitAuthor,
 } from "./repository.service";
 import { initialWorkspaceFiles } from "./workspace-template";
@@ -67,13 +70,15 @@ export type MirrorTarget = {
 };
 
 /**
- * The workspace's durable mirror: the connected repo when one is bound and
- * the tier is enabled here, else null (local-only).
+ * Resolve the bound repository for read-only clone/fetch operations.
+ *
+ * This deliberately ignores the push gate. Preview instances start with an
+ * empty APPS_GIT_ROOT, so treating the binding as wholly inert also makes all
+ * git-backed apps, consoles, and dbt files disappear.
  */
-export async function resolveMirrorTarget(
+async function resolveReadableMirrorTarget(
   workspaceId: string,
 ): Promise<MirrorTarget | null> {
-  if (!connectedTierEnabled()) return null;
   const binding = await getWorkspaceRepo(workspaceId).catch(() => null);
   if (!binding) return null;
   return {
@@ -82,6 +87,17 @@ export async function resolveMirrorTarget(
     repo: binding.repo,
     installationId: binding.installationId,
   };
+}
+
+/**
+ * The workspace's durable mirror: the connected repo when one is bound and
+ * pushes are enabled here, else null (local-only writes).
+ */
+export async function resolveMirrorTarget(
+  workspaceId: string,
+): Promise<MirrorTarget | null> {
+  if (!connectedTierEnabled()) return null;
+  return resolveReadableMirrorTarget(workspaceId);
 }
 
 async function tokenFor(target: MirrorTarget): Promise<string | undefined> {
@@ -154,7 +170,7 @@ export async function ensureLocalRepo(workspaceId: string): Promise<void> {
   const existing = cloneInFlight.get(workspaceId);
   if (existing) return existing;
   const run = (async () => {
-    const target = await resolveMirrorTarget(workspaceId);
+    const target = await resolveReadableMirrorTarget(workspaceId);
     if (!target) return;
     const token = await tokenFor(target);
     await cloneMirrorInto(
@@ -399,7 +415,7 @@ export async function fetchFromCloud(
   workspaceId: string,
   branch: string,
 ): Promise<void> {
-  const target = await resolveMirrorTarget(workspaceId);
+  const target = await resolveReadableMirrorTarget(workspaceId);
   if (!target) return;
   const repoDir = repoDirFor(workspaceId);
   const token = await tokenFor(target);
@@ -587,9 +603,45 @@ export async function assertTreeAtMirrorMain(
   }
 }
 
+/**
+ * Whether the remote's default branch and the local one descend from a common
+ * commit. Fetching the remote tip into the local object store is harmless (a
+ * fetch never moves a local ref) and is what the reconcile step needs anyway.
+ * A remote with content but no default branch, or an unreachable remote,
+ * answers "no": the caller then refuses, which is the safe side.
+ */
+async function sharesHistoryWith(
+  repoDir: string,
+  url: string,
+  token: string | undefined,
+): Promise<boolean> {
+  try {
+    await runGit([
+      "-C",
+      repoDir,
+      ...authArgs(token),
+      "fetch",
+      "--quiet",
+      url,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    ]);
+    await runGit([
+      "-C",
+      repoDir,
+      "merge-base",
+      "FETCH_HEAD",
+      `refs/heads/${DEFAULT_BRANCH}`,
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export type ConnectedRepoAdoption =
   | "imported"
   | "seeded"
+  | "reconnected"
   | "fresh"
   | "deferred";
 
@@ -604,8 +656,15 @@ export type ConnectedRepoAdoption =
  *  - workspace has content, repo is empty → SEED: the workspace history is
  *    pushed into the repo; it is the mirror from here on.
  *  - both empty → nothing to reconcile; the first commit seeds the repo.
- *  - both have content → refuse. Choosing whose history wins is not ours to
- *    guess; the caller rolls the binding back.
+ *  - both have content and share history → RECONNECT: this is the
+ *    disconnect-then-connect-again case (the repo WAS this workspace's
+ *    mirror; unlinking never touches the local repo, so both sides hold the
+ *    same commits). The two tips are reconciled the way every later fetch
+ *    reconciles them (`fetchFromCloud`: remote ahead → fast-forward, local
+ *    ahead → push, diverged → the mirror wins with the local tip parked
+ *    under refs/mako/diverged/*, nothing dropped), then pushed.
+ *  - both have content and NO common ancestor → refuse. Choosing whose
+ *    history wins is not ours to guess; the caller rolls the binding back.
  *
  * Where the connected tier is gated off (previews/dev on prod-cloned DBs) the
  * binding is stored as inert metadata: "deferred".
@@ -636,11 +695,25 @@ export async function adoptConnectedRepo(
   const remoteEmpty = lsRemote.stdout.trim() === "";
 
   if (!remoteEmpty && hasHistory) {
-    throw new Error(
-      `${label} already has content and this workspace already has apps. ` +
-        "Connect an empty repository (the workspace's history will be pushed into it), " +
-        "or import a non-empty repository into a workspace that has no apps yet.",
-    );
+    if (!(await sharesHistoryWith(repoDir, url, token))) {
+      throw new Error(
+        `${label} already has content unrelated to this workspace's history, and this workspace already has apps. ` +
+          "Reconnect the repository this workspace was previously connected to, " +
+          "connect an empty repository (the workspace's history will be pushed into it), " +
+          "or import a non-empty repository into a workspace that has no apps yet.",
+      );
+    }
+    // RECONNECT: same lineage on both sides. Reconcile main exactly as a
+    // webhook fetch would, then push so the mirror carries whatever the
+    // local side has that it lacks (local-ahead commits, refs/mako/*, a
+    // parked diverged tip).
+    await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
+    await mirrorPushNow(workspaceId);
+    logger.info("Apps workspace reconnected to a repo sharing its history", {
+      workspaceId,
+      repo: label,
+    });
+    return "reconnected";
   }
   if (!remoteEmpty) {
     // IMPORT: drop the (history-less) local slot and adopt the repo's history.
@@ -675,7 +748,16 @@ export async function ensureWorkspaceRepo(
 ): Promise<string> {
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
+  const hasMain =
+    (await repoExists(repoDir)) &&
+    Boolean(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`));
+  if (!hasMain) {
+    // `git clone --mirror` of an empty GitHub repo still creates a bare
+    // directory with no refs. The first write needs `main` so it can seed
+    // the mirror (issue #956).
+    if (await repoExists(repoDir)) {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
     await initRepo(repoDir, initialWorkspaceFiles(workspaceId), {
       message: "Initialize workspace repository",
       author,

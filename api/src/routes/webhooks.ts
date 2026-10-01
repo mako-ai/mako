@@ -4,7 +4,7 @@ import { Types } from "mongoose";
 import {
   Flow,
   WebhookEvent,
-  Connector as DataSource,
+  SourceConnection,
 } from "../database/workspace-schema";
 import { v4 as uuidv4 } from "uuid";
 import { connectorRegistry } from "../connectors/registry";
@@ -106,15 +106,17 @@ router.openapi(
         return c.json({ error: "Webhook endpoint disabled" }, 403);
       }
 
-      const dataSource = await DataSource.findById(flow.dataSourceId);
-      if (!dataSource) {
+      const sourceConnection = await SourceConnection.findById(
+        flow.dataSourceId,
+      );
+      if (!sourceConnection) {
         return c.json({ error: "Data source not found" }, 404);
       }
 
-      const connector = connectorRegistry.getConnector(dataSource);
+      const connector = connectorRegistry.getConnectorFor(sourceConnection);
       if (!connector) {
         return c.json(
-          { error: `Connector not found for type: ${dataSource.type}` },
+          { error: `Connector not found for type: ${sourceConnection.type}` },
           500,
         );
       }

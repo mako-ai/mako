@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import { saveCredential, normalizeApiUrl } from "@makoai/app-sdk/credentials";
 import { openInBrowser } from "./browser.js";
+import { loginPage } from "./login-page.js";
 
 const CLIENT_NAME = "Mako CLI";
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -72,21 +73,50 @@ function awaitCallback(server, expectedState, timeoutMs) {
       const code = url.searchParams.get("code");
       const error = url.searchParams.get("error");
       res.setHeader("content-type", "text/html; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
+      res.setHeader("referrer-policy", "no-referrer");
       if (state !== expectedState || (!code && !error)) {
         res.statusCode = 400;
-        res.end("<p>Unexpected callback. Return to the terminal and run <code>mako login</code> again.</p>");
+        res.end(loginPage("error"));
         return;
       }
       res.end(
-        error
-          ? `<p>Sign-in failed: ${error}. You can close this tab.</p>`
-          : "<p>Signed in to Mako. You can close this tab and return to the terminal.</p>",
+        loginPage(error === "access_denied" ? "denied" : error ? "error" : "approved", error === "access_denied" ? "" : error ?? ""),
       );
       clearTimeout(timer);
       server.close();
       error ? reject(new Error(`sign-in refused: ${error} ${url.searchParams.get("error_description") ?? ""}`.trim())) : resolve(code);
     });
   });
+}
+
+/**
+ * What the CLI asks for: read-only MCP, plus `warehouse:write` with
+ * `--warehouse-write` (what `mako dbt run` needs — the consent screen shows
+ * it as its own option, pre-ticked because it was asked for; untickable).
+ */
+export function loginScopes(flags = {}) {
+  return ["mcp", "query:read", ...(flags["warehouse-write"] ? ["warehouse:write"] : [])];
+}
+
+/**
+ * The browser's authorize URL. `scope` carries what `loginScopes` asks for;
+ * the consent page shows (and pre-ticks) exactly the optional scopes named
+ * here, so `--warehouse-write` must reach it.
+ */
+export function authorizeUrl(meta, { apiUrl, clientId, redirectUri, challenge, state, flags = {} }) {
+  const url = new URL(meta.authorization_endpoint);
+  url.search = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    state,
+    resource: `${normalizeApiUrl(apiUrl)}/api/mcp`,
+    scope: loginScopes(flags).join(" "),
+  }).toString();
+  return url;
 }
 
 export async function login(ctx, flags, io = { log: console.log }) {
@@ -101,16 +131,7 @@ export async function login(ctx, flags, io = { log: console.log }) {
   const clientId = await registerClient(meta, redirectUri);
   const { verifier, challenge } = pkcePair();
   const state = crypto.randomBytes(16).toString("base64url");
-  const authorize = new URL(meta.authorization_endpoint);
-  authorize.search = new URLSearchParams({
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state,
-    resource: `${apiUrl}/api/mcp`,
-  }).toString();
+  const authorize = authorizeUrl(meta, { apiUrl, clientId, redirectUri, challenge, state, flags });
 
   io.log(`Signing in to ${apiUrl}${ctx.workspaceId ? ` (workspace ${ctx.workspaceId})` : ""}…`);
   if (flags.browser === false || !openInBrowser(authorize.toString())) {
@@ -143,6 +164,7 @@ export async function login(ctx, flags, io = { log: console.log }) {
     scopes: typeof tokens.scope === "string" ? tokens.scope.split(" ") : undefined,
   });
   io.log(`Signed in. Credentials saved for ${apiUrl}${ctx.workspaceId ? ` / workspace ${ctx.workspaceId}` : ""}.`);
+  if (typeof tokens.scope === "string") io.log(`Granted: ${tokens.scope}.`);
   if (!ctx.workspaceId) {
     io.log("Tip: run `mako login` inside a workspace checkout so the credential is tied to that workspace.");
   }

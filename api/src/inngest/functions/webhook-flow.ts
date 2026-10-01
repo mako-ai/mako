@@ -2,7 +2,7 @@ import { inngest } from "../client";
 import {
   WebhookEvent,
   Flow,
-  Connector as DataSource,
+  SourceConnection,
   DatabaseConnection,
   CdcEntityState,
 } from "../../database/workspace-schema";
@@ -59,7 +59,7 @@ type WebhookCdcRecord = {
  */
 function buildWebhookCdcRecords(params: {
   connector: BaseConnector;
-  dataSource: { id: string; name: string };
+  sourceConnection: { id: string; name: string };
   flow: Parameters<typeof isEntityEnabledForFlow>[0];
   webhookEvent: {
     eventId: string;
@@ -68,7 +68,7 @@ function buildWebhookCdcRecords(params: {
     receivedAt: Date | string;
   };
 }): { records: WebhookCdcRecord[]; extractedCount: number } {
-  const { connector, dataSource, flow, webhookEvent } = params;
+  const { connector, sourceConnection, flow, webhookEvent } = params;
 
   const rawRecords = (
     connector.extractWebhookCdcRecords(
@@ -98,8 +98,8 @@ function buildWebhookCdcRecords(params: {
 
     const payload: Record<string, unknown> = {
       ...normalizePayloadKeys(sourcePayload),
-      _dataSourceId: dataSource.id,
-      _dataSourceName: dataSource.name,
+      _dataSourceId: sourceConnection.id,
+      _dataSourceName: sourceConnection.name,
       _syncedAt: new Date(),
     };
 
@@ -527,12 +527,12 @@ async function ingestPendingWebhookEvents(logger: {
     }
     const flow: any = flowDoc.toObject();
 
-    const dataSource = await DataSource.findById(flow.dataSourceId);
+    const sourceConnection = await SourceConnection.findById(flow.dataSourceId);
     const database = await DatabaseConnection.findById(
       flow.destinationDatabaseId,
     );
 
-    if (!dataSource || !database) {
+    if (!sourceConnection || !database) {
       await WebhookEvent.updateMany(
         { _id: { $in: events.map(e => e._id) } },
         {
@@ -551,11 +551,11 @@ async function ingestPendingWebhookEvents(logger: {
       continue;
     }
 
-    const connector = connectorRegistry.getConnector(dataSource);
+    const connector = connectorRegistry.getConnectorFor(sourceConnection);
     if (!connector) {
       logger.warn("Connector not found for data source", {
         flowId,
-        type: dataSource.type,
+        type: sourceConnection.type,
       });
       await WebhookEvent.updateMany(
         { _id: { $in: events.map(e => e._id) } },
@@ -566,7 +566,7 @@ async function ingestPendingWebhookEvents(logger: {
             processedAt: new Date(),
             applyError: {
               code: "CONNECTOR_NOT_FOUND",
-              message: `Connector not found for type: ${dataSource.type}`,
+              message: `Connector not found for type: ${sourceConnection.type}`,
             },
           },
         },
@@ -658,7 +658,10 @@ async function ingestPendingWebhookEvents(logger: {
       // (e.g. Calendly invitee.created -> invitees + scheduled_events).
       const { records, extractedCount } = buildWebhookCdcRecords({
         connector,
-        dataSource: { id: dataSource.id, name: dataSource.name },
+        sourceConnection: {
+          id: sourceConnection.id,
+          name: sourceConnection.name,
+        },
         flow,
         webhookEvent: {
           eventId: webhookEvent.eventId,

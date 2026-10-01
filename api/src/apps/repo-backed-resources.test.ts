@@ -26,9 +26,9 @@ const webhook = readFileSync(join(SRC, "routes/github.routes.ts"), "utf8");
 // Every repo-backed resource is reconciled from exactly one place.
 const SYNCS = [
   "syncConsolesIndexFromRepo",
-  "syncSkillsIndexFromRepo",
   "syncDbtConfigFromRepo",
   "syncNotebooksFromRepo",
+  "syncConnectorsFromRepo",
 ];
 
 const shared = worktree.slice(

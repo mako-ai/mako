@@ -11,8 +11,21 @@ import { workspaceResourceLoader } from "./lib/load-resource";
 import { Readable } from "stream";
 import { Types } from "mongoose";
 import { z } from "zod";
+import { RepoRequiredError } from "../apps/config";
 import { loggers, enrichContextWithWorkspace } from "../logging";
-import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import {
+  isMcpOAuthAuth,
+  unifiedAuthMiddleware,
+} from "../auth/unified-auth.middleware";
+import { resolveWorkspaceApiKeyScopes } from "../auth/api-key-scopes";
+import {
+  LocalRunError,
+  findOwnLocalRun,
+  sliceRunLogs,
+  startLocalDbtRun,
+  type LocalRunAuthority,
+} from "../dbt/local-run.service";
+import { LocalOverlayError, normalizeLocalOverlay } from "../dbt/local-overlay";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
@@ -48,7 +61,13 @@ import {
   commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  ensureEnvironmentsDerivedCache,
+  jobScheduleFailure,
+  loadLiveJobById,
+  loadLiveJobs,
+  liveJobToPlain,
   reserveJobSlug,
+  resolveLiveJobRow,
 } from "../dbt/dbt-config.service";
 import {
   DBT_PREVIEW_DEFAULT_LIMIT,
@@ -100,8 +119,22 @@ dbtRoutes.use("*", async (c: AuthenticatedContext, next) => {
         403,
       );
     }
-    // Workspace-scoped API keys are service credentials with full access.
-    c.set("memberRole", "owner");
+    if (isMcpOAuthAuth(c) && user) {
+      // An MCP OAuth token acts as ONE person (`mako dbt run`): their live
+      // role, not a service credential's — a demoted or departed member's
+      // token must not keep building.
+      const member = await workspaceService.getMember(workspaceId, user.id);
+      if (!member) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+      c.set("memberRole", member.role);
+    } else {
+      // Workspace-scoped API keys are service credentials with full access.
+      c.set("memberRole", "owner");
+    }
   } else if (user) {
     const member = await workspaceService.getMember(workspaceId, user.id);
     if (!member) {
@@ -154,6 +187,12 @@ function serverError(
   error: unknown,
   fallback: string,
 ) {
+  if (error instanceof RepoRequiredError) {
+    return c.json(
+      { success: false, code: error.code, error: error.message },
+      error.status as 412,
+    );
+  }
   if (error instanceof DbtProtectedEnvironmentError) {
     return c.json({ success: false, error: error.message }, 400);
   }
@@ -302,11 +341,21 @@ dbtRoutes.get("/projects", async (c: AuthenticatedContext) => {
     if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
       return badRequest(c, "Valid workspace ID is required");
     }
-    const projects = await DbtProject.find({
+    const docs = await DbtProject.find({
       workspaceId: new Types.ObjectId(workspaceId),
-    })
-      .sort({ updatedAt: -1 })
-      .lean();
+    }).sort({ updatedAt: -1 });
+    // Environments follow dbt/environments.yml at main (apps.md §23).
+    for (const doc of docs) {
+      try {
+        await ensureEnvironmentsDerivedCache(doc);
+      } catch (error) {
+        logger.warn("ensureEnvironmentsDerivedCache failed", {
+          projectId: doc._id.toString(),
+          error,
+        });
+      }
+    }
+    const projects = docs.map(doc => doc.toObject());
     const userId = getUserId(c);
     const prefs = await DbtEnvPreference.find({
       projectId: { $in: projects.map(p => p._id) },
@@ -373,7 +422,7 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
         "This workspace already has a dbt project (dbt/ in the workspace repo)",
       );
     }
-    const project = await DbtProject.create({
+    const project = new DbtProject({
       workspaceId: new Types.ObjectId(workspaceId),
       name: body.name,
       dbtVersion: body.dbtVersion ?? "1.9",
@@ -384,6 +433,9 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
       defaultEnvironment: body.defaultEnvironment,
       createdBy: userId,
     });
+    // Git first (issue #956): the file is the record, the row follows.
+    await commitDbtEnvironmentsFile(project, userId);
+    await project.save();
 
     // Scaffold straight into the workspace repo: dbt/ appears as one commit
     // on the creator's session branch. A pre-existing dbt/dbt_project.yml
@@ -424,6 +476,8 @@ dbtRoutes.get("/projects/:projectId", async (c: AuthenticatedContext) => {
     if (!project) {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
+    // Environments follow dbt/environments.yml at main (apps.md §23).
+    await ensureEnvironmentsDerivedCache(project);
     return c.json({ success: true, project });
   } catch (error) {
     return serverError(c, error, "Failed to fetch dbt project");
@@ -489,9 +543,8 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
       );
       if (personalError) return badRequest(c, personalError);
     }
-    await project.save();
-    // Environments/settings live in dbt/environments.yml (apps.md §23).
     await commitDbtEnvironmentsFile(project, getUserId(c));
+    await project.save();
     publishDbtEvent(c, {
       type: "dbt.project.updated",
       projectId: project._id.toString(),
@@ -842,6 +895,10 @@ function validateJobBody(
     } catch (error) {
       return error instanceof Error ? error.message : "Invalid schedule";
     }
+    // Same check the git overlay and push-sync apply (catches a timezone
+    // cron-parser only rejects when computing the next run).
+    const scheduleFailure = jobScheduleFailure(body.schedule);
+    if (scheduleFailure) return scheduleFailure;
   }
   return null;
 }
@@ -852,14 +909,33 @@ dbtRoutes.get("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     if (!project) {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
-    const jobs = await DbtJob.find({ projectId: project._id })
-      .sort({ createdAt: 1 })
-      .lean();
+    const jobs = (await loadLiveJobs(project)).map(job =>
+      liveJobToPlain(job, project),
+    );
     return c.json({ success: true, jobs });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt jobs");
   }
 });
+
+dbtRoutes.get(
+  "/projects/:projectId/jobs/:jobId",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const live = await loadLiveJobById(project, c.req.param("jobId"));
+      if (!live) {
+        return c.json({ success: false, error: "Job not found" }, 404);
+      }
+      return c.json({ success: true, job: liveJobToPlain(live, project) });
+    } catch (error) {
+      return serverError(c, error, "Failed to get dbt job");
+    }
+  },
+);
 
 dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
   try {
@@ -874,7 +950,7 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     const validationError = validateJobBody(project, parsed.data);
     if (validationError) return badRequest(c, validationError);
 
-    const job = await DbtJob.create({
+    const job = new DbtJob({
       workspaceId: project.workspaceId,
       projectId: project._id,
       slug: await reserveJobSlug(project._id, parsed.data.name),
@@ -886,9 +962,10 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
       deferToProduction: parsed.data.deferToProduction,
       createdBy: getUserId(c),
     });
-    await applyJobScheduleChange(job);
-    // The definition is a file: dbt/jobs/<slug>.yml (apps.md §23).
+    // Git first: the file is the record, the derived row follows.
     await commitDbtJobFile(project, job, getUserId(c));
+    await job.save();
+    await applyJobScheduleChange(job);
     const fresh = await DbtJob.findById(job._id).lean();
     publishDbtEvent(c, {
       type: "dbt.job.updated",
@@ -912,13 +989,14 @@ dbtRoutes.patch(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const job = await DbtJob.findOne({
-        _id: new Types.ObjectId(jobId),
-        projectId: project._id,
-      });
-      if (!job) {
-        return c.json({ success: false, error: "Job not found" }, 404);
+      const resolved = await resolveLiveJobRow(project, jobId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
       }
+      const job = resolved.row;
       const parsed = jobSchema.partial().safeParse(await c.req.json());
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid job");
@@ -944,9 +1022,9 @@ dbtRoutes.patch(
       job.schedule = merged.schedule ?? undefined;
       job.enabled = merged.enabled;
       job.deferToProduction = merged.deferToProduction;
+      await commitDbtJobFile(project, job, getUserId(c));
       await job.save();
       await applyJobScheduleChange(job);
-      await commitDbtJobFile(project, job, getUserId(c));
       const fresh = await DbtJob.findById(job._id).lean();
       publishDbtEvent(c, {
         type: "dbt.job.updated",
@@ -971,15 +1049,16 @@ dbtRoutes.delete(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const doomed = await DbtJob.findOne({
-        _id: new Types.ObjectId(jobId),
-        projectId: project._id,
-      }).select("slug");
-      if (!doomed) {
-        return c.json({ success: false, error: "Job not found" }, 404);
+      const resolved = await resolveLiveJobRow(project, jobId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
       }
-      await DbtJob.deleteOne({ _id: doomed._id });
+      const doomed = resolved.row;
       await deleteDbtJobFile(project, doomed.slug, getUserId(c));
+      await DbtJob.deleteOne({ _id: doomed._id });
       publishDbtEvent(c, {
         type: "dbt.job.updated",
         projectId: project._id.toString(),
@@ -1003,13 +1082,14 @@ dbtRoutes.post(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const job = await DbtJob.findOne({
-        _id: new Types.ObjectId(jobId),
-        projectId: project._id,
-      });
-      if (!job) {
-        return c.json({ success: false, error: "Job not found" }, 404);
+      const resolved = await resolveLiveJobRow(project, jobId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
       }
+      const job = resolved.row;
       const run = await triggerDbtJobRun({
         workspaceId: project.workspaceId.toString(),
         job,
@@ -1227,6 +1307,191 @@ dbtRoutes.get(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// `mako dbt run|build|test` — a laptop checkout, built by the runner
+// ---------------------------------------------------------------------------
+
+const localRunSchema = z.object({
+  projectId: z.string().optional(),
+  command: z.enum(["run", "build", "test"]),
+  select: z.string().min(1).max(256),
+  environment: z.string().min(1).max(64).optional(),
+  fullRefresh: z.boolean().optional(),
+  defer: z.boolean().optional(),
+  sourceLabel: z.string().max(200).optional(),
+  baseSha: z.string().optional(),
+  files: z.record(z.string(), z.string()).default({}),
+  deletes: z.array(z.string()).default([]),
+});
+
+/** Who is asking, and with what authority (see local-run.service). */
+function localRunCaller(
+  c: AuthenticatedContext,
+): { userId: string; authority: LocalRunAuthority } | null {
+  const userId = c.get("user")?.id?.toString();
+  if (!userId) return null;
+  const authType = c.get("authType");
+  if (authType === "session") {
+    return { userId, authority: { kind: "session" } };
+  }
+  const raw =
+    authType === "mcpOAuth"
+      ? (c as unknown as { get(key: string): unknown }).get("mcpOAuthScopes")
+      : c.get("apiKey")?.scopes;
+  return {
+    userId,
+    authority: { kind: "token", scopes: resolveWorkspaceApiKeyScopes(raw) },
+  };
+}
+
+function localRunFailure(c: AuthenticatedContext, error: unknown) {
+  if (error instanceof LocalRunError) {
+    return c.json({ success: false, error: error.message }, error.status);
+  }
+  if (error instanceof LocalOverlayError) {
+    return badRequest(c, error.message);
+  }
+  return serverError(c, error, "Failed to start dbt run");
+}
+
+dbtRoutes.post("/local-runs", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const caller = localRunCaller(c);
+    if (!workspaceId || !caller) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const parsed = localRunSchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+    }
+    const body = parsed.data;
+    const overlay = normalizeLocalOverlay(body);
+    const result = await startLocalDbtRun({
+      workspaceId,
+      userId: caller.userId,
+      authority: caller.authority,
+      projectId: body.projectId,
+      command: body.command,
+      select: body.select,
+      environment: body.environment,
+      fullRefresh: body.fullRefresh,
+      defer: body.defer,
+      sourceLabel: body.sourceLabel,
+      overlay,
+    });
+    publishDbtEvent(c, {
+      type: "dbt.run.updated",
+      projectId: result.projectId,
+      runId: result.run._id.toString(),
+    });
+    if (result.provisionedEnvironment) {
+      publishDbtEvent(c, {
+        type: "dbt.project.updated",
+        projectId: result.projectId,
+      });
+    }
+    return c.json({
+      success: true,
+      runId: result.run._id.toString(),
+      projectId: result.projectId,
+      environment: result.run.environment,
+      commands: result.run.commands,
+      defer: Boolean(result.run.deferToProduction),
+      sourceBranch: result.run.sourceBranch,
+      ...(result.provisionedEnvironment
+        ? { provisionedEnvironment: result.provisionedEnvironment }
+        : {}),
+    });
+  } catch (error) {
+    return localRunFailure(c, error);
+  }
+});
+
+dbtRoutes.get("/local-runs/:runId", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const caller = localRunCaller(c);
+    if (!workspaceId || !caller) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const found = await findOwnLocalRun({
+      workspaceId,
+      userId: caller.userId,
+      runId: c.req.param("runId"),
+    });
+    if (!found) {
+      return c.json({ success: false, error: "Run not found" }, 404);
+    }
+    const run = await reconcileStaleQueuedRun(found.toObject(), {
+      persist: false,
+    });
+    // logsSince = the absolute line number the client has read up to (the
+    // previous answer's logCursor) — it survives the executor's log cap.
+    const page = sliceRunLogs(
+      run.logs ?? [],
+      run.logTotal,
+      Number(c.req.query("logsSince")) || 0,
+    );
+    return c.json({
+      success: true,
+      run: {
+        _id: run._id.toString(),
+        projectId: run.projectId.toString(),
+        status: run.status,
+        environment: run.environment,
+        commands: run.commands,
+        sourceBranch: run.sourceBranch,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        durationMs: run.durationMs,
+        error: run.error,
+        stepResults: run.stepResults ?? [],
+        logs: page.logs,
+        logCursor: page.logCursor,
+        ...(page.logsSkipped ? { logsSkipped: page.logsSkipped } : {}),
+      },
+    });
+  } catch (error) {
+    return serverError(c, error, "Failed to fetch dbt run");
+  }
+});
+
+dbtRoutes.post("/local-runs/:runId/cancel", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const caller = localRunCaller(c);
+    if (!workspaceId || !caller) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const runId = c.req.param("runId");
+    const found = await findOwnLocalRun({
+      workspaceId,
+      userId: caller.userId,
+      runId,
+    });
+    if (!found) {
+      return c.json({ success: false, error: "Run not found" }, 404);
+    }
+    const result = await requestDbtRunCancel({
+      workspaceId,
+      runId,
+      cancelledBy: caller.userId,
+    });
+    if (!result) {
+      return c.json({ success: false, error: "Run not found" }, 404);
+    }
+    publishDbtEvent(c, {
+      type: "dbt.run.updated",
+      projectId: found.projectId.toString(),
+      runId,
+    });
+    return c.json({ success: true, status: result.status });
+  } catch (error) {
+    return serverError(c, error, "Failed to cancel dbt run");
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Ad-hoc compile / command (synchronous runner invocations)

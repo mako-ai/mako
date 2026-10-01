@@ -61,7 +61,9 @@ export type RealtimeEvent =
         | "discard"
         | "checkout"
         | "lifecycle"
-        | "push";
+        | "push"
+        // A deploy from main finished (live, or failed: see lastDeployError).
+        | "deploy";
     }
   | {
       type: "dbt.file.updated";

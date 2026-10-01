@@ -221,7 +221,7 @@ export function SyncFlowForm({
 
   const connectorTypes = useConnectorCatalogStore(state => state.types);
   const fetchCatalog = useConnectorCatalogStore(state => state.fetchCatalog);
-  const { schemas, fetchSchema } = useConnectorCatalogStore();
+  const fetchSchema = useConnectorCatalogStore(state => state.fetchSchema);
 
   const webhookCapabilitiesByType = useMemo(() => {
     const map: Record<string, WebhookCapabilities> = {};
@@ -293,7 +293,6 @@ export function SyncFlowForm({
   // guards against. Reset to false whenever a different existing flow loads;
   // always "touched" for brand-new flows (nothing saved to protect there).
   const formTouchedRef = useRef(isNew);
-  const reconcileAutoEnabledRef = useRef(false);
 
   const toggleStep = (stepIndex: number) => {
     // Keep Triggers open while provisioning, and after success until the
@@ -613,40 +612,34 @@ export function SyncFlowForm({
     setValue,
   ]);
 
-  // Auto-suggest (and once soft-enable) periodic reconcile for Incremental
-  // flows whose selected entities are created-anchor or none — polls alone
-  // cannot catch updates / will silent-full-repull those streams.
-  useEffect(() => {
-    if (!suggestReconcile || !formTouchedRef.current) return;
-    if (watchBackfillScheduleEnabled) return;
-    if (reconcileAutoEnabledRef.current) return;
-    reconcileAutoEnabledRef.current = true;
-    setValue("backfillScheduleEnabled", true, { shouldDirty: true });
-    const cron = getValues("backfillScheduleCron");
-    if (!cron) {
-      setValue("backfillScheduleCron", "0 3 * * *", { shouldDirty: true });
-    }
-    const tz = getValues("backfillScheduleTimezone");
-    if (!tz) {
-      setValue("backfillScheduleTimezone", "UTC", { shouldDirty: true });
-    }
-  }, [suggestReconcile, watchBackfillScheduleEnabled, setValue, getValues]);
+  // The periodic full reconcile is opt-in. When Incremental polls cannot see
+  // updates for the selected entities (created-anchor or none), the form
+  // RECOMMENDS it (warning + "Enable daily" button, see step 3) but never
+  // switches it on by itself: a reconcile re-upserts every current record on
+  // a cron, which is a cost and a load on the source the user must choose.
 
-  // transferQueries schema (GraphQL/PostHog-style connectors)
+  // transferQueries schema (GraphQL/PostHog-style connectors).
+  // Stale-while-revalidate: show the persisted cache immediately, but always
+  // refetch — the cache lives in localStorage, so schema changes (e.g.
+  // transferQueries.required flipping) would otherwise never reach the form.
   useEffect(() => {
     if (!selectedConnectorType) {
       setTransferQueriesSchema(null);
       return;
     }
-    const cachedSchema = schemas[selectedConnectorType];
-    if (cachedSchema?.transferQueries) {
-      setTransferQueriesSchema(cachedSchema.transferQueries);
-    } else {
-      fetchSchema(selectedConnectorType).then(schema => {
-        setTransferQueriesSchema(schema?.transferQueries ?? null);
-      });
+    const cachedSchema =
+      useConnectorCatalogStore.getState().schemas[selectedConnectorType];
+    if (cachedSchema) {
+      setTransferQueriesSchema(cachedSchema.transferQueries ?? null);
     }
-  }, [selectedConnectorType, schemas, fetchSchema]);
+    fetchSchema(selectedConnectorType, true).then(schema => {
+      if (schema) {
+        setTransferQueriesSchema(schema.transferQueries ?? null);
+      } else if (!cachedSchema) {
+        setTransferQueriesSchema(null);
+      }
+    });
+  }, [selectedConnectorType, fetchSchema]);
 
   // Multi-database servers (non-CDC destinations): list databases to pick one.
   useEffect(() => {
@@ -738,7 +731,7 @@ export function SyncFlowForm({
         const sources = await fetchConnectors(currentWorkspace.id);
         setConnectors(sources || []);
       } catch {
-        setError("Failed to load connectors");
+        setError("Failed to load source connections");
       } finally {
         setIsLoadingConnectors(false);
       }
@@ -870,18 +863,6 @@ export function SyncFlowForm({
       return;
     }
 
-    // Trigger-set validation. The periodic full reconcile is a real trigger
-    // (migrated legacy full-refresh syncs run on it exclusively), but it only
-    // exists for CDC-capable destinations.
-    const hasReconcileTrigger =
-      isCdcCapableDest && Boolean(data.backfillScheduleEnabled);
-    if (!data.scheduleEnabled && !data.webhookEnabled && !hasReconcileTrigger) {
-      setError(
-        "Enable at least one trigger — a schedule, a webhook, or a periodic full reconcile.",
-      );
-      setOpenSteps(prev => new Set([...prev, 4]));
-      return;
-    }
     if (data.scheduleEnabled && !data.scheduleCron.trim()) {
       setError("A cron expression is required for the scheduled trigger.");
       setOpenSteps(prev => new Set([...prev, 4]));
@@ -1404,13 +1385,13 @@ export function SyncFlowForm({
                   <Controller
                     name="dataSourceId"
                     control={control}
-                    rules={{ required: "Data source is required" }}
+                    rules={{ required: "Source connection is required" }}
                     render={({ field }) => (
                       <FormControl fullWidth error={!!errors.dataSourceId}>
-                        <InputLabel>Data Source</InputLabel>
+                        <InputLabel>Source connection</InputLabel>
                         <Select
                           {...field}
-                          label="Data Source"
+                          label="Source connection"
                           startAdornment={
                             <DataIcon sx={{ mr: 1, color: "action.active" }} />
                           }
@@ -1452,7 +1433,7 @@ export function SyncFlowForm({
                     <Typography variant="caption" color="text.secondary">
                       Syncing from a database query instead?{" "}
                       <Button size="small" onClick={onSwitchToDbSync}>
-                        Use a database source
+                        Use a database connection
                       </Button>
                     </Typography>
                   )}
@@ -2254,9 +2235,9 @@ export function SyncFlowForm({
                   {!watchScheduleEnabled &&
                     !watchWebhookEnabled &&
                     !(isCdcCapableDest && watchBackfillScheduleEnabled) && (
-                      <Alert severity="warning">
-                        Enable at least one trigger — a schedule, a webhook, or
-                        a periodic full reconcile.
+                      <Alert severity="info">
+                        No automatic triggers are enabled. You can still run
+                        this sync manually.
                       </Alert>
                     )}
 
@@ -2377,7 +2358,7 @@ export function SyncFlowForm({
                   <Tooltip
                     title={
                       !watchDataSourceId
-                        ? "Select a data source first"
+                        ? "Select a source connection first"
                         : connectorSupportsWebhook
                           ? ""
                           : "This connector does not provide webhooks — use a schedule"
@@ -2656,12 +2637,7 @@ export function SyncFlowForm({
                       variant="contained"
                       startIcon={<AddIcon />}
                       onClick={handleFormSubmit}
-                      disabled={
-                        isSubmitting ||
-                        (!watchScheduleEnabled &&
-                          !watchWebhookEnabled &&
-                          !(isCdcCapableDest && watchBackfillScheduleEnabled))
-                      }
+                      disabled={isSubmitting}
                       fullWidth
                     >
                       {isSubmitting
@@ -2681,12 +2657,7 @@ export function SyncFlowForm({
                       <Button
                         variant="contained"
                         onClick={handleFormSubmit}
-                        disabled={
-                          isSubmitting ||
-                          (!watchScheduleEnabled &&
-                            !watchWebhookEnabled &&
-                            !(isCdcCapableDest && watchBackfillScheduleEnabled))
-                        }
+                        disabled={isSubmitting}
                       >
                         {isSubmitting ? "Saving..." : "Save triggers"}
                       </Button>

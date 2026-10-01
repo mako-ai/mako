@@ -36,6 +36,7 @@ import { useDashboardTreeStore } from "../store/dashboardTreeStore";
 import { useDbtStore } from "../store/dbtStore";
 import { useFlowStore } from "../store/flowStore";
 import { useUIStore } from "../store/uiStore";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
@@ -58,6 +59,9 @@ function groupIntoRows(items: PaletteItem[]): Row[] {
 
 export default function CommandPalette() {
   const open = useCommandPaletteStore(state => state.open);
+  // On a phone the palette IS the search screen (Browse's search field opens
+  // it), so it takes the whole viewport instead of floating as a dialog.
+  const isMobile = useIsMobile();
   const consoleResults = useCommandPaletteStore(state => state.consoleResults);
   const searching = useCommandPaletteStore(state => state.searching);
   const workspaceId = useUIStore(state => state.currentWorkspaceId);
@@ -216,6 +220,7 @@ export default function CommandPalette() {
       open={open}
       onClose={() => useCommandPaletteStore.getState().closePalette()}
       fullWidth
+      fullScreen={isMobile}
       maxWidth="sm"
       // Without this, MUI restores focus to the previously focused element
       // (e.g. Monaco) when the dialog opens, defeating the input autofocus.

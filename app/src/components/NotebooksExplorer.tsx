@@ -1,10 +1,17 @@
-import { useCallback, useRef, type ChangeEvent } from "react";
-import { IconButton, Tooltip } from "@mui/material";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type ChangeEvent,
+} from "react";
+import { IconButton, ListItemIcon, MenuItem, Tooltip } from "@mui/material";
 import {
   Download,
   Notebook as NotebookIcon,
   Plus,
   RefreshCw as RefreshIcon,
+  Star as StarIcon,
   Upload,
 } from "lucide-react";
 
@@ -28,6 +35,22 @@ import {
   type Ipynb,
 } from "../notebook-runtime/ipynb";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { useAuth } from "../contexts/auth-context";
+import {
+  selectFavourites,
+  starredRefs,
+  useFavouritesStore,
+} from "../store/favouritesStore";
+import StarToggle from "./starred/StarToggle";
+import {
+  buildStarredSection,
+  entityIdFromStarredRow,
+  flattenLeafRows,
+  realEntityId,
+} from "./starred/starred-section";
+import { useStarredTree } from "./starred/use-starred-tree";
+import AccessIcon from "./AccessIcon";
+import { resolveAccessState } from "./access-state";
 
 export default function NotebooksExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -40,6 +63,39 @@ export default function NotebooksExplorer() {
     loading,
     fetchTree,
   } = tree;
+
+  const { user } = useAuth();
+  const userId = user?.id;
+  // Starred notebooks: a star is a SHORTCUT. Notebooks already have real
+  // shared folders their team created, so a starred notebook keeps its place
+  // in the tree below and is also pinned on top, in this person's own
+  // favourites folders.
+  const favourites = useFavouritesStore(selectFavourites(workspaceId));
+  const fetchFavourites = useFavouritesStore(s => s.fetch);
+  const toggleFavourite = useFavouritesStore(s => s.toggle);
+  const starred = useMemo(
+    () => starredRefs(favourites, "notebook"),
+    [favourites],
+  );
+  useEffect(() => {
+    if (workspaceId) void fetchFavourites(workspaceId);
+  }, [workspaceId, fetchFavourites]);
+  const handleToggleStar = useCallback(
+    (notebookId: string) => {
+      if (!workspaceId) return;
+      void toggleFavourite(
+        workspaceId,
+        "notebook",
+        notebookId,
+        !starred.has(notebookId),
+      );
+    },
+    [workspaceId, toggleFavourite, starred],
+  );
+  const allNotebooks = useMemo(
+    () => flattenLeafRows([...myNotebooks, ...workspaceNotebooks]),
+    [myNotebooks, workspaceNotebooks],
+  );
 
   const createNotebook = useNotebookStore(s => s.createNotebook);
   const getNotebook = useNotebookStore(s => s.getNotebook);
@@ -93,7 +149,8 @@ export default function NotebooksExplorer() {
 
   const handleItemClick = useCallback((node: ResourceTreeNode) => {
     if (node.isDirectory) return;
-    focusNotebookTab(node.id, node.name);
+    // A pinned row points at the same notebook as its real row below.
+    focusNotebookTab(realEntityId(node.id), node.name);
   }, []);
 
   const handleDuplicate = useCallback(
@@ -133,7 +190,82 @@ export default function NotebooksExplorer() {
     [getNotebook],
   );
 
-  const sectionsDef = tree.sections({ my: "My Notebooks" });
+  const sectionsDef = useMemo(() => {
+    const byId = new Map(allNotebooks.map(n => [n.id, n]));
+    return [
+      ...buildStarredSection(
+        favourites,
+        "notebook",
+        refId => {
+          const node = byId.get(refId);
+          return node
+            ? {
+                name: node.name,
+                path: node.path,
+                access: node.access,
+                owner_id: node.owner_id,
+              }
+            : undefined;
+        },
+        { droppable: true },
+      ),
+      ...tree.sections({ my: "My Notebooks" }),
+    ];
+  }, [favourites, allNotebooks, tree]);
+
+  // Rows under Starred are views: their moves, renames and deletes go to
+  // the favourites store, never to the notebook store (use-starred-tree.tsx).
+  const starrable = useCallback(
+    (id: string) => allNotebooks.some(n => n.id === id),
+    [allNotebooks],
+  );
+  const { treeHandlers, handleSectionDrop, getSectionContextMenuItems } =
+    useStarredTree({
+      kind: "notebook",
+      workspaceId,
+      favourites,
+      base: tree.treeHandlers,
+      isStarrable: starrable,
+      onToggleStar: handleToggleStar,
+    });
+
+  const getContextMenuItems = useCallback(
+    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
+      const pinnedId = entityIdFromStarredRow(node.id);
+      // Only pinned rows get a bespoke menu; every other row keeps the
+      // tree's own rename/duplicate/delete entries (Starred folders too).
+      if (!pinnedId) return null;
+      return [
+        <MenuItem
+          key="unstar"
+          onClick={() => {
+            helpers.closeMenu();
+            handleToggleStar(pinnedId);
+          }}
+        >
+          <ListItemIcon>
+            <StarIcon size={16} fill="currentColor" />
+          </ListItemIcon>
+          Unstar
+        </MenuItem>,
+      ];
+    },
+    [handleToggleStar],
+  );
+
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      if (node.isDirectory) return null;
+      const notebookId = realEntityId(node.id);
+      return (
+        <StarToggle
+          starred={starred.has(notebookId)}
+          onToggle={() => handleToggleStar(notebookId)}
+        />
+      );
+    },
+    [starred, handleToggleStar],
+  );
 
   const activeNotebookTabId = (() => {
     if (!activeTabId) return null;
@@ -145,8 +277,23 @@ export default function NotebooksExplorer() {
   })();
 
   const getItemIcon = useCallback(
-    () => <NotebookIcon size={14} style={{ opacity: 0.75 }} />,
-    [],
+    (node: ResourceTreeNode) => {
+      if (node.isDirectory) return null;
+      // Only a PINNED row carries the access overlay: it has left the section
+      // that would otherwise say who can see it.
+      if (entityIdFromStarredRow(node.id)) {
+        return (
+          <AccessIcon
+            Glyph={NotebookIcon}
+            state={resolveAccessState(node, userId)}
+            kindLabel="Notebook"
+            size={14}
+          />
+        );
+      }
+      return <NotebookIcon size={14} style={{ opacity: 0.75 }} />;
+    },
+    [userId],
   );
 
   const actions = (
@@ -216,7 +363,11 @@ export default function NotebooksExplorer() {
             enableDelete
             enableNewFolder
             onItemClick={handleItemClick}
-            {...tree.treeHandlers}
+            {...treeHandlers}
+            onSectionDrop={handleSectionDrop}
+            getSectionContextMenuItems={getSectionContextMenuItems}
+            getContextMenuItems={getContextMenuItems}
+            getRightAdornment={getRightAdornment}
             onDuplicateItem={handleDuplicate}
             isFolderExpanded={isNotebookFolderExpanded}
             onToggleFolder={toggleNotebookFolder}

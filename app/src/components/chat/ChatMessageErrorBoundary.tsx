@@ -49,10 +49,13 @@ export class ChatMessageErrorBoundary extends React.Component<
     return (
       <div
         role="alert"
+        // A class component has no hook access to the MUI theme, so the BUI
+        // custom properties are read directly — they already flip with the
+        // theme, which the hardcoded hex values did not.
         style={{
-          border: "1px solid rgba(211, 47, 47, 0.45)",
+          border: "1px solid var(--bui-red-tint)",
           borderRadius: 6,
-          color: "#d32f2f",
+          color: "var(--bui-red)",
           margin: "8px 16px",
           padding: "10px 12px",
         }}

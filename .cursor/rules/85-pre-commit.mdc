@@ -22,6 +22,11 @@ If you touched `api/src/routes/**`, `packages/schemas/**`, or
 them for you when those files are in the commit). A stale committed spec fails
 the "OpenAPI contract + drift check" on EVERY subsequent PR, not just yours.
 
+If you add or rename an `api/src/**/*.test.ts` file, register it in the API
+`test` script or a matching Vitest config and run
+`pnpm --filter api exec tsx src/test-coverage.test.ts`. The staged-files hook
+runs this guard automatically for API test-file changes.
+
 ## Why the pre-commit hook is not enough
 
 - `lint-staged` only runs on staged files, not the full package.
@@ -30,6 +35,9 @@ the "OpenAPI contract + drift check" on EVERY subsequent PR, not just yours.
 
 ## Common gotchas that only CI catches
 
+- **Unregistered API tests.** A test passing when invoked directly does not mean
+  the standard API suite owns it. The test-coverage guard must report that every
+  test file belongs to the `tsx` chain or a Vitest configuration.
 - **Unused `eslint-disable` directives.** When you fix a deps array or tighten a type, the surrounding `// eslint-disable-next-line` comment often becomes unused. Delete the comment in the same edit.
 - **Pre-existing warnings you introduced one more of.** CI doesn't fail on warnings, but don't rely on that — remove warnings you can fix.
 - **`@typescript-eslint/no-non-null-assertion`** from `!` on store lookups. Use an `if (!x) return;` guard or `?.` instead.

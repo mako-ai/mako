@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 9;
+export const WORKSPACE_TEMPLATE_VERSION = 18;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -53,11 +53,16 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 
 ## Layout
 
-- \`apps/<slug>/\` — one app per folder: a real Vite + React + TypeScript
-  project. \`mako.json\` (title, entry), \`bindings/<name>.sql\` (data),
-  \`src/\`, \`package.json\` + \`package-lock.json\` (commit the lockfile).
+- \`apps/<folder>/…/<slug>/\` — one app per folder holding a \`mako.json\`:
+  a real Vite + React + TypeScript project. \`mako.json\` (\`id\`, title,
+  entry), \`bindings/<name>.sql\` (data), \`src/\`, \`package.json\` +
+  \`package-lock.json\` (commit the lockfile). Folders between \`apps/\` and
+  the app are plain organisation — move an app with \`git mv\` and it keeps
+  its identity, which is the \`id\` in its manifest, never its path.
+  \`users/<userId>/apps/…\` are personal apps.
 - \`packages/app-sdk/\` — \`@makoai/app-sdk\` (managed by Mako, do not edit).
-  Apps depend on it via \`file:../../packages/app-sdk\`.
+  Apps depend on the published package (\`"@makoai/app-sdk": "^2"\`); older
+  apps may still reference it via \`file:../../packages/app-sdk\`.
 - \`consoles/<folder>/<name>.sql\` — saved consoles (\`.js\`, \`.mongodb.js\`
   for the other languages); \`users/<userId>/consoles/…\` are private ones.
   Leading \`-- key: value\` lines are metadata (\`connection\`, \`database\`,
@@ -112,7 +117,10 @@ You are an ordinary developer in an ordinary checkout.
 - **Data**: the \`mako\` MCP server is the only way to the warehouse.
   \`list_connections\` → \`list_tables\` / \`inspect_table\` →
   \`sql_execute_query\` (read-only). Validate every query there BEFORE it
-  goes into a binding.
+  goes into a binding. A *connection* is a configured credential — kind
+  \`database\` (queryable) or \`source\` (a Stripe/Close/… key that flows
+  read and \`probe_connection\` reads live); a *connector* is the code
+  behind it (\`list_connectors\`).
 - **Skills**: call \`get_relevant_skills({ query })\` before writing app code.
   The SDK API (\`useQuery\`, \`useDuckDB\`), binding front matter, chart and
   dialect guidance live there — not in this file. \`load_skill("apps")\` is
@@ -129,10 +137,15 @@ You are an ordinary developer in an ordinary checkout.
 Each app's \`vite.config.ts\` includes \`makoData()\` from
 \`@makoai/app-sdk/vite\`. During \`vite dev\` it answers
 \`__data/index.json\` (the app's \`bindings/*.sql\`) and
-\`__data/<name>.parquet\` by streaming the binding's materialized artifact
-from the Mako API with your login (or the key in \`.env\`); a binding that was never
-materialized is built on first request. Results are cached under
-\`node_modules/.mako-data/\` for 5 minutes (\`?refresh\` bypasses).
+\`__data/<name>.parquet\` from the Mako API with your login (or the key in
+\`.env\`), built from your LOCAL \`bindings/<name>.sql\`: unchanged text is the
+committed artifact, edited text is a draft built from your SQL and never
+stored — edit a binding and reload to see its data before committing. The
+SDK's \`refresh()\` (\`POST __data/<name>/refresh\`) rebuilds on demand. Results
+are cached under \`node_modules/.mako-data/\` per binding text (5 minutes;
+\`?refresh\` bypasses). \`MAKO_DBT_ENV=<env>\` in \`.env\` (or
+\`makoData({ dbtEnvironment })\`) renders \`{{ dbt_schema }}\` against that dbt
+environment, e.g. your personal one, instead of production.
 
 Not signed in (and no key) → the app still runs, and every \`useQuery\` /
 \`useDuckDB\` surfaces a "not connected: run \`npx @makoai/cli login\`" error
@@ -155,6 +168,16 @@ SELECT …
 \`useQuery("<name>")\` in the app reads it. Materialize on demand with the
 \`app_materialize\` tool (safe from a checkout: it builds from the committed
 binding, keyed by content) or let the dev server do it on first load.
+
+## Who is looking
+
+\`useViewer()\` gives the signed-in person: \`{ id, email, workspace: { id,
+name, role }, app: { id, slug, role } }\`, or \`null\` on an anonymous share.
+Mako knows nothing else about people on purpose — team, country, seniority
+are YOUR data: put a roster in a binding (\`email\` + the columns the app's
+logic needs) and join it on the email in \`useDuckDB\`. \`MAKO_VIEWER_AS=<email>\`
+in \`.env\` previews the app as another member during \`npm run dev\`. See
+\`packages/app-sdk/README.md\`.
 
 ## Shipping
 

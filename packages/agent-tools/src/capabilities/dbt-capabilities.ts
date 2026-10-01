@@ -7,11 +7,9 @@
  */
 import {
   ALL_AGENT_SURFACES,
-  PRODUCT_AGENT_SURFACES,
   type AgentCapabilityDefinition,
   type AgentSurface,
 } from "./types";
-
 
 export type DbtCapabilityPack =
   | "dbt-orient"
@@ -48,6 +46,7 @@ export const DBT_CAPABILITIES = [
     name: "create_dbt_file",
     pack: "dbt-edit",
     risk: "write",
+    minimumWorkspaceRole: "member",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -56,6 +55,7 @@ export const DBT_CAPABILITIES = [
     name: "modify_dbt_file",
     pack: "dbt-edit",
     risk: "write",
+    minimumWorkspaceRole: "member",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -64,6 +64,7 @@ export const DBT_CAPABILITIES = [
     name: "edit_dbt_file",
     pack: "dbt-edit",
     risk: "write",
+    minimumWorkspaceRole: "member",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -72,6 +73,7 @@ export const DBT_CAPABILITIES = [
     name: "delete_dbt_file",
     pack: "dbt-edit",
     risk: "destructive",
+    minimumWorkspaceRole: "member",
     requiredGrant: "artifact-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
@@ -85,6 +87,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_parse",
     pack: "dbt-validation",
     risk: "read",
+    minimumWorkspaceRole: "member",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
   }),
@@ -92,6 +95,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_compile_model",
     pack: "dbt-validation",
     risk: "read",
+    minimumWorkspaceRole: "member",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
   }),
@@ -99,6 +103,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_show",
     pack: "dbt-validation",
     risk: "read",
+    minimumWorkspaceRole: "member",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
     requiresQueryAccess: true,
@@ -107,6 +112,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_run_model",
     pack: "dbt-validation",
     risk: "destructive",
+    minimumWorkspaceRole: "member",
     requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
@@ -124,6 +130,7 @@ export const DBT_CAPABILITIES = [
     name: "dbt_cancel_run",
     pack: "dbt-validation",
     risk: "write",
+    minimumWorkspaceRole: "member",
     requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
@@ -132,16 +139,18 @@ export const DBT_CAPABILITIES = [
     name: "dbt_create_project",
     pack: "dbt-projects",
     risk: "write",
+    minimumWorkspaceRole: "admin",
     requiredGrant: "artifact-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
     name: "dbt_ensure_dev_environment",
     pack: "dbt-projects",
     risk: "write",
+    minimumWorkspaceRole: "member",
     requiredGrant: "warehouse-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
     requiresQueryAccess: true,
   }),
@@ -149,30 +158,46 @@ export const DBT_CAPABILITIES = [
     name: "dbt_create_job",
     pack: "dbt-jobs",
     risk: "write",
-    requiredGrant: "schedule-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    minimumWorkspaceRole: "admin",
+    // A saved job with a cron schedule is executed by the scheduler against
+    // the warehouse with no further scope check, so creating, rescheduling or
+    // removing one is warehouse authority — never the implicit schedule-write
+    // grant every external MCP key holds.
+    requiredGrant: "warehouse-write",
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
     name: "dbt_update_job",
     pack: "dbt-jobs",
     risk: "write",
-    requiredGrant: "schedule-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    minimumWorkspaceRole: "admin",
+    // A saved job with a cron schedule is executed by the scheduler against
+    // the warehouse with no further scope check, so creating, rescheduling or
+    // removing one is warehouse authority — never the implicit schedule-write
+    // grant every external MCP key holds.
+    requiredGrant: "warehouse-write",
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
     name: "dbt_delete_job",
     pack: "dbt-jobs",
     risk: "destructive",
-    requiredGrant: "schedule-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    minimumWorkspaceRole: "admin",
+    // A saved job with a cron schedule is executed by the scheduler against
+    // the warehouse with no further scope check, so creating, rescheduling or
+    // removing one is warehouse authority — never the implicit schedule-write
+    // grant every external MCP key holds.
+    requiredGrant: "warehouse-write",
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
     name: "dbt_run_job",
     pack: "dbt-jobs",
     risk: "destructive",
+    minimumWorkspaceRole: "member",
     requiredGrant: "warehouse-write",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",

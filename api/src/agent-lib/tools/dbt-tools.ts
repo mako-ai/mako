@@ -35,6 +35,7 @@ import {
 } from "../../database/workspace-schema";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { workspaceService } from "../../services/workspace.service";
+import { RepoRequiredError } from "../../apps/config";
 import {
   ensurePersonalDbtEnvironment,
   findPersonalEnvironment,
@@ -63,9 +64,13 @@ import {
 } from "../../dbt/dbt-working-tree.service";
 import { resolveDbtRules } from "../../dbt/dbt-rules.service";
 import {
+  commitDbtEnvironmentsFile,
   commitDbtJobFile,
   deleteDbtJobFile,
+  loadLiveJobs,
+  liveJobToPlain,
   reserveJobSlug,
+  resolveLiveJobRow,
 } from "../../dbt/dbt-config.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
@@ -350,7 +355,7 @@ export const createDbtServerTools = (
           const project = await assertProject(projectId);
           const [files, jobs, rules] = await Promise.all([
             listWorkingFiles(project, actingUserId),
-            DbtJob.find({ projectId: project._id }).lean(),
+            loadLiveJobs(project),
             resolveDbtRules(project, actingUserId),
           ]);
           return {
@@ -375,14 +380,20 @@ export const createDbtServerTools = (
                   },
                 }
               : {}),
-            jobs: jobs.map(job => ({
-              id: job._id.toString(),
-              name: job.name,
-              environment: job.environment,
-              commands: job.commands,
-              schedule: job.schedule ?? null,
-              enabled: job.enabled,
-            })),
+            jobs: jobs.map(live => {
+              const job = liveJobToPlain(live, project);
+              return {
+                id: live.id.toString(),
+                name: job.name,
+                environment: job.environment,
+                commands: job.commands,
+                schedule: job.schedule ?? null,
+                enabled: job.enabled,
+                ...(job.definitionInvalid
+                  ? { definitionInvalid: job.definitionInvalid }
+                  : {}),
+              };
+            }),
           };
         } catch (error) {
           return toolError(error, "Failed to read dbt project tree");
@@ -632,7 +643,7 @@ export const createDbtServerTools = (
             };
           }
 
-          const project = await DbtProject.create({
+          const project = new DbtProject({
             workspaceId: new Types.ObjectId(workspaceId),
             name,
             dbtVersion: dbtVersion ?? "1.9",
@@ -647,6 +658,8 @@ export const createDbtServerTools = (
             defaultEnvironment: environmentName,
             createdBy: "agent",
           });
+          await commitDbtEnvironmentsFile(project, actingUserId);
+          await project.save();
 
           const scaffold = buildStarterScaffold(name);
           await commitDbtFiles(
@@ -879,8 +892,11 @@ export const createDbtServerTools = (
           //  - MULTIPLE players: auto-provision the caller's PERSONAL
           //    environment on first build so teammates never build over each
           //    other's schemas.
-          // An explicit `environment` or a saved per-user choice always wins;
-          // best-effort — a provisioning failure falls back to the default.
+          // An explicit `environment` or a saved per-user choice always wins.
+          // Transient provision failures (display-name lookup, etc.) fall
+          // back to the shared default so a flaky lookup does not block the
+          // run. A missing git repo must not: falling back would let
+          // teammates overwrite each other's schemas (#956).
           let autoProvisionedEnv: string | undefined;
           if (
             !environment &&
@@ -903,8 +919,9 @@ export const createDbtServerTools = (
                   publishProjectUpdated(projectId);
                 }
               }
-            } catch {
-              /* fall back to the resolved default environment */
+            } catch (error) {
+              if (error instanceof RepoRequiredError) throw error;
+              /* transient provision failure: fall back to the resolved default */
             }
           }
           const wantsDefer =
@@ -985,11 +1002,9 @@ export const createDbtServerTools = (
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
-          const job = await DbtJob.findOne({
-            _id: new Types.ObjectId(jobId),
-            projectId: project._id,
-          });
-          if (!job) return { success: false, error: "Job not found" };
+          const resolved = await resolveLiveJobRow(project, jobId);
+          if (!resolved.ok) return { success: false, error: resolved.error };
+          const job = resolved.row;
           const run = await triggerDbtJobRun({
             workspaceId,
             job,
@@ -1281,7 +1296,7 @@ export const createDbtServerTools = (
           if (validationError) {
             return { success: false, error: validationError };
           }
-          const job = await DbtJob.create({
+          const job = new DbtJob({
             workspaceId: project.workspaceId,
             projectId: project._id,
             slug: await reserveJobSlug(project._id, name),
@@ -1293,8 +1308,9 @@ export const createDbtServerTools = (
             deferToProduction,
             createdBy: "agent",
           });
-          await applyJobScheduleChange(job);
           await commitDbtJobFile(project, job, actingUserId);
+          await job.save();
+          await applyJobScheduleChange(job);
           publishJobUpdated(projectId);
           return {
             success: true,
@@ -1336,11 +1352,9 @@ export const createDbtServerTools = (
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
-          const job = await DbtJob.findOne({
-            _id: new Types.ObjectId(jobId),
-            projectId: project._id,
-          });
-          if (!job) return { success: false, error: "Job not found" };
+          const resolved = await resolveLiveJobRow(project, jobId);
+          if (!resolved.ok) return { success: false, error: resolved.error };
+          const job = resolved.row;
 
           const merged = {
             environment: updates.environment ?? job.environment,
@@ -1363,9 +1377,9 @@ export const createDbtServerTools = (
           if (updates.deferToProduction !== undefined) {
             job.deferToProduction = updates.deferToProduction;
           }
+          await commitDbtJobFile(project, job, actingUserId);
           await job.save();
           await applyJobScheduleChange(job);
-          await commitDbtJobFile(project, job, actingUserId);
           publishJobUpdated(projectId);
           return {
             success: true,
@@ -1398,14 +1412,12 @@ export const createDbtServerTools = (
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
-          const job = await DbtJob.findOne({
-            _id: new Types.ObjectId(jobId),
-            projectId: project._id,
-          });
-          if (!job) return { success: false, error: "Job not found" };
+          const resolved = await resolveLiveJobRow(project, jobId);
+          if (!resolved.ok) return { success: false, error: resolved.error };
+          const job = resolved.row;
           const name = job.name;
-          await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           await deleteDbtJobFile(project, job.slug, actingUserId);
+          await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };
         } catch (error) {

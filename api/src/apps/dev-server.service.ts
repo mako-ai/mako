@@ -73,10 +73,15 @@ const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
  */
 const MAX_RUNNING_DEV_SERVERS = 3;
 
-/** One filesystem identity per app for launcher, log and staged data. */
+/**
+ * One in-box identity per app for launcher, log, staged data, the port
+ * registry and the box agent's reports: the app's ID. Folder basenames are
+ * not unique once apps nest (`apps/sales/report`, `users/<me>/apps/report`),
+ * and a path is not a filename — so every site that used to key by the
+ * basename keys by this instead, and they cannot disagree with each other.
+ */
 function appSlug(handle: WorktreeHandle): string {
-  const base = handle.appRoot.split("/").filter(Boolean).pop() ?? "app";
-  return base.replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 60);
+  return handleProject(handle)._id.toString();
 }
 
 /**
@@ -162,13 +167,17 @@ async function devPort(
         `if(Date.now()-t0>5000){try{fs.rmdirSync(lock)}catch{}continue}` +
         `const w=Date.now()+15;while(Date.now()<w);}}` +
         `try{let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
+        // A box that predates id-keyed registries holds this app under its
+        // old key (apps/<basename>): adopt that slot rather than start a
+        // second vite beside the first for the rest of the box's life.
+        `const legacy=process.argv[2];if(!m[app]&&legacy&&Number.isInteger(m[legacy])){m[app]=m[legacy];delete m[legacy];fs.writeFileSync(f,JSON.stringify(m));}` +
         `if(!m[app]){const used=new Set(Object.values(m));let p=${DEV_PORT_BASE};while(used.has(p))p++;m[app]=p;fs.writeFileSync(f,JSON.stringify(m));}` +
         `console.log(m[app]??"")}finally{try{fs.rmdirSync(lock)}catch{}}`
       : `let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
         `console.log(m[app]??"");`);
   const result = await provider.exec(
     ctx,
-    `node -e ${sh(script)} ${JSON.stringify(handle.appRoot)}`,
+    `node -e ${sh(script)} ${JSON.stringify(appSlug(handle))} ${JSON.stringify(handle.appRoot)}`,
     { timeoutMs: 30_000 },
   );
   const port = Number(result.stdout.trim());
@@ -291,6 +300,65 @@ const makoData = {
         } else {
           res.end("[]");
         }
+        return;
+      }
+      // POST __data/<name>/refresh — the SDK's refresh(): re-run the binding
+      // through Mako as a real materialization (artifact stored, run
+      // recorded), and keep the fresh bytes as this box's staged copy so the
+      // very next __data/<name>.parquet read serves them. Same upstream as a
+      // live binding, with persist on.
+      const refresh = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\/refresh$/.exec(url);
+      if (refresh) {
+        if (req.method !== "POST") { res.statusCode = 405; return res.end(); }
+        const name = refresh[1];
+        const env = makoEnv();
+        const reply = (status, body) => {
+          res.statusCode = status;
+          res.setHeader("content-type", "application/json");
+          res.setHeader("cache-control", "no-store");
+          res.end(JSON.stringify(body));
+        };
+        (async () => {
+          try {
+            const token = readFileSync(env.MAKO_TOKEN_FILE, "utf8").trim();
+            const upstream = await fetch(
+              env.MAKO_API + "/api/apps-box/" + env.MAKO_WS + "/live-binding",
+              {
+                method: "POST",
+                headers: { "content-type": "application/json", authorization: "Bearer " + token },
+                body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name, persist: true }),
+                signal: AbortSignal.timeout(330000),
+              },
+            );
+            if (!upstream.ok) {
+              let detail = {};
+              try { detail = await upstream.json(); } catch {}
+              return reply(upstream.status === 503 ? 429 : upstream.status === 404 ? 404 : 502, {
+                success: false,
+                error: detail.error || ("Refresh failed (HTTP " + upstream.status + ")"),
+                ...(detail.retryAfterMs ? { retryAfterMs: detail.retryAfterMs } : {}),
+              });
+            }
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            const materializedAt = upstream.headers.get("x-mako-materialized-at");
+            // Write-through, like the live path above: serve these bytes
+            // until the next refresh rather than re-querying on every read.
+            try {
+              writeFileSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet"), buf);
+              rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+            } catch {}
+            reply(200, {
+              success: true,
+              binding: name,
+              materialization: materializedAt ? "parquet" : "live",
+              rowCount: Number(upstream.headers.get("x-mako-row-count")) || 0,
+              byteSize: buf.length,
+              ...(materializedAt ? { materializedAt } : {}),
+            });
+          } catch (error) {
+            reply(502, { success: false, error: "Refresh failed: " + String(error && error.message) });
+          }
+        })();
         return;
       }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
@@ -792,7 +860,7 @@ async function reapDevServerBySlug(
     .exec(
       ctx,
       `pkill -f "[m]ako-dev-${slug}.mjs" 2>/dev/null; rm -f /tmp/mako-term-dev-${slug}.sock; ` +
-        `node -e 'const fs=require("fs");const f=${JSON.stringify(PORTS_REGISTRY)};let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}delete m["apps/"+process.argv[1]];try{fs.writeFileSync(f,JSON.stringify(m))}catch{}' ${JSON.stringify(slug)}; echo reaped`,
+        `node -e 'const fs=require("fs");const f=${JSON.stringify(PORTS_REGISTRY)};let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}delete m[process.argv[1]];delete m["apps/"+process.argv[1]];try{fs.writeFileSync(f,JSON.stringify(m))}catch{}' ${JSON.stringify(slug)}; echo reaped`,
       { timeoutMs: 30_000 },
     )
     .catch(() => undefined);
@@ -979,7 +1047,7 @@ async function ensureDevServerLaunch(
     }
     const write = await provider.exec(
       ctx,
-      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx), appEnv)}\nMAKO_LAUNCHER_EOF\necho written`,
+      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx), appEnv)}\nMAKO_LAUNCHER_EOF\nprintf %s ${sh(appDir)} > /tmp/mako-dev-${appSlug(handle)}.dir\necho written`,
       { timeoutMs: 30_000 },
     );
     if (write.exitCode !== 0) {

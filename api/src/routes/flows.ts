@@ -5,7 +5,7 @@ import {
   CdcChangeEvent,
   CdcEntityState,
   CdcStateTransition,
-  Connector as DataSource,
+  SourceConnection,
   DatabaseConnection,
   FlowExecution,
   WebhookEvent,
@@ -19,7 +19,7 @@ import {
   commitFlowFile,
   deleteFlowFile,
 } from "../services/flow-config.service";
-import { Types, PipelineStage } from "mongoose";
+import { Types } from "mongoose";
 import { inngest } from "../inngest";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -33,6 +33,14 @@ import {
 } from "../services/destination-writer.service";
 import { teardownFlow } from "../sync-cdc/flow-reconcile";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
+import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
+import {
+  listFlowDefinitionsAtMain,
+  loadLiveFlowById,
+  loadLiveFlows,
+  liveFlowToPlain,
+  resolveLiveFlowRow,
+} from "../services/flow-sync.service";
 import { resolveMirrorTarget } from "../apps/cloud-repo.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { syncMachineService } from "../sync-cdc/sync-state";
@@ -45,7 +53,7 @@ import {
   computePendingLagSeconds,
 } from "../sync-cdc/backlog";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { databaseDataSourceManager } from "../sync/database-data-source-manager";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
 import {
@@ -79,21 +87,8 @@ const logger = loggers.inngest("flow");
  * the opposite of the position consoles were in when they hit this.
  */
 /**
- * Write the definition to its file, and REFUSE to report success if it did
- * not land.
- *
- * `commitFlowFile` is deliberately tolerant — a failed mirror must not fail a
- * user's mutation — and that was right while the file was a projection of the
- * row. Block 3 made the file authoritative, and the tolerance then produces a
- * silent, undetectable divergence: the row moves, the file does not, and
- * `sourceBlobSha` still matches the OLD file, so the next sync sees "unchanged"
- * and skips it. The row and the file disagree, permanently, and the system
- * believes they agree.
- *
- * The row is left as saved rather than rolled back: Mongo still drives the
- * running flow, so reverting it would stop a stream the user asked to change.
- * What changes is that the caller is TOLD, instead of being shown a 200 for a
- * definition that never reached its home.
+ * Write the definition to its file first, then the caller persists the
+ * derived index. A failed commit fails the request — git is the store.
  */
 async function commitFlowFileOrFail(
   c: AuthenticatedContext,
@@ -101,7 +96,17 @@ async function commitFlowFileOrFail(
   actorUserId?: string,
 ): Promise<Response | null> {
   const result = await commitFlowFile(flow, actorUserId);
-  if (result.ok) return null;
+  if (result.ok) {
+    if (result.sourceBlobSha) flow.sourceBlobSha = result.sourceBlobSha;
+    // Assigning undefined to a nested path and saving persists `{}`, which
+    // the overlay used to read as "invalid". Unset the marker instead; a
+    // not-yet-saved flow has no row to unset, which is fine.
+    await Flow.updateOne(
+      { _id: flow._id },
+      { $unset: { definitionInvalid: 1 } },
+    );
+    return null;
+  }
   logger.error("Flow definition did not reach the workspace repo", {
     workspaceId: flow.workspaceId.toString(),
     slug: flow.slug,
@@ -112,7 +117,7 @@ async function commitFlowFileOrFail(
       success: false,
       code: "definition_not_committed",
       error:
-        "The flow was saved but its definition could not be written to the workspace repo, so the repo and the running flow now disagree. Retry the change; if it keeps failing, check the GitHub connection.",
+        "The flow definition could not be written to the workspace repo, so nothing was saved. Retry the change; if it keeps failing, check the GitHub connection.",
       detail: result.error,
     },
     502,
@@ -120,8 +125,10 @@ async function commitFlowFileOrFail(
 }
 
 async function assertFlowRepo(workspaceId: string): Promise<void> {
-  if (!appsRequireConnectedRepo()) return;
-  if (!(await resolveMirrorTarget(workspaceId))) throw new RepoRequiredError();
+  await requireWorkspaceRepo(workspaceId);
+  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
+    throw new RepoRequiredError();
+  }
 }
 
 /** 412 with the actionable message, as consoles and the prompt already do. */
@@ -130,6 +137,177 @@ function repoRequired(c: AuthenticatedContext, error: RepoRequiredError) {
     { success: false, code: error.code, error: error.message },
     error.status as 412,
   );
+}
+
+function asObjectIdString(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") {
+    return Types.ObjectId.isValid(value) ? value : null;
+  }
+  if (value instanceof Types.ObjectId) return value.toString();
+  if (typeof value === "object" && value !== null && "_id" in value) {
+    return asObjectIdString((value as { _id: unknown })._id);
+  }
+  const text = String(value);
+  return Types.ObjectId.isValid(text) ? text : null;
+}
+
+function connectionSummary(
+  doc: {
+    _id: Types.ObjectId;
+    name?: string;
+    type?: string;
+  } | null,
+): Record<string, unknown> | null {
+  if (!doc) return null;
+  return { _id: doc._id, name: doc.name, type: doc.type };
+}
+
+/**
+ * Populate source/destination lookups the list used to get from `$lookup`.
+ * Git-only flows have no Mongo row, so aggregation on `_id` cannot see them.
+ */
+async function attachFlowLookups(
+  workspaceId: string,
+  flows: Record<string, unknown>[],
+  options: { includeSourceConfig?: boolean } = {},
+): Promise<void> {
+  const sourceIds: Types.ObjectId[] = [];
+  const destIds: Types.ObjectId[] = [];
+  const seenSource = new Set<string>();
+  const seenDest = new Set<string>();
+
+  const pushId = (
+    raw: unknown,
+    into: Types.ObjectId[],
+    seen: Set<string>,
+  ): void => {
+    const id = asObjectIdString(raw);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    into.push(new Types.ObjectId(id));
+  };
+
+  for (const flow of flows) {
+    const sourceType =
+      flow.sourceType === "database" ? "database" : "connector";
+    const databaseSource = flow.databaseSource as
+      | { connectionId?: unknown }
+      | undefined;
+    const tableDestination = flow.tableDestination as
+      | { connectionId?: unknown }
+      | undefined;
+    if (sourceType === "database") {
+      pushId(databaseSource?.connectionId, destIds, seenDest);
+    } else {
+      pushId(flow.dataSourceId, sourceIds, seenSource);
+    }
+    pushId(flow.destinationDatabaseId, destIds, seenDest);
+    pushId(tableDestination?.connectionId, destIds, seenDest);
+  }
+
+  const ws = new Types.ObjectId(workspaceId);
+  const [sources, dests] = await Promise.all([
+    sourceIds.length === 0
+      ? []
+      : SourceConnection.find({ _id: { $in: sourceIds }, workspaceId: ws })
+          .select(
+            options.includeSourceConfig ? "name type config" : "name type",
+          )
+          .lean(),
+    destIds.length === 0
+      ? []
+      : DatabaseConnection.find({ _id: { $in: destIds }, workspaceId: ws })
+          .select("name type")
+          .lean(),
+  ]);
+  const sourceById = new Map(sources.map(doc => [doc._id.toString(), doc]));
+  const destById = new Map(dests.map(doc => [doc._id.toString(), doc]));
+
+  for (const flow of flows) {
+    const sourceType =
+      flow.sourceType === "database" ? "database" : "connector";
+    const databaseSource = flow.databaseSource as
+      | { connectionId?: unknown }
+      | undefined;
+    const tableDestination = flow.tableDestination as
+      | { connectionId?: unknown }
+      | undefined;
+    if (sourceType === "database") {
+      const dbConn = destById.get(
+        asObjectIdString(databaseSource?.connectionId) ?? "",
+      );
+      flow.dataSourceId = connectionSummary(dbConn ?? null);
+    } else {
+      const source = sourceById.get(asObjectIdString(flow.dataSourceId) ?? "");
+      if (source) {
+        flow.dataSourceId = options.includeSourceConfig
+          ? {
+              _id: source._id,
+              name: source.name,
+              type: source.type,
+              config: source.config,
+            }
+          : connectionSummary(source);
+      } else {
+        flow.dataSourceId = null;
+      }
+    }
+    const dest = destById.get(
+      asObjectIdString(flow.destinationDatabaseId) ?? "",
+    );
+    flow.destinationDatabaseId = connectionSummary(dest ?? null);
+    const tableConn = destById.get(
+      asObjectIdString(tableDestination?.connectionId) ?? "",
+    );
+    flow.tableDestinationConnection = connectionSummary(tableConn ?? null);
+  }
+}
+
+function projectFlowListItem(
+  flow: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    _id: flow._id,
+    workspaceId: flow.workspaceId,
+    type: flow.type,
+    name: flow.name,
+    slug: flow.slug,
+    sourceType: flow.sourceType ?? "connector",
+    destinationDatabaseName: flow.destinationDatabaseName,
+    schedule: flow.schedule,
+    webhookConfig: flow.webhookConfig,
+    entityFilter: flow.entityFilter,
+    queries: flow.queries,
+    syncMode: flow.syncMode,
+    writeMode: flow.writeMode,
+    backfillSchedule: flow.backfillSchedule,
+    syncEngine: flow.syncEngine,
+    syncState: flow.syncState,
+    syncStateUpdatedAt: flow.syncStateUpdatedAt,
+    syncStateMeta: flow.syncStateMeta,
+    lastRunAt: flow.lastRunAt,
+    lastSuccessAt: flow.lastSuccessAt,
+    lastError: flow.lastError,
+    nextRunAt: flow.nextRunAt,
+    runCount: flow.runCount,
+    avgDurationMs: flow.avgDurationMs,
+    createdBy: flow.createdBy,
+    createdAt: flow.createdAt,
+    updatedAt: flow.updatedAt,
+    dataSourceId: flow.dataSourceId,
+    databaseSource: flow.databaseSource,
+    destinationDatabaseId: flow.destinationDatabaseId,
+    tableDestination: flow.tableDestination,
+    tableDestinationConnection: flow.tableDestinationConnection,
+    incrementalConfig: flow.incrementalConfig,
+    conflictConfig: flow.conflictConfig,
+    batchSize: flow.batchSize,
+    entityLayouts: flow.entityLayouts,
+    deleteMode: flow.deleteMode,
+    sourceBlobSha: flow.sourceBlobSha,
+    definitionInvalid: flow.definitionInvalid,
+  };
 }
 export const flowRoutes = createRouter();
 
@@ -457,6 +635,8 @@ async function assertOwnerOrAdmin(
 }
 
 // GET /api/workspaces/:workspaceId/flows - List all flows
+// Git at main is the definition; Mongo is overlay (runtime / SHA / webhook).
+// No GitHub binding → 200 empty list, not 412. Leftover local git is ignored.
 flowRoutes.openapi(
   createRoute({
     method: "get",
@@ -475,146 +655,34 @@ flowRoutes.openapi(
   }),
   async c => {
     try {
-      const workspaceId = c.req.param("workspaceId");
+      const workspaceId = c.req.param("workspaceId") as string;
       const sourceType = c.req.query("sourceType"); // Optional filter
 
-      const pipeline: PipelineStage[] = [
-        {
-          $match: {
-            workspaceId: new Types.ObjectId(workspaceId),
-            ...(sourceType && { sourceType }),
-          },
-        },
-        // Lookup for connector sources (optional)
-        {
-          $lookup: {
-            from: "connectors",
-            localField: "dataSourceId",
-            foreignField: "_id",
-            as: "dataSourceLookup",
-          },
-        },
-        // Lookup for database sources (optional)
-        {
-          $lookup: {
-            from: "databaseconnections",
-            localField: "databaseSource.connectionId",
-            foreignField: "_id",
-            as: "databaseSourceLookup",
-          },
-        },
-        // Lookup for destination database
-        {
-          $lookup: {
-            from: "databaseconnections",
-            localField: "destinationDatabaseId",
-            foreignField: "_id",
-            as: "destinationDatabaseLookup",
-          },
-        },
-        // Lookup for table destination (optional)
-        {
-          $lookup: {
-            from: "databaseconnections",
-            localField: "tableDestination.connectionId",
-            foreignField: "_id",
-            as: "tableDestinationLookup",
-          },
-        },
-        {
-          $addFields: {
-            // Normalize source info based on sourceType
-            dataSourceId: {
-              $cond: {
-                if: { $eq: ["$sourceType", "database"] },
-                then: { $arrayElemAt: ["$databaseSourceLookup", 0] },
-                else: { $arrayElemAt: ["$dataSourceLookup", 0] },
-              },
-            },
-            destinationDatabaseId: {
-              $arrayElemAt: ["$destinationDatabaseLookup", 0],
-            },
-            tableDestinationConnection: {
-              $arrayElemAt: ["$tableDestinationLookup", 0],
-            },
-          },
-        },
-        {
-          $project: {
-            _id: 1,
-            workspaceId: 1,
-            type: 1,
-            name: 1,
-            slug: 1,
-            sourceType: { $ifNull: ["$sourceType", "connector"] },
-            destinationDatabaseName: 1,
-            schedule: 1,
-            webhookConfig: 1,
-            entityFilter: 1,
-            queries: 1,
-            syncMode: 1,
-            writeMode: 1,
-            backfillSchedule: 1,
-            syncEngine: 1,
-            syncState: 1,
-            syncStateUpdatedAt: 1,
-            syncStateMeta: 1,
-            lastRunAt: 1,
-            lastSuccessAt: 1,
-            lastError: 1,
-            nextRunAt: 1,
-            runCount: 1,
-            avgDurationMs: 1,
-            createdBy: 1,
-            createdAt: 1,
-            updatedAt: 1,
-            // Source info
-            "dataSourceId._id": 1,
-            "dataSourceId.name": 1,
-            "dataSourceId.type": 1,
-            // Database source details
-            databaseSource: 1,
-            // Destination info
-            "destinationDatabaseId._id": 1,
-            "destinationDatabaseId.name": 1,
-            "destinationDatabaseId.type": 1,
-            // Table destination details
-            tableDestination: 1,
-            "tableDestinationConnection._id": 1,
-            "tableDestinationConnection.name": 1,
-            "tableDestinationConnection.type": 1,
-            // Database source specific config
-            incrementalConfig: 1,
-            conflictConfig: 1,
-            batchSize: 1,
-            entityLayouts: 1,
-            deleteMode: 1,
-          },
-        },
-        {
-          $sort: {
-            createdAt: -1,
-          },
-        },
-      ];
-
-      const flows = await Flow.aggregate(pipeline);
+      const live = await loadLiveFlows(workspaceId);
+      const plains = live
+        .map(item => liveFlowToPlain(item, workspaceId))
+        .filter(flow => !sourceType || flow.sourceType === sourceType);
+      plains.sort((a, b) => {
+        const aTime = a.createdAt instanceof Date ? a.createdAt.getTime() : 0;
+        const bTime = b.createdAt instanceof Date ? b.createdAt.getTime() : 0;
+        return bTime - aTime;
+      });
+      await attachFlowLookups(workspaceId, plains);
       const requestBaseUrl = getRequestBaseUrl(c);
-      const normalizedFlows = flows.map((flow: any) => {
-        if (flow?.type !== "webhook" || !flow?._id) {
-          return flow;
+      const normalizedFlows = plains.map(flow => {
+        const projected = projectFlowListItem(flow);
+        if (projected.type !== "webhook" || !projected._id) {
+          return projected;
         }
-
         const endpoint = generateWebhookEndpoint(
-          workspaceId as string,
-          flow._id.toString(),
+          workspaceId,
+          String(projected._id),
           requestBaseUrl,
         );
-
         return {
-          ...flow,
+          ...projected,
           webhookConfig: {
-            ...(flow.webhookConfig || {}),
+            ...((projected.webhookConfig as Record<string, unknown>) || {}),
             endpoint,
           },
         };
@@ -625,6 +693,9 @@ flowRoutes.openapi(
         data: normalizedFlows,
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true, data: [] }, 200);
+      }
       logger.error("Error listing flows", { error });
       return c.json(
         {
@@ -662,24 +733,24 @@ function selectedEntitiesFromFlowBody(body: {
 }
 
 function resolveConnectorIncrementalCapabilities(
-  dataSource:
+  sourceConnection:
     | { type?: string; config?: Record<string, unknown> }
     | null
     | undefined,
 ): IncrementalCapabilities | undefined {
-  if (!dataSource?.type) return undefined;
+  if (!sourceConnection?.type) return undefined;
   try {
-    const connector = connectorRegistry.getConnector({
+    const connector = connectorRegistry.getConnectorFor({
       id: "validation",
-      name: dataSource.type,
-      type: dataSource.type,
-      config: dataSource.config || {},
+      name: sourceConnection.type,
+      type: sourceConnection.type,
+      config: sourceConnection.config || {},
     } as any);
     return connector?.getIncrementalCapabilities?.();
   } catch {
     const meta = connectorRegistry
       .getAllMetadata()
-      .find(entry => entry.type === dataSource.type);
+      .find(entry => entry.type === sourceConnection.type);
     return meta?.metadata?.incremental;
   }
 }
@@ -834,12 +905,12 @@ flowRoutes.openapi(
         }
 
         // Validate data source exists and belongs to workspace
-        const dataSource = await DataSource.findOne({
+        const sourceConnection = await SourceConnection.findOne({
           _id: new Types.ObjectId(body.dataSourceId),
           workspaceId: new Types.ObjectId(workspaceId),
         });
 
-        if (!dataSource) {
+        if (!sourceConnection) {
           return c.json(
             { success: false, error: "Data source not found" },
             404,
@@ -1064,7 +1135,7 @@ flowRoutes.openapi(
 
       let createIncremental: IncrementalCapabilities | undefined;
       if (sourceType !== "database" && body.dataSourceId) {
-        const ds = await DataSource.findById(body.dataSourceId)
+        const ds = await SourceConnection.findById(body.dataSourceId)
           .select({ type: 1, config: 1 })
           .lean();
         createIncremental = resolveConnectorIncrementalCapabilities(ds as any);
@@ -1097,7 +1168,14 @@ flowRoutes.openapi(
           ? body.name.trim().slice(0, 200)
           : await deriveFlowDisplayName(flowData as unknown as IFlow);
       flowData.name = requestedName;
-      flowData.slug = await reserveFlowSlug(workspaceId, requestedName);
+      // Files at main without a row yet are part of the identity space too.
+      flowData.slug = await reserveFlowSlug(
+        workspaceId,
+        requestedName,
+        new Set(
+          (await listFlowDefinitionsAtMain(workspaceId)).map(def => def.slug),
+        ),
+      );
 
       const flow = new Flow(flowData);
 
@@ -1111,13 +1189,11 @@ flowRoutes.openapi(
         );
       }
 
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
       if (
@@ -1202,23 +1278,26 @@ flowRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const flowId = c.req.param("flowId") as string;
 
-      const flow = await findFlow(workspaceId, flowId);
-
-      if (!flow) {
+      const live = await loadLiveFlowById(workspaceId, flowId);
+      if (!live) {
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
-      // Populate references based on source type
-      if (flow.sourceType !== "database" && flow.dataSourceId) {
-        await flow.populate("dataSourceId", "name type config");
-      }
-      await flow.populate("destinationDatabaseId", "name type");
-      if (flow.type === "webhook" && flow.webhookConfig) {
-        flow.webhookConfig.endpoint = generateWebhookEndpoint(
-          workspaceId as string,
-          flow._id.toString(),
-          getRequestBaseUrl(c),
-        );
+      const flow = liveFlowToPlain(live, workspaceId);
+      await attachFlowLookups(workspaceId, [flow], {
+        includeSourceConfig: true,
+      });
+      if (flow.type === "webhook") {
+        const webhookConfig = {
+          ...((flow.webhookConfig as Record<string, unknown> | undefined) ??
+            {}),
+          endpoint: generateWebhookEndpoint(
+            workspaceId,
+            String(flow._id),
+            getRequestBaseUrl(c),
+          ),
+        };
+        flow.webhookConfig = webhookConfig;
       }
 
       return c.json({
@@ -1226,6 +1305,9 @@ flowRoutes.openapi(
         data: flow,
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: "Flow not found" }, 404);
+      }
       logger.error("Error getting flow", { error });
       return c.json(
         {
@@ -1333,7 +1415,7 @@ flowRoutes.openapi(
 
         let updateIncremental: IncrementalCapabilities | undefined;
         if (flow.sourceType !== "database" && flow.dataSourceId) {
-          const ds = await DataSource.findById(flow.dataSourceId)
+          const ds = await SourceConnection.findById(flow.dataSourceId)
             .select({ type: 1, config: 1 })
             .lean();
           updateIncremental = resolveConnectorIncrementalCapabilities(
@@ -1575,13 +1657,11 @@ flowRoutes.openapi(
         flow.conflictConfig.strategy = "update";
       }
 
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       // Populate references for response based on source type
       if (flow.sourceType !== "database" && flow.dataSourceId) {
@@ -1656,11 +1736,8 @@ flowRoutes.openapi(
       // repo reconciler (sync-cdc/flow-reconcile.ts). Two copies of a
       // five-collection teardown would drift, and the halves that drifted
       // would be the ones nobody deletes.
-      await teardownFlow(flow);
-      // Only this direction writes the file: a deletion made HERE is Mongo →
-      // git. When the reconciler tears down, the file is already gone from
-      // the tree and committing again would fight the push that caused it.
       await deleteFlowFile(flow, c.get("user")?.id);
+      await teardownFlow(flow);
 
       return c.json({
         success: true,
@@ -1737,13 +1814,11 @@ flowRoutes.openapi(
       } else {
         flow.schedule.enabled = !flow.schedule.enabled;
       }
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       return c.json({
         success: true,
@@ -1797,10 +1872,16 @@ flowRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const flowId = c.req.param("flowId");
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
+      // Resolve through the git overlay: a flow whose file was deleted on
+      // main is not runnable, and one that exists only in git says so.
+      const resolved = await resolveLiveFlowRow(String(workspaceId), flowId);
+      if (!resolved.ok) {
+        return c.json(
+          { success: false, error: resolved.error },
+          resolved.status,
+        );
+      }
+      const flow = await Flow.findById(resolved.row._id)
         .populate("dataSourceId")
         .populate("destinationDatabaseId");
 
@@ -2001,13 +2082,11 @@ flowRoutes.openapi(
           lastReason: "Switched to cdc engine",
         };
       }
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       return c.json({
         success: true,
@@ -2115,13 +2194,11 @@ flowRoutes.openapi(
         timezone,
         lastRunAt: flow.backfillSchedule?.lastRunAt,
       };
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       return c.json({
         success: true,
@@ -3048,7 +3125,7 @@ flowRoutes.openapi(
         );
       }
 
-      const connectorSource = await DataSource.findOne({
+      const connectorSource = await SourceConnection.findOne({
         _id: new Types.ObjectId(String(flow.dataSourceId)),
         workspaceId: new Types.ObjectId(workspaceId),
       });
@@ -3057,7 +3134,7 @@ flowRoutes.openapi(
       }
 
       const decryptedConnectorSource =
-        await databaseDataSourceManager.getDataSource(
+        await sourceConnectionManager.getSourceConnection(
           connectorSource._id.toString(),
         );
       if (!decryptedConnectorSource) {
@@ -3070,7 +3147,7 @@ flowRoutes.openapi(
         );
       }
 
-      const connector = await syncConnectorRegistry.getConnector(
+      const connector = await syncConnectorRegistry.getConnectorFor(
         decryptedConnectorSource,
       );
       if (!connector || !connector.supportsWebhooks()) {
@@ -3162,13 +3239,11 @@ flowRoutes.openapi(
       if (created.signingSecret) {
         webhookConfig.secret = created.signingSecret;
       }
-      await flow.save();
-      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
-      // export-only — Mongo stays authoritative, a failed write is logged).
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
+      await flow.save();
 
       if (!created.signingSecret) {
         // Some providers create the endpoint but omit the signing secret from
@@ -3939,11 +4014,11 @@ flowRoutes.openapi(
       > = new Map();
       if (flow.dataSourceId) {
         try {
-          const ds = await databaseDataSourceManager.getDataSource(
+          const ds = await sourceConnectionManager.getSourceConnection(
             String(flow.dataSourceId),
           );
           if (ds) {
-            const connector = await syncConnectorRegistry.getConnector(ds);
+            const connector = await syncConnectorRegistry.getConnectorFor(ds);
             if (connector?.resolveSchema) {
               for (const entity of targetEntities) {
                 try {
@@ -4240,13 +4315,15 @@ flowRoutes.openapi(
         );
       }
 
-      const dataSource = await DataSource.findById(flow.dataSourceId).lean();
-      if (!dataSource) {
+      const sourceConnection = await SourceConnection.findById(
+        flow.dataSourceId,
+      ).lean();
+      if (!sourceConnection) {
         return c.json({ success: false, error: "Data source not found" }, 404);
       }
 
-      const decrypted = await databaseDataSourceManager.getDataSource(
-        String(dataSource._id),
+      const decrypted = await sourceConnectionManager.getSourceConnection(
+        String(sourceConnection._id),
       );
       if (!decrypted) {
         return c.json(
@@ -4254,7 +4331,7 @@ flowRoutes.openapi(
           404,
         );
       }
-      const connector = await syncConnectorRegistry.getConnector(decrypted);
+      const connector = await syncConnectorRegistry.getConnectorFor(decrypted);
       if (!connector) {
         return c.json(
           { success: false, error: "Connector not found for data source type" },

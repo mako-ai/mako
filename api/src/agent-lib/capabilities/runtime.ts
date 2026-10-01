@@ -1,8 +1,10 @@
 import type { ToolSet } from "ai";
 import {
   AGENT_CAPABILITY_BY_NAME,
+  hasMinimumWorkspaceRole,
   type AgentSurface,
   type CapabilityGrant,
+  type MinimumWorkspaceRole,
 } from "@mako/agent-tools";
 
 import type { QueryAccess } from "../../auth/api-key-scopes";
@@ -11,6 +13,38 @@ export interface AgentCapabilityAuthorizationContext {
   surface: AgentSurface;
   queryAccess: QueryAccess;
   grants: ReadonlySet<CapabilityGrant>;
+  /**
+   * The caller's live workspace role. Omit ONLY for surface-only listing
+   * decisions (the in-product working set keeps role-gated schemas visible
+   * and enforces the role at execution, like grants); every execution path
+   * must pass it, and a missing membership (`null`) denies.
+   */
+  memberRole?: string | null;
+}
+
+/**
+ * The workspace role a call is missing, or null when the capability has no
+ * role floor or the role satisfies it. Shared by MCP listing (hide with a
+ * reason), MCP execution and the in-product execution wrapper.
+ */
+export function missingWorkspaceRole(
+  name: string,
+  role: string | undefined | null,
+): { required: MinimumWorkspaceRole } | null {
+  const minimum = AGENT_CAPABILITY_BY_NAME.get(name)?.minimumWorkspaceRole;
+  if (!minimum) return null;
+  return hasMinimumWorkspaceRole(role, minimum) ? null : { required: minimum };
+}
+
+export function workspaceRoleDenial(
+  name: string,
+  required: MinimumWorkspaceRole,
+  role: string | undefined | null,
+): string {
+  return (
+    `${name} requires at least the ${required} workspace role` +
+    (role ? ` (you are a ${role})` : " (no workspace membership)")
+  );
 }
 
 export interface AgentCapabilityDecision {
@@ -44,6 +78,19 @@ export function authorizeAgentCapability(
       allowed: false,
       reason: `${name} requires query access`,
     };
+  }
+  if (context.memberRole !== undefined) {
+    const missingRole = missingWorkspaceRole(name, context.memberRole);
+    if (missingRole) {
+      return {
+        allowed: false,
+        reason: workspaceRoleDenial(
+          name,
+          missingRole.required,
+          context.memberRole,
+        ),
+      };
+    }
   }
   if (
     capability.requiredGrant &&
@@ -104,10 +151,18 @@ export function missingInputConditionalGrant(
  *
  * `liveGrants` is read per call, so a plan approved earlier in the derived
  * mode state is honored without rebuilding the tool set.
+ *
+ * `liveRole` resolves the caller's current workspace role for capabilities
+ * with a `minimumWorkspaceRole` (dbt project/job administration, model
+ * authoring). Resolved lazily and only for those tools, so an unprivileged
+ * caller is refused by the same registry rule the REST routes and MCP apply
+ * — a viewer asking chat to "create a dbt project" no longer succeeds where
+ * POST /dbt/projects would 403.
  */
 export function enforceCapabilityGrantsAtExecution(
   tools: ToolSet,
   liveGrants: () => ReadonlySet<CapabilityGrant>,
+  liveRole?: () => Promise<string | undefined | null>,
 ): ToolSet {
   const wrapped: ToolSet = { ...tools };
   for (const [name, toolDef] of Object.entries(tools)) {
@@ -115,13 +170,29 @@ export function enforceCapabilityGrantsAtExecution(
     const requiredGrant = capability?.requiredGrant;
     const hasConditional =
       (capability?.inputConditionalGrants?.length ?? 0) > 0;
+    const roleResolver = capability?.minimumWorkspaceRole
+      ? liveRole
+      : undefined;
     const execute = toolDef.execute;
-    if ((!requiredGrant && !hasConditional) || typeof execute !== "function") {
+    if (
+      (!requiredGrant && !hasConditional && !roleResolver) ||
+      typeof execute !== "function"
+    ) {
       continue;
     }
     wrapped[name] = {
       ...toolDef,
-      execute: (input: never, options: never) => {
+      execute: async (input: never, options: never) => {
+        if (roleResolver) {
+          const role = await roleResolver();
+          const missingRole = missingWorkspaceRole(name, role);
+          if (missingRole) {
+            return {
+              success: false,
+              error: workspaceRoleDenial(name, missingRole.required, role),
+            };
+          }
+        }
         if (requiredGrant && !liveGrants().has(requiredGrant)) {
           return {
             success: false,

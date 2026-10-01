@@ -31,8 +31,9 @@ import {
 } from "react-hook-form";
 
 // Zustand stores
-import { useConnectorStore } from "../store/connectorStore";
+import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
+import { connectorIconUrl } from "../lib/connector-icon";
 
 export interface ConnectorFieldSchema {
   name: string;
@@ -64,7 +65,7 @@ export interface ConnectorSchemaResponse {
   fields: ConnectorFieldSchema[];
 }
 
-interface ConnectorFormProps {
+interface SourceConnectionFormProps {
   tabId?: string;
   variant?: "dialog" | "inline";
   open?: boolean;
@@ -104,7 +105,7 @@ function generateDefaultValues(
   return defaults;
 }
 
-function ConnectorForm({
+function SourceConnectionForm({
   onClose,
   onSubmit,
   connector,
@@ -112,7 +113,7 @@ function ConnectorForm({
   errorMessage,
   tabId,
   onDirtyChange,
-}: ConnectorFormProps) {
+}: SourceConnectionFormProps) {
   const { currentWorkspace } = useWorkspace();
   const [schema, setSchema] = useState<ConnectorSchemaResponse | null>(null);
   const [schemaLoading, setSchemaLoading] = useState(false);
@@ -132,11 +133,14 @@ function ConnectorForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const draftRef = useRef<Record<string, any> | undefined>(
-    tabId ? useConnectorStore.getState().drafts[tabId]?.values : undefined,
+    tabId
+      ? useSourceConnectionStore.getState().drafts[tabId]?.values
+      : undefined,
   );
   useEffect(() => {
     if (tabId) {
-      draftRef.current = useConnectorStore.getState().drafts[tabId]?.values;
+      draftRef.current =
+        useSourceConnectionStore.getState().drafts[tabId]?.values;
     }
   }, [tabId]);
 
@@ -258,7 +262,9 @@ function ConnectorForm({
   const revealSecret = async (fieldName: string) => {
     const connectorId = connector?._id;
     if (!connectorId) {
-      setSnackbarMessage("Save the connector before revealing its secrets");
+      setSnackbarMessage(
+        "Save the source connection before revealing its secrets",
+      );
       return;
     }
     if (!currentWorkspace?.id) return;
@@ -267,7 +273,7 @@ function ConnectorForm({
 
     try {
       const response = await fetch(
-        `/api/workspaces/${currentWorkspace.id}/connectors/${connectorId}/reveal-secret`,
+        `/api/workspaces/${currentWorkspace.id}/connections/sources/${connectorId}/reveal-secret`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -456,19 +462,19 @@ function ConnectorForm({
       if (succeeded) {
         setSuccessMessage(
           isNewConnector
-            ? "Connector created successfully"
-            : "Connector updated successfully",
+            ? "Source connection created successfully"
+            : "Source connection updated successfully",
         );
       }
     } catch (err) {
-      console.error("[ConnectorForm] onSubmit threw", err);
+      console.error("[SourceConnectionForm] onSubmit threw", err);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const onSubmitError = (errors: Record<string, any>) => {
-    console.error("[ConnectorForm] validation errors", errors);
+    console.error("[SourceConnectionForm] validation errors", errors);
   };
 
   const renderDynamicField = (
@@ -903,7 +909,7 @@ function ConnectorForm({
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <Box
                     component="img"
-                    src={`/api/connectors/${connector.type}/icon.svg`}
+                    src={connectorIconUrl(connector.type, currentWorkspace?.id)}
                     alt={`${connector.type} icon`}
                     sx={{ width: 20, height: 20 }}
                   />
@@ -1100,7 +1106,7 @@ function ConnectorForm({
           >
             <Box
               component="img"
-              src={`/api/connectors/${selectedType}/icon.svg`}
+              src={connectorIconUrl(selectedType, currentWorkspace?.id)}
               alt={`${selectedType} icon`}
               sx={{ width: 32, height: 32 }}
             />
@@ -1195,4 +1201,4 @@ function ConnectorForm({
   );
 }
 
-export default ConnectorForm;
+export default SourceConnectionForm;

@@ -40,6 +40,7 @@ import {
   FolderInput as MoveIcon,
   Clock3 as ScheduleIcon,
   Share2 as Share2Icon,
+  MoreHorizontal as MoreIcon,
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
@@ -234,6 +235,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     null,
   );
   const saveMenuOpen = Boolean(saveMenuAnchor);
+  // Mobile overflow menu: everything the one-row phone toolbar cannot show.
+  const [mobileMenuAnchor, setMobileMenuAnchor] = useState<null | HTMLElement>(
+    null,
+  );
 
   // Compute dirty state by comparing current state hash vs saved state hash
   const hasUnsavedChanges = useMemo(() => {
@@ -1169,6 +1174,56 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     ],
   );
 
+  // Undo/redo go through Monaco's own stack so the toolbar (desktop) and the
+  // overflow menu (mobile) behave identically to the keyboard shortcuts.
+  const runUndo = useCallback(() => {
+    if (!editorRef.current) return;
+    editorRef.current.trigger("keyboard", "undo", null);
+    setTimeout(() => {
+      const model = editorRef.current?.getModel();
+      if (model) {
+        setMonacoCanUndo(model.canUndo());
+        setMonacoCanRedo(model.canRedo());
+      }
+    }, 0);
+  }, []);
+  const runRedo = useCallback(() => {
+    if (!editorRef.current) return;
+    editorRef.current.trigger("keyboard", "redo", null);
+    setTimeout(() => {
+      const model = editorRef.current?.getModel();
+      if (model) {
+        setMonacoCanUndo(model.canUndo());
+        setMonacoCanRedo(model.canRedo());
+      }
+    }, 0);
+  }, []);
+
+  const handleConnectionChange = useCallback(
+    (newConnectionId: string) => {
+      const newConnection = databases.find(db => db.id === newConnectionId);
+      if (onDatabaseChange) {
+        onDatabaseChange(newConnectionId);
+      }
+      // For non-cluster mode: set databaseName from the connection's database
+      // For cluster mode: clear and let user select from dropdown
+      if (onDatabaseNameChange) {
+        if (
+          newConnection &&
+          !newConnection.isClusterMode &&
+          newConnection.databaseName
+        ) {
+          onDatabaseNameChange(undefined, newConnection.databaseName);
+        } else {
+          onDatabaseNameChange(undefined, undefined);
+        }
+      }
+    },
+    [databases, onDatabaseChange, onDatabaseNameChange],
+  );
+
+  const closeMobileMenu = () => setMobileMenuAnchor(null);
+
   return (
     <Box
       sx={{
@@ -1178,9 +1233,240 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         position: "relative",
       }}
     >
+      {/* Mobile toolbar — ONE row: connection, save, overflow. Everything
+          else (undo, redo, history, share, schedule, info, save-as) lives in
+          the overflow menu; the run affordance is the FAB. This is what gets
+          the first line of SQL back above the fold on a phone. */}
+      {isMobile && (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            px: 1,
+            pb: 1,
+            backgroundColor: "background.paper",
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <ConnectionSelector
+              value={connectionId || ""}
+              onChange={handleConnectionChange}
+              size="compact"
+              showLabel={false}
+              placeholder="Select connection"
+              fullWidth
+            />
+          </Box>
+          {selectedConnection?.isClusterMode && (
+            <FormControl size="small" variant="outlined" sx={{ minWidth: 96 }}>
+              <Select
+                value={databaseId || ""}
+                onChange={e => {
+                  const dbId = e.target.value || undefined;
+                  const db = availableDatabases.find(d => d.id === dbId);
+                  if (onDatabaseNameChange) {
+                    onDatabaseNameChange(dbId, db?.label);
+                  }
+                }}
+                disabled={isLoadingDatabases || availableDatabases.length === 0}
+                displayEmpty
+                aria-label="Database"
+              >
+                {availableDatabases.map(db => (
+                  <MenuItem key={db.id} value={db.id}>
+                    {db.label || db.id}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+          {onSave && !isReadOnly && (
+            <Tooltip title={!hasUnsavedChanges ? "No changes to save" : "Save"}>
+              <span>
+                <IconButton
+                  aria-label="Save"
+                  onClick={handleSave}
+                  disabled={isSaving || isExecuting || !hasUnsavedChanges}
+                  sx={{
+                    width: 40,
+                    height: 40,
+                    border: 1,
+                    borderColor: "divider",
+                    borderRadius: 1,
+                  }}
+                >
+                  <SaveIcon strokeWidth={1.75} size={20} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+          <IconButton
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={mobileMenuAnchor ? "true" : undefined}
+            onClick={e => setMobileMenuAnchor(e.currentTarget)}
+            sx={{
+              width: 40,
+              height: 40,
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+            }}
+          >
+            <MoreIcon strokeWidth={1.75} size={20} />
+          </IconButton>
+          <Menu
+            anchorEl={mobileMenuAnchor}
+            open={Boolean(mobileMenuAnchor)}
+            onClose={closeMobileMenu}
+            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+          >
+            {enableVersionControl && (
+              <MenuItem
+                disabled={isDiffMode || !monacoCanUndo}
+                onClick={() => {
+                  closeMobileMenu();
+                  runUndo();
+                }}
+              >
+                <ListItemIcon>
+                  <UndoIcon size={18} strokeWidth={2} />
+                </ListItemIcon>
+                <ListItemText primary="Undo" />
+              </MenuItem>
+            )}
+            {enableVersionControl && (
+              <MenuItem
+                disabled={isDiffMode || !monacoCanRedo}
+                onClick={() => {
+                  closeMobileMenu();
+                  runRedo();
+                }}
+              >
+                <ListItemIcon>
+                  <RedoIcon size={18} strokeWidth={2} />
+                </ListItemIcon>
+                <ListItemText primary="Redo" />
+              </MenuItem>
+            )}
+            {enableVersionControl && onHistoryClick && (
+              <MenuItem
+                disabled={isDiffMode || !historyAvailable}
+                onClick={() => {
+                  const anchor = mobileMenuAnchor;
+                  closeMobileMenu();
+                  if (anchor) onHistoryClick(anchor);
+                }}
+              >
+                <ListItemIcon>
+                  <HistoryIcon size={18} strokeWidth={2} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Version history"
+                  secondary={
+                    historyAvailable ? undefined : "Save the console first"
+                  }
+                />
+              </MenuItem>
+            )}
+            {enableVersionControl && onShareClick && (
+              <MenuItem
+                disabled={isDiffMode || !shareAvailable}
+                onClick={() => {
+                  closeMobileMenu();
+                  onShareClick();
+                }}
+              >
+                <ListItemIcon>
+                  <Share2Icon size={18} strokeWidth={2} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Share"
+                  secondary={
+                    shareAvailable ? undefined : "Save the console first"
+                  }
+                />
+              </MenuItem>
+            )}
+            {!isReadOnly && (onCreateSchedule || onUpdateSchedule) && (
+              <MenuItem
+                disabled={!isSaved}
+                onClick={() => {
+                  closeMobileMenu();
+                  if (hasSchedule) onUpdateSchedule?.();
+                  else onCreateSchedule?.();
+                }}
+              >
+                <ListItemIcon>
+                  <ScheduleIcon size={18} strokeWidth={2} />
+                </ListItemIcon>
+                <ListItemText
+                  primary={hasSchedule ? "Update schedule" : "Schedule"}
+                  secondary={isSaved ? undefined : "Save the console first"}
+                />
+              </MenuItem>
+            )}
+            {onSave && !isReadOnly && <Divider />}
+            {onSave && !isReadOnly && (
+              <MenuItem
+                disabled={isSaving || isExecuting || !onSaveAsCopy}
+                onClick={() => {
+                  closeMobileMenu();
+                  handleSaveAsCopy();
+                }}
+              >
+                <ListItemIcon>
+                  <CopyIcon size={18} strokeWidth={2} />
+                </ListItemIcon>
+                <ListItemText primary="Save a copy…" />
+              </MenuItem>
+            )}
+            {onSave && !isReadOnly && (
+              <MenuItem
+                disabled={
+                  isSaving ||
+                  isExecuting ||
+                  !onRenameMove ||
+                  !filePathRef.current
+                }
+                onClick={() => {
+                  closeMobileMenu();
+                  handleRenameMove();
+                }}
+              >
+                <ListItemIcon>
+                  <MoveIcon size={18} strokeWidth={2} />
+                </ListItemIcon>
+                <ListItemText primary="Rename / Move…" />
+              </MenuItem>
+            )}
+            <Divider />
+            <MenuItem
+              onClick={() => {
+                closeMobileMenu();
+                handleInfoClick();
+              }}
+            >
+              <ListItemIcon>
+                <InfoOutlineIcon size={18} strokeWidth={2} />
+              </ListItemIcon>
+              <ListItemText primary="Console info" />
+            </MenuItem>
+          </Menu>
+        </Box>
+      )}
+      {isMobile && headerExtras && (
+        <Box sx={{ px: 1, pb: 1, backgroundColor: "background.paper" }}>
+          {headerExtras}
+        </Box>
+      )}
+      {/* Desktop toolbar. Hidden (not unmounted) on phones, where the one-row
+          toolbar above replaces it. */}
       <Box
         sx={{
-          display: "flex",
+          display: isMobile ? "none" : "flex",
           justifyContent: "space-between",
           alignItems: "center",
           backgroundColor: "background.paper",
@@ -1201,7 +1487,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           }}
         >
           {/* On mobile the run/cancel affordance is the floating FAB, so the
-              inline toolbar button is desktop-only to save horizontal space. */}
+            inline toolbar button is desktop-only to save horizontal space. */}
           {!isMobile &&
             (isExecuting ? (
               <Button
@@ -1418,18 +1704,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                 <span>
                   <IconButton
                     size="small"
-                    onClick={() => {
-                      if (editorRef.current) {
-                        editorRef.current.trigger("keyboard", "undo", null);
-                        setTimeout(() => {
-                          const model = editorRef.current?.getModel();
-                          if (model) {
-                            setMonacoCanUndo(model.canUndo());
-                            setMonacoCanRedo(model.canRedo());
-                          }
-                        }, 0);
-                      }
-                    }}
+                    onClick={runUndo}
                     disabled={isDiffMode || !monacoCanUndo}
                   >
                     <UndoIcon strokeWidth={2} size={22} />
@@ -1441,18 +1716,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                 <span>
                   <IconButton
                     size="small"
-                    onClick={() => {
-                      if (editorRef.current) {
-                        editorRef.current.trigger("keyboard", "redo", null);
-                        setTimeout(() => {
-                          const model = editorRef.current?.getModel();
-                          if (model) {
-                            setMonacoCanUndo(model.canUndo());
-                            setMonacoCanRedo(model.canRedo());
-                          }
-                        }, 0);
-                      }
-                    }}
+                    onClick={runRedo}
                     disabled={isDiffMode || !monacoCanRedo}
                   >
                     <RedoIcon strokeWidth={2} size={22} />
@@ -1511,27 +1775,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           {/* Connection selector */}
           <ConnectionSelector
             value={connectionId || ""}
-            onChange={newConnectionId => {
-              const newConnection = databases.find(
-                db => db.id === newConnectionId,
-              );
-              if (onDatabaseChange) {
-                onDatabaseChange(newConnectionId);
-              }
-              // For non-cluster mode: set databaseName from the connection's database
-              // For cluster mode: clear and let user select from dropdown
-              if (onDatabaseNameChange) {
-                if (
-                  newConnection &&
-                  !newConnection.isClusterMode &&
-                  newConnection.databaseName
-                ) {
-                  onDatabaseNameChange(undefined, newConnection.databaseName);
-                } else {
-                  onDatabaseNameChange(undefined, undefined);
-                }
-              }
-            }}
+            onChange={handleConnectionChange}
             size="compact"
             showLabel={false}
             placeholder="Select connection"

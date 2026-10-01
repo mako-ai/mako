@@ -59,8 +59,12 @@ export interface FlowFileSchedule {
 export interface FlowFile {
   name: string;
   type: "scheduled" | "webhook";
-  source:
-    | { type: "connector"; connectorId: string }
+  source: /**
+   * A source connection (a credential configured with a connector). On
+   * disk this is `source.connection_id`; `connector_id` is the older key
+   * and is still read.
+   */
+  | { type: "connector"; connectionId: string }
     | {
         type: "database";
         connectionId?: string;
@@ -144,6 +148,14 @@ function plain<T>(value: unknown): T | undefined {
           depopulate: true,
         })
       : value;
+  // A nested path (`tableDestination.partitioning`, `.clustering`) is not a
+  // subdocument: Mongoose hands back a getter object whose `toObject()` is
+  // `undefined` when nothing is set — which is the state after the update
+  // route reassigns `tableDestination` from a form payload that never
+  // carries either. `JSON.stringify(undefined)` is `undefined`, and
+  // `JSON.parse(undefined)` throws `"undefined" is not valid JSON`, which
+  // reached the user as the save error for every edit of a CDC flow.
+  if (source === null || source === undefined) return undefined;
   // The round-trip also normalises ObjectIds and Dates to strings, which is
   // what the file wants anyway.
   return JSON.parse(JSON.stringify(source)) as T;
@@ -194,7 +206,10 @@ export function serializeFlowFile(flow: FlowFile): string {
           database: flow.source.database,
           query: flow.source.query,
         })
-      : omitEmpty({ type: "connector", connector_id: flow.source.connectorId });
+      : omitEmpty({
+          type: "connector",
+          connection_id: flow.source.connectionId,
+        });
 
   const table = flow.destination.table;
   doc.destination = omitEmpty({
@@ -340,7 +355,13 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
           database: str(srcDoc.database),
           query: str(srcDoc.query),
         }
-      : { type: "connector", connectorId: str(srcDoc.connector_id) ?? "" };
+      : {
+          type: "connector",
+          // `connection_id` is the key; `connector_id` is what files written
+          // before the vocabulary settled carry, and they must keep parsing.
+          connectionId:
+            str(srcDoc.connection_id) ?? str(srcDoc.connector_id) ?? "",
+        };
 
   const destDoc = (doc.destination ?? {}) as Record<string, unknown>;
   const tableDoc = destDoc.table as Record<string, unknown> | undefined;
@@ -447,7 +468,7 @@ export function flowToFile(flow: IFlow): FlowFile {
         }
       : {
           type: "connector",
-          connectorId: flow.dataSourceId?.toString() ?? "",
+          connectionId: flow.dataSourceId?.toString() ?? "",
         };
 
   const t = flow.tableDestination;

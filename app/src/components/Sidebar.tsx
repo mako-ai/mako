@@ -10,14 +10,14 @@ import {
 } from "@mui/material";
 import { Logout as LogoutIcon } from "@mui/icons-material";
 import { CircleUserRound as UserIcon } from "lucide-react";
-import { CHAT_ICON as ChatIcon, EXPLORER_ICONS } from "../lib/entity-icons";
+import { CHAT_ICON as ChatIcon } from "../lib/entity-icons";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
 import { startTransition, useEffect, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
-import { useConnectorStore } from "../store/connectorStore";
+import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
@@ -25,7 +25,13 @@ import { useRepoStore } from "../store/repoStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
+import {
+  topNavigationItems,
+  bottomNavigationItems,
+  type NavigationView,
+} from "../lib/explorer-nav";
 import { tabRevealTarget } from "../lib/explorer-reveal";
+import { railButtonColors } from "./sidebar-rail";
 
 /**
  * The rail answers TWO questions, and conflating them is confusing.
@@ -36,72 +42,43 @@ import { tabRevealTarget } from "../lib/explorer-reveal";
  * workflow, and a reload deliberately restores the panel you had rather than
  * the one the URL implies (see UrlSync's isReload note).
  *
- * With only the selected-background state, a rail showing Settings while the
- * address bar said /apps/ubiflow read as "Settings is the active app". So the
- * two facts now look different: selected background for the open panel, brand
- * colour for the explorer holding the open tab.
+ * The highlight (full-contrast icon on the selected background, neutral — no
+ * brand colour anywhere on the rail) always follows the open panel; the
+ * explorer holding the open tab gets only a quieter hint. See
+ * `railButtonColors` for why the emphasis is that way round.
  */
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive" && prop !== "ownsActiveTab",
-})<{ isActive?: boolean; ownsActiveTab?: boolean }>(
-  ({ theme, isActive, ownsActiveTab }) => ({
+})<{ isActive?: boolean; ownsActiveTab?: boolean }>(({
+  theme,
+  isActive,
+  ownsActiveTab,
+}) => {
+  const colors = railButtonColors(theme, { isActive, ownsActiveTab });
+  return {
     minWidth: 40,
     width: 40,
     height: 40,
     padding: 0,
     borderRadius: 8,
-    backgroundColor: isActive ? theme.palette.action.selected : "transparent",
-    color: isActive
-      ? theme.palette.text.primary
-      : ownsActiveTab
-        ? theme.palette.primary.main
-        : theme.palette.text.secondary,
+    backgroundColor: colors.backgroundColor,
+    color: colors.color,
     "&:hover": {
-      backgroundColor: isActive
-        ? theme.palette.action.selected
-        : theme.palette.action.hover,
+      backgroundColor: colors.hoverBackgroundColor,
+    },
+    // Ripples are disabled app-wide, so keyboard focus needs its own ring;
+    // neutral like everything else on the rail.
+    "&.Mui-focusVisible": {
+      outline: `2px solid ${colors.focusOutlineColor}`,
+      outlineOffset: -2,
     },
     transition: "all 0.2s ease",
-  }),
-);
+  };
+});
 
 // Views that can appear in the sidebar navigation. Extends the core AppView
 // union with additional sidebar-specific entries that don't directly map to
 // a left-pane view managed by the app store.
-type NavigationView =
-  | "databases"
-  | "consoles"
-  | "connectors"
-  | "flows"
-  | "dashboards"
-  | "notebooks"
-  | "apps"
-  | "dbt"
-  | "source-control"
-  | "settings"
-  | "views";
-
-const topNavigationItems: {
-  view: NavigationView;
-  icon: any;
-  label: string;
-}[] = [
-  { view: "databases", icon: EXPLORER_ICONS.databases, label: "Databases" },
-  // The workspace repository, VS Code style — second in the rail, the same
-  // neighbourhood VS Code keeps its SCM icon in.
-  {
-    view: "source-control",
-    icon: EXPLORER_ICONS["source-control"],
-    label: "Source Control",
-  },
-  { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
-  { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
-  { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
-  { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
-  { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
-  { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
-  { view: "apps", icon: EXPLORER_ICONS["apps"], label: "Apps" },
-];
 
 /**
  * Is the workspace checkout dirty? VS Code's SCM badge, reduced to a dot.
@@ -130,19 +107,13 @@ function useRepoDirty(): boolean {
   return dirty;
 }
 
-const bottomNavigationItems: {
-  view: NavigationView;
-  icon: any;
-  label: string;
-}[] = [{ view: "settings", icon: EXPLORER_ICONS.settings, label: "Settings" }];
-
 const preloadDashboardsExplorer = () => {
   void import("./DashboardsExplorer");
 };
 
 /**
  * Avatar button + dropdown (workspace switcher + sign out). Shared between the
- * desktop rail and the mobile AppBar / explorer drawer so logout and workspace
+ * desktop rail and the mobile Browse pane header so logout and workspace
  * switching behave identically everywhere.
  */
 export function SidebarUserMenu({
@@ -175,7 +146,7 @@ export function SidebarUserMenu({
 
       // Clear all store data from memory before logout
       useConnectorCatalogStore.getState().clearTypes();
-      useConnectorStore.getState().clearDrafts();
+      useSourceConnectionStore.getState().clearDrafts();
       useConsoleStore.getState().clearAllConsoles();
 
       // Full store resets
@@ -250,80 +221,6 @@ export function SidebarUserMenu({
   );
 }
 
-/**
- * Horizontal explorer switcher for the mobile drawer header. Reuses the same
- * nav item definitions as the desktop rail and switches which explorer the
- * drawer body (App.tsx `renderLeftPane`) shows. The drawer stays open so the
- * user can browse explorers; selecting a tree node closes it (handled in
- * App.tsx).
- */
-export function SidebarMobileExplorerNav() {
-  const activeExplorer = useUIStore(selectActiveExplorer);
-  const setLeftPane = useUIStore(state => state.setLeftPane);
-  const openLeftPane = useUIStore(state => state.openLeftPane);
-  const items = [...topNavigationItems, ...bottomNavigationItems];
-
-  return (
-    <Box
-      sx={{
-        display: "grid",
-        // Wrap every destination into an even grid so nothing scrolls off
-        // the right edge or gets clipped mid-label on a phone.
-        gridTemplateColumns: "repeat(auto-fill, minmax(64px, 1fr))",
-        gap: 0.25,
-        px: 0.5,
-        py: 0.25,
-      }}
-    >
-      {items.map(item => {
-        const Icon = item.icon;
-        const isActive = activeExplorer === item.view;
-        return (
-          <Button
-            key={item.view}
-            onClick={() => {
-              startTransition(() => {
-                setLeftPane(item.view as Exclude<NavigationView, "views">);
-                openLeftPane();
-              });
-            }}
-            onTouchStart={
-              item.view === "dashboards" ? preloadDashboardsExplorer : undefined
-            }
-            sx={{
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 0.25,
-              minWidth: 0,
-              width: "100%",
-              px: 0.5,
-              py: 0.5,
-              borderRadius: 1.5,
-              color: isActive ? "primary.main" : "text.secondary",
-              backgroundColor: isActive ? "action.selected" : "transparent",
-            }}
-          >
-            <Icon size={18} strokeWidth={1.5} />
-            <Typography
-              variant="caption"
-              sx={{
-                fontSize: "0.6rem",
-                lineHeight: 1.1,
-                maxWidth: "100%",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {item.label}
-            </Typography>
-          </Button>
-        );
-      })}
-    </Box>
-  );
-}
-
 function Sidebar() {
   // `activeExplorer` is the explorer that's actually visible on the left
   // (null when the pane is collapsed). Use this — not `leftPane`, which is
@@ -363,7 +260,7 @@ function Sidebar() {
   };
 
   // On mobile the 52px rail is hidden; navigation moves to the BottomNavigation
-  // and explorer Drawer rendered by App.tsx (which reuse the helpers above).
+  // and Browse pane rendered by App.tsx (which reuse the helpers above).
   if (isMobile) return null;
 
   return (
@@ -419,6 +316,7 @@ function Sidebar() {
                   // Stable hooks for tests: the two states are otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
+                  aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
                   data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
@@ -509,6 +407,7 @@ function Sidebar() {
                   // Stable hooks for tests: the two states are otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
+                  aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
                   data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}

@@ -179,6 +179,35 @@ SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
 
+**Refresh on demand (SDK ≥ 2.3).** `useQuery` / `useDuckDB` return
+`refresh()` and `refreshing`: `refresh()` rematerializes the binding (the
+same rebuild as `app_materialize`) and re-renders every hook reading it,
+keeping the old rows visible while `refreshing` is true. Wire it to a
+button and show the rejection's message (`status` 429 = refreshed too
+recently, 502 = the query failed). Works in the sandbox, the published app
+and the laptop alike (`POST __data/<name>/refresh`, answered by whoever
+serves the data). Public share links refuse it unless the owner enabled
+live queries for the link. Prefer this over a cron for "what is it now?"
+buttons; keep `-- schedule:` for data that must be fresh before anyone asks.
+
+## Who is looking: `useViewer()` (SDK ≥ 2.4)
+
+`const { viewer, loading } = useViewer()` — `null` on an anonymous share
+link, else `{ id, email, workspace: { id, name, role }, app: { id, slug,
+role } }`. `workspace.role` is the person's ACCESS role
+(owner/admin/member/viewer); `app.role` is owner/editor/viewer. Mako
+resolves it server-side (session or signed token); the page cannot forge it.
+
+That is ALL the platform knows about a person, by design. Team, territory,
+seniority, quota — anything an app needs to shape its view — is data:
+write a roster binding (`bindings/viewers.sql`: `email` plus only the
+columns the logic needs), join it on `lower(viewer.email)` in `useDuckDB`,
+and branch the UI on the result. Never propose adding such fields to Mako
+users or members. Every binding the app can read is downloaded whole into
+the browser, so this shapes the UI; it is not access control — say so
+when the user asks for "hiding" data. `MAKO_VIEWER_AS=<email>` in the
+repo's `.env` previews the app as another member during `npm run dev`.
+
 ## The SDK's name
 
 New apps depend on `@makoai/app-sdk` (npm) — vendored at `packages/app-sdk`.

@@ -91,6 +91,12 @@ export interface UpdateMemberRoleData {
   role: "admin" | "member" | "viewer";
 }
 
+/** Domain auto-join: who joins by email domain, and with which access. null = off. */
+export interface WorkspaceAutoJoin {
+  domains: string[];
+  role: "member" | "viewer";
+}
+
 export interface WorkspaceDatabase {
   id: string;
   name: string;
@@ -217,6 +223,30 @@ class WorkspaceClient {
       }),
     );
     return body.data as WorkspaceMember;
+  }
+
+  /** Domain auto-join settings (owner/admin). */
+  async getAutoJoin(workspaceId: string): Promise<WorkspaceAutoJoin | null> {
+    const body = unwrap(
+      await api.GET("/api/workspaces/{id}/auto-join", {
+        params: { path: { id: workspaceId } },
+      }),
+    );
+    return (body.data ?? null) as WorkspaceAutoJoin | null;
+  }
+
+  /** An empty domain list turns auto-join off. */
+  async setAutoJoin(
+    workspaceId: string,
+    data: WorkspaceAutoJoin,
+  ): Promise<WorkspaceAutoJoin | null> {
+    const body = unwrap(
+      await api.PUT("/api/workspaces/{id}/auto-join", {
+        params: { path: { id: workspaceId } },
+        body: data,
+      }),
+    );
+    return (body.data ?? null) as WorkspaceAutoJoin | null;
   }
 
   /**

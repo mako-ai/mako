@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Box, List, ListItem, Paper, Tooltip } from "@mui/material";
+import { Box, ButtonBase, List, ListItem, Paper } from "@mui/material";
 import { StreamingMarkdown } from "../StreamingMarkdown";
 import { StreamingToolCard, type ToolPartState } from "../StreamingToolCard";
 import { ClarifyingQuestionsCard } from "../ClarifyingQuestionsCard";
@@ -23,18 +23,14 @@ import {
 import { useRenderCount, useWhyChanged } from "../../utils/renderDebug";
 import {
   getConsoleToolPresentation,
+  isToolPartType,
+  toolNameFromPartType,
   type ToolInvocationInfo,
 } from "./tool-presentation";
 import { ReasoningDisplay } from "./ReasoningDisplay";
 import { StreamingIndicator } from "./StreamingIndicator";
-import {
-  formatCostUsd,
-  formatTokenCount,
-  getResponseCostMetadata,
-  type ResponseCostMetadata,
-} from "./response-cost";
-import { BUI_MONO_FONT_FAMILY } from "./bui-styles";
 import { CollapsibleUserText } from "./CollapsibleUserText";
+import { AssistantMessageActions } from "./AssistantMessageActions";
 import { WebSearchCard } from "./WebSearchCard";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
 import { isRawMcpToolLabel } from "../../lib/local-acp-parts";
@@ -63,6 +59,10 @@ const userMessagePaperSx = {
 } as const;
 const assistantMessageSx = {
   flex: 1,
+  // Without this a flex item's `min-width: auto` lets an over-wide child (a
+  // table, a long code line) stretch the row instead of scrolling inside its
+  // own container.
+  minWidth: 0,
   // The row must clip runaway-wide content (tables, code) — but a plain
   // overflow:hidden box also clips the BUI card shadows (1px ring + 6px
   // blur) of full-width children at its left/right edges. Same clip-box
@@ -75,48 +75,9 @@ const assistantMessageSx = {
   mt: 0,
   mb: "-8px",
   fontSize: "0.875rem",
-  "& pre": { margin: 0, overflow: "hidden" },
+  "& pre": { margin: 0 },
 } as const;
 const listItemSx = { p: 0 } as const;
-
-// Quiet per-response cost tag at the end of a finished assistant turn.
-// Memoized per the ChatMessageRow child rule (chat-performance).
-const ResponseCostTag = React.memo(function ResponseCostTag({
-  meta,
-}: {
-  meta: ResponseCostMetadata;
-}) {
-  const tooltip = [
-    meta.modelId,
-    meta.inputTokens != null && `${formatTokenCount(meta.inputTokens)} in`,
-    meta.outputTokens != null && `${formatTokenCount(meta.outputTokens)} out`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <Tooltip title={tooltip} placement="left">
-      <Box
-        component="span"
-        sx={{
-          display: "inline-flex",
-          alignItems: "center",
-          width: "fit-content",
-          mt: 0.75,
-          fontFamily: BUI_MONO_FONT_FAMILY,
-          fontSize: "11px",
-          color: "var(--bui-ink-3)",
-          fontVariantNumeric: "tabular-nums",
-          cursor: "default",
-          transition: "color 0.15s",
-          "&:hover": { color: "var(--bui-ink-2)" },
-          animation: "bui-fade-in 300ms ease-out both",
-        }}
-      >
-        {formatCostUsd(meta.costUsd ?? 0)}
-      </Box>
-    </Tooltip>
-  );
-});
 
 export const ChatMessageRow = React.memo(function ChatMessageRow({
   message,
@@ -177,25 +138,33 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 }}
               >
                 {fileParts.map((fp, i) => (
-                  <Box
-                    key={i}
-                    component="img"
-                    src={fp.url}
-                    alt="Attached image"
-                    loading="lazy"
-                    decoding="async"
+                  // A clickable thumbnail is a control: wrap it in a real
+                  // button so it is focusable and operable by keyboard.
+                  <ButtonBase
+                    key={fp.url || i}
                     onClick={() => setPreviewSrc(fp.url)}
+                    aria-label={`Open attached image ${i + 1}`}
                     sx={{
-                      width: 56,
-                      height: 56,
                       borderRadius: 1.5,
-                      objectFit: "cover",
-                      cursor: "pointer",
+                      overflow: "hidden",
                       border: 1,
                       borderColor: "divider",
-                      display: "block",
                     }}
-                  />
+                  >
+                    <Box
+                      component="img"
+                      src={fp.url}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      sx={{
+                        width: 56,
+                        height: 56,
+                        objectFit: "cover",
+                        display: "block",
+                      }}
+                    />
+                  </ButtonBase>
                 ))}
               </Box>
             )}
@@ -241,17 +210,32 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
       ? getStreamingReasoningGroupStart(parts, reasoningGroups)
       : null;
 
+  // Tracks whether the previously RENDERED sibling was also a reasoning block,
+  // so a run of them can be drawn as one tight stack instead of several
+  // floating rows. Reset per render pass; `parts.map` runs synchronously.
+  let prevRenderedWasReasoning = false;
+
+  // The turn's prose, for the copy action. Tool inputs/outputs and reasoning
+  // are deliberately excluded: copying a reply should yield the reply.
+  const assistantText = parts
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map(p => p.text)
+    .join("\n\n");
+
   return (
     <ListItem alignItems="flex-start" sx={listItemSx}>
       <Box sx={assistantMessageSx}>
         {parts.map((part, partIndex) => {
           const partType = part.type as string;
 
-          if (partType?.startsWith("tool-") || partType === "dynamic-tool") {
+          if (isToolPartType(partType)) {
+            // A tool row breaks a reasoning run visually, whether or not this
+            // particular tool part ends up rendering anything.
+            prevRenderedWasReasoning = false;
             const toolName =
               partType === "dynamic-tool"
                 ? (part.toolName as string)
-                : partType.split("-").slice(1).join("-");
+                : toolNameFromPartType(partType);
             const rawState = part.state as string;
             const cardState: ToolPartState =
               rawState === "output-error"
@@ -447,8 +431,11 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
             // yet). This avoids rendering blank "Thinking process" blocks for
             // empty reasoning parts loaded from history.
             if (!group.text && !isGroupStreaming) return null;
+            const clustered = prevRenderedWasReasoning;
+            prevRenderedWasReasoning = true;
             return (
               <ReasoningDisplay
+                clustered={clustered}
                 key={`reasoning-group-${reasoningGroupOrdinals.get(partIndex) ?? partIndex}`}
                 reasoningText={group.text}
                 isStreaming={isGroupStreaming}
@@ -467,6 +454,7 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
             // text blocks are static and can skip animation entirely.
             const isTrailingStreamingText =
               isLastPartText && partIndex === lastPartIndex;
+            prevRenderedWasReasoning = false;
             return (
               <StreamingMarkdown
                 key={`text-${partIndex}`}
@@ -480,12 +468,10 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
           return null;
         })}
         {isStreaming && isLastMessage && <StreamingIndicator />}
-        {(() => {
-          // Cost tag only once the turn is settled — never under the loader.
-          if (isStreaming && isLastMessage) return null;
-          const costMeta = getResponseCostMetadata(message);
-          return costMeta ? <ResponseCostTag meta={costMeta} /> : null;
-        })()}
+        {/* Copy is offered only once the turn has settled. */}
+        {!(isStreaming && isLastMessage) && (
+          <AssistantMessageActions text={assistantText} />
+        )}
       </Box>
     </ListItem>
   );
@@ -503,7 +489,20 @@ export const MessageVirtuosoList = React.memo(
   React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
     function MessageVirtuosoList({ style, children }, ref) {
       return (
-        <List dense component="div" ref={ref} style={style} sx={{ px: 2 }}>
+        <List
+          dense
+          component="div"
+          ref={ref}
+          style={style}
+          // `log` rather than `feed`: a chat transcript is an append-only
+          // record. Announcement is left to the streaming indicator's own
+          // live region — marking the whole transcript `aria-live` would
+          // re-announce every windowed row Virtuoso mounts while scrolling.
+          role="log"
+          aria-label="Chat messages"
+          aria-live="off"
+          sx={{ px: 2 }}
+        >
           {children}
         </List>
       );

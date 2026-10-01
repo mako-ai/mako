@@ -1,4 +1,4 @@
-import { IConnector } from "../../database/workspace-schema";
+import { ISourceConnection } from "../../database/workspace-schema";
 import type { NormalizedCdcEvent } from "../../sync-cdc/events";
 
 export interface SyncLogger {
@@ -225,10 +225,14 @@ export interface EntityMetadata {
 }
 
 export abstract class BaseConnector {
-  protected dataSource: IConnector;
+  /** The source connection (credential) this connector instance is bound to. */
+  protected sourceConnection: ISourceConnection;
+  /** @deprecated use sourceConnection */
+  protected dataSource: ISourceConnection;
 
-  constructor(dataSource: IConnector) {
-    this.dataSource = dataSource;
+  constructor(connection: ISourceConnection) {
+    this.sourceConnection = connection;
+    this.dataSource = connection;
   }
 
   /**
@@ -241,7 +245,7 @@ export abstract class BaseConnector {
   }
 
   /**
-   * Test the connection to the data source
+   * Test the bound source connection against the connector's platform
    */
   abstract testConnection(): Promise<ConnectionTestResult>;
 

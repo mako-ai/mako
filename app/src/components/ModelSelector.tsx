@@ -206,6 +206,10 @@ export const ModelSelector: React.FC = () => {
       <Button
         size="small"
         onClick={handleClick}
+        aria-label={`Model: ${displayName}. Change model`}
+        // MUI's Menu renders role="menu"/"menuitem", so announce a menu.
+        aria-haspopup="menu"
+        aria-expanded={open}
         endIcon={<KeyboardArrowDown sx={{ fontSize: 16 }} />}
         sx={{
           textTransform: "none",

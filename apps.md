@@ -14,40 +14,40 @@
 
 Two RFCs were written independently against the same brief and then merged. Where they agreed (git as truth, Mako-hosted remote, microVM sandbox behind a provider abstraction, durable server-side WIP state, explorer reads git never the sandbox, Vite + pnpm + lockfile, immutable static deploys, bindings as files, MCP server, CLI, per-app reversible migration), that shared backbone stands. Where they differed:
 
-| Decision | Adopted position | Origin |
-|---|---|---|
-| Repo topology | **One repo per app** under a workspace namespace (app-level ACLs make a workspace mega-repo unauthorizable); the *session* rematerializes all apps the actor can access into one workspace-shaped directory to preserve agent context | Other draft (topology) + this draft (context recovery) |
-| Uncommitted-work durability | **Private WIP refs** (`refs/mako/worktrees/<id>`), hidden from clone/fetch, advanced only by compare-and-swap with a fenced lease epoch; per-actor worktrees, not a shared mutable draft | Other draft; full index/conflict-stage serialization deferred |
-| Git credentials in sandboxes | **Never.** A trusted broker materializes the repo into the sandbox and accepts snapshots back; only the broker touches refs | Other draft |
-| Hosting domain | **Separate registrable, PSL-registered domain** for deployed apps and previews — never a `mako.ai` subdomain; runtime data access via short-lived capability tokens as the end state | Other draft |
-| Sandbox egress | Deny-by-default with a registry allowlist during install as the target posture; pilot may run relaxed with scoped short-TTL tokens bounding blast radius | Other draft (posture) + this draft (pilot pragmatism) |
-| Auth for CLI/MCP/local | Staged: workspace API keys (`revops_*`) for the internal pilot → **OAuth 2.1 authorization server ADR before GA** of CLI/MCP (PKCE, device flow, scoped rotating tokens) | Both |
-| Terminal + local substrate | **`mako agent`** terminal harness and the **local machine as a first-class executor** (desktop local-first sessions) are kept; local WIP mirroring to Mako is **explicit opt-in** (`--sync`), never silent | This draft (surfaces) + other draft (explicit-sync contract) |
-| Scheduled jobs | Kept (Phase 5), same sandbox primitive as builds/materialization | This draft |
-| Delivery strategy | **Parallel v2 module** (`api/src/apps-v2/`, new collections, new routes, new tools); v1 code paths untouched until migration | New (this merge) |
-| **Durable store (corrected)** | **The customer's linked GitHub repo is the only durable store** (option B). No Mongo mirror, no GCS, no Mako-hosted bare repo — the earlier "Mako-hosted git on a volume/GCS" idea is dropped. The E2B sandbox disk is the sole working copy; **each conversation branches off the default branch, each agent turn is a commit+push, publish is a merge back to the default branch.** Reuses the existing dbt GitHub App integration verbatim (`resolveRepoToken` → short-lived installation token, never persisted; `api/src/integrations/github/github-api.ts` Git Data API). This mirrors how dbt binds to a customer repo, minus dbt's Mongo file mirror. A workspace must link a GitHub repo before using cloud Apps v2. | Corrected by the user (2026-07-12) |
-| Feature flag | **Removed.** Apps v2 is always available (no `APPS_V2_ENABLED`); the two app systems coexist and tool-family isolation picks v1 vs v2 per turn. | User |
-| Where git runs | **Both the API host and the sandbox have git.** The API keeps a **local clone of the linked GitHub repo as an ephemeral read cache** to render the file explorer before/without a sandbox (re-clonable on cache miss; `git` is now in the production `Dockerfile` — its absence in `node:20-slim` caused `spawn git ENOENT`). The **sandbox** does the agent's git and **pushes to GitHub**. GitHub is the only durable store. | User |
-| Explorer freshness during a turn | While the agent works in the sandbox, the API's cache clone is stale. It reconciles at the **end of each conversation turn**: the turn's commit is pushed to GitHub, then the API `git fetch`es its cache to catch up — so the explorer reflects committed state per turn (the commit-per-turn cadence makes this natural; live-during-turn streaming is a later enhancement). | User |
-| Adopted post-hoc from the parallel implementation branch | Custom E2B template builder (pnpm pinned, scaffold deps cache-warmed — dead-sandbox `npm install` ≈ 2s); v1/v2 **app tool-family isolation** in `prepareStep` (tab/explorer context prunes the wrong suite); `apps-v2` system skill + app-mode prompt split; explicit **index migrations**; tenant-archive hardening (symlink stripping on sandbox sync-out); `.env.example` + OpenAPI-coverage tests | Other branch (implementation commits) |
-| Realtime invalidation | `app-v2.updated` pokes on flush/commit/merge/discard/lifecycle; open windows refetch from git (poke-then-pull, matching v1's pattern) | Both (their event-visibility idea, this branch's implementation) |
-| API keys on apps-v2 routes | **Allowed** (external harnesses authenticate with them — R7); the other branch's cookie-only stance was rejected as it contradicts the CLI/MCP path | This branch |
-| GitHub App for apps-v2 repo linking | **Not yet built.** Apps-v2 currently reuses dbt's GitHub App verbatim (`mako-transforms` prod / `mako-transforms-dev` dev), which only has `contents`/`pull_requests`/`actions`/`statuses` write — no `administration` permission, so it cannot create repos. The link dialog (`AppsV2LinkRepoDialog.tsx`) only supports linking an **existing** repo (`getRepoInfo` validates it exists; no create-repo call anywhere in `api/src/integrations/github`). Planned direction: a **separate, dedicated GitHub App** (name TBD, not dbt-branded — working name "Mako") with `administration` added, so the link flow can offer **create a new repo** (becomes fully Mako-owned) as well as **link an existing repo** (Mako's content goes under a `mako/` subfolder at the repo root by default — renamed from today's `apps/` default — with the existing "Apps folder" text field as the escape hatch to override it). Requires: registering the new GitHub App in GitHub's UI (App creation isn't API-automatable), a new create-repo backend endpoint, and a create-vs-link toggle in the dialog. Not started as of 2026-07-13. | User (2026-07-13), during local verification of this PR |
-| **End-state platform: Postgres + GitHub, no Mongo** | The long-term control plane is **Postgres** (workspaces, members, app pointers, chat records — Mongo retired except perhaps webhook payloads) and the data plane is **GitHub** (all file storage: user-pays, version control, access management, Actions for CI later — explicitly not yet). Repo = tenant = the only isolation unit; **subfolders are organization, never authorization** (git can't scope fetch access by path — when two things must not see each other they go in different repos). Mako's API stays the access-control plane regardless (workspace members ≠ GitHub identities; password-signup users have none). Verified platform limits: 100k repos/org hard cap (shard orgs above it), unlimited private repos at $0 (seat pricing only, end users consume no seats), installation REST limit scales 5k→12.5k req/hr with repo count, git-protocol ops don't consume REST quota, repo creation throttled ~500/hr (secondary limit) → create lazily, pace backfills. Self-hosting git remains an escape hatch, not a plan: `git push --mirror` makes the store portable. | User (2026-07-15) |
-| **Workspace repos (supersedes per-app topology + apps-v2-scoped binding)** | Repos are a WORKSPACE-level concept, not an apps-v2 one: `workspaceRepos[]` on the Workspace doc (apps-v2 will be promoted to "apps"; consoles and dbt projects will mount into the same repos later). Layout inside a repo: `<makoRoot>/apps/<app>` for workspace content and `<makoRoot>/users/<userId>/apps/<app>` for personal content (`users/<id>/apps` chosen over `apps/users/<id>` so `users/<id>/consoles` etc. compose later). Model allows N repos per workspace; the product default is exactly one. **This reverses the earlier repo-topology decision** ("one repo per app; app-level ACLs make a workspace mega-repo unauthorizable"): folder-level privacy is organization, enforced by Mako's API as the ACL plane — in a BYO repo, anyone with direct GitHub access sees all folders including personal ones (documented semantics; cloud-tier users have no direct repo access, so Mako's ACL is airtight there). Consequence for the cloud tier: per-app cloud repos become ONE `<prefix>-<workspaceId>` repo per workspace — a git-substrate change (repository/worktree services currently assume repo-per-project) scheduled as its own block. UX (Cursor-cloud style): "Add GitHub repository" is the single entry point (the sync/authorize hop runs invisibly inside it — no standalone Sync button); installations are plumbing shown only as manage/forget actions; the Settings page lists Connected repositories, not installations-then-one-binding-form. Chat/branch model unchanged and already aligned: conversation on main auto-branches, explicit dev branch honored (roadmap), turn = commit, merge to main = publish. | User (2026-07-15) |
-| **End-state substrate: GitHub API reads + sandbox writes, NO API-host git (decided)** | The API host keeps **no git state at all** — it is stateless and serverless-correct (the local bare repos were exposed as a data-loss bug on Cloud Run: tmpfs, min-instances=0, no cross-instance sharing). Read path: explorer tree + file contents from **GitHub's Trees/Contents API with ETag caching** (304s are rate-limit-free). Write paths: (1) the agent works in the **sandbox, which is a real `git clone`**; every turn ends commit + `push --force-with-lease` — **GitHub is the ref authority**, which solves multi-instance coherence structurally; (2) sandbox-less edits (Monaco saves, scaffold) commit via the **Git Data API** (dbt's existing pattern — no git binary on the API). Merge-to-main/publish via the GitHub Merges API. `app2_grep/glob` run in the warm sandbox, or read the GitHub tree when cold. **WIP refs and the fenced-CAS machinery die as a concept**: the turn-end push is the durability watermark; crash window = at most the in-flight turn (accepted trade, matches commit-per-turn cadence). This also UNIFIES cloud and BYO tiers — the cloud repo is just another GitHub remote. Rollout: Phase A (bridge, built first): local repos demoted to a **rebuildable cache** — clone-on-miss from the cloud mirror + creation fails unless the initial durable push succeeds; Phase B (pivot): GitHub API becomes the primary read path, sandbox-clone lifecycle, delete the local substrate + WIP machinery. | User (2026-07-15): "use GitHub's API to render files in the tree and the sandbox's filesystem for the agent" |
-| **Data bindings v2 (bindings-as-files) — Phase 1 BUILT** | A v2 binding is repo content: `mako.json` declares `bindings: [{name, connectionId}]`, the SQL lives in `bindings/<name>.sql` — authored with the ordinary file tools, versioned/branchable with the app, no bespoke CRUD. Materialization reuses v1's read-only-enforced parquet pipeline (`buildQueryParquetFile` + artifact store), artifacts keyed `apps-v2/<projectId>/<name>.parquet`, via `POST /{id}/bindings/{name}/materialize`. The preview runtime serves `__data/<name>.parquet` app-relative (resolves under the token prefix in both static and dev previews), so app code fetches a relative URL and reads it with DuckDB-WASM — v1's useRows pattern ports with a URL change. Next: `app2_materialize` agent tool (+ bridge-policy entry), scheduled refresh, dbt-schema templating (`{{ dbt_schema }}`), live (non-parquet) bindings. | User (2026-07-15), unblocking the v1→v2 Engagement Score port |
-| **Mako Cloud storage (instant start) — BUILT** | Org **`mako-ai-cloud`** (github.com/mako-ai-cloud; "mako-cloud" was squatted) + private GitHub App **"Mako Cloud Storage"** (id 4300530, slug `mako-cloud-storage`, `administration:write` + `contents:write` + `metadata:read`), installed once org-wide (all current+future repos). **No per-user install flow exists on this path at all** — the entire setup-callback/stale-installation/wrong-slug bug class only applies to BYO repos. One org + one app serves every environment; repo names are namespaced per backing DB: `<prefix>-<workspaceId>-<projectId>` with prefix `ws` (prod) / `staging` (all PR previews) / `dev` (local). **One repo per app project** — mirrors the local one-bare-repo-per-project layout 1:1, so durability is a literal `git push --mirror` (auth via installation token in an HTTP header, never in the URL). Implemented: `cloud-app-auth.ts` (JWT + runtime-resolved installation id — private app ⇒ only possible install is the owner org), `cloud-repo.service.ts` (idempotent ensure-repo on app creation, delete-on-app-delete, per-project serialized+coalesced mirror pushes after commit/turn-commit/merge — not per WIP flush, too chatty), `canCreate` probe field (creation allowed = BYO binding ∨ cloud configured; the 409 link-first gate is gone). WIP refs may be pushed to cloud repos (we own the remote — the never-push-WIP-to-customer-remotes rule is BYO-only). E2E-verified 2026-07-15: create-app with no binding → private repo + scaffold on GitHub; commit → mirror lands the exact commit; delete app → repo deleted. | User's plan (2026-07-15), implemented same day |
-| **Workspace monorepo (radical simplification)** | ONE repo per workspace (the N-repo model + org/repo explorer tree dies); `dbt/`, `apps/`, `consoles/`, `skills/` are folders at the repo root and leave Mongo; branch state is **per-user-session** (not per-workspace — preserves branch-per-conversation), and switching it re-checkouts everything the session sees: explorer, open tabs, sandbox. Manual saves auto-commit (agent turns already do) — the Commit button and change-count badge die. Folder privacy remains organization-not-authorization (Mako's API is the ACL plane). Plan: §10. | User (2026-07-16) |
-| **Local-first is the strategy, not a feature (supersedes §4.8's framing)** | Reselling inference at API rates loses to the Claude Code / Codex subscriptions our users already hold: the same building hour costs us gateway tokens + E2B minutes + kernel time in the browser, and **zero marginal compute** in their terminal — with a better harness than we will ever staff. Mako repositions as the **data and deployment control plane, not an inference reseller**; the moat is credential-free warehouse access with real schema tools (over MCP) plus instant deploy/hosting, neither of which a clone gives you. The web tier is NOT replaced — E2B, the kernel and the gateway remain, serving non-technical seats and the on-ramp. **Pricing must move from token-shaped to seats/workspaces/deployments before local-first goes wide**, or the product gets better exactly as revenue evaporates (decision required, not yet made). Detail: §11.1–11.2. | User (2026-08-19) |
-| **`main` is production; the workspace repo is an app monorepo** | Target workflow: `git clone` the workspace repo → `mako` serves the UI at localhost:6969 → `claude` in the checkout is fully Mako-aware → commit, push, PR → **merging deploys**. Publishing stops being a concept separate from merging; conversation branches and human feature branches are the same kind of proposal. Per-PR preview deploys are desirable and explicitly NOT a blocker. Detail: §11.3–11.4. | User (2026-08-19) |
-| **Repo access is a builder tier, not a member right (DECIDED)** | Git is not a member interface. **Normal users never touch the repo** — they reach content only through Mako's API, which enforces per-app ACLs exactly as today, so their ACL plane is unchanged and airtight. Repo access is a distinct **builder tier**: an explicit per-workspace capability carrying workspace-wide read as an accepted, documented property (the trust model every company runs on its monorepo). **Read and write are separate boundaries**: clone = confidentiality, push-to-`main` = integrity — builders push branches freely, `main` is branch-protected, and GitHub branch protection becomes the deploy gate for free. Consequence: `users/<id>/` means "not cluttering the workspace view", NOT "confidential from builders" — product copy must stop promising privacy the substrate does not deliver; splitting personal content into per-user repos is the trigger-based later fix. Open sub-decision: how builders get access — GitHub collaborators via the Cloud Storage App (proposed for pilot) vs. a Mako git proxy (`api.mako.ai/git/<workspace>`, a partial return of §4.3). Today no human has ANY access to cloud repos, so this is net-new work either way. Detail: §11.5. | User (2026-08-19) |
-| **Repo layout stays owner-first; signal/noise is a checkout-scope problem** | Reconsidered and re-affirmed §10's layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/` at the root, personal content under `users/<userId>/apps/…` and `users/<userId>/consoles/…`. Type-first (`apps/workspace/`, `apps/users/joan/`) rejected again — for a reason §10 did not state: **both access and noise are "exclude one subtree" operations**, so owner-first needs ONE rule where type-first needs one per content type, a list that grows with every new type and fails silently in the unsafe direction when someone forgets. Type-first wins only on uniform globbing — a cost paid once in code against a risk paid forever. **Layout alone does not fix noise: checkout scope does.** Sparse-checkout (nonexistent today) should default BOTH the builder's clone and the agent's sandbox to workspace content + the caller's own `users/<id>/`, with `CLAUDE.md` stating the scope. Converges with §11.5: if the per-user-repo trigger fires, the workspace repo becomes type-first by construction and the question dissolves — and owner-first `git subtree split`s cleanly into that end state where type-first would have to scatter-gather. Free to settle now: `users/<id>/` is unimplemented and nothing needs migrating. Detail: §11.10. | User (2026-08-19) |
-| **Prior art (verified 2026-08-19): the differentiator is source-vs-serialized-state, not git-vs-no-git** | Netlify/Vercel are a deploy layer on a repo GitHub already governs — never owning the store, they never answer "who may clone", never bridge platform↔git identity, and have no personal-content-in-a-shared-repo concept; our cloud tier inherits all three as the price of instant-start. They validate §11.4 wholesale (many projects per repo with base directories + build-skip, production branch → prod deploy, **PR previews as table stakes** — evidence against deferring them), and their template flow is the origin of §11.5 option (iii). **Correction to an earlier draft:** Retool/Hex/Appsmith are NOT simply "a mirror". Retool Source Control has real git feature branching and PR-gated main-is-prod, serializing apps to **ToolScript** (`.rsx`, JSX-style, replaced YAML for readability) — but *"Retool recommends you not modify Toolscript files directly"*, no linting or type-checking: **reviewable by design, not authorable**. Hex Git export is **one-way only** (Hex is source of truth; manual YAML re-import exists but is not a sync) and is **incompatible with branch protection**. Appsmith (open source) keeps the **database authoritative** with one server-side mirror clone. So the real differentiator is **what the repo contains**: their serialized GUI state vs. our actual source (a real Vite/React app, real `.sql`), which is exactly why Claude Code works on a Mako repo and cannot work on a `.rsx`. Also corrected: multiplayer and git are NOT inherently in tension (Retool/Appsmith have both) — the trade is resolved by **whoever holds truth**, and git-authoritative costs us real-time co-editing, which must be stated rather than discovered. Lessons stolen: Appsmith's git-ops-too-slow→timeout→corruption and metadata-churn warnings; Hex's branch-protection incompatibility (our publish must go THROUGH a PR, never around it); secrets in the DB not the repo (consensus, settles §7). Detail: §11.11. | Verified research 2026-08-19 |
-| **One substrate: E2B everywhere; the local provider is deleted (DECIDED)** | Three unrelated activities were all called "development", and the substrate was chosen for the wrong one. **(1) Developing Mako runs on E2B** — exercising a substrate no user runs ships untested code paths and carries a second implementation forever; every developer has an E2B key, like a database URL. Proven, not theoretical: the nested-node_modules bug (app could not build; 13-27s per command) survived from Block B until 2026-08-20 **because the local provider has no host↔sandbox sync at all** — structurally invisible there, immediate on E2B. **(2) Customer app dev on app.mako.ai runs on E2B** — N1, plus an unsandboxed shell lets a tenant exhaust the API host. **(3) Local customer dev uses NO Mako sandbox**: the user has the WORKSPACE repo checked out, a `mako` executable supplies data proxies + auth, and the user (or Claude Code) runs `vite dev` directly as themselves — Mako is not in the execution path, and **the user never checks out Mako**. This corrects §4.8(d)'s "local executor behind the provider seam". Deleted: local-provider.ts, dev-server.service.ts, dev-preview-ws-proxy.ts, the devPreviewAvailable probe + toolbar gating, and the APPS_V2_SANDBOX_PROVIDER knob; provider.ts stays as the seam for a Fly/Modal fallback. **Live preview moves INTO the sandbox** (vite on 0.0.0.0 + `sandbox.getHost(port)` + iframe), which is why it can finally exist in deployed environments at all. Detail: §12. | User (2026-08-21) |
-| **App lifecycle: view / edit / publish (§13)** | Found by this RFC's own author: *"even though I built this, I don't understand the UX"*. The cause is not labelling — **there is no publish, no deploy and no viewer**: `publishedSha` is never written by anything, there is no public-share route, the built bundle is served behind a 30-MINUTE in-memory token, and even browsing an app calls `ensureWorktree`. Apps v2 is an IDE with two developer preview modes. **Correction to an earlier claim in this session:** data is much further along — bindings already materialize into the shared artifact store (GCS when deployed) at `apps-v2/<projectId>/<name>.parquet`, so warehouse→parquet→bucket is DONE and durable; only the serving path is tied to the ephemeral preview token. Target: three states, one primary action each — Published (no sandbox at all; primary = Edit), Editing (branch + dev session; primary = Publish), Never published. Publish = merge → build from main → IMMUTABLE addressable artifact → repoint, which makes rollback a repoint. Open: an ACL'd data path for published apps (§4.7 capability tokens — the genuinely hard part), scheduled refresh, failed-build-on-main, rollback UX, concurrent editors, static-only boundary. Detail: §13. | User + analysis (2026-08-21) |
-| **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
-| **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@makoai/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
+| Decision                                                                                                 | Adopted position                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Origin                                                                                                       |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Repo topology                                                                                            | **One repo per app** under a workspace namespace (app-level ACLs make a workspace mega-repo unauthorizable); the _session_ rematerializes all apps the actor can access into one workspace-shaped directory to preserve agent context                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Other draft (topology) + this draft (context recovery)                                                       |
+| Uncommitted-work durability                                                                              | **Private WIP refs** (`refs/mako/worktrees/<id>`), hidden from clone/fetch, advanced only by compare-and-swap with a fenced lease epoch; per-actor worktrees, not a shared mutable draft                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Other draft; full index/conflict-stage serialization deferred                                                |
+| Git credentials in sandboxes                                                                             | **Never.** A trusted broker materializes the repo into the sandbox and accepts snapshots back; only the broker touches refs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Other draft                                                                                                  |
+| Hosting domain                                                                                           | **Separate registrable, PSL-registered domain** for deployed apps and previews — never a `mako.ai` subdomain; runtime data access via short-lived capability tokens as the end state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Other draft                                                                                                  |
+| Sandbox egress                                                                                           | Deny-by-default with a registry allowlist during install as the target posture; pilot may run relaxed with scoped short-TTL tokens bounding blast radius                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Other draft (posture) + this draft (pilot pragmatism)                                                        |
+| Auth for CLI/MCP/local                                                                                   | Staged: workspace API keys (`revops_*`) for the internal pilot → **OAuth 2.1 authorization server ADR before GA** of CLI/MCP (PKCE, device flow, scoped rotating tokens)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Both                                                                                                         |
+| Terminal + local substrate                                                                               | **`mako agent`** terminal harness and the **local machine as a first-class executor** (desktop local-first sessions) are kept; local WIP mirroring to Mako is **explicit opt-in** (`--sync`), never silent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | This draft (surfaces) + other draft (explicit-sync contract)                                                 |
+| Scheduled jobs                                                                                           | Kept (Phase 5), same sandbox primitive as builds/materialization                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | This draft                                                                                                   |
+| Delivery strategy                                                                                        | **Parallel v2 module** (`api/src/apps-v2/`, new collections, new routes, new tools); v1 code paths untouched until migration                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | New (this merge)                                                                                             |
+| **Durable store (corrected)**                                                                            | **The customer's linked GitHub repo is the only durable store** (option B). No Mongo mirror, no GCS, no Mako-hosted bare repo — the earlier "Mako-hosted git on a volume/GCS" idea is dropped. The E2B sandbox disk is the sole working copy; **each conversation branches off the default branch, each agent turn is a commit+push, publish is a merge back to the default branch.** Reuses the existing dbt GitHub App integration verbatim (`resolveRepoToken` → short-lived installation token, never persisted; `api/src/integrations/github/github-api.ts` Git Data API). This mirrors how dbt binds to a customer repo, minus dbt's Mongo file mirror. A workspace must link a GitHub repo before using cloud Apps v2.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Corrected by the user (2026-07-12)                                                                           |
+| Feature flag                                                                                             | **Removed.** Apps v2 is always available (no `APPS_V2_ENABLED`); the two app systems coexist and tool-family isolation picks v1 vs v2 per turn.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | User                                                                                                         |
+| Where git runs                                                                                           | **Both the API host and the sandbox have git.** The API keeps a **local clone of the linked GitHub repo as an ephemeral read cache** to render the file explorer before/without a sandbox (re-clonable on cache miss; `git` is now in the production `Dockerfile` — its absence in `node:20-slim` caused `spawn git ENOENT`). The **sandbox** does the agent's git and **pushes to GitHub**. GitHub is the only durable store.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | User                                                                                                         |
+| Explorer freshness during a turn                                                                         | While the agent works in the sandbox, the API's cache clone is stale. It reconciles at the **end of each conversation turn**: the turn's commit is pushed to GitHub, then the API `git fetch`es its cache to catch up — so the explorer reflects committed state per turn (the commit-per-turn cadence makes this natural; live-during-turn streaming is a later enhancement).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | User                                                                                                         |
+| Adopted post-hoc from the parallel implementation branch                                                 | Custom E2B template builder (pnpm pinned, scaffold deps cache-warmed — dead-sandbox `npm install` ≈ 2s); v1/v2 **app tool-family isolation** in `prepareStep` (tab/explorer context prunes the wrong suite); `apps-v2` system skill + app-mode prompt split; explicit **index migrations**; tenant-archive hardening (symlink stripping on sandbox sync-out); `.env.example` + OpenAPI-coverage tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Other branch (implementation commits)                                                                        |
+| Realtime invalidation                                                                                    | `app-v2.updated` pokes on flush/commit/merge/discard/lifecycle; open windows refetch from git (poke-then-pull, matching v1's pattern)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Both (their event-visibility idea, this branch's implementation)                                             |
+| API keys on apps-v2 routes                                                                               | **Allowed** (external harnesses authenticate with them — R7); the other branch's cookie-only stance was rejected as it contradicts the CLI/MCP path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | This branch                                                                                                  |
+| GitHub App for workspace repo linking                                                                    | **Mako AI** — the existing GitHub Apps currently named **Mako Transforms** (prod) and **Mako Transforms DEV** (PR previews + local). They are being renamed in GitHub's UI; **do not rotate `GITHUB_APP_*` / `MAKO_GITHUB_APP_*`** and do not create a `https://github.com/apps/mako` app (it does not exist). Slug stays whatever GitHub currently has until the rename also changes it. Workspace content lives in the customer's connected repo.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | User (2026-09-02), issue #956                                                                                |
+| **End-state platform: Postgres + GitHub, no Mongo**                                                      | The long-term control plane is **Postgres** (workspaces, members, app pointers, chat records — Mongo retired except perhaps webhook payloads) and the data plane is **GitHub** (all file storage: user-pays, version control, access management, Actions for CI later — explicitly not yet). Repo = tenant = the only isolation unit; **subfolders are organization, never authorization** (git can't scope fetch access by path — when two things must not see each other they go in different repos). Mako's API stays the access-control plane regardless (workspace members ≠ GitHub identities; password-signup users have none). Verified platform limits: 100k repos/org hard cap (shard orgs above it), unlimited private repos at $0 (seat pricing only, end users consume no seats), installation REST limit scales 5k→12.5k req/hr with repo count, git-protocol ops don't consume REST quota, repo creation throttled ~500/hr (secondary limit) → create lazily, pace backfills. Self-hosting git remains an escape hatch, not a plan: `git push --mirror` makes the store portable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | User (2026-07-15)                                                                                            |
+| **Workspace repos (supersedes per-app topology + apps-v2-scoped binding)**                               | Repos are a WORKSPACE-level concept, not an apps-v2 one: `workspaceRepos[]` on the Workspace doc (apps-v2 will be promoted to "apps"; consoles and dbt projects will mount into the same repos later). Layout inside a repo: `<makoRoot>/apps/<app>` for workspace content and `<makoRoot>/users/<userId>/apps/<app>` for personal content (`users/<id>/apps` chosen over `apps/users/<id>` so `users/<id>/consoles` etc. compose later). Model allows N repos per workspace; the product default is exactly one. **This reverses the earlier repo-topology decision** ("one repo per app; app-level ACLs make a workspace mega-repo unauthorizable"): folder-level privacy is organization, enforced by Mako's API as the ACL plane — in a BYO repo, anyone with direct GitHub access sees all folders including personal ones (documented semantics; cloud-tier users have no direct repo access, so Mako's ACL is airtight there). Consequence for the cloud tier: per-app cloud repos become ONE `<prefix>-<workspaceId>` repo per workspace — a git-substrate change (repository/worktree services currently assume repo-per-project) scheduled as its own block. UX (Cursor-cloud style): "Add GitHub repository" is the single entry point (the sync/authorize hop runs invisibly inside it — no standalone Sync button); installations are plumbing shown only as manage/forget actions; the Settings page lists Connected repositories, not installations-then-one-binding-form. Chat/branch model unchanged and already aligned: conversation on main auto-branches, explicit dev branch honored (roadmap), turn = commit, merge to main = publish.                                                                                                                                                                                                                                                                                                                      | User (2026-07-15)                                                                                            |
+| **End-state substrate: GitHub API reads + sandbox writes, NO API-host git (decided)**                    | The API host keeps **no git state at all** — it is stateless and serverless-correct (the local bare repos were exposed as a data-loss bug on Cloud Run: tmpfs, min-instances=0, no cross-instance sharing). Read path: explorer tree + file contents from **GitHub's Trees/Contents API with ETag caching** (304s are rate-limit-free). Write paths: (1) the agent works in the **sandbox, which is a real `git clone`**; every turn ends commit + `push --force-with-lease` — **GitHub is the ref authority**, which solves multi-instance coherence structurally; (2) sandbox-less edits (Monaco saves, scaffold) commit via the **Git Data API** (dbt's existing pattern — no git binary on the API). Merge-to-main/publish via the GitHub Merges API. `app2_grep/glob` run in the warm sandbox, or read the GitHub tree when cold. **WIP refs and the fenced-CAS machinery die as a concept**: the turn-end push is the durability watermark; crash window = at most the in-flight turn (accepted trade, matches commit-per-turn cadence). This also UNIFIES cloud and BYO tiers — the cloud repo is just another GitHub remote. Rollout: Phase A (bridge, built first): local repos demoted to a **rebuildable cache** — clone-on-miss from the cloud mirror + creation fails unless the initial durable push succeeds; Phase B (pivot): GitHub API becomes the primary read path, sandbox-clone lifecycle, delete the local substrate + WIP machinery.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | User (2026-07-15): "use GitHub's API to render files in the tree and the sandbox's filesystem for the agent" |
+| **Data bindings v2 (bindings-as-files) — Phase 1 BUILT**                                                 | A v2 binding is repo content: `mako.json` declares `bindings: [{name, connectionId}]`, the SQL lives in `bindings/<name>.sql` — authored with the ordinary file tools, versioned/branchable with the app, no bespoke CRUD. Materialization reuses v1's read-only-enforced parquet pipeline (`buildQueryParquetFile` + artifact store), artifacts keyed `apps-v2/<projectId>/<name>.parquet`, via `POST /{id}/bindings/{name}/materialize`. The preview runtime serves `__data/<name>.parquet` app-relative (resolves under the token prefix in both static and dev previews), so app code fetches a relative URL and reads it with DuckDB-WASM — v1's useRows pattern ports with a URL change. Next: `app2_materialize` agent tool (+ bridge-policy entry), scheduled refresh, dbt-schema templating (`{{ dbt_schema }}`), live (non-parquet) bindings.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | User (2026-07-15), unblocking the v1→v2 Engagement Score port                                                |
+| **Mako Cloud storage (instant start) — BUILT**                                                           | Org **`mako-ai-cloud`** (github.com/mako-ai-cloud; "mako-cloud" was squatted) + private GitHub App **"Mako Cloud Storage"** (id 4300530, slug `mako-cloud-storage`, `administration:write` + `contents:write` + `metadata:read`), installed once org-wide (all current+future repos). **No per-user install flow exists on this path at all** — the entire setup-callback/stale-installation/wrong-slug bug class only applies to BYO repos. One org + one app serves every environment; repo names are namespaced per backing DB: `<prefix>-<workspaceId>-<projectId>` with prefix `ws` (prod) / `staging` (all PR previews) / `dev` (local). **One repo per app project** — mirrors the local one-bare-repo-per-project layout 1:1, so durability is a literal `git push --mirror` (auth via installation token in an HTTP header, never in the URL). Implemented: `cloud-app-auth.ts` (JWT + runtime-resolved installation id — private app ⇒ only possible install is the owner org), `cloud-repo.service.ts` (idempotent ensure-repo on app creation, delete-on-app-delete, per-project serialized+coalesced mirror pushes after commit/turn-commit/merge — not per WIP flush, too chatty), `canCreate` probe field (creation allowed = BYO binding ∨ cloud configured; the 409 link-first gate is gone). WIP refs may be pushed to cloud repos (we own the remote — the never-push-WIP-to-customer-remotes rule is BYO-only). E2E-verified 2026-07-15: create-app with no binding → private repo + scaffold on GitHub; commit → mirror lands the exact commit; delete app → repo deleted.                                                                                                                                                                                                                                                                                                                                                                                    | User's plan (2026-07-15), implemented same day                                                               |
+| **Workspace monorepo (radical simplification)**                                                          | ONE repo per workspace (the N-repo model + org/repo explorer tree dies); `dbt/`, `apps/`, `consoles/`, `skills/` are folders at the repo root and leave Mongo; branch state is **per-user-session** (not per-workspace — preserves branch-per-conversation), and switching it re-checkouts everything the session sees: explorer, open tabs, sandbox. Manual saves auto-commit (agent turns already do) — the Commit button and change-count badge die. Folder privacy remains organization-not-authorization (Mako's API is the ACL plane). Plan: §10.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | User (2026-07-16)                                                                                            |
+| **Local-first is the strategy, not a feature (supersedes §4.8's framing)**                               | Reselling inference at API rates loses to the Claude Code / Codex subscriptions our users already hold: the same building hour costs us gateway tokens + E2B minutes + kernel time in the browser, and **zero marginal compute** in their terminal — with a better harness than we will ever staff. Mako repositions as the **data and deployment control plane, not an inference reseller**; the moat is credential-free warehouse access with real schema tools (over MCP) plus instant deploy/hosting, neither of which a clone gives you. The web tier is NOT replaced — E2B, the kernel and the gateway remain, serving non-technical seats and the on-ramp. **Pricing must move from token-shaped to seats/workspaces/deployments before local-first goes wide**, or the product gets better exactly as revenue evaporates (decision required, not yet made). Detail: §11.1–11.2.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | User (2026-08-19)                                                                                            |
+| **`main` is production; the workspace repo is an app monorepo**                                          | Target workflow: `git clone` the workspace repo → `mako` serves the UI at localhost:6969 → `claude` in the checkout is fully Mako-aware → commit, push, PR → **merging deploys**. Publishing stops being a concept separate from merging; conversation branches and human feature branches are the same kind of proposal. Per-PR preview deploys are desirable and explicitly NOT a blocker. Detail: §11.3–11.4.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | User (2026-08-19)                                                                                            |
+| **Repo access is a builder tier, not a member right (DECIDED)**                                          | Git is not a member interface. **Normal users never touch the repo** — they reach content only through Mako's API, which enforces per-app ACLs exactly as today, so their ACL plane is unchanged and airtight. Repo access is a distinct **builder tier**: an explicit per-workspace capability carrying workspace-wide read as an accepted, documented property (the trust model every company runs on its monorepo). **Read and write are separate boundaries**: clone = confidentiality, push-to-`main` = integrity — builders push branches freely, `main` is branch-protected, and GitHub branch protection becomes the deploy gate for free. Consequence: `users/<id>/` means "not cluttering the workspace view", NOT "confidential from builders" — product copy must stop promising privacy the substrate does not deliver; splitting personal content into per-user repos is the trigger-based later fix. Open sub-decision: how builders get access — GitHub collaborators via the Cloud Storage App (proposed for pilot) vs. a Mako git proxy (`api.mako.ai/git/<workspace>`, a partial return of §4.3). Today no human has ANY access to cloud repos, so this is net-new work either way. Detail: §11.5.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | User (2026-08-19)                                                                                            |
+| **Repo layout stays owner-first; signal/noise is a checkout-scope problem**                              | Reconsidered and re-affirmed §10's layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/` at the root, personal content under `users/<userId>/apps/…` and `users/<userId>/consoles/…`. Type-first (`apps/workspace/`, `apps/users/joan/`) rejected again — for a reason §10 did not state: **both access and noise are "exclude one subtree" operations**, so owner-first needs ONE rule where type-first needs one per content type, a list that grows with every new type and fails silently in the unsafe direction when someone forgets. Type-first wins only on uniform globbing — a cost paid once in code against a risk paid forever. **Layout alone does not fix noise: checkout scope does.** Sparse-checkout (nonexistent today) should default BOTH the builder's clone and the agent's sandbox to workspace content + the caller's own `users/<id>/`, with `CLAUDE.md` stating the scope. Converges with §11.5: if the per-user-repo trigger fires, the workspace repo becomes type-first by construction and the question dissolves — and owner-first `git subtree split`s cleanly into that end state where type-first would have to scatter-gather. Free to settle now: `users/<id>/` is unimplemented and nothing needs migrating. Detail: §11.10.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | User (2026-08-19)                                                                                            |
+| **Prior art (verified 2026-08-19): the differentiator is source-vs-serialized-state, not git-vs-no-git** | Netlify/Vercel are a deploy layer on a repo GitHub already governs — never owning the store, they never answer "who may clone", never bridge platform↔git identity, and have no personal-content-in-a-shared-repo concept; our cloud tier inherits all three as the price of instant-start. They validate §11.4 wholesale (many projects per repo with base directories + build-skip, production branch → prod deploy, **PR previews as table stakes** — evidence against deferring them), and their template flow is the origin of §11.5 option (iii). **Correction to an earlier draft:** Retool/Hex/Appsmith are NOT simply "a mirror". Retool Source Control has real git feature branching and PR-gated main-is-prod, serializing apps to **ToolScript** (`.rsx`, JSX-style, replaced YAML for readability) — but _"Retool recommends you not modify Toolscript files directly"_, no linting or type-checking: **reviewable by design, not authorable**. Hex Git export is **one-way only** (Hex is source of truth; manual YAML re-import exists but is not a sync) and is **incompatible with branch protection**. Appsmith (open source) keeps the **database authoritative** with one server-side mirror clone. So the real differentiator is **what the repo contains**: their serialized GUI state vs. our actual source (a real Vite/React app, real `.sql`), which is exactly why Claude Code works on a Mako repo and cannot work on a `.rsx`. Also corrected: multiplayer and git are NOT inherently in tension (Retool/Appsmith have both) — the trade is resolved by **whoever holds truth**, and git-authoritative costs us real-time co-editing, which must be stated rather than discovered. Lessons stolen: Appsmith's git-ops-too-slow→timeout→corruption and metadata-churn warnings; Hex's branch-protection incompatibility (our publish must go THROUGH a PR, never around it); secrets in the DB not the repo (consensus, settles §7). Detail: §11.11. | Verified research 2026-08-19                                                                                 |
+| **One substrate: E2B everywhere; the local provider is deleted (DECIDED)**                               | Three unrelated activities were all called "development", and the substrate was chosen for the wrong one. **(1) Developing Mako runs on E2B** — exercising a substrate no user runs ships untested code paths and carries a second implementation forever; every developer has an E2B key, like a database URL. Proven, not theoretical: the nested-node_modules bug (app could not build; 13-27s per command) survived from Block B until 2026-08-20 **because the local provider has no host↔sandbox sync at all** — structurally invisible there, immediate on E2B. **(2) Customer app dev on app.mako.ai runs on E2B** — N1, plus an unsandboxed shell lets a tenant exhaust the API host. **(3) Local customer dev uses NO Mako sandbox**: the user has the WORKSPACE repo checked out, a `mako` executable supplies data proxies + auth, and the user (or Claude Code) runs `vite dev` directly as themselves — Mako is not in the execution path, and **the user never checks out Mako**. This corrects §4.8(d)'s "local executor behind the provider seam". Deleted: local-provider.ts, dev-server.service.ts, dev-preview-ws-proxy.ts, the devPreviewAvailable probe + toolbar gating, and the APPS_V2_SANDBOX_PROVIDER knob; provider.ts stays as the seam for a Fly/Modal fallback. **Live preview moves INTO the sandbox** (vite on 0.0.0.0 + `sandbox.getHost(port)` + iframe), which is why it can finally exist in deployed environments at all. Detail: §12.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | User (2026-08-21)                                                                                            |
+| **App lifecycle: view / edit / publish (§13)**                                                           | Found by this RFC's own author: _"even though I built this, I don't understand the UX"_. The cause is not labelling — **there is no publish, no deploy and no viewer**: `publishedSha` is never written by anything, there is no public-share route, the built bundle is served behind a 30-MINUTE in-memory token, and even browsing an app calls `ensureWorktree`. Apps v2 is an IDE with two developer preview modes. **Correction to an earlier claim in this session:** data is much further along — bindings already materialize into the shared artifact store (GCS when deployed) at `apps-v2/<projectId>/<name>.parquet`, so warehouse→parquet→bucket is DONE and durable; only the serving path is tied to the ephemeral preview token. Target: three states, one primary action each — Published (no sandbox at all; primary = Edit), Editing (branch + dev session; primary = Publish), Never published. Publish = merge → build from main → IMMUTABLE addressable artifact → repoint, which makes rollback a repoint. Open: an ACL'd data path for published apps (§4.7 capability tokens — the genuinely hard part), scheduled refresh, failed-build-on-main, rollback UX, concurrent editors, static-only boundary. Detail: §13.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | User + analysis (2026-08-21)                                                                                 |
+| **What `mako` runs locally (OPEN)**                                                                      | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Raised 2026-08-19                                                                                            |
+| **Sequencing: cheap half first; `mako agent` deferred indefinitely**                                     | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@makoai/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | User (2026-08-19)                                                                                            |
 
 ---
 
@@ -65,7 +65,7 @@ This architecture was right for v1 (zero infra, instant preview, no build step) 
 
 ### What we must not lose (our USP vs. "just use Claude Code locally")
 
-1. **Data source access with smart schema tools.** Apps have first-class, credential-free access to every workspace connection, with the schema discovery tools (`sql_list_tables`, `sql_inspect_table`, ...) that make the agent good at data work. Credentials never leave our backend.
+1. **Connection access with smart schema tools.** Apps have first-class, credential-free access to every workspace connection, with the schema discovery tools (`sql_list_tables`, `sql_inspect_table`, ...) that make the agent good at data work. Credentials never leave our backend.
 2. **Instant deploy and hosting.** An app is live and shareable seconds after the agent writes it. No Vercel account, no CI setup, no DNS.
 
 Both properties must survive — and both must extend to users editing from outside Mako.
@@ -79,7 +79,7 @@ Both properties must survive — and both must extend to users editing from outs
 - **R1** — Each app is a directory in a git repository with a real `package.json`, lockfile, and scripts.
 - **R2** — The agent operates on a real filesystem through a real shell (`bash`), plus fast-path read/write/edit tools. It can install packages, run builds, typecheckers, tests, and arbitrary scripts.
 - **R3** — Git is the durable source of truth. Versioning, history, diff, branches, restore, and conflict resolution come from git, not `entity_versions`.
-- **R4** — The Mako file explorer and preview always reflect the latest state — committed *and* uncommitted — even when no sandbox is running, and survive sandbox death with at most seconds of loss.
+- **R4** — The Mako file explorer and preview always reflect the latest state — committed _and_ uncommitted — even when no sandbox is running, and survive sandbox death with at most seconds of loss.
 - **R5** — Apps build with a real toolchain (Vite) and are hosted by Mako: dev preview with HMR while editing, and a published static deployment on a stable URL.
 - **R6** — Runtime data access (`useQuery` bindings, parquet materialization, DuckDB) keeps working, and the sharing model (private / workspace / public link, `allowLiveQueries`) is preserved.
 - **R7** — Users can edit apps with external harnesses:
@@ -101,19 +101,19 @@ Both properties must survive — and both must extend to users editing from outs
 
 ## 3. Current-state summary (what we build on)
 
-| Subsystem | Today | Reusable for v2? |
-|---|---|---|
-| App storage | `MakoApp` doc, embedded `files[]`, `dependencies` map | Migration source only |
-| App versioning | `version` counter + `entity_versions` snapshots | Replaced by git; keep publish pointer concept |
-| Agent tools | ~20 bespoke server tools + 3 client tools | Replaced by shell/file tools; binding tools evolve |
-| Rendering | Babel + esm.sh import-map iframe, `@makoai/app-sdk` injected via postMessage bridge | Bridge + SDK concepts survive; transpile pipeline retired |
-| Data bindings | `dataBindings[]` on the doc; live via `POST /workspaces/:id/execute`; parquet via Inngest + DuckDB-WASM | Execution + materialization services reused as-is; binding *definitions* move into files |
-| Sharing | `published` snapshot + `/api/share/:token` routes | Reused; "published" becomes a git ref + built artifact |
-| Git integration | dbt module: GitHub App, Git Data API, Mongo mirror + per-user drafts (`api/src/dbt/dbt-github-*.service.ts`) | GitHub App auth + webhook plumbing reused; the Mongo-mirror pattern is *not* carried into apps v2 |
-| Programmatic auth | Workspace API keys `revops_*` (`api/src/auth/api-key.middleware.ts`) | Reused for CLI/MCP; PATs added later |
-| Sandboxing | None (dbt subprocess is the only server-side execution; E2B only mentioned in `docs/connector-builder-prd.md`) | Net-new |
-| Local agent | `packages/local-agent` — loopback Hono server, DB drivers, no shell/files | Extended for desktop extension slot |
-| Deploy | Cloud Run single container + Cloudflare Workers as edge routers | Workers/KV pattern extended for app hosting |
+| Subsystem         | Today                                                                                                          | Reusable for v2?                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| App storage       | `MakoApp` doc, embedded `files[]`, `dependencies` map                                                          | Migration source only                                                                             |
+| App versioning    | `version` counter + `entity_versions` snapshots                                                                | Replaced by git; keep publish pointer concept                                                     |
+| Agent tools       | ~20 bespoke server tools + 3 client tools                                                                      | Replaced by shell/file tools; binding tools evolve                                                |
+| Rendering         | Babel + esm.sh import-map iframe, `@makoai/app-sdk` injected via postMessage bridge                            | Bridge + SDK concepts survive; transpile pipeline retired                                         |
+| Data bindings     | `dataBindings[]` on the doc; live via `POST /workspaces/:id/execute`; parquet via Inngest + DuckDB-WASM        | Execution + materialization services reused as-is; binding _definitions_ move into files          |
+| Sharing           | `published` snapshot + `/api/share/:token` routes                                                              | Reused; "published" becomes a git ref + built artifact                                            |
+| Git integration   | dbt module: GitHub App, Git Data API, Mongo mirror + per-user drafts (`api/src/dbt/dbt-github-*.service.ts`)   | GitHub App auth + webhook plumbing reused; the Mongo-mirror pattern is _not_ carried into apps v2 |
+| Programmatic auth | Workspace API keys `revops_*` (`api/src/auth/api-key.middleware.ts`)                                           | Reused for CLI/MCP; PATs added later                                                              |
+| Sandboxing        | None (dbt subprocess is the only server-side execution; E2B only mentioned in `docs/connector-builder-prd.md`) | Net-new                                                                                           |
+| Local agent       | `packages/local-agent` — loopback Hono server, DB drivers, no shell/files                                      | Extended for desktop extension slot                                                               |
+| Deploy            | Cloud Run single container + Cloudflare Workers as edge routers                                                | Workers/KV pattern extended for app hosting                                                       |
 
 ---
 
@@ -149,7 +149,7 @@ Both properties must survive — and both must extend to users editing from outs
 
 Three layers, with strict roles:
 
-1. **Git (durable truth).** One Mako-hosted bare repo per app, namespaced by workspace. Every byte that matters ends up here — including uncommitted work, as *private WIP refs* (see 4.4).
+1. **Git (durable truth).** One Mako-hosted bare repo per app, namespaced by workspace. Every byte that matters ends up here — including uncommitted work, as _private WIP refs_ (see 4.4).
 2. **Sandbox (ephemeral working copy + compute).** An E2B microVM per editing session. It holds a clone, a shell, node/npm, and the Vite dev server. It is disposable by design: anything not yet flushed to git is at most seconds of work.
 3. **Read model (API).** The explorer, preview, and external clients never talk to the sandbox for file state; they read git through the Files API. This is the invariant that makes sandbox death a non-event.
 
@@ -159,7 +159,7 @@ Three layers, with strict roles:
 
 The original draft of this RFC proposed one repo per workspace for agent context. The merge reverses that on an authorization argument that has no good counter: apps carry **per-app ACLs today** (`access: private | workspace`, `sharedWith` collaborators), and a git repo is the authorization boundary — anyone who can clone a repo can read all of its objects. A workspace mega-repo would silently flatten private apps into workspace-readable ones. Per-app repos also give deployment, rollback, transfer, deletion, and audit a natural unit, keep clones and lockfiles independent, and bound blast radius.
 
-**The context loss is recovered at the session layer, not the storage layer.** An editing session materializes *all apps the actor is allowed to access* into one workspace-shaped directory:
+**The context loss is recovered at the session layer, not the storage layer.** An editing session materializes _all apps the actor is allowed to access_ into one workspace-shaped directory:
 
 ```
 /workspace/                # sandbox or local checkout root
@@ -177,7 +177,7 @@ The agent sees and greps across everything it may see; git boundaries stay per-a
 
 Two nuances:
 
-- **dbt stays where it is.** dbt projects typically bind to a *pre-existing customer repo* (`IDbtRepoBinding`) — untouched by this RFC.
+- **dbt stays where it is.** dbt projects typically bind to a _pre-existing customer repo_ (`IDbtRepoBinding`) — untouched by this RFC.
 - **BYO repo / external monorepos (later, separate RFC).** A subdirectory of a customer repo is not an authorization boundary, and WIP refs must never be written to a customer remote; users can export/subtree explicitly until that design exists. Async GitHub mirroring via the existing GitHub App remains the likely shape.
 
 **Concurrency model:** per-actor worktrees (see 4.4), not a shared mutable draft. Committing to `main` checks the expected branch SHA; divergence requires merge/rebase with normal git semantics — a strict improvement over Mongo last-write-wins.
@@ -189,7 +189,7 @@ Two nuances:
 Why not GitHub-first (the dbt pattern)?
 
 - dbt's model requires a GitHub App installation before anything works. For apps, that would put a GitHub signup + org-admin approval in front of "create your first app" — unacceptable for the instant-start UX. Hosting ourselves keeps app creation at one click.
-- dbt's Mongo-mirror + Git-Data-API design exists because the server never has a real working tree. In v2 the sandbox *is* a real working tree with a real `git` binary, so we want a real remote it can push to at wire speed, not REST-API blob writes.
+- dbt's Mongo-mirror + Git-Data-API design exists because the server never has a real working tree. In v2 the sandbox _is_ a real working tree with a real `git` binary, so we want a real remote it can push to at wire speed, not REST-API blob writes.
 
 Implementation sketch (small, well-trodden):
 
@@ -201,7 +201,7 @@ This is the one genuinely new piece of stateful infra. It is justified: it remov
 
 ### 4.4 Durability of uncommitted work: private WIP refs with fenced compare-and-swap
 
-The answer to *"how does the app reflect the latest files, committed or uncommitted, and what happens if the sandbox dies?"*:
+The answer to _"how does the app reflect the latest files, committed or uncommitted, and what happens if the sandbox dies?"_:
 
 - Each active editor/agent gets an **`AppWorktree`** record: app, actor, branch, base commit SHA, a private WIP ref, a monotonic revision, and a **lease epoch**. WIP state lives at `refs/mako/worktrees/<worktreeId>` — a shadow commit of the full working tree (tracked + untracked, minus ignored caches like `node_modules`/`dist`).
 - **WIP refs are private.** They are hidden from clone/fetch (`hideRefs` / not advertised over smart HTTP) and never mirrored externally; only the worktree service reads or advances them. This matters because a fetchable draft ref would leak in-progress work to every repo collaborator.
@@ -211,11 +211,11 @@ The answer to *"how does the app reflect the latest files, committed or uncommit
 - **Sandbox death loses at most one flush interval.** Recovery = new sandbox, materialize base commit, apply WIP state, reinstall from cache, continue. No source correctness depends on the old sandbox resuming.
 - "Commit" in the product UI = squash the WIP state onto the branch with a message (AI-suggested, like dbt's `commit-message` endpoint), advance the branch ref with CAS, reset the worktree base. This replaces `app_save_version`; publish (4.7) is a separate act.
 
-Deferred from the stricter draft (explicitly, not silently): serializing the git *index* including merge-conflict stages 1/2/3 and sandbox-local refs into the WIP object. v2 foundation snapshots the working tree only; a sandbox-local `git commit` or unresolved merge should be committed or resolved before flush, and the tooling steers the agent that way. Revisit when shared/branchy workflows demand it.
+Deferred from the stricter draft (explicitly, not silently): serializing the git _index_ including merge-conflict stages 1/2/3 and sandbox-local refs into the WIP object. v2 foundation snapshots the working tree only; a sandbox-local `git commit` or unresolved merge should be committed or resolved before flush, and the tooling steers the agent that way. Revisit when shared/branchy workflows demand it.
 
-**On mounting a stable filesystem into the sandbox instead:** considered (gcsfuse / juicefs) and rejected as the durability mechanism: network-FS latency ruins `npm install` and Vite; failure modes are worse (hung mounts vs. clean flush retries); FUSE/object mounts don't provide git-grade atomicity; and it would bypass git as the single source of truth. Provider volumes and pause/resume snapshots are *warm caches* — `node_modules`, pnpm store — never the system of record.
+**On mounting a stable filesystem into the sandbox instead:** considered (gcsfuse / juicefs) and rejected as the durability mechanism: network-FS latency ruins `npm install` and Vite; failure modes are worse (hung mounts vs. clean flush retries); FUSE/object mounts don't provide git-grade atomicity; and it would bypass git as the single source of truth. Provider volumes and pause/resume snapshots are _warm caches_ — `node_modules`, pnpm store — never the system of record.
 
-**Trusted git broker (no credentials in sandboxes).** The sandbox never receives a git password, token, SSH key, or credential helper. The broker (a trusted control-plane component) materializes the authorized repo content into the sandbox, receives snapshots back over the session channel, validates them (path canonicalization, no `.git`/symlink smuggling, size limits), and is the only principal that touches refs. Local clones on a user's machine are different: there the *user* is the principal, with their own short-lived git credential from `mako login`.
+**Trusted git broker (no credentials in sandboxes).** The sandbox never receives a git password, token, SSH key, or credential helper. The broker (a trusted control-plane component) materializes the authorized repo content into the sandbox, receives snapshots back over the session channel, validates them (path canonicalization, no `.git`/symlink smuggling, size limits), and is the only principal that touches refs. Local clones on a user's machine are different: there the _user_ is the principal, with their own short-lived git credential from `mako login`.
 
 ### 4.5 Sandbox layer: E2B
 
@@ -244,23 +244,23 @@ Deferred from the stricter draft (explicitly, not silently): serializing the git
 - Database access is **always proxied** through `POST /workspaces/:id/execute` with that token. Raw connection credentials never enter the sandbox. Egress target posture (from the merged draft): deny-by-default with registry domains allowed only during install and build egress re-disabled after dependencies are present; the internal pilot may run relaxed with the scoped short-TTL token bounding blast radius, but GA requires the deny-by-default posture.
 - Package lifecycle scripts (`postinstall` etc.) run inside the sandbox with **no** Mako token, git credential, or deploy credential in scope — the token is injected only for interactive/agent processes, not install phases.
 
-**The cloud sandbox is one of two substrates.** The session layer is designed as an executor seam: the agent's `bash`/file tools dispatch to a *session executor*, of which there are two implementations — the E2B sandbox (web app, headless jobs) and the **user's own machine** (a local checkout driven via the `mako` CLI or the desktop app's local agent, see 4.8). Everything above the seam — the agent, the tool contract, draft-ref durability, git as truth, credential proxying — is identical in both. Users working locally or in the desktop app therefore don't consume cloud sandbox compute at all: their filesystem is the working copy and their machine runs the shell, while data tools stay server-side. This mirrors a pattern the product already has for database connections, where the frontend routes `local_`-prefixed connections to the local agent at `127.0.0.1:41720` instead of the cloud execute API.
+**The cloud sandbox is one of two substrates.** The session layer is designed as an executor seam: the agent's `bash`/file tools dispatch to a _session executor_, of which there are two implementations — the E2B sandbox (web app, headless jobs) and the **user's own machine** (a local checkout driven via the `mako` CLI or the desktop app's local agent, see 4.8). Everything above the seam — the agent, the tool contract, draft-ref durability, git as truth, credential proxying — is identical in both. Users working locally or in the desktop app therefore don't consume cloud sandbox compute at all: their filesystem is the working copy and their machine runs the shell, while data tools stay server-side. This mirrors a pattern the product already has for database connections, where the frontend routes `local_`-prefixed connections to the local agent at `127.0.0.1:41720` instead of the cloud execute API.
 
 ### 4.6 Agent tools v2
 
 The unified agent (`api/src/agents/unified/index.ts`, `app` mode in `modes/registry.ts`) swaps the bespoke suite for:
 
-| Tool | Replaces | Notes |
-|---|---|---|
-| `bash` | (nothing — net new) | Runs in the session sandbox, cwd = repo root; streamed output; timeout param. The workhorse. |
-| `read_file`, `write_file`, `edit_file` (str-replace), `glob`, `grep` | `app_read_file`, `app_write_file`, `app_edit_file`, `app_delete_file`, `app_rename_file`, `get_app_state` | Direct FS fast paths (cheaper + more reliable than shelling out for the 90% case). |
-| `bash("pnpm add …")` etc. | `app_add_dependency`, `app_remove_dependency` | No bespoke tool needed — this is the point. |
-| `git` via `bash` + a `commit_app` tool | `app_save_version`, `app_restore_version`, `browse_version_history`, `get_version_snapshot` | `commit_app` wraps draft-ref squash so the agent can't push broken refs; history/restore are `git log`/`git checkout` away. |
-| binding tools (kept, thinner) | `app_create_data_binding`, `app_update_data_binding`, etc. | See below — bindings become files; tools become "validate + materialize". |
-| `run_app`, `open_app`, `app_set_preview_environment` (client) | same | Kept; `run_app` now reports Vite dev-server diagnostics instead of Babel errors. |
-| `sql_*`, `mongo_*` discovery/query tools | same | Unchanged — USP #1. |
+| Tool                                                                 | Replaces                                                                                                  | Notes                                                                                                                       |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `bash`                                                               | (nothing — net new)                                                                                       | Runs in the session sandbox, cwd = repo root; streamed output; timeout param. The workhorse.                                |
+| `read_file`, `write_file`, `edit_file` (str-replace), `glob`, `grep` | `app_read_file`, `app_write_file`, `app_edit_file`, `app_delete_file`, `app_rename_file`, `get_app_state` | Direct FS fast paths (cheaper + more reliable than shelling out for the 90% case).                                          |
+| `bash("pnpm add …")` etc.                                            | `app_add_dependency`, `app_remove_dependency`                                                             | No bespoke tool needed — this is the point.                                                                                 |
+| `git` via `bash` + a `commit_app` tool                               | `app_save_version`, `app_restore_version`, `browse_version_history`, `get_version_snapshot`               | `commit_app` wraps draft-ref squash so the agent can't push broken refs; history/restore are `git log`/`git checkout` away. |
+| binding tools (kept, thinner)                                        | `app_create_data_binding`, `app_update_data_binding`, etc.                                                | See below — bindings become files; tools become "validate + materialize".                                                   |
+| `run_app`, `open_app`, `app_set_preview_environment` (client)        | same                                                                                                      | Kept; `run_app` now reports Vite dev-server diagnostics instead of Babel errors.                                            |
+| `sql_*`, `mongo_*` discovery/query tools                             | same                                                                                                      | Unchanged — USP #1.                                                                                                         |
 
-**Data bindings become files.** A binding is `apps/<slug>/bindings/<name>.sql` (or `.js` for Mongo) plus an entry in `mako.json` (`connectionId`, `materialization`, schedule). On flush, the server parses `mako.json` and reconciles with the materialization service (`app-binding-materialization.service.ts` reused nearly verbatim, keyed by app path + binding name + content hash instead of embedded-doc ids). This makes bindings editable from *any* harness — Claude Code edits a `.sql` file and the schedule stanza, and it Just Works. The `parquet` cache metadata moves to a small `AppDeployment` Mongo doc (server-owned state was never a good fit for the user-editable document anyway).
+**Data bindings become files.** A binding is `apps/<slug>/bindings/<name>.sql` (or `.js` for Mongo) plus an entry in `mako.json` (`connectionId`, `materialization`, schedule). On flush, the server parses `mako.json` and reconciles with the materialization service (`app-binding-materialization.service.ts` reused nearly verbatim, keyed by app path + binding name + content hash instead of embedded-doc ids). This makes bindings editable from _any_ harness — Claude Code edits a `.sql` file and the schedule stanza, and it Just Works. The `parquet` cache metadata moves to a small `AppDeployment` Mongo doc (server-owned state was never a good fit for the user-editable document anyway).
 
 ### 4.7 Preview & hosting
 
@@ -273,7 +273,7 @@ Two tiers replace the single CDN iframe:
 
 **Dev preview (editing).** The sandbox runs `vite dev`; E2B exposes it at a public per-sandbox URL; `AppRenderer` iframes that URL. HMR works natively. The `@makoai/app-sdk` becomes a real npm package (dep of the scaffold) that keeps the same API (`useQuery`, `useDuckDB`, `useTheme`, `useLocation`) and the same postMessage bridge to the authenticated parent window — so live queries, parquet/DuckDB, theming, and virtual routing carry over with minimal renderer changes, and the iframe still never holds credentials. When no sandbox is running, the preview shows the last published build with a "start dev session" affordance.
 
-**Published (deployed).** "Publish" = deploy an **immutable commit** (never a moving branch head; a dirty worktree gets an explicit "commit and publish"): run `vite build` with `--frozen-lockfile` in a fresh build sandbox, upload `dist/` to a GCS/R2 bucket under a content-addressed deployment prefix, record an `AppDeployment` (commit SHA, lockfile digest, artifact digest), and point the routing entry at it. Rollback is a pointer change, no rebuild. Serving reuses the Cloudflare pattern we already run (`cloudflare/app-router/` KV-routed Worker) — but on a **separate registrable domain, never a `mako.ai` subdomain** (e.g. `<stable-app-id>.makoapps.dev`, registered in the Public Suffix List so sibling apps are different browser *sites*). User code sharing a registrable domain with the control plane would share cookie scope and same-site trust; this was a flaw in the first draft of this RFC. The Worker enforces the existing public-share model (tokens, password unlock, `allowLiveQueries`); runtime data access continues through `api/src/routes/public-share.ts` initially, evolving to a dedicated runtime capability endpoint (opaque, short-lived, deployment-scoped tokens exchanged via one-time bootstrap codes) as the end state.
+**Published (deployed).** "Publish" = deploy an **immutable commit** (never a moving branch head; a dirty worktree gets an explicit "commit and publish"): run `vite build` with `--frozen-lockfile` in a fresh build sandbox, upload `dist/` to a GCS/R2 bucket under a content-addressed deployment prefix, record an `AppDeployment` (commit SHA, lockfile digest, artifact digest), and point the routing entry at it. Rollback is a pointer change, no rebuild. Serving reuses the Cloudflare pattern we already run (`cloudflare/app-router/` KV-routed Worker) — but on a **separate registrable domain, never a `mako.ai` subdomain** (e.g. `<stable-app-id>.makoapps.dev`, registered in the Public Suffix List so sibling apps are different browser _sites_). User code sharing a registrable domain with the control plane would share cookie scope and same-site trust; this was a flaw in the first draft of this RFC. The Worker enforces the existing public-share model (tokens, password unlock, `allowLiveQueries`); runtime data access continues through `api/src/routes/public-share.ts` initially, evolving to a dedicated runtime capability endpoint (opaque, short-lived, deployment-scoped tokens exchanged via one-time bootstrap codes) as the end state.
 
 This answers "if the app installs packages, how do we host it": packages are resolved at build time by a real bundler; hosting is static output, not CDN import-maps. **Scope note:** v2 published apps are static SPAs + data via Mako APIs. Server-side app code (API routes, SSR) is explicitly out of scope; the escape hatch for compute is scheduled scripts (4.9).
 
@@ -281,7 +281,7 @@ This answers "if the app installs packages, how do we host it": packages are res
 
 > **Framing superseded by §11.** This section treats external harnesses as one surface among several; §11.1 promotes them to the strategically primary surface for technical users, and §11.8 reorders what gets built. The mechanics below (MCP server, local clone flow, auth staging, desktop local-first) remain correct — but note that `mako agent` (c) is now **deferred indefinitely** per §11.9, and that the repo scaffold promised in (b) is still unbuilt (§11.7), which is exactly what §11.8 step 1 fixes.
 
-**(a) Mako MCP server** (net new — today we are MCP *client* only, `api/src/services/mcp-client.service.ts`). A streamable-HTTP MCP endpoint at `/api/mcp`, authenticated by API key / PAT, exposing: schema discovery (`sql_list_tables`, `sql_inspect_table`, ...), query execution (row-capped), binding validation/materialization, `publish_app`, and docs/skills lookup. This makes Claude Desktop / Claude Code / Codex / Cursor first-class Mako citizens with USP #1 intact. Implementation is thin: the tools already exist as server tool impls; we're adding a protocol adapter and an auth path.
+**(a) Mako MCP server** (net new — today we are MCP _client_ only, `api/src/services/mcp-client.service.ts`). A streamable-HTTP MCP endpoint at `/api/mcp`, authenticated by API key / PAT, exposing: schema discovery (`sql_list_tables`, `sql_inspect_table`, ...), query execution (row-capped), binding validation/materialization, `publish_app`, and docs/skills lookup. This makes Claude Desktop / Claude Code / Codex / Cursor first-class Mako citizens with USP #1 intact. Implementation is thin: the tools already exist as server tool impls; we're adding a protocol adapter and an auth path.
 
 **(b) Local clone + Claude Code.** The flow the user described — no Mako app open at all:
 
@@ -298,7 +298,7 @@ mako agent          # ...or vibe with the Mako agent itself, right in the termin
 - **Publish from local:** `mako deploy` = push + call Deploy API. USP #2 intact.
 - The repo scaffold includes `.mcp.json` and `AGENTS.md`/`CLAUDE.md` describing the layout and the SDK, so third-party harnesses are effective immediately after clone.
 
-**(c) The `mako` CLI — plumbing *and* a terminal agent.** The commands above imply a real CLI product (`@makoai/cli`, installed via `npm i -g mako` or a curl script), not just glue. Beyond `login` / `clone` / `dev` / `deploy` / `run <job>`, it ships **`mako agent`: the Mako agent as a terminal harness**, so users can vibe-code an app from their shell the way they would with Claude Code — except this agent natively knows their workspace.
+**(c) The `mako` CLI — plumbing _and_ a terminal agent.** The commands above imply a real CLI product (`@makoai/cli`, installed via `npm i -g mako` or a curl script), not just glue. Beyond `login` / `clone` / `dev` / `deploy` / `run <job>`, it ships **`mako agent`: the Mako agent as a terminal harness**, so users can vibe-code an app from their shell the way they would with Claude Code — except this agent natively knows their workspace.
 
 - **It is a thin client, not a second agent.** `POST /api/agent/chat` already accepts `revops_*` API keys through `unifiedAuthMiddleware`, so streaming, chat persistence, model selection, skills, modes, and MCP tools all come from the existing server for free. The CLI renders the stream and handles tool round-trips.
 - **Tool execution split reuses the existing client/server pattern.** The codebase already splits tools into server-executed and client-executed (`app/src/agent-runtime/client-tool-manifest.ts` + `useClientToolDispatch`); the CLI simply becomes an alternative "client" surface. Data tools (`sql_*`, `mongo_*`, bindings, materialization, publish) keep running server-side; the v2 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`grep` tools execute **locally against the user's checkout** instead of an E2B sandbox. Same tool contract, two interchangeable executors: cloud sandbox when driven from the web app, local filesystem when driven from the terminal. One brain, two pairs of hands.
@@ -307,9 +307,9 @@ mako agent          # ...or vibe with the Mako agent itself, right in the termin
 
 **(d) Desktop: local-first sessions + extension slot.** The desktop app (`packages/desktop`) gets two things.
 
-*Local-first sessions.* **Corrected by §12.2(3): there is no "local executor" and no Mako sandbox on the user's machine — the user has the workspace repo, `mako` supplies data proxies and auth, and they run `vite dev` themselves. The paragraph below is kept as design history.** On desktop, even the regular Mako chat doesn't need a cloud sandbox: the desktop app keeps a managed local checkout of the workspace repo (e.g. `~/Mako/<workspace>/`), and the agent's `bash`/file tools dispatch to the **local executor** (4.5) via the local agent instead of E2B. `vite dev` runs on the laptop and the preview iframes `localhost` — the same routing trick the app already uses for `local_` database connections. Draft-ref flushes still push to the workspace repo on the same cadence, so the web explorer, collaborators, and durability guarantees are unaffected by where the shell happens to run. Result: faster (no clone/boot), free (no sandbox billing), and offline-tolerant for everything except data queries — with cloud sandboxes remaining the default for browser users and the only option for headless jobs.
+_Local-first sessions._ **Corrected by §12.2(3): there is no "local executor" and no Mako sandbox on the user's machine — the user has the workspace repo, `mako` supplies data proxies and auth, and they run `vite dev` themselves. The paragraph below is kept as design history.** On desktop, even the regular Mako chat doesn't need a cloud sandbox: the desktop app keeps a managed local checkout of the workspace repo (e.g. `~/Mako/<workspace>/`), and the agent's `bash`/file tools dispatch to the **local executor** (4.5) via the local agent instead of E2B. `vite dev` runs on the laptop and the preview iframes `localhost` — the same routing trick the app already uses for `local_` database connections. Draft-ref flushes still push to the workspace repo on the same cadence, so the web explorer, collaborators, and durability guarantees are unaffected by where the shell happens to run. Result: faster (no clone/boot), free (no sandbox billing), and offline-tolerant for everything except data queries — with cloud sandboxes remaining the default for browser users and the only option for headless jobs.
 
-*Extension slot.* A right-panel "coding agent" slot that can host Claude Code / Codex (their CLIs speak a well-documented stdio/ACP protocol) against either the managed local checkout or a cloud sandbox terminal. `mako agent` speaks the same protocol and becomes the slot's first-party occupant, which also makes it the reference implementation to test the slot against.
+_Extension slot._ A right-panel "coding agent" slot that can host Claude Code / Codex (their CLIs speak a well-documented stdio/ACP protocol) against either the managed local checkout or a cloud sandbox terminal. `mako agent` speaks the same protocol and becomes the slot's first-party occupant, which also makes it the reference implementation to test the slot against.
 
 To support both, the local agent (`packages/local-agent`) is extended with two capabilities, both opt-in and scoped: a PTY endpoint (shell restricted to the managed checkout directory) and repo file access. Its existing loopback + CORS trust model carries over. This is the last phase and can ship independently.
 
@@ -318,7 +318,15 @@ To support both, the local agent (`packages/local-agent`) is extended with two c
 `mako.json` may declare jobs:
 
 ```json
-{ "jobs": [{ "name": "refresh-geocodes", "run": "pnpm tsx scripts/geocode.ts", "schedule": "0 6 * * *" }] }
+{
+  "jobs": [
+    {
+      "name": "refresh-geocodes",
+      "run": "pnpm tsx scripts/geocode.ts",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}
 ```
 
 An Inngest function (same pattern as `dbt-run.ts` / `app-binding-materialize.ts`) spins a short-lived job sandbox: clone at `main`, install, run the command with a scoped `MAKO_TOKEN`, capture logs/exit code to a run record, kill. This is deliberately the same primitive as binding materialization and the future connector-builder PRD sandbox — one execution substrate for everything.
@@ -338,8 +346,8 @@ An Inngest function (same pattern as `dbt-run.ts` / `app-binding-materialize.ts`
 
 Everything lands as a **parallel v2 module**: `api/src/apps-v2/**`, new Mongo collections (`app_projects_v2`, `app_worktrees_v2`, later `app_deployments_v2`), new routes (`/api/workspaces/:id/apps-v2/...`), and new agent tools (`app2_*`). No v1 route, schema, tool, or renderer is modified; v1 and v2 apps coexist until per-app migration.
 
-1. **Phase 1 — Git substrate.** Mako-hosted bare repos (per app) + repository service with CAS ref updates and hidden WIP refs; Files API (tree/read from a ref); worktree service. Smart-HTTP clone endpoint. *De-risks: git hosting, the read model.* **(Foundation implemented in this PR.)**
-2. **Phase 2 — Sandbox sessions + agent v2.** `SandboxProvider` abstraction (E2B for production; a flag-gated local subprocess provider for dev VMs), session service materializing accessible apps into a workspace-shaped directory, scoped tokens, `app2_bash`/file tools, WIP flush loop, `app2_commit`. Chat can build an app end-to-end. *De-risks: sandbox integration, flush durability, tool ergonomics.* **(Foundation implemented in this PR: provider seam + local provider + session/exec/flush + tools; E2B adapter next.)**
+1. **Phase 1 — Git substrate.** Mako-hosted bare repos (per app) + repository service with CAS ref updates and hidden WIP refs; Files API (tree/read from a ref); worktree service. Smart-HTTP clone endpoint. _De-risks: git hosting, the read model._ **(Foundation implemented in this PR.)**
+2. **Phase 2 — Sandbox sessions + agent v2.** `SandboxProvider` abstraction (E2B for production; a flag-gated local subprocess provider for dev VMs), session service materializing accessible apps into a workspace-shaped directory, scoped tokens, `app2_bash`/file tools, WIP flush loop, `app2_commit`. Chat can build an app end-to-end. _De-risks: sandbox integration, flush durability, tool ergonomics._ **(Foundation implemented in this PR: provider seam + local provider + session/exec/flush + tools; E2B adapter next.)**
 3. **Phase 3 — Preview & hosting.** `@makoai/app-sdk` as real package + Vite scaffold; dev-preview iframe via sandbox URL; publish pipeline (build sandbox → bucket → apps-router Worker); binding-as-files reconciliation + materialization rewire.
 4. **Phase 4 — Open editing.** MCP server, `mako` CLI (`login`/`dev`/`deploy`, then `mako agent` reusing the Phase 2 tool contract with a local executor), PATs with scopes, repo scaffold docs for third-party harnesses.
 5. **Phase 5 — Desktop local-first + extension slot + jobs.** Local-agent PTY/file capabilities; desktop-managed workspace checkout with local executor sessions (Mako chat with zero cloud sandbox); right-panel harness hosting (with `mako agent` as first-party occupant); `mako.json` scheduled jobs; bulk v1 migration + CDN runtime deprecation.
@@ -348,17 +356,17 @@ Each phase ships behind a flag and is independently valuable (Phase 1 alone give
 
 ## 7. Risks & open questions
 
-| Risk / question | Position |
-|---|---|
-| Git hosting is new stateful infra | Accepted; smallest possible surface (bare repos + `git http-backend`), nightly bundles to GCS, swap-out path to Gitea/managed git behind an unchanged interface. |
-| E2B vendor dependency / outage | Session layer is behind our own Session API; E2B is Apache-2.0 self-hostable as a last resort; an outage degrades to read-only explorer + published apps (both git/bucket-backed), not data loss. |
-| Sandbox egress (exfiltration via `npm install` etc.) | Deny-by-default with install-phase registry allowlist is the GA posture; pilot may run relaxed with scoped short-TTL tokens bounding blast radius, and lifecycle scripts never see tokens. |
-| Concurrent edits (two users, or Mako session + local push) | Per-actor worktrees + fenced CAS on WIP refs; branch commits check expected SHA; divergence surfaces as merge/rebase, never silent overwrite. UX for "your worktree is behind main" needs design. |
-| Cost of always-editing users | Auto-pause makes idle free; per-second compute at ~$0.08/hr is negligible vs. LLM token cost of the same session. Budget alarms per workspace anyway. |
-| Do bindings-as-files break the binding editor UI? | No — the binding editor becomes a structured editor over `bindings/*.sql` + `mako.json` via the Files API. |
-| Monaco in-browser editing (no sandbox running) | Explorer writes go through a Files API write endpoint that commits directly to the draft ref server-side (isomorphic-git or a transient sandbox); keeps "quick edit" cheap. |
-| Public URL isolation for published apps | Per-app host on a separate PSL-registered registrable domain (never `mako.ai`): different browser *sites*, no shared cookies or same-site trust with the control plane; Worker enforces share tokens/passwords. |
-| Where do secrets for apps/scripts live? | SHIPPED as the per-app env vault (`env.service.ts`, §13.21): vars on the `AppProject` row, values encrypted with `crypto.service`, never committed. One `secret` boolean encodes the static-publish boundary — non-secret vars reach the dev server and the publish build (`VITE_*` inlined into the public bundle: the publishable-key class), secrets reach dev processes only and refuse the `VITE_` prefix. Runtime secrets for published apps (a true backend) remain out of scope. |
+| Risk / question                                            | Position                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Git hosting is new stateful infra                          | Accepted; smallest possible surface (bare repos + `git http-backend`), nightly bundles to GCS, swap-out path to Gitea/managed git behind an unchanged interface.                                                                                                                                                                                                                                                                                                                         |
+| E2B vendor dependency / outage                             | Session layer is behind our own Session API; E2B is Apache-2.0 self-hostable as a last resort; an outage degrades to read-only explorer + published apps (both git/bucket-backed), not data loss.                                                                                                                                                                                                                                                                                        |
+| Sandbox egress (exfiltration via `npm install` etc.)       | Deny-by-default with install-phase registry allowlist is the GA posture; pilot may run relaxed with scoped short-TTL tokens bounding blast radius, and lifecycle scripts never see tokens.                                                                                                                                                                                                                                                                                               |
+| Concurrent edits (two users, or Mako session + local push) | Per-actor worktrees + fenced CAS on WIP refs; branch commits check expected SHA; divergence surfaces as merge/rebase, never silent overwrite. UX for "your worktree is behind main" needs design.                                                                                                                                                                                                                                                                                        |
+| Cost of always-editing users                               | Auto-pause makes idle free; per-second compute at ~$0.08/hr is negligible vs. LLM token cost of the same session. Budget alarms per workspace anyway.                                                                                                                                                                                                                                                                                                                                    |
+| Do bindings-as-files break the binding editor UI?          | No — the binding editor becomes a structured editor over `bindings/*.sql` + `mako.json` via the Files API.                                                                                                                                                                                                                                                                                                                                                                               |
+| Monaco in-browser editing (no sandbox running)             | Explorer writes go through a Files API write endpoint that commits directly to the draft ref server-side (isomorphic-git or a transient sandbox); keeps "quick edit" cheap.                                                                                                                                                                                                                                                                                                              |
+| Public URL isolation for published apps                    | Per-app host on a separate PSL-registered registrable domain (never `mako.ai`): different browser _sites_, no shared cookies or same-site trust with the control plane; Worker enforces share tokens/passwords.                                                                                                                                                                                                                                                                          |
+| Where do secrets for apps/scripts live?                    | SHIPPED as the per-app env vault (`env.service.ts`, §13.21): vars on the `AppProject` row, values encrypted with `crypto.service`, never committed. One `secret` boolean encodes the static-publish boundary — non-secret vars reach the dev server and the publish build (`VITE_*` inlined into the public bundle: the publishable-key class), secrets reach dev processes only and refuse the `VITE_` prefix. Runtime secrets for published apps (a true backend) remain out of scope. |
 
 ## 8. Alternatives considered (summary)
 
@@ -392,6 +400,7 @@ content type, one branch per user session, auto-commit everywhere. Mongo keeps
 only identity/ACL/derived caches — no file content, no per-type repo bindings.
 
 **End-state invariants**
+
 - `workspace.repo` (singular). Cloud tier: `<prefix>-<workspaceId>` under
   mako-ai-cloud, provisioned lazily. BYO: link/re-point an existing GitHub repo.
 - Repo layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/`,
@@ -433,7 +442,7 @@ keyed (workspace, user) runs `git fetch && git checkout` on switch; realtime
 refetch. Branch picker lists main + conversation branches with friendly
 labels ("Chat: port engagement score").
 
-*Explorer ↔ sandbox sync contract (agreed 2026-07-16).* There is no shared
+_Explorer ↔ sandbox sync contract (agreed 2026-07-16)._ There is no shared
 filesystem between the API and the sandbox and none is wanted (E2B can't
 mount external volumes, Cloud Run disk is tmpfs, and a shared working tree
 means two uncoordinated writers — shared bytes without atomicity, history,
@@ -441,6 +450,7 @@ or conflict detection). **The git remote IS the shared storage**; Block A's
 auto-commit is what makes this sound — every manual save is a commit, so
 "uncommitted change the sandbox can't see" is not a state that exists. Sync
 is the same bus in both directions:
+
 - Agent → explorer (built): turn ends → commit + push → poke → explorer
   refetches.
 - Explorer → sandbox: manual save → commit (Git Data API) → the same poke,
@@ -467,6 +477,7 @@ second write path and ties save latency to sandbox liveness; ship
 pull-on-poke first, add write-through only if rebase noise shows up.
 
 **Block D — content moves into the repo (staged, each shippable alone).**
+
 - D1 `skills/`: workspace skills as `skills/<name>/SKILL.md`; agent skill
   discovery reads the repo (system skills stay in the API image).
 - D2 `consoles/`: `consoles/<name>.sql` with the SAME front-matter convention
@@ -683,7 +694,7 @@ deploy gate at no cost.
 
 **Consequence — "personal" stops meaning "private".** §10 places
 `users/<userId>/consoles/` in the workspace repo. The builder tier protects
-normal users *from* git but not *in* it: a builder who clones reads every
+normal users _from_ git but not _in_ it: a builder who clones reads every
 user's personal content, and that user never opted into the builder tier's
 trust model. Two honest resolutions:
 
@@ -696,8 +707,8 @@ trust model. Two honest resolutions:
   everything" property that makes §11.3 attractive; do it only when the trigger
   fires.
 
-**Open sub-decision — how builders actually get access.** Today *no human has
-any access to cloud repos at all*: `mako-ai-cloud` repos are touched only by
+**Open sub-decision — how builders actually get access.** Today _no human has
+any access to cloud repos at all_: `mako-ai-cloud` repos are touched only by
 Mako's installation token. Granting the builder tier is therefore net-new work,
 with a fork:
 
@@ -715,7 +726,7 @@ with a fork:
 
 - **(iii) Put the repo in the customer's own GitHub org.** The pattern Vercel
   and Netlify use when they create a repo from a template: the platform creates
-  it in *your* account/org, never in a platform-owned one. Then "builder
+  it in _your_ account/org, never in a platform-owned one. Then "builder
   access" is simply GitHub access the customer already administers — no
   collaborator management, no proxy, and revocation is automatic when they
   remove someone from their org. Mako keeps its installation token and never
@@ -759,28 +770,28 @@ local-first sessions.
 
 The substrate is largely built. The local developer surface is close to zero.
 
-| Capability                                                                                                                                       | State                                                                                                                                                                      |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace = one git repo; apps are `apps/<slug>/` folders                                                                                        | ✅ §10 Block B, built                                                                                                                                                      |
-| Every save is a commit; no dirty/uncommitted UI state                                                                                            | ✅ §10 Block A, built                                                                                                                                                      |
-| Cloud storage (`mako-ai-cloud` org + GitHub App) and BYO repo linking                                                                            | ✅ built                                                                                                                                                                   |
-| Real sandbox with shell, git, pnpm; `app2_*` tools over a real filesystem                                                                        | ✅ built                                                                                                                                                                   |
-| Bindings as files (`bindings/*.sql` + `mako.json`)                                                                                               | ✅ Phase 1 built (§9)                                                                                                                                                      |
-| MCP server — `POST /api/mcp`, OAuth 2.1 + scoped workspace API keys                                                                              | ✅ built                                                                                                                                                                   |
-| Local Claude Code / Codex over ACP, auto-wired to Mako MCP with a generated system prompt (`packages/local-agent/src/acp/mako-system-append.ts`) | ✅ built — **the sleeper asset; §11.8 step 1 is mostly a retargeting of this**                                                                                             |
-| Merge a branch into `main` (`POST /{id}/merge`)                                                                                                  | ✅ built                                                                                                                                                                   |
-| **Deploy on merge to `main`**                                                                                                                    | ❌ `publishedSha` is exposed on reads and **never written**; no pipeline. Previews are token-gated sandbox builds, not durable deployments                                 |
-| **Repo-resident agent instructions** (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`)                                                                     | ❌ `api/src/apps-v2/scaffold.ts` writes only `package.json`, `mako.json`, `index.html`, `vite.config.ts`, `tsconfig.json`. A fresh clone tells `claude` nothing about Mako |
-| **Skills in the repo** (§10 Block D1)                                                                                                            | ❌ system skills live in the API image (`api/src/agent-skills/`)                                                                                                           |
-| **`mako` CLI / npm package**                                                                                                                     | ❌ does not exist. The `mako-agent` bin in `packages/local-agent` is the local-database daemon + ACP bridge — a different product                                          |
-| **App SDK for data access from a local checkout**                                                                                                | ❌ no `@makoai/app-sdk` package exists, though §5 and §6 Phase 3 both assume one                                                                                             |
-| Consoles in the repo (§10 Block D2)                                                                                                              | ❌ still Mongo `SavedConsole`                                                                                                                                              |
-| Per-session branch state (§10 Block C)                                                                                                           | ❌ not started                                                                                                                                                             |
-| **Human (builder) access to workspace repos**                                                                                                     | ❌ cloud repos are touched only by Mako's installation token — no human has any access. The builder tier of §11.5 is net-new: collaborator management or a git proxy, plus revocation wired to workspace membership |
-| **Checkout scope (sparse-checkout) for clones and sandboxes**                                                                                      | ❌ does not exist anywhere. Personal `users/<userId>/` content is also unimplemented, so §11.10's owner-first layout + scoped checkout can be built correctly from the start rather than migrated                    |
-| **A repo home for notebooks**                                                                                                                       | ❌ notebooks appear nowhere in this RFC; §10's layout is `apps/ consoles/ skills/ dbt/`. Path convention and the commit-outputs-or-strip question are both undecided (§11.11)                                         |
-| **PR preview deploys**                                                                                                                              | ❌ deferred in §11.9 — but table stakes at Netlify/Vercel (§11.11), so the deferral is worth revisiting once deploy-on-merge exists                                                                                   |
-| dbt in the repo (§10 Block D3)                                                                                                                   | ❌ last; own RFC section                                                                                                                                                   |
+| Capability                                                                                                                                       | State                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace = one git repo; apps are `apps/<slug>/` folders                                                                                        | ✅ §10 Block B, built                                                                                                                                                                                               |
+| Every save is a commit; no dirty/uncommitted UI state                                                                                            | ✅ §10 Block A, built                                                                                                                                                                                               |
+| Cloud storage (`mako-ai-cloud` org + GitHub App) and BYO repo linking                                                                            | ✅ built                                                                                                                                                                                                            |
+| Real sandbox with shell, git, pnpm; `app2_*` tools over a real filesystem                                                                        | ✅ built                                                                                                                                                                                                            |
+| Bindings as files (`bindings/*.sql` + `mako.json`)                                                                                               | ✅ Phase 1 built (§9)                                                                                                                                                                                               |
+| MCP server — `POST /api/mcp`, OAuth 2.1 + scoped workspace API keys                                                                              | ✅ built                                                                                                                                                                                                            |
+| Local Claude Code / Codex over ACP, auto-wired to Mako MCP with a generated system prompt (`packages/local-agent/src/acp/mako-system-append.ts`) | ✅ built — **the sleeper asset; §11.8 step 1 is mostly a retargeting of this**                                                                                                                                      |
+| Merge a branch into `main` (`POST /{id}/merge`)                                                                                                  | ✅ built                                                                                                                                                                                                            |
+| **Deploy on merge to `main`**                                                                                                                    | ❌ `publishedSha` is exposed on reads and **never written**; no pipeline. Previews are token-gated sandbox builds, not durable deployments                                                                          |
+| **Repo-resident agent instructions** (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`)                                                                     | ❌ `api/src/apps-v2/scaffold.ts` writes only `package.json`, `mako.json`, `index.html`, `vite.config.ts`, `tsconfig.json`. A fresh clone tells `claude` nothing about Mako                                          |
+| **Skills in the repo** (§10 Block D1)                                                                                                            | ❌ system skills live in the API image (`api/src/agent-skills/`)                                                                                                                                                    |
+| **`mako` CLI / npm package**                                                                                                                     | ❌ does not exist. The `mako-agent` bin in `packages/local-agent` is the local-database daemon + ACP bridge — a different product                                                                                   |
+| **App SDK for data access from a local checkout**                                                                                                | ❌ no `@makoai/app-sdk` package exists, though §5 and §6 Phase 3 both assume one                                                                                                                                    |
+| Consoles in the repo (§10 Block D2)                                                                                                              | ❌ still Mongo `SavedConsole`                                                                                                                                                                                       |
+| Per-session branch state (§10 Block C)                                                                                                           | ❌ not started                                                                                                                                                                                                      |
+| **Human (builder) access to workspace repos**                                                                                                    | ❌ cloud repos are touched only by Mako's installation token — no human has any access. The builder tier of §11.5 is net-new: collaborator management or a git proxy, plus revocation wired to workspace membership |
+| **Checkout scope (sparse-checkout) for clones and sandboxes**                                                                                    | ❌ does not exist anywhere. Personal `users/<userId>/` content is also unimplemented, so §11.10's owner-first layout + scoped checkout can be built correctly from the start rather than migrated                   |
+| **A repo home for notebooks**                                                                                                                    | ❌ notebooks appear nowhere in this RFC; §10's layout is `apps/ consoles/ skills/ dbt/`. Path convention and the commit-outputs-or-strip question are both undecided (§11.11)                                       |
+| **PR preview deploys**                                                                                                                           | ❌ deferred in §11.9 — but table stakes at Netlify/Vercel (§11.11), so the deferral is worth revisiting once deploy-on-merge exists                                                                                 |
+| dbt in the repo (§10 Block D3)                                                                                                                   | ❌ last; own RFC section                                                                                                                                                                                            |
 
 Net: **`git clone` works today; `claude` in that clone is Mako-blind; and a
 merged PR deploys nothing.** Those are the three gaps between here and §11.3.
@@ -835,7 +846,7 @@ their editor plus a browser tab pointed at the cloud.
 ### 11.10 Signal, noise, and checkout scope (2026-08-19)
 
 Access (§11.5) is not the only cost of putting everyone's content in one repo.
-A builder who is fully *entitled* to read `users/jonas/` still does not want it
+A builder who is fully _entitled_ to read `users/jonas/` still does not want it
 in their grep results — and neither does the agent, whose effectiveness is the
 entire premise of §11.1's second argument. Confidentiality and signal-to-noise
 are separate problems with, as it turns out, the same solution shape.
@@ -849,7 +860,7 @@ for a reason §10 did not state: **both access and noise are "exclude one
 subtree" operations.** Owner-first makes that a single rule. Type-first needs
 one rule per content type, the list grows with every type we add, and a
 forgotten rule fails silently and in the unsafe direction — new personal
-content leaks into the clone *and* into the agent's context. Type-first wins
+content leaks into the clone _and_ into the agent's context. Type-first wins
 only on uniform globbing (`apps/**/mako.json` finds every app in one pattern
 instead of two), which is a cost paid once in code, against a risk paid
 forever.
@@ -889,9 +900,9 @@ to selected repos. They never own the store, so they never answer "who may
 clone" (GitHub's ACL, the customer's to manage and revoke), never bridge
 platform identity to git identity (dashboard accounts and GitHub accounts are
 simply different things), and have no concept of personal-content-inside-a-
-shared-repo. Mako's cloud tier *is* the store, so it inherits all three — the
+shared-repo. Mako's cloud tier _is_ the store, so it inherits all three — the
 price of "instant start, no GitHub setup," which is a real advantage they do
-not offer. What they *do* validate is most of §11.4: many projects in one repo
+not offer. What they _do_ validate is most of §11.4: many projects in one repo
 with a base directory each and build-skip so touching `apps/a` does not rebuild
 `apps/b`; production branch → production deploy; and **PR previews as the
 review surface, which is table stakes for both** — mild evidence against
@@ -916,8 +927,8 @@ Corrected:
   gating, for real. Apps serialize to **ToolScript** (`.rsx`), a JSX-style
   markup that explicitly replaced an earlier YAML format for readability, plus
   autogenerated JSON dotfiles (`.defaults.json`, `.positions`). The decisive
-  line: *"Retool recommends you not modify Toolscript files directly and only
-  make changes when resolving merge conflicts"* — there is no linting or
+  line: _"Retool recommends you not modify Toolscript files directly and only
+  make changes when resolving merge conflicts"_ — there is no linting or
   type-checking for `.rsx`. Reviewable, deliberately not authorable.
 - **Hex Git export** is **one-way only** (Hex → git); Hex is explicitly the
   source of truth. YAML can be manually re-imported as a new project or a new
@@ -934,11 +945,11 @@ Corrected:
 **The differentiator is not "we use git and they don't."** All three use git,
 with branches, PRs, and main-is-production. It is **what the repo contains**:
 
-- *Them:* a serialized representation of GUI-authored state (YAML, `.rsx` +
+- _Them:_ a serialized representation of GUI-authored state (YAML, `.rsx` +
   JSON, JSON) — reviewable by design, explicitly not authorable. Hex will not
   take your edits back, Retool tells you not to make them, Appsmith's database
   remains the truth.
-- *Us:* **actual source** — a real Vite/React app, real `.sql` files — with git
+- _Us:_ **actual source** — a real Vite/React app, real `.sql` files — with git
   as the only store. That is precisely what makes §11.3 possible: Claude Code
   works on a Mako repo because it is a React app, and cannot productively work
   on a `.rsx` file the vendor tells you not to edit.
@@ -955,7 +966,7 @@ trade, not a discovery during a customer call.**
 
 **Two operational lessons worth stealing.**
 
-- *Appsmith on performance:* early git operations were "simply too slow, which
+- _Appsmith on performance:_ early git operations were "simply too slow, which
   caused the Appsmith client to time out," leading to corruption. They
   recovered ~4x by skipping components unchanged since the last commit and
   moving non-user-facing metadata into separate ignorable files. Their still-
@@ -964,12 +975,12 @@ trade, not a discovery during a customer call.**
   commit. Our architecture already avoids the worst of this (the sandbox runs
   git, the API is stateless, commits are per-turn), but the metadata-churn
   lesson transfers intact.
-- *Hex on branch protection:* their publish path cannot coexist with protected
+- _Hex on branch protection:_ their publish path cannot coexist with protected
   branches. §11.5 leans on branch protection as the deploy gate, so our publish
   must go **through** a PR/merge that respects protection, never around it. If
   we ever find ourselves needing an unprotected branch to publish, we have
   rebuilt Hex's constraint.
-- *All three on secrets:* configuration in committed files, encrypted secrets
+- _All three on secrets:_ configuration in committed files, encrypted secrets
   only in the platform database, never in the repo. That is consensus, and it
   settles §7's open question.
 
@@ -1038,7 +1049,7 @@ behind the provider seam — Mako still executing on the user's behalf, just
 pointed at their laptop.
 
 The real shape is simpler. The user has **the workspace repo** checked out. A
-`mako` executable supplies what only Mako can: data-source proxies,
+`mako` executable supplies what only Mako can: connection proxies,
 authentication, and the API surface. The user — or Claude Code — then runs
 `vite dev`, `npm test`, anything, **directly, as themselves**. Mako is not in
 the execution path, there is no sandbox abstraction, and **the user never has
@@ -1078,14 +1089,14 @@ while a dev server is running; vite needs its allowed-hosts check satisfied for
 the `*.e2b.app` host; and the public URL is unguessable but unauthenticated,
 which is the same exposure the existing token-gated static preview already
 accepts. §4.7's end state (separate PSL-registered domain, capability tokens)
-still stands for *published* apps — this is the dev-preview tier only.
+still stands for _published_ apps — this is the dev-preview tier only.
 
 ---
 
 ## 13. The app lifecycle: view, edit, publish (2026-08-21)
 
-> The gap this closes was found by its own author: *"even though I built this,
-> I don't understand the UX and I don't know how this works."* That is not a
+> The gap this closes was found by its own author: _"even though I built this,
+> I don't understand the UX and I don't know how this works."_ That is not a
 > labelling problem. Apps v2 today is an IDE with two developer preview modes,
 > and an app has no existence outside it.
 
@@ -1107,7 +1118,7 @@ that was never built:
   already materialize through v1's read-only-enforced pipeline into the shared
   artifact store — GCS in deployed environments — keyed
   `apps-v2/<projectId>/<name>.parquet`. That half is durable and works. It is
-  only *served* through the same ephemeral preview token, at
+  only _served_ through the same ephemeral preview token, at
   `__data/<name>.parquet`.
 
 So the missing piece is narrower than "publishing": the warehouse→parquet→
@@ -1116,11 +1127,11 @@ an app **and** its data to someone who is not editing it.
 
 ### 13.2 Three states, one primary action each
 
-| State | What the user sees | Primary action |
-|---|---|---|
-| **Published** (default for everyone) | the live app built from `main` — **no sandbox involved** | **Edit** |
-| **Editing** (on a branch, dev session live) | live `vite dev` with HMR | **Publish** (+ *Stop session*) |
-| **Never published** | empty state explaining what an app is | **Publish** |
+| State                                       | What the user sees                                       | Primary action                 |
+| ------------------------------------------- | -------------------------------------------------------- | ------------------------------ |
+| **Published** (default for everyone)        | the live app built from `main` — **no sandbox involved** | **Edit**                       |
+| **Editing** (on a branch, dev session live) | live `vite dev` with HMR                                 | **Publish** (+ _Stop session_) |
+| **Never published**                         | empty state explaining what an app is                    | **Publish**                    |
 
 Consequences worth stating:
 
@@ -1153,12 +1164,12 @@ and every deployment keeps a stable URL that can be linked to.
 1. **Serving data to a published app.** The artifacts are already durable; the
    serving path is not. A published app needs `__data/<name>.parquet` behind
    Mako's ACLs rather than a 30-minute token — and the current handler sets
-   `Access-Control-Allow-Origin: *`, which is safe only *because* the token is
+   `Access-Control-Allow-Origin: *`, which is safe only _because_ the token is
    the credential. This is §4.7's capability-token design and it is the hard
    part of publishing, harder than the build.
 2. **Freshness.** A published bundle is static; its data is not. Something must
    refresh bindings on a schedule (§9's Block 4) and publish must therefore
-   deploy *bundle + binding schedule*, not just a bundle.
+   deploy _bundle + binding schedule_, not just a bundle.
 3. **A failed build on `main`.** Production must keep serving the last good
    deployment and someone must be told. This argues for building the PR before
    the merge — the per-PR previews §11.11 found to be table stakes elsewhere.
@@ -1171,8 +1182,8 @@ and every deployment keeps a stable URL that can be linked to.
 
 ### 13.6 An app is a folder, not a row (decided 2026-08-21)
 
-Answers §10.1's open question — *"whether `AppProjectV2` dies entirely or stays
-as an id-stable cache"* — with: it dies. An app is `apps/<name>/` containing a
+Answers §10.1's open question — _"whether `AppProjectV2` dies entirely or stays
+as an id-stable cache"_ — with: it dies. An app is `apps/<name>/` containing a
 `mako.json`. The folder name is the identity, the manifest is the metadata, and
 git history is the provenance. Listing apps means reading the repo, so a folder
 pushed from a local checkout appears with no registration step of any kind —
@@ -1212,7 +1223,7 @@ only merging writes it. Sessions created before this are moved off `main`
 automatically, carrying their work, because the WIP ref is keyed by worktree
 rather than by branch.
 
-Publish therefore means *ship my work*: it merges the caller's own branch by
+Publish therefore means _ship my work_: it merges the caller's own branch by
 default. Publishing with no edits at all is not an error — it deploys what
 `main` already holds; telling someone who has changed nothing that their work
 "could not be merged" would simply be false.
@@ -1224,7 +1235,7 @@ directions: bad edits cannot reach it, and a bad build cannot land on it.
 
 If `main` is production, then putting a commit on `main` should be the act that
 makes something live — whether that came from `git push` in a checkout, a merge
-on GitHub, or the Publish button. A button that is the *only* way to ship
+on GitHub, or the Publish button. A button that is the _only_ way to ship
 breaks §11.3 outright: someone working from a local folder would have to open a
 browser to release.
 
@@ -1279,12 +1290,13 @@ binding as inert metadata and keep using their own `staging-`/`dev-` repos.
 **Connect-time adoption** (`adoptConnectedRepo`, run by the link route; on
 refusal the binding is rolled back):
 
-| repo on GitHub | workspace history | outcome |
-| --- | --- | --- |
-| empty | none | `fresh` — first commit seeds the repo |
-| empty | exists | `seeded` — history pushed into the repo |
-| has content | none | `imported` — the repo's history becomes the workspace repo; its `apps/<slug>/mako.json` folders appear as apps with no registration step (§13 doctrine, now applied to customer repos) |
-| has content | exists | refused — whose history wins is not ours to guess |
+| repo on GitHub               | workspace history | outcome                                                                                                                                                                                                                                                                                                              |
+| ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| empty                        | none              | `fresh` — first commit seeds the repo                                                                                                                                                                                                                                                                                |
+| empty                        | exists            | `seeded` — history pushed into the repo                                                                                                                                                                                                                                                                              |
+| has content                  | none              | `imported` — the repo's history becomes the workspace repo; its `apps/<slug>/mako.json` folders appear as apps with no registration step (§13 doctrine, now applied to customer repos)                                                                                                                               |
+| has content (shares history) | exists            | `reconnected` — the disconnect-then-connect-again case: unlinking never touches the local repo, so both sides hold the same lineage. `main` is reconciled like a webhook fetch (remote ahead → fast-forward; local ahead → push; diverged → mirror wins, local tip parked under `refs/mako/diverged/*`), then pushed |
+| has content (unrelated)      | exists            | refused — whose history wins is not ours to guess                                                                                                                                                                                                                                                                    |
 
 **A customer remote is never force-pushed.** mako-cloud repos are OUR remotes
 and keep `git push --mirror` (all refs, pruned). Connected repos get explicit
@@ -1511,7 +1523,7 @@ got here; where this section disagrees with one of them, this one wins.
   with revisions → files), notebooks (`.ipynb`; the kernel keeps running
   where it runs, only storage moves), then dbt (it has its own git
   integration today — this is unification, not migration). Flow
-  *definitions* follow, with a push reaction that re-registers Inngest
+  _definitions_ follow, with a push reaction that re-registers Inngest
   functions the way a push to `apps/` deploys; run state stays out of git.
   Dashboards are deferred: apps have replaced them in practice, so they
   move only if a generic entity-as-folder layer makes it free.
@@ -1572,7 +1584,7 @@ cheap.
 
 ## §13.3.1 Publish builds `main`, not a dangling candidate (RFC, 2026-08-27)
 
-**Problem.** Publish computed a *merge commit that no branch points to* (so
+**Problem.** Publish computed a _merge commit that no branch points to_ (so
 `main` only moved after a green build), parked it as `refs/mako/publish-candidate`
 — a ref namespace deliberately **hidden from the GitHub mirror** — and asked the
 sandbox to `git fetch origin <sha>`. The one object the build depends on was the
@@ -1591,7 +1603,7 @@ that "merging deploys" (decision log, 2026-08-19):
    deployment and move `publishedSha`.
 
 **Source and production are now decoupled.** `main` is the source of truth (may
-or may not build, like any branch). `publishedSha` is production and moves *only*
+or may not build, like any branch). `publishedSha` is production and moves _only_
 on a successful build. So a failed build leaves `main` ahead of what is deployed
 and the **live app untouched** — never "poisoned", just un-deployed. Rollback is
 still repointing `publishedSha`. This deletes the dangling-candidate machinery
@@ -1604,13 +1616,13 @@ opens a GitHub PR instead of merging directly, and merging it triggers the same
 app tweak is the wrong friction when everyone is building apps.
 
 **Still required for serverless foolproofness (NOT yet done).** Building `main`
-makes the target durable *in the mirror*, so a **cold** instance restores it. An
+makes the target durable _in the mirror_, so a **cold** instance restores it. An
 **already-warm but stale** instance still can't serve a just-pushed `main`, and a
-naive "reconcile on read" is unsafe (a *forced* mirror fetch can revert a local
+naive "reconcile on read" is unsafe (a _forced_ mirror fetch can revert a local
 commit that hasn't been mirror-pushed yet — data loss). The durable fix is to
 make the bare repo a **store, not a per-instance cache**: a shared/persistent
 volume for `APPS_V2_GIT_ROOT`, or `min-instances=1` per environment, or an
-*additive* fetch-by-missing-sha at the git endpoint (never a forced ref update).
+_additive_ fetch-by-missing-sha at the git endpoint (never a forced ref update).
 This is an infra decision to make before high-concurrency use.
 
 ## §13.9 The client renders; the box governs dev processes (RFC, 2026-08-27)
@@ -1627,8 +1639,8 @@ vite servers. The client was healing itself back to a remembered state.
 
 **The invariant.** The client **renders state and requests actions on an
 explicit click; it never heals.** No `useEffect` — no mount, reload, reconnect,
-or restore path — may start a process. Restoring a *view* (which pane to show)
-is fine; starting a *server* is not. Reads fall back to the last commit when no
+or restore path — may start a process. Restoring a _view_ (which pane to show)
+is fine; starting a _server_ is not. Reads fall back to the last commit when no
 sandbox is running, so a restored workbench costs nothing until the user acts.
 
 **The asymmetry that makes it safe.** The system may **STOP** a dev server; it
@@ -1636,6 +1648,7 @@ may never **START** one. Stops can only ever reduce load, so they cannot run
 away; auto-starts are the dangerous direction and are click-only, everywhere.
 
 **Who governs what.**
+
 - **The box is the authority for liveness.** Its agent observes running servers
   every 2s and now also **reaps** any dev server with no viewer for 20 minutes
   ("viewer" = an established TCP connection to the port — the preview iframe's
@@ -1661,7 +1674,7 @@ agent's per-server activity into eviction would make it exact.
 The dev-server URL is `https://<port>-<sandboxId>.e2b.app` — the E2B sandbox id
 is baked into the hostname, and E2B offers no stable alias. So a recycle mints a
 new id and every open tab's iframe is suddenly pointing at a dead sandbox
-("sandbox not found"), and a *second* browser had no way to know the first had
+("sandbox not found"), and a _second_ browser had no way to know the first had
 recycled until its own poll failed or the 90s cache TTL lapsed.
 
 Fix, within the existing push pipeline (box → `patchBoxState` → Redis/memory →
@@ -1720,13 +1733,13 @@ never call the API directly (go through a Zustand store action, read via a
 selector — enforced by `no-restricted-imports`); external inputs (REST and
 realtime/Redis) land in Zustand via one reducer and components read only from
 there; localStorage is for per-browser UI prefs only and may never auto-trigger
-a side effect. Redis flows *through* Zustand — that is the correct unidirectional
+a side effect. Redis flows _through_ Zustand — that is the correct unidirectional
 shape, not an anti-pattern.
 
 ## §13.12 The dev tunnel: how a cloud box reaches a laptop API (2026-08-27)
 
 **Who uses it: the E2B sandbox, and only in local dev.** The box is a
-Firecracker microVM in E2B's cloud whose git origin is *this* API —
+Firecracker microVM in E2B's cloud whose git origin is _this_ API —
 but `localhost:8080` inside that microVM is the microVM, not the developer's
 machine. Deployed, `BASE_URL` is already public and no tunnel runs.
 
@@ -1744,7 +1757,7 @@ Exactly three arrows go **box → API**, and all three ride the tunnel:
 3. Nothing else. The **terminal does not use it**: xterm traffic is
    browser → API → E2B SDK, outbound from the API — same for every exec the
    API runs in the box. The API can always reach the box; the tunnel exists so
-   the box can reach the API *back*.
+   the box can reach the API _back_.
 
 **Mechanics.** Cloudflare Tunnel is inbound-without-inbound: `cloudflared` on
 the laptop holds a few persistent outbound QUIC connections to Cloudflare's
@@ -1762,13 +1775,13 @@ concurrently):
   `cloudflared tunnel login` cert covers, which is why it is realadvisor.com
   and not mako.ai) and records `APPS_V2_TUNNEL_NAME`/`APPS_V2_TUNNEL_HOSTNAME`
   in `.env` (machine-specific, never synced to Secret Manager). The runner then
-  only supervises the *process* — the URL never changes, so `.env.tunnel` is
+  only supervises the _process_ — the URL never changes, so `.env.tunnel` is
   written once and boxes never need their origin reconfigured.
 - **Quick tunnel (fallback).** No named vars → an ephemeral
   `trycloudflare.com` URL. These get **revoked by Cloudflare while cloudflared
   is still running** (every clone/push/event then fails "could not resolve
   host"), and macOS's mDNSResponder negatively caches the dead name so a live
-  tunnel can *look* dead locally. The supervisor therefore health-checks end to
+  tunnel can _look_ dead locally. The supervisor therefore health-checks end to
   end — resolve via `1.1.1.1` directly, `curl --resolve` through the tunnel to
   `/api/auth/me` — publishes the URL only after it verifies, re-checks every
   15s, and respawns with a fresh URL after two consecutive failures.
@@ -1789,7 +1802,7 @@ the hostname with no code change.
 
 A deliberate break-it session (live box inspection + two independent code
 reviews + driving the real UI) against §13.9–§13.11. Everything below is
-fixed on this branch; the point of recording it is the *shapes*, which will
+fixed on this branch; the point of recording it is the _shapes_, which will
 try to come back.
 
 **The live box was a museum of the bugs.** The (workspace,user) box had been
@@ -1883,9 +1896,9 @@ stop call and the hooks exemption grandfathered.
 
 ## §13.14 app2_open_app: the agent can put an app on the user's screen (2026-08-28)
 
-Tested the promised loop end-to-end through the chat panel: *create an app →
+Tested the promised loop end-to-end through the chat panel: _create an app →
 it appears in the tree → opens in a tab → dev session starts → agent edits
-files → the user watches live reload.* It broke exactly at the seam between
+files → the user watches live reload._ It broke exactly at the seam between
 the tool families: `open_app`/`run_app` are v1-only (Mongo apps, client-side
 preview iframes), so after `app2_create_app` the agent had no way to show its
 work — `run_app` answered "No visible preview iframe … open it with
@@ -1907,7 +1920,7 @@ recovered alone (`app2_bash` npm install, retried, succeeded); "make the
 title orange" hot-reloaded on screen with no manual action. The box-state
 push keeps every other tab's dots consistent throughout. One observation
 for the record: the file is the only truth the preview renders — when the
-model *claimed* an edit it had not made, the preview correctly kept showing
+model _claimed_ an edit it had not made, the preview correctly kept showing
 v1 until a real edit landed.
 
 ## §13.15 Agent eyes: build truth, runtime truth, pixel truth (2026-08-28)
@@ -1986,7 +1999,7 @@ Three real defects the matrix flushed out, all fixed:
    silently, exactly when the console mattered most. Batches are now small
    (40 x 500 chars), and truncation is loud at every layer:
    `droppedBeyondCaps` on the browse result, a `[bridge] N earlier console
-   events dropped` marker in the console file, and a truncation marker when
+events dropped` marker in the console file, and a truncation marker when
    the file itself is cycled.
 3. **Restart orphaned its own server from the registry.** The restart reap
    ran AFTER the port allocation, deleting the app's registry entry that
@@ -2045,8 +2058,8 @@ echoes the active session's name instead of a generic caption.
 moment a workspace binds a repo (RealAdvisor → `realadvisor/mako-workspace`),
 `resolveMirrorTarget` prefers the binding over `appsV2CloudRepo`, and every
 mirror push lands in the customer's own repo. Adoption on connect follows a
-matrix (fresh repo → seed; matching history → import; unrelated history →
-refuse), and pushes to a customer remote are NEVER forced: `refs/heads/*` and
+matrix (fresh repo → seed; empty workspace → import; shared history → reconnect;
+unrelated history → refuse), and pushes to a customer remote are NEVER forced: `refs/heads/*` and
 `refs/tags/*` go unforced, only `+refs/mako/*` may move. Divergence therefore
 stalls by design and is reconciled with a merge commit, not `--force`. Inbound,
 the GitHub webhook matches pushes by repo binding
@@ -2175,7 +2188,7 @@ nothing below depends on it, and the final acceptance run used a bare clone.
 
 ### 15.1 What the baseline run found
 
-The agent *succeeded*, in about fifteen minutes, mostly by heroics:
+The agent _succeeded_, in about fifteen minutes, mostly by heroics:
 
 1. **The repo told it nothing.** README, `.gitignore`, `apps/`,
    `packages/app-sdk`. No `CLAUDE.md`, no `.mcp.json`, no skills — §11.7's
@@ -2185,7 +2198,7 @@ The agent *succeeded*, in about fifteen minutes, mostly by heroics:
    carries a 14-char `prefix` next to the real `key`; store the wrong one and
    you get a bare `401 Unauthorized`.
 3. **A plain `vite dev` has no data.** `__data/<name>.parquet` is answered by
-   a middleware Mako's launcher generates *inside the E2B box* with a box
+   a middleware Mako's launcher generates _inside the E2B box_ with a box
    token (`dev-server.service.ts`). On a laptop Vite's SPA fallback returns
    `index.html` and DuckDB fails with `footer != PAR1`. The agent pulled the
    binding's query through `sql_execute_query`, wrote the rows to a parquet
@@ -2205,14 +2218,14 @@ The agent *succeeded*, in about fifteen minutes, mostly by heroics:
 ### 15.2 What we shipped
 
 **A seeded, refreshed workspace template** (`api/src/apps/workspace-template.ts`).
-Two kinds of file. *Managed* — overwritten on every refresh, headed "managed
+Two kinds of file. _Managed_ — overwritten on every refresh, headed "managed
 by Mako": `AGENTS.md` (the instructions; `CLAUDE.md` is one line, `@AGENTS.md`,
 so Claude Code, Codex and Cursor read the same text), `.mcp.json` (`url:
 ${MAKO_API_URL:-https://app.mako.ai}/api/mcp`, `Authorization: Bearer
 ${MAKO_API_KEY}` — Claude Code expands both from the environment), `.envrc`
 (`dotenv_if_exists`, so direnv users export the key by cd-ing in),
 `.mako/workspace.json` (workspace id + template version), and the vendored
-`packages/app-sdk`. *Seeded* — written once when absent and the user's from
+`packages/app-sdk`. _Seeded_ — written once when absent and the user's from
 then on: `README.md`, `.gitignore`.
 
 The instructions are pointers, not knowledge. They say what the repo is, that
@@ -2225,7 +2238,7 @@ committed. Skill bodies stay behind the MCP server: one copy in
 drifts — the §11.8 warning taken literally. The starter-repo idea (clone a
 template repository on workspace creation) was rejected for the same reason:
 a second source of truth plus a network dependency on creation. A public
-starter repo, if we want one, is a *showcase* of this template, not its source.
+starter repo, if we want one, is a _showcase_ of this template, not its source.
 
 Refresh is **monotonic on `templateVersion`**: a repo only moves forward, so a
 dev API and a prod API on different versions sharing one connected repo (this
@@ -2292,9 +2305,9 @@ It also found two things worth more than the chart:
 - **DATE columns arrive as epoch milliseconds.** The parquet → DuckDB-WASM path
   hands `first_invoice_date` to the app as a number; the v1-migrated
   `formatDate` did `new Date(\`${d}T00:00:00\`)`, threw, and React unmounted
-  the tree — the deployed app was almost certainly blank until this commit.
-  v1 served JSON strings, so other migrated apps likely share the pattern.
-  Decision needed: normalise DATE/TIMESTAMP in `useQuery` (ISO strings), or
+the tree — the deployed app was almost certainly blank until this commit.
+v1 served JSON strings, so other migrated apps likely share the pattern.
+Decision needed: normalise DATE/TIMESTAMP in `useQuery` (ISO strings), or
   document it in the skill and audit the migrated apps.
 - **No charting guidance for v2 apps.** `get_relevant_skills` / the `apps`
   system skill returned nothing for "chart in a Mako app"; the agent fell
@@ -2305,7 +2318,7 @@ It also found two things worth more than the chart:
   commit touched 58 app folders; prod republished 13 published apps in
   alphabetical order and stopped at 09:05:30Z, about four and a half minutes
   after the webhook. The loop catches per-app failures, so an exception does
-  not explain it; the work runs *detached* from the webhook response
+  not explain it; the work runs _detached_ from the webhook response
   (`github.routes.ts`), which on Cloud Run is where background CPU gets
   throttled away. Harmless this time (the other 25 serve their previous
   build, and the change was dev-only config), but `publishedSha` now lags
@@ -2336,7 +2349,7 @@ Three follow-ups from the review of the first pass, plus one correction.
   (v2): `.mcp.json` carries no `Authorization` header and the agent signs in
   through its own browser prompt; the API key path remains for CI. To make
   that work, OAuth tokens get the same narrow allowlist scoped keys got —
-  the three read-only binding routes — with the token validated *before* the
+  the three read-only binding routes — with the token validated _before_ the
   path check.
 - **`server.json`** at the repository root describes the hosted remote for
   the MCP Registry (`ai.mako/mako`, streamable HTTP). Submitting it (and the
@@ -2529,7 +2542,7 @@ and no mako-cloud credentials, so nothing left the machine:
   v1 produces `Restore "save: …" (sha)` and the open editor reloads. The
   description job fired on save (Inngest `console-description`), generated
   text + embedding stamped with the source sha.
-- **External push**: a laptop clone over the git endpoint (mgt_ token),
+- **External push**: a laptop clone over the git endpoint (mgt\_ token),
   `consoles/laptop/external test.sql` committed and pushed → sync created
   the row (workspace scope, `laptop` folder created, authored description,
   owner = pusher) before the app was touched.
@@ -2599,9 +2612,12 @@ prod-vs-preview signal `MAKO_CLOUD_REPO_PREFIX=ws` is replaced by an explicit
 **The rule users see:** connect GitHub, or nothing saves. In production,
 creating an app or saving a console in a workspace without a connected repo
 returns 412 `github_required` with "Connect a GitHub repository first
-(Settings → GitHub)". Dev, tests and previews keep local-only bare repos
-(nothing durable — previews are throwaway by design). The consoles CLI lost
-`--create-repo`; adoption happens on the first save after connecting.
+(Settings → GitHub)". A PR preview restores its empty local cache from the
+connected repo so git-backed apps, consoles, and dbt remain visible, but its
+push gate stays closed: preview commits never write back to the customer's
+repo and remain throwaway. Dev and tests may still use local-only bare repos.
+The consoles CLI lost `--create-repo`; adoption happens on the first save
+after connecting.
 
 Six test repos in `mako-ai-cloud` remain to be deleted by hand (`gh repo
 delete` needs the `delete_repo` scope). Cut through complexity: one tier,
@@ -2622,7 +2638,7 @@ TTL) and the browser downloads from the bucket directly. GCS supplies
 downloads are bounded by the bucket, not the API; the API's cost per file is
 one existence probe plus a locally-computed signature. Streaming remains as
 the fallback — the filesystem store has no URLs to sign, and any store that
-cannot *prove* redirects are safe keeps proxying exactly as before.
+cannot _prove_ redirects are safe keeps proxying exactly as before.
 
 "Prove safe" is CORS, and it is why the last attempt at this retreated to
 proxying (the comment lives in `dashboard-materialization.ts`): the request
@@ -2646,7 +2662,7 @@ downloading them. Two rules of the design follow:
 
 Converted paths: the workspace artifact route, published `__data` (viewer
 and share), the preview grant route (whose cross-origin `ACAO: *` now rides
-on the 302 as well — a redirect response is CORS-checked *before* it is
+on the 302 as well — a redirect response is CORS-checked _before_ it is
 followed), and an app share's `/artifacts/<name>`. Dashboard/notebook
 artifacts deliberately keep streaming: their `rev`-addressed responses are
 `immutable`-cacheable, which beats a fresh signed URL per request for
@@ -3017,3 +3033,420 @@ on.
   pins because they only fail on old code for the trivial reason that the
   route did not exist yet. #912 now enforces the first half of this
   mechanically.
+
+## 26. The overlay audit: four kinds, six bug classes (2026-09-03)
+
+PR #975 put dbt jobs on the GET/list overlay and, browser-tested against
+hostile files on main, found six ways the shape breaks. The other three
+kinds (flows, skills, consoles) were then audited for the same six, and
+every one of them had most of the list. What was fixed, per class:
+
+1. **Read-path resync stamps the sha, push-sync then skips the side effect.**
+   dbt: `ensureJobDerivedCache` now calls `applyJobScheduleChange` when the
+   file changed schedule/enabled. Flows and skills stamp too, but their
+   push-sync side effects (CDC reconcile, endpoint mint on create,
+   re-embed) either run from the row's current definition regardless of the
+   skip or apply to new rows only, so no change there. Consoles have no
+   read-path resync since the storm fix (#971); their file-derived folder
+   placement and schedule wait for the push — documented, not changed.
+2. **"Valid" must mean the same thing in the list and in push-sync, and one
+   bad file must never abort the loop.** dbt: `jobApplyFailure` now also
+   parses the cron and computes its next date (a `99 99 99 99 99` cron and a
+   `Nope/Zone` timezone used to throw inside the loop after creating the
+   row). Flows: `flowFileApplyFailure` runs in the sync loop too, and
+   `markFlowInvalid` is a targeted `updateOne` instead of a `save()` that a
+   legacy row could fail. Skills: the loop is guarded per file; a file that
+   stops parsing keeps its row (marked) instead of being deleted as
+   "removed", and files past the index cap are no longer deleted either.
+   Consoles: the loop is guarded per file so the deletion pass and realtime
+   events always run.
+3. **Git-only ids.** dbt push-sync now creates rows with `derivedJobId`, as
+   flows/skills/consoles already did. Flow slug reservation consults the
+   files at main, so a name that slugifies onto a git-only file no longer
+   overwrites it under a second id.
+4. **Invalid git-only stubs must be whole.** dbt: name/commands/enabled
+   filled, unrunnable. Flows: `name`/`syncMode`/`createdAt`/`updatedAt`
+   filled — one half-defined item used to fail the client's persisted-list
+   validation and cold-start every reload. Skills: null dates added.
+5. **Mongoose materialises an unset nested path as `{}`.** Every
+   `if (row.definitionInvalid)` in flows, skills and dbt read healthy rows as
+   invalid: every list resynced every row, every flow run re-parsed its file,
+   and an unbound workspace's flow runs were refused outright. Presence is
+   now `typeof definitionInvalid?.reason === "string"` everywhere, clearing
+   is `$unset` (assigning `undefined` and saving persists `{}`), and a file
+   reverted to identical content clears its marker in push-sync.
+6. **Silent UI failures.** dbt job view and flow editor render the run/save
+   failure and an invalid-file warning; the skills settings surface the
+   server's reason on toggle/delete.
+
+Execution follows the file, not the row: the console execute route, the
+scheduled-query executor and the agent's console loader run the code at
+main when the console is live there (`liveConsoleCode`), and job/flow
+runs resolve through the overlay — a file that only lives in git is a 409
+with the reason, a row whose file was deleted is not runnable. Saving a
+git-only console by its derived id now ACL-checks against the file's path
+scope, keeps its language, and replaces the file instead of writing a
+`.sql` beside a `.js`. dbt environments follow `dbt/environments.yml` on
+project GET/list, the way jobs follow `dbt/jobs/*.yml`.
+
+**Decided, not changed — schedulers on unbound workspaces.** When a
+workspace has no GitHub binding (or a file is deleted and the push has not
+been reconciled), the list is empty but Inngest keeps running the Mongo
+rows: dbt's due-job poll, the flow scheduler, the CDC consumer, and
+scheduled consoles all select rows without consulting the binding. Gating
+them on the overlay would be a behaviour change for every workspace that
+never connected a repo, and the audit found only one such flow row in
+production. Left as is; the fix for a deleted definition is the push-sync
+that removes the row, which the loop guards above now make reliable.
+
+**Not in this block (D, E, F of the hand-off prompt):** the three
+documented notebook v1 gaps (§24), the skills triage branch on the
+workspace repo, and connectors-as-code. Each is content or a decision, not
+an overlay bug.
+
+## 27. Skills are files, full stop (2026-09-04)
+
+The audit of what was still in Mongo found the skills index in the worst
+state of any kind: 113 rows for 97 files, 21 retired skills still injected
+into the agent, 3 new ones never indexed, and every push since 2026-09-02
+aborting the sync on one file whose description exceeded a schema cap. The
+index existed to feed a retrieval pipeline (embeddings, an Atlas vector
+index, `$text`, entity overlap, a 30-entry cap, 3 auto-injected bodies) that
+none of the vendors use for a catalog this size. Anthropic's Agent Skills,
+Claude Code and OpenAI's Codex all do the same thing: every skill's name and
+description in the system prompt, the model loads what it needs by reading
+the file. Retrieval earns its place in the hundreds-to-thousands range;
+Mako has 97.
+
+So: the files at main are the skills. `loadSkillCatalog` is an in-memory
+view keyed by the main commit — a push moves the commit, the next read
+rebuilds; nothing else runs. Every offered skill's name and description
+(cut at 200 characters) is in every prompt; `pinned: true` in frontmatter
+puts a body excerpt there too, within a 2,500-character per-skill and
+7,500-character aggregate budget; `load_skill` reads the complete body by
+name; `search_skills` is a keyword match over the catalog. Writes are
+commits, as before. The live `skills` collection, its
+vector and text indexes, `useCount`/`lastUsedAt`/`injectedCount`, the
+single-slot `previousBody` undo (git history is the undo), `sourceBlobSha`,
+`definitionInvalid` markers, the push-sync, the derived ids — all gone.
+Ids are `sha1(workspace:name)`, stable as long as the name is. A file that
+does not parse is listed in the settings panel with the reason and never
+offered. The removal migration renames the old collection to
+`skills_retired_20260904` instead of destroying it, because the earlier
+best-effort adoption may have skipped a workspace; that recovery archive is
+outside every runtime path and can be removed after deployment-specific
+verification.
+
+Two limits are now about the prompt, not a schema: descriptions cap at 300
+characters (they are index lines), and the 200-skill cap stays as the point
+past which an index alone stops routing well. Unbound workspaces have no
+skills — the posture every other kind already had.
+
+## 28. Who is looking: identity is a primitive, permissions are the app's (2026-09-07)
+
+> Supersedes §27 (viewer roles). Rolled back the same evening (PR #988):
+> #983 put a fixed list of job roles (`sdr`, `bdr`, `csm`, …) and an ISO
+> country on every workspace member, #984 auto-joined domains with a
+> default job role and country, #985/#987 added a "wait for an admin"
+> gate. Joan: *"Mako is meant to be an Open Source data platform as well
+> as a SaaS. It cannot be so opinionated about roles and countries. These
+> are specific to RealAdvisor and don't belong in the platform."* The
+> problem stands; the solution is replaced by this section.
+
+**The rule.** The platform knows WHO a person is and WHAT THEY MAY TOUCH,
+and nothing about what they do for a living. Workspace roles stay access
+levels — owner / admin / member / viewer — and `WorkspaceMember` gains no
+field a company would want to rename. Anything an app needs to shape its
+view (team, territory, seniority, quota) is data the app owns, looked up in
+the warehouse by the one key every CRM, HRIS and warehouse already share:
+the email address.
+
+**The primitive: `useViewer()`.** A published app can ask who is looking.
+`__data/viewer.json` — next to `__data/index.json` and the parquet files,
+so it exists in the sandbox, the published app and a laptop `vite dev`
+alike — answers:
+
+```json
+{
+  "id": "…", "email": "sam@acme.com",
+  "workspace": { "id": "…", "name": "Acme", "role": "viewer" },
+  "app": { "id": "…", "slug": "fr-sales", "role": "viewer" }
+}
+```
+
+or `null` on an anonymous share link. `workspace.role` is the access role;
+`app.role` is the resource ACL's answer (owner / editor / viewer,
+`utils/resource-acl.ts`). Nothing else, deliberately: every extra key here
+would be the first step back to §27.
+
+**Identity reaches the cookie-free route through the grant.** The
+sandboxed iframe has an opaque origin and no cookies, so the `pub.` token
+minted by `POST /apps/{id}/view-token` carries `u`/`e` (user id, email)
+under the HMAC — a tampered email fails like any other byte. Static build
+previews carry the builder the same way (in-memory grant). `/live/*` uses
+the session. `serveDeploymentFile({ viewer })` is still the one function
+all three published routes converge on; the anonymous share passes `null`.
+The identity lookup (workspace name, membership, ACL) happens only on the
+`viewer.json` request — never per asset.
+
+**The pattern (the apps skill teaches it):** a roster binding —
+`bindings/viewers.sql`, `email` plus only the columns the app's logic
+needs — joined on `lower(viewer.email)` in `useDuckDB`, and the UI
+branches on the row. A promotion in the CRM changes the view the next
+morning with no commit and no admin click. `MAKO_VIEWER_AS=<email>` in the
+repo's `.env` (or `GET /apps/{id}/viewer?as=`) previews the app as another
+member; editors of the app only.
+
+**What this is not (yet).** Every binding an admitted viewer can read is
+downloaded whole into their browser, so the roster pattern shapes the UI;
+it is not access control. Accepted for now (Joan: *"I don't care about
+that at this point"*). Server-side enforcement is an additive step on the
+same primitive when the day comes: `mako.json` names a claims binding
+whose row for `viewer.email` supplies `{{ viewer.<column> }}`, a single
+`-- row_filter:` per binding compiles to a bound-parameter predicate, and
+the DuckDB filter service from #983 (`filtered-parquet.service.ts`,
+`compileRowFilter`) streams the result. That was Théo's rejected `source`
+design, which was the generic one: claims from data, never from an enum.
+
+**Domain auto-join stays, stripped.** The UX Théo needed — *"un bdr reçoit
+le lien … il passe par gauth mako, et pouf il est sur sa vue"* — needs
+membership without an invitation, which Slack, Notion and Google Workspace
+all offer. `settings.autoJoin = { domains, role: "viewer" | "member" }`,
+one card on the Members page, applied by `requireWorkspace` and the apps
+router's access check on the first request that would have refused the
+person. No default job role, no country, no pending gate: a newcomer with
+no roster row simply sees an empty app.
+
+Code: `api/src/apps/app-viewer.service.ts` (resolution),
+`preview.service.ts` (`viewer` on grants), `deployment.service.ts`,
+routes `apps.ts` (`GET /{id}/viewer`, view-token, preview grant) /
+`apps-preview.ts` / `public-share.ts`; `services/auto-join.service.ts`,
+`routes/workspaces.ts` (`GET`/`PUT /{id}/auto-join`); SDK `useViewer()` /
+`getViewer()` and the Vite plugin's `viewer.json` + `MAKO_VIEWER_AS`
+(2.4.0); workspace template v12. Tests: `app-viewer.service.test.ts`,
+`preview.service.test.ts`, `deployment.service.test.ts`,
+`auto-join.service.test.ts`.
+
+## 29. Apps in real folders; favourites as a view (2026-09-16)
+
+Supersedes the deferral in §14.4 ("nesting would touch slug identity…") and
+replaces PR #1004's per-user Mongo folders. Decided with Joan on 2026-09-16:
+**Workspace and Personal are real filesystem folders, exactly as consoles do
+it; favourites are virtual folders in the database.** No YAML registry, no
+manifest field for organisation.
+
+### 29.1 Identity moves into the manifest
+
+An app is still a folder holding `mako.json` (§13.6) — now at any depth under
+`apps/` or `users/<id>/apps/`. Its identity is **`id` in the manifest**
+(24 hex, a Mongo `_id`), not its path. A manifest without an id keeps the id
+it always had, derived from `apps/<slug>` (`derivedAppId(workspace, key)`,
+`app-paths.ts`), so nothing moves for the 68 apps that predate ids:
+deployments, binding artifacts, sandbox sessions and share tokens are all
+keyed by that same id. New apps are scaffolded with the id; the server stamps
+it on the first move it makes (`moveProject`, `moveAppFolder`) so a move
+never changes an identity, even for an un-stamped app. A copied folder that
+declares another app's id does not steal it: the incumbent keeps the id, the
+copy is indexed under a derived id with `duplicateOf` set, and the UI offers
+"Give this copy its own id" (`POST /apps/{id}/stamp-id`).
+
+### 29.2 The index is the read model
+
+`app-index.service.ts` reads the tree at `main` once per push
+(`syncRepoBackedResources`) and writes one flat row per app to `app_index`
+(`workspaceId, appId, path, slug, scope, ownerId, treeOid, title,
+description, hasManifestId, duplicateOf, schedules[], indexedSha`) plus the
+folders of both trees (`.gitkeep`-only ones included) on `app_index_heads`.
+Derived, disposable, rebuilt when main's sha differs — the sidebar, the
+agent's `app_list_apps`, the ChatGPT connector and the binding scheduler all
+read it instead of opening the repo. Flat on purpose (string ids, no nested
+documents): this is the first table that moves to Postgres, and it is a
+column copy. `AppProject` stays the state row (sharing, `publishedSha`, env,
+share token) and gains `path`, kept current by the sync; the unique
+`(workspaceId, slug)` index becomes unique `(workspaceId, path)`
+(migration `2026-09-16-150000`).
+
+`resolveProjectRef(workspaceId, ref)` is THE resolver: id, repo path
+(`apps/Sales/report`, with or without `apps/`) or slug all mean the same app.
+A slug shared by several apps resolves to the top-level `apps/<slug>` if
+there is one, otherwise to nothing — an ambiguous name never silently picks
+a folder. URLs: a top-level app keeps `/apps/<slug>`; a nested one is
+addressed by id (`appUrlRef`, `appsStore.ts`).
+
+### 29.3 Moves are commits; nothing rebuilds
+
+`POST /apps/{id}/move { folder, name? }` and the agent's `app_move_app` are
+one lifecycle commit on `main` (`git mv` in a throwaway clone, manifest
+stamped if needed), mirror-pushed durably like `createProject`. Folder
+operations are commits too: `POST /apps/folders` writes a `.gitkeep`,
+`PATCH /apps/folders` renames/moves a directory with its apps (ids stamped),
+`DELETE /apps/folders?path=` refuses a non-empty folder. Workspace-tree
+changes need an editing member (viewers read); a person's `users/<id>/apps`
+tree is theirs alone.
+
+Deploy-on-push decides "changed" by the app folder's **git tree oid** by app
+id, not by which paths a diff lists (`changedApps` discovers apps at
+`before` AND `after` with the same identity rules): a moved app has the same
+tree and is not rebuilt; a vanished one is unpublished. One exception: the
+FIRST server-side move of a legacy app stamps its manifest, which changes the
+tree oid, so each of the 68 pre-id apps rebuilds once. The hourly reconcile
+compares tree oids at `publishedSha` vs head. Inngest deploy events carry
+`appId`; the singleton key is `workspaceId + '/' + appId` (CEL — no `??`).
+
+### 29.4 Favourites
+
+`favourites` is one self-referential table (Firefox's `moz_bookmarks`):
+folders and items are rows, `parentId` nests them, `position` orders
+siblings, an item is `(kind, refId)` with a partial unique index per user.
+`/api/workspaces/:id/favourites` — `GET`, `POST /folders`,
+`PUT|DELETE /items/{kind}/{refId}`, `PATCH|DELETE /{id}`. A star is a VIEW:
+it never moves an entity, needs no commit, and a row that no longer resolves
+is simply not rendered. The Apps, Notebooks and Dashboards explorers show a
+Starred tree on top (with the person's folders, drag to file, star toggle on
+hover); Apps additionally shows the Workspace and Personal trees from the
+index, with drag-to-move (`AppsExplorer.tsx`, `apps-explorer-tree.ts`,
+`starred/starred-section.tsx`, `favouritesStore.ts`).
+
+### 29.5 The SDK comes from npm
+
+Every app's `"@makoai/app-sdk": "file:../../packages/app-sdk"` broke the
+moment an app was one level deeper. Scaffolds now depend on the published
+package (`^<version this API ships>`, `appSdkDependency()`), and the
+workspace repo's apps were switched in one commit (imports renamed from
+`@mako/app-sdk` to `@makoai/app-sdk`, lockfiles regenerated).
+`packages/app-sdk` stays vendored for anything still referencing it.
+
+### 29.6 Not done here
+
+- Consoles keep their own `SavedConsole` index and `ConsoleFolder` rows; the
+  generic `repo_entities` table that would fold consoles, notebooks and apps
+  into one catalog is the Postgres-era follow-up.
+- A pinned (starred) row is a leaf: expanding an app's files happens on the
+  real row in the Workspace/Personal tree.
+- Tests: `app-paths.test.ts`, `app-index.service.test.ts` (real git + mongo:
+  discovery, identity, moves, duplicates, folders, scaffold-in-folder),
+  `favourites.service.test.ts`, `apps-explorer-tree.test.ts`,
+  `starred-section.test.ts`, `favouritesStore.test.ts`.
+
+### 29.7 What the review changed (2026-09-16)
+
+Twenty-three confirmed findings from the deep review of #1005, all fixed on
+the branch. The ones that change how the design works:
+
+- **Identity across a laptop `git mv` of an UNSTAMPED app.** A manifest
+  without an id leaves no trace of identity in git, so a rename from a
+  checkout used to read as a delete plus a new app (deployment unpublished,
+  share link dead, env vars orphaned). `assignAppIds` gained a tier: an
+  unstamped app whose folder vanished is matched by its **tree oid**
+  (`treeIncumbentsOf`) to the app at the new path, consumed once so a copy
+  never inherits it. `readIndexedAppsAt` applies the same rule at older
+  commits, so deploy-on-push sees a move as unchanged.
+- **The index never rebuilds backwards.** On Cloud Run the instance that took
+  a push has the commit before the others fetch it (≤ `FRESHEN_INTERVAL_MS`).
+  An instance whose local main is an ancestor of the indexed sha serves the
+  rows as they are instead of overwriting them with its stale tree (which
+  also flipped a just-moved app's project path back).
+- **Project rows move in two phases.** `(workspaceId, path)` is a unique
+  PARTIAL index (`path` present), not sparse — a compound sparse index still
+  indexes rows whose `path` is missing, so two rows mid-swap collided on
+  `null`. The sync unsets the moving rows' paths first, then sets them; two
+  stamped apps that swap folders in one commit now sync. A state row whose
+  path a different id claims (a stamped manifest landed on a legacy row's
+  folder) gives the path up rather than blocking `ensureProjectRow` forever.
+- **Visibility follows the tree.** Filing a row-backed app into a personal
+  tree sets `access: private, owner_id`; filing it back into `apps/` sets
+  `access: workspace`. Both the server move and the sync's "row follows the
+  folder" do it, so a "personal" app is never still readable by everyone.
+- **One authorization rule set** (`app-authorization.ts`): the routes, the
+  agent tools and the ChatGPT connector share `authorizeFolderTarget` /
+  `authorizeAppMove`. An actor with NO role (an API key whose creator left)
+  is refused everywhere, not only where the check happened to be
+  `role !== "viewer"`. The connector's search and fetch filter personal
+  trees by the acting user like every other reader.
+- **Deploy-on-push diffs at the delivery's own commits** (`before`→`after`,
+  never "main's current head"), skips a delivery whose sha is an ancestor of
+  what is already published (`superseded`), resolves the app's path AT the
+  deployed sha, and, when the app has moved since, re-enqueues main's head
+  under the new path instead of building in a directory that does not exist
+  there. Absent at `sha` but present on main is not "gone".
+- **The binding scheduler refreshes the index** for every workspace with a
+  published app before reading schedules — the index is built on reads and
+  pushes, and a workspace nobody opens would otherwise silently stop.
+- **Dev servers are keyed by app id** in the box: launcher, log, socket,
+  staged data, the port registry and the agent's reports all use
+  `appSlug(handle)` = the app's id (basenames are not unique once apps nest).
+  The launcher records its app directory in `/tmp/mako-dev-<id>.dir` so the
+  agent can still reap servers of deleted apps; the client matches a
+  dev-server entry by id or basename (legacy boxes).
+- **Ambiguous slugs resolve to nothing** in `resolveProjectRef` too: the
+  row-lookup fallback runs only when the index knows no app by that slug.
+- **A live box that predates a move** pulls main once before reads; if the
+  folder is still missing, reads fall back to the repo at main.
+- Folder names are Unicode (`apps/café` is listed again); the client's app
+  deep-link pattern and URL builder encode/decode the segment.
+- Starring an already-starred item INTO a folder moves it there
+  (`addFavourite` with `parentId`); the client's toggle refetches on failure
+  instead of restoring a snapshot; Notebooks/Dashboards drops of a folder on
+  Starred are refused.
+- The explorer shows "Shared with me" again (personal-tree apps another user
+  shared with you); rename/delete are wired for app rows and off for file
+  rows; the client resolves `/apps/<ref>` with the server's rules.
+- CI fails when `packages/app-sdk`'s version is not on npm (scaffolds pin
+  `^<that version>`).
+
+A second review pass on the fixed branch confirmed ten more, also fixed:
+
+- A legacy app moved AND edited in one push is matched by git's rename
+  detection on its manifest (`renamedAppFolders`, `git diff -M` between the
+  previously indexed commit and the new one), where neither the path nor
+  the tree oid could.
+- The no-rebuild-backwards guard also covers an indexed commit this clone
+  has never seen: fetch it from the mirror first, then compare. A commit
+  that is not on the mirror either was never durable (a re-bound repo, a
+  wiped preview clone), so the index is rebuilt from local main.
+- Move writes (id stamps, and a pre-npm `file:` SDK dependency rewritten to
+  the registry package) are computed AFTER the pre-commit freshen, so a
+  laptop's manifest edit is never overwritten by a stale copy; the source
+  folder is re-checked against the freshened main.
+- `PATCH /apps/folders` requires write access to every row-backed app the
+  folder holds (a member could otherwise re-own a colleague's restricted
+  app by moving its folder into their personal tree).
+- Stop-dev, the dev terminal window, the build log and the port registry
+  are keyed by app id everywhere (the terminal waited forever on a socket
+  named by basename); a box that predates the change has its
+  `apps/<basename>` registry slot adopted rather than duplicated.
+- The scheduler warms the index for every workspace with a state row, not
+  only published ones. `stamp-id` on an already-stamped app is a no-op.
+  Scaffolding inside another app is refused. Bad folder paths are 400s.
+  A CAS rollback that did not apply is logged instead of swallowed.
+- `discoverApps` never promotes a manifest-less project's directories (or
+  its `src/`) to folders; a folder holds apps, folders and `.gitkeep` only.
+- The SDK's vite plugin and the CLI identify the app by its manifest id
+  when it has one (basename fallback) — this ships with the next SDK
+  publish; the API accepts both.
+- Client: the dev terminal id is `dev-<app id>`; inline rename of an app row
+  edits the folder name, never the title; malformed `/apps/<ref>` segments
+  no longer throw; Notebooks/Dashboards Starred headers create favourites
+  folders and starred rows dropped on other headers stay put (shared
+  `useStarredTree` hook); the folder name validator matches the server's
+  Unicode rule.
+
+Found on a real box while verifying the above, and fixed too: on an agent
+upgrade the installer killed only the process the pid file named, so a box
+resumed from before the pid file existed kept its OLD agent running beside
+the new one — and the old code reaped every id-keyed dev server as a ghost
+within a minute of its start. `installBoxAgent` now stops every running
+`node /tmp/mako-box-agent.mjs` on a version change. Verified on the
+preview: Start dev attaches the `dev-<id>` terminal to the running vite
+session, the sidebar dot and the running list are keyed by id, a fresh API
+instance rediscovers the session, and Stop dev kills the process, frees the
+registry slot and removes the socket.
+
+**Previews cannot verify the write paths.** The preview job does not set
+`APPS_REQUIRE_CONNECTED_REPO`, so `commitOnMainDurably` commits only to that
+instance's local clone (no mirror push); a later request served by another
+instance rebuilds the index from an older main and reports the folder "not
+on main". Reads, favourites and the explorer are testable there; moves and
+folders are proven by `app-index.service.test.ts`. And the preview's bound
+repo is the REAL workspace repo, so a Workspace-tree move from a preview
+would make prod unpublish that app — test moves in a personal tree only.

@@ -16,16 +16,18 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
-// No connected GitHub repo: the mirror helpers become no-ops and the
-// reconciler has nothing destructive to verify against (no removals here).
-vi.mock("./workspace-repos.service", () => ({
-  getWorkspaceRepo: vi.fn(async () => null),
-  findWorkspaceIdByRepoBinding: vi.fn(async () => null),
-}));
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
@@ -36,11 +38,27 @@ vi.mock("../inngest/client", () => ({
 import { Flow } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  blobOid,
   commitBlobsOnBranch,
   initRepo,
+  readBlob,
   repoDirFor,
+  resolveCommit,
 } from "../apps/repository.service";
-import { syncFlowsFromRepo } from "./flow-sync.service";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "../apps/bind-test-workspace-repo";
+import {
+  derivedFlowId,
+  ensureFlowDerivedCache,
+  isFlowMarkedInvalid,
+  liveFlowToPlain,
+  loadLiveFlowById,
+  loadLiveFlows,
+  resolveLiveFlowRow,
+  syncFlowsFromRepo,
+} from "./flow-sync.service";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -108,6 +126,87 @@ beforeEach(async () => {
   WS = new Types.ObjectId().toString();
   await Flow.deleteMany({});
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
+});
+
+describe("markers, reverts, and resolution", () => {
+  it("an unset marker is not 'invalid': an unbound workspace's run is not refused", async () => {
+    await push({ "flows/marker.yml": flowYaml("Marker") });
+    await syncFlowsFromRepo(WS, "user-42");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "marker" });
+    expect(row).not.toBeNull();
+    // Mongoose materialises the unset nested path as `{}` on a hydrated
+    // doc; `if (row.definitionInvalid)` used to read that as invalid.
+    expect(isFlowMarkedInvalid(row!)).toBe(false);
+    const plain = liveFlowToPlain(
+      (await loadLiveFlows(WS)).find(item => item.def.slug === "marker")!,
+      WS,
+    );
+    expect(plain.definitionInvalid).toBeUndefined();
+    await unbindTestWorkspaceRepo(WS);
+    expect(await ensureFlowDerivedCache(row!)).toBe("ok");
+  });
+
+  it("a broken file is marked once; reverting to identical content clears it in push-sync", async () => {
+    const good = flowYaml("Revertable");
+    await push({ "flows/revertable.yml": good });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({ "flows/revertable.yml": "name: [broken" });
+    await loadLiveFlows(WS);
+    const marked = await Flow.findOne({ workspaceId: WS, slug: "revertable" });
+    expect(marked?.definitionInvalid?.reason).toBe("unparseable flow file");
+    const at = marked?.definitionInvalid?.at;
+    await loadLiveFlows(WS);
+    expect(
+      (await Flow.findOne({ workspaceId: WS, slug: "revertable" }))
+        ?.definitionInvalid?.at,
+    ).toEqual(at);
+    await push({ "flows/revertable.yml": good });
+    const result = await syncFlowsFromRepo(WS, "user-42");
+    expect(result.invalid).toEqual([]);
+    expect(
+      (await Flow.findOne({ workspaceId: WS, slug: "revertable" }))
+        ?.definitionInvalid?.reason,
+    ).toBeUndefined();
+  });
+
+  it("resolves a git-only flow as 409, a synced one as ok, a deleted file as 404; the stub is whole", async () => {
+    await push({ "flows/only-git.yml": flowYaml("Only git") });
+    const live = await loadLiveFlows(WS);
+    const id = live.find(item => item.def.slug === "only-git")!.id.toString();
+    const gitOnly = await resolveLiveFlowRow(WS, id);
+    expect(gitOnly.ok).toBe(false);
+    if (!gitOnly.ok) expect(gitOnly.status).toBe(409);
+
+    await syncFlowsFromRepo(WS, "user-42");
+    const synced = await resolveLiveFlowRow(WS, id);
+    expect(synced.ok).toBe(true);
+
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { deletes: ["flows/only-git.yml"] },
+      { message: "laptop delete" },
+    );
+    const gone = await resolveLiveFlowRow(WS, id);
+    expect(gone.ok).toBe(false);
+    if (!gone.ok) expect(gone.status).toBe(404);
+
+    await push({ "flows/broken-stub.yml": "name: [broken" });
+    const stub = liveFlowToPlain(
+      (await loadLiveFlows(WS)).find(item => item.def.slug === "broken-stub")!,
+      WS,
+    );
+    expect(stub).toMatchObject({
+      name: "broken-stub",
+      syncMode: "full",
+      enabled: false,
+    });
+    expect(stub.createdAt).toBeInstanceOf(Date);
+    expect(
+      (stub.definitionInvalid as { reason?: string } | undefined)?.reason,
+    ).toBe("unparseable flow file");
+  });
 });
 
 describe("a NEW flow file creates a row", () => {
@@ -118,10 +217,16 @@ describe("a NEW flow file creates a row", () => {
 
     expect(result.created).toBe(1);
     expect(result.invalid).toEqual([]);
-    const row = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     expect(row).not.toBeNull();
     expect(row!.createdBy).toBe("user-42");
     expect(row!.type).toBe("webhook");
+    expect(row!._id.toString()).toBe(
+      derivedFlowId(WS, "close-to-bigquery").toString(),
+    );
     expect(row!.syncEngine).toBe("cdc");
     expect(row!.backfillSchedule?.enabled).toBe(true);
     expect(row!.backfillSchedule?.cron).toBe("0 3 * * *");
@@ -139,7 +244,10 @@ describe("a NEW flow file creates a row", () => {
     const result = await syncFlowsFromRepo(WS);
 
     expect(result.created).toBe(1);
-    const row = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     // Same author the dbt job sync uses for the same situation.
     expect(row?.createdBy).toBe("sync");
   });
@@ -168,7 +276,9 @@ describe("one bad file is that file's problem", () => {
     expect(result.invalid).toEqual(["a-bad-one"]);
     expect(result.created).toBe(1);
     expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
-    expect(await Flow.findOne({ workspaceId: WS, slug: "z-good-one" })).not.toBeNull();
+    expect(
+      await Flow.findOne({ workspaceId: WS, slug: "z-good-one" }),
+    ).not.toBeNull();
   });
 
   it("a connector NAME where an id belongs is refused, not thrown", async () => {
@@ -199,24 +309,34 @@ describe("one bad file is that file's problem", () => {
       "flows/other.yml": flowYaml("Other"),
     });
     await syncFlowsFromRepo(WS, "user-42");
-    const before = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const before = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
 
     await push({ "flows/close-to-bigquery.yml": "name: [broken\n" });
     const result = await syncFlowsFromRepo(WS, "user-42");
 
     expect(result.invalid).toEqual(["close-to-bigquery"]);
     expect(result.deferred).toEqual([]);
-    const after = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const after = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     expect(after).not.toBeNull();
     expect(after!.name).toBe(before!.name);
     expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);
+    expect(after!.definitionInvalid?.reason).toMatch(/unparseable/i);
     expect(await Flow.countDocuments({ workspaceId: WS })).toBe(2);
   });
 
   it("a failed save on an EXISTING row keeps that row as it was", async () => {
     await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
     await syncFlowsFromRepo(WS, "user-42");
-    const before = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const before = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
 
     await push({
       "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
@@ -227,9 +347,180 @@ describe("one bad file is that file's problem", () => {
     const result = await syncFlowsFromRepo(WS, "user-42");
 
     expect(result.invalid).toEqual(["close-to-bigquery"]);
-    const after = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    const after = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
     expect(after!.name).toBe(before!.name);
     expect(after!.writeMode).toBe(before!.writeMode);
     expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);
+  });
+});
+
+describe("GET/list from git", () => {
+  it("serves the file at main when the Mongo row has no definition body", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
+    expect(row).not.toBeNull();
+    await Flow.updateOne(
+      { _id: row!._id },
+      { $set: { name: "", queries: [] } },
+    );
+    const stale = await Flow.findById(row!._id);
+    expect(stale?.name).toBe("");
+
+    const listed = await loadLiveFlows(WS);
+    expect(listed).toHaveLength(1);
+    const plain = liveFlowToPlain(listed[0], WS);
+    expect(plain.name).toBe("Close → BigQuery");
+    expect(plain.syncEngine).toBe("cdc");
+
+    const got = await loadLiveFlowById(WS, row!._id.toString());
+    expect(got).not.toBeNull();
+    expect(liveFlowToPlain(got!, WS).name).toBe("Close → BigQuery");
+  });
+
+  it("resyncs a stale sourceBlobSha from the blob at main", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await Flow.updateOne(
+      { workspaceId: WS, slug: "close-to-bigquery" },
+      { $set: { name: "stale-mongo", sourceBlobSha: "deadbeef" } },
+    );
+
+    const listed = await loadLiveFlows(WS);
+    expect(liveFlowToPlain(listed[0], WS).name).toBe("Close → BigQuery");
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
+    expect(row?.name).toBe("Close → BigQuery");
+    expect(row?.sourceBlobSha).not.toBe("deadbeef");
+  });
+
+  it("lists a git file that has no Mongo row", async () => {
+    await push({ "flows/from-laptop.yml": flowYaml("From laptop") });
+    const listed = await loadLiveFlows(WS);
+    expect(listed.map(item => item.def.slug)).toEqual(["from-laptop"]);
+    expect(listed[0].row).toBeNull();
+    expect(listed[0].id.toString()).toBe(
+      derivedFlowId(WS, "from-laptop").toString(),
+    );
+    expect(liveFlowToPlain(listed[0], WS).name).toBe("From laptop");
+    const got = await loadLiveFlowById(WS, listed[0].id.toString());
+    expect(got?.def.slug).toBe("from-laptop");
+  });
+
+  it("does not list a Mongo row that has no git file", async () => {
+    await Flow.create({
+      workspaceId: WS,
+      slug: "mongo-only",
+      name: "should-not-appear",
+      type: "webhook",
+      sourceType: "connector",
+      dataSourceId: CONNECTOR,
+      destinationDatabaseId: DEST,
+      syncEngine: "cdc",
+      createdBy: "user-42",
+    });
+    const listed = await loadLiveFlows(WS);
+    expect(listed.map(item => item.def.slug)).not.toContain("mongo-only");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "mongo-only" });
+    expect(row).not.toBeNull();
+    expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
+  });
+
+  it("does not throw when a file at main parses but fails schema save", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
+        "write_mode: append_dedup",
+        "write_mode: not_a_real_mode",
+      ),
+    });
+
+    // GET/list must not 500 the explorer because one file is unsavable.
+    // syncFlowsFromRepo already swallows this; ensureFlowDerivedCache did not.
+    await expect(loadLiveFlows(WS)).resolves.toHaveLength(1);
+    const row = await Flow.findOne({
+      workspaceId: WS,
+      slug: "close-to-bigquery",
+    });
+    expect(row?.name).toBe("Close → BigQuery");
+    expect(row?.writeMode).toBe("append_dedup");
+    expect(row?.definitionInvalid?.reason).toMatch(
+      /writeMode|write_mode|enum/i,
+    );
+  });
+
+  it("does not serve a schema-invalid file as a live definition", async () => {
+    await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close-to-bigquery.yml": flowYaml("Renamed").replace(
+        "write_mode: append_dedup",
+        "write_mode: not_a_real_mode",
+      ),
+    });
+
+    const listed = await loadLiveFlows(WS);
+    const plain = liveFlowToPlain(listed[0], WS);
+    // Git is the store, but a file the reactor cannot save must not be
+    // applied over the last-good row or look valid in GET/list.
+    expect(plain.definitionInvalid).toBeTruthy();
+    expect(plain.name).toBe("Close → BigQuery");
+    expect(plain.writeMode).toBe("append_dedup");
+  });
+
+  it("does not 500 GET/list when one file's connector_id is not an ObjectId", async () => {
+    await push({
+      "flows/a-by-name.yml": flowYaml("By name").replace(
+        `connector_id: ${CONNECTOR}`,
+        "connector_id: close",
+      ),
+      "flows/z-good-one.yml": flowYaml("Good"),
+    });
+
+    await expect(loadLiveFlows(WS)).resolves.toHaveLength(2);
+    const plains = (await loadLiveFlows(WS)).map(item =>
+      liveFlowToPlain(item, WS),
+    );
+    const bad = plains.find(item => item.slug === "a-by-name");
+    const good = plains.find(item => item.slug === "z-good-one");
+    expect(bad?.definitionInvalid).toBeTruthy();
+    expect(good?.name).toBe("Good");
+    expect(good?.definitionInvalid).toBeUndefined();
+  });
+
+  it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
+    await push({ "flows/leftover.yml": flowYaml("Leftover") });
+    await syncFlowsFromRepo(WS, "user-42");
+    expect((await loadLiveFlows(WS)).map(item => item.def.slug)).toEqual([
+      "leftover",
+    ]);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "leftover" });
+    expect(row).not.toBeNull();
+
+    await unbindTestWorkspaceRepo(WS);
+    expect(await loadLiveFlows(WS)).toEqual([]);
+    expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
+    expect(await Flow.findById(row!._id)).not.toBeNull();
+    const leftoverHead = await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    expect(leftoverHead).toBeTruthy();
+    const leftoverFile = await readBlob(
+      repoDirFor(WS),
+      leftoverHead as string,
+      "flows/leftover.yml",
+    );
+    expect(leftoverFile.contents).toContain("name: Leftover");
+    expect(row!.sourceBlobSha).toBe(blobOid(leftoverFile.contents));
   });
 });

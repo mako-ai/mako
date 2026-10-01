@@ -634,6 +634,8 @@ importers:
         specifier: workspace:*
         version: link:../app-sdk
 
+  packages/connector-sdk: {}
+
   packages/desktop:
     devDependencies:
       '@types/node':

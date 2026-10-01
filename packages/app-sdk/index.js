@@ -23,47 +23,208 @@ function getDb() {
   return dbPromise;
 }
 
+// The server answers failures with JSON { error, hint, retryAfterMs } —
+// show that, not a bare status code (and never let it reach DuckDB, where it
+// would surface as a baffling Catalog Error).
+async function responseError(res, what) {
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* not JSON (e.g. a published build with no artifact) */
+  }
+  const detail = body ? [body.error, body.hint].filter(Boolean).join(" — ") : "";
+  const error = new Error(what + " (HTTP " + res.status + ")" + (detail ? ": " + detail : ""));
+  error.status = res.status;
+  if (body && typeof body.retryAfterMs === "number") error.retryAfterMs = body.retryAfterMs;
+  return error;
+}
+
+async function loadBinding(name, bust) {
+  const res = await fetch(
+    "__data/" + encodeURIComponent(name) + ".parquet" + (bust ? "?refresh=" + Date.now() : ""),
+  );
+  if (!res.ok) {
+    throw await responseError(res, 'Data for binding "' + name + '" could not be loaded');
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const db = await getDb();
+  if (bust) await db.dropFile(name + ".parquet").catch(() => {});
+  await db.registerFileBuffer(name + ".parquet", buf);
+  const conn = await db.connect();
+  try {
+    // A view per binding so SQL can name tables by binding name.
+    await conn.query(
+      'CREATE OR REPLACE VIEW "' + name.replace(/"/g, '""') +
+        "\" AS SELECT * FROM read_parquet('" + name + ".parquet')",
+    );
+  } finally {
+    await conn.close();
+  }
+}
+
 const registered = new Map(); // name -> Promise<void>
 function registerBinding(name) {
   if (!registered.has(name)) {
-    registered.set(
-      name,
-      (async () => {
-        const res = await fetch("__data/" + encodeURIComponent(name) + ".parquet");
-        if (!res.ok) {
-          registered.delete(name);
-          // The dev server answers failures with JSON { error, hint } — show
-          // that, not a bare status code (and never let it reach DuckDB,
-          // where it would surface as a baffling Catalog Error).
-          let detail = "";
-          try {
-            const body = await res.json();
-            detail = [body.error, body.hint].filter(Boolean).join(" — ");
-          } catch {
-            /* not JSON (e.g. a published build with no artifact) */
-          }
-          throw new Error(
-            'Data for binding "' + name + '" could not be loaded (HTTP ' + res.status + ")" +
-              (detail ? ": " + detail : ""),
-          );
-        }
-        const buf = new Uint8Array(await res.arrayBuffer());
-        const db = await getDb();
-        await db.registerFileBuffer(name + ".parquet", buf);
-        const conn = await db.connect();
-        try {
-          // A view per binding so SQL can name tables by binding name.
-          await conn.query(
-            'CREATE OR REPLACE VIEW "' + name.replace(/"/g, '""') +
-              "\" AS SELECT * FROM read_parquet('" + name + ".parquet')",
-          );
-        } finally {
-          await conn.close();
-        }
-      })(),
-    );
+    const load = loadBinding(name, false);
+    registered.set(name, load);
+    load.catch(() => registered.delete(name));
   }
   return registered.get(name);
+}
+
+/** Replace a binding's loaded bytes with what the server has now. */
+async function reloadBinding(name) {
+  // Let a load in flight settle first, or its (older) bytes could land after
+  // the fresh ones and win.
+  const previous = registered.get(name);
+  if (previous) await previous.catch(() => {});
+  const load = loadBinding(name, true);
+  registered.set(name, load);
+  try {
+    await load;
+  } catch (error) {
+    registered.delete(name);
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Refresh — rematerialize a binding on demand. The runtime POSTs to the
+// data URL's sibling, `__data/<name>/refresh`, and every server that answers
+// `__data/<name>.parquet` (Mako's viewer, preview and share routes, the
+// sandbox dev server, the laptop Vite plugin) rebuilds the binding behind
+// it, with its own authorization. The runtime then reloads the bytes and
+// bumps a version every query hook depends on, so the page re-renders with
+// the new rows — and keeps the old ones on screen until they arrive.
+// ---------------------------------------------------------------------------
+const bindingListeners = new Set();
+let bindingState = { version: 0, refreshing: new Set() };
+function setBindingState(next) {
+  bindingState = next;
+  for (const l of [...bindingListeners]) l();
+}
+function subscribeBindings(l) {
+  bindingListeners.add(l);
+  return () => bindingListeners.delete(l);
+}
+function getBindingState() {
+  return bindingState;
+}
+function useBindingState() {
+  return React.useSyncExternalStore(subscribeBindings, getBindingState, getBindingState);
+}
+
+const refreshes = new Map(); // name -> Promise<RefreshResult>
+
+/**
+ * Rebuild one binding's data and reload it. Resolves with what the server
+ * built; rejects with an Error carrying `status` (403: not allowed here,
+ * 429: refreshed too recently — see `retryAfterMs`, 502: the query failed —
+ * the message says why). Concurrent calls for the same binding share one
+ * request.
+ */
+export function refreshBinding(name) {
+  const pending = refreshes.get(name);
+  if (pending) return pending;
+  const run = (async () => {
+    const res = await fetch("__data/" + encodeURIComponent(name) + "/refresh", { method: "POST" });
+    if (!res.ok) {
+      throw await responseError(res, 'Binding "' + name + '" could not be refreshed');
+    }
+    const body = await res.json();
+    await reloadBinding(name);
+    setBindingState({ ...bindingState, version: bindingState.version + 1 });
+    return {
+      binding: name,
+      materialization: body.materialization,
+      rowCount: body.rowCount,
+      byteSize: body.byteSize,
+      materializedAt: body.materializedAt,
+    };
+  })();
+  refreshes.set(name, run);
+  setBindingState({ ...bindingState, refreshing: new Set([...bindingState.refreshing, name]) });
+  run
+    .finally(() => {
+      refreshes.delete(name);
+      const refreshing = new Set(bindingState.refreshing);
+      refreshing.delete(name);
+      setBindingState({ ...bindingState, refreshing });
+    })
+    .catch(() => {
+      /* the caller's copy of `run` carries the rejection */
+    });
+  return run;
+}
+
+/**
+ * Refresh several bindings at once — every staged binding when no names are
+ * given (what `useDuckDB(...).refresh()` does). All of them are attempted;
+ * if any failed, rejects after the rest settle with `failures` listing them.
+ */
+export async function refreshBindings(names) {
+  const list = names ?? (await bindingIndex());
+  const settled = await Promise.allSettled(list.map(refreshBinding));
+  const failures = settled
+    .map((s, i) => (s.status === "rejected" ? { binding: list[i], error: s.reason } : null))
+    .filter(Boolean);
+  if (failures.length) {
+    const error = new Error(
+      failures.map(f => (f.error instanceof Error ? f.error.message : String(f.error))).join("; "),
+    );
+    error.failures = failures;
+    throw error;
+  }
+  return settled.map(s => s.value);
+}
+
+// ---------------------------------------------------------------------------
+// Viewer — who is looking. `__data/viewer.json` is answered per request by
+// whoever serves the app (Mako's published/preview routes from the session
+// or the signed token, the Vite plugin from the API), so the app cannot
+// forge it. `null` on an anonymous share link, and on servers that predate
+// it (404). Mako says only what it knows: id, email, the workspace and the
+// person's ACCESS role in it, their role on this app. Anything else about
+// the person is data the app looks up in the warehouse by email.
+// ---------------------------------------------------------------------------
+let viewerPromise = null;
+function normalizeViewer(body) {
+  if (!body || typeof body !== "object" || typeof body.email !== "string") return null;
+  const ws = body.workspace && typeof body.workspace === "object" ? body.workspace : {};
+  const app = body.app && typeof body.app === "object" ? body.app : {};
+  return {
+    id: typeof body.id === "string" ? body.id : "",
+    email: body.email,
+    workspace: {
+      id: typeof ws.id === "string" ? ws.id : "",
+      name: typeof ws.name === "string" ? ws.name : "",
+      role: typeof ws.role === "string" ? ws.role : null,
+    },
+    app: {
+      id: typeof app.id === "string" ? app.id : "",
+      slug: typeof app.slug === "string" ? app.slug : null,
+      role: typeof app.role === "string" ? app.role : null,
+    },
+  };
+}
+
+/** The viewer, once per page. Resolves to null when nobody is known. */
+export function getViewer() {
+  viewerPromise ??= fetch("__data/viewer.json").then(async r => {
+    if (r.status === 404) return null;
+    const body = await r.json().catch(() => null);
+    if (!r.ok) {
+      throw new Error(
+        body && body.error ? String(body.error) : "Viewer lookup failed (HTTP " + r.status + ")",
+      );
+    }
+    return normalizeViewer(body);
+  });
+  viewerPromise.catch(() => {
+    viewerPromise = null;
+  });
+  return viewerPromise;
 }
 
 /** Names of every staged binding — written by the dev server next to the
@@ -127,38 +288,40 @@ async function runSql(sql, rowLimit) {
   }
 }
 
-function useAsyncQuery(run, deps) {
-  const [state, setState] = React.useState({
-    data: null,
-    fields: null,
-    error: null,
-    loading: true,
-    truncated: false,
-    rowCount: null,
-  });
+const EMPTY = {
+  data: null,
+  fields: null,
+  error: null,
+  loading: true,
+  truncated: false,
+  rowCount: null,
+  refreshing: false,
+};
+
+// Runs `run` when `deps` change (a fresh query: rows reset, `loading`), and
+// again when a refresh lands (`refreshing`: the rows already on screen stay
+// until the new ones arrive — a dashboard must not blink to empty on every
+// refresh). `isRefreshing` says whether a refresh in flight concerns this
+// query, so `refreshing` is true from the click, not only from the reload.
+function useAsyncQuery(run, deps, isRefreshing) {
+  const bindings = useBindingState();
+  const [state, setState] = React.useState(EMPTY);
+  const seenVersion = React.useRef(bindings.version);
   React.useEffect(() => {
     let active = true;
-    setState({
-      data: null,
-      fields: null,
-      error: null,
-      loading: true,
-      truncated: false,
-      rowCount: null,
-    });
+    const isRefresh = seenVersion.current !== bindings.version;
+    seenVersion.current = bindings.version;
+    setState(s => (isRefresh && s.data !== null ? { ...s, refreshing: true } : EMPTY));
     run().then(
       result => {
-        if (active) setState({ ...result, error: null, loading: false });
+        if (active) setState({ ...result, error: null, loading: false, refreshing: false });
       },
       error => {
         if (active)
           setState({
-            data: null,
-            fields: null,
+            ...EMPTY,
             error: error instanceof Error ? error.message : String(error),
             loading: false,
-            truncated: false,
-            rowCount: null,
           });
       },
     );
@@ -166,25 +329,65 @@ function useAsyncQuery(run, deps) {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-  return state;
+  }, [...deps, bindings.version]);
+  return {
+    ...state,
+    refreshing: state.refreshing || isRefreshing(bindings.refreshing),
+  };
 }
 
 export function useQuery(name, opts) {
   const rowLimit = opts ? opts.rowLimit : undefined;
-  return useAsyncQuery(async () => {
-    await registerBinding(name);
-    const r = await runSql(
-      'SELECT * FROM "' + name.replace(/"/g, '""') + '"',
-      rowLimit,
+  const state = useAsyncQuery(
+    async () => {
+      await registerBinding(name);
+      const r = await runSql(
+        'SELECT * FROM "' + name.replace(/"/g, '""') + '"',
+        rowLimit,
+      );
+      return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
+    },
+    [name, rowLimit],
+    refreshing => refreshing.has(name),
+  );
+  const refresh = React.useCallback(() => refreshBinding(name), [name]);
+  return { ...state, refresh };
+}
+
+/**
+ * Who is looking at the app: `{ viewer, loading, error }`. `viewer` is null
+ * while loading, on an anonymous share link, and when the server does not
+ * know. Join `viewer.email` against your own roster binding for anything
+ * beyond identity and access role — that is the app's call, not Mako's.
+ */
+export function useViewer() {
+  const [state, setState] = React.useState({ viewer: null, loading: true, error: null });
+  React.useEffect(() => {
+    let active = true;
+    getViewer().then(
+      viewer => {
+        if (active) setState({ viewer, loading: false, error: null });
+      },
+      error => {
+        if (active) {
+          setState({
+            viewer: null,
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
     );
-    return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
-  }, [name, rowLimit]);
+    return () => {
+      active = false;
+    };
+  }, []);
+  return state;
 }
 
 export function useDuckDB(sql, opts) {
   const rowLimit = opts ? opts.rowLimit : undefined;
-  return useAsyncQuery(async () => {
+  const state = useAsyncQuery(async () => {
     // Register everything the server staged, so SQL can join across
     // bindings by name without declaring them first. A binding that fails to
     // load must not sink the whole query set silently: remember why, and when
@@ -211,7 +414,10 @@ export function useDuckDB(sql, opts) {
       }
       throw error;
     }
-  }, [sql, rowLimit]);
+  }, [sql, rowLimit], refreshing => refreshing.size > 0);
+  // A query over every binding refreshes every binding.
+  const refresh = React.useCallback(() => refreshBindings(), []);
+  return { ...state, refresh };
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +451,21 @@ export function navigate(to, opts) {
     window.history.pushState(null, "", url);
   }
   emitLocation();
+  // Inside Mako's shell the app is a sandboxed iframe with an opaque origin,
+  // so the line above moved a URL nobody can see or copy. Tell the host,
+  // which projects the query onto its own address bar (/apps/<slug>?...)
+  // and seeds it back into the iframe when that link is opened. Only the
+  // query travels: the frame's pathname is the preview token, not the app's.
+  if (window.parent !== window) {
+    try {
+      window.parent.postMessage(
+        { type: "mako-app:navigate", search: url.search },
+        "*",
+      );
+    } catch {
+      // A host that is not Mako, or a frame that forbids it: nothing to tell.
+    }
+  }
 }
 
 export function useLocation() {

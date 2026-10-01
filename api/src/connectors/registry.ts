@@ -3,15 +3,21 @@ import {
   type WebhookCapabilities,
   type IncrementalCapabilities,
 } from "./base/BaseConnector";
-import { IConnector } from "../database/workspace-schema";
+import { ISourceConnection } from "../database/workspace-schema";
 import * as fs from "fs";
 import * as path from "path";
 import { loggers } from "../logging";
+import {
+  isWorkspaceConnectorType,
+  SandboxedConnector,
+} from "./workspace/SandboxedConnector";
 
 const logger = loggers.connector();
 
 // Type for connector constructor
-type ConnectorConstructor = new (dataSource: IConnector) => BaseConnector;
+type ConnectorConstructor = new (
+  connection: ISourceConnection,
+) => BaseConnector;
 
 // Updated metadata interface
 interface ConnectorRegistryMetadata {
@@ -49,9 +55,20 @@ const DEFAULT_INCREMENTAL_CAPABILITIES: IncrementalCapabilities = {
 class ConnectorRegistry {
   private connectors: Map<string, ConnectorRegistryMetadata> = new Map();
   private initialized = false;
+  private initializing: Promise<void>;
 
   constructor() {
-    void this.initializeConnectors();
+    this.initializing = this.initializeConnectors();
+  }
+
+  /**
+   * Resolves once the directory scan has finished. The constructor starts it
+   * without waiting, which is right for the hot paths — but a caller that
+   * lists the catalog (`getAllMetadata`) right after boot would otherwise
+   * see an empty registry and report a workspace with no connectors.
+   */
+  async ready(): Promise<void> {
+    await this.initializing;
   }
 
   /**
@@ -146,14 +163,14 @@ class ConnectorRegistry {
         dirName,
       });
 
-      // Create a dummy data source to get metadata
+      // Dummy source connection so the constructor can report metadata
       const dummyDataSource = {
         _id: "dummy",
         name: "dummy",
         type: dirName,
         config: {},
         settings: {},
-      } as unknown as IConnector;
+      } as unknown as ISourceConnection;
 
       let metadata;
       try {
@@ -196,16 +213,31 @@ class ConnectorRegistry {
   }
 
   /**
-   * Get a connector instance for a data source
+   * Instantiate connector *code* for a source *connection* (credential).
+   *
+   * A `ws:` type is a connector the workspace itself wrote, which lives in its
+   * git repo rather than in this directory. It resolves to one adapter class
+   * whose methods run the folder in a sandbox — the instance is built here
+   * without touching Mongo or a sandbox, because this is a hot, synchronous
+   * path and constructing a connector must never boot a machine.
    */
-  getConnector(dataSource: IConnector): BaseConnector | null {
-    const metadata = this.connectors.get(dataSource.type);
+  getConnectorFor(connection: ISourceConnection): BaseConnector | null {
+    if (isWorkspaceConnectorType(connection.type)) {
+      return new SandboxedConnector(connection);
+    }
+
+    const metadata = this.connectors.get(connection.type);
     if (!metadata) {
       return null;
     }
 
     const ConnectorClass = metadata.connector;
-    return new ConnectorClass(dataSource);
+    return new ConnectorClass(connection);
+  }
+
+  /** @deprecated use getConnectorFor */
+  getConnector(dataSource: ISourceConnection): BaseConnector | null {
+    return this.getConnectorFor(dataSource);
   }
 
   /**
@@ -231,6 +263,12 @@ class ConnectorRegistry {
 
   /**
    * Check if a connector type is registered
+   *
+   * Workspace connectors are deliberately NOT answered here. Whether
+   * `ws:acme` exists depends on which workspace is asking, and a global
+   * yes/no would either leak one workspace's connectors into another's or
+   * refuse every one of them. Callers with a workspace in hand use
+   * `hasWorkspaceConnector` instead.
    */
   hasConnector(type: string): boolean {
     return this.connectors.has(type);
@@ -242,7 +280,8 @@ class ConnectorRegistry {
   async reinitialize() {
     this.connectors.clear();
     this.initialized = false;
-    await this.initializeConnectors();
+    this.initializing = this.initializeConnectors();
+    await this.initializing;
   }
 }
 

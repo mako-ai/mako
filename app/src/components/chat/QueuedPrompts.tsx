@@ -1,5 +1,11 @@
 import React, { useState } from "react";
-import { Box, IconButton, Tooltip, Typography } from "@mui/material";
+import {
+  Box,
+  ButtonBase,
+  IconButton,
+  Tooltip,
+  Typography,
+} from "@mui/material";
 import { keyframes } from "@mui/material/styles";
 import { ArrowUp, ChevronDown, Circle, Pencil, Trash2 } from "lucide-react";
 import type { FileUIPart } from "ai";
@@ -76,6 +82,8 @@ const QueuedPromptRow = React.memo(
               : "var(--bui-hover)",
           },
           "&:hover .queued-prompt-actions": { opacity: 1 },
+          // Keyboard users focus these buttons without ever hovering the row.
+          "&:focus-within .queued-prompt-actions": { opacity: 1 },
         }}
       >
         <Box
@@ -187,20 +195,16 @@ export const QueuedPromptList = React.memo(
           animation: `${queueSlideUp} 220ms cubic-bezier(0.4, 0, 0.2, 1)`,
         }}
       >
-        <Box
-          role="button"
-          tabIndex={0}
+        {/* ButtonBase gives a real <button>: native Enter/Space activation,
+            focus ring and disabled semantics, so no manual key handling. */}
+        <ButtonBase
           aria-expanded={expanded}
           onClick={() => setExpanded(prev => !prev)}
-          onKeyDown={e => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setExpanded(prev => !prev);
-            }
-          }}
           sx={{
             display: "flex",
             alignItems: "center",
+            justifyContent: "flex-start",
+            width: "100%",
             gap: 0.5,
             px: 1,
             py: 0.5,
@@ -224,7 +228,7 @@ export const QueuedPromptList = React.memo(
           >
             {prompts.length} Queued
           </Typography>
-        </Box>
+        </ButtonBase>
 
         {expanded && (
           <Box sx={{ display: "flex", flexDirection: "column" }}>

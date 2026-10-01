@@ -1,3 +1,7 @@
+/**
+ * Catalog of connector *code* (built-in + workspace types), not
+ * configured source connections. Keep this filename.
+ */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
@@ -146,7 +150,9 @@ export const useConnectorCatalogStore = create<CatalogState>()(
     })),
     {
       name: "connector-catalog-store",
-      version: 2,
+      // v3: invalidate schemas cached before PostHog transferQueries became
+      // optional — a stale required:true blocks saving builtin-only flows.
+      version: 3,
       partialize: state => ({ schemas: state.schemas }), // Only persist schemas, not types
     },
   ),

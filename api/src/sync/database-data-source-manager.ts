@@ -2,12 +2,13 @@ import { Db, ObjectId } from "mongodb";
 import { decryptEncrypted } from "../services/crypto.service";
 import * as dotenv from "dotenv";
 import { syncConnectorRegistry } from "./connector-registry";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
 
 dotenv.config();
 
-const logger = loggers.sync("data-source-manager");
+const logger = loggers.sync("source-connection-manager");
 
 // Import connector schemas to determine which fields should be encrypted
 type ConnectorFieldSchema = {
@@ -20,12 +21,21 @@ type ConnectorFieldSchema = {
 
 type ConnectorSchema = { fields: ConnectorFieldSchema[] };
 
-// Data source interface matching the database schema
-export interface DataSourceConfig {
+/**
+ * Decrypted runtime config for a source connection (a credential configured
+ * with a connector). Not a DuckDB dashboard data source.
+ */
+export interface SourceConnectionConfig {
   id: string;
   name: string;
   description?: string;
   type: string;
+  /**
+   * The owning workspace. Optional only because rows predating multi-tenancy
+   * may not have one; a `ws:` connector cannot be resolved without it, since
+   * its code, its spec and its secret fields are all per-workspace.
+   */
+  workspaceId?: string;
   active: boolean;
   connection: any;
   settings: {
@@ -37,7 +47,10 @@ export interface DataSourceConfig {
   };
 }
 
-class DatabaseDataSourceManager {
+/** @deprecated use SourceConnectionConfig */
+export type DataSourceConfig = SourceConnectionConfig;
+
+class SourceConnectionManager {
   private schemaCache: Map<string, ConnectorSchema> = new Map();
   private databaseName: string = "";
   private initialized = false;
@@ -86,16 +99,33 @@ class DatabaseDataSourceManager {
    */
   private async getConnectorSchema(
     connectorType: string,
+    workspaceId?: string,
   ): Promise<ConnectorSchema | null> {
-    const cachedSchema = this.schemaCache.get(connectorType);
+    // A BUILT-IN connector's schema is a static method on a class that is
+    // fixed for the life of the process, so caching it is free. A workspace
+    // connector's is not: it is re-derived from the spec on every push, and
+    // this process has no way to hear about a push. Caching it would mean
+    // that after an author renames or adds a secret field, a long-lived
+    // instance keeps decrypting by the field list it saw first — handing the
+    // connector ciphertext, or trying to decrypt a value that was never
+    // encrypted. The read behind it is one indexed Mongo lookup, which is not
+    // worth being wrong about which fields are secrets.
+    const workspaceConnector = isWorkspaceConnectorType(connectorType);
+    const cachedSchema = workspaceConnector
+      ? undefined
+      : this.schemaCache.get(connectorType);
     if (cachedSchema) {
       return cachedSchema;
     }
     // Ask the connector registry for the live schema
-    const schema =
-      await syncConnectorRegistry.getConfigSchemaForType(connectorType);
+    const schema = await syncConnectorRegistry.getConfigSchemaForType(
+      connectorType,
+      workspaceId,
+    );
     if (schema && schema.fields) {
-      this.schemaCache.set(connectorType, schema as ConnectorSchema);
+      if (!workspaceConnector) {
+        this.schemaCache.set(connectorType, schema as ConnectorSchema);
+      }
       return schema as ConnectorSchema;
     }
     logger.warn("No schema found for connector type", { connectorType });
@@ -103,11 +133,18 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Get all active data sources
+   * Get all active source connections
    */
+  async getActiveSourceConnections(
+    workspaceId?: string,
+  ): Promise<SourceConnectionConfig[]> {
+    return this.getActiveDataSources(workspaceId);
+  }
+
+  /** @deprecated use getActiveSourceConnections */
   async getActiveDataSources(
     workspaceId?: string,
-  ): Promise<DataSourceConfig[]> {
+  ): Promise<SourceConnectionConfig[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
 
@@ -125,8 +162,15 @@ class DatabaseDataSourceManager {
         name: source.name,
         description: source.description,
         type: source.type,
+        workspaceId: source.workspaceId
+          ? String(source.workspaceId)
+          : undefined,
         active: source.isActive,
-        connection: await this.decryptConfig(source.config, source.type),
+        connection: await this.decryptConfig(
+          source.config,
+          source.type,
+          source.workspaceId ? String(source.workspaceId) : undefined,
+        ),
         settings: {
           sync_batch_size: source.settings?.sync_batch_size || 100,
           rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
@@ -141,9 +185,16 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Get a specific data source by ID or name
+   * Get a specific source connection by ID
    */
-  async getDataSource(id: string): Promise<DataSourceConfig | null> {
+  async getSourceConnection(
+    id: string,
+  ): Promise<SourceConnectionConfig | null> {
+    return this.getDataSource(id);
+  }
+
+  /** @deprecated use getSourceConnection */
+  async getDataSource(id: string): Promise<SourceConnectionConfig | null> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
 
@@ -163,8 +214,13 @@ class DatabaseDataSourceManager {
       name: source.name,
       description: source.description,
       type: source.type,
+      workspaceId: source.workspaceId ? String(source.workspaceId) : undefined,
       active: source.isActive,
-      connection: await this.decryptConfig(source.config, source.type),
+      connection: await this.decryptConfig(
+        source.config,
+        source.type,
+        source.workspaceId ? String(source.workspaceId) : undefined,
+      ),
       settings: {
         sync_batch_size: source.settings?.sync_batch_size || 100,
         rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
@@ -176,9 +232,16 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Get data sources by type
+   * Get source connections by connector type
    */
-  async getDataSourcesByType(type: string): Promise<DataSourceConfig[]> {
+  async getSourceConnectionsByType(
+    type: string,
+  ): Promise<SourceConnectionConfig[]> {
+    return this.getDataSourcesByType(type);
+  }
+
+  /** @deprecated use getSourceConnectionsByType */
+  async getDataSourcesByType(type: string): Promise<SourceConnectionConfig[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
 
@@ -191,8 +254,15 @@ class DatabaseDataSourceManager {
         name: source.name,
         description: source.description,
         type: source.type,
+        workspaceId: source.workspaceId
+          ? String(source.workspaceId)
+          : undefined,
         active: source.isActive,
-        connection: await this.decryptConfig(source.config, source.type),
+        connection: await this.decryptConfig(
+          source.config,
+          source.type,
+          source.workspaceId ? String(source.workspaceId) : undefined,
+        ),
         settings: {
           sync_batch_size: source.settings?.sync_batch_size || 100,
           rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
@@ -206,9 +276,12 @@ class DatabaseDataSourceManager {
     return results;
   }
 
-  /**
-   * List all data source IDs
-   */
+  /** List all source-connection IDs */
+  async listSourceConnectionIds(): Promise<string[]> {
+    return this.listDataSourceIds();
+  }
+
+  /** @deprecated use listSourceConnectionIds */
   async listDataSourceIds(): Promise<string[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
@@ -220,9 +293,12 @@ class DatabaseDataSourceManager {
     return sources.map(s => `${s.name} (${s._id})`);
   }
 
-  /**
-   * List active data source IDs
-   */
+  /** List active source-connection IDs */
+  async listActiveSourceConnectionIds(): Promise<string[]> {
+    return this.listActiveDataSourceIds();
+  }
+
+  /** @deprecated use listActiveSourceConnectionIds */
   async listActiveDataSourceIds(): Promise<string[]> {
     const db = await this.getDb();
     const collection = db.collection("connectors");
@@ -235,7 +311,8 @@ class DatabaseDataSourceManager {
   }
 
   /**
-   * Validate configuration (always returns valid for database sources)
+   * Validate configuration (always returns valid — source connections are
+   * stored rows, not a file-based config).
    */
   validateConfig(): { valid: boolean; errors: string[] } {
     // Don't initialize here, just return valid
@@ -269,10 +346,11 @@ class DatabaseDataSourceManager {
   private async decryptConfig(
     config: any,
     connectorType: string,
+    workspaceId?: string,
   ): Promise<any> {
     if (!config) return config;
 
-    const schema = await this.getConnectorSchema(connectorType);
+    const schema = await this.getConnectorSchema(connectorType, workspaceId);
     if (!schema) {
       logger.warn("No schema found for connector type, skipping decryption", {
         connectorType,
@@ -368,39 +446,71 @@ class DatabaseDataSourceManager {
 }
 
 // Export singleton instance with lazy initialization
-let _databaseDataSourceManager: DatabaseDataSourceManager | null = null;
-export function getDatabaseDataSourceManager(): DatabaseDataSourceManager {
-  if (!_databaseDataSourceManager) {
-    _databaseDataSourceManager = new DatabaseDataSourceManager();
+let _sourceConnectionManager: SourceConnectionManager | null = null;
+export function getSourceConnectionManager(): SourceConnectionManager {
+  if (!_sourceConnectionManager) {
+    _sourceConnectionManager = new SourceConnectionManager();
   }
-  return _databaseDataSourceManager;
+  return _sourceConnectionManager;
 }
 
-// For backward compatibility, export a getter that returns the instance
-export const databaseDataSourceManager = {
-  get instance() {
-    return getDatabaseDataSourceManager();
-  },
-  // Proxy all methods to the singleton
-  async getActiveDataSources(workspaceId?: string) {
-    return getDatabaseDataSourceManager().getActiveDataSources(workspaceId);
-  },
-  async getDataSource(id: string) {
-    return getDatabaseDataSourceManager().getDataSource(id);
-  },
-  async getDataSourcesByType(type: string) {
-    return getDatabaseDataSourceManager().getDataSourcesByType(type);
-  },
-  async listDataSourceIds() {
-    return getDatabaseDataSourceManager().listDataSourceIds();
-  },
-  async listActiveDataSourceIds() {
-    return getDatabaseDataSourceManager().listActiveDataSourceIds();
-  },
-  validateConfig() {
-    return getDatabaseDataSourceManager().validateConfig();
-  },
-};
+/** @deprecated use getSourceConnectionManager */
+export function getDatabaseDataSourceManager(): SourceConnectionManager {
+  return getSourceConnectionManager();
+}
 
-// Export class for custom instances
-export { DatabaseDataSourceManager };
+function proxyManager() {
+  return {
+    get instance() {
+      return getSourceConnectionManager();
+    },
+    async getActiveSourceConnections(workspaceId?: string) {
+      return getSourceConnectionManager().getActiveSourceConnections(
+        workspaceId,
+      );
+    },
+    /** @deprecated use getActiveSourceConnections */
+    async getActiveDataSources(workspaceId?: string) {
+      return getSourceConnectionManager().getActiveDataSources(workspaceId);
+    },
+    async getSourceConnection(id: string) {
+      return getSourceConnectionManager().getSourceConnection(id);
+    },
+    /** @deprecated use getSourceConnection */
+    async getDataSource(id: string) {
+      return getSourceConnectionManager().getDataSource(id);
+    },
+    async getSourceConnectionsByType(type: string) {
+      return getSourceConnectionManager().getSourceConnectionsByType(type);
+    },
+    /** @deprecated use getSourceConnectionsByType */
+    async getDataSourcesByType(type: string) {
+      return getSourceConnectionManager().getDataSourcesByType(type);
+    },
+    async listSourceConnectionIds() {
+      return getSourceConnectionManager().listSourceConnectionIds();
+    },
+    /** @deprecated use listSourceConnectionIds */
+    async listDataSourceIds() {
+      return getSourceConnectionManager().listDataSourceIds();
+    },
+    async listActiveSourceConnectionIds() {
+      return getSourceConnectionManager().listActiveSourceConnectionIds();
+    },
+    /** @deprecated use listActiveSourceConnectionIds */
+    async listActiveDataSourceIds() {
+      return getSourceConnectionManager().listActiveDataSourceIds();
+    },
+    validateConfig() {
+      return getSourceConnectionManager().validateConfig();
+    },
+  };
+}
+
+export const sourceConnectionManager = proxyManager();
+/** @deprecated use sourceConnectionManager */
+export const databaseDataSourceManager = sourceConnectionManager;
+
+export { SourceConnectionManager };
+/** @deprecated use SourceConnectionManager */
+export const DatabaseDataSourceManager = SourceConnectionManager;

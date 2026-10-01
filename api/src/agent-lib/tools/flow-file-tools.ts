@@ -385,7 +385,7 @@ export function createFlowFileTools(workspaceId: string) {
   return {
     check_flow_files: tool({
       description: [
-        "Check proposed `flows/<slug>.yml` files BEFORE committing them: whether each parses, whether the connector/connection ids it names exist in this workspace, whether the flow row it describes would actually save, and what the resulting push would do to running syncs (create, reconfigure, tear down).",
+        "Check proposed `flows/<slug>.yml` files BEFORE committing them: whether each parses, whether the connection ids it names (source and destination) exist in this workspace, whether the flow row it describes would actually save, and what the resulting push would do to running syncs (create, reconfigure, tear down).",
         "Pass ONLY the files you added or changed. The rest of `flows/` is read from the workspace repo's main branch and merged underneath yours, so a flow you do not mention is never read as deleted.",
         "To check a DELETION, name its path in `deletedPaths`. That is the only way a teardown is attributed to you — and a teardown deletes the flow and disposes its CDC checkpoints, which re-adding the file does not recover.",
         "Read-only: nothing is created, changed, deleted, or committed, and this never pushes.",

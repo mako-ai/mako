@@ -52,6 +52,8 @@ import {
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
+  liveConsoleCode,
+  loadLiveConsoleById,
   projectSavedConsole,
   requestConsoleDescription,
   restoreConsoleTo,
@@ -80,6 +82,47 @@ function repoRequired(c: Context, error: RepoRequiredError) {
     { success: false, code: error.code, error: error.message },
     error.status as 412,
   );
+}
+
+/** GET/list without a GitHub binding is an empty explorer, not 412. */
+function emptyConsoleTree() {
+  return {
+    success: true as const,
+    myConsoles: [] as never[],
+    sharedWithWorkspace: [] as never[],
+    tree: [] as never[],
+  };
+}
+
+async function connectionSummary(
+  connectionId: unknown,
+  workspaceId: string,
+): Promise<{ id: unknown; name: unknown; type: unknown } | null> {
+  if (!connectionId) return null;
+  const id =
+    typeof connectionId === "object" &&
+    connectionId !== null &&
+    "_id" in connectionId
+      ? (connectionId as { _id: Types.ObjectId })._id
+      : connectionId;
+  if (!Types.ObjectId.isValid(String(id))) return null;
+  const populated =
+    typeof connectionId === "object" &&
+    connectionId !== null &&
+    "name" in connectionId
+      ? (connectionId as { _id: Types.ObjectId; name?: string; type?: string })
+      : null;
+  if (populated?.name) {
+    return { id: populated._id, name: populated.name, type: populated.type };
+  }
+  const doc = await DatabaseConnection.findOne({
+    _id: new Types.ObjectId(String(id)),
+    workspaceId: new Types.ObjectId(workspaceId),
+  })
+    .select("name type")
+    .lean();
+  if (!doc) return null;
+  return { id: doc._id, name: doc.name, type: doc.type };
 }
 
 // IMPORTANT: this MUST stay byte-for-byte compatible with the client hash so
@@ -255,7 +298,9 @@ consoleRoutes.openapi(
       );
       return c.json({ success: true, tree });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json(emptyConsoleTree(), 200);
+      }
       logger.error("Error listing consoles", { error });
       return c.json(
         {
@@ -388,7 +433,9 @@ consoleRoutes.openapi(
         lastRun: fullConsole?.lastRun,
       });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
       logger.error("Error fetching console content", {
         consoleId: c.req.query("id"),
         error,
@@ -1165,10 +1212,37 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         _id: new Types.ObjectId(pathOrId),
         workspaceId: new Types.ObjectId(workspaceId),
       });
+      // A console that exists only in git (no row yet) is addressed by its
+      // derived id. It still has an owner (its path scope) and a language
+      // (its extension): the ACL check must run against the file, and the
+      // save must replace THAT file — not write a fresh `.sql` beside a
+      // `.js`, which is what the row-less defaults did.
+      const liveOnly =
+        existingById === null
+          ? await loadLiveConsoleById(workspaceId, pathOrId)
+          : null;
+      const liveFile = liveOnly && "live" in liveOnly ? liveOnly.live : null;
+      const aclSubject: ISavedConsole | null =
+        existingById ??
+        (liveFile
+          ? ({
+              _id: liveFile.id,
+              workspaceId: new Types.ObjectId(workspaceId),
+              access:
+                liveFile.location.scope === "private" ? "private" : "workspace",
+              isPrivate: liveFile.location.scope === "private",
+              owner_id:
+                liveFile.location.ownerId || liveFile.row?.owner_id || "git",
+              createdBy:
+                liveFile.location.ownerId || liveFile.row?.createdBy || "git",
+              sharedWith: liveFile.row?.sharedWith,
+              workspaceRole: liveFile.row?.workspaceRole,
+            } as unknown as ISavedConsole)
+          : null);
       if (
-        existingById &&
+        aclSubject &&
         !ConsoleManager.canWrite(
-          existingById,
+          aclSubject,
           user.id,
           isAdminPut,
           memberPut?.role,
@@ -1330,7 +1404,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         const setOnInsertFields: Record<string, any> = {
           createdBy: user.id,
           owner_id: user.id,
-          language: "sql" as const,
+          language: liveFile?.location.language ?? ("sql" as const),
           executionCount: 0,
           createdAt: now,
         };
@@ -1344,6 +1418,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         const projected = await projectSavedConsole({
           workspaceId,
           current: existingById ?? null,
+          previousPath: liveFile?.path ?? null,
           set: setFields,
           onInsert: setOnInsertFields,
           actorUserId: user.id,
@@ -2204,6 +2279,14 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
 
+      // Git is the definition: run the file at main, not the row's last
+      // pushed copy (a query edited in git ran stale until the webhook).
+      const liveCode = await liveConsoleCode(
+        access.workspaceId,
+        consoleIdParsed.toString(),
+      );
+      if (liveCode) savedConsole.code = liveCode.code;
+
       // If console has a connection ID, verify it exists and belongs to workspace
       if (savedConsole.connectionId) {
         database = await DatabaseConnection.findOne({
@@ -2689,54 +2772,64 @@ consoleRoutes.openapi(
     try {
       // Access was verified by the router middleware; only the id is needed.
       const access = { workspaceId: c.req.param("workspaceId") as string };
-
-      // Get all consoles for the workspace
-      const consoles = await SavedConsole.find({
-        workspaceId: new Types.ObjectId(access.workspaceId),
-      })
-        .select(
-          "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount lastExternalUsedAt externalUseCount lastExternalSource access owner_id createdBy",
-        )
-        .populate("connectionId", "name type")
-        .sort({ updatedAt: -1 });
-
       const user = c.get("user");
-      const userId = user?.id;
 
-      // Filter by visibility when we have a user
-      const visibleConsoles = userId
-        ? consoles.filter(doc => ConsoleManager.canRead(doc, userId))
-        : consoles;
+      const consoles = await consoleManager.listConsolesFlat(
+        access.workspaceId,
+        user?.id,
+      );
+
+      const connectionIds = [
+        ...new Set(
+          consoles
+            .map(doc => doc.connectionId?.toString())
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const connections =
+        connectionIds.length === 0
+          ? []
+          : await DatabaseConnection.find({
+              _id: { $in: connectionIds.map(id => new Types.ObjectId(id)) },
+              workspaceId: new Types.ObjectId(access.workspaceId),
+            })
+              .select("name type")
+              .lean();
+      const connectionById = new Map(
+        connections.map(doc => [doc._id.toString(), doc]),
+      );
 
       return c.json({
         success: true,
-        consoles: visibleConsoles.map(console => ({
-          id: console._id,
-          name: console.name,
-          description: console.description,
-          language: console.language,
-          connection: console.connectionId
-            ? {
-                id: console.connectionId._id,
-                name: (console.connectionId as any).name,
-                type: (console.connectionId as any).type,
-              }
-            : null,
-          databaseName: console.databaseName,
-          createdAt: console.createdAt,
-          updatedAt: console.updatedAt,
-          lastExecutedAt: console.lastExecutedAt,
-          executionCount: console.executionCount,
-          lastExternalUsedAt: console.lastExternalUsedAt ?? null,
-          externalUseCount: console.externalUseCount ?? 0,
-          lastExternalSource: console.lastExternalSource ?? null,
-          access: ConsoleManager.resolveAccess(console),
-          owner_id: console.owner_id || console.createdBy,
-        })),
-        total: visibleConsoles.length,
+        consoles: consoles.map(console => {
+          const connId = console.connectionId?.toString();
+          const conn = connId ? connectionById.get(connId) : undefined;
+          return {
+            id: console._id,
+            name: console.name,
+            description: console.description,
+            language: console.language,
+            connection: conn
+              ? { id: conn._id, name: conn.name, type: conn.type }
+              : null,
+            databaseName: console.databaseName,
+            createdAt: console.createdAt,
+            updatedAt: console.updatedAt,
+            lastExecutedAt: console.lastExecutedAt,
+            executionCount: console.executionCount,
+            lastExternalUsedAt: console.lastExternalUsedAt ?? null,
+            externalUseCount: console.externalUseCount ?? 0,
+            lastExternalSource: console.lastExternalSource ?? null,
+            access: ConsoleManager.resolveAccess(console),
+            owner_id: console.owner_id || console.createdBy,
+          };
+        }),
+        total: consoles.length,
       });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true, consoles: [], total: 0 }, 200);
+      }
       logger.error("Error listing consoles", { error });
       return c.json(
         {
@@ -2879,19 +2972,24 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Invalid console ID" }, 400);
       }
 
-      // Find the console
-      const savedConsole = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(access.workspaceId),
-      }).populate("connectionId", "name type");
+      const consoleData = await consoleManager.getConsoleWithMetadata(
+        consoleId,
+        access.workspaceId,
+      );
 
+      if (!consoleData) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const savedConsole = consoleData._raw ?? null;
       if (!savedConsole) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
 
       const user = c.get("user");
-      const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
-      const ownerId = savedConsole.owner_id || savedConsole.createdBy;
+      const resolvedAccess =
+        consoleData.access || ConsoleManager.resolveAccess(savedConsole);
+      const ownerId = consoleData.owner_id || savedConsole.createdBy;
 
       if (
         user?.id &&
@@ -2930,23 +3028,22 @@ consoleRoutes.openapi(
         );
       }
 
+      const connection = await connectionSummary(
+        consoleData.connectionId ?? savedConsole.connectionId,
+        access.workspaceId,
+      );
+
       return c.json({
         success: true,
         console: {
-          id: savedConsole._id,
-          name: savedConsole.name,
-          description: savedConsole.description,
-          code: savedConsole.code,
-          language: savedConsole.language,
-          mongoOptions: savedConsole.mongoOptions,
-          connection: savedConsole.connectionId
-            ? {
-                id: savedConsole.connectionId._id,
-                name: (savedConsole.connectionId as any).name,
-                type: (savedConsole.connectionId as any).type,
-              }
-            : null,
-          databaseName: savedConsole.databaseName,
+          id: consoleData.id ?? savedConsole._id,
+          name: consoleData.name ?? savedConsole.name,
+          description: consoleData.description ?? savedConsole.description,
+          code: consoleData.content,
+          language: consoleData.language ?? savedConsole.language,
+          mongoOptions: consoleData.mongoOptions ?? savedConsole.mongoOptions,
+          connection,
+          databaseName: consoleData.databaseName ?? savedConsole.databaseName,
           createdAt: savedConsole.createdAt,
           updatedAt: savedConsole.updatedAt,
           lastExecutedAt: savedConsole.lastExecutedAt,
@@ -2961,7 +3058,9 @@ consoleRoutes.openapi(
         },
       });
     } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
       logger.error("Error getting console details", { error });
       return c.json(
         {

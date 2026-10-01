@@ -1,14 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Box, CircularProgress } from "@mui/material";
-import ConnectorForm from "./ConnectorForm";
+import SourceConnectionForm from "./SourceConnectionForm";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
-import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
-import { useConnectorStore } from "../store/connectorStore";
+import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
+import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { trackEvent } from "../lib/analytics";
+import { connectorIconUrl } from "../lib/connector-icon";
 
-interface ConnectorTabProps {
+interface SourceConnectionTabProps {
   /**
    * The id of the connector being edited. If undefined/empty -> create new.
    */
@@ -17,7 +18,7 @@ interface ConnectorTabProps {
   tabId: string;
 }
 
-const ConnectorTab: React.FC<ConnectorTabProps> = ({
+const SourceConnectionTab: React.FC<SourceConnectionTabProps> = ({
   sourceId: initialSourceId,
   tabId,
 }) => {
@@ -33,7 +34,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
   const consoleTabs = Object.values(tabs);
 
   // Draft store
-  const deleteDraft = useConnectorStore(state => state.deleteDraft);
+  const deleteDraft = useSourceConnectionStore(state => state.deleteDraft);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +47,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
     fetchOne: fetchConnector,
     upsert: upsertConnector,
     entities,
-  } = useConnectorEntitiesStore();
+  } = useSourceConnectionEntitiesStore();
 
   const [localSourceId, setLocalSourceId] = useState<string | undefined>(
     initialSourceId,
@@ -72,9 +73,9 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
   // Helper to update the tab icon based on connector type
   const updateTabIcon = useCallback(
     (type: string) => {
-      updateIcon(tabId, `/api/connectors/${type}/icon.svg`);
+      updateIcon(tabId, connectorIconUrl(type, currentWorkspace?.id));
     },
-    [updateIcon, tabId],
+    [updateIcon, tabId, currentWorkspace?.id],
   );
 
   /* ------------------ effects ------------------ */
@@ -89,7 +90,10 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
     if (!currentWorkspace || !effectiveSourceId) return;
     if (connector) {
       // ensure title/icon update once entity arrives
-      updateConsoleTitleRef.current(tabId, connector.name || "Connector");
+      updateConsoleTitleRef.current(
+        tabId,
+        connector.name || "Source connection",
+      );
       updateTabIcon(connector.type);
       setError(null);
       return;
@@ -97,11 +101,14 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
     setLoading(true);
     fetchConnector(currentWorkspace.id, effectiveSourceId).then(entity => {
       if (entity) {
-        updateConsoleTitleRef.current(tabId, entity.name || "Connector");
+        updateConsoleTitleRef.current(
+          tabId,
+          entity.name || "Source connection",
+        );
         updateTabIcon(entity.type);
         setError(null);
       } else {
-        setError("Failed to load connector");
+        setError("Failed to load source connection");
       }
       setLoading(false);
     });
@@ -128,8 +135,8 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
 
     try {
       const url = effectiveSourceId
-        ? `/api/workspaces/${currentWorkspace.id}/connectors/${effectiveSourceId}`
-        : `/api/workspaces/${currentWorkspace.id}/connectors`;
+        ? `/api/workspaces/${currentWorkspace.id}/connections/sources/${effectiveSourceId}`
+        : `/api/workspaces/${currentWorkspace.id}/connections/sources`;
       const method = effectiveSourceId ? "PUT" : "POST";
 
       const response = await fetch(url, {
@@ -146,7 +153,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
         setError(null);
         updateTabIcon(data.data.type);
         // Update the tab title once after a successful save
-        updateTitle(tabId, data.data.name || "Connector");
+        updateTitle(tabId, data.data.name || "Source connection");
 
         // Clear draft on successful save
         deleteDraft(tabId);
@@ -157,6 +164,11 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
           trackEvent("connector_created", {
             connector_type: data.data.type,
             connector_id: newId,
+          });
+          trackEvent("source_connection_created", {
+            connector_type: data.data.type,
+            connector_id: newId,
+            source_connection_id: newId,
           });
 
           // Persist the newly created connector id as the tab's content
@@ -170,8 +182,8 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
         return { success: false, isNew };
       }
     } catch (err: any) {
-      console.error("Error saving connector", err);
-      setError(err.message || "Failed to save connector");
+      console.error("Error saving source connection", err);
+      setError(err.message || "Failed to save source connection");
       return { success: false, isNew };
     }
   };
@@ -194,7 +206,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
         bgcolor: "background.paper",
       }}
     >
-      <ConnectorForm
+      <SourceConnectionForm
         variant="inline"
         tabId={tabId}
         onClose={handleClose}
@@ -208,4 +220,4 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
   );
 };
 
-export default ConnectorTab;
+export default SourceConnectionTab;

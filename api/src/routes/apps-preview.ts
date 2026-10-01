@@ -12,8 +12,13 @@
  */
 import type { Context } from "hono";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
+import {
+  refreshBindingHttp,
+  refreshPathBinding,
+} from "../apps/binding-refresh";
 import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
+import { resolveAppViewerById } from "../apps/app-viewer.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
@@ -41,6 +46,31 @@ async function serveAsset(c: Context): Promise<Response> {
       404,
     );
   }
+  // `POST __data/<name>/refresh` — the SDK's `refresh()`. The token was
+  // minted by a workspace member who could see the app (a viewer's published
+  // grant, or a builder's preview grant), which is what a signed-in refresh
+  // needs too; a published grant rebuilds AT its commit, a preview grant what
+  // the preview's data path serves. Answered with the same wildcard ACAO as
+  // the data it refreshes — the iframe's origin is opaque, and a bodiless
+  // POST needs no preflight.
+  if (c.req.method === "POST") {
+    const name = refreshPathBinding(assetPathFor(c, token));
+    const project = name ? await AppProject.findById(grant.projectId) : null;
+    if (!name || !project) {
+      return c.json({ success: false, error: "Not found" }, 404);
+    }
+    const { status, body, headers } = await refreshBindingHttp({
+      project,
+      name,
+      actorId: "",
+      at: grant.publishedSha,
+    });
+    return c.json(body, status, {
+      ...headers,
+      "Access-Control-Allow-Origin": "*",
+    });
+  }
+
   // A published deployment is served from the artifact store, not a
   // directory — but through the same token, because the reason for the token
   // is the sandboxed iframe, which does not care where the bytes come from.
@@ -52,6 +82,10 @@ async function serveAsset(c: Context): Promise<Response> {
       // The token is the only credential, so nothing in between should keep
       // a copy of a private app's build.
       private: true,
+      // The token is also the only place the viewer's identity can ride
+      // (no cookie in the sandboxed iframe) — `__data/viewer.json` is
+      // answered from it (apps.md §28).
+      viewer: grant.viewer ?? null,
     });
     if (!response) {
       return c.json({ success: false, error: "Not found" }, 404);
@@ -64,6 +98,19 @@ async function serveAsset(c: Context): Promise<Response> {
     const headers = new Headers(response.headers);
     headers.set("Access-Control-Allow-Origin", "*");
     return new Response(response.body, { status: response.status, headers });
+  }
+
+  // A build preview is the builder looking at their own build: tell the app
+  // so, the same way the published route does (apps.md §28).
+  if (assetPathFor(c, token) === "__data/viewer.json") {
+    const viewer = await resolveAppViewerById(
+      grant.projectId,
+      grant.viewer ?? null,
+    );
+    return c.json(viewer, 200, {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+    });
   }
 
   // Data bindings: `__data/<name>.parquet` (app-relative, so it works under

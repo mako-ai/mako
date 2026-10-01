@@ -26,6 +26,7 @@ import {
   type AcpToolUpdate,
 } from "./local-acp-parts";
 import { isAcpConnectionClosedError } from "./acp-connection-errors";
+import { isMakoMcpTokenStale } from "./acp-session-expiry";
 import {
   persistLocalAcpChat,
   type LocalAcpChatBinding,
@@ -167,6 +168,19 @@ export async function ensureAcpSessionForProvider(
   // Always reconcile with Local Agent — Desktop/agent restarts leave stale ids.
   await useAcpStore.getState().refreshSessions();
   const liveIds = new Set(useAcpStore.getState().sessions.map(s => s.id));
+  // The Mako MCP Bearer is fixed for the life of a process session and lives
+  // ~8h. Reusing a session past that makes every mako-workspace tool fail
+  // with "requires re-authorization" while the session still looks attached.
+  // Retire such sessions here so the fresh-session path below mints a new
+  // token (Chat continuity seed restores the transcript).
+  for (const stale of useAcpStore
+    .getState()
+    .sessions.filter(
+      s => s.providerId === providerId && isMakoMcpTokenStale(s),
+    )) {
+    useAcpStore.getState().forgetSession(stale.id);
+    liveIds.delete(stale.id);
+  }
   const modelPreference = options?.model?.trim() || null;
 
   if (

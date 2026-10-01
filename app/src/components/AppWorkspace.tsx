@@ -14,7 +14,13 @@
  * Every read resolves from git through the durable worktree API, so the view
  * renders identically whether the sandbox is hot, paused, or dead.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import {
   Alert,
   Box,
@@ -33,6 +39,7 @@ import {
   Play as PlayIcon,
   Plus as PlusIcon,
   RefreshCw as RefreshIcon,
+  Share2 as ShareIcon,
   Square as StopIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
@@ -40,13 +47,23 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import { useRealtimeStore } from "../store/realtimeStore";
-import { useAppsStore } from "../store/appsStore";
+import {
+  appUrlRef,
+  devServerKeyMatches,
+  useAppsStore,
+} from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
+import AppPublishedChip from "./AppPublishedChip";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
+import { useIsMobile } from "../hooks/useIsMobile";
+import { useUIStore } from "../store/uiStore";
 import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
+import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import ShareDialog from "./ShareDialog";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -97,6 +114,18 @@ const HIDDEN_PAUSE_MS = 10 * 60 * 1000;
  * is how a dev box billed hours of idle time. Pausing unmounts the dev
  * preview and terminals (dtach keeps the sessions; they replay on return).
  */
+/** Keys a phone keyboard does not have, as the bytes a pty expects. */
+const MOBILE_TERMINAL_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ["Esc", "\x1b"],
+  ["Tab", "\t"],
+  ["^C", "\x03"],
+  ["↑", "\x1b[A"],
+  ["↓", "\x1b[B"],
+  ["←", "\x1b[D"],
+  ["→", "\x1b[C"],
+  ["Ret", "\r"],
+];
+
 function useHiddenPause(): boolean {
   const [paused, setPaused] = useState(false);
   useEffect(() => {
@@ -129,6 +158,7 @@ function TerminalPanel({
   label,
   fresh = false,
   onSessionEnd,
+  inputRef,
 }: {
   appId: string;
   workspaceId: string;
@@ -140,6 +170,12 @@ function TerminalPanel({
   fresh?: boolean;
   /** The session ended for good (`exit`, kill): close the tab, do not respawn. */
   onSessionEnd?: () => void;
+  /**
+   * Receives the "write to the pty" function while the socket is up, so a
+   * parent can inject keystrokes a phone keyboard has no key for (Esc,
+   * arrows, ^C) — see the mobile key bar in TerminalTabs.
+   */
+  inputRef?: MutableRefObject<((data: string) => void) | null>;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<
@@ -197,6 +233,7 @@ function TerminalPanel({
     const send = (data: string) => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
     };
+    if (inputRef) inputRef.current = send;
 
     // macOS line editing. xterm sends a bare backspace for these, so
     // ⌘⌫ and ⌥⌫ silently deleted one character — the shell already
@@ -352,6 +389,7 @@ function TerminalPanel({
       typeAhead?.dispose();
       ws?.close();
       term.dispose();
+      if (inputRef) inputRef.current = null;
     };
     // onSessionEnd deliberately not a dependency: it is stable in practice
     // and reconnecting the pty because a parent re-rendered would be worse.
@@ -579,7 +617,254 @@ function TerminalTabs({
   // never on mount for a stopped app, which used to spawn a "[waiting for the
   // dev server]" attach with nothing behind it (apps.md §13.11).
   const runningDevApps = useAppsStore(st => st.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
+  const isMobile = useIsMobile();
+  // One writer ref per terminal id, handed to its TerminalPanel; the mobile
+  // key bar writes through the active one. Refs, not state: a socket coming
+  // up must not re-render the tab bar.
+  const inputRefs = useRef<
+    Record<string, MutableRefObject<((data: string) => void) | null>>
+  >({});
+  const inputRefFor = (id: string) =>
+    (inputRefs.current[id] ??= { current: null });
+
+  const addShell = () => {
+    // Never mint an id the BOX already has a session for: with a detached
+    // ghost "1" on screen, + used to create id 1 — silently adopting the old
+    // shell (cwd, state) while presenting it as fresh. Skip every id in use,
+    // client-side or box-side.
+    const used = new Set([
+      ...shells,
+      ...boxTerminals.filter(t => /^[0-9]+$/.test(t)),
+    ]);
+    let n = nextId.current;
+    while (used.has(String(n))) n += 1;
+    nextId.current = n + 1;
+    const id = String(n);
+    freshIds.current.add(id);
+    setShells(prev => [...prev, id]);
+    setActive(id);
+  };
+
+  // ONE session list for both layouts: the desktop column and the mobile chip
+  // row. Dev server first (server-side it is a tmux session like any other),
+  // then this pageview's shells, then GHOST sessions — shells that exist in
+  // the box (pushed truth) but have no tab here: opened by the agent, another
+  // browser, or a previous pageview. One tap attaches, history and all;
+  // invisible sessions were how people collided with them.
+  // The dev session is named by the app's ID server-side (dev-server.service
+  // keys the dtach socket, history and launcher by it — folder basenames are
+  // not unique once apps nest), so the terminal id must be too; the label
+  // keeps the human-readable slug.
+  const devTermId = `dev-${appId}`;
+  const sessionItems: {
+    key: string;
+    termId: string;
+    label: string;
+    selected: boolean;
+    onSelect: () => void;
+    onClose?: () => void;
+  }[] = [
+    {
+      key: "dev",
+      termId: devTermId,
+      label: slug
+        ? `dev: ${slug}${devRunning ? "" : " · stopped"}`
+        : "dev server",
+      selected: active === "dev",
+      onSelect: () => setActive("dev"),
+      // Closing the dev session IS stopping dev mode — one mental model,
+      // same as the toolbar's Stop dev.
+      onClose: devRunning ? () => void stopDev(workspaceId, appId) : undefined,
+    },
+    ...shells.map((id, index) => ({
+      key: id,
+      termId: id,
+      label: `bash ${index + 1}`,
+      selected: active === id,
+      onSelect: () => setActive(id),
+      onClose: () => closeShell(id, { killRemote: true }),
+    })),
+    ...boxTerminals
+      .filter(id => /^[0-9]+$/.test(id) && !shells.includes(id))
+      .map(id => ({
+        key: `ghost-${id}`,
+        termId: id,
+        label: `bash · detached (${id})`,
+        selected: false,
+        onSelect: () => {
+          setShells(prev => (prev.includes(id) ? prev : [...prev, id]));
+          setActive(id);
+        },
+      })),
+  ];
+
+  // Every pane STAYS MOUNTED — an unmounted xterm is a dropped session and a
+  // re-scroll; hiding keeps the socket, the scrollback and the dev-log offset
+  // alive across switches.
+  const terminalPanes = (
+    <Box
+      sx={{
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          display: active === "dev" ? "block" : "none",
+        }}
+      >
+        {!hiddenPaused && slug && (devRunning || active === "dev") ? (
+          // The dev server runs in a dtach session named like any other
+          // (mako-term-dev-<slug>) — this is a normal terminal attached
+          // to it: colors, native scrollback, prefit history, and Ctrl-C
+          // reaches vite. Mounted only when a server is actually running
+          // (box truth) or the user selected this tab — never on mount for
+          // a stopped app, which would attach a waiter to nothing.
+          <TerminalPanel
+            appId={appId}
+            workspaceId={workspaceId}
+            termId={devTermId}
+            label={`dev: ${slug}`}
+            inputRef={inputRefFor(devTermId)}
+          />
+        ) : null}
+      </Box>
+      {!hiddenPaused &&
+        shells.map((id, index) => (
+          <Box
+            key={id}
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: active === id ? "block" : "none",
+            }}
+          >
+            <TerminalPanel
+              appId={appId}
+              workspaceId={workspaceId}
+              termId={id}
+              label={`bash ${index + 1}`}
+              fresh={freshIds.current.has(id)}
+              onSessionEnd={() => closeShell(id, { killRemote: false })}
+              inputRef={inputRefFor(id)}
+            />
+          </Box>
+        ))}
+    </Box>
+  );
+
+  if (isMobile) {
+    // Phone anatomy: sessions as a chip row on top (the column would eat a
+    // third of the width), the shell filling the pane, and a key bar above
+    // the soft keyboard for the keys it does not have.
+    const activeTermId = active === "dev" ? devTermId : active;
+    const sendKey = (seq: string) => inputRefFor(activeTermId).current?.(seq);
+    return (
+      <Box
+        sx={{
+          height: "100%",
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.75,
+            px: 1,
+            py: 0.75,
+            borderBottom: 1,
+            borderColor: "divider",
+          }}
+        >
+          <Box
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              gap: 0.75,
+              overflowX: "auto",
+              scrollbarWidth: "none",
+              "&::-webkit-scrollbar": { display: "none" },
+            }}
+          >
+            {sessionItems.map(item => (
+              <Chip
+                key={item.key}
+                icon={<TerminalIcon size={14} strokeWidth={1.75} />}
+                label={item.label}
+                variant={item.selected ? "filled" : "outlined"}
+                onClick={item.onSelect}
+                onDelete={item.onClose}
+                sx={{
+                  flexShrink: 0,
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", monospace',
+                  fontSize: 12,
+                }}
+              />
+            ))}
+          </Box>
+          <Tooltip title="New terminal — another real shell in the same sandbox">
+            <IconButton
+              size="small"
+              aria-label="New terminal"
+              onClick={addShell}
+            >
+              <PlusIcon size={16} strokeWidth={2} />
+            </IconButton>
+          </Tooltip>
+        </Box>
+        {terminalPanes}
+        <Box
+          sx={{
+            display: "flex",
+            gap: 0.75,
+            px: 1,
+            py: 0.75,
+            borderTop: 1,
+            borderColor: "divider",
+            bgcolor: "background.default",
+          }}
+        >
+          {MOBILE_TERMINAL_KEYS.map(([label, seq]) => (
+            <Button
+              key={label}
+              size="small"
+              variant="outlined"
+              color="inherit"
+              aria-label={`Send ${label}`}
+              // Keep focus (and the soft keyboard) on the terminal: a button
+              // that takes focus on tap hides the keyboard on iOS.
+              onPointerDown={e => e.preventDefault()}
+              onClick={() => sendKey(seq)}
+              sx={{
+                flex: 1,
+                minWidth: 0,
+                px: 0,
+                minHeight: 36,
+                textTransform: "none",
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", monospace',
+              }}
+            >
+              {label}
+            </Button>
+          ))}
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     // VS Code's panel anatomy: the active session fills the area, and the
@@ -593,61 +878,7 @@ function TerminalTabs({
       style={{ height: "100%" }}
     >
       <Panel minSize={40}>
-        <Box
-          sx={{
-            height: "100%",
-            minWidth: 0,
-            minHeight: 0,
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          {/* Every pane STAYS MOUNTED — an unmounted xterm is a dropped
-            session and a re-scroll; hiding keeps the socket, the scrollback
-            and the dev-log offset alive across switches. */}
-          <Box
-            sx={{
-              flex: 1,
-              minHeight: 0,
-              display: active === "dev" ? "block" : "none",
-            }}
-          >
-            {!hiddenPaused && slug && (devRunning || active === "dev") ? (
-              // The dev server runs in a dtach session named like any other
-              // (mako-term-dev-<slug>) — this is a normal terminal attached
-              // to it: colors, native scrollback, prefit history, and Ctrl-C
-              // reaches vite. Mounted only when a server is actually running
-              // (box truth) or the user selected this tab — never on mount for
-              // a stopped app, which would attach a waiter to nothing.
-              <TerminalPanel
-                appId={appId}
-                workspaceId={workspaceId}
-                termId={`dev-${slug}`}
-                label={`dev: ${slug}`}
-              />
-            ) : null}
-          </Box>
-          {!hiddenPaused &&
-            shells.map((id, index) => (
-              <Box
-                key={id}
-                sx={{
-                  flex: 1,
-                  minHeight: 0,
-                  display: active === id ? "block" : "none",
-                }}
-              >
-                <TerminalPanel
-                  appId={appId}
-                  workspaceId={workspaceId}
-                  termId={id}
-                  label={`bash ${index + 1}`}
-                  fresh={freshIds.current.has(id)}
-                  onSessionEnd={() => closeShell(id, { killRemote: false })}
-                />
-              </Box>
-            ))}
-        </Box>
+        <Box sx={{ height: "100%", display: "flex" }}>{terminalPanes}</Box>
       </Panel>
       <SessionsResizeHandle />
       <Panel defaultSize={14} minSize={7} maxSize={40}>
@@ -681,71 +912,20 @@ function TerminalTabs({
               SESSIONS
             </Typography>
             <Tooltip title="New terminal — another real shell in the same sandbox">
-              <IconButton
-                size="small"
-                onClick={() => {
-                  // Never mint an id the BOX already has a session for:
-                  // with a detached ghost "1" on screen, + used to create
-                  // id 1 — silently adopting the old shell (cwd, state)
-                  // while presenting it as fresh. Skip every id in use,
-                  // client-side or box-side.
-                  const used = new Set([
-                    ...shells,
-                    ...boxTerminals.filter(t => /^[0-9]+$/.test(t)),
-                  ]);
-                  let n = nextId.current;
-                  while (used.has(String(n))) n += 1;
-                  nextId.current = n + 1;
-                  const id = String(n);
-                  freshIds.current.add(id);
-                  setShells(prev => [...prev, id]);
-                  setActive(id);
-                }}
-              >
+              <IconButton size="small" onClick={addShell}>
                 <PlusIcon size={13} strokeWidth={2} />
               </IconButton>
             </Tooltip>
           </Box>
-          <SessionRow
-            label={
-              slug
-                ? `dev: ${slug}${devRunning ? "" : " · stopped"}`
-                : "dev server"
-            }
-            selected={active === "dev"}
-            onSelect={() => setActive("dev")}
-            // Closing the dev session IS stopping dev mode — one mental
-            // model, same as the toolbar's Stop dev.
-            onClose={
-              devRunning ? () => void stopDev(workspaceId, appId) : undefined
-            }
-          />
-          {shells.map((id, index) => (
+          {sessionItems.map(item => (
             <SessionRow
-              key={id}
-              label={`bash ${index + 1}`}
-              selected={active === id}
-              onSelect={() => setActive(id)}
-              onClose={() => closeShell(id, { killRemote: true })}
+              key={item.key}
+              label={item.label}
+              selected={item.selected}
+              onSelect={item.onSelect}
+              onClose={item.onClose}
             />
           ))}
-          {/* GHOST sessions: shells that exist in the box (pushed truth)
-              but have no tab here — opened by the agent, another browser,
-              or a previous pageview. One click attaches, history and all;
-              invisible sessions were how people collided with them. */}
-          {boxTerminals
-            .filter(id => /^[0-9]+$/.test(id) && !shells.includes(id))
-            .map(id => (
-              <SessionRow
-                key={`ghost-${id}`}
-                label={`bash · detached (${id})`}
-                selected={false}
-                onSelect={() => {
-                  setShells(prev => (prev.includes(id) ? prev : [...prev, id]));
-                  setActive(id);
-                }}
-              />
-            ))}
         </Box>
       </Panel>
     </PanelGroup>
@@ -926,7 +1106,9 @@ export default function AppWorkspace({
   appId: string;
 }) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
 
   const app = useAppsStore(s => s.apps.find(a => a.id === appId));
   const status = useAppsStore(s => s.statusByApp[appId]);
@@ -955,7 +1137,9 @@ export default function AppWorkspace({
   // Every "running" affordance derives from this, so they cannot disagree
   // (apps.md §13.11).
   const runningDevApps = useAppsStore(s => s.runningDevApps);
-  const devRunning = slug ? runningDevApps.includes(slug) : false;
+  const devRunning = runningDevApps.some(k =>
+    devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
+  );
   const viewUrl = useAppsStore(s => s.viewUrlByApp[appId]);
   const hiddenPaused = useHiddenPause();
   // Durable, session-authorized URL for the published app — for normal tabs.
@@ -967,6 +1151,10 @@ export default function AppWorkspace({
       ? `/api/workspaces/${workspaceId}/apps/${appId}/live/`
       : undefined;
   const fetchViewUrl = useAppsStore(s => s.fetchViewUrl);
+  // Phone: the workbench is one pane at a time (preview OR terminal),
+  // switched by the toggle beside the window pill in the Editor header.
+  const isMobile = useIsMobile();
+  const mobileAppPane = useUIStore(s => s.mobileAppPane);
 
   // Derive the workbench view from BOX TRUTH, never localStorage. Auto-open
   // the workbench ONLY when a dev server is actually serving this app — a
@@ -1007,16 +1195,18 @@ export default function AppWorkspace({
       void fetchViewUrl(workspaceId, appId);
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
-  // Older tabs were opened before slugs rode in tab metadata; heal them so
-  // the URL upgrades from /apps/<id> to /apps/<slug>.
+  // Keep the tab's URL handle honest: a top-level app is addressed by its
+  // slug (/apps/<slug>), a nested one by its id (a nested folder name may
+  // be shared by another app; an id never is). A move updates it in place.
   useEffect(() => {
-    const slug = app?.slug;
-    if (!slug) return;
+    if (!app) return;
+    const ref = appUrlRef(app);
+    const slug = ref === app.id ? undefined : ref;
     useConsoleStore.setState(state => {
       const t = state.tabs[_tabId];
-      if (t?.metadata && !t.metadata.appSlug) t.metadata.appSlug = slug;
+      if (t?.metadata && t.metadata.appSlug !== slug) t.metadata.appSlug = slug;
     });
-  }, [app?.slug, _tabId]);
+  }, [app, _tabId]);
 
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {
@@ -1053,8 +1243,68 @@ export default function AppWorkspace({
   const stopDev = useAppsStore(s => s.stopDev);
 
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   // Bumping this remounts the preview iframe — a plain page refresh.
   const [previewNonce, setPreviewNonce] = useState(0);
+
+  // THE APP'S QUERY STRING, PROJECTED ONTO THE ADDRESS BAR.
+  //
+  // The published app is a sandboxed iframe with an opaque origin: its own
+  // URL is invisible and unshareable, so the SDK posts the query on every
+  // navigate() and the tab carries it (metadata.appSearch). tabUrlPath puts
+  // it on the address bar, UrlSync captures it from a shared link into the
+  // tab, and the iframe boots from it below. Only the published iframe is
+  // trusted as a source, and only the query is taken — never a path.
+  const pubIframeRef = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const frame = pubIframeRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
+      const data = event.data as { type?: unknown; search?: unknown } | null;
+      if (
+        !data ||
+        data.type !== "mako-app:navigate" ||
+        typeof data.search !== "string"
+      ) {
+        return;
+      }
+      const search =
+        data.search === "" || data.search.startsWith("?")
+          ? data.search
+          : `?${data.search}`;
+      useConsoleStore.setState(state => {
+        const t = state.tabs[_tabId];
+        if (t?.metadata && t.metadata.appSearch !== search) {
+          t.metadata.appSearch = search;
+        }
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [_tabId]);
+  // Seeded once per boot — re-read only when the key below remounts the
+  // iframe: on an explicit rebuild (previewNonce), or when a shared link
+  // lands a DIFFERENT query on this already-open tab (appSearchSeed, bumped
+  // by focusAppsTab). It must NOT follow every navigate(): a src that changed
+  // on each filter would reload the app and throw away exactly the state
+  // being kept. Without the seed, a deep link into an open tab kept the
+  // query on the address bar while the app inside still showed its old view.
+  const appSearchSeed = useConsoleStore(
+    s => (s.tabs[_tabId]?.metadata?.appSearchSeed as number | undefined) ?? 0,
+  );
+  const seedKey = `${previewNonce}:${appSearchSeed}`;
+  const seededSearchRef = useRef<{ key: string; search: string } | null>(null);
+  if (
+    seededSearchRef.current === null ||
+    seededSearchRef.current.key !== seedKey
+  ) {
+    const s = useConsoleStore.getState().tabs[_tabId]?.metadata?.appSearch;
+    seededSearchRef.current = {
+      key: seedKey,
+      search: typeof s === "string" && s.length > 1 ? s : "",
+    };
+  }
+  const seededSearch = seededSearchRef.current.search;
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -1081,6 +1331,75 @@ export default function AppWorkspace({
 
   if (!workspaceId) return null;
 
+  // The dev-mode preview: build log while booting, the live iframe, or the
+  // getting-started copy. Shared by the desktop split and the phone layout.
+  const previewPane =
+    preview?.building && preview.publishing ? (
+      <BuildLogPanel text={preview.buildOutput ?? ""} />
+    ) : preview?.building ? (
+      // A 60-second cold boot behind a bare spinner reads as frozen.
+      // The boot writes a real log (npm install → vite); stream its
+      // tail here so starting reads as PROGRESS.
+      <DevBootLog workspaceId={workspaceId} appId={appId} />
+    ) : preview?.mode === "dev" && preview.reachable === false ? (
+      <Alert severity="warning" sx={{ m: 2 }}>
+        A dev server for this app is running in the sandbox but rejects the
+        preview host — it was started outside Mako without{" "}
+        <code>server.allowedHosts</code> including{" "}
+        <code>&quot;.e2b.app&quot;</code>. Use{" "}
+        <strong>Restart dev session</strong> to let Mako run it, or add that
+        host to the app&apos;s <code>vite.config</code>.
+      </Alert>
+    ) : hiddenPaused ? (
+      <Alert severity="info" sx={{ m: 2 }}>
+        Preview paused after 10 minutes in the background — its sockets are
+        released so the sandbox can sleep. It resumes when you come back.
+      </Alert>
+    ) : preview?.url ? (
+      <iframe
+        key={`dev-${previewNonce}`}
+        title="App preview"
+        src={preview.url}
+        // The two preview tiers need DIFFERENT sandboxes.
+        //
+        // Static builds are served by Mako from Mako's own origin, so
+        // `allow-same-origin` would hand app code our origin and let
+        // it escape the sandbox entirely — it stays off, and the
+        // opaque origin is why those assets are served with
+        // `Access-Control-Allow-Origin: *`.
+        //
+        // The live dev server (§12.4) is a genuinely foreign origin
+        // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants
+        // it only ITS OWN origin, never ours. It is required there:
+        // with an opaque origin, Vite's HMR socket and its
+        // cross-origin module scripts do not work.
+        sandbox={
+          preview.mode === "dev"
+            ? "allow-scripts allow-forms allow-same-origin"
+            : "allow-scripts allow-forms"
+        }
+        style={{ border: 0, width: "100%", height: "100%" }}
+      />
+    ) : (
+      <Box sx={{ p: 3, maxWidth: 560 }}>
+        <Typography variant="subtitle1" gutterBottom>
+          {app?.title ?? "App"}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" paragraph>
+          Browse and edit this app&apos;s files from the Apps explorer on the
+          left — every file opens in its own tab. Ask the agent in chat to build
+          features (it works on your branch and commits every turn), or use the
+          terminal below — it is a real machine with a real git checkout.
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          <strong>Start dev session</strong> runs the app live, so edits show up
+          as you make them. <strong>Publish</strong> builds it and deploys —
+          that is the version everyone else sees. A failed build publishes
+          nothing and leaves the current version untouched.
+        </Typography>
+      </Box>
+    );
+
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {/* Toolbar */}
@@ -1096,9 +1415,12 @@ export default function AppWorkspace({
           flexWrap: "wrap",
         }}
       >
-        <Typography variant="subtitle2" noWrap sx={{ maxWidth: 240 }}>
-          {app?.title ?? "App"}
-        </Typography>
+        {/* The window pill already carries the title on a phone. */}
+        {!isMobile && (
+          <Typography variant="subtitle2" noWrap sx={{ maxWidth: 240 }}>
+            {app?.title ?? "App"}
+          </Typography>
+        )}
         {devRunning && (
           <Chip
             label="live · HMR"
@@ -1107,35 +1429,15 @@ export default function AppWorkspace({
             variant="outlined"
           />
         )}
-        <Tooltip
-          title={
-            publishedSha
-              ? `Deployed from commit ${publishedSha.slice(0, 7)} — click to open the live app.`
-              : "Nobody can see this app yet. Click to publish it from main."
-          }
-        >
-          <Chip
-            label={
-              publishedSha
-                ? `published · ${publishedSha.slice(0, 7)}`
-                : "not published"
-            }
-            size="small"
-            color={publishedSha ? "default" : "warning"}
-            variant="outlined"
-            // Dead chips become navigation: published → open the live app;
-            // not published → this IS the call to action, publish.
-            onClick={
-              publishedSha
-                ? liveUrl
-                  ? () => window.open(liveUrl, "_blank", "noopener")
-                  : undefined
-                : preview?.building
-                  ? undefined
-                  : () => void publishApp(workspaceId, appId)
-            }
-          />
-        </Tooltip>
+        <AppPublishedChip
+          workspaceId={workspaceId}
+          appId={appId}
+          publishedSha={publishedSha}
+          publishedAt={app?.publishedAt}
+          liveUrl={liveUrl}
+          building={preview?.building}
+          onPublish={() => void publishApp(workspaceId, appId)}
+        />
         <Box sx={{ flex: 1 }} />
         {/* ONE dev toggle in the query-runner's language: blue Play →
             "Start dev" when stopped, red Stop → "Stop dev" while running.
@@ -1198,17 +1500,49 @@ export default function AppWorkspace({
             </Button>
           </span>
         </Tooltip>
-        <Tooltip title={`History (${status?.branch ?? "main"})`}>
-          <IconButton
-            size="small"
-            onClick={e => {
-              setHistoryAnchor(e.currentTarget);
-              void fetchHistory(workspaceId, appId);
-            }}
-          >
-            <HistoryIcon size={16} />
-          </IconButton>
+        <Tooltip
+          title={
+            app?.publishedSha
+              ? "Share the fullscreen published app"
+              : "Publish the app before sharing it"
+          }
+        >
+          <span>
+            {isMobile ? (
+              <IconButton
+                size="small"
+                aria-label="Share app"
+                disabled={!app?.publishedSha}
+                onClick={() => setShareOpen(true)}
+              >
+                <ShareIcon size={16} />
+              </IconButton>
+            ) : (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ShareIcon size={15} />}
+                disabled={!app?.publishedSha}
+                onClick={() => setShareOpen(true)}
+              >
+                Share
+              </Button>
+            )}
+          </span>
         </Tooltip>
+        {!isMobile && (
+          <Tooltip title={`History (${status?.branch ?? "main"})`}>
+            <IconButton
+              size="small"
+              onClick={e => {
+                setHistoryAnchor(e.currentTarget);
+                void fetchHistory(workspaceId, appId);
+              }}
+            >
+              <HistoryIcon size={16} />
+            </IconButton>
+          </Tooltip>
+        )}
         <Tooltip title="Open the preview in a new tab">
           <span>
             <IconButton
@@ -1278,9 +1612,20 @@ export default function AppWorkspace({
             // granting it would hand app code our origin and let it out of
             // the sandbox entirely.
             <iframe
-              key={`pub-${previewNonce}`}
+              key={`pub-${seedKey}`}
+              ref={pubIframeRef}
               title={`${app?.title ?? "App"} (published)`}
-              src={viewUrl}
+              // The view URL never carries a query of its own; the app's
+              // rides on it so the SDK reads it at mount (the preview route
+              // resolves the asset from the path alone).
+              src={
+                seededSearch
+                  ? viewUrl +
+                    (viewUrl.includes("?")
+                      ? `&${seededSearch.slice(1)}`
+                      : seededSearch)
+                  : viewUrl
+              }
               sandbox="allow-scripts allow-forms"
               style={{ border: 0, width: "100%", height: "100%" }}
             />
@@ -1324,6 +1669,30 @@ export default function AppWorkspace({
             </Box>
           )}
         </Box>
+      ) : isMobile ? (
+        // Phone: preview and terminal are the two halves of the toggle in
+        // the Editor header; both stay mounted so switching costs nothing.
+        <>
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: mobileAppPane === "preview" ? "flex" : "none",
+              flexDirection: "column",
+            }}
+          >
+            {previewPane}
+          </Box>
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: mobileAppPane === "terminal" ? "block" : "none",
+            }}
+          >
+            <TerminalTabs appId={appId} workspaceId={workspaceId} />
+          </Box>
+        </>
       ) : (
         <PanelGroup
           direction="vertical"
@@ -1334,74 +1703,7 @@ export default function AppWorkspace({
           style={{ flex: 1, minHeight: 0 }}
         >
           <Panel defaultSize={70} minSize={20}>
-            {preview?.building && preview.publishing ? (
-              <BuildLogPanel text={preview.buildOutput ?? ""} />
-            ) : preview?.building ? (
-              // A 60-second cold boot behind a bare spinner reads as frozen.
-              // The boot writes a real log (npm install → vite); stream its
-              // tail here so starting reads as PROGRESS.
-              <DevBootLog workspaceId={workspaceId} appId={appId} />
-            ) : preview?.mode === "dev" && preview.reachable === false ? (
-              <Alert severity="warning" sx={{ m: 2 }}>
-                A dev server for this app is running in the sandbox but rejects
-                the preview host — it was started outside Mako without{" "}
-                <code>server.allowedHosts</code> including{" "}
-                <code>&quot;.e2b.app&quot;</code>. Use{" "}
-                <strong>Restart dev session</strong> to let Mako run it, or add
-                that host to the app&apos;s <code>vite.config</code>.
-              </Alert>
-            ) : hiddenPaused ? (
-              <Alert severity="info" sx={{ m: 2 }}>
-                Preview paused after 10 minutes in the background — its sockets
-                are released so the sandbox can sleep. It resumes when you come
-                back.
-              </Alert>
-            ) : preview?.url ? (
-              <iframe
-                key={`dev-${previewNonce}`}
-                title="App preview"
-                src={preview.url}
-                // The two preview tiers need DIFFERENT sandboxes.
-                //
-                // Static builds are served by Mako from Mako's own origin, so
-                // `allow-same-origin` would hand app code our origin and let
-                // it escape the sandbox entirely — it stays off, and the
-                // opaque origin is why those assets are served with
-                // `Access-Control-Allow-Origin: *`.
-                //
-                // The live dev server (§12.4) is a genuinely foreign origin
-                // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants
-                // it only ITS OWN origin, never ours. It is required there:
-                // with an opaque origin, Vite's HMR socket and its
-                // cross-origin module scripts do not work.
-                sandbox={
-                  preview.mode === "dev"
-                    ? "allow-scripts allow-forms allow-same-origin"
-                    : "allow-scripts allow-forms"
-                }
-                style={{ border: 0, width: "100%", height: "100%" }}
-              />
-            ) : (
-              <Box sx={{ p: 3, maxWidth: 560 }}>
-                <Typography variant="subtitle1" gutterBottom>
-                  {app?.title ?? "App"}
-                </Typography>
-                <Typography variant="body2" color="text.secondary" paragraph>
-                  Browse and edit this app&apos;s files from the Apps explorer
-                  on the left — every file opens in its own tab. Ask the agent
-                  in chat to build features (it works on your branch and commits
-                  every turn), or use the terminal below — it is a real machine
-                  with a real git checkout.
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  <strong>Start dev session</strong> runs the app live, so edits
-                  show up as you make them. <strong>Publish</strong> builds it
-                  and deploys — that is the version everyone else sees. A failed
-                  build publishes nothing and leaves the current version
-                  untouched.
-                </Typography>
-              </Box>
-            )}
+            {previewPane}
           </Panel>
 
           <TerminalResizeHandle onDragging={setTerminalDragging} />
@@ -1421,6 +1723,35 @@ export default function AppWorkspace({
         branch={status?.branch ?? "main"}
         publishedSha={app?.publishedSha}
       />
+      {app && (
+        <ShareDialog
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          resourceType="app"
+          resourceId={app.id}
+          resourceName={app.title}
+          ownerId={app.owner_id}
+          access={app.access ?? "workspace"}
+          workspaceRole={app.workspaceRole ?? "viewer"}
+          publicShare={app.publicShare}
+          canManage={
+            !app.owner_id || app.owner_id === user?.id || isWorkspaceAdmin
+          }
+          onSharingChanged={changes => {
+            useAppsStore.setState(state => {
+              const currentApp = state.apps.find(item => item.id === app.id);
+              if (!currentApp) return;
+              if (changes.access) currentApp.access = changes.access;
+              if (changes.workspaceRole) {
+                currentApp.workspaceRole = changes.workspaceRole;
+              }
+              if (changes.publicShare) {
+                currentApp.publicShare = changes.publicShare;
+              }
+            });
+          }}
+        />
+      )}
     </Box>
   );
 }

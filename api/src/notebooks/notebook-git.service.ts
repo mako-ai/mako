@@ -24,6 +24,8 @@ import {
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import { ensureLocalRepo, queueMirrorPush } from "../apps/cloud-repo.service";
+import { RepoRequiredError } from "../apps/config";
+import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
   DEFAULT_BRANCH,
   blobOid,
@@ -32,14 +34,13 @@ import {
   listTree,
   log as repoLog,
   readBlob,
-  repoDirFor,
-  repoExists,
   resolveCommit,
   type ChangedFile,
   type CommitInfo,
 } from "../apps/repository.service";
 import { EMPTY_TREE } from "../apps/git";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { getNotebookStore } from "./store";
 import {
   isNotebookRepoPath,
@@ -58,9 +59,12 @@ const CHECKPOINT_DEBOUNCE_MS = 30_000;
 const CHECKPOINT_MAX_WAIT_MS = 5 * 60_000;
 
 async function repoDirIfExists(workspaceId: string): Promise<string | null> {
+  // Leftover local git without a GitHub binding is not a repository
+  // (issue #956). Checkpoints skip with no_repository instead of writing
+  // into Cloud Storage. Bound but not yet cloned: restore the cache first.
+  if (!(await getWorkspaceRepo(workspaceId))) return null;
   await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  return (await repoExists(repoDir)) ? repoDir : null;
+  return boundRepoDirIfExists(workspaceId);
 }
 
 async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
@@ -91,9 +95,15 @@ export async function checkpointNotebook(
   workspaceId: string,
   notebookId: string,
   actorUserId?: string,
-): Promise<{ committed: boolean }> {
+): Promise<{ committed: boolean; skippedReason?: "no_repository" }> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return { committed: false };
+  if (repoDir == null) {
+    logger.warn("Notebook checkpoint not committed — connect a repository", {
+      workspaceId,
+      notebookId,
+    });
+    return { committed: false, skippedReason: "no_repository" };
+  }
   const [doc, index] = await Promise.all([
     getNotebookStore().get(workspaceId, notebookId),
     NotebookIndex.findOne({
@@ -140,7 +150,13 @@ export async function removeNotebookFile(
 ): Promise<void> {
   if (!index.path) return;
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return;
+  if (repoDir == null) {
+    logger.warn("Notebook file not deleted from git — connect a repository", {
+      workspaceId,
+      path: index.path,
+    });
+    return;
+  }
   await commitBlobsOnBranch(
     repoDir,
     DEFAULT_BRANCH,
@@ -248,7 +264,7 @@ async function syncNotebooksNow(
   actorUserId?: string,
 ): Promise<void> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return;
+  if (repoDir == null) return;
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) return;
   const paths = (await listTree(repoDir, head))
@@ -337,7 +353,7 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
   written: number;
 }> {
   const repoDir = await repoDirIfExists(workspaceId);
-  if (!repoDir) return { notebooks: 0, written: 0 };
+  if (repoDir == null) return { notebooks: 0, written: 0 };
   const store = getNotebookStore();
   const indexes = await NotebookIndex.find({
     workspaceId: new Types.ObjectId(workspaceId),
@@ -390,8 +406,8 @@ export async function notebookHistory(
   limit = 50,
 ): Promise<CommitInfo[]> {
   if (!index.path) return [];
-  const repoDir = repoDirFor(index.workspaceId.toString());
-  if (!(await repoExists(repoDir))) return [];
+  const repoDir = await boundRepoDirIfExists(index.workspaceId.toString());
+  if (repoDir == null) return [];
   if (!(await resolveCommit(repoDir, MAIN_REF))) return [];
   return repoLog(repoDir, MAIN_REF, limit, index.path);
 }
@@ -401,7 +417,8 @@ export async function notebookCommitChanges(
   index: Pick<INotebookIndex, "workspaceId" | "path">,
   sha: string,
 ): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
-  const repoDir = repoDirFor(index.workspaceId.toString());
+  const repoDir = await boundRepoDirIfExists(index.workspaceId.toString());
+  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
@@ -416,7 +433,8 @@ export async function notebookFileVersions(
   sha: string,
   relPath: string,
 ): Promise<{ before: string | null; after: string | null; binary: boolean }> {
-  const repoDir = repoDirFor(index.workspaceId.toString());
+  const repoDir = await boundRepoDirIfExists(index.workspaceId.toString());
+  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
@@ -455,7 +473,8 @@ export async function restoreNotebookTo(
   if (!index?.path) {
     throw new Error("This notebook has no file in the repo yet");
   }
-  const repoDir = repoDirFor(workspaceId);
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) throw new RepoRequiredError();
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
 

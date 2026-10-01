@@ -275,6 +275,11 @@ export function createResourceTreeStore<
     resortIn,
   };
 
+  // Realtime events, focus handlers and explorer mounts can all request the
+  // same tree in one tick. One workspace needs one fetch; every caller can
+  // await the shared result.
+  const fetchInFlight = new Map<string, Promise<void>>();
+
   return create<State>()(
     immer((set, get) => ({
       myItems: {},
@@ -282,29 +287,40 @@ export function createResourceTreeStore<
       loading: {},
       error: {},
 
-      fetchTree: async workspaceId => {
-        set(state => {
-          state.loading[workspaceId] = true;
-          state.error[workspaceId] = null;
+      fetchTree: workspaceId => {
+        const pending = fetchInFlight.get(workspaceId);
+        if (pending) return pending;
+
+        const run = (async () => {
+          set(state => {
+            state.loading[workspaceId] = true;
+            state.error[workspaceId] = null;
+          });
+          try {
+            const data = await endpoints.fetch(workspaceId);
+            set(state => {
+              state.myItems[workspaceId] = data.my as never;
+              state.workspaceItems[workspaceId] = data.workspace as never;
+            });
+          } catch (err: unknown) {
+            set(state => {
+              state.error[workspaceId] = toErrorMessage(
+                err,
+                `Failed to fetch ${resourceName} tree`,
+              );
+            });
+          } finally {
+            set(state => {
+              delete state.loading[workspaceId];
+            });
+          }
+        })().finally(() => {
+          if (fetchInFlight.get(workspaceId) === run) {
+            fetchInFlight.delete(workspaceId);
+          }
         });
-        try {
-          const data = await endpoints.fetch(workspaceId);
-          set(state => {
-            state.myItems[workspaceId] = data.my as never;
-            state.workspaceItems[workspaceId] = data.workspace as never;
-          });
-        } catch (err: unknown) {
-          set(state => {
-            state.error[workspaceId] = toErrorMessage(
-              err,
-              `Failed to fetch ${resourceName} tree`,
-            );
-          });
-        } finally {
-          set(state => {
-            delete state.loading[workspaceId];
-          });
-        }
+        fetchInFlight.set(workspaceId, run);
+        return run;
       },
 
       refresh: async workspaceId => {

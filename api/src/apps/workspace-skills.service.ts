@@ -1,35 +1,29 @@
 /**
- * Workspace skills in the workspace repo — git is the source of truth,
- * Mongo's `skills` collection is the DERIVED retrieval index (embeddings,
- * $text, useCount telemetry), the same doctrine consoles follow (apps.md
- * §10 Block D1, §16).
+ * Workspace skills ARE the files in the workspace repo (apps.md §27).
  *
- * Adoption: workspaces predate this layout, so `skills/README.md` on main is
- * the marker that git owns skills. Until it exists, Mongo may hold skills
- * git has never seen — the first skill save on a pre-existing workspace
- * adopts them all in one commit, and the sync never deletes index rows for
- * a repo that has not adopted. The workspace_skills_to_git migration
- * performs the same adoption for every workspace that already has a repo.
+ * `skills/<name>/SKILL.md` at main is the only store: no index rows, no
+ * embeddings, no push-sync, nothing that can drift from git. Reads go
+ * through `loadSkillCatalog`, an in-memory catalog keyed by the main commit
+ * — a push moves the commit, so the next read rebuilds; between pushes the
+ * catalog is served from memory. Writes are commits on main
+ * (`commitSkillSave` / `commitSkillDelete` / `commitSkillFlags`), mirrored
+ * to GitHub like every other kind.
  *
- * Must not import worktree.service (it imports this module for the push
+ * Unbound workspaces (no GitHub repo) have no skills — the same posture as
+ * consoles, flows and dbt. Leftover local git without a binding is not a
+ * read surface (`boundRepoDirIfExists` / `getWorkspaceRepo` gate every walk).
+ *
+ * Must not import worktree.service (it imports the apps stack for the push
  * hook).
  */
-import { Types } from "mongoose";
-import { Skill, type ISkill } from "../database/workspace-schema";
-import {
-  embedText,
-  getEmbeddingModelName,
-  isEmbeddingAvailable,
-} from "../services/embedding.service";
-import { extractEntities } from "../agent-lib/entity-extraction";
+import { createHash } from "node:crypto";
 import { loggers } from "../logging";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
+import { freshenBeforeMainWrite, queueMirrorPush } from "./cloud-repo.service";
 import {
-  ensureWorkspaceRepo,
-  freshenBeforeMainWrite,
-  queueMirrorPush,
-  resolveMirrorTarget,
-} from "./cloud-repo.service";
-import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
+  requireWorkspaceRepo,
+  boundRepoDirIfExists,
+} from "./workspace-repo-required";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -37,7 +31,6 @@ import {
   listTree,
   readBlob,
   repoDirFor,
-  repoExists,
   resolveCommit,
   type GitAuthor,
 } from "./repository.service";
@@ -46,6 +39,9 @@ import {
   SKILLS_README_PATH,
   SKILL_FILE_GLOB,
   SKILL_NAME_RE,
+  MAX_SKILL_BODY_CHARS,
+  MAX_SKILL_FILE_BYTES,
+  MAX_WORKSPACE_SKILLS,
   parseSkillFile,
   serializeSkillFile,
   skillFilePath,
@@ -55,12 +51,180 @@ import {
 
 const logger = loggers.api("skills-git");
 
-/** Mirrors skills.service's MAX_SKILLS_PER_WORKSPACE — bounds the index. */
-const MAX_SYNCED_SKILLS = 200;
-
-// Ref policy: skills pin to the default branch while their Mongo index is
-// main-scoped — see branch-policy.ts (commitBranchFor "skill") for why.
+// Ref policy: skills pin to the default branch — see branch-policy.ts
+// (commitBranchFor "skill") for why.
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
+
+/** A parsed skill file at main. `id` is stable for as long as the name is. */
+export interface WorkspaceSkill extends WorkspaceSkillFile {
+  id: string;
+  path: string;
+}
+
+/** A `skills/<name>/SKILL.md` at main that does not parse. Listed, never offered. */
+export interface InvalidSkillFile {
+  name: string;
+  path: string;
+  reason: string;
+}
+
+export interface SkillCatalog {
+  workspaceId: string;
+  /** Main commit the catalog was built from; null when there is no repo. */
+  head: string | null;
+  /** Valid skills, sorted by name. */
+  skills: WorkspaceSkill[];
+  invalid: InvalidSkillFile[];
+}
+
+/**
+ * Stable id for a skill, derived from its name (24 hex chars so it looks
+ * like every other id the client handles). Nothing else mints skill ids.
+ */
+export function skillId(workspaceId: string, name: string): string {
+  return createHash("sha1")
+    .update(`skills:${workspaceId}:${name}`)
+    .digest("hex")
+    .slice(0, 24);
+}
+
+/** Cloud Run is multi-tenant; never retain every workspace catalog forever. */
+export const MAX_CACHED_SKILL_CATALOGS = 16;
+const catalogCache = new Map<string, SkillCatalog>();
+
+function getCachedCatalog(
+  workspaceId: string,
+  head: string,
+): SkillCatalog | null {
+  const cached = catalogCache.get(workspaceId);
+  if (!cached || cached.head !== head) return null;
+  // Refresh recency for the insertion-ordered Map used as a tiny LRU.
+  catalogCache.delete(workspaceId);
+  catalogCache.set(workspaceId, cached);
+  return cached;
+}
+
+function cacheCatalog(workspaceId: string, catalog: SkillCatalog): void {
+  catalogCache.delete(workspaceId);
+  catalogCache.set(workspaceId, catalog);
+  while (catalogCache.size > MAX_CACHED_SKILL_CATALOGS) {
+    const oldest = catalogCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    catalogCache.delete(oldest);
+  }
+}
+
+function emptyCatalog(workspaceId: string): SkillCatalog {
+  return { workspaceId, head: null, skills: [], invalid: [] };
+}
+
+/**
+ * The skills at main. Rebuilt only when the main commit moved; an empty
+ * catalog (no binding, no repo, no main) is never cached.
+ */
+export async function loadSkillCatalog(
+  workspaceId: string,
+): Promise<SkillCatalog> {
+  if (!(await getWorkspaceRepo(workspaceId))) return emptyCatalog(workspaceId);
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return emptyCatalog(workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return emptyCatalog(workspaceId);
+  const cached = getCachedCatalog(workspaceId, head);
+  if (cached) return cached;
+
+  const skills: WorkspaceSkill[] = [];
+  const invalid: InvalidSkillFile[] = [];
+  const paths = await globTree(repoDir, MAIN, SKILL_FILE_GLOB, 1000);
+  for (const path of paths.sort()) {
+    const name = skillNameFromPath(path);
+    if (!name) {
+      invalid.push({
+        name: path.split("/")[1] ?? path,
+        path,
+        reason: "folder name must be lowercase snake_case (a-z, 0-9, _)",
+      });
+      continue;
+    }
+    let contents: string | null = null;
+    let invalidReason: string | null = null;
+    try {
+      const blob = await readBlob(repoDir, MAIN, path);
+      if (blob.isBinary) {
+        invalidReason = "binary skill file";
+      } else if (blob.size > MAX_SKILL_FILE_BYTES) {
+        invalidReason = `skill file exceeds ${MAX_SKILL_FILE_BYTES} bytes`;
+      } else {
+        contents = blob.contents;
+      }
+    } catch (error) {
+      logger.warn("Unreadable skill file at main", {
+        workspaceId,
+        path,
+        error,
+      });
+    }
+    const parsed = contents === null ? null : parseSkillFile(name, contents);
+    if (!parsed) {
+      invalid.push({
+        name,
+        path,
+        reason:
+          invalidReason ??
+          (contents === null
+            ? "unreadable or binary skill file"
+            : "unparseable skill file (frontmatter with `description` and a body are required)"),
+      });
+      continue;
+    }
+    if (parsed.body.length > MAX_SKILL_BODY_CHARS) {
+      invalid.push({
+        name,
+        path,
+        reason: `body exceeds ${MAX_SKILL_BODY_CHARS} characters`,
+      });
+      continue;
+    }
+    if (skills.length >= MAX_WORKSPACE_SKILLS) {
+      invalid.push({
+        name,
+        path,
+        reason: `workspace exceeds the ${MAX_WORKSPACE_SKILLS} skill limit`,
+      });
+      continue;
+    }
+    skills.push({ ...parsed, id: skillId(workspaceId, name), path });
+  }
+  const catalog: SkillCatalog = { workspaceId, head, skills, invalid };
+  cacheCatalog(workspaceId, catalog);
+  return catalog;
+}
+
+/** Drop the cached catalog; the next read rebuilds from main. */
+export function invalidateSkillCatalog(workspaceId: string): void {
+  catalogCache.delete(workspaceId);
+}
+
+export async function findSkill(
+  workspaceId: string,
+  name: string,
+): Promise<WorkspaceSkill | null> {
+  const trimmed = name.trim();
+  const catalog = await loadSkillCatalog(workspaceId);
+  return catalog.skills.find(skill => skill.name === trimmed) ?? null;
+}
+
+export async function findSkillById(
+  workspaceId: string,
+  id: string,
+): Promise<WorkspaceSkill | null> {
+  const catalog = await loadSkillCatalog(workspaceId);
+  return catalog.skills.find(skill => skill.id === id) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Writes — commits on main
+// ---------------------------------------------------------------------------
 
 async function readRepoFile(
   repoDir: string,
@@ -74,90 +238,37 @@ async function readRepoFile(
   }
 }
 
-/** Whether this repo's skills folder has been adopted (see module doc). */
+/** Whether the folder's README marker exists (written with the first save). */
 export async function skillsAdopted(repoDir: string): Promise<boolean> {
   return (await readRepoFile(repoDir, SKILLS_README_PATH)) !== null;
 }
 
-/** Every parseable skill file on main. Missing repo/branch → empty. */
-export async function listSkillFilesFromRepo(
-  workspaceId: string,
-): Promise<WorkspaceSkillFile[]> {
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return [];
-  if (!(await resolveCommit(repoDir, MAIN))) return [];
-  const paths = await globTree(repoDir, MAIN, SKILL_FILE_GLOB, 1000);
-  const out: WorkspaceSkillFile[] = [];
-  for (const path of paths.sort()) {
-    const name = skillNameFromPath(path);
-    if (!name) {
-      logger.warn("Skipping skill file with invalid name", {
-        workspaceId,
-        path,
-      });
-      continue;
-    }
-    const raw = await readRepoFile(repoDir, path);
-    const parsed = raw === null ? null : parseSkillFile(name, raw);
-    if (!parsed) {
-      logger.warn("Skipping unparseable skill file", { workspaceId, path });
-      continue;
-    }
-    out.push(parsed);
-  }
-  return out;
-}
-
-/** Production gate (apps.md §17): no connected repo, no durable skill save. */
-async function assertDurableWritable(workspaceId: string): Promise<void> {
-  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
-    throw new RepoRequiredError();
-  }
-}
-
 /**
- * Commit one skill save onto main. On a repo that has not adopted yet, the
- * same commit adopts: the caller's snapshot of the workspace's Mongo skills
- * (`loadAdoptable`, called lazily — only that first commit needs the bodies)
- * and the `skills/README.md` marker ride along, so no Mongo-only skill can
- * be orphaned by the sync afterwards.
+ * Commit one skill save onto main. The first save on a repo also writes the
+ * `skills/README.md` marker so the folder explains itself.
  */
 export async function commitSkillSave(
   workspaceId: string,
   skill: WorkspaceSkillFile,
-  options: {
-    author?: GitAuthor;
-    loadAdoptable?: () => Promise<WorkspaceSkillFile[]>;
-  } = {},
+  options: { author?: GitAuthor } = {},
 ): Promise<void> {
-  await assertDurableWritable(workspaceId);
-  const repoDir = await ensureWorkspaceRepo(workspaceId, options.author);
-  // Commit onto the mirror's main, not a stale cached tip.
+  const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
   const writes: Record<string, string> = {};
-  let message = `Save skill "${skill.name}"`;
   if (!(await skillsAdopted(repoDir))) {
     writes[SKILLS_README_PATH] = SKILLS_README;
-    for (const existing of (await options.loadAdoptable?.()) ?? []) {
-      if (existing.name === skill.name) continue;
-      const path = skillFilePath(existing.name);
-      if ((await readRepoFile(repoDir, path)) === null) {
-        writes[path] = serializeSkillFile(existing);
-      }
-    }
-    message = `Adopt workspace skills into git; save skill "${skill.name}"`;
   }
   writes[skillFilePath(skill.name)] = serializeSkillFile(skill);
   await commitBlobsOnBranch(
     repoDir,
     DEFAULT_BRANCH,
     { writes },
-    { message, author: options.author },
+    { message: `Save skill "${skill.name}"`, author: options.author },
   );
+  invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
 }
 
-/** Every path under a skill's folder (a laptop may have added extras). */
 async function skillFolderPaths(
   repoDir: string,
   name: string,
@@ -170,19 +281,15 @@ async function skillFolderPaths(
     .filter(p => p.startsWith(prefix));
 }
 
-/**
- * Commit a skill deletion. No-op (returns false) when the repo or the file
- * does not exist — a Mongo-only skill on an unadopted workspace has nothing
- * to delete in git.
- */
+/** Remove the skill's folder from main. False when there is nothing to delete. */
 export async function commitSkillDelete(
   workspaceId: string,
   name: string,
   author?: GitAuthor,
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(name)) return false;
+  await requireWorkspaceRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return false;
   await freshenBeforeMainWrite(workspaceId);
   const deletes = await skillFolderPaths(repoDir, name);
   if (deletes.length === 0) return false;
@@ -192,220 +299,59 @@ export async function commitSkillDelete(
     { deletes },
     { message: `Delete skill "${name}"`, author },
   );
+  invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
   return true;
 }
 
 /**
- * Commit a suppressed-flag flip by rewriting the file's frontmatter. No-op
- * when the file is not in git yet (unadopted workspace).
+ * Flip `suppressed` and/or `pinned` by rewriting the file's frontmatter.
+ * False when the file is not at main; true (no commit) when nothing changes.
  */
+export async function commitSkillFlags(
+  workspaceId: string,
+  name: string,
+  flags: { suppressed?: boolean; pinned?: boolean },
+  author?: GitAuthor,
+): Promise<boolean> {
+  if (!SKILL_NAME_RE.test(name)) return false;
+  await requireWorkspaceRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
+  const path = skillFilePath(name);
+  const raw = await readRepoFile(repoDir, path);
+  const parsed = raw === null ? null : parseSkillFile(name, raw);
+  if (!parsed) return false;
+  const next: WorkspaceSkillFile = {
+    ...parsed,
+    suppressed: flags.suppressed ?? parsed.suppressed,
+    pinned: flags.pinned ?? parsed.pinned,
+  };
+  if (next.suppressed === parsed.suppressed && next.pinned === parsed.pinned) {
+    return true;
+  }
+  const verbs: string[] = [];
+  if (next.suppressed !== parsed.suppressed) {
+    verbs.push(next.suppressed ? "Suppress" : "Unsuppress");
+  }
+  if (next.pinned !== parsed.pinned) verbs.push(next.pinned ? "Pin" : "Unpin");
+  await commitBlobsOnBranch(
+    repoDir,
+    DEFAULT_BRANCH,
+    { writes: { [path]: serializeSkillFile(next) } },
+    { message: `${verbs.join(" + ")} skill "${name}"`, author },
+  );
+  invalidateSkillCatalog(workspaceId);
+  queueMirrorPush(workspaceId);
+  return true;
+}
+
+/** Kept for the suppress route and older callers. */
 export async function commitSkillSuppressed(
   workspaceId: string,
   name: string,
   suppressed: boolean,
   author?: GitAuthor,
 ): Promise<boolean> {
-  if (!SKILL_NAME_RE.test(name)) return false;
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return false;
-  await freshenBeforeMainWrite(workspaceId);
-  const path = skillFilePath(name);
-  const raw = await readRepoFile(repoDir, path);
-  const parsed = raw === null ? null : parseSkillFile(name, raw);
-  if (!parsed) return false;
-  if (parsed.suppressed === suppressed) return true;
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes: { [path]: serializeSkillFile({ ...parsed, suppressed }) } },
-    {
-      message: `${suppressed ? "Suppress" : "Unsuppress"} skill "${name}"`,
-      author,
-    },
-  );
-  queueMirrorPush(workspaceId);
-  return true;
-}
-
-function sameEntities(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  const bs = new Set(b);
-  return a.every(e => bs.has(e));
-}
-
-/** Declared (file) entities ∪ extracted — same union saveSkill computes. */
-function indexEntities(skill: WorkspaceSkillFile): string[] {
-  const extracted = extractEntities(`${skill.loadWhen}\n${skill.body}`);
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of [...skill.entities, ...extracted]) {
-    const norm = raw.toLowerCase().trim();
-    if (norm.length < 2 || seen.has(norm)) continue;
-    seen.add(norm);
-    out.push(norm);
-  }
-  return out;
-}
-
-async function embeddingFor(
-  loadWhen: string,
-): Promise<{ embedding?: number[]; model?: string }> {
-  if (!isEmbeddingAvailable()) return {};
-  try {
-    const embedding = await embedText(loadWhen);
-    if (!embedding) return {};
-    return { embedding, model: getEmbeddingModelName() ?? undefined };
-  } catch (error) {
-    logger.warn("Skill embedding failed during index sync", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return {};
-  }
-}
-
-/**
- * Reconcile the Mongo retrieval index with the repo's skills/ folder —
- * called after every push to the git endpoint (worktree.service
- * notifyRepoPushed) so a skill edited in a terminal or a laptop clone is in
- * the agent's index by its next turn.
- *
- * Deliberately conservative: it never touches an unadopted repo (Mongo may
- * hold skills git has never seen), it preserves telemetry (useCount,
- * lastUsedAt) and createdBy on update, and it re-embeds only when the
- * trigger text actually changed.
- */
-export async function syncSkillsIndexFromRepo(
-  workspaceId: string,
-  userId?: string,
-): Promise<void> {
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return;
-  if (!(await skillsAdopted(repoDir))) return;
-
-  let files = await listSkillFilesFromRepo(workspaceId);
-  if (files.length > MAX_SYNCED_SKILLS) {
-    logger.warn(
-      "Workspace has more skill files than the index cap; truncating",
-      {
-        workspaceId,
-        fileCount: files.length,
-        cap: MAX_SYNCED_SKILLS,
-      },
-    );
-    files = files.slice(0, MAX_SYNCED_SKILLS);
-  }
-
-  const wsObjectId = new Types.ObjectId(workspaceId);
-  const rows = (await Skill.find({ workspaceId: wsObjectId })) as ISkill[];
-  const rowByName = new Map(rows.map(r => [r.name, r]));
-  const fileNames = new Set(files.map(f => f.name));
-
-  for (const file of files) {
-    const entities = indexEntities(file);
-    const row = rowByName.get(file.name);
-    if (!row) {
-      const { embedding, model } = await embeddingFor(file.loadWhen);
-      await Skill.create({
-        workspaceId: wsObjectId,
-        name: file.name,
-        loadWhen: file.loadWhen,
-        body: file.body,
-        entities,
-        loadWhenEmbedding: embedding,
-        embeddingModel: model,
-        scopeType: "workspace",
-        createdBy: userId && userId.length > 0 ? userId : "agent",
-        suppressed: file.suppressed,
-        useCount: 0,
-      });
-      continue;
-    }
-    const unchanged =
-      row.loadWhen === file.loadWhen &&
-      row.body === file.body &&
-      row.suppressed === file.suppressed &&
-      sameEntities(row.entities ?? [], entities);
-    if (unchanged) continue;
-    if (row.body !== file.body) {
-      row.previousBody = row.body;
-      row.previousUpdatedAt = row.updatedAt;
-    }
-    if (row.loadWhen !== file.loadWhen) {
-      const { embedding, model } = await embeddingFor(file.loadWhen);
-      if (embedding) {
-        row.loadWhenEmbedding = embedding;
-        row.embeddingModel = model;
-      }
-    }
-    row.loadWhen = file.loadWhen;
-    row.body = file.body;
-    row.entities = entities;
-    row.suppressed = file.suppressed;
-    await row.save();
-  }
-
-  const stale = rows.filter(r => !fileNames.has(r.name));
-  if (stale.length > 0) {
-    await Skill.deleteMany({
-      workspaceId: wsObjectId,
-      _id: { $in: stale.map(r => r._id) },
-    });
-  }
-}
-
-/**
- * Adopt a workspace's Mongo skills into its repo: write every skill file
- * that is missing plus the `skills/README.md` marker, in one commit. Used
- * by the workspace_skills_to_git migration (repos that already exist) —
- * the first skill save adopts lazily everywhere else. Re-runnable.
- */
-export async function adoptWorkspaceSkills(workspaceId: string): Promise<{
-  workspaceId: string;
-  skills: number;
-  written: number;
-  adopted: boolean;
-}> {
-  const rows = (await Skill.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select("name loadWhen body entities suppressed")
-    .lean()) as Array<
-    Pick<ISkill, "name" | "loadWhen" | "body" | "entities" | "suppressed">
-  >;
-  const repoDir = await ensureWorkspaceRepo(workspaceId);
-  const alreadyAdopted = await skillsAdopted(repoDir);
-  const writes: Record<string, string> = {};
-  for (const row of rows) {
-    if (!SKILL_NAME_RE.test(row.name)) {
-      logger.warn("Skipping skill with a name git cannot hold", {
-        workspaceId,
-        name: row.name,
-      });
-      continue;
-    }
-    const path = skillFilePath(row.name);
-    if ((await readRepoFile(repoDir, path)) !== null) continue;
-    writes[path] = serializeSkillFile({
-      name: row.name,
-      loadWhen: row.loadWhen,
-      entities: row.entities ?? [],
-      suppressed: !!row.suppressed,
-      body: row.body,
-    });
-  }
-  if (!alreadyAdopted) writes[SKILLS_README_PATH] = SKILLS_README;
-  const written = Object.keys(writes).length;
-  if (written > 0) {
-    await commitBlobsOnBranch(
-      repoDir,
-      DEFAULT_BRANCH,
-      { writes },
-      {
-        message: `Adopt workspace skills into git (${rows.length} skill${rows.length === 1 ? "" : "s"})`,
-      },
-    );
-    queueMirrorPush(workspaceId);
-  }
-  return { workspaceId, skills: rows.length, written, adopted: true };
+  return commitSkillFlags(workspaceId, name, { suppressed }, author);
 }

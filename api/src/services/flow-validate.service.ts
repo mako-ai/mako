@@ -90,14 +90,16 @@ export async function validateFlowFile(input: {
 
   // ---- referential: the ids must exist, in THIS workspace ----------------
   if (file.source.type === "connector") {
-    const id = file.source.connectorId;
+    const id = file.source.connectionId;
     if (!id) {
-      add("`source.connector_id:` is required for a connector source");
+      add(
+        "`source.connection_id:` is required for a connector source (the id of a source connection from list_connections)",
+      );
     } else if (!isObjectId(id)) {
-      add(`\`source.connector_id: ${id}\` is not a valid id`);
+      add(`\`source.connection_id: ${id}\` is not a valid id`);
     } else if (!(await Connector.exists({ _id: id, workspaceId }))) {
       add(
-        `\`source.connector_id: ${id}\` does not name a connector in this workspace — create the connector first, then reference the id it returns`,
+        `\`source.connection_id: ${id}\` does not name a source connection in this workspace — configure the connection first (Sources → Add), then reference the id list_connections returns`,
       );
     }
   } else {

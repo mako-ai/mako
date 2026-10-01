@@ -3,7 +3,7 @@ import type { OpenAPIHono } from "@hono/zod-openapi";
 import type { AuthEnv } from "../openapi/core";
 import { consoleRoutes } from "./consoles";
 import { realtimeRoutes } from "./realtime";
-import { dataSourceRoutes } from "./sources";
+import { sourceConnectionRoutes } from "./source-connections";
 import { customPromptRoutes } from "./custom-prompt";
 import { skillsRoutes } from "./skills";
 import { dbtRoutes } from "./dbt.routes";
@@ -44,6 +44,7 @@ import { workspaceRepoRoutes } from "./workspace-repo";
 import { appsGitRoutes } from "./apps-git";
 import { appsBoxRoutes } from "./apps-box";
 import { appsPreviewRoutes } from "./apps-preview";
+import { favouriteRoutes } from "./favourites";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -71,7 +72,14 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/dbt", dbtRoutes);
   // GitHub App install callback (session-authed, workspace via state param).
   app.route("/api/github", githubRoutes);
-  app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
+  // Source connections (credentials configured with a connector).
+  // Primary path; `/connectors` is the pre-2026-09 alias and must keep working.
+  app.route(
+    "/api/workspaces/:workspaceId/connections/sources",
+    sourceConnectionRoutes,
+  );
+  /** @deprecated use /api/workspaces/:workspaceId/connections/sources */
+  app.route("/api/workspaces/:workspaceId/connectors", sourceConnectionRoutes);
   app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
   app.route(
     "/api/workspaces/:workspaceId/scheduled-queries",
@@ -105,6 +113,10 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // The workspace repo itself (status, branches, commits, GitHub connect) —
   // the repo is workspace infrastructure; apps/consoles/dbt are lenses on it.
   app.route("/api/workspaces/:workspaceId/repo", workspaceRepoRoutes);
+  // One person's bookmark tree over apps/consoles/notebooks/dashboards. Not
+  // part of any entity's surface: it stores a view and can never change an
+  // entity's identity, folder, sharing or deployment.
+  app.route("/api/workspaces/:workspaceId/favourites", favouriteRoutes);
   app.route("/api/apps-preview", appsPreviewRoutes);
   // Intentionally public: the workspace repo over git's own HTTP protocol,
   // authorized by a scoped `mgt_` token. This is what makes a sandbox a

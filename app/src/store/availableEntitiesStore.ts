@@ -141,7 +141,7 @@ export const useAvailableEntitiesStore = create<AvailableEntitiesState>()(
       try {
         const json = unwrapBody(
           await api.GET(
-            "/api/workspaces/{workspaceId}/connectors/{id}/entities",
+            "/api/workspaces/{workspaceId}/connections/sources/{id}/entities",
             { params: { path: { workspaceId, id: connectorId } } },
           ),
         ) as ApiResponse<AvailableConnectorEntity[]>;

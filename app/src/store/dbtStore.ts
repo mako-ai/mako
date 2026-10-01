@@ -75,10 +75,18 @@ export interface DbtFileEntry {
 export interface DbtJobItem {
   _id: string;
   projectId: string;
+  /** Filename identity in dbt/jobs/<slug>.yml. */
+  slug?: string;
   name: string;
   environment: string;
   commands: string[];
   schedule?: { cron: string; timezone: string } | null;
+  /**
+   * Set when `dbt/jobs/<slug>.yml` at main does not parse or apply. The
+   * rest of the item is the last valid version (or an empty stub for a
+   * git-only file), so treat the job as read-only until the file is fixed.
+   */
+  definitionInvalid?: { reason: string; at: string; path: string };
   scheduledRun?: {
     nextAt?: string;
     lastAt?: string;

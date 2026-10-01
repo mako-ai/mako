@@ -44,6 +44,7 @@ vi.mock("../../services/scheduled-query-schedule.service", () => ({
 import { createDbtServerTools } from "./dbt-tools";
 import { AppWorktree, DbtProject } from "../../database/workspace-schema";
 import { seedDbtGitTree } from "../../dbt/test-support/git-tree";
+import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import {
   DEFAULT_BRANCH,
   log as repoLog,
@@ -79,6 +80,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await Promise.all([DbtProject.deleteMany({}), AppWorktree.deleteMany({})]);
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function seedProject() {

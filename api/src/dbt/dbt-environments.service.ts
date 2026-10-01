@@ -29,6 +29,14 @@ import {
 } from "../database/workspace-schema";
 import { getUserDisplayName } from "../services/entity-version.service";
 import { isWarehouseWriteCommand, type ParsedDbtCommand } from "./commands";
+import { loggers } from "../logging";
+import {
+  dbtSchemaReferences,
+  renderDbtSchemaWithDefer,
+  type DevRelationLister,
+} from "./dbt-defer";
+
+const logger = loggers.api("dbt-environments");
 
 type ProjectEnvFields = Pick<
   IDbtProject,
@@ -270,12 +278,9 @@ export async function ensurePersonalDbtEnvironment(params: {
   };
   project.environments.push(environment);
   project.markModified("environments");
-  await project.save();
-  // Environments live in dbt/environments.yml — write the provisioned one
-  // through so the file and the row never diverge (apps.md §23). Lazy
-  // import: dbt-config.service imports this module for prod-env resolution.
   const { commitDbtEnvironmentsFile } = await import("./dbt-config.service");
   await commitDbtEnvironmentsFile(project, params.userId);
+  await project.save();
 
   return { environment, created: true };
 }
@@ -324,9 +329,76 @@ export async function resolveDbtBoundCode(params: {
   workspaceId: string | Types.ObjectId;
   dbtProjectId?: string;
   code: string;
+  /**
+   * Render against this environment instead of the prod-like one — the
+   * laptop dev loop only (`makoData({ dbtEnvironment })`), whose builds are
+   * never stored as an app's artifact. `userId` is the caller: a personal
+   * environment renders only for its owner.
+   */
+  environment?: {
+    name: string;
+    userId?: string;
+    /**
+     * Defer to prod per relation (`dbt --defer`): a reference whose relation
+     * the dev schema lacks renders to the prod-like schema. Given only when
+     * deferring; returns null when existence cannot be told (then every
+     * reference renders to dev, as without defer).
+     */
+    listDevRelations?: DevRelationLister;
+  };
 }): Promise<string> {
   if (!params.dbtProjectId || !containsDbtSchemaToken(params.code)) {
     return params.code;
+  }
+  if (params.environment) {
+    const project = Types.ObjectId.isValid(params.dbtProjectId)
+      ? await DbtProject.findOne({
+          _id: new Types.ObjectId(params.dbtProjectId),
+          workspaceId: new Types.ObjectId(params.workspaceId.toString()),
+        })
+          .select("environments defaultEnvironment prodEnvironment")
+          .lean()
+      : null;
+    if (!project) {
+      throw new DbtEnvironmentUnavailableError(
+        "The dbt project linked to this data source is unavailable — cannot resolve {{ dbt_schema }}",
+      );
+    }
+    const schema = devDbtEnvironmentSchema(
+      project,
+      params.environment.name,
+      params.environment.userId,
+    );
+    const prodSchema = project.environments.find(
+      env => env.name === resolveProdLikeEnvironmentName(project),
+    )?.targetSchema;
+    if (
+      !params.environment.listDevRelations ||
+      !prodSchema ||
+      prodSchema === schema
+    ) {
+      return resolveDbtSchemaToken(params.code, schema);
+    }
+    const devRelations = await params.environment.listDevRelations(
+      schema,
+      dbtSchemaReferences(params.code),
+    );
+    const rendered = renderDbtSchemaWithDefer(params.code, {
+      devSchema: schema,
+      prodSchema,
+      devRelations,
+    });
+    if (rendered.deferred.length > 0) {
+      // Which references read prod instead of the developer's schema — the
+      // first thing to check when dev data "doesn't change".
+      logger.info("dbt defer: references read the prod-like schema", {
+        environment: params.environment.name,
+        devSchema: schema,
+        prodSchema,
+        deferred: rendered.deferred,
+      });
+    }
+    return rendered.code;
   }
   const resolved = await resolveDbtSchemaForBinding({
     workspaceId: params.workspaceId,
@@ -338,4 +410,41 @@ export async function resolveDbtBoundCode(params: {
     );
   }
   return resolveDbtSchemaToken(params.code, resolved.schema);
+}
+
+/** A requested dbt environment that does not exist or is not the caller's. */
+export class DbtEnvironmentUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DbtEnvironmentUnavailableError";
+  }
+}
+
+/**
+ * The schema a developer's requested environment builds into. A personal
+ * environment is its owner's scratch space — refused to anyone else (and to
+ * API keys, which have no user), for the same reason personal environments
+ * can never be the default or the prod target: one developer's half-built
+ * models must not show up in someone else's app.
+ */
+export function devDbtEnvironmentSchema(
+  project: Pick<IDbtProject, "environments">,
+  environmentName: string,
+  userId: string | undefined,
+): string {
+  const environment = project.environments.find(
+    env => env.name === environmentName,
+  );
+  if (!environment) {
+    const names = project.environments.map(env => env.name).join(", ");
+    throw new DbtEnvironmentUnavailableError(
+      `No dbt environment named "${environmentName}" in the linked dbt project (environments: ${names || "none"})`,
+    );
+  }
+  if (environment.ownerUserId && environment.ownerUserId !== userId) {
+    throw new DbtEnvironmentUnavailableError(
+      `dbt environment "${environmentName}" is another developer's personal environment`,
+    );
+  }
+  return environment.targetSchema;
 }

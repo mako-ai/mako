@@ -30,6 +30,7 @@ import {
   ensureWorktree,
   execInWorktree,
   listBranches,
+  listAppFolders,
   listFiles,
   mergeBranchToMain,
   projectHistory,
@@ -40,7 +41,13 @@ import {
 } from "./worktree.service";
 import { AppWorktree } from "../database/workspace-schema";
 import { getSandboxProvider } from "./sandbox/provider";
-import { repoDirFor, resolveCommit } from "./repository.service";
+import { repoDirFor, resolveCommit, initRepo } from "./repository.service";
+import { RepoRequiredError } from "./config";
+import { seededTemplateFiles } from "./workspace-template";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
 let mongo: MongoMemoryServer;
@@ -84,6 +91,8 @@ beforeEach(async () => {
   // starts from an empty workspace repo.
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
+  await bindTestWorkspaceRepo(WS);
 });
 
 /** Lose the machine. Not every provider can, and a test must not pretend. */
@@ -100,6 +109,11 @@ async function makeProject(title = "Test App") {
 }
 
 describe("project lifecycle", () => {
+  it("refuses to create an app when the workspace has no GitHub repo bound", async () => {
+    await unbindTestWorkspaceRepo(WS);
+    await expect(makeProject()).rejects.toBeInstanceOf(RepoRequiredError);
+  });
+
   it("creates a project whose files read from git with no session", async () => {
     const project = await makeProject();
     const { entries } = await listFiles(project, USER);
@@ -113,6 +127,24 @@ describe("project lifecycle", () => {
     expect(history[0].subject).toContain('Create app "Test App"');
 
     await deleteProject(project);
+  });
+
+  it("does not serve leftover local git history when no GitHub repo is bound", async () => {
+    const project = await makeProject();
+    expect(await projectHistory(scopeOf(project))).not.toEqual([]);
+    await unbindTestWorkspaceRepo(WS);
+    await expect(projectHistory(scopeOf(project))).rejects.toBeInstanceOf(
+      RepoRequiredError,
+    );
+    await bindTestWorkspaceRepo(WS);
+    await deleteProject(project);
+  });
+
+  it("lists no app folders when the workspace has no GitHub repo bound", async () => {
+    await makeProject();
+    expect(await listAppFolders(WS)).not.toEqual([]);
+    await unbindTestWorkspaceRepo(WS);
+    expect(await listAppFolders(WS)).toEqual([]);
   });
 });
 

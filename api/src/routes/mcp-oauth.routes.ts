@@ -20,18 +20,22 @@ import { getCookie } from "hono/cookie";
 import { sessionManager } from "../auth/session";
 import {
   ACP_MCP_CLIENT_ID,
+  MCP_OAUTH_SCOPES,
   createAuthorizationCode,
   exchangeAuthorizationCode,
   getOAuthClient,
+  parseMcpOAuthScopes,
   refreshAccessToken,
   registerOAuthClient,
+  resolveMcpOAuthConsentScopes,
 } from "../auth/mcp-oauth.service";
+import { hasMinimumWorkspaceRole } from "@mako/agent-tools";
 import { workspaceService } from "../services/workspace.service";
+import { authMessagePage } from "../auth/auth-page";
+import { AUTHORIZE_PATH, consentPage } from "../auth/mcp-consent-page";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
-
-const AUTHORIZE_PATH = "/api/oauth/mcp/authorize";
 
 /**
  * Public origin clients use to reach Mako (the Vite dev server proxy or the
@@ -57,15 +61,6 @@ export function mcpResourceMetadataUrl(c: Context): string {
   return `${publicBaseUrl(c)}/.well-known/oauth-protected-resource/api/mcp`;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 // ---------------------------------------------------------------------------
 // Well-known discovery documents (mounted at the domain root)
 // ---------------------------------------------------------------------------
@@ -78,7 +73,7 @@ function protectedResourceMetadata(c: Context) {
     resource: `${base}/api/mcp`,
     authorization_servers: [base],
     bearer_methods_supported: ["header"],
-    scopes_supported: ["mcp", "query:read"],
+    scopes_supported: MCP_OAUTH_SCOPES,
     resource_name: "Mako MCP",
   });
 }
@@ -103,7 +98,7 @@ function authorizationServerMetadata(c: Context) {
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["mcp", "query:read"],
+    scopes_supported: MCP_OAUTH_SCOPES,
   });
 }
 
@@ -180,6 +175,7 @@ interface AuthorizeParams {
   redirectUri: string;
   state?: string;
   codeChallenge: string;
+  scopes: ReturnType<typeof parseMcpOAuthScopes>;
 }
 
 /**
@@ -249,6 +245,16 @@ async function parseAuthorizeParams(
     );
   }
 
+  let scopes: ReturnType<typeof parseMcpOAuthScopes>;
+  try {
+    scopes = parseMcpOAuthScopes(params.scope);
+  } catch (error) {
+    return fail(
+      "invalid_scope",
+      error instanceof Error ? error.message : "Unsupported OAuth scope",
+    );
+  }
+
   return {
     ok: true,
     value: {
@@ -256,8 +262,21 @@ async function parseAuthorizeParams(
       redirectUri,
       state: params.state,
       codeChallenge: params.code_challenge,
+      scopes,
     },
   };
+}
+
+/** Any refusal of the authorize request, in the same card as the consent. */
+function cannotConnectPage(message: string): string {
+  return authMessagePage({
+    heading: "Can’t connect",
+    message,
+    next: {
+      title: "Start again from your client",
+      body: "Retry the sign-in from the app or terminal that opened this page (for the Mako CLI: mako login).",
+    },
+  });
 }
 
 async function sessionUser(c: Context) {
@@ -268,117 +287,12 @@ async function sessionUser(c: Context) {
   return user;
 }
 
-function consentPage(input: {
-  clientName: string;
-  params: AuthorizeParams;
-  workspaces: { id: string; name: string; role: string }[];
-}): string {
-  const { clientName, params, workspaces } = input;
-  const options = workspaces
-    .map(
-      (ws, i) => `
-      <label class="ws">
-        <input type="radio" name="workspace_id" value="${escapeHtml(ws.id)}" ${i === 0 ? "checked" : ""} />
-        <span>${escapeHtml(ws.name)}</span>
-        <em>${escapeHtml(ws.role)}</em>
-      </label>`,
-    )
-    .join("");
-  const hidden = (name: string, value?: string) =>
-    value
-      ? `<input type="hidden" name="${name}" value="${escapeHtml(value)}" />`
-      : "";
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Connect ${escapeHtml(clientName)} — Mako</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: #f6f5f1; color: #1a1a1a; display: flex; min-height: 100vh;
-         align-items: center; justify-content: center; margin: 0; }
-  .card { background: #fff; border: 1px solid #d8d5cc; padding: 32px;
-          max-width: 420px; width: calc(100% - 48px);
-          box-shadow: 6px 6px 0 0 #e3e0d7; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  p { color: #555; font-size: 14px; line-height: 1.5; }
-  .ws { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-        border: 1px solid #d8d5cc; margin-bottom: 8px; cursor: pointer;
-        font-size: 14px; }
-  .ws em { margin-left: auto; color: #888; font-style: normal;
-           font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-  .scopes { background: #f6f5f1; border: 1px solid #e3e0d7; padding: 10px 12px;
-            font-size: 13px; color: #444; margin: 16px 0; }
-  .actions { display: flex; gap: 8px; margin-top: 20px; }
-  button { flex: 1; padding: 10px 16px; font-size: 14px; cursor: pointer;
-           border: 1px solid #1a1a1a; display: inline-flex;
-           align-items: center; justify-content: center; gap: 8px; }
-  .allow { background: #1a1a1a; color: #fff; }
-  .deny { background: #fff; color: #1a1a1a; }
-  button[disabled] { cursor: default; opacity: 0.65; }
-  .spinner { width: 14px; height: 14px; border-radius: 50%; flex: none;
-             border: 2px solid currentColor; border-top-color: transparent;
-             animation: spin 0.7s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-</style>
-</head>
-<body>
-<main class="card">
-  <h1>Connect ${escapeHtml(clientName)}</h1>
-  <p><strong>${escapeHtml(clientName)}</strong> wants to access a Mako workspace over MCP.</p>
-  <form method="post" action="${AUTHORIZE_PATH}">
-    ${hidden("client_id", params.clientId)}
-    ${hidden("redirect_uri", params.redirectUri)}
-    ${hidden("state", params.state)}
-    ${hidden("code_challenge", params.codeChallenge)}
-    <p style="margin-bottom:6px;font-weight:600;color:#1a1a1a">Choose a workspace</p>
-    ${options}
-    <div class="scopes">
-      Read-only access: explore schemas, run read-only queries, and build
-      Mako apps. It can never write to your databases.
-    </div>
-    <div class="actions">
-      <button class="deny" type="submit" name="decision" value="deny">Deny</button>
-      <button class="allow" type="submit" name="decision" value="allow"><span class="label">Allow</span></button>
-    </div>
-  </form>
-</main>
-<script>
-  // Approving mints the code and round-trips back to the MCP client, which
-  // can take a moment — show a spinner and lock the form so the user knows
-  // the click registered and can't double-submit. The disable is deferred a
-  // tick so the clicked button's name/value is still serialized into the
-  // POST body (disabling synchronously would drop it in some browsers).
-  (function () {
-    var form = document.querySelector("form");
-    form.addEventListener("submit", function (e) {
-      var decision = e.submitter && e.submitter.value;
-      setTimeout(function () {
-        form.querySelectorAll("button").forEach(function (b) {
-          b.disabled = true;
-        });
-        if (decision === "allow") {
-          form.querySelector(".allow").innerHTML =
-            '<span class="spinner"></span><span>Connecting…</span>';
-        }
-      }, 0);
-    });
-  })();
-</script>
-</body>
-</html>`;
-}
-
 mcpOAuthRoutes.get("/authorize", async c => {
   const query = c.req.query();
   const parsed = await parseAuthorizeParams(query);
   if (!parsed.ok) {
     if ("redirect" in parsed) return c.redirect(parsed.redirect, 302);
-    return c.html(
-      `<h1>Cannot connect</h1><p>${escapeHtml(parsed.message)}</p>`,
-      parsed.status,
-    );
+    return c.html(cannotConnectPage(parsed.message), parsed.status);
   }
 
   const user = await sessionUser(c);
@@ -395,7 +309,15 @@ mcpOAuthRoutes.get("/authorize", async c => {
   );
   if (memberships.length === 0) {
     return c.html(
-      "<h1>No workspace</h1><p>Create a workspace in Mako first, then retry from your MCP client.</p>",
+      authMessagePage({
+        heading: "No workspace yet",
+        message:
+          "This account is not a member of any Mako workspace, so there is nothing to connect to.",
+        next: {
+          title: "Create or join a workspace",
+          body: "Create a workspace in Mako (or accept an invitation), then start the connection again from your MCP client.",
+        },
+      }),
       400,
     );
   }
@@ -425,14 +347,12 @@ mcpOAuthRoutes.post("/authorize", async c => {
     state: typeof form.state === "string" ? form.state : undefined,
     code_challenge:
       typeof form.code_challenge === "string" ? form.code_challenge : undefined,
+    scope: typeof form.scope === "string" ? form.scope : undefined,
   };
   const parsed = await parseAuthorizeParams(params);
   if (!parsed.ok) {
     if ("redirect" in parsed) return c.redirect(parsed.redirect, 302);
-    return c.html(
-      `<h1>Cannot connect</h1><p>${escapeHtml(parsed.message)}</p>`,
-      parsed.status,
-    );
+    return c.html(cannotConnectPage(parsed.message), parsed.status);
   }
 
   const user = await sessionUser(c);
@@ -455,7 +375,22 @@ mcpOAuthRoutes.post("/authorize", async c => {
   const member = await workspaceService.getMember(workspaceId, String(user.id));
   if (!member) {
     return c.html(
-      "<h1>Cannot connect</h1><p>You are not a member of that workspace.</p>",
+      cannotConnectPage("You are not a member of that workspace."),
+      403,
+    );
+  }
+  const scopes = resolveMcpOAuthConsentScopes(
+    parsed.value.scopes,
+    form.grant_warehouse_write === "yes",
+  );
+  if (
+    scopes.includes("warehouse:write") &&
+    !hasMinimumWorkspaceRole(member.role, "member")
+  ) {
+    return c.html(
+      cannotConnectPage(
+        "Running dbt in the warehouse needs at least the member role in this workspace. Untick it to connect read-only, or ask an admin for access.",
+      ),
       403,
     );
   }
@@ -466,10 +401,12 @@ mcpOAuthRoutes.post("/authorize", async c => {
     workspaceId,
     redirectUri: parsed.value.redirectUri,
     codeChallenge: parsed.value.codeChallenge,
+    scopes,
   });
   logger.info("MCP OAuth grant approved", {
     clientId: parsed.value.clientId,
     workspaceId,
+    scopes,
   });
   redirect.searchParams.set("code", code);
   return c.redirect(redirect.toString(), 302);
