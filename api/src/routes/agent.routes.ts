@@ -17,7 +17,11 @@ import {
   stepCountIs,
   type UIMessage,
 } from "ai";
-import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import {
+  getModel,
+  buildProviderOptions,
+  buildPromptCacheHeaders,
+} from "../agent-lib/ai-gateway";
 import {
   buildClientStreamErrorPayload,
   describeStreamError,
@@ -1077,6 +1081,9 @@ agentRoutes.openapi(
         workspaceId,
         agentId: resolvedAgentId,
         invocationType: "chat",
+        // Every step of the tool loop re-sends the whole prompt; cache it so
+        // each step pays full input price only for what it appended.
+        promptCacheSessionId: chatId,
       }),
       ...(thinkingPayload ? { anthropic: { thinking: thinkingPayload } } : {}),
     };
@@ -1182,6 +1189,7 @@ agentRoutes.openapi(
               });
             },
             providerOptions,
+            headers: buildPromptCacheHeaders(chatId),
             abortSignal: turnSignal,
             experimental_telemetry: {
               isEnabled: true,
