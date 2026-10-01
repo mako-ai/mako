@@ -77,16 +77,22 @@ The `@makoai/cli` can run dbt from a local checkout, including uncommitted files
 mako login --warehouse-write
 mako dbt run -s orders
 mako dbt build -s +orders --env staging
-mako dbt test -s orders --full-refresh --no-defer
+mako dbt build -s orders --full-refresh --no-defer
+mako dbt test -s orders
 ```
 
-`run`, `build`, and `test` upload the checkout to Mako and stream the run log. The
-command exits with dbt's exit code. Runs use your personal environment by
-default (created on first use); use `--env <name>` to select another environment.
-Production is not selected by this command. `--no-defer` disables deferral to
-production, and `--full-refresh` is passed through to dbt. Local runs require the
-`warehouse:write` scope because the uploaded project executes with the selected
-environment's warehouse credentials.
+`run`, `build`, and `test` upload the checkout's `dbt/` folder to Mako and stream
+the run log; with git, only the files that differ from `git merge-base HEAD
+origin/main` are sent (staged, unstaged, untracked and deleted), laid over that
+commit on the server. The command exits with dbt's exit code. Runs use your
+personal environment by default (created on first use); use `--env <name>` to
+select a shared development environment. The production environment is refused
+(`403`) even with `--env` — it is only built from `main` by a job — and so is
+another person's personal environment. `--no-defer` disables deferral to
+production; `--full-refresh` applies to `run` and `build` (not `test`). Local runs
+require the `warehouse:write` scope because the uploaded project executes with the
+selected environment's warehouse credentials. See also
+[Working from a local checkout](/mcp-server/#working-from-a-local-checkout).
 
 The API equivalent is `POST /api/workspaces/:workspaceId/dbt/local-runs`, followed
 by polling `GET /api/workspaces/:workspaceId/dbt/local-runs/:runId`; cancel with

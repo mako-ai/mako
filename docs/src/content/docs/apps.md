@@ -75,11 +75,14 @@ exactly that SQL with the connection named in its front matter; it does not
 store the draft as a committed binding. Identical text can reuse the committed
 artifact.
 
-For long-running builds, add `?async=1` to the materialize endpoint or use the
-SDK's dev flow. The API returns `202` with a job id; poll
+For long-running builds, add `?async=1` to the materialize endpoint, or send
+`"async": true` in the dev-build request body (the SDK's dev flow does). When a
+build is needed the API returns `202` with a job id (a stored artifact is served
+directly); poll
 `GET /api/workspaces/:wid/apps/:id/binding-jobs/:jobId` until the job is
 `ready` or `error`, then fetch the parquet from
-`GET .../binding-jobs/:jobId/artifact`. Jobs are retained for one hour.
+`GET .../binding-jobs/:jobId/artifact`. Jobs are retained for one hour. See also
+[Working from a local checkout](/mcp-server/#working-from-a-local-checkout).
 
 ## Publishing & Sharing
 
