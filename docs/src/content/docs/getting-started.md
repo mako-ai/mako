@@ -64,26 +64,22 @@ mako/
 │   │   ├── connectors/   # ETL connectors (Stripe, Close, etc.)
 │   │   ├── databases/    # Query runner drivers
 │   │   ├── inngest/      # Background job functions
-│   │   ├── sync/         # Sync orchestrator & CLI
+│   │   ├── sync/         # Sync orchestrator (engine for flows; no CLI)
 │   │   └── routes/       # API route handlers
 ├── docs/          # Documentation (Astro Starlight)
 └── cloudflare/    # Cloudflare Workers config
 ```
 
-## Run Sync Manually
-
-Mako includes a CLI for running data sync flows:
+## Run Migrations
 
 ```bash
-# Interactive mode — prompts for source, destination, entities
-pnpm run sync
-
-# Direct mode
-pnpm run sync -- -s <source_id> -d <dest_id>
-
 # Run database migrations
 pnpm run migrate
 ```
+
+Data sync is configured through [flows](/data-sync/), not a CLI — either in
+the console UI or as `flows/<slug>.yml` files in a workspace repo. The old
+interactive sync CLI (`pnpm run sync`) was removed.
 
 ## Next Steps
 

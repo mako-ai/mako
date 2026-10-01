@@ -78,17 +78,37 @@ Flows run on [Inngest](https://www.inngest.com/), a job queue that handles:
 
 The Inngest dev server runs locally at `http://localhost:8288` during development.
 
-## CLI
+## Flows as Code (git-based)
 
-You can trigger syncs from the command line:
+Flows can also be defined declaratively in a workspace's own git repo, as
+`flows/<slug>.yml` files. This is the mechanism an AI agent (Claude Code,
+Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
 
-```bash
-# Run a specific sync
-pnpm run sync --connector stripe --entity customers
+- **The file is authoritative.** A push to `main` that changes `flows/<slug>.yml`
+  reconfigures the corresponding stream; a push that removes the file tears the
+  stream down and disposes its checkpoints — re-adding the file backfills from
+  scratch. Pushes to other branches have no effect.
+- **The filename slug is the flow's identity**, minted once and never changed.
+  Renaming a file is a delete-plus-create (new stream, new webhook URL if
+  applicable); the in-file `name:` field is the free-to-change display name.
+- **Credentials never live in the file.** A flow names its source
+  *connection* by ObjectId (`source.connection_id`) — a connection is a
+  credential configured with a connector, and a connector is code (a built-in
+  such as `stripe`, or `ws:<slug>` for one your workspace ships under
+  `connectors/<slug>/`, see [Connectors](/connectors/)). Webhook secrets and
+  endpoints are minted in Mongo on first create and are never read from or
+  written to the file.
+- **The connection must already exist.** No MCP tool or CLI creates one: ask
+  for it to be configured in Mako (Sources → Add), find its id with
+  `list_connections({ kind: "source" })`, confirm it works with
+  `probe_connection`, then write the file.
+- Validate before pushing with the `check_flow_files` MCP tool, which reports
+  parse/id-resolution problems, schema issues, and the reconciliation plan
+  (`wouldCreate` / `wouldReconfigure` / `wouldTeardown`) against currently
+  running streams.
 
-# Run all syncs for a workspace
-pnpm run sync --workspace <workspace-id>
-```
+See the `flows-as-code` system skill (loaded automatically by MCP-connected
+agents) for the full file format and step-by-step workflow.
 
 ## Error Handling
 
