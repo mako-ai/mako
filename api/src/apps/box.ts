@@ -74,16 +74,52 @@ function boxGit(ctx: SandboxExecContext, ...args: string[]): string {
   return ["git", "-C", sh(boxRoot(ctx)), ...args.map(sh)].join(" ");
 }
 
+const DISK_FULL = /No space left on device/i;
+
+/**
+ * Free what a sandbox can regenerate: package-manager caches, tool caches and
+ * scratch. Never node_modules or the working tree — those are the user's
+ * state, not cache. Best effort: each removal is independent, and the command
+ * always exits 0 so a missing path is not an error.
+ *
+ * Why this exists: the box disk is small and fills with the npm/pnpm caches,
+ * so the first git config write (`config.lock`) fails with ENOSPC, which
+ * left the box unconfigured with no way for the user to recover it.
+ */
+const RECLAIM_DISK = [
+  'rm -rf "$HOME/.npm/_cacache" "$HOME/.npm/_logs" "$HOME/.cache" "$HOME/.local/share/pnpm/store" "$HOME/.pnpm-store" 2>/dev/null',
+  "rm -rf /tmp/* /var/tmp/* 2>/dev/null",
+  "true",
+].join("; ");
+
 async function run(
   ctx: SandboxExecContext,
   command: string,
   what: string,
   timeoutMs = 180_000,
 ): Promise<string> {
-  const result = await getSandboxProvider().exec(ctx, command, { timeoutMs });
+  const provider = getSandboxProvider();
+  let result = await provider.exec(ctx, command, { timeoutMs });
+  if (
+    result.exitCode !== 0 &&
+    DISK_FULL.test(`${result.stderr}${result.stdout}`)
+  ) {
+    // Reclaim and retry once. Every command here is safe to repeat (see
+    // configureBoxRemote), and a second failure is a real full disk that the
+    // error below should report.
+    logger.warn("Apps sandbox disk full; reclaiming caches and retrying", {
+      sessionKey: ctx.sessionKey,
+      what,
+    });
+    await provider.exec(ctx, RECLAIM_DISK, { timeoutMs: 60_000 });
+    result = await provider.exec(ctx, command, { timeoutMs });
+  }
   if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout).slice(-500);
     throw new Error(
-      `${what} failed in the sandbox: ${(result.stderr || result.stdout).slice(-500)}`,
+      DISK_FULL.test(detail)
+        ? `${what} failed in the sandbox: the disk is full even after clearing caches. Delete large files (check \`du -sh ~/app/* | sort -h\`) or recycle the sandbox. ${detail}`
+        : `${what} failed in the sandbox: ${detail}`,
     );
   }
   return result.stdout;
