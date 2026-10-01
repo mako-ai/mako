@@ -194,7 +194,7 @@ export function pageLines(
 
 /** Marker shape of a result replaced by the backstop. */
 export interface BackstoppedToolOutput {
-  _truncated: true;
+  _outputCapped: true;
   originalChars: number;
   note: string;
   preview: string;
@@ -204,7 +204,7 @@ function isBackstopped(value: unknown): value is BackstoppedToolOutput {
   return (
     typeof value === "object" &&
     value !== null &&
-    (value as { _truncated?: unknown })._truncated === true
+    (value as { _outputCapped?: unknown })._outputCapped === true
   );
 }
 
@@ -235,7 +235,7 @@ export function capToolOutputValue(
     headChars: Math.floor(maxChars * BACKSTOP_HEAD_RATIO),
   });
   const result: BackstoppedToolOutput = {
-    _truncated: true,
+    _outputCapped: true,
     originalChars: length,
     note:
       `Tool output was ${length.toLocaleString("en-US")} chars; showing the ` +

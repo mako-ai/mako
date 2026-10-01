@@ -97,9 +97,17 @@ describe("capToolOutputValue", () => {
   it("replaces an oversized result with a head+tail preview", () => {
     const output = { log: "z".repeat(5000) };
     const capped = capToolOutputValue(output, 1000) as Record<string, unknown>;
-    expect(capped._truncated).toBe(true);
+    expect(capped._outputCapped).toBe(true);
     expect(capped.originalChars).toBe(JSON.stringify(output).length);
     expect((capped.preview as string).length).toBeLessThan(1100);
+  });
+
+  it("still caps results that carry a tool's own _truncated flag", () => {
+    // sql_execute_query marks >100-row results `_truncated: true`; that must
+    // not read as "already capped by the backstop".
+    const output = { _truncated: true, data: ["r".repeat(5000)] };
+    const capped = capToolOutputValue(output, 1000) as Record<string, unknown>;
+    expect(capped._outputCapped).toBe(true);
   });
 
   it("does not re-cap an already capped result", () => {
@@ -131,7 +139,7 @@ describe("withToolOutputBackstop", () => {
       return execute({}, {});
     };
     const plain = (await run("plain")) as Record<string, unknown>;
-    expect(plain._truncated).toBe(true);
+    expect(plain._outputCapped).toBe(true);
     expect(await run("small")).toEqual({ ok: true });
     expect(await run("mapped")).toEqual({ log: big });
     expect(wrapped.client).toBe(
