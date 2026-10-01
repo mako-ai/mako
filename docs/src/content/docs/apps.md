@@ -66,6 +66,24 @@ navigate("/customers/42");
 
 Use distinct **paths** for separate views and **query params** for filters and sort within a view.
 
+## Local binding builds
+
+During `vite dev`, the app SDK sends the local contents of
+`bindings/<name>.sql` to Mako so uncommitted edits can be previewed. The
+`POST /api/workspaces/:wid/apps/:id/bindings/:name/dev-build` endpoint builds
+exactly that SQL with the connection named in its front matter; it does not
+store the draft as a committed binding. Identical text can reuse the committed
+artifact.
+
+For long-running builds, add `?async=1` to the materialize endpoint, or send
+`"async": true` in the dev-build request body (the SDK's dev flow does). When a
+build is needed the API returns `202` with a job id (a stored artifact is served
+directly); poll
+`GET /api/workspaces/:wid/apps/:id/binding-jobs/:jobId` until the job is
+`ready` or `error`, then fetch the parquet from
+`GET .../binding-jobs/:jobId/artifact`. Jobs are retained for one hour. See also
+[Working from a local checkout](/mcp-server/#working-from-a-local-checkout).
+
 ## Publishing & Sharing
 
 - The **dev preview** is your branch's working copy, live (vite + HMR) — visible to you while you build.
