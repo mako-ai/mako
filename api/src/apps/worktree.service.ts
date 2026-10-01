@@ -1590,11 +1590,16 @@ export async function execInWorktree(
  * Used to keep the full output of a command whose tool result was truncated,
  * where `grep`/`tail` in app_bash can reach it. Scratch lives as long as the
  * sandbox: a recycled box loses it.
+ *
+ * `keepNewest` bounds the file's directory to that many files (newest kept):
+ * the box disk is small, and these files are regenerable by re-running the
+ * command, so they must never be what fills it.
  */
 export async function writeWorktreeScratchFile(
   handle: WorktreeHandle,
   relPath: string,
   contents: string,
+  options: { keepNewest?: number } = {},
 ): Promise<string> {
   const ctx = await ensureBox(handle);
   const provider = getSandboxProvider();
@@ -1605,6 +1610,24 @@ export async function writeWorktreeScratchFile(
   // TextEncoder, not Buffer.from: a Buffer can be a view into Node's shared
   // pool, and the E2B provider uploads `bytes.buffer` — the whole pool.
   await provider.writeFile(ctx, remotePath, new TextEncoder().encode(contents));
+  if (options.keepNewest && options.keepNewest > 0) {
+    const dir = sh(path.posix.dirname(remotePath));
+    await provider
+      .exec(
+        ctx,
+        // cd first and delete bare names: nothing outside the directory can
+        // match, and a failed cd stops the pipeline before any rm runs.
+        // (A read loop, not xargs -d: that flag is GNU-only.)
+        `cd ${dir} && ls -1t | tail -n +${options.keepNewest + 1} | ` +
+          'while IFS= read -r f; do rm -f -- "$f"; done',
+        { timeoutMs: 15_000 },
+      )
+      .catch(error =>
+        logger.warn("Could not prune sandbox scratch files", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  }
   return remotePath;
 }
 
