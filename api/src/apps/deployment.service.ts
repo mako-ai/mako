@@ -519,6 +519,46 @@ export function buildLogPath(handle: WorktreeHandle): string {
   return `/tmp/mako-build-${handleProject(handle)._id.toString()}.log`;
 }
 
+/** Percent of the box disk in use above which the publish box prunes. */
+const PUBLISH_DISK_PRUNE_PERCENT = 80;
+
+/**
+ * Keep the publish box from filling its disk.
+ *
+ * The publish box builds every app in the workspace and keeps each one's
+ * `node_modules` and `dist` so the next publish can skip the install. Nothing
+ * ever removed them, so a workspace with several apps ended in "No space left
+ * on device". Pruning only when the disk is nearly full keeps normal publishes
+ * fast; it is safe because this box is write-free and `main` is the source of
+ * truth — a pruned app just reinstalls on its next publish.
+ *
+ * Only the publish box: a user's box holds their running dev servers, and
+ * deleting a sibling app's `node_modules` would break them.
+ */
+async function prunePublishBoxIfFull(
+  handle: WorktreeHandle,
+  exec: Parameters<typeof buildApp>[1],
+): Promise<void> {
+  if (handle.doc.userId !== PUBLISH_ACTOR) return;
+  const script = [
+    // Other apps = every node_modules/dist in the repo except this app's own.
+    `top="$(git rev-parse --show-toplevel)"; here="$(pwd -P)"`,
+    `used="$(df -P "$top" | awk 'NR==2 { gsub("%","",$5); print $5 }')"`,
+    `[ "\${used:-0}" -ge ${PUBLISH_DISK_PRUNE_PERCENT} ] || exit 0`,
+    `find "$top" -maxdepth 4 -type d \\( -name node_modules -o -name dist \\) -prune ! -path "$here/*" ! -path "$top/.git/*" -exec rm -rf {} + 2>/dev/null`,
+    `rm -rf "$HOME/.npm/_cacache" "$HOME/.cache" /tmp/mako-build-*.log 2>/dev/null`,
+    `echo pruned`,
+  ].join("\n");
+  const result = await exec(handle, script, { timeoutMs: 60_000 }).catch(
+    () => undefined,
+  );
+  if (result?.stdout.includes("pruned")) {
+    logger.warn("Publish box disk nearly full; pruned other apps' builds", {
+      workspaceId: handle.doc.workspaceId.toString(),
+    });
+  }
+}
+
 export async function buildApp(
   handle: WorktreeHandle,
   exec: (
@@ -527,6 +567,7 @@ export async function buildApp(
     options: { timeoutMs: number; env?: Record<string, string> },
   ) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
 ): Promise<{ ok: boolean; output: string }> {
+  await prunePublishBoxIfFull(handle, exec);
   const log = buildLogPath(handle);
   // The app's NON-SECRET env vars (env.service): `vite build` inlines the
   // `VITE_*` ones into the bundle — which is the point, that class of key is
