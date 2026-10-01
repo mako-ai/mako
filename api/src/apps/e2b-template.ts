@@ -18,9 +18,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { Template } from "e2b";
 import { createAppsScaffold } from "./scaffold";
+import { PNPM_VERSION } from "./package-manager";
 
 const DEFAULT_ALIAS = "mako-apps";
-const PNPM_VERSION = "10.33.3";
 
 const envPath = path.resolve(__dirname, "../../../.env");
 if (fs.existsSync(envPath)) {
@@ -258,7 +258,11 @@ export function createAppsE2BTemplate() {
         "set -eux",
         "mkdir -p /tmp/warmup",
         `echo ${pkgB64} | base64 -d > /tmp/warmup/package.json`,
+        // Warm both caches: new apps install with pnpm (their scaffold pins
+        // it), apps from before the switch still install with npm.
         "cd /tmp/warmup && npm install --no-audit --no-fund",
+        "rm -rf /tmp/warmup/node_modules /tmp/warmup/package-lock.json",
+        "cd /tmp/warmup && pnpm install",
         "rm -rf /tmp/warmup",
       ].join(" && "),
       { user: "user" },

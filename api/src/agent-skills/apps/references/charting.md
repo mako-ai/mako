@@ -7,8 +7,7 @@ this is the Mako-specific part.
 ## Library
 
 Use **recharts** (28 of the workspace's apps already do; agents and reviewers
-know it). Add it to the app's `package.json` (`"recharts": "^2"`), run
-`npm install`, commit `package-lock.json`. Do not pull in d3 for a bar chart;
+know it). `pnpm add recharts@^2` and commit `pnpm-lock.yaml`. Do not pull in d3 for a bar chart;
 reach for `d3-geo` only for maps. Pure CSS/SVG bars are fine for a single
 small comparison inside a card.
 
@@ -60,7 +59,7 @@ draws nothing looks like a broken binding.
 
 ## Verify
 
-Look at it: run the app (`npm run dev` locally or `app_open_app`), then
+Look at it: run the app (`pnpm dev` locally or `app_open_app`), then
 `app_browse` / your own browser. Check axis labels are not clipped, the tooltip
 formats like the table, and the top bar's value label is inside the card.
 Report what you saw, with the numbers, not that "the chart renders".

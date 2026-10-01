@@ -6,6 +6,7 @@
  * non-secret Mako-specific configuration (entry, data bindings, jobs).
  */
 import { appSdkDependency } from "./app-sdk-package";
+import { PNPM_VERSION } from "./package-manager";
 
 export interface ScaffoldOptions {
   title: string;
@@ -36,6 +37,10 @@ export function createAppsScaffold(
         private: true,
         version: "0.0.0",
         type: "module",
+        // pnpm: one shared store hard-linked into every app instead of a
+        // full node_modules copy per app. Mako installs with whatever this
+        // field (or the committed lockfile) names — see package-manager.ts.
+        packageManager: `pnpm@${PNPM_VERSION}`,
         scripts: {
           dev: "vite",
           // Publish builds with vite (esbuild) only — the same transform dev
@@ -270,7 +275,8 @@ tsconfig.tsbuildinfo
 ${description ?? "A Mako app."}
 
 Built with Mako Apps: a real Vite + React project stored in a Mako-managed
-git repository. Run \`npm install\` (or pnpm/yarn) and \`npm run dev\` locally,
+git repository. Run \`pnpm install\` and \`pnpm dev\` locally (this app uses pnpm — do
+not run \`npm install\`, it would write a competing \`package-lock.json\`),
 or edit it from Mako chat.
 `,
   };
