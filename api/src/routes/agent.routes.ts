@@ -83,6 +83,10 @@ import { searchConsoles } from "../agent-lib/tools/console-search-tools";
 import { prepareAgentTurnGuidance } from "../services/agent-turn-preparation.service";
 import { isDbtShapedTurn } from "../dbt/dbt-turn-shape";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
+import {
+  capToolPartOutputsForModel,
+  withToolOutputBackstop,
+} from "../agent-lib/tools/shared/output-cap";
 import { resolveChatAttachmentsForModel } from "../services/chat-attachment.service";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
@@ -907,6 +911,11 @@ agentRoutes.openapi(
       systemPrompt = agentConfig.systemPrompt;
       tools = agentConfig.tools;
     }
+    // Backstop cap on every server-executed tool result: each result is
+    // replayed on every later step and turn, so one oversized output is
+    // re-billed many times. Per-tool caps sit below this; it catches the
+    // tool nobody capped yet.
+    tools = withToolOutputBackstop(tools);
 
     const modelDef = await getModelById(resolvedModelId);
     // Self-heal wrapper: if the catalog still classifies this model as manual
@@ -942,9 +951,22 @@ agentRoutes.openapi(
         workspaceId,
         { supportsVision: agentContext.modelSupportsVision },
       );
-      const sanitizedMessages = sanitizeMessagesForModel(
-        messagesWithAttachments,
+      // Cap replayed tool outputs the execute-time backstop never saw:
+      // client-executed tool results, chats persisted before the caps, and
+      // app_browse screenshots the client still carries as base64.
+      const toolPartCaps = capToolPartOutputsForModel(
+        sanitizeMessagesForModel(messagesWithAttachments),
       );
+      const sanitizedMessages = toolPartCaps.messages;
+      if (toolPartCaps.changed) {
+        logger.info("Capped replayed tool outputs before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          cappedCount: toolPartCaps.cappedCount,
+          screenshotsDropped: toolPartCaps.screenshotsDropped,
+        });
+      }
       // Always-on cost control (budget-independent): the client replays the
       // entire `messages[]` every turn, so a long session re-sends every prior
       // turn's full tool outputs on every request — re-billed as input tokens

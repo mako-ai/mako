@@ -26,6 +26,20 @@ import { z } from "zod";
 import { Types } from "mongoose";
 import { applyStrReplace, buildStrReplaceDiff } from "@mako/agent-tools";
 import { buildBrowseModelOutput } from "./browse-model-output";
+import {
+  BASH_STDERR_HEAD_CHARS,
+  BASH_STDERR_MAX_CHARS,
+  BASH_STDOUT_HEAD_CHARS,
+  BASH_STDOUT_MAX_CHARS,
+  GREP_MAX_LINE_CHARS,
+  GREP_MAX_MATCHES,
+  READ_DEFAULT_LIMIT_LINES,
+  READ_MAX_CHARS,
+  READ_MAX_LINE_CHARS,
+  capLine,
+  capText,
+  pageLines,
+} from "./shared/output-cap";
 import { AppProject, type IAppProject } from "../../database/workspace-schema";
 import { workspaceService } from "../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
@@ -54,6 +68,7 @@ import {
   listAppFolderPaths,
   moveProject,
   resolveProjectRef,
+  writeWorktreeScratchFile,
   type AppFolderTarget,
 } from "../../apps/worktree.service";
 import { parseAppRepoPath } from "../../apps/app-paths";
@@ -82,6 +97,12 @@ import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
+
+/** A tool call id as a file name: provider ids are not guaranteed path-safe. */
+function safeFileStem(id: string | undefined): string {
+  const stem = (id ?? "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+  return stem || `out-${Date.now().toString(36)}`;
+}
 
 export interface AppsToolsOptions {
   workspaceId: string;
@@ -301,7 +322,7 @@ export function createAppsTools({
 
     app_bash: tool({
       description:
-        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Git is fully yours: commit with app_commit or run git yourself — branch, checkout, merge, push; the sandbox is a real clone with a real remote. Note the checkout is SHARED with the user AND their other concurrent chats: a branch switch changes what everyone sees (do it when the task calls for it, and say so), and dirty files or 'Mako Agent' commits you don't recognize are someone else's in-flight work — normal, not corruption; leave them alone. Your end-of-turn auto-commit only includes apps YOU touched this turn.",
+        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Git is fully yours: commit with app_commit or run git yourself — branch, checkout, merge, push; the sandbox is a real clone with a real remote. Note the checkout is SHARED with the user AND their other concurrent chats: a branch switch changes what everyone sees (do it when the task calls for it, and say so), and dirty files or 'Mako Agent' commits you don't recognize are someone else's in-flight work — normal, not corruption; leave them alone. Your end-of-turn auto-commit only includes apps YOU touched this turn. Output is capped (start + end kept); when it is cut, the full output is saved to a file in the sandbox whose path is returned — grep/tail/sed that file instead of re-running the command. Pipe noisy commands (installs, builds) through `| tail -n 50` or `| grep` up front.",
       inputSchema: z.object({
         appId: z
           .string()
@@ -321,7 +342,10 @@ export function createAppsTools({
           .optional()
           .describe("Kill the command after this many seconds (default 120)"),
       }),
-      execute: async ({ appId, command, cwd, timeoutSeconds }) => {
+      execute: async (
+        { appId, command, cwd, timeoutSeconds },
+        { toolCallId },
+      ) => {
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
@@ -331,14 +355,49 @@ export function createAppsTools({
             cwd,
             timeoutMs: timeoutSeconds ? timeoutSeconds * 1000 : undefined,
           });
+          const stdout = capText(result.stdout, {
+            maxChars: BASH_STDOUT_MAX_CHARS,
+            headChars: BASH_STDOUT_HEAD_CHARS,
+          });
+          const stderr = capText(result.stderr, {
+            maxChars: BASH_STDERR_MAX_CHARS,
+            headChars: BASH_STDERR_HEAD_CHARS,
+          });
+          let fullOutputPath: string | undefined;
+          if (stdout.truncated || stderr.truncated) {
+            try {
+              fullOutputPath = await writeWorktreeScratchFile(
+                handle,
+                `mako-tool-output/${safeFileStem(toolCallId)}.log`,
+                `$ ${command}\n\n=== stdout ===\n${result.stdout}\n\n=== stderr ===\n${result.stderr}\n`,
+              );
+            } catch (error) {
+              logger.warn("Could not save full app_bash output", {
+                error: errorMessage(error),
+                appId,
+              });
+            }
+          }
           return {
             success: result.exitCode === 0,
             exitCode: result.exitCode,
-            stdout: result.stdout,
-            stderr: result.stderr,
+            stdout: stdout.text,
+            stderr: stderr.text,
             timedOut: result.timedOut,
             truncated: result.truncated,
             durationMs: result.durationMs,
+            ...(stdout.truncated || stderr.truncated
+              ? {
+                  outputCapped: {
+                    stdoutOmittedChars: stdout.omittedChars,
+                    stderrOmittedChars: stderr.omittedChars,
+                    ...(fullOutputPath ? { fullOutputPath } : {}),
+                    note: fullOutputPath
+                      ? `Output was truncated. Full output saved to ${fullOutputPath} — use grep, tail or sed -n on it via app_bash instead of re-running the command. The file is lost if the sandbox restarts.`
+                      : "Output was truncated and could not be saved. Re-run with output narrowed (| tail, | grep, > file) to see the part that was cut.",
+                  },
+                }
+              : {}),
           };
         } catch (error) {
           logger.error("app_bash failed", { error, appId });
@@ -348,8 +407,7 @@ export function createAppsTools({
     }),
 
     app_read_file: tool({
-      description:
-        "Read a file from an Apps project at the latest durable state (committed + uncommitted). Prefer this over `app_bash cat` for single files. Returns line-numbered content by default so you can make precise anchored edits.",
+      description: `Read a file from an Apps project at the latest durable state (committed + uncommitted). Prefer this over \`app_bash cat\` for single files. Returns line-numbered content by default so you can make precise anchored edits. Returns up to ${READ_DEFAULT_LIMIT_LINES} lines or ~${READ_MAX_CHARS / 1000}k chars per call (lines over ${READ_MAX_LINE_CHARS} chars are shortened); when more remains, the result has \`nextOffset\` — pass it as \`offset\` to continue, or use app_grep to find the part you need.`,
       inputSchema: z.object({
         appId: z.string(),
         path: z
@@ -360,8 +418,28 @@ export function createAppsTools({
           .boolean()
           .optional()
           .describe("Prefix each line with its 1-based number (default true)"),
+        offset: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("1-based line to start reading from (default 1)"),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            `Maximum number of lines to return (default ${READ_DEFAULT_LIMIT_LINES}; the ~${READ_MAX_CHARS / 1000}k-char cap still applies)`,
+          ),
       }),
-      execute: async ({ appId, path: relPath, withLineNumbers }) => {
+      execute: async ({
+        appId,
+        path: relPath,
+        withLineNumbers,
+        offset,
+        limit,
+      }) => {
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
@@ -374,17 +452,41 @@ export function createAppsTools({
           }
           markRead(appId, file.path);
           const numbered = withLineNumbers !== false;
+          const page = pageLines(file.contents, { offset, limit });
           const contents = numbered
-            ? file.contents
-                .split("\n")
-                .map((l, i) => `${String(i + 1).padStart(5)}\u2502${l}`)
+            ? page.lines
+                .map(
+                  (l, i) =>
+                    `${String(page.startLine + i).padStart(5)}\u2502${l}`,
+                )
                 .join("\n")
-            : file.contents;
+            : page.lines.join("\n");
+          const partial =
+            page.nextOffset !== undefined ||
+            page.startLine > 1 ||
+            page.longLinesCut > 0;
           return {
             success: true,
             path: file.path,
             contents,
             lineNumbered: numbered,
+            ...(partial
+              ? {
+                  startLine: page.startLine,
+                  endLine: page.endLine,
+                  totalLines: page.totalLines,
+                  ...(page.nextOffset !== undefined
+                    ? { nextOffset: page.nextOffset }
+                    : {}),
+                  ...(page.longLinesCut > 0
+                    ? { longLinesCut: page.longLinesCut }
+                    : {}),
+                  note:
+                    page.nextOffset !== undefined
+                      ? `Showing lines ${page.startLine}-${page.endLine} of ${page.totalLines}. Pass offset: ${page.nextOffset} to continue, or app_grep for a specific part.`
+                      : `Showing lines ${page.startLine}-${page.endLine} of ${page.totalLines}.`,
+                }
+              : {}),
           };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
@@ -427,11 +529,27 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const matches = await grepFiles(loaded.project, pattern, actorId, {
+          // One extra match tells us whether the cap cut anything.
+          const found = await grepFiles(loaded.project, pattern, actorId, {
             ignoreCase,
             pathspec,
+            maxMatches: GREP_MAX_MATCHES + 1,
           });
-          return { success: true, count: matches.length, matches };
+          const truncated = found.length > GREP_MAX_MATCHES;
+          const matches = found
+            .slice(0, GREP_MAX_MATCHES)
+            .map(m => ({ ...m, text: capLine(m.text, GREP_MAX_LINE_CHARS) }));
+          return {
+            success: true,
+            count: matches.length,
+            matches,
+            ...(truncated
+              ? {
+                  truncated: true,
+                  note: `Stopped at ${GREP_MAX_MATCHES} matches. Narrow the pattern or pass a pathspec to see the rest.`,
+                }
+              : {}),
+          };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
         }

@@ -1585,6 +1585,28 @@ export async function execInWorktree(
 }
 
 /**
+ * Write a file to the sandbox's scratch area — outside the working copy, so
+ * it can never be committed — and return its absolute path in the sandbox.
+ * Used to keep the full output of a command whose tool result was truncated,
+ * where `grep`/`tail` in app_bash can reach it. Scratch lives as long as the
+ * sandbox: a recycled box loses it.
+ */
+export async function writeWorktreeScratchFile(
+  handle: WorktreeHandle,
+  relPath: string,
+  contents: string,
+): Promise<string> {
+  const ctx = await ensureBox(handle);
+  const provider = getSandboxProvider();
+  const remotePath = path.posix.join(
+    provider.scratch(ctx),
+    assertSafeRelPath(relPath),
+  );
+  await provider.writeFile(ctx, remotePath, Buffer.from(contents, "utf8"));
+  return remotePath;
+}
+
+/**
  * Where a read comes from.
  *
  * If the sandbox is up, the working copy — that is what the person is
