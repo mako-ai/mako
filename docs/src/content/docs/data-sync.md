@@ -91,12 +91,17 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
 - **The filename slug is the flow's identity**, minted once and never changed.
   Renaming a file is a delete-plus-create (new stream, new webhook URL if
   applicable); the in-file `name:` field is the free-to-change display name.
-- **Credentials never live in the file.** Connectors and connections are
-  referenced by ObjectId only. Webhook secrets and endpoints are minted in
-  Mongo on first create and are never read from or written to the file.
-- **The connector itself must already exist** — created via the Mako UI
-  (Sources → Add). No MCP tool or CLI creates a connector; a flow file can
-  only reference one that already has an id.
+- **Credentials never live in the file.** A flow names its source
+  *connection* by ObjectId (`source.connection_id`) — a connection is a
+  credential configured with a connector, and a connector is code (a built-in
+  such as `stripe`, or `ws:<slug>` for one your workspace ships under
+  `connectors/<slug>/`, see [Connectors](/connectors/)). Webhook secrets and
+  endpoints are minted in Mongo on first create and are never read from or
+  written to the file.
+- **The connection must already exist.** No MCP tool or CLI creates one: ask
+  for it to be configured in Mako (Sources → Add), find its id with
+  `list_connections({ kind: "source" })`, confirm it works with
+  `probe_connection`, then write the file.
 - Validate before pushing with the `check_flow_files` MCP tool, which reports
   parse/id-resolution problems, schema issues, and the reconciliation plan
   (`wouldCreate` / `wouldReconfigure` / `wouldTeardown`) against currently
