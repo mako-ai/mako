@@ -86,14 +86,14 @@ merging the two ingest paths.
 
 ### Duplication that actually exists
 
-| Layer | Scheduled | Webhook | Verdict |
-|---|---|---|---|
-| Destination adapter (MERGE) | CDC adapter (if CDC) / legacy | CDC adapter | Shared for CDC |
-| Ingest/staging path | direct `applyBatch` | event store → materialize | Intentionally different |
-| Flow `type` discriminator | `"scheduled"` | `"webhook"` | Duplicated (remove) |
-| UI form | `ScheduledFlowForm` | `WebhookFlowForm` | Duplicated (unify) |
-| Trigger scheduler | `flowSchedulerFunction` | `cdcScheduledBackfillFunction` | Overlapping selection |
-| Engine exposure | legacy (UI never exposes cdc) | cdc only | Inconsistent |
+| Layer                       | Scheduled                     | Webhook                        | Verdict                 |
+| --------------------------- | ----------------------------- | ------------------------------ | ----------------------- |
+| Destination adapter (MERGE) | CDC adapter (if CDC) / legacy | CDC adapter                    | Shared for CDC          |
+| Ingest/staging path         | direct `applyBatch`           | event store → materialize      | Intentionally different |
+| Flow `type` discriminator   | `"scheduled"`                 | `"webhook"`                    | Duplicated (remove)     |
+| UI form                     | `ScheduledFlowForm`           | `WebhookFlowForm`              | Duplicated (unify)      |
+| Trigger scheduler           | `flowSchedulerFunction`       | `cdcScheduledBackfillFunction` | Overlapping selection   |
+| Engine exposure             | legacy (UI never exposes cdc) | cdc only                       | Inconsistent            |
 
 ### Known pain points
 
@@ -133,18 +133,18 @@ interface IFlow {
   syncEngine: "legacy" | "cdc"; // "cdc" for any CDC-capable destination
 
   // Trigger set (already exist) — invariant: at least one enabled.
-  schedule?: { enabled: boolean; cron?: string; timezone?: string };        // poll
-  webhookConfig?: { enabled: boolean; secret: string; /* ... */ };          // push
+  schedule?: { enabled: boolean; cron?: string; timezone?: string }; // poll
+  webhookConfig?: { enabled: boolean; secret: string /* ... */ }; // push
 
   // Backfill / reconcile (already exist).
-  syncMode: "full" | "incremental";                                          // reconcile strategy
+  syncMode: "full" | "incremental"; // reconcile strategy
   backfillSchedule?: { enabled: boolean; cron?: string; timezone?: string }; // periodic full reconcile
 
   // Unchanged.
   sourceType: "connector" | "database";
   dataSourceId?: ObjectId;
   destinationDatabaseId: ObjectId;
-  tableDestination?: { connectionId; schema?; tableName; /* ... */ };
+  tableDestination?: { connectionId; schema?; tableName /* ... */ };
   entityFilter?: string[];
   entityLayouts?: IEntityLayout[];
   deleteMode?: "hard" | "soft";
@@ -193,7 +193,7 @@ Key invariants (enforced by a shared validator, not by `type`):
 
 ### Scheduler model (there are four `*/5` crons, not two)
 
-Only the first two are *triggers*; the other two must stay as-is:
+Only the first two are _triggers_; the other two must stay as-is:
 
 - **`flowSchedulerFunction`** — poll trigger (`schedule.enabled`). Emits
   `flow.execute`.
@@ -291,7 +291,7 @@ and keep `type` authoritative until Phase 3, the flag is a clean rollback.
 
 ### Rollback
 
-- Phases 0–3 keep legacy fields authoritative and only *derive* the new shape;
+- Phases 0–3 keep legacy fields authoritative and only _derive_ the new shape;
   disabling the flag reverts behavior. The Phase 2 migration is `down`-reversible.
 
 ---
@@ -381,7 +381,7 @@ webhook secret / provisioning block, cron editor) so we reuse validated pieces:
 - Flow model: `api/src/database/workspace-schema.ts` — `IFlow` (L856-935),
   `type` enum (L2065), `syncEngine` enum (L2218), `schedule` (L2127),
   `backfillSchedule` (L2154), `webhookConfig` (L2176); `ICdcChangeEvent` (L1002)
-  + `sourceKind` enum (L2537); `IWebhookEvent` (L968).
+  - `sourceKind` enum (L2537); `IWebhookEvent` (L968).
 - Schedulers + executor guards: `api/src/inngest/functions/flow.ts` —
   `flowSchedulerFunction` (L1990), scheduled safety check (L2018),
   `cdcScheduledBackfillFunction` (L2214), executor guards (L633-666, L1558),
@@ -405,3 +405,45 @@ webhook secret / provisioning block, cron editor) so we reuse validated pieces:
   update `PUT .../flows/:flowId`, `POST .../flows/:flowId/sync-engine`).
 - Forms: `app/src/components/ScheduledFlowForm.tsx`,
   `app/src/components/WebhookFlowForm.tsx`, `app/src/components/BackfillPanel.tsx`.
+
+---
+
+## Addendum: schedules as a list (implemented)
+
+The trigger set above shipped as three checkboxes — Scheduled poll, Webhook,
+Periodic full reconcile — where the poll and reconcile boxes were two cron
+controls for what users read as one concept ("when does this sync run?"). The
+Triggers step now exposes **two** triggers, Webhook and Schedule, where
+Schedule is a _list_ of cron rows:
+
+```ts
+schedules: Array<{
+  id: string; // stable; lastRunAt is stamped per row
+  enabled: boolean;
+  cron: string;
+  timezone: string;
+  entities?: string[]; // empty = every entity enabled in the Entities step
+  kind: "poll" | "reconcile"; // "poll" honors syncMode; "reconcile" is a full re-pull
+  lastRunAt?: Date;
+}>;
+```
+
+This subsumes the old pair: the reconcile trigger is a row with
+`kind: "reconcile"`, and per-row `entities` lets one sync poll everything
+hourly while fully reconciling only the expensive entities nightly.
+
+**Compatibility.** `schedule` and `backfillSchedule` remain on the model. When
+a client sends `schedules`, the API mirrors the first enabled poll row onto
+`schedule` and the first enabled reconcile row onto `backfillSchedule`, so
+list payloads and the flow panels keep working unchanged; flows saved before
+the list have no `schedules` and are projected into the same row shape by
+`resolveFlowSchedules()` (`api/src/services/flow-triggers.service.ts`). Every
+scheduler path reads that resolver, never the raw fields.
+
+**Runtime.** `flowSchedulerFunction` iterates `kind: "poll"` rows and emits
+`flow.execute` with `entityScope` (the older `backfillEntities` event field is
+still accepted); `cdcScheduledBackfillFunction` iterates `kind: "reconcile"`
+rows and calls `cdcBackfillService.startBackfill(..., { entities })` on the CDC
+engine, or dispatches a `backfill: true` run otherwise. Rows from the list
+stamp `schedules.$[row].lastRunAt` at dispatch; legacy rows keep their
+original bookkeeping (`flow.lastRunAt` / `backfillSchedule.lastRunAt`).

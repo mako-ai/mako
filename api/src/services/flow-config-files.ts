@@ -56,6 +56,21 @@ export interface FlowFileSchedule {
   timezone: string;
 }
 
+/**
+ * One row of the unified `schedules:` list — the file form of
+ * `IFlow.schedules`. `lastRunAt` is a scheduler claim and stays on the row,
+ * exactly like `backfillSchedule.lastRunAt`.
+ */
+export interface FlowFileScheduleRow {
+  /** Stable across edits so the row keeps its `lastRunAt`. */
+  id?: string;
+  cron: string;
+  timezone: string;
+  /** Empty/absent = every entity the flow syncs. */
+  entities?: string[];
+  kind: "poll" | "reconcile";
+}
+
 export interface FlowFile {
   name: string;
   type: "scheduled" | "webhook";
@@ -84,6 +99,12 @@ export interface FlowFile {
       clustering?: Record<string, unknown>;
     };
   };
+  /**
+   * The unified cron list. When present it is authoritative and the two
+   * single-schedule keys below are omitted from the file; flows written
+   * before the list carry `schedule:` / `backfill_schedule:` instead.
+   */
+  schedules?: FlowFileScheduleRow[] | null;
   schedule?: FlowFileSchedule | null;
   backfillSchedule?: FlowFileSchedule | null;
   /** Only whether inbound delivery is on; never the endpoint or secret. */
@@ -232,17 +253,29 @@ export function serializeFlowFile(flow: FlowFile): string {
       : undefined,
   });
 
-  if (flow.schedule) {
-    doc.schedule = {
-      cron: flow.schedule.cron,
-      timezone: flow.schedule.timezone,
-    };
-  }
-  if (flow.backfillSchedule) {
-    doc.backfill_schedule = {
-      cron: flow.backfillSchedule.cron,
-      timezone: flow.backfillSchedule.timezone,
-    };
+  if (flow.schedules && flow.schedules.length > 0) {
+    doc.schedules = flow.schedules.map(row =>
+      omitEmpty({
+        id: row.id,
+        cron: row.cron,
+        timezone: row.timezone,
+        kind: row.kind,
+        entities: row.entities?.length ? row.entities : undefined,
+      }),
+    );
+  } else {
+    if (flow.schedule) {
+      doc.schedule = {
+        cron: flow.schedule.cron,
+        timezone: flow.schedule.timezone,
+      };
+    }
+    if (flow.backfillSchedule) {
+      doc.backfill_schedule = {
+        cron: flow.backfillSchedule.cron,
+        timezone: flow.backfillSchedule.timezone,
+      };
+    }
   }
   if (flow.type === "webhook") {
     doc.webhook = { enabled: flow.webhookEnabled !== false };
@@ -290,6 +323,30 @@ export function serializeFlowFile(flow: FlowFile): string {
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+function schedulesFrom(v: unknown): FlowFileScheduleRow[] | null {
+  if (!Array.isArray(v)) return null;
+  const rows: FlowFileScheduleRow[] = [];
+  for (const entry of v) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const cron = str(row.cron);
+    if (!cron) continue;
+    const entities = Array.isArray(row.entities)
+      ? row.entities
+          .map(e => str(e))
+          .filter((e): e is string => typeof e === "string")
+      : undefined;
+    rows.push({
+      id: str(row.id),
+      cron,
+      timezone: str(row.timezone) ?? "UTC",
+      kind: str(row.kind) === "reconcile" ? "reconcile" : "poll",
+      ...(entities && entities.length > 0 ? { entities } : {}),
+    });
+  }
+  return rows.length > 0 ? rows : null;
 }
 
 function scheduleFrom(v: unknown): FlowFileSchedule | null {
@@ -399,6 +456,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     type,
     source,
     destination,
+    schedules: schedulesFrom(doc.schedules),
     schedule: scheduleFrom(doc.schedule),
     backfillSchedule: scheduleFrom(doc.backfill_schedule),
     webhookEnabled: webhookDoc ? webhookDoc.enabled !== false : undefined,
@@ -491,8 +549,20 @@ export function flowToFile(flow: IFlow): FlowFile {
           }
         : undefined,
     },
-    // Schedules carry cron + timezone only; `backfillSchedule.lastRunAt` is
-    // a scheduler claim and stays on the row.
+    // Schedules carry the definition only; `lastRunAt` (per row, and on
+    // `backfillSchedule`) is a scheduler claim and stays on the row.
+    schedules:
+      flow.schedules && flow.schedules.length > 0
+        ? flow.schedules
+            .filter(row => row.enabled !== false && row.cron)
+            .map(row => ({
+              id: row.id,
+              cron: row.cron,
+              timezone: row.timezone || "UTC",
+              kind: row.kind === "reconcile" ? ("reconcile" as const) : ("poll" as const),
+              ...(row.entities?.length ? { entities: [...row.entities] } : {}),
+            }))
+        : null,
     schedule:
       flow.schedule?.enabled && flow.schedule.cron
         ? {

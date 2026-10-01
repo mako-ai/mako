@@ -53,6 +53,7 @@ import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { getWorkspaceRepo } from "./workspace-repos.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
+import { deriveLegacyScheduleMirrors } from "./flow-triggers.service";
 import {
   flowToFile,
   parseFlowFile,
@@ -155,11 +156,16 @@ async function markFlowInvalid(
   const set: Record<string, unknown> = { definitionInvalid };
   if (doc.schedule) set["schedule.enabled"] = false;
   if (doc.backfillSchedule) set["backfillSchedule.enabled"] = false;
+  // An invalid definition must not keep firing any of its cadences.
+  (doc.schedules ?? []).forEach((_row, index) => {
+    set[`schedules.${index}.enabled`] = false;
+  });
   try {
     await Flow.updateOne({ _id: doc._id }, { $set: set });
     doc.definitionInvalid = definitionInvalid;
     if (doc.schedule) doc.schedule.enabled = false;
     if (doc.backfillSchedule) doc.backfillSchedule.enabled = false;
+    for (const row of doc.schedules ?? []) row.enabled = false;
   } catch (error) {
     logger.warn("Failed to mark flow invalid", {
       flowId: doc._id.toString(),
@@ -558,20 +564,49 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     } as IFlow["tableDestination"];
   }
 
-  // Schedules: cron + timezone only. `backfillSchedule.lastRunAt` is a
-  // scheduler claim (`isCronDue` reads it) and must survive a file edit.
-  doc.schedule = {
-    ...(doc.schedule ?? {}),
-    enabled: Boolean(file.schedule),
-    cron: file.schedule?.cron,
-    timezone: file.schedule?.timezone,
-  } as IFlow["schedule"];
-  doc.backfillSchedule = {
-    ...(doc.backfillSchedule ?? {}),
-    enabled: Boolean(file.backfillSchedule),
-    cron: file.backfillSchedule?.cron,
-    timezone: file.backfillSchedule?.timezone,
-  } as IFlow["backfillSchedule"];
+  // Schedules: the definition only. Every `lastRunAt` (per row, and on
+  // `backfillSchedule`) is a scheduler claim that `isCronDue` reads, so it
+  // must survive a file edit — carried over by row id below.
+  if (file.schedules && file.schedules.length > 0) {
+    const previousRun = new Map(
+      (doc.schedules ?? []).map(row => [row.id, row.lastRunAt]),
+    );
+    doc.schedules = file.schedules.map((row, index) => {
+      const id = row.id || `${file.name}-${index}`;
+      const carried = previousRun.get(id);
+      return {
+        id,
+        enabled: true,
+        cron: row.cron,
+        timezone: row.timezone || "UTC",
+        entities: row.entities,
+        kind: row.kind,
+        ...(carried ? { lastRunAt: carried } : {}),
+      };
+    }) as IFlow["schedules"];
+    // Legacy mirrors so readers that still consult the single-schedule
+    // fields (list payloads, the flow panels) stay correct.
+    const mirrors = deriveLegacyScheduleMirrors(doc.schedules ?? []);
+    doc.schedule = mirrors.schedule as IFlow["schedule"];
+    doc.backfillSchedule = {
+      ...mirrors.backfillSchedule,
+      lastRunAt: doc.backfillSchedule?.lastRunAt,
+    } as IFlow["backfillSchedule"];
+  } else {
+    doc.schedules = undefined;
+    doc.schedule = {
+      ...(doc.schedule ?? {}),
+      enabled: Boolean(file.schedule),
+      cron: file.schedule?.cron,
+      timezone: file.schedule?.timezone,
+    } as IFlow["schedule"];
+    doc.backfillSchedule = {
+      ...(doc.backfillSchedule ?? {}),
+      enabled: Boolean(file.backfillSchedule),
+      cron: file.backfillSchedule?.cron,
+      timezone: file.backfillSchedule?.timezone,
+    } as IFlow["backfillSchedule"];
+  }
 
   // Enabled-ness only. The endpoint is inbound URL identity minted once in
   // Mongo (17 of 31 production flows have external systems POSTing to it) and
