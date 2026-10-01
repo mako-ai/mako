@@ -55,23 +55,59 @@ export function getEmbeddingModel(modelId: string): EmbeddingModel {
 }
 
 /**
+ * Gateway options, plus `caching` — a Gateway feature newer than the pinned
+ * `@ai-sdk/gateway` types (it arrives with the package `ai` depends on). The
+ * client posts `providerOptions` to the Gateway verbatim, so the field works
+ * today; drop this extension once the bundled types carry it.
+ */
+type GatewayOptions = GatewayLanguageModelOptions & { caching?: "auto" };
+
+/**
  * Build `providerOptions` for a request. Attaches user / tag metadata
  * for Vercel-side spend tracking.
+ *
+ * Pass `promptCacheSessionId` (a stable, opaque id such as the chat id) for
+ * multi-step / multi-turn traffic that re-sends a growing prompt:
+ * - `gateway.caching: "auto"` makes the Gateway add Anthropic `cache_control`
+ *   breakpoints on the last message (and before the last user message), so
+ *   each agent step reads the previous step's prompt from cache instead of
+ *   paying full input price for the whole history again. Providers that cache
+ *   implicitly (OpenAI, Google, DeepSeek) are left untouched.
+ * - `openai.promptCacheKey` routes the session's requests to the same OpenAI
+ *   cache shard, which raises implicit-cache hit rates.
+ * Leave it unset for one-shot calls: an Anthropic cache write costs 1.25× and
+ * pays off only when a later request reads it.
  */
 export function buildProviderOptions(opts: {
   userId: string;
   workspaceId: string;
   agentId?: string;
   invocationType?: string;
+  promptCacheSessionId?: string;
 }): Record<string, any> {
   const tags: string[] = [`ws:${opts.workspaceId}`];
   if (opts.agentId) tags.push(`agent:${opts.agentId}`);
   if (opts.invocationType) tags.push(`type:${opts.invocationType}`);
 
+  const cacheSession = opts.promptCacheSessionId;
   return {
     gateway: {
       user: opts.userId,
       tags,
-    } satisfies GatewayLanguageModelOptions,
+      ...(cacheSession ? { caching: "auto" as const } : {}),
+    } satisfies GatewayOptions,
+    ...(cacheSession ? { openai: { promptCacheKey: cacheSession } } : {}),
   };
+}
+
+/**
+ * Request headers that keep a session's requests on the same provider-side
+ * prompt cache. The Gateway forwards `x-session-affinity` to providers that
+ * support it; it never changes routing. The id must be opaque (no personal
+ * data) and stable for the conversation.
+ */
+export function buildPromptCacheHeaders(
+  sessionId: string,
+): Record<string, string> {
+  return { "x-session-affinity": sessionId };
 }
