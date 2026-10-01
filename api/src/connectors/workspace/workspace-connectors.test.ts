@@ -16,7 +16,7 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
   ConnectorDefinition,
-  type IConnector,
+  type ISourceConnection,
 } from "../../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
@@ -139,10 +139,10 @@ async function push(
   );
 }
 
-const dataSourceFor = (
+const sourceConnectionFor = (
   type: string,
   config: Record<string, unknown>,
-): IConnector =>
+): ISourceConnection =>
   ({
     _id: new Types.ObjectId(),
     workspaceId: new Types.ObjectId(WS),
@@ -150,7 +150,7 @@ const dataSourceFor = (
     type,
     config,
     settings: {},
-  }) as unknown as IConnector;
+  }) as unknown as ISourceConnection;
 
 describe("a connector pushed to the workspace repo", () => {
   it("is discovered, its spec captured, and it becomes usable", async () => {
@@ -243,14 +243,14 @@ describe("running a workspace connector", () => {
 
   it("tests a good credential, and reports the vendor's own message for a bad one", async () => {
     const good = new SandboxedConnector(
-      dataSourceFor("ws:acme", { apiKey: "secret" }),
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
     );
     await expect(good.testConnection()).resolves.toMatchObject({
       success: true,
     });
 
     const bad = new SandboxedConnector(
-      dataSourceFor("ws:acme", { apiKey: "wrong" }),
+      sourceConnectionFor("ws:acme", { apiKey: "wrong" }),
     );
     const result = await bad.testConnection();
     expect(result.success).toBe(false);
@@ -259,7 +259,7 @@ describe("running a workspace connector", () => {
 
   it("resolves an entity schema the destination adapters can use", async () => {
     const connector = new SandboxedConnector(
-      dataSourceFor("ws:acme", { apiKey: "secret" }),
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
     );
     const schema = await connector.resolveSchema("widgets");
     expect(schema).toMatchObject({
@@ -273,7 +273,7 @@ describe("running a workspace connector", () => {
 
   it("fetches in resumable chunks, without repeating or losing a row", async () => {
     const connector = new SandboxedConnector(
-      dataSourceFor("ws:acme", { apiKey: "secret" }),
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
     );
     const seen: Array<{ id: string }> = [];
 
@@ -309,7 +309,7 @@ describe("running a workspace connector", () => {
 
   it("fails loudly for an entity the connector does not have", async () => {
     const connector = new SandboxedConnector(
-      dataSourceFor("ws:acme", { apiKey: "secret" }),
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
     );
     await connector.loadDefinition();
 
@@ -337,12 +337,12 @@ describe("the registry, which is how every caller reaches a connector", () => {
   /**
    * Nothing reaches a workspace connector by constructing one: the routes,
    * the orchestrator and the Inngest functions all go through the registry
-   * with a `DataSourceConfig`, whose credential is `connection` and not
+   * with a `SourceConnectionConfig`, whose credential is `connection` and not
    * `config`. Testing only the class is how a registry that passed the raw
    * row — no config, no workspaceId — looked fine.
    */
-  it("builds a working connector from a DataSourceConfig", async () => {
-    const connector = await syncConnectorRegistry.getConnector({
+  it("builds a working connector from a SourceConnectionConfig", async () => {
+    const connector = await syncConnectorRegistry.getConnectorFor({
       id: new Types.ObjectId().toString(),
       name: "Acme",
       type: "ws:acme",
@@ -365,7 +365,7 @@ describe("the registry, which is how every caller reaches a connector", () => {
 
   it("refuses to resolve a workspace connector without a workspace", async () => {
     await expect(
-      syncConnectorRegistry.getConnector({
+      syncConnectorRegistry.getConnectorFor({
         id: new Types.ObjectId().toString(),
         name: "Acme",
         type: "ws:acme",
@@ -397,7 +397,7 @@ describe("a connector whose entry file is not connector.ts", () => {
     // every command after it, which fell back to connector.ts and failed
     // with "No connector at .../connector.ts".
     const connector = new SandboxedConnector(
-      dataSourceFor("ws:acme", { apiKey: "secret" }),
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
     );
     await expect(connector.testConnection()).resolves.toMatchObject({
       success: true,
@@ -805,7 +805,7 @@ describe("the SDK installed in a persistent sync box", () => {
     await fs.rm(path.join(runtimeRoot, ".materialized"));
 
     const connector = new SandboxedConnector(
-      dataSourceFor("ws:acme", { apiKey: "secret" }),
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
     );
     await expect(connector.testConnection()).resolves.toMatchObject({
       success: true,

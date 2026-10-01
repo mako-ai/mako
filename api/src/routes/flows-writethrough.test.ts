@@ -46,7 +46,7 @@ const helper = routes.slice(
   routes.indexOf("async function assertFlowRepo"),
 );
 assert.ok(
-  helper.includes("if (result.ok) return null"),
+  helper.includes("if (result.ok)") && helper.includes("return null"),
   "the helper must branch on the returned result",
 );
 assert.ok(
@@ -58,7 +58,8 @@ assert.ok(
   "the failure needs a stable code the client can branch on",
 );
 
-// And every call site must RETURN on failure rather than fall through.
+// Commit the file first, then persist the derived row. Mongo-first is the
+// split-brain this guard exists to prevent.
 const sites = routes.split("commitFlowFileOrFail(").slice(2); // skip def + its own name
 for (const [i, site] of sites.entries()) {
   assert.ok(
@@ -66,5 +67,13 @@ for (const [i, site] of sites.entries()) {
     `call site ${i + 1} must return the refusal rather than continue to a 200`,
   );
 }
+
+const saveThenCommit =
+  /await flow\.save\(\);[\s\S]{0,240}commitFlowFileOrFail\(/.test(routes);
+assert.equal(
+  saveThenCommit,
+  false,
+  "flow mutations must commit the file before flow.save() — git is the store",
+);
 
 console.log("flow write-through honesty: all assertions passed");

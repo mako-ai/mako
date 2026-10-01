@@ -12,11 +12,13 @@
  * mirror is reset to it with its commits parked under `refs/mako/diverged/*`
  * (`fetchFromCloud`).
  *
- * The connected tier only engages on production (APPS_REQUIRE_CONNECTED_REPO)
- * or under the explicit APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and
- * dev run on prod-cloned databases that carry REAL customer bindings, and a
- * test commit must never land in a customer repo — gated environments treat
- * the binding as inert metadata and keep local-only bare repos.
+ * Reads always use a connected repo when one is bound: serverless preview
+ * instances have an empty filesystem and must be able to rebuild their local
+ * cache. Writes to that repo only engage on production
+ * (APPS_REQUIRE_CONNECTED_REPO) or under the explicit
+ * APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and dev can therefore read
+ * real workspace content without a test commit ever landing in a customer
+ * repo.
  *
  * The local bare repo remains the working store the API reads from; the
  * mirror is the durable replica. Mirror pushes run after commits/merges
@@ -34,6 +36,7 @@ import {
   initRepo,
   repoDirFor,
   repoExists,
+  resolveCommit,
   type GitAuthor,
 } from "./repository.service";
 import { initialWorkspaceFiles } from "./workspace-template";
@@ -67,13 +70,15 @@ export type MirrorTarget = {
 };
 
 /**
- * The workspace's durable mirror: the connected repo when one is bound and
- * the tier is enabled here, else null (local-only).
+ * Resolve the bound repository for read-only clone/fetch operations.
+ *
+ * This deliberately ignores the push gate. Preview instances start with an
+ * empty APPS_GIT_ROOT, so treating the binding as wholly inert also makes all
+ * git-backed apps, consoles, and dbt files disappear.
  */
-export async function resolveMirrorTarget(
+async function resolveReadableMirrorTarget(
   workspaceId: string,
 ): Promise<MirrorTarget | null> {
-  if (!connectedTierEnabled()) return null;
   const binding = await getWorkspaceRepo(workspaceId).catch(() => null);
   if (!binding) return null;
   return {
@@ -82,6 +87,17 @@ export async function resolveMirrorTarget(
     repo: binding.repo,
     installationId: binding.installationId,
   };
+}
+
+/**
+ * The workspace's durable mirror: the connected repo when one is bound and
+ * pushes are enabled here, else null (local-only writes).
+ */
+export async function resolveMirrorTarget(
+  workspaceId: string,
+): Promise<MirrorTarget | null> {
+  if (!connectedTierEnabled()) return null;
+  return resolveReadableMirrorTarget(workspaceId);
 }
 
 async function tokenFor(target: MirrorTarget): Promise<string | undefined> {
@@ -154,7 +170,7 @@ export async function ensureLocalRepo(workspaceId: string): Promise<void> {
   const existing = cloneInFlight.get(workspaceId);
   if (existing) return existing;
   const run = (async () => {
-    const target = await resolveMirrorTarget(workspaceId);
+    const target = await resolveReadableMirrorTarget(workspaceId);
     if (!target) return;
     const token = await tokenFor(target);
     await cloneMirrorInto(
@@ -399,7 +415,7 @@ export async function fetchFromCloud(
   workspaceId: string,
   branch: string,
 ): Promise<void> {
-  const target = await resolveMirrorTarget(workspaceId);
+  const target = await resolveReadableMirrorTarget(workspaceId);
   if (!target) return;
   const repoDir = repoDirFor(workspaceId);
   const token = await tokenFor(target);
@@ -732,7 +748,16 @@ export async function ensureWorkspaceRepo(
 ): Promise<string> {
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
+  const hasMain =
+    (await repoExists(repoDir)) &&
+    Boolean(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`));
+  if (!hasMain) {
+    // `git clone --mirror` of an empty GitHub repo still creates a bare
+    // directory with no refs. The first write needs `main` so it can seed
+    // the mirror (issue #956).
+    if (await repoExists(repoDir)) {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
     await initRepo(repoDir, initialWorkspaceFiles(workspaceId), {
       message: "Initialize workspace repository",
       author,

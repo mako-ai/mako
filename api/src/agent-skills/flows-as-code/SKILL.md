@@ -1,6 +1,6 @@
 ---
 name: flows-as-code
-description: Load when adding, changing or removing a sync flow by editing flows/<slug>.yml in a workspace repo — "add a Stripe connector and sync it to BigQuery", "sync the new Close account", "stop syncing X" — or when a pushed flow file did nothing.
+description: Load when adding, changing or removing a sync flow by editing flows/<slug>.yml in a workspace repo — "add a Stripe connection and sync it to BigQuery", "sync the new Close account", "stop syncing X" — or when a pushed flow file did nothing.
 entities:
   - flows/
   - flow file

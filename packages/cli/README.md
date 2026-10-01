@@ -25,7 +25,16 @@ live against its platform: the credential check plus one bounded page of an
 entity, written nowhere — the way to see that a new key works, or what a
 platform's data looks like before a flow lands it in the warehouse.
 
-Also: `mako whoami`, `mako logout`, `--api-url <host>` for self-hosted Mako
+dbt: `mako dbt run -s <selector>` (also `build` / `test`, `--env <name>`,
+`--full-refresh`, `--no-defer`) runs dbt in Mako's runner on this checkout's
+`dbt/` folder — uncommitted edits included, nothing committed — and streams the
+log; the exit code is dbt's. It needs `mako login --warehouse-write`: your dbt
+code runs with the environment's warehouse credentials. It builds your personal
+environment (created on first use) unless you pass `--env`; production is only
+built from `main` by a job.
+
+Also: `mako whoami` (says when the token expired, and refreshes it when it
+can), `mako logout`, `--api-url <host>` for self-hosted Mako
 (or `MAKO_API_URL` in the repo's `.env`). An API key in `.env`
 (`MAKO_API_KEY`) is used instead of the login when present — that is the path
 for CI.

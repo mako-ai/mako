@@ -165,3 +165,55 @@ describe("tab-routing", () => {
     expect(url).toBe("/t/651234567890abcdef1234/public/users?db=mydb");
   });
 });
+
+/**
+ * An app tab carries the app's own query string. The published app is a
+ * sandboxed iframe whose URL nobody can see, so the query it reports is what
+ * makes a filtered view shareable — and what it boots from when the link is
+ * opened. Without this every /apps/:slug link opened the default view.
+ */
+describe("app tabs carry the app's query string", () => {
+  it("appends the query to /apps/:slug", () => {
+    expect(
+      tabUrlPath(
+        "t",
+        baseTab({
+          kind: "app",
+          metadata: {
+            appId: "a1",
+            appSlug: "seller-media",
+            appSearch: "?filters.countries=PL&chart.breakdown=device",
+          },
+        }),
+      ),
+    ).toBe("/apps/seller-media?filters.countries=PL&chart.breakdown=device");
+  });
+
+  it("accepts a query without its question mark, and none at all", () => {
+    const withSearch = (appSearch?: string) =>
+      tabUrlPath(
+        "t",
+        baseTab({
+          kind: "app",
+          metadata: { appId: "a1", appSlug: "s", appSearch },
+        }),
+      );
+    expect(withSearch("x=1")).toBe("/apps/s?x=1");
+    expect(withSearch(undefined)).toBe("/apps/s");
+    expect(withSearch("")).toBe("/apps/s");
+    expect(withSearch("?")).toBe("/apps/s");
+  });
+});
+
+describe("decodeUrlSegment", () => {
+  it("decodes a percent-encoded app slug", async () => {
+    const { decodeUrlSegment } = await import("./tab-routing");
+    expect(decodeUrlSegment("caf%C3%A9")).toBe("café");
+  });
+
+  it("falls back to the raw segment on a malformed sequence instead of throwing", async () => {
+    const { decodeUrlSegment } = await import("./tab-routing");
+    expect(decodeUrlSegment("100%")).toBe("100%");
+    expect(decodeUrlSegment("%E0%A4%A")).toBe("%E0%A4%A");
+  });
+});

@@ -28,6 +28,15 @@ export interface DashboardArtifactStore {
   getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   getSize(key: string): Promise<number | null>;
+  /**
+   * When the object at `key` was last written, or null when it is missing
+   * or the store cannot say. Publish uses it to tell a content-addressed
+   * binding artifact that is merely PRESENT from one that is also CURRENT,
+   * so it must reflect the last CONTENT write (a metadata-only update, such
+   * as a storage-class transition, must not count) and must not throw — a
+   * null is "unknown", which the caller treats as stale.
+   */
+  getLastModified(key: string): Promise<Date | null>;
   delete(key: string): Promise<void>;
   /**
    * Make sure a browser can fetch this store's signed URLs directly: the
@@ -54,6 +63,13 @@ function ensureSafeKey(key: string): string {
     throw new Error(`Invalid artifact key: ${key}`);
   }
   return normalized;
+}
+
+/** A GCS `timeCreated` / S3 `Last-Modified` value as a Date, or null if unusable. */
+function parseTimestamp(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function getFilesystemRoot(): string {
@@ -170,6 +186,20 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
       const stat = await fsPromises.stat(this.resolvePath(key));
       return stat.size;
     } catch {
+      return null;
+    }
+  }
+
+  async getLastModified(key: string): Promise<Date | null> {
+    try {
+      const stat = await fsPromises.stat(this.resolvePath(key));
+      return stat.mtime;
+    } catch (error) {
+      logger.debug("Could not read filesystem artifact write time", {
+        key,
+        storeType: this.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -326,6 +356,25 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
       const [metadata] = await this.file(key).getMetadata();
       return metadata.size ? Number(metadata.size) : null;
     } catch {
+      return null;
+    }
+  }
+
+  async getLastModified(key: string): Promise<Date | null> {
+    try {
+      const [metadata] = await this.file(key).getMetadata();
+      // `timeCreated` is the current generation's creation time — every
+      // content write creates a new generation — whereas `updated` also
+      // moves on metadata-only changes (lifecycle storage-class transitions,
+      // custom-metadata patches), which would make a day-old artifact look
+      // freshly built.
+      return parseTimestamp(metadata.timeCreated ?? metadata.updated);
+    } catch (error) {
+      logger.warn("Could not read GCS artifact write time", {
+        key,
+        storeType: this.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -634,6 +683,28 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
     }
   }
 
+  async getLastModified(key: string): Promise<Date | null> {
+    try {
+      const response = await this.signedRequest("HEAD", key);
+      if (!response.ok) {
+        logger.warn("Could not read S3 artifact write time", {
+          key,
+          storeType: this.type,
+          status: response.status,
+        });
+        return null;
+      }
+      return parseTimestamp(response.headers.get("last-modified"));
+    } catch (error) {
+      logger.warn("Could not read S3 artifact write time", {
+        key,
+        storeType: this.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
   async delete(key: string): Promise<void> {
     await this.signedRequest("DELETE", key).catch(() => undefined);
   }
@@ -662,12 +733,12 @@ export function getDashboardArtifactStore(): DashboardArtifactStore {
 }
 
 /**
- * A read-only artifact store to COPY existing artifacts FROM, distinct from
- * the live store written TO. Set APPS_ARTIFACT_SOURCE_BUCKET to a GCS
- * bucket to hydrate a rehearsal environment (e.g. dev, cloned from prod's DB
- * but NOT its artifact store) with prod's parquet — the migration then adopts
- * real data instead of finding nothing local. Unset (prod and normal runs) →
- * null, and callers read from the main store exactly as before.
+ * A read-only artifact store for existing app artifacts, distinct from the
+ * live store written TO. Set APPS_ARTIFACT_SOURCE_BUCKET to a GCS bucket when
+ * a rehearsal environment uses a cloned production database but an isolated
+ * writable artifact store. Published deployment reads may fall back to this
+ * source; writes always stay in the live store. Unset (prod and normal runs)
+ * returns null, and callers use the main store exactly as before.
  */
 export function getArtifactSourceStore(): DashboardArtifactStore | null {
   const bucket = process.env.APPS_ARTIFACT_SOURCE_BUCKET; // pre-rename name

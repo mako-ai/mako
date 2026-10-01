@@ -4,6 +4,7 @@ import { containsDbtSchemaToken, resolveDbtSchemaToken } from "@mako/schemas";
 import {
   DbtProtectedEnvironmentError,
   assertAdhocDbtRunAllowed,
+  devDbtEnvironmentSchema,
   findPersonalEnvironment,
   resolveEnvironmentNameForUser,
   resolveProdLikeEnvironmentName,
@@ -197,6 +198,33 @@ describe("assertAdhocDbtRunAllowed", () => {
     expect(() =>
       assertAdhocDbtRunAllowed(project, "prod", commands("build")),
     ).not.toThrow();
+  });
+});
+
+describe("devDbtEnvironmentSchema", () => {
+  const project = { environments: [env("prod"), env("joan", "u-joan")] };
+
+  it("resolves a shared environment for anyone", () => {
+    expect(devDbtEnvironmentSchema(project, "prod", undefined)).toBe(
+      "dbt_prod",
+    );
+  });
+
+  it("resolves a personal environment for its owner only", () => {
+    expect(devDbtEnvironmentSchema(project, "joan", "u-joan")).toBe("dbt_joan");
+    expect(() => devDbtEnvironmentSchema(project, "joan", "u-other")).toThrow(
+      /another developer's personal environment/,
+    );
+    // An API key has no user, so it owns no personal environment.
+    expect(() => devDbtEnvironmentSchema(project, "joan", undefined)).toThrow(
+      /personal environment/,
+    );
+  });
+
+  it("names the environments that exist when the requested one does not", () => {
+    expect(() => devDbtEnvironmentSchema(project, "nope", "u-joan")).toThrow(
+      /No dbt environment named "nope".*prod, joan/,
+    );
   });
 });
 

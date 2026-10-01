@@ -18,6 +18,7 @@ const h = vi.hoisted(() => {
     loadConsole: vi.fn(),
     openTab: vi.fn(),
     setActiveTab: vi.fn(),
+    focusOrOpenTab: vi.fn(),
     activeTabId: null as string | null,
     tabs: {} as Record<string, unknown>,
   };
@@ -25,6 +26,11 @@ const h = vi.hoisted(() => {
     focusNotebookTab: vi.fn(),
     setLeftPane: vi.fn(),
     captureOAuthReturn: vi.fn(),
+    fetchOneSourceConnection: vi.fn(),
+    closeSourceConnectionTabsFor: vi.fn(),
+    focusAppsTab: vi.fn(),
+    fetchApps: vi.fn().mockResolvedValue(undefined),
+    apps: [{ id: "app1", slug: "seller-media", title: "Seller Media" }],
     consoleState,
     useConsoleStore: Object.assign(
       (selector: (s: typeof consoleState) => unknown) => selector(consoleState),
@@ -58,6 +64,15 @@ vi.mock("../store/mcpStore", () => ({
     getState: () => ({ captureOAuthReturn: h.captureOAuthReturn }),
   },
 }));
+vi.mock("../store/sourceConnectionEntitiesStore", () => ({
+  useSourceConnectionEntitiesStore: {
+    getState: () => ({ fetchOne: h.fetchOneSourceConnection }),
+  },
+}));
+vi.mock("../lib/source-connection-tabs", () => ({
+  closeSourceConnectionTabsFor: (...args: unknown[]) =>
+    h.closeSourceConnectionTabsFor(...args),
+}));
 
 // Stores/shells only touched by branches the notebook path never enters; stub
 // their named exports so module import resolves without pulling real deps.
@@ -75,6 +90,27 @@ vi.mock("../dbt-runtime/shell", () => ({
   focusDbtRunsTab: vi.fn(),
 }));
 
+vi.mock("../apps-runtime/shell", () => ({
+  closeAppsTabsFor: vi.fn(),
+  focusAppsFileTab: vi.fn(),
+  focusAppsTab: (...args: unknown[]) => h.focusAppsTab(...args),
+}));
+vi.mock("../store/appsStore", () => {
+  const state = { fetchApps: h.fetchApps, apps: h.apps };
+  return {
+    useAppsStore: Object.assign(
+      (selector: (s: typeof state) => unknown) => selector(state),
+      { getState: () => state },
+    ),
+    // The real rule: a top-level app is addressed by its slug, anything
+    // else by its id (no slug on the tab).
+    appUrlSlug: (app: { id: string; slug?: string; path?: string }) =>
+      app.slug && (app.path ?? `apps/${app.slug}`) === `apps/${app.slug}`
+        ? app.slug
+        : undefined,
+  };
+});
+
 import { UrlSync } from "./UrlSync";
 
 describe("UrlSync hydration", () => {
@@ -82,6 +118,32 @@ describe("UrlSync hydration", () => {
     vi.clearAllMocks();
     h.consoleState.activeTabId = null;
     h.consoleState.tabs = {};
+  });
+
+  /**
+   * A shared app link carries the app's own query string. The published app
+   * is a sandboxed iframe whose URL nobody can see, so the query on the HOST
+   * URL is the only way a filtered view travels — and hydration has to hand
+   * it to the tab before the outgoing sync rewrites the address bar.
+   */
+  it("hands the app's query string to the tab when deep-linking /apps/:slug?…", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/apps/seller-media?filters.countries=PL&chart.breakdown=device",
+    );
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "app1",
+        "Seller Media",
+        "seller-media",
+        "?filters.countries=PL&chart.breakdown=device",
+      ),
+    );
+    expect(h.setLeftPane).toHaveBeenCalledWith("apps");
   });
 
   it("opens the notebook tab when deep-linking /n/:id", async () => {
@@ -100,5 +162,39 @@ describe("UrlSync hydration", () => {
       ),
     );
     expect(h.setLeftPane).toHaveBeenCalledWith("notebooks");
+  });
+
+  it("opens a source-connection tab when /cx/:id still exists", async () => {
+    const id = "507f1f77bcf86cd799439011";
+    h.fetchOneSourceConnection.mockResolvedValue({
+      _id: id,
+      name: "Stripe",
+    });
+    window.history.replaceState({}, "", `/cx/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.consoleState.focusOrOpenTab).toHaveBeenCalledWith(
+        { kind: "connectors", where: expect.any(Function) },
+        expect.any(Function),
+      ),
+    );
+    expect(h.setLeftPane).toHaveBeenCalledWith("connectors");
+    expect(h.closeSourceConnectionTabsFor).not.toHaveBeenCalled();
+  });
+
+  it("does not leave a 404 tab when /cx/:id no longer resolves", async () => {
+    const id = "507f1f77bcf86cd799439012";
+    h.fetchOneSourceConnection.mockResolvedValue(null);
+    window.history.replaceState({}, "", `/cx/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.closeSourceConnectionTabsFor).toHaveBeenCalledWith(id),
+    );
+    expect(h.consoleState.focusOrOpenTab).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
   });
 });

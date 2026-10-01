@@ -125,7 +125,7 @@ async function hashSharePassword(password: string): Promise<string> {
   return bcrypt.hash(password, rounds);
 }
 
-function serialize(publicShare?: IPublicShare) {
+export function serializePublicShare(publicShare?: IPublicShare) {
   if (!publicShare?.enabled || !publicShare.token) {
     return { enabled: false as const };
   }
@@ -220,7 +220,10 @@ export function registerPublicShareRoutes(
         doc.markModified("publicShare");
         await doc.save();
 
-        return c.json({ success: true, data: serialize(doc.publicShare) });
+        return c.json({
+          success: true,
+          data: serializePublicShare(doc.publicShare),
+        });
       } catch (error) {
         logger.error(`Error enabling public share for ${resourceName}`, {
           error,
@@ -342,7 +345,10 @@ export function registerPublicShareRoutes(
         doc.markModified("publicShare");
         await doc.save();
 
-        return c.json({ success: true, data: serialize(doc.publicShare) });
+        return c.json({
+          success: true,
+          data: serializePublicShare(doc.publicShare),
+        });
       } catch (error) {
         logger.error(`Error updating public share for ${resourceName}`, {
           error,

@@ -77,12 +77,13 @@ function decryptObject(obj: any): any {
   }
 }
 
-// Pass-through for DataSource config - encryption handled at route using connector schema
-function encryptDataSourceConfig(config: any): any {
+// Pass-through for source-connection config — encryption is applied at the
+// route using the connector's schema, not by this getter/setter.
+function encryptSourceConnectionConfig(config: any): any {
   return config;
 }
 
-function decryptDataSourceConfig(config: any): any {
+function decryptSourceConnectionConfig(config: any): any {
   return config;
 }
 
@@ -120,16 +121,21 @@ export interface IWorkspace extends Document {
     maxDatabases: number;
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
-    customPrompt?: string;
     disabledModelIds?: string[];
     /**
      * Max concurrent scheduled/manual dashboard artifact refreshes for this
      * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     dashboardRefreshConcurrency?: number;
+    /**
+     * Domain auto-join (apps.md §28): a signed-in person whose email domain
+     * is listed becomes a member on first contact with the workspace — no
+     * invitation — with this access role. How someone clicks a published
+     * app's link, signs in, and is simply in.
+     */
+    autoJoin?: IWorkspaceAutoJoin;
   };
   billing: IWorkspaceBilling;
-  selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
   /**
    * Connected GitHub repos — workspace-level infrastructure, not an apps
@@ -167,6 +173,13 @@ export type IAppsRepoBinding = IWorkspaceRepoBinding;
 /**
  * API Key interface for workspace authentication
  */
+export interface IWorkspaceAutoJoin {
+  /** Lowercase email domains, exact match (no sub-domains). */
+  domains: string[];
+  /** The ACCESS role newcomers get. Never owner/admin. */
+  role: "member" | "viewer";
+}
+
 export interface IWorkspaceApiKey {
   _id?: Types.ObjectId;
   name: string;
@@ -271,9 +284,10 @@ export interface IDatabaseConnection extends Document {
 export type IDatabase = IDatabaseConnection;
 
 /**
- * Connector model interface
+ * Source connection: a credential a workspace configured with a connector
+ * (Stripe key, Close account, …). Stored in collection `connectors`.
  */
-export interface IConnector extends Document {
+export interface ISourceConnection extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   name: string;
@@ -322,6 +336,9 @@ export interface IConnector extends Document {
   lastSyncedAt?: Date;
   isActive: boolean;
 }
+
+/** @deprecated use ISourceConnection */
+export type IConnector = ISourceConnection;
 
 /**
  * ConsoleFolder model interface
@@ -933,14 +950,29 @@ export interface IFlow extends Document {
   /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
-   * file itself.
+   * file itself. Derived cache — git is the store.
    */
   sourceBlobSha?: string;
+  /**
+   * Set when `flows/<slug>.yml` at main does not parse or cannot be applied.
+   * Runtime must not run this definition and must never write the row back
+   * over the file.
+   */
+  definitionInvalid?: {
+    reason: string;
+    at: Date;
+    path?: string;
+  };
 
-  // Source configuration - either connector or database
+  // Source configuration — either a source connection or a database connection
   sourceType: "connector" | "database";
-  dataSourceId?: Types.ObjectId; // For connector sources (Stripe, Close, etc.)
-  databaseSource?: IDatabaseSource; // For database sources (SQL queries)
+  /**
+   * Id of the source connection this flow reads from (when `sourceType` is
+   * `"connector"`). Persisted field name is historical — do not rename in
+   * Mongo. TypeScript callers should treat this as a SourceConnection id.
+   */
+  dataSourceId?: Types.ObjectId;
+  databaseSource?: IDatabaseSource; // For database-query sources
 
   // Destination configuration
   destinationDatabaseId: Types.ObjectId;
@@ -1268,33 +1300,25 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         enum: ["free", "pro", "enterprise"],
         default: "free",
       },
-      customPrompt: {
-        type: String,
-        default: `# Custom Prompt Configuration
-
-This is your custom prompt that will be combined with the system prompt to provide additional context about your data and business relationships.
-
-## Business Context
-Add information about your business domain, terminology, and key concepts here.
-
-## Data Relationships
-Describe important relationships between your collections and how they connect.
-
-## Common Queries
-Document frequently requested queries or analysis patterns.
-
-## Custom Instructions
-Add any specific instructions for how the AI should interpret your data or respond to certain types of questions.
-
----
-
-*This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
-      },
       disabledModelIds: [{ type: String }],
       dashboardRefreshConcurrency: {
         type: Number,
         default: 2,
         min: 1,
+      },
+      autoJoin: {
+        type: new Schema(
+          {
+            domains: [{ type: String, lowercase: true, trim: true }],
+            role: {
+              type: String,
+              enum: ["member", "viewer"],
+              default: "viewer",
+            },
+          },
+          { _id: false },
+        ),
+        required: false,
       },
     },
     billing: {
@@ -1324,11 +1348,6 @@ Add any specific instructions for how the AI should interpret your data or respo
       lastReportedOverageCents: { type: Number, default: 0 },
       pendingReportedOverageCents: { type: Number, default: null },
       pendingMeterEventIdempotencyKey: { type: String, default: null },
-    },
-    selfDirective: {
-      type: String,
-      default: "",
-      maxlength: 10000,
     },
     workspaceRepos: {
       type: [
@@ -1562,9 +1581,10 @@ DatabaseConnectionSchema.index({ workspaceId: 1 });
 DatabaseConnectionSchema.index({ workspaceId: 1, name: 1 });
 
 /**
- * Connector Schema
+ * Source-connection schema. Collection name `connectors` is historical and
+ * must never change.
  */
-const ConnectorSchema = new Schema<IConnector>(
+const SourceConnectionSchema = new Schema<ISourceConnection>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -1587,8 +1607,8 @@ const ConnectorSchema = new Schema<IConnector>(
     config: {
       type: Schema.Types.Mixed,
       required: true,
-      set: encryptDataSourceConfig,
-      get: decryptDataSourceConfig,
+      set: encryptSourceConnectionConfig,
+      get: decryptSourceConnectionConfig,
     },
     settings: {
       sync_batch_size: {
@@ -1637,8 +1657,8 @@ const ConnectorSchema = new Schema<IConnector>(
 );
 
 // Indexes
-ConnectorSchema.index({ workspaceId: 1 });
-ConnectorSchema.index({ workspaceId: 1, type: 1 });
+SourceConnectionSchema.index({ workspaceId: 1 });
+SourceConnectionSchema.index({ workspaceId: 1, type: 1 });
 
 /**
  * ConsoleFolder Schema
@@ -2289,6 +2309,11 @@ const FlowSchema = new Schema<IFlow>(
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
+    },
+    definitionInvalid: {
+      reason: { type: String },
+      at: { type: Date },
+      path: { type: String },
     },
     // Source type discriminator - defaults to "connector" for backward compatibility
     sourceType: {
@@ -4088,10 +4113,12 @@ export const DatabaseConnection = mongoose.model<IDatabaseConnection>(
 );
 /** @deprecated Use DatabaseConnection instead */
 export const Database = DatabaseConnection;
-export const Connector = mongoose.model<IConnector>(
+export const SourceConnection = mongoose.model<ISourceConnection>(
   "Connector",
-  ConnectorSchema,
+  SourceConnectionSchema,
 );
+/** @deprecated use SourceConnection */
+export const Connector = SourceConnection;
 /**
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
@@ -4252,99 +4279,7 @@ export const Dashboard = mongoose.model<IDashboard>(
   DashboardSchema,
 );
 
-/**
- * Skill — workspace-scoped knowledge + procedure primitive.
- *
- * See GitHub issue #365. A skill is a named, conditional playbook with:
- *   - loadWhen: short trigger description (what query/task it applies to)
- *   - body:     schema facts + procedural hints (SQL shapes, gotchas, etc.)
- *   - entities: tokens used for retrieval (authored + extracted)
- *   - declaredEntities: only the authored ones — what the SKILL.md file
- *     carries. `entities` is derived from it and must never be written
- *     back to git (that is how the 2026-08-31 adoption put ~200 tokenised
- *     body words into every skill's frontmatter).
- *
- * Retrieval combines entity overlap with semantic similarity on `loadWhen`.
- * The full index (name + loadWhen) is injected into the agent's system prompt
- * every turn; bodies are injected only for top-k matches above a threshold
- * or when the agent explicitly calls `load_skill`.
- */
-export type SkillScopeType = "workspace" | "user" | "connection";
-
-export interface ISkill extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  name: string;
-  loadWhen: string;
-  body: string;
-  entities: string[];
-  /** Author-declared entities as written in SKILL.md; absent on rows that predate the field. */
-  declaredEntities?: string[];
-  /** Embedding over `loadWhen` only. Bodies are too long to embed usefully. */
-  loadWhenEmbedding?: number[];
-  embeddingModel?: string;
-  /** Reserved for future scoping. MVP: all skills are scope_type="workspace". */
-  scopeType: SkillScopeType;
-  scopeRefId?: Types.ObjectId | string;
-  /** "agent" for model-authored skills, otherwise a user id. */
-  createdBy: string;
-  /** Soft-disable without deletion — lets admins A/B whether a skill helps. */
-  suppressed: boolean;
-  /** Explicit load_skill calls — the honest "someone reached for this". */
-  useCount: number;
-  lastUsedAt?: Date;
-  /** Auto-injection exposure (pre-turn retrieval). NOT a usefulness signal. */
-  injectedCount?: number;
-  lastInjectedAt?: Date;
-  /** Single-slot undo for wrong overwrites. */
-  previousBody?: string;
-  previousUpdatedAt?: Date;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const SkillSchema = new Schema<ISkill>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    name: { type: String, required: true, trim: true },
-    loadWhen: { type: String, required: true, trim: true, maxlength: 500 },
-    body: { type: String, required: true, maxlength: 20000 },
-    entities: { type: [String], default: [] },
-    declaredEntities: { type: [String], default: [] },
-    loadWhenEmbedding: { type: [Number], select: false },
-    embeddingModel: { type: String },
-    scopeType: {
-      type: String,
-      enum: ["workspace", "user", "connection"],
-      default: "workspace",
-      required: true,
-    },
-    scopeRefId: { type: Schema.Types.Mixed },
-    createdBy: { type: String, required: true },
-    suppressed: { type: Boolean, default: false },
-    useCount: { type: Number, default: 0 },
-    injectedCount: { type: Number, default: 0 },
-    lastInjectedAt: { type: Date },
-    lastUsedAt: { type: Date },
-    previousBody: { type: String },
-    previousUpdatedAt: { type: Date },
-  },
-  { collection: "skills", timestamps: true },
-);
-
-SkillSchema.index({ workspaceId: 1, name: 1 }, { unique: true });
-SkillSchema.index({ workspaceId: 1, suppressed: 1 });
-SkillSchema.index({ workspaceId: 1, entities: 1 });
-SkillSchema.index(
-  { name: "text", loadWhen: "text", body: "text" },
-  { name: "skill_text_search" },
-);
-
-export const Skill = mongoose.model<ISkill>("Skill", SkillSchema);
+// Skills are files in the workspace repo (apps.md §27); no model.
 
 /**
  * ConnectorDefinition — the derived index of `connectors/` in the workspace
@@ -4525,6 +4460,15 @@ export interface IDbtProject extends Document {
    * the state artifact for --defer / state:modified+ (Slim CI, later phase).
    */
   lastProdManifestKey?: string;
+  /**
+   * Set when `dbt/environments.yml` at main does not parse. The derived
+   * environments array is left as last-good; the file is never overwritten
+   * from Mongo.
+   */
+  environmentsInvalid?: {
+    reason: string;
+    at: Date;
+  };
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -4559,6 +4503,10 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     defaultEnvironment: { type: String, default: "dev" },
     prodEnvironment: { type: String },
     lastProdManifestKey: { type: String },
+    environmentsInvalid: {
+      reason: { type: String },
+      at: { type: Date },
+    },
     createdBy: { type: String, required: true },
   },
   { collection: "dbt_projects", timestamps: true },
@@ -4684,8 +4632,13 @@ export interface IDbtJob extends Document {
   name: string;
   /** Filename identity in dbt/jobs/<slug>.yml (apps.md §23). */
   slug?: string;
-  /** Blob sha of the job file this row mirrors (sync levelling). */
   sourceBlobSha?: string;
+  /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
+  definitionInvalid?: {
+    reason: string;
+    at: Date;
+    path?: string;
+  };
   /** Environment name from the project's environments list. */
   environment: string;
   /** Validated against the dbt command allowlist (api/src/dbt/commands.ts). */
@@ -4727,6 +4680,11 @@ const DbtJobSchema = new Schema<IDbtJob>(
     name: { type: String, required: true, trim: true },
     slug: { type: String },
     sourceBlobSha: { type: String },
+    definitionInvalid: {
+      reason: { type: String },
+      at: { type: Date },
+      path: { type: String },
+    },
     environment: { type: String, required: true },
     commands: { type: [String], default: [] },
     schedule: {
@@ -4822,6 +4780,20 @@ export interface IDbtRun extends Document {
    */
   deferToProduction?: boolean;
   /**
+   * `mako dbt run` from a laptop checkout: the run builds the tree at
+   * `baseSha` (a commit of the workspace repo) with the developer's local
+   * files laid over it — uncommitted edits included, never committed
+   * anywhere. The overlay itself is a JSON blob in the artifact store at
+   * `key`; without `baseSha` it is the whole dbt/ tree. Never set together
+   * with `gitBranch` / `workingTreeUserId`.
+   */
+  localOverlay?: {
+    key: string;
+    baseSha?: string;
+    files: number;
+    deletes: number;
+  };
+  /**
    * Pull-request CI context (trigger === "ci"). Drives the GitHub commit
    * status posted back to the PR head on completion.
    */
@@ -4843,6 +4815,13 @@ export interface IDbtRun extends Document {
   cancelledBy?: string;
   /** Capped, batch-written log lines (parsed from --log-format json). */
   logs: IDbtRunLogLine[];
+  /**
+   * Log lines EVER written, including those the cap has dropped from the
+   * front of `logs`: `logs[0]` is line number `logTotal - logs.length`. A
+   * follower's cursor is this absolute number, so it keeps working once the
+   * cap starts slicing. Absent on runs that predate it (= logs.length).
+   */
+  logTotal?: number;
   /** Parsed from run_results.json after each command. */
   stepResults: IDbtRunStepResult[];
   /** Structured bounded output for commands whose result is not run_results. */
@@ -4903,6 +4882,18 @@ const DbtRunSchema = new Schema<IDbtRun>(
     workingTreeUserId: { type: String },
     sourceBranch: { type: String },
     deferToProduction: { type: Boolean },
+    localOverlay: {
+      type: new Schema(
+        {
+          key: { type: String, required: true },
+          baseSha: { type: String },
+          files: { type: Number, required: true },
+          deletes: { type: Number, required: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     ci: {
       type: new Schema(
         {
@@ -4936,6 +4927,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
       ],
       default: [],
     },
+    logTotal: { type: Number },
     stepResults: {
       type: [
         new Schema<IDbtRunStepResult>(
@@ -5380,10 +5372,18 @@ export interface IAppProject extends Document {
   workspaceId: Types.ObjectId;
   title: string;
   /**
-   * Folder name under `apps/` in the workspace repo (§10 monorepo). Kebab,
-   * immutable, unique per workspace. Optional only for pre-migration docs.
+   * The app's own folder name — the last segment of `path`, and its URL
+   * handle. Not unique per workspace any more: `apps/sales/report` and
+   * `users/<id>/apps/report` may coexist. Optional only for pre-migration docs.
    */
   slug?: string;
+  /**
+   * Repo-relative folder the app lives in (`apps/sales/report`,
+   * `users/<id>/apps/scratch`). Maintained by the apps index sync from the
+   * tree at main; a move in git updates it here. Absent on legacy rows until
+   * the backfill migration, where it is `apps/<slug>`.
+   */
+  path?: string;
   description?: string;
   /** Same Google-style ACL model as v1 apps (utils/resource-acl.ts). */
   access: "private" | "workspace";
@@ -5405,6 +5405,19 @@ export interface IAppProject extends Document {
   /** When publishedSha was last repointed (publish or rollback). */
   publishedAt?: Date;
   /**
+   * Why the most recent deploy attempt did not go live — build output or
+   * the binding that could not be prepared. Cleared by the next successful
+   * repoint. This is what app_publish_status / app_build_log report when
+   * the publish sandbox is asleep, so diagnosing a stalled deploy needs
+   * neither a box nor bucket inspection.
+   */
+  lastDeployError?: {
+    sha: string;
+    stage: "bindings" | "build" | "publish";
+    message: string;
+    at: Date;
+  };
+  /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
    * protected. Same primitive dashboards and v1 apps use, so the management
    * routes and the /api/share/:token consumption side are shared verbatim.
@@ -5425,6 +5438,7 @@ const AppProjectSchema = new Schema<IAppProject>(
     },
     title: { type: String, required: true, trim: true },
     slug: { type: String, trim: true },
+    path: { type: String, trim: true },
     description: { type: String },
     access: {
       type: String,
@@ -5434,7 +5448,12 @@ const AppProjectSchema = new Schema<IAppProject>(
     workspaceRole: { type: String, enum: ["viewer", "editor"] },
     sharedWith: { type: [ResourceShareEntrySchema], default: undefined },
     owner_id: { type: String, index: true },
-    createdBy: { type: String, required: true },
+    // Empty when the row was materialized by a system actor (the push-deploy
+    // worker, an API key with no acting user) for a repo-imported folder:
+    // the app is ownerless until the first person acts on it
+    // (ensureProjectRow claims it). resource-acl falls back from owner_id to
+    // createdBy, so a sentinel here would become a permanent fake owner.
+    createdBy: { type: String, default: "" },
     defaultBranch: { type: String, default: "main" },
     cloudRepo: {
       type: new Schema(
@@ -5448,6 +5467,22 @@ const AppProjectSchema = new Schema<IAppProject>(
     },
     publishedSha: { type: String },
     publishedAt: { type: Date },
+    lastDeployError: {
+      type: new Schema(
+        {
+          sha: { type: String, required: true },
+          stage: {
+            type: String,
+            enum: ["bindings", "build", "publish"],
+            required: true,
+          },
+          message: { type: String, required: true },
+          at: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     publicShare: { type: PublicShareSchema, default: undefined },
     env: { type: [AppEnvVarSchema], default: undefined },
   },
@@ -5461,16 +5496,269 @@ AppProjectSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
 );
-// §10 monorepo: one folder per app in the workspace repo. Sparse until the
-// workspace-monorepo migration backfills slugs on legacy docs.
+// The folder is the identity's ADDRESS, not the identity (that is `_id`, which
+// the manifest carries). Two apps cannot share a path; two may share a slug
+// once folders nest, so the old unique slug index is dropped by the
+// app-folders migration and replaced by this one.
+// Partial, not sparse: a COMPOUND sparse index still indexes a row whose
+// `path` is missing (workspaceId is present), so two rows with the path
+// unset — mid-move, or orphaned state rows — would collide on `null`.
 AppProjectSchema.index(
-  { workspaceId: 1, slug: 1 },
-  { unique: true, sparse: true },
+  { workspaceId: 1, path: 1 },
+  { unique: true, partialFilterExpression: { path: { $exists: true } } },
 );
+AppProjectSchema.index({ workspaceId: 1, slug: 1 });
 
 export const AppProject = mongoose.model<IAppProject>(
   "AppProject",
   AppProjectSchema,
+);
+
+/**
+ * What Mako last said on GitHub about one app's deploy of one commit
+ * (deploy-commit-status). Keyed by the app's id, NOT its row: an app that
+ * only exists as a folder on main has no row until its first deploy, and
+ * its first commit must be resolvable all the same.
+ *
+ * `pending` is the only state anything but the deploy's own outcome may
+ * change, and only by compare-and-set: resolving a commit a cancelled run
+ * left pending must never overwrite the failure (or success) that run's
+ * own outcome already recorded.
+ */
+export type AppDeployCommitState =
+  | "pending"
+  | "success"
+  | "failure"
+  | "superseded";
+
+export interface IAppDeployCommitStatus extends Document {
+  workspaceId: Types.ObjectId;
+  appId: string;
+  sha: string;
+  state: AppDeployCommitState;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppDeployCommitStatusSchema = new Schema<IAppDeployCommitStatus>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    sha: { type: String, required: true },
+    state: {
+      type: String,
+      enum: ["pending", "success", "failure", "superseded"],
+      required: true,
+    },
+  },
+  { collection: "app_deploy_commit_statuses", timestamps: true },
+);
+
+AppDeployCommitStatusSchema.index(
+  { workspaceId: 1, appId: 1, sha: 1 },
+  { unique: true },
+);
+AppDeployCommitStatusSchema.index({ workspaceId: 1, appId: 1, state: 1 });
+
+export const AppDeployCommitStatus = mongoose.model<IAppDeployCommitStatus>(
+  "AppDeployCommitStatus",
+  AppDeployCommitStatusSchema,
+);
+
+// ---------------------------------------------------------------------------
+// Apps index — derived from the tree at main, rebuilt on every push
+// ---------------------------------------------------------------------------
+
+/**
+ * One row per app folder on `main`. Derived, disposable, rebuilt from git by
+ * `syncAppsIndexFromRepo`; nothing here is authoritative. Flat on purpose
+ * (string ids, no nested documents) so the Postgres move is a column copy.
+ * The sidebar, search, the agent's list and the binding scheduler read this
+ * instead of scanning the repo.
+ */
+export interface IAppIndexEntry extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  /** The app's identity (24 hex): manifest `id`, or derived from the path. */
+  appId: string;
+  /** Repo-relative folder: `apps/sales/report`, `users/<id>/apps/x`. */
+  path: string;
+  /** Last path segment — the URL handle. */
+  slug: string;
+  scope: "workspace" | "private";
+  /** Owner of the `users/<id>/apps` tree, for `private`. */
+  ownerId?: string;
+  /** git tree oid of the folder: equal ⇒ identical content ⇒ no rebuild. */
+  treeOid: string;
+  title: string;
+  description?: string;
+  /** Whether `mako.json` declares the id (false = derived from the path). */
+  hasManifestId: boolean;
+  /**
+   * Set when this folder declared an id another folder already holds — a
+   * copy that kept its source's manifest. The row is filed under a derived
+   * id instead and the UI offers to stamp a fresh one.
+   */
+  duplicateOf?: string;
+  /** Scheduled bindings, so the scheduler never opens the repo. */
+  schedules: Array<{ binding: string; cron: string; timezone?: string }>;
+  /** The main commit this row was built from. */
+  indexedSha: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    path: { type: String, required: true },
+    slug: { type: String, required: true },
+    scope: {
+      type: String,
+      enum: ["workspace", "private"],
+      required: true,
+    },
+    ownerId: { type: String },
+    treeOid: { type: String, required: true },
+    title: { type: String, required: true },
+    description: { type: String },
+    hasManifestId: { type: Boolean, required: true, default: false },
+    duplicateOf: { type: String },
+    schedules: {
+      type: [
+        new Schema(
+          {
+            binding: { type: String, required: true },
+            cron: { type: String, required: true },
+            timezone: { type: String },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    indexedSha: { type: String, required: true },
+  },
+  { collection: "app_index", timestamps: true },
+);
+
+// An app id is unique across workspaces (a copied manifest must not alias
+// another workspace's app); the per-workspace lookup index is plain.
+AppIndexEntrySchema.index({ appId: 1 }, { unique: true });
+AppIndexEntrySchema.index({ workspaceId: 1, appId: 1 });
+AppIndexEntrySchema.index({ workspaceId: 1, path: 1 }, { unique: true });
+AppIndexEntrySchema.index({ workspaceId: 1, slug: 1 });
+
+export const AppIndexEntry = mongoose.model<IAppIndexEntry>(
+  "AppIndexEntry",
+  AppIndexEntrySchema,
+);
+
+/**
+ * Which commit of main a workspace's app index reflects, plus the folders
+ * that exist in its trees — including empty ones held by a `.gitkeep`, which
+ * no app row would otherwise reveal.
+ */
+export interface IAppIndexHead extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  sha: string;
+  schemaVersion?: number;
+  /** Every folder in the app trees, as repo-relative paths (`apps/sales`). */
+  folders: string[];
+  updatedAt: Date;
+}
+
+const AppIndexHeadSchema = new Schema<IAppIndexHead>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+      unique: true,
+    },
+    sha: { type: String, required: true },
+    schemaVersion: { type: Number },
+    folders: { type: [String], default: [] },
+  },
+  { collection: "app_index_heads", timestamps: true },
+);
+
+export const AppIndexHead = mongoose.model<IAppIndexHead>(
+  "AppIndexHead",
+  AppIndexHeadSchema,
+);
+
+// ---------------------------------------------------------------------------
+// Favourites — one person's bookmark tree, never a location
+// ---------------------------------------------------------------------------
+
+export type FavouriteKind = "app" | "console" | "notebook" | "dashboard";
+
+/**
+ * Browser-bookmark shape (Firefox's `moz_bookmarks`): folders and items are
+ * rows in one self-referential table, so nesting, reordering and "move into
+ * folder" are each one update. An item points at an entity by kind + id and
+ * carries nothing of its own — a favourite that no longer resolves is simply
+ * not shown. Starring never moves the entity: the entity's place is its
+ * folder in git; this is a view over it.
+ */
+export interface IFavourite extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  userId: string;
+  /** Parent folder row, or null at the root. */
+  parentId: string | null;
+  type: "folder" | "item";
+  /** Folders only. */
+  title?: string;
+  /** Items only. */
+  kind?: FavouriteKind;
+  refId?: string;
+  /** Order among siblings. */
+  position: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const FavouriteSchema = new Schema<IFavourite>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    parentId: { type: String, default: null },
+    type: { type: String, enum: ["folder", "item"], required: true },
+    title: { type: String, trim: true },
+    kind: { type: String, enum: ["app", "console", "notebook", "dashboard"] },
+    refId: { type: String },
+    position: { type: Number, required: true, default: 0 },
+  },
+  { collection: "favourites", timestamps: true },
+);
+
+FavouriteSchema.index({ workspaceId: 1, userId: 1, parentId: 1, position: 1 });
+// An entity is in one place in a person's favourites, so "unstar" is
+// unambiguous and the star toggle has one row to look at.
+FavouriteSchema.index(
+  { workspaceId: 1, userId: 1, kind: 1, refId: 1 },
+  { unique: true, partialFilterExpression: { type: "item" } },
+);
+
+export const Favourite = mongoose.model<IFavourite>(
+  "Favourite",
+  FavouriteSchema,
 );
 
 /**

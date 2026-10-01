@@ -27,17 +27,28 @@ export const ReasoningDisplay = React.memo(
   ({
     reasoningText,
     isStreaming,
-    paletteMode: _paletteMode,
     /**
      * Local ACP only: keep empty Thinking placeholders label-only. Default
      * in-app chat keeps the historical auto-expand-while-streaming behavior.
      */
     collapseEmptyWhileStreaming = false,
+    /**
+     * Tightens the vertical margins so a run of consecutive thinking blocks
+     * reads as ONE stack instead of several floating rows. A plain boolean, so
+     * the default shallow `React.memo` comparison stays correct.
+     */
+    clustered = false,
   }: {
     reasoningText: string;
     isStreaming: boolean;
+    /**
+     * Load-bearing in `chat-message-comparator.ts` (a theme toggle must
+     * re-render the row) even though this component reads its colors from CSS
+     * custom properties and never uses the value directly.
+     */
     paletteMode: "light" | "dark";
     collapseEmptyWhileStreaming?: boolean;
+    clustered?: boolean;
   }) => {
     const [userToggled, setUserToggled] = React.useState(false);
     const [userOpen, setUserOpen] = React.useState(false);
@@ -109,11 +120,11 @@ export const ReasoningDisplay = React.memo(
     } else if (wasLiveRef.current) {
       label = `Thought for ${elapsedSeconds || "<1"}s`;
     } else {
-      label = "Thinking process";
+      label = "Thought";
     }
 
     return (
-      <Box sx={{ my: 0.5 }}>
+      <Box sx={{ my: clustered ? 0.125 : 0.5 }}>
         <ButtonBase
           onClick={handleToggle}
           aria-expanded={isOpen}

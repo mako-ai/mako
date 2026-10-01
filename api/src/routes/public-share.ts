@@ -662,6 +662,8 @@ async function serveSharedApp(c: Context): Promise<Response> {
     sha,
     assetPath,
     private: true,
+    // Anonymous: `__data/viewer.json` is null — there is nobody to describe.
+    viewer: null,
   });
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }

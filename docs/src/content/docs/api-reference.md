@@ -46,10 +46,12 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 | `GET`  | `/api/workspaces/:id` | Get workspace details  |
 | `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`dashboardRefreshConcurrency`, `appBindingRefreshConcurrency`; defaults 2, clamped to the per-workspace max) |
 | `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits |
+| `GET`  | `/api/workspaces/:id/auto-join` | Get domain auto-join settings (email domains that auto-join on first sign-in, and the role granted: `member` \| `viewer`) |
+| `PUT`  | `/api/workspaces/:id/auto-join` | Set domain auto-join (`{ domains: string[] (max 20), role?: "member" \| "viewer" }`, default role `viewer`) |
 
 ## Database Connections
 
-These endpoints manage connections to user databases (PostgreSQL, MySQL, MongoDB, BigQuery, ClickHouse, Redshift, SQLite, Cloudflare D1/KV) that Mako queries on the user's behalf. For SaaS data-source connectors (Stripe, Close, PostHog, GraphQL, REST, BigQuery sync), see [SaaS Connectors](/connectors/).
+These endpoints manage connections to user databases (PostgreSQL, MySQL, MongoDB, BigQuery, ClickHouse, Redshift, SQLite, Cloudflare D1/KV) that Mako queries on the user's behalf. For SaaS connectors (Stripe, Close, PostHog, GraphQL, REST, BigQuery sync), see [SaaS Connectors](/connectors/).
 
 | Method   | Endpoint                                              | Description                                                                |
 | -------- | ----------------------------------------------------- | -------------------------------------------------------------------------- |
@@ -126,23 +128,25 @@ See [Console](/console/) for full API documentation with examples. Scheduled que
 
 ## Source Connections
 
-A *connector* is code (Stripe, Close, PostHog, a workspace-authored `ws:` connector, …); a *source connection* is a credential configured with one — what a [flow](#flows) reads from. These routes manage source connections; the router keeps its historical `/connectors` path. Database connections are under [Database Connections](#database-connections). See [SaaS Connectors](/connectors/).
+A *connector* is code (Stripe, Close, PostHog, a workspace-authored `ws:` connector, …); a *source connection* is a credential configured with one — what a [flow](#flows) reads from. These routes manage source connections. The primary path is `/connections/sources`; `/connectors` is the pre-2026-09 alias and still works. Database connections are under [Database Connections](#database-connections). See [SaaS Connectors](/connectors/).
 
 | Method   | Endpoint                                              | Description                                                                |
 | -------- | ----------------------------------------------------- | -------------------------------------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/connectors`                     | List source connections (credentials masked)                               |
-| `POST`   | `/api/workspaces/:wid/connectors`                     | Add a source connection (secret fields encrypted per the connector's schema) |
-| `GET`    | `/api/workspaces/:wid/connectors/:id`                 | Get one source connection                                                  |
-| `PUT`    | `/api/workspaces/:wid/connectors/:id`                 | Update a source connection                                                 |
-| `DELETE` | `/api/workspaces/:wid/connectors/:id`                 | Remove a source connection                                                 |
-| `POST`   | `/api/workspaces/:wid/connectors/:id/test`            | Test the credential                                                        |
-| `POST`   | `/api/workspaces/:wid/connectors/:id/probe`           | Probe live: test the credential and read one bounded page of an entity     |
-| `GET`    | `/api/workspaces/:wid/connectors/:id/entities`        | Entities the connection's connector offers                                 |
-| `PATCH`  | `/api/workspaces/:wid/connectors/:id/enable`          | Enable or disable                                                          |
+| `GET`    | `/api/workspaces/:wid/connections/sources`            | List source connections (credentials masked)                               |
+| `POST`   | `/api/workspaces/:wid/connections/sources`            | Add a source connection (secret fields encrypted per the connector's schema) |
+| `GET`    | `/api/workspaces/:wid/connections/sources/:id`        | Get one source connection                                                  |
+| `PUT`    | `/api/workspaces/:wid/connections/sources/:id`        | Update a source connection                                                 |
+| `DELETE` | `/api/workspaces/:wid/connections/sources/:id`        | Remove a source connection                                                 |
+| `POST`   | `/api/workspaces/:wid/connections/sources/:id/test`   | Test the credential                                                        |
+| `POST`   | `/api/workspaces/:wid/connections/sources/:id/probe`  | Probe live: test the credential and read one bounded page of an entity     |
+| `GET`    | `/api/workspaces/:wid/connections/sources/:id/entities` | Entities the connection's connector offers                               |
+| `PATCH`  | `/api/workspaces/:wid/connections/sources/:id/enable` | Enable or disable                                                          |
+
+The same methods are also served at `/api/workspaces/:wid/connectors` (and `/connectors/:id/…`) as a deprecated alias.
 
 ### Probe Request
 
-`POST …/connectors/:id/probe` takes an optional JSON body — `entity` (omit to test the credential only), `limit` (1–200, default 20), `fields` (top-level fields to keep), `since` (ISO 8601 instant, honoured where the connector can) — and answers `{ success, data: { connection, check, entity?, durationMs } }`. `entity` carries `records`, `schema`, `count`, `received`, `truncated`, `hasMore` and `logs`. One API page is read and nothing is written; credential values are scrubbed from every string in the result. Errors carry a `code` (`invalid_input`, `not_found`, `unknown_entity`, `timeout`, `connector_unavailable`). Requires a browser session or a legacy (unscoped) API key: scoped MCP keys stay MCP-only, and reach the same probe through the `probe_connection` tool.
+`POST …/connections/sources/:id/probe` (or the legacy `POST …/connectors/:id/probe`) takes an optional JSON body — `entity` (omit to test the credential only), `limit` (1–200, default 20), `fields` (top-level fields to keep), `since` (ISO 8601 instant, honoured where the connector can) — and answers `{ success, data: { connection, check, entity?, durationMs } }`. `entity` carries `records`, `schema`, `count`, `received`, `truncated`, `hasMore` and `logs`. One API page is read and nothing is written; credential values are scrubbed from every string in the result. Errors carry a `code` (`invalid_input`, `not_found`, `unknown_entity`, `timeout`, `connector_unavailable`). Requires a browser session or a legacy (unscoped) API key: scoped MCP keys stay MCP-only, and reach the same probe through the `probe_connection` tool.
 
 ## Flows
 
@@ -358,9 +362,11 @@ Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps 
 | `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:name/materialize`    | Build/rebuild a binding's Parquet artifact                 |
 | `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:name/artifact`       | Stream the materialized Parquet artifact                   |
 | `POST`   | `/api/workspaces/:wid/apps/:id/publish` / `…/rollback`        | Build & publish a `main` commit / repoint the deployment   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/publish-state`                | Read the live commit, publication time, pending app commits, and last deploy error |
 | `POST`   | `/api/workspaces/:wid/apps/:id/preview` / `…/dev-preview`     | Published-build preview / live dev server preview          |
 | `POST`   | `/api/workspaces/:wid/apps/:id/public-share`                  | Manage the anonymous public link (also `PATCH`/`DELETE`)   |
 | `GET`    | `/api/workspaces/:wid/apps/:id/sandbox`                       | Sandbox status (also `POST …/sandbox/recycle`)             |
+| `GET`    | `/api/workspaces/:wid/apps/:id/viewer`                        | Resolve the caller's viewer identity (what `useViewer()` sees): id, email, workspace role, app role. Editors may pass `?as=<email>` to preview another member's resolution |
 
 ## Notebooks
 

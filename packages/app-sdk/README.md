@@ -45,6 +45,48 @@ or 502 with the query's error.
 Data arrives from `__data/<name>.parquet`, relative to the page — the same
 path in Mako's sandbox, in a published app, and on a laptop.
 
+### Who is looking: `useViewer()`
+
+```tsx
+import { useViewer } from "@makoai/app-sdk";
+
+const { viewer, loading } = useViewer();
+// viewer === null       → anonymous share link (or still loading)
+// viewer.email          → "sam@acme.com"
+// viewer.workspace.role → "owner" | "admin" | "member" | "viewer" | null
+// viewer.app.role       → "owner" | "editor" | "viewer" | null
+```
+
+Mako resolves the viewer server-side from the session or the signed view
+token — the page cannot forge it — and reports only what the platform
+knows: identity, the workspace and the person's **access** role in it, and
+their role on this app. There is no job title, team or country in the
+platform, on purpose: those are your data. Put a roster in a binding and
+join on the email:
+
+```sql
+-- bindings/viewers.sql
+SELECT lower(email) AS email, team, country, is_lead FROM hr.people
+```
+
+```tsx
+const { viewer } = useViewer();
+const me = useDuckDB(
+  viewer ? `select * from viewers where email = '${viewer.email.replace(/'/g, "''")}'` : "select 1 where false",
+);
+const board = useDuckDB(
+  me.data?.[0]?.is_lead
+    ? "select * from pipeline"
+    : `select * from pipeline where team = '${me.data?.[0]?.team ?? ""}'`,
+);
+```
+
+Keep the roster binding to the columns the app needs for its logic: every
+binding the app can read is downloaded whole into the viewer's browser, so
+this shapes the UI rather than enforcing access. Who may *open* the app is
+the app's access setting in Mako; server-side row filtering is a follow-up
+on the same identity (apps.md §28).
+
 ## In `vite.config.ts`
 
 ```ts
@@ -54,13 +96,46 @@ export default defineConfig({ plugins: [react(), makoData()] });
 ```
 
 `makoData()` answers `__data/index.json` (the app's `bindings/*.sql`) and
-`__data/<name>.parquet` during `vite dev` by streaming each binding's
-materialized artifact from the Mako API — a binding that was never
-materialized is built on first request, and `POST __data/<name>/refresh`
-(the SDK's `refresh()`) rebuilds one on demand. Results are cached under
-`node_modules/.mako-data/` for five minutes (`?refresh` bypasses; a stale
-copy is served if the API is unreachable). It is `apply: "serve"` only —
+`__data/<name>.parquet` during `vite dev` from the Mako API, and what it asks
+for is **your local binding file**: it sends the text of
+`bindings/<name>.sql` and gets back the parquet of exactly that query, run
+read-only through the workspace connection its front matter names. When the
+text is the committed binding, that is the app's stored artifact (built on
+first request if it never was); when you have edited it, Mako builds a draft
+from your text and hands it back without storing it — nobody else, and no
+published viewer, ever sees uncommitted SQL. Building needs edit access to the
+app; read-only members get committed artifacts. `POST __data/<name>/refresh`
+(the SDK's `refresh()`) rebuilds from the local text on demand.
+
+Builds run as jobs: the plugin asks for one (`async`), gets a job id back at
+once, and polls it until the parquet is ready — so a query that runs for
+minutes is waited for instead of failing when a proxy cuts the request at
+100 s. `pollIntervalMs` / `buildTimeoutMs` tune the wait (1 s, 30 min).
+
+Results are cached under `node_modules/.mako-data/` for five minutes
+(`revalidateMs`; `?refresh` bypasses), next to a fingerprint of the text they
+were built from: after an edit the cache is never served, however long
+`revalidateMs` is, and while the API is unreachable a stale copy is served
+only if it was built from the same text. It is `apply: "serve"` only —
 production builds never load it.
+
+### dbt models you are still building
+
+A binding linked to dbt (`-- dbt_project: <id>`) writes `{{ dbt_schema }}`,
+which renders to the production schema. To preview models you built into
+your own dbt environment, point the dev server at it:
+
+```ts
+makoData({ dbtEnvironment: "joan" }) // or MAKO_DBT_ENV=joan in the repo's .env
+```
+
+The environment must exist in the linked dbt project (`dbt/environments.yml`),
+and a personal environment (`owner_user_id`) renders only for its owner.
+These builds are drafts too: never stored, never what a published app reads.
+
+It also answers `__data/viewer.json` (you, as Mako sees you), and
+`MAKO_VIEWER_AS=<email>` — in the environment or the repo's `.env` —
+previews the app as that member instead (editors of the app only).
 
 Credentials, in order: `MAKO_API_URL` / `MAKO_API_KEY` in the environment,
 then in the repo-root `.env`. The workspace id comes from

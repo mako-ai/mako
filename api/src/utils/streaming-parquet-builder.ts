@@ -337,7 +337,20 @@ export async function buildParquetFromBatches(
     await options.streamBatches(insertBatch);
 
     if (!tableCreated) {
-      await connection.run(`CREATE TABLE _data (_empty VARCHAR)`);
+      // Zero rows: the query's schema (from the probe) still defines the
+      // artifact, so readers that union partitions positionally or select
+      // named columns see the same shape as a non-empty build. `_empty` is
+      // only for a query whose schema nobody could tell us.
+      const schema = resolveColumnSchema(options.fields ?? [], []);
+      const colDefs = schema.columns.map(
+        col =>
+          `${escapeIdentifier(col)} ${schema.typeMap.get(col) ?? "VARCHAR"}`,
+      );
+      await connection.run(
+        colDefs.length > 0
+          ? `CREATE TABLE _data (${colDefs.join(", ")})`
+          : `CREATE TABLE _data (_empty VARCHAR)`,
+      );
     }
 
     // SNAPPY, not ZSTD: artifacts are read by arbitrary in-browser consumers

@@ -18,7 +18,7 @@
 import { Types } from "mongoose";
 
 import {
-  Connector as DataSource,
+  SourceConnection,
   DatabaseConnection,
   Flow,
   type IFlow,
@@ -47,8 +47,10 @@ export async function deriveFlowDisplayName(
       sourceName =
         sourceDb?.name || flow.databaseSource.connectionId.toString();
     } else if (flow.dataSourceId) {
-      const dataSource = await DataSource.findById(flow.dataSourceId);
-      sourceName = dataSource?.name || flow.dataSourceId.toString();
+      const sourceConnection = await SourceConnection.findById(
+        flow.dataSourceId,
+      );
+      sourceName = sourceConnection?.name || flow.dataSourceId.toString();
     } else {
       sourceName = "Unknown Source";
     }
@@ -108,6 +110,12 @@ export function slugifyFlowName(name: string): string {
 export async function reserveFlowSlug(
   workspaceId: Types.ObjectId | string,
   name: string,
+  /**
+   * Slugs already taken by files at main that have no row yet. Mongo rows
+   * alone are not the identity space: a name that slugifies onto a git-only
+   * `flows/<slug>.yml` would otherwise overwrite that file under a second id.
+   */
+  takenAtMain: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const wsId =
     typeof workspaceId === "string"
@@ -116,6 +124,7 @@ export async function reserveFlowSlug(
   return reserveSlug(
     slugifyFlowName(name),
     async candidate =>
+      takenAtMain.has(candidate) ||
       Boolean(await Flow.exists({ workspaceId: wsId, slug: candidate })),
     { label: `flow "${name}"` },
   );

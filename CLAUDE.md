@@ -57,8 +57,16 @@ pnpm api:build             # Build backend only (TypeScript compilation)
 pnpm lint:all              # Lint all packages
 pnpm lint:fix:all          # Auto-fix linting issues across workspace
 pnpm openapi:sync          # Regenerate OpenAPI spec + typed client (~3s) — REQUIRED after any api route/schema change; commit the outputs
-
+pnpm --filter api run test:dbt   # vitest.config.ts: src/dbt/**, github integration, dbt tools (whole config, not single files)
+pnpm --filter api run test:apps  # vitest.apps.config.ts: apps, consoles, skills, flows, notebooks
 ```
+
+Hooks: `pre-commit` runs lint-staged (eslint, prettier, the test-coverage
+guard, `openapi:sync` on route changes). `pre-push` runs BOTH API vitest
+configs above (~2 min); bypass deliberately with `SKIP_PREPUSH_TESTS=1`.
+Run the whole config, never a single file: a test's location decides which
+config runs it, and CI's "API tests (tsx + vitest)" job runs all of them.
+
 
 ### Data Operations
 

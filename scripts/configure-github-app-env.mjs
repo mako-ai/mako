@@ -4,7 +4,7 @@
  * Usage:
  *   node scripts/configure-github-app-env.mjs \
  *     --app-id 123456 \
- *     --slug mako-transforms-jonas-dev \
+ *     --slug <github-app-slug> \
  *     --pem ~/.ssh/mako-github-app.pem \
  *     --webhook-secret "$(openssl rand -hex 24)"
  */

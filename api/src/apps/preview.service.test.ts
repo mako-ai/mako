@@ -93,3 +93,61 @@ describe("published preview grants are stateless", () => {
     expect(resolvePreviewGrant("nope")).toBeNull();
   });
 });
+
+describe("grants carry the viewer they were minted for (apps.md §28)", () => {
+  beforeEach(() => {
+    process.env.SESSION_SECRET = "test-secret-0123456789abcdef";
+  });
+  afterEach(() => {
+    delete process.env.SESSION_SECRET;
+  });
+
+  it("round-trips the viewer through the signed token, and stays viewer-less when minted without one", () => {
+    const viewer = { id: "u1", email: "lead@acme.com" };
+    const grant = mintPublishedGrant({
+      workspaceId: ws,
+      projectId: project,
+      sha,
+      viewer,
+    });
+    expect(grant.viewer).toEqual(viewer);
+    expect(resolvePreviewGrant(grant.token)?.viewer).toEqual(viewer);
+
+    const anonymous = mintPublishedGrant({
+      workspaceId: ws,
+      projectId: project,
+      sha,
+    });
+    expect(anonymous.viewer).toBeUndefined();
+    expect(resolvePreviewGrant(anonymous.token)?.viewer).toBeUndefined();
+  });
+
+  it("rejects a token whose viewer email was swapped", () => {
+    const grant = mintPublishedGrant({
+      workspaceId: ws,
+      projectId: project,
+      sha,
+      viewer: { id: "u1", email: "rep@acme.com" },
+    });
+    const [prefix, body, sig] = grant.token.split(".");
+    const forged = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    forged.e = "lead@acme.com";
+    const forgedBody = Buffer.from(JSON.stringify(forged)).toString(
+      "base64url",
+    );
+    expect(resolvePreviewGrant(`${prefix}.${forgedBody}.${sig}`)).toBeNull();
+  });
+
+  it("keeps the builder's identity on a static preview grant", () => {
+    const grant = mintPreviewGrant({
+      workspaceId: ws,
+      projectId: project,
+      rootDir: "/tmp/preview-viewer-test",
+      viewer: { id: "u1", email: "dev@acme.com" },
+    });
+    expect(resolvePreviewGrant(grant.token)?.viewer).toEqual({
+      id: "u1",
+      email: "dev@acme.com",
+    });
+  });
+});

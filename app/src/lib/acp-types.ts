@@ -106,6 +106,11 @@ export interface AcpSessionInfo {
   busy: boolean;
   /** True when Mako `/api/mcp` was attached on session/new. */
   makoMcpAttached?: boolean;
+  /**
+   * ISO time this session's Mako MCP Bearer expires. Newer Local Agents echo
+   * it back; Chat also keeps it locally for older agents.
+   */
+  makoMcpTokenExpiresAt?: string;
   currentModel?: string | null;
   availableModels?: AcpModelChoice[];
 }

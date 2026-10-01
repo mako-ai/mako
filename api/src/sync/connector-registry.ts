@@ -1,9 +1,9 @@
-import { DataSourceConfig } from "./database-data-source-manager";
+import { SourceConnectionConfig } from "./database-data-source-manager";
 import { BaseConnector } from "../connectors/base/BaseConnector";
 import * as fs from "fs";
 import * as path from "path";
 import { loggers } from "../logging";
-import type { IConnector } from "../database/workspace-schema";
+import type { ISourceConnection } from "../database/workspace-schema";
 import {
   isWorkspaceConnectorType,
   SandboxedConnector,
@@ -26,23 +26,25 @@ interface ConnectorRegistryEntry {
 }
 
 /**
- * The manager's shape -> the shape every connector is constructed from.
+ * The manager's shape → the shape every connector is constructed from.
  *
- * `DataSourceConfig` calls the credential `connection`; a connector reads it
- * as `config`. One function does the mapping for both the built-in and the
- * workspace branch on purpose: when they each did it themselves, the
+ * `SourceConnectionConfig` calls the credential `connection`; a connector
+ * reads it as `config`. One function does the mapping for both the built-in
+ * and the workspace branch on purpose: when they each did it themselves, the
  * workspace branch handed the raw row straight to `SandboxedConnector`, which
  * then found no `config` and no `workspaceId` and could not run at all.
  */
-function toConnectorDataSource(dataSource: DataSourceConfig): IConnector {
+function asSourceConnection(
+  connection: SourceConnectionConfig,
+): ISourceConnection {
   return {
-    _id: dataSource.id,
-    name: dataSource.name,
-    type: dataSource.type,
-    config: dataSource.connection,
-    settings: dataSource.settings,
-    workspaceId: dataSource.workspaceId,
-  } as unknown as IConnector;
+    _id: connection.id,
+    name: connection.name,
+    type: connection.type,
+    config: connection.connection,
+    settings: connection.settings,
+    workspaceId: connection.workspaceId,
+  } as unknown as ISourceConnection;
 }
 
 /**
@@ -194,21 +196,19 @@ class SyncConnectorRegistry {
   }
 
   /**
-   * Get a connector instance for a data source
+   * Instantiate connector *code* for a source *connection* (credential).
    */
-  async getConnector(
-    dataSource: DataSourceConfig,
+  async getConnectorFor(
+    connection: SourceConnectionConfig,
   ): Promise<BaseConnector | null> {
-    if (isWorkspaceConnectorType(dataSource.type)) {
-      if (!dataSource.workspaceId) {
+    if (isWorkspaceConnectorType(connection.type)) {
+      if (!connection.workspaceId) {
         throw new Error(
-          `Resolving the connector for "${dataSource.type}" needs a workspaceId on the data source; ` +
+          `Resolving the connector for "${connection.type}" needs a workspaceId on the connection; ` +
             `a workspace connector cannot be resolved globally.`,
         );
       }
-      const connector = new SandboxedConnector(
-        toConnectorDataSource(dataSource),
-      );
+      const connector = new SandboxedConnector(asSourceConnection(connection));
       // Load the index row before handing the connector out. This path is
       // async and its callers go on to ask `getAvailableEntities()`, which is
       // synchronous by contract and would otherwise answer "no entities" for a
@@ -217,18 +217,18 @@ class SyncConnectorRegistry {
       return connector;
     }
 
-    let entry = this.connectors.get(dataSource.type);
+    let entry = this.connectors.get(connection.type);
     if (!entry) {
       // Attempt lazy load by type name (directory)
       try {
-        const mod = await import(`../connectors/${dataSource.type}`);
+        const mod = await import(`../connectors/${connection.type}`);
         const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
         if (exportKey) {
           const connectorClass = (mod as any)[exportKey];
           let metadata = {
-            name: dataSource.type,
+            name: connection.type,
             version: "1.0.0",
-            description: `${dataSource.type} connector`,
+            description: `${connection.type} connector`,
             supportedEntities: [],
           };
           try {
@@ -239,11 +239,11 @@ class SyncConnectorRegistry {
           } catch {
             // ignore metadata fetch errors
           }
-          entry = { type: dataSource.type, connectorClass, metadata };
+          entry = { type: connection.type, connectorClass, metadata };
           this.register(entry);
         }
       } catch {
-        logger.error("Unknown connector type", { type: dataSource.type });
+        logger.error("Unknown connector type", { type: connection.type });
         return null;
       }
     }
@@ -251,18 +251,18 @@ class SyncConnectorRegistry {
     // If somehow no class yet, try to import by convention
     if (!entry || !entry.connectorClass) {
       try {
-        const mod = await import(`../connectors/${dataSource.type}`);
+        const mod = await import(`../connectors/${connection.type}`);
         const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
         if (exportKey) {
           const klass = (mod as any)[exportKey];
           if (!entry) {
             entry = {
-              type: dataSource.type,
+              type: connection.type,
               connectorClass: klass,
               metadata: {
-                name: dataSource.type,
+                name: connection.type,
                 version: "1.0.0",
-                description: `${dataSource.type} connector`,
+                description: `${connection.type} connector`,
                 supportedEntities: [],
               },
             };
@@ -275,14 +275,21 @@ class SyncConnectorRegistry {
         }
       } catch (error) {
         logger.error("Failed to load connector", {
-          type: dataSource.type,
+          type: connection.type,
           error,
         });
         return null;
       }
     }
 
-    return new entry.connectorClass(toConnectorDataSource(dataSource));
+    return new entry.connectorClass(asSourceConnection(connection));
+  }
+
+  /** @deprecated use getConnectorFor */
+  async getConnector(
+    dataSource: SourceConnectionConfig,
+  ): Promise<BaseConnector | null> {
+    return this.getConnectorFor(dataSource);
   }
 
   /**

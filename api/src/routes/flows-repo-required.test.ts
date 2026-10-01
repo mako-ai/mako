@@ -88,11 +88,10 @@ assert.ok(
   `expected at least 7 mirroring flow routes, found ${mirroring} — if routes were removed, lower this deliberately`,
 );
 
-// The gate must stay env-gated like every other §17 gate, so a workspace that
-// has not adopted a repo is unaffected until the flag is set for it.
+// The gate requires a local git repo regardless of the connected-mirror flag.
 assert.ok(
-  /function assertFlowRepo[\s\S]*?appsRequireConnectedRepo\(\)/.test(flows),
-  "assertFlowRepo must short-circuit on appsRequireConnectedRepo() — an unflagged workspace must not start failing flow writes",
+  /function assertFlowRepo[\s\S]*?requireWorkspaceRepo\(/.test(flows),
+  "assertFlowRepo must call requireWorkspaceRepo — a workspace without git must not write Mongo-only flows",
 );
 
 console.log(

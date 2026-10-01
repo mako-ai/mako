@@ -90,7 +90,7 @@ export async function validateFlowFile(input: {
 
   // ---- referential: the ids must exist, in THIS workspace ----------------
   if (file.source.type === "connector") {
-    const id = file.source.connectorId;
+    const id = file.source.connectionId;
     if (!id) {
       add(
         "`source.connection_id:` is required for a connector source (the id of a source connection from list_connections)",

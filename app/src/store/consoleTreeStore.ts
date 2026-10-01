@@ -1,4 +1,4 @@
-import { api, unwrapBody } from "../api";
+import { api, unwrapBody, ApiError } from "../api";
 import {
   createResourceTreeStore,
   type ResourceTreeEntry,
@@ -87,17 +87,27 @@ export const useConsoleTreeStore = createResourceTreeStore<
   resourceName: "console",
   endpoints: {
     fetch: async workspaceId => {
-      const data = unwrapBody(
-        await api.GET(base, { params: { path: { workspaceId } } }),
-      ) as {
-        tree?: ConsoleEntry[];
-        myConsoles?: ConsoleEntry[];
-        sharedWithWorkspace?: ConsoleEntry[];
-      };
-      return {
-        my: data.myConsoles ?? data.tree ?? [],
-        workspace: data.sharedWithWorkspace ?? [],
-      };
+      try {
+        const data = unwrapBody(
+          await api.GET(base, { params: { path: { workspaceId } } }),
+        ) as {
+          tree?: ConsoleEntry[];
+          myConsoles?: ConsoleEntry[];
+          sharedWithWorkspace?: ConsoleEntry[];
+        };
+        return {
+          my: data.myConsoles ?? data.tree ?? [],
+          workspace: data.sharedWithWorkspace ?? [],
+        };
+      } catch (error) {
+        // Writes 412 without GitHub; GET/list is an empty explorer (disconnect
+        // or never linked). Keeping the previous tree left the sidebar
+        // populated after unlink.
+        if (error instanceof ApiError && error.status === 412) {
+          return { my: [], workspace: [] };
+        }
+        throw error;
+      }
     },
     moveItem: async (workspaceId, id, folderId, access) =>
       ok(

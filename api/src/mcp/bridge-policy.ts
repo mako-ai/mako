@@ -152,6 +152,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_build_log: bridge(),
   app_commit: bridge(),
   app_create_app: bridge(),
+  app_move_app: bridge(),
   app_dev_log: bridge(),
   app_edit_file: bridge(),
   app_glob: bridge(),
@@ -168,6 +169,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_write_file: bridge(),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
+  get_mcp_capabilities: mcpOnly(),
 
   // ── MCP-only ChatGPT connector contract (chatgpt-connector-tools.ts) ──
   // ChatGPT only accepts an MCP server as a chat/deep-research connector

@@ -8,7 +8,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -25,6 +33,7 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
+  initRepo,
   listTree,
   log,
   readBlob,
@@ -39,11 +48,16 @@ import {
   consoleFileVersions,
   consoleHistory,
   deriveConsoleDescription,
+  listConsoleDefinitionsAtMain,
   projectSavedConsole,
   restoreConsoleTo,
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
-import { ConsoleManager } from "../utils/console-manager";
+import { ConsoleManager, type ConsoleFile } from "../utils/console-manager";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -74,6 +88,8 @@ beforeEach(async () => {
   await ConsoleFolder.deleteMany({});
   await EntityVersion.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function fileAt(rel: string): Promise<string | null> {
@@ -315,6 +331,80 @@ describe("write-through", () => {
   });
 });
 
+describe("sync hardening", () => {
+  it("one file that fails to reconcile does not skip the files after it or the deletion pass", async () => {
+    const a = await manager.saveConsole(
+      "Finance/aaa",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const b = await manager.saveConsole(
+      "Finance/bbb",
+      "SELECT 2",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const doomed = await manager.saveConsole(
+      "Finance/ccc",
+      "SELECT 3",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const edit = (n: number) =>
+      serializeConsoleFile({
+        name: "x",
+        language: "sql",
+        code: `SELECT ${n} -- laptop`,
+      });
+    await externalCommit(
+      {
+        "consoles/Finance/aaa.sql": edit(10),
+        "consoles/Finance/bbb.sql": edit(20),
+      },
+      ["consoles/Finance/ccc.sql"],
+    );
+    // The first row write throws (a value the schema cannot cast, a race,
+    // any Mongo error); it used to escape the loop.
+    const original = SavedConsole.updateOne.bind(SavedConsole);
+    let failed = false;
+    const spy = vi.spyOn(SavedConsole, "updateOne").mockImplementation(((
+      ...args: Parameters<typeof original>
+    ) => {
+      const filter = args[0] as { _id?: unknown };
+      if (!failed && String(filter?._id) === String(a._id)) {
+        failed = true;
+        throw new Error("simulated cast failure");
+      }
+      return original(...args);
+    }) as typeof SavedConsole.updateOne);
+    try {
+      const stats = await syncConsolesIndexFromRepo(WS, USER);
+      expect(stats.deleted).toBe(1);
+      expect(failed).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await SavedConsole.findById(a._id))?.code).toBe("SELECT 1");
+    expect((await SavedConsole.findById(b._id))?.code).toBe(
+      "SELECT 20 -- laptop",
+    );
+    expect((await SavedConsole.findById(doomed._id))?.is_deleted).toBe(true);
+  });
+});
+
 describe("sync from repo", () => {
   it("an external edit reaches the row; unchanged blobs are skipped", async () => {
     const saved = await manager.saveConsole(
@@ -445,8 +535,6 @@ describe("sync from repo", () => {
       path: "consoles/legacy.sql",
       sourceBlobSha: "x",
     });
-    const { initRepo } = await import("./repository.service");
-    await initRepo(repoDirFor(WS), { "README.md": "x\n" });
     expect(await syncConsolesIndexFromRepo(WS, USER)).toBeNull();
     expect(
       (await SavedConsole.findOne({ name: "legacy" }))?.is_deleted,
@@ -725,6 +813,147 @@ describe("history — the apps surface for a console", () => {
     expect(subjects[0]).toMatch(/^Restore "create: h" \(/);
     expect(subjects).toHaveLength(3);
     expect(await fileAt("consoles/h.sql")).toContain("SELECT 1");
+  });
+
+  it("does not list leftover local git history when no GitHub repo is bound", async () => {
+    const saved = await manager.saveConsole(
+      "orphan-hist",
+      "SELECT leftover",
+      WS,
+      USER,
+      "68471be56e70c184bbc6cceb",
+      "db",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const row = (await SavedConsole.findById(saved._id))!;
+    expect(await consoleHistory(row)).not.toEqual([]);
+    await unbindTestWorkspaceRepo(WS);
+    expect(await consoleHistory(row)).toEqual([]);
+  });
+});
+
+function flattenConsoles(nodes: ConsoleFile[]): ConsoleFile[] {
+  const out: ConsoleFile[] = [];
+  for (const node of nodes) {
+    if (node.isDirectory) out.push(...flattenConsoles(node.children ?? []));
+    else out.push(node);
+  }
+  return out;
+}
+
+describe("GET/list from git", () => {
+  it("serves the file at main when the Mongo row has no body", async () => {
+    const saved = await manager.saveConsole(
+      "body-from-git",
+      "SELECT 'git-body'",
+      WS,
+      USER,
+      "68471be56e70c184bbc6cceb",
+      "db",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne({ _id: saved._id }, { $set: { code: "" } });
+    const mongo = await SavedConsole.findById(saved._id);
+    expect(mongo?.code).toBe("");
+
+    const listed = flattenConsoles(await manager.listConsoles(WS, USER));
+    const hit = listed.find(c => c.name === "body-from-git");
+    expect(hit?.content).toContain("SELECT 'git-body'");
+
+    const meta = await manager.getConsoleWithMetadata(saved._id.toString(), WS);
+    expect(meta?.content).toContain("SELECT 'git-body'");
+  });
+
+  it("lists a git file that has no Mongo row", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await externalCommit({
+      "consoles/from-laptop.sql": "SELECT 42 -- laptop\n",
+    });
+    const listed = flattenConsoles(await manager.listConsoles(WS, USER));
+    const hit = listed.find(c => c.name === "from-laptop");
+    expect(hit).toBeTruthy();
+    expect(hit?.content).toContain("SELECT 42");
+  });
+
+  it("never reconciles or soft-deletes Mongo as a side effect of listing", async () => {
+    const saved = await manager.saveConsole(
+      "removed-elsewhere",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    expect(saved.path).toBeTruthy();
+    await externalCommit({}, [saved.path as string]);
+
+    expect(await manager.listConsoles(WS, USER)).toEqual([]);
+    const row = await SavedConsole.findById(saved._id);
+    expect(row?.is_deleted).not.toBe(true);
+  });
+
+  it("shares one cold git definition load across concurrent list requests", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await externalCommit({
+      "consoles/cold-load.sql": "SELECT 42\n",
+    });
+
+    const [first, second, third] = await Promise.all([
+      listConsoleDefinitionsAtMain(WS),
+      listConsoleDefinitionsAtMain(WS),
+      listConsoleDefinitionsAtMain(WS),
+    ]);
+    expect(first).toBe(second);
+    expect(second).toBe(third);
+  });
+
+  it("does not list a Mongo row that has no git file", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await SavedConsole.create({
+      workspaceId: WS,
+      name: "mongo-only",
+      code: "SELECT 'should-not-appear'",
+      language: "sql",
+      createdBy: USER,
+      owner_id: USER,
+      isSaved: true,
+      access: "workspace",
+      isPrivate: false,
+      executionCount: 0,
+      version: 1,
+      draftRevision: 1,
+    });
+    const listed = flattenConsoles(await manager.listConsoles(WS, USER));
+    expect(listed.map(c => c.name)).not.toContain("mongo-only");
+  });
+
+  it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
+    const saved = await manager.saveConsole(
+      "leftover-list",
+      "SELECT leftover",
+      WS,
+      USER,
+      "68471be56e70c184bbc6cceb",
+      "db",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    expect(
+      flattenConsoles(await manager.listConsoles(WS, USER)).map(c => c.name),
+    ).toContain("leftover-list");
+    expect(await fileAt(saved.path!)).toContain("SELECT leftover");
+
+    await unbindTestWorkspaceRepo(WS);
+    expect(await manager.listConsoles(WS, USER)).toEqual([]);
+    expect(await manager.listConsolesFlat(WS, USER)).toEqual([]);
+    const leftoverPath = saved.path;
+    expect(leftoverPath).toBeTruthy();
+    expect(await fileAt(leftoverPath as string)).toContain("SELECT leftover");
+    expect(await SavedConsole.findById(saved._id)).not.toBeNull();
   });
 });
 

@@ -5,9 +5,14 @@
  * authoritative: a push that changes `flows/<slug>.yml` changes the flow.
  *
  * Structure mirrors `dbt/dbt-config.service.ts#syncDbtConfigNow` deliberately
- * — same tree read, same `sourceBlobSha` short-circuit, same "invalid file
- * keeps the current row" tolerance. Two things differ, and both make this
- * more dangerous than the dbt version:
+ * — same tree read, same `sourceBlobSha` short-circuit. Invalid files are
+ * marked on the row and never replaced by Mongo: a broken YAML must not be
+ * "healed" from the derived cache.
+ *
+ * GET/list serves the files at main and overlays Mongo for slug, runtime,
+ * SHA, cursors, webhook, and sync state (issue #956, same contract as
+ * consoles). Leftover local git without a GitHub binding is not a read
+ * surface — `boundRepoDirIfExists` / `getWorkspaceRepo` gate every walk.
  *
  *  1. A flow is a RUNNING STREAM. 31 of 31 production flows are CDC, so a
  *     definition change has to reconcile something live rather than change
@@ -26,12 +31,14 @@
  * rename. The file format already excludes all of them; this module must not
  * reintroduce them by writing whole nested objects.
  */
+import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 
 import { loggers } from "../logging";
 import {
   DEFAULT_BRANCH,
   listTree,
+  readBlob,
   readBlobsBatch,
   repoDirFor,
   repoExists,
@@ -42,6 +49,8 @@ import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
 } from "../apps/cloud-repo.service";
+import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
+import { getWorkspaceRepo } from "./workspace-repos.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
@@ -100,6 +109,392 @@ export function mintedWebhookEndpoint(args: {
   return generateWebhookEndpoint(args.workspaceId, args.flowId);
 }
 
+/**
+ * Mongoose materialises an unset nested path as `{}` on a hydrated doc, so
+ * the marker's presence is its `reason`, never the object's truthiness —
+ * `if (row.definitionInvalid)` read every healthy flow as invalid, which is
+ * how a bound workspace's runs came to re-parse their file on every fire and
+ * an unbound one's runs were refused outright.
+ */
+export function isFlowMarkedInvalid(row: {
+  definitionInvalid?: { reason?: string } | null;
+}): boolean {
+  return typeof row.definitionInvalid?.reason === "string";
+}
+
+/** The row's marker when it is a real one (see isFlowMarkedInvalid). */
+function rowInvalidMarker(
+  row: IFlow | null,
+): IFlow["definitionInvalid"] | undefined {
+  return row && isFlowMarkedInvalid(row) ? row.definitionInvalid : undefined;
+}
+
+/** Assigning `undefined` to a nested path persists `{}`; unset it instead. */
+async function clearFlowInvalid(id: Types.ObjectId): Promise<void> {
+  await Flow.updateOne({ _id: id }, { $unset: { definitionInvalid: 1 } });
+}
+
+/**
+ * Stamp the marker (and pause the schedules) with a targeted update, never
+ * a `save()`: a legacy row that no longer passes the schema would throw out
+ * of the push-sync loop and skip every file after it. Idempotent, so a list
+ * call does not rewrite the marker on every read.
+ */
+async function markFlowInvalid(
+  doc: IFlow,
+  reason: string,
+  path: string,
+): Promise<void> {
+  if (
+    doc.definitionInvalid?.reason === reason &&
+    doc.definitionInvalid?.path === path
+  ) {
+    return;
+  }
+  const definitionInvalid = { reason, at: new Date(), path };
+  const set: Record<string, unknown> = { definitionInvalid };
+  if (doc.schedule) set["schedule.enabled"] = false;
+  if (doc.backfillSchedule) set["backfillSchedule.enabled"] = false;
+  try {
+    await Flow.updateOne({ _id: doc._id }, { $set: set });
+    doc.definitionInvalid = definitionInvalid;
+    if (doc.schedule) doc.schedule.enabled = false;
+    if (doc.backfillSchedule) doc.backfillSchedule.enabled = false;
+  } catch (error) {
+    logger.warn("Failed to mark flow invalid", {
+      flowId: doc._id.toString(),
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Stable id for a flow that exists as `flows/<slug>.yml` but has no index
+ * row yet (same contract as `derivedConsoleId` / `derivedAppId`).
+ */
+export function derivedFlowId(
+  workspaceId: string,
+  slug: string,
+): Types.ObjectId {
+  const digest = createHash("sha1")
+    .update(`flows:${workspaceId}:${slug}`)
+    .digest("hex");
+  return new Types.ObjectId(digest.slice(0, 24));
+}
+
+export interface FlowDefinitionAtMain {
+  path: string;
+  slug: string;
+  oid: string;
+  contents: string;
+  parsed: FlowFile | null;
+}
+
+export interface LiveFlow {
+  def: FlowDefinitionAtMain;
+  row: IFlow | null;
+  id: Types.ObjectId;
+}
+
+function rowAsPlain(row: IFlow): Record<string, unknown> {
+  const maybeToObject = row as IFlow & {
+    toObject?: () => Record<string, unknown>;
+  };
+  if (typeof maybeToObject.toObject === "function") {
+    return maybeToObject.toObject();
+  }
+  return { ...(row as unknown as Record<string, unknown>) };
+}
+
+/**
+ * Authored flow files at `main`. Empty when no GitHub repo is bound —
+ * leftover local git is not a definition store (issue #956). Never throws
+ * `RepoRequiredError`; a missing binding is an empty list, not 412.
+ */
+export async function listFlowDefinitionsAtMain(
+  workspaceId: string,
+): Promise<FlowDefinitionAtMain[]> {
+  const { files } = await readFlowFilesAtMain(workspaceId, { freshen: false });
+  const defs: FlowDefinitionAtMain[] = [];
+  for (const { path, contents } of files) {
+    const slug = slugFromFlowFilePath(path);
+    if (!slug) continue;
+    defs.push({
+      path,
+      slug,
+      oid: blobOid(contents),
+      contents,
+      parsed: parseFlowFile(contents),
+    });
+  }
+  return defs;
+}
+
+function flowIndexDrift(defs: FlowDefinitionAtMain[], rows: IFlow[]): boolean {
+  const bySlug = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (row.slug) bySlug.set(row.slug, row);
+  }
+  for (const def of defs) {
+    const row = bySlug.get(def.slug);
+    if (!row) continue;
+    if (row.sourceBlobSha !== def.oid) return true;
+    if (isFlowMarkedInvalid(row) && def.parsed) return true;
+  }
+  return false;
+}
+
+/**
+ * SHA-check derived rows against blobs at main; resync matching rows on
+ * mismatch. Does not create, delete, or CDC-reconcile — GET/list must not
+ * tear down streams. Git-only files stay git-only until push-sync.
+ */
+export async function ensureFlowsDerivedCache(
+  workspaceId: string,
+): Promise<"ok" | "resynced" | "unbound"> {
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return "unbound";
+  const defs = await listFlowDefinitionsAtMain(workspaceId);
+  const rows = await Flow.find({ workspaceId });
+  if (!flowIndexDrift(defs, rows)) return "ok";
+  const bySlug = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (row.slug) bySlug.set(row.slug, row);
+  }
+  for (const def of defs) {
+    const row = bySlug.get(def.slug);
+    if (row) await ensureFlowDerivedCache(row);
+  }
+  return "resynced";
+}
+
+function joinLiveFlows(
+  workspaceId: string,
+  defs: FlowDefinitionAtMain[],
+  rows: IFlow[],
+): LiveFlow[] {
+  const bySlug = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (row.slug) bySlug.set(row.slug, row);
+  }
+  return defs.map(def => {
+    const row = bySlug.get(def.slug) ?? null;
+    return {
+      def,
+      row,
+      id: row?._id ?? derivedFlowId(workspaceId, def.slug),
+    };
+  });
+}
+
+/**
+ * Live flows: files at main, overlaying the Mongo index.
+ *
+ * Unbound workspace → `[]` (leftover Mongo rows and leftover local git do
+ * not populate the list). Git-only files appear; Mongo-only rows do not.
+ */
+export async function loadLiveFlows(workspaceId: string): Promise<LiveFlow[]> {
+  const status = await ensureFlowsDerivedCache(workspaceId);
+  if (status === "unbound") return [];
+  const defs = await listFlowDefinitionsAtMain(workspaceId);
+  const rows = await Flow.find({ workspaceId });
+  return joinLiveFlows(workspaceId, defs, rows);
+}
+
+/**
+ * Resolve a flow id for GET. Live only when `flows/<slug>.yml` exists at
+ * main. Unbound or Mongo-only → `null` (404).
+ */
+export async function loadLiveFlowById(
+  workspaceId: string,
+  flowId: string,
+): Promise<LiveFlow | null> {
+  if (!Types.ObjectId.isValid(flowId)) return null;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
+
+  const row = await Flow.findOne({
+    _id: new Types.ObjectId(flowId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (row?.slug) {
+    const defs = await listFlowDefinitionsAtMain(workspaceId);
+    const def = defs.find(item => item.slug === row.slug);
+    if (!def) return null;
+    if (row.sourceBlobSha !== def.oid || isFlowMarkedInvalid(row)) {
+      await ensureFlowDerivedCache(row);
+    }
+    return { def, row, id: row._id };
+  }
+
+  const live = await loadLiveFlows(workspaceId);
+  return live.find(item => item.id.toString() === flowId) ?? null;
+}
+
+/**
+ * Git definition overlaid on the Mongo runtime row (or a stub when the
+ * file has no row). The body comes from the file when it parses AND
+ * applies; a file the reactor would refuse must not look valid in GET.
+ */
+export function liveFlowToPlain(
+  live: LiveFlow,
+  workspaceId: string,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = live.row
+    ? rowAsPlain(live.row)
+    : {
+        _id: live.id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        slug: live.def.slug,
+        createdBy: "git",
+        runCount: 0,
+        sourceType: "connector",
+        // Whole shape for a file with no row yet: the client's schema
+        // requires these, and one half-defined item used to fail the whole
+        // persisted flow list's validation (every reload cold-started).
+        name: live.def.slug,
+        syncMode: "full",
+        enabled: false,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      };
+  base._id = live.id;
+  base.slug = live.def.slug;
+  base.workspaceId = live.row?.workspaceId ?? new Types.ObjectId(workspaceId);
+  const parsed = live.def.parsed;
+  const createdBy =
+    typeof live.row?.createdBy === "string" && live.row.createdBy
+      ? live.row.createdBy
+      : "git";
+  if (!parsed) {
+    base.definitionInvalid = rowInvalidMarker(live.row) ?? {
+      reason: "unparseable flow file",
+      at: new Date(),
+      path: live.def.path,
+    };
+    base.sourceBlobSha = live.def.oid;
+    return base;
+  }
+  const applyFailure = flowFileApplyFailure(parsed, {
+    workspaceId,
+    slug: live.def.slug,
+    createdBy,
+  });
+  if (applyFailure) {
+    base.definitionInvalid = rowInvalidMarker(live.row) ?? {
+      reason: applyFailure,
+      at: new Date(),
+      path: live.def.path,
+    };
+    base.sourceBlobSha = live.def.oid;
+    return base;
+  }
+  applyDefinition(base as unknown as IFlow, parsed);
+  base.sourceBlobSha = live.def.oid;
+  delete base.definitionInvalid;
+  return base;
+}
+
+/**
+ * SHA-check the derived cache against `flows/<slug>.yml` at main.
+ * Resyncs the row when the blob moved; never writes Mongo over an invalid file.
+ * Leftover local git without a GitHub binding is ignored — runtime keeps
+ * the SHA-checked Mongo cache (issue #956).
+ */
+export async function ensureFlowDerivedCache(flow: {
+  _id: { toString(): string };
+  workspaceId: { toString(): string };
+  slug?: string;
+  sourceBlobSha?: string;
+  definitionInvalid?: { reason: string } | null;
+}): Promise<"ok" | "invalid" | "missing" | "resynced"> {
+  if (!flow.slug) return "ok";
+  const workspaceId = flow.workspaceId.toString();
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) {
+    return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
+  }
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!head) return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
+  const path = `flows/${flow.slug}.yml`;
+  let contents: string;
+  try {
+    const blob = await readBlob(repoDir, head, path);
+    if (blob.isBinary) {
+      const row = await Flow.findById(flow._id);
+      if (row) await markFlowInvalid(row, "binary flow file", path);
+      return "invalid";
+    }
+    contents = blob.contents;
+  } catch {
+    const row = await Flow.findById(flow._id);
+    if (row) await markFlowInvalid(row, "flow file missing at main", path);
+    return "missing";
+  }
+  const sha = blobOid(contents);
+  const wasMarked = isFlowMarkedInvalid(flow);
+  if (flow.sourceBlobSha === sha && !wasMarked) return "ok";
+  const parsed = parseFlowFile(contents);
+  const row = await Flow.findById(flow._id);
+  if (!row) return "missing";
+  if (!parsed) {
+    await markFlowInvalid(row, "unparseable flow file", path);
+    return "invalid";
+  }
+  let refusal: string | null;
+  try {
+    refusal = applyDefinition(row, parsed);
+  } catch (error) {
+    refusal = error instanceof Error ? error.message : String(error);
+  }
+  if (refusal) {
+    await markFlowInvalid(row, refusal, path);
+    return "invalid";
+  }
+  row.sourceBlobSha = sha;
+  try {
+    await row.save();
+  } catch (error) {
+    // applyDefinition already mutated `row`. Saving that document again
+    // (via markFlowInvalid) would re-raise the same ValidationError and
+    // 500 GET/list. Reload the persisted row, then stamp invalid.
+    const reason = error instanceof Error ? error.message : String(error);
+    const fresh = await Flow.findById(flow._id);
+    if (fresh) await markFlowInvalid(fresh, reason, path);
+    return "invalid";
+  }
+  if (wasMarked) await clearFlowInvalid(row._id);
+  return "resynced";
+}
+
+export type LiveFlowRowResolution =
+  | { ok: true; live: LiveFlow; row: IFlow }
+  | { ok: false; status: 404 | 409; error: string };
+
+/**
+ * Resolve a flow id for a mutation or a run: the file must be live at main
+ * AND the index row must exist. A file that only lives in git (the push has
+ * not been reconciled yet) is a 409 with the reason, not a bare 404 — the
+ * list just showed the flow. A row whose file was deleted is not live and
+ * resolves to nothing, so it can no longer be run from the UI.
+ */
+export async function resolveLiveFlowRow(
+  workspaceId: string,
+  flowId: string,
+): Promise<LiveFlowRowResolution> {
+  const live = await loadLiveFlowById(workspaceId, flowId);
+  if (!live) return { ok: false, status: 404, error: "Flow not found" };
+  if (!live.row) {
+    return {
+      ok: false,
+      status: 409,
+      error: `Flow "${live.def.slug}" exists only in git so far (${live.def.path}); it becomes runnable and editable once the push is synced.`,
+    };
+  }
+  return { ok: true, live, row: live.row };
+}
+
 export interface FlowSyncResult {
   created: number;
   updated: number;
@@ -133,11 +528,11 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     // `dataSourceId` is required on the schema, so a connector file without
     // one cannot produce a valid row. Refuse the file rather than write half
     // a flow — the row that exists is more trustworthy than a bad edit.
-    if (!file.source.connectorId) {
+    if (!file.source.connectionId) {
       return "connector source has no connection_id";
     }
     doc.sourceType = "connector";
-    doc.dataSourceId = new Types.ObjectId(file.source.connectorId);
+    doc.dataSourceId = new Types.ObjectId(file.source.connectionId);
   }
 
   // Required on the schema, same as `dataSourceId` above: refuse rather than
@@ -227,6 +622,17 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
   return null;
 }
 
+/** Why a parsed file cannot become a row — refusal or schema, same as save(). */
+function flowFileApplyFailure(
+  file: FlowFile,
+  args: { workspaceId: string; slug: string; createdBy: string },
+): string | null {
+  const hydrated = hydrateFlowRow(file, args);
+  if (hydrated.refusal) return hydrated.refusal;
+  if (hydrated.schemaErrors.length === 0) return null;
+  return hydrated.schemaErrors.map(e => `${e.path}: ${e.message}`).join("; ");
+}
+
 /** What a file would produce if it were written onto a fresh row. */
 export interface HydratedFlowRow {
   /** Set when `applyDefinition` refuses the file outright. */
@@ -265,7 +671,12 @@ export function hydrateFlowRow(
     createdBy: args.createdBy,
   }) as unknown as IFlow;
 
-  const refusal = applyDefinition(doc, file);
+  let refusal: string | null;
+  try {
+    refusal = applyDefinition(doc, file);
+  } catch (error) {
+    refusal = error instanceof Error ? error.message : String(error);
+  }
   if (refusal) return { refusal, schemaErrors: [] };
 
   // validateSync() runs the schema's own validators in-process and touches no
@@ -310,6 +721,10 @@ export interface FlowFilesAtMain {
  * writes nothing and is not allowed to reset a shared local repo as a side
  * effect of a read, so it takes the cache as it finds it and reports the
  * commit it read.
+ *
+ * A GitHub binding is required. Leftover Cloud Storage git without a
+ * binding is not a definition store (issue #956) — GET/list and the
+ * checker both return empty rather than walking it.
  */
 export async function readFlowFilesAtMain(
   workspaceId: string,
@@ -317,10 +732,13 @@ export async function readFlowFilesAtMain(
 ): Promise<FlowFilesAtMain> {
   const none: FlowFilesAtMain = { commit: null, files: [] };
 
-  await ensureLocalRepo(workspaceId);
+  if (!(await getWorkspaceRepo(workspaceId))) return none;
+  if (options.freshen) {
+    await ensureLocalRepo(workspaceId);
+    await freshenBeforeMainWrite(workspaceId);
+  }
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) return none;
-  if (options.freshen) await freshenBeforeMainWrite(workspaceId);
 
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) return none;
@@ -408,26 +826,56 @@ export async function syncFlowsFromRepo(
       });
     }
 
-    if (row && row.sourceBlobSha === sha) {
+    // Level already — unless the row is still flagged from an earlier bad
+    // version and the file was reverted to this exact content, in which
+    // case the marker must clear.
+    if (row && row.sourceBlobSha === sha && !isFlowMarkedInvalid(row)) {
       result.unchanged++;
       continue;
     }
 
     const parsed = parsedForDesired;
     if (!parsed) {
-      // Keep the current row: a file that does not parse is far more likely
-      // to be a bad edit than an instruction to change a running stream.
-      logger.warn("Flow file is invalid; keeping current row", {
+      logger.warn("Flow file is invalid; not overwriting from Mongo", {
         workspaceId,
         path,
       });
+      if (row) {
+        await markFlowInvalid(row, "unparseable flow file", path);
+      }
+      result.invalid.push(slug);
+      continue;
+    }
+
+    // Same "applies" predicate GET/list uses: a file the list flags must
+    // never be indexed here, and one the list shows as valid must not be
+    // what throws below.
+    const applyFailure = flowFileApplyFailure(parsed, {
+      workspaceId,
+      slug,
+      createdBy: row?.createdBy || actorUserId || "sync",
+    });
+    if (applyFailure) {
+      logger.warn("Flow file does not apply; not overwriting from Mongo", {
+        workspaceId,
+        path,
+        reason: applyFailure,
+      });
+      if (row) await markFlowInvalid(row, applyFailure, path);
       result.invalid.push(slug);
       continue;
     }
 
     const isNew = !row;
+    const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
     const doc =
-      row ?? new Flow({ workspaceId, slug, createdBy: actorUserId ?? "sync" });
+      row ??
+      new Flow({
+        _id: derivedFlowId(workspaceId, slug),
+        workspaceId,
+        slug,
+        createdBy: actorUserId ?? "sync",
+      });
     // `applyDefinition` refuses with a reason, but it can also THROW: an id
     // that is not an ObjectId (`connector_id: close` — a name where an id
     // belongs, the likeliest agent mistake) fails inside `new ObjectId()`.
@@ -440,11 +888,14 @@ export async function syncFlowsFromRepo(
       refusal = error instanceof Error ? error.message : String(error);
     }
     if (refusal) {
-      logger.warn("Flow file cannot be applied; keeping current row", {
+      logger.warn("Flow file cannot be applied; not overwriting from Mongo", {
         workspaceId,
         path,
         reason: refusal,
       });
+      if (row) {
+        await markFlowInvalid(row, refusal, path);
+      }
       result.invalid.push(slug);
       continue;
     }
@@ -483,6 +934,7 @@ export async function syncFlowsFromRepo(
       result.invalid.push(slug);
       continue;
     }
+    if (wasInvalid) await clearFlowInvalid((doc as IFlow)._id);
     if (isNew) {
       result.created++;
       // A row created in this pass has no id until now, so its desired entry

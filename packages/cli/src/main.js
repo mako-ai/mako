@@ -1,4 +1,4 @@
-import { findCredential, removeCredential } from "@makoai/app-sdk/credentials";
+import { removeCredential } from "@makoai/app-sdk/credentials";
 import { parseArgs } from "./args.js";
 import { loadContext } from "./context.js";
 import { login } from "./login.js";
@@ -7,17 +7,24 @@ import { status } from "./status.js";
 import { publish } from "./publish.js";
 import { connector } from "./connector.js";
 import { connection } from "./connection.js";
+import { dbt } from "./dbt.js";
+import { whoami } from "./whoami.js";
 
 const HELP = `mako — Mako from your terminal
 
-  mako login   [--api-url <url>] [--no-browser]   sign in once (OAuth, browser), for this workspace checkout
+  mako login   [--api-url <url>] [--no-browser] [--warehouse-write]
+                                                  sign in once (OAuth, browser), for this workspace checkout
   mako logout                                     forget the stored credential for this host/workspace
-  mako whoami                                     show which host/workspace you are signed in to
+  mako whoami                                     show which host/workspace you are signed in to (refreshes an expired token)
   mako dev     [<app>] [--port <n>] [--open]      run apps/<app> locally with real data
   mako status  [<app>]                            what is LIVE: published commit vs the tip of main
   mako publish [<app>]                            deploy the app's main branch now (enqueue + wait)
   mako connector test [<path>] [--config <file>]  run a connector's code (connectors/<slug>) against its own contract
   mako connection probe <id|name> [--entity <e>]  run a configured connection live: check + one page, written nowhere
+  mako dbt run|build|test -s <selector> [--env <name>] [--full-refresh] [--no-defer]
+                                                  run dbt in Mako's runner on this checkout's dbt/ (uncommitted
+                                                  edits included); default: your personal environment;
+                                                  needs \`mako login --warehouse-write\`
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env
@@ -42,20 +49,8 @@ export async function main(argv, io = { log: console.log }) {
       );
       return 0;
     }
-    case "whoami": {
-      const entry = findCredential(ctx.apiUrl, ctx.workspaceId);
-      if (ctx.apiKey)
-        io.log(`API key configured for ${ctx.apiUrl} (MAKO_API_KEY).`);
-      if (entry) {
-        io.log(
-          `Signed in to ${entry.apiUrl}${entry.workspaceId ? ` / workspace ${entry.workspaceId}` : ""} (token expires ${entry.expiresAt ?? "?"}).`,
-        );
-      } else if (!ctx.apiKey) {
-        io.log(`Not signed in to ${ctx.apiUrl}. Run \`mako login\`.`);
-        return 1;
-      }
-      return 0;
-    }
+    case "whoami":
+      return whoami(ctx, io);
     case "dev":
       return dev(ctx, positional, flags, io);
     case "status":
@@ -66,6 +61,8 @@ export async function main(argv, io = { log: console.log }) {
       return connector(ctx, positional, flags, io);
     case "connection":
       return connection(ctx, positional, flags, io);
+    case "dbt":
+      return dbt(ctx, positional, flags, io);
     default:
       io.log(`unknown command "${command}"\n\n${HELP}`);
       return 2;

@@ -51,7 +51,7 @@ vi.mock("../connectors/probe.service", async importOriginal => {
   };
 });
 
-import { dataSourceRoutes } from "./sources";
+import { sourceConnectionRoutes } from "./source-connections";
 import { ProbeError } from "../connectors/probe.service";
 
 process.env.ENCRYPTION_KEY =
@@ -62,18 +62,30 @@ const WS = new Types.ObjectId().toString();
 const CONNECTOR = new Types.ObjectId().toString();
 
 const app = new Hono();
-app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
+app.route(
+  "/api/workspaces/:workspaceId/connections/sources",
+  sourceConnectionRoutes,
+);
+app.route("/api/workspaces/:workspaceId/connectors", sourceConnectionRoutes);
 
 /**
  * A bodiless POST is sent the way a client sends one — no content type —
  * because a JSON content type with nothing behind it is what the OpenAPI
  * validator (rightly) refuses as malformed before the route runs.
  */
-function probe(body?: unknown, raw?: string): Promise<Response> {
+function probe(
+  body?: unknown,
+  raw?: string,
+  path: "legacy" | "current" = "legacy",
+): Promise<Response> {
   const payload =
     raw ?? (body === undefined ? undefined : JSON.stringify(body));
+  const prefix =
+    path === "current"
+      ? `/api/workspaces/${WS}/connections/sources`
+      : `/api/workspaces/${WS}/connectors`;
   return Promise.resolve(
-    app.request(`/api/workspaces/${WS}/connectors/${CONNECTOR}/probe`, {
+    app.request(`${prefix}/${CONNECTOR}/probe`, {
       method: "POST",
       ...(payload === undefined
         ? {}
@@ -117,6 +129,16 @@ describe("the edge", () => {
         since: new Date("2026-08-01T00:00:00Z"),
       },
     ]);
+  });
+
+  it("serves the same probe at /connections/sources (the current path)", async () => {
+    const res = await probe({ entity: "daily-usage" }, undefined, "current");
+    expect(res.status).toBe(200);
+    expect(state.calls[0]).toMatchObject({
+      workspaceId: WS,
+      connectionId: CONNECTOR,
+      entity: "daily-usage",
+    });
   });
 
   it("an empty body is a check-only probe", async () => {

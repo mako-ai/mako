@@ -22,9 +22,15 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
+  getBindingState,
   readBindings,
+  readBindingsTolerant,
+  recordBindingRun,
 } from "./bindings.service";
 import { createProject, ensureWorktree, writeFile } from "./worktree.service";
+import { initRepo, repoDirFor } from "./repository.service";
+import { seededTemplateFiles } from "./workspace-template";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
 let mongo: MongoMemoryServer;
@@ -65,6 +71,8 @@ beforeEach(async () => {
   await mongoose.connection.collection("app_worktrees").deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function projectWithBindings(files: Record<string, string>) {
@@ -126,6 +134,16 @@ describe("bindingArtifactKeyByName", () => {
     await expect(
       bindingArtifactKeyByName(project, "broken", USER),
     ).rejects.toThrow(/no connection/);
+    // Publish reads the tolerant form: the healthy binding is prepared and
+    // the stray file is named, so one WIP file cannot pin the whole app.
+    const tolerant = await readBindingsTolerant(project, USER);
+    expect(tolerant.bindings.map(b => b.name)).toEqual(["revenue"]);
+    expect(tolerant.skipped).toEqual([
+      {
+        path: "bindings/broken.sql",
+        error: expect.stringMatching(/"broken" has no connection/),
+      },
+    ]);
   });
 
   it("returns null for a name that is not a binding", async () => {
@@ -140,5 +158,40 @@ describe("bindingArtifactKeyByName", () => {
     await expect(
       bindingArtifactKeyByName(project, "../../etc/passwd", USER),
     ).resolves.toBeNull();
+  });
+});
+
+describe("recordBindingRun", () => {
+  it("keeps which artifact each run built, newest first", async () => {
+    const projectId = new Types.ObjectId().toString();
+    const keyA = bindingArtifactKey({
+      connectionId: "conn-a",
+      code: "SELECT 1",
+    });
+    const keyB = bindingArtifactKey({
+      connectionId: "conn-a",
+      code: "SELECT 2",
+    });
+
+    await recordBindingRun(projectId, "revenue", {
+      at: new Date("2026-09-07T05:49:00Z"),
+      status: "ready",
+      rowCount: 3,
+      artifactKey: keyA,
+    });
+    await recordBindingRun(projectId, "revenue", {
+      at: new Date("2026-09-08T05:47:00Z"),
+      status: "error",
+      error: "boom",
+      artifactKey: keyB,
+    });
+
+    const state = await getBindingState(projectId, "revenue");
+    // Newest first; the key survives the (strict) history subdocument schema.
+    expect(state?.history?.map(run => [run.status, run.artifactKey])).toEqual([
+      ["error", keyB],
+      ["ready", keyA],
+    ]);
+    expect(state?.lastMaterializedAt).toEqual(new Date("2026-09-07T05:49:00Z"));
   });
 });

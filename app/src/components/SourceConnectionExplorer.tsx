@@ -15,7 +15,7 @@ import {
 
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
-import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
+import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -27,8 +27,9 @@ import ResourceTree, {
 import ExplorerShell from "./ExplorerShell";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { connectorIconUrl } from "../lib/connector-icon";
+import { closeSourceConnectionTabsFor } from "../lib/source-connection-tabs";
 
-interface Connector {
+interface SourceConnectionRow {
   _id: string;
   name: string;
   description?: string;
@@ -37,7 +38,7 @@ interface Connector {
   workspaceId: string;
 }
 
-function ConnectorExplorer() {
+function SourceConnectionExplorer() {
   const { currentWorkspace } = useWorkspace();
   const { tabs, activeTabId, openTab, setActiveTab } = useConsoleStore();
   const consoleTabs = Object.values(tabs);
@@ -48,17 +49,17 @@ function ConnectorExplorer() {
     init,
     refresh,
     delete: deleteSource,
-  } = useConnectorEntitiesStore();
+  } = useSourceConnectionEntitiesStore();
 
-  const connectors: Connector[] = useMemo(() => {
+  const connectors: SourceConnectionRow[] = useMemo(() => {
     if (!currentWorkspace) return [];
     return Object.values(entities).filter(
       e => e.workspaceId === currentWorkspace.id,
-    ) as Connector[];
+    ) as SourceConnectionRow[];
   }, [entities, currentWorkspace]);
 
   const connectorById = useMemo(() => {
-    const map = new Map<string, Connector>();
+    const map = new Map<string, SourceConnectionRow>();
     for (const c of connectors) map.set(c._id, c);
     return map;
   }, [connectors]);
@@ -66,7 +67,9 @@ function ConnectorExplorer() {
   const [error] = useState<string | null>(null);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [selectedItem, setSelectedItem] = useState<Connector | null>(null);
+  const [selectedItem, setSelectedItem] = useState<SourceConnectionRow | null>(
+    null,
+  );
 
   const fetchSources = async () => {
     if (!currentWorkspace) return;
@@ -80,7 +83,7 @@ function ConnectorExplorer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id]);
 
-  const openTabForSource = (source?: Connector) => {
+  const openTabForSource = (source?: SourceConnectionRow) => {
     if (source) {
       const contentKey = source._id;
       const existing = consoleTabs.find(
@@ -100,7 +103,7 @@ function ConnectorExplorer() {
       setActiveTab(id);
     } else {
       const id = openTab({
-        title: "New Connector",
+        title: "New source connection",
         content: "",
         kind: "connectors",
       });
@@ -110,16 +113,20 @@ function ConnectorExplorer() {
 
   const handleAdd = () => openTabForSource(undefined);
 
-  const handleDelete = (item: Connector) => {
+  const handleDelete = (item: SourceConnectionRow) => {
     setSelectedItem(item);
     setDeleteDialogOpen(true);
   };
 
   const handleDeleteConfirm = async () => {
     if (!currentWorkspace || !selectedItem) return;
-    const res = await deleteSource(currentWorkspace.id, selectedItem._id);
+    const sourceId = selectedItem._id;
+    const res = await deleteSource(currentWorkspace.id, sourceId);
     if (!res.success) {
       console.error("Failed to delete data source:", res.error);
+    } else {
+      // Tabs outlive the row: without this the editor stays on a 404.
+      closeSourceConnectionTabsFor(sourceId);
     }
     setDeleteDialogOpen(false);
     setSelectedItem(null);
@@ -170,7 +177,7 @@ function ConnectorExplorer() {
 
   const actions = (
     <>
-      <Tooltip title="Add Connector">
+      <Tooltip title="Add source connection">
         <IconButton size="small" onClick={handleAdd}>
           <AddIcon size={20} strokeWidth={2} />
         </IconButton>
@@ -188,9 +195,9 @@ function ConnectorExplorer() {
   return (
     <>
       <ExplorerShell
-        title="Connectors"
+        title="Sources"
         actions={actions}
-        searchPlaceholder="Search connectors..."
+        searchPlaceholder="Search source connections..."
         error={error}
         loading={isLoading && connectors.length === 0}
         skeleton={
@@ -202,7 +209,9 @@ function ConnectorExplorer() {
         {({ searchQuery }) =>
           connectors.length === 0 ? (
             <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-              <Typography variant="body2">No connectors configured.</Typography>
+              <Typography variant="body2">
+                No source connections configured.
+              </Typography>
             </Box>
           ) : (
             <ResourceTree
@@ -249,8 +258,8 @@ function ConnectorExplorer() {
 
       <ConfirmDialog
         open={deleteDialogOpen}
-        title="Delete Connector"
-        body={`This will permanently delete the connector. Are you sure you want to delete "${selectedItem?.name}"?`}
+        title="Delete source connection"
+        body={`This will permanently delete the source connection. Are you sure you want to delete "${selectedItem?.name}"?`}
         confirmLabel="Delete"
         destructive
         onConfirm={() => void handleDeleteConfirm()}
@@ -260,4 +269,4 @@ function ConnectorExplorer() {
   );
 }
 
-export default ConnectorExplorer;
+export default SourceConnectionExplorer;

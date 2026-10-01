@@ -30,7 +30,7 @@ A **connector** is code: the thing that knows how to check a credential and read
 
 ## How It Works
 
-1. **Configure** — Add a connector with API credentials and select which entities to sync
+1. **Configure** — Add a source connection with API credentials and select which entities to sync
 2. **Map** — Choose a destination database and table naming convention
 3. **Sync** — Connectors fetch data in chunks with cursor-based pagination
 4. **Resume** — If a sync fails, it resumes from the last saved cursor (idempotent upserts)
@@ -45,15 +45,15 @@ Three surfaces, one implementation, so they cannot drift on what "bounded", "rea
 | --- | --- |
 | MCP (any agent, or the in-product agent) | `probe_connection({ connectionId, entity?, limit?, fields?, since? })` — ids from `list_connections`, entity names from `inspect_connection` |
 | CLI | `mako connection probe <id\|name> [--entity <name>] [--limit <n>] [--fields a,b] [--since <iso>] [--json]` |
-| REST | `POST /api/workspaces/:wid/connectors/:id/probe` with the same body fields (the router keeps its historical `/connectors` path; the rows it manages are source connections) |
+| REST | `POST /api/workspaces/:wid/connections/sources/:id/probe` (legacy alias: `POST /api/workspaces/:wid/connectors/:id/probe`) with the same body fields |
 
 The result carries the check outcome, then `entity.records`, `entity.schema` (declared field types), `entity.hasMore` (further pages exist on the platform), `entity.truncated` (the page held more than `limit`) and the connector's own log lines. Limits: at most `limit` records (default 20, max 200) from a single API page, and a 90-second budget for the whole probe — a connection whose connector is [workspace-authored](/guides/building-connectors/) runs in a sandbox, so its first probe can take tens of seconds. Every string value of the connection's config is scrubbed from the result, including from a vendor error that would echo the key back.
 
-Nothing is written: no destination table, no sync cursor. The one side effect is the same one **Test connection** has — a workspace connector's last-check mark, which is what moves it to *verified*.
+Nothing is written: no destination table, no sync cursor. The one side effect is the same one **Test connection** has — a workspace source connection's last-check mark, which is what moves its connector to *verified*.
 
 ## Building Custom Connectors
 
-See the [Building Connectors](/guides/building-connectors/) guide for implementing new data sources.
+See the [Building Connectors](/guides/building-connectors/) guide for implementing new connectors.
 
 Each connector extends `BaseConnector` and implements:
 
@@ -75,4 +75,4 @@ class MyConnector extends BaseConnector {
 
 ## Configuration
 
-Connectors are configured per-workspace through the UI or API. Credentials are encrypted at rest using the `ENCRYPTION_KEY` environment variable.
+Source connections are configured per-workspace through the UI or API. Credentials are encrypted at rest using the `ENCRYPTION_KEY` environment variable.

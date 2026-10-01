@@ -285,7 +285,7 @@ export default function NotebookCell({
             sx={{ minWidth: 180, fontSize: "0.8rem" }}
           >
             <MenuItem value="" disabled>
-              Select a data source…
+              Select a connection…
             </MenuItem>
             {sources.map(s => (
               <MenuItem key={s.id} value={s.id} sx={{ fontSize: "0.8rem" }}>

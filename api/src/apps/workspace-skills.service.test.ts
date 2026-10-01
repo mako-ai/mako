@@ -1,7 +1,7 @@
 /**
- * Skills in git (apps.md §10 Block D1): real bare repos under a temp
- * APPS_GIT_ROOT, mongodb-memory-server for the derived index, no network —
- * the same rig the consoles suite uses.
+ * Skills are files at main (apps.md §27): real bare repos under a temp
+ * APPS_GIT_ROOT, no Mongo, no network. mongodb-memory-server is started only
+ * because the workspace-repo binding helpers read the Workspace model.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -9,8 +9,9 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { Skill } from "../database/workspace-schema";
 import {
+  MAX_SKILL_BODY_CHARS,
+  MAX_SKILL_FILE_BYTES,
   SKILLS_README_PATH,
   parseSkillFile,
   serializeSkillFile,
@@ -19,19 +20,26 @@ import {
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
+  initRepo,
   log,
   readBlob,
   repoDirFor,
   resolveCommit,
 } from "./repository.service";
 import {
-  adoptWorkspaceSkills,
   commitSkillDelete,
+  commitSkillFlags,
   commitSkillSave,
-  commitSkillSuppressed,
-  listSkillFilesFromRepo,
-  syncSkillsIndexFromRepo,
+  findSkill,
+  findSkillById,
+  invalidateSkillCatalog,
+  loadSkillCatalog,
+  skillId,
 } from "./workspace-skills.service";
+import {
+  bindTestWorkspaceRepo,
+  unbindTestWorkspaceRepo,
+} from "./bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -41,8 +49,6 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
-  delete process.env.OPENAI_API_KEY;
-  delete process.env.AI_GATEWAY_API_KEY;
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
@@ -58,8 +64,10 @@ const WS = new Types.ObjectId().toString();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 beforeEach(async () => {
-  await Skill.deleteMany({});
+  invalidateSkillCatalog(WS);
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function fileAt(rel: string): Promise<string | null> {
@@ -71,209 +79,173 @@ async function fileAt(rel: string): Promise<string | null> {
   }
 }
 
-const skill = (name: string, body = "Do the thing.") => ({
+async function laptopCommit(
+  writes: Record<string, string>,
+  message = "laptop push",
+): Promise<void> {
+  await commitBlobsOnBranch(
+    repoDirFor(WS),
+    DEFAULT_BRANCH,
+    { writes },
+    { message },
+  );
+}
+
+const skill = (
+  name: string,
+  body = "Do the thing.",
+  extra: { pinned?: boolean; suppressed?: boolean } = {},
+) => ({
   name,
   loadWhen: `when asked about ${name}`,
   entities: [name],
-  suppressed: false,
+  suppressed: extra.suppressed ?? false,
+  pinned: extra.pinned ?? false,
   body,
 });
 
 describe("format round-trip", () => {
-  it("serializes and parses the SKILL.md package shape", () => {
-    const file = serializeSkillFile(skill("mrr_walkthrough"));
+  it("serializes and parses the SKILL.md package shape, flags included", () => {
+    const file = serializeSkillFile(
+      skill("mrr_walkthrough", "Do the thing.", { pinned: true }),
+    );
     expect(file).toContain("description: when asked about mrr_walkthrough");
-    const parsed = parseSkillFile("mrr_walkthrough", file);
-    expect(parsed).toMatchObject({
+    expect(file).toContain("pinned: true");
+    expect(file).not.toContain("suppressed");
+    expect(parseSkillFile("mrr_walkthrough", file)).toMatchObject({
       name: "mrr_walkthrough",
       loadWhen: "when asked about mrr_walkthrough",
       entities: ["mrr_walkthrough"],
       suppressed: false,
+      pinned: true,
       body: "Do the thing.",
     });
   });
 });
 
-describe("write-through", () => {
-  it("the first save adopts existing Mongo skills plus the marker", async () => {
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "legacy_skill",
-      loadWhen: "legacy trigger",
-      body: "Old knowledge.",
-      entities: [],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 3,
-    });
-    await commitSkillSave(WS, skill("fresh_skill"), {
-      loadAdoptable: async () => [
-        {
-          name: "legacy_skill",
-          loadWhen: "legacy trigger",
-          entities: [],
-          suppressed: false,
-          body: "Old knowledge.",
-        },
-      ],
-    });
+describe("the catalog is the files at main", () => {
+  it("lists what is committed, in name order, with stable ids; unbound reads empty", async () => {
+    await commitSkillSave(WS, skill("zeta"));
+    await commitSkillSave(WS, skill("alpha"));
     expect(await fileAt(SKILLS_README_PATH)).not.toBeNull();
-    expect(await fileAt(skillFilePath("fresh_skill"))).toContain(
-      "Do the thing.",
-    );
-    expect(await fileAt(skillFilePath("legacy_skill"))).toContain(
-      "Old knowledge.",
-    );
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.skills.map(s => s.name)).toEqual(["alpha", "zeta"]);
+    expect(catalog.skills[0]!.id).toBe(skillId(WS, "alpha"));
+    expect(catalog.invalid).toEqual([]);
+    expect(await findSkillById(WS, skillId(WS, "zeta"))).toMatchObject({
+      name: "zeta",
+      path: skillFilePath("zeta"),
+    });
+    await unbindTestWorkspaceRepo(WS);
+    expect((await loadSkillCatalog(WS)).skills).toEqual([]);
   });
 
-  it("delete and suppress commit; a Mongo-only skill is a git no-op", async () => {
-    await commitSkillSave(WS, skill("keeper"));
-    expect(await commitSkillSuppressed(WS, "keeper", true)).toBe(true);
-    expect(await fileAt(skillFilePath("keeper"))).toContain("suppressed: true");
-    expect(await commitSkillDelete(WS, "keeper")).toBe(true);
-    expect(await fileAt(skillFilePath("keeper"))).toBeNull();
-    expect(await commitSkillDelete(WS, "never_committed")).toBe(false);
-  });
-});
-
-describe("sync from repo", () => {
-  it("an external skill edit reaches the index; removal deletes the row", async () => {
+  it("a push from elsewhere is visible on the next read; nothing else has to run", async () => {
     await commitSkillSave(WS, skill("synced"));
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    let row = await Skill.findOne({ name: "synced" });
-    expect(row?.body).toBe("Do the thing.");
-
-    // Laptop edit: change the body, keep telemetry.
-    await Skill.updateOne({ _id: row!._id }, { $set: { useCount: 9 } });
-    await commitBlobsOnBranch(
-      repoDirFor(WS),
-      DEFAULT_BRANCH,
-      {
-        writes: {
-          [skillFilePath("synced")]: serializeSkillFile(
-            skill("synced", "Do the BETTER thing."),
-          ),
-        },
-      },
-      { message: "laptop edit" },
-    );
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    row = await Skill.findOne({ name: "synced" });
-    expect(row?.body).toBe("Do the BETTER thing.");
-    expect(row?.previousBody).toBe("Do the thing.");
-    expect(row?.useCount).toBe(9);
-
+    expect((await findSkill(WS, "synced"))?.body).toBe("Do the thing.");
+    await laptopCommit({
+      [skillFilePath("synced")]: serializeSkillFile(
+        skill("synced", "Do the BETTER thing."),
+      ),
+      [skillFilePath("new_from_laptop")]: serializeSkillFile(
+        skill("new_from_laptop"),
+      ),
+    });
+    expect((await findSkill(WS, "synced"))?.body).toBe("Do the BETTER thing.");
+    expect(await findSkill(WS, "new_from_laptop")).not.toBeNull();
     await commitBlobsOnBranch(
       repoDirFor(WS),
       DEFAULT_BRANCH,
       { deletes: [skillFilePath("synced")] },
       { message: "laptop delete" },
     );
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    expect(await Skill.findOne({ name: "synced" })).toBeNull();
+    expect(await findSkill(WS, "synced")).toBeNull();
   });
 
-  it("never touches a workspace that has not adopted", async () => {
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "mongo_only",
-      loadWhen: "trigger",
-      body: "body",
-      entities: [],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 0,
+  it("is served from memory while main does not move", async () => {
+    await commitSkillSave(WS, skill("cached"));
+    const first = await loadSkillCatalog(WS);
+    const again = await loadSkillCatalog(WS);
+    expect(again).toBe(first);
+    expect(first.head).toBe(await resolveCommit(repoDirFor(WS), MAIN));
+    await commitSkillSave(WS, skill("cached", "v2"));
+    const after = await loadSkillCatalog(WS);
+    expect(after).not.toBe(first);
+    expect(after.skills[0]!.body).toBe("v2");
+  });
+
+  it("a file that does not parse, or a folder with a bad name, is listed as invalid and never offered", async () => {
+    await commitSkillSave(WS, skill("fine"));
+    await laptopCommit({
+      [skillFilePath("broken")]: "no frontmatter here\n",
+      "skills/Bad-Name/SKILL.md": serializeSkillFile(skill("bad_name")),
     });
-    const { initRepo } = await import("./repository.service");
-    await initRepo(repoDirFor(WS), { "README.md": "x\n" });
-    await syncSkillsIndexFromRepo(WS);
-    expect(await Skill.findOne({ name: "mongo_only" })).not.toBeNull();
-  });
-});
-
-describe("adoption (migration path)", () => {
-  it("writes missing files + marker once, is re-runnable", async () => {
-    for (const name of ["a_skill", "b_skill"]) {
-      await Skill.create({
-        workspaceId: new Types.ObjectId(WS),
-        name,
-        loadWhen: `use ${name}`,
-        body: `${name} body`,
-        entities: [],
-        scopeType: "workspace",
-        createdBy: "agent",
-        suppressed: false,
-        useCount: 0,
-      });
-    }
-    const first = await adoptWorkspaceSkills(WS);
-    expect(first).toMatchObject({ skills: 2, written: 3, adopted: true });
-    expect((await listSkillFilesFromRepo(WS)).map(f => f.name).sort()).toEqual([
-      "a_skill",
-      "b_skill",
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.skills.map(s => s.name)).toEqual(["fine"]);
+    expect(catalog.invalid.map(i => [i.name, i.path])).toEqual([
+      ["Bad-Name", "skills/Bad-Name/SKILL.md"],
+      ["broken", skillFilePath("broken")],
     ]);
-    const head = await resolveCommit(repoDirFor(WS), MAIN);
-    const again = await adoptWorkspaceSkills(WS);
-    expect(again.written).toBe(0);
-    expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(head);
-    expect((await log(repoDirFor(WS), MAIN, 5))[0].subject).toContain(
-      "Adopt workspace skills",
-    );
+    expect(catalog.invalid.every(i => i.reason.length > 0)).toBe(true);
   });
 
-  it("writes the DECLARED entities to the file, never the derived index", async () => {
-    // A row as the extractor leaves it: the author declared one entity, the
-    // index holds that plus every tokenised body word.
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "mrr_rules",
-      loadWhen: "MRR questions",
-      body: "MRR is working already; null months are pending.",
-      declaredEntities: ["mrr"],
-      entities: ["mrr", "working", "already", "null", "months", "pending"],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 0,
+  it("rejects oversized files and bodies before retaining them in the catalog", async () => {
+    await laptopCommit({
+      [skillFilePath("body_too_large")]: serializeSkillFile(
+        skill("body_too_large", "x".repeat(MAX_SKILL_BODY_CHARS + 1)),
+      ),
+      [skillFilePath("file_too_large")]:
+        "---\nname: file_too_large\ndescription: x\n---\n\n" +
+        "y".repeat(MAX_SKILL_FILE_BYTES),
     });
-    // A row from before `declaredEntities` existed: nothing was declared.
-    await Skill.create({
-      workspaceId: new Types.ObjectId(WS),
-      name: "legacy_rules",
-      loadWhen: "legacy questions",
-      body: "Legacy body with several tokenised words.",
-      entities: ["legacy", "body", "several", "tokenised", "words"],
-      scopeType: "workspace",
-      createdBy: "agent",
-      suppressed: false,
-      useCount: 0,
-    });
-    await adoptWorkspaceSkills(WS);
 
-    const declared = parseSkillFile(
-      "mrr_rules",
-      (await fileAt(skillFilePath("mrr_rules"))) ?? "",
-    );
-    expect(declared?.entities).toEqual(["mrr"]);
-    const legacy = await fileAt(skillFilePath("legacy_rules"));
-    expect(legacy).not.toContain("entities:");
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.skills).toEqual([]);
+    expect(catalog.invalid.map(file => file.reason)).toEqual([
+      `body exceeds ${MAX_SKILL_BODY_CHARS} characters`,
+      `skill file exceeds ${MAX_SKILL_FILE_BYTES} bytes`,
+    ]);
   });
 });
 
-describe("index sync keeps declared and derived apart", () => {
-  it("stores the file's list as declaredEntities and the union as entities", async () => {
-    await commitSkillSave(WS, {
-      ...skill("feed_rules", "Offers come from lead_agents rows."),
-      entities: ["feed"],
-    });
-    await syncSkillsIndexFromRepo(WS, "user-1");
-    const row = await Skill.findOne({ name: "feed_rules" });
-    expect(row?.declaredEntities).toEqual(["feed"]);
-    expect(row?.entities).toEqual(
-      expect.arrayContaining(["feed", "lead_agents"]),
+describe("writes are commits on main", () => {
+  it("save, flags, delete each leave one commit and nothing else", async () => {
+    await commitSkillSave(WS, skill("keeper"));
+    expect(await commitSkillFlags(WS, "keeper", { suppressed: true })).toBe(
+      true,
     );
-    expect(row?.entities.length ?? 0).toBeGreaterThan(1);
+    expect(await fileAt(skillFilePath("keeper"))).toContain("suppressed: true");
+    expect(await commitSkillFlags(WS, "keeper", { pinned: true })).toBe(true);
+    expect(await findSkill(WS, "keeper")).toMatchObject({
+      suppressed: true,
+      pinned: true,
+    });
+    // A no-op flip commits nothing.
+    const head = await resolveCommit(repoDirFor(WS), MAIN);
+    expect(await commitSkillFlags(WS, "keeper", { pinned: true })).toBe(true);
+    expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(head);
+
+    expect(await commitSkillDelete(WS, "keeper")).toBe(true);
+    expect(await fileAt(skillFilePath("keeper"))).toBeNull();
+    expect(await commitSkillDelete(WS, "never_committed")).toBe(false);
+    expect(
+      await commitSkillFlags(WS, "never_committed", { pinned: true }),
+    ).toBe(false);
+    const subjects = (await log(repoDirFor(WS), MAIN, 10)).map(c => c.subject);
+    expect(subjects).toEqual(
+      expect.arrayContaining([
+        'Save skill "keeper"',
+        'Suppress skill "keeper"',
+        'Pin skill "keeper"',
+        'Delete skill "keeper"',
+      ]),
+    );
+  });
+
+  it("refuses to write without a bound repo", async () => {
+    await unbindTestWorkspaceRepo(WS);
+    await expect(commitSkillSave(WS, skill("nope"))).rejects.toMatchObject({
+      name: "RepoRequiredError",
+    });
   });
 });

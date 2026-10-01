@@ -4,9 +4,15 @@ export { useUIStore } from "./uiStore";
 export { useExplorerStore, useDatabaseExplorerStore } from "./explorerStore";
 export { useSettingsStore } from "./settingsStore";
 export { useApiKeyStore } from "./apiKeyStore";
-export { useConnectorStore } from "./connectorStore";
+export {
+  useSourceConnectionStore,
+  useConnectorStore,
+} from "./sourceConnectionStore";
 export { useConnectorCatalogStore } from "./connectorCatalogStore";
-export { useConnectorEntitiesStore } from "./connectorEntitiesStore";
+export {
+  useSourceConnectionEntitiesStore,
+  useConnectorEntitiesStore,
+} from "./sourceConnectionEntitiesStore";
 export { useSchemaStore } from "./schemaStore";
 export type {
   Connection,

@@ -21,13 +21,22 @@ import {
   getSkillForAdmin,
   listSkillsForAdmin,
   saveSkill,
+  setSkillPinned,
   toggleSkillSuppressed,
 } from "../services/skills.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { RepoRequiredError } from "../apps/config";
 
 const logger = loggers.api("skills");
 
 export const skillsRoutes = createRouter();
+
+function repoRequired(c: AuthenticatedContext, error: RepoRequiredError) {
+  return c.json(
+    { success: false, code: error.code, error: error.message },
+    error.status as 412,
+  );
+}
 
 const WorkspaceParam = z.object({
   workspaceId: z
@@ -98,6 +107,9 @@ skillsRoutes.openapi(
       const skills = await listSkillsForAdmin(workspaceId);
       return c.json({ success: true, skills });
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true, skills: [] }, 200);
+      }
       logger.error("Error listing skills", { error });
       return c.json(
         {
@@ -135,25 +147,11 @@ skillsRoutes.openapi(
       if (!skill) {
         return c.json({ success: false, error: "Skill not found" }, 404);
       }
-      return c.json({
-        success: true,
-        skill: {
-          id: skill._id.toString(),
-          name: skill.name,
-          loadWhen: skill.loadWhen,
-          body: skill.body,
-          entities: skill.entities ?? [],
-          suppressed: !!skill.suppressed,
-          useCount: skill.useCount ?? 0,
-          lastUsedAt: skill.lastUsedAt ?? null,
-          createdBy: skill.createdBy,
-          createdAt: skill.createdAt,
-          updatedAt: skill.updatedAt,
-          previousBody: skill.previousBody ?? null,
-          previousUpdatedAt: skill.previousUpdatedAt ?? null,
-        },
-      });
+      return c.json({ success: true, skill });
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: "Skill not found" }, 404);
+      }
       logger.error("Error getting skill", { error });
       return c.json(
         {
@@ -183,6 +181,7 @@ skillsRoutes.openapi(
               loadWhen: z.string().optional(),
               body: z.string().optional(),
               entities: z.array(z.string()).optional(),
+              pinned: z.boolean().optional(),
             }),
           },
         },
@@ -208,9 +207,10 @@ skillsRoutes.openapi(
         loadWhen?: unknown;
         body?: unknown;
         entities?: unknown;
+        pinned?: unknown;
       };
       const user = c.get("user");
-      const actorId = user?.id ?? existing.createdBy;
+      const actorId = user?.id ?? "git";
 
       const nextLoadWhen =
         typeof body.loadWhen === "string" ? body.loadWhen : existing.loadWhen;
@@ -220,6 +220,8 @@ skillsRoutes.openapi(
         ? body.entities.filter((e): e is string => typeof e === "string")
         : undefined;
 
+      const nextPinned =
+        typeof body.pinned === "boolean" ? body.pinned : undefined;
       const result = await saveSkill(
         workspaceId,
         {
@@ -227,6 +229,7 @@ skillsRoutes.openapi(
           loadWhen: nextLoadWhen,
           body: nextBody,
           entities: nextEntities,
+          pinned: nextPinned,
         },
         actorId,
       );
@@ -235,6 +238,7 @@ skillsRoutes.openapi(
       }
       return c.json({ success: true, skill: result.skill });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error updating skill", { error });
       return c.json(
         {
@@ -294,6 +298,7 @@ skillsRoutes.openapi(
       }
       return c.json({ success: true, suppressed });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error toggling skill suppressed", { error });
       return c.json(
         {
@@ -302,6 +307,67 @@ skillsRoutes.openapi(
             error instanceof Error
               ? error.message
               : "Failed to update suppressed flag",
+        },
+        500,
+      );
+    }
+  },
+);
+
+skillsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/pin",
+    tags: ["Skills"],
+    summary: "Pin or unpin a skill (full body in every prompt)",
+    security: AUTH_SECURITY,
+    request: {
+      params: SkillIdParam,
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({ pinned: z.boolean().optional() }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+        return c.json(
+          { success: false, error: "Valid workspace ID is required" },
+          400,
+        );
+      }
+      const body = (await c.req.json().catch(() => ({}))) as {
+        pinned?: unknown;
+      };
+      const pinned = typeof body.pinned === "boolean" ? body.pinned : true;
+      const ok = await setSkillPinned(
+        workspaceId,
+        id,
+        pinned,
+        c.get("user")?.id,
+      );
+      if (!ok) {
+        return c.json({ success: false, error: "Skill not found" }, 404);
+      }
+      return c.json({ success: true, pinned });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      logger.error("Error toggling skill pinned", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to update pinned flag",
         },
         500,
       );
@@ -335,6 +401,7 @@ skillsRoutes.openapi(
       }
       return c.json({ success: true });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error deleting skill", { error });
       return c.json(
         {

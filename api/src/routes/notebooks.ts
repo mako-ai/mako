@@ -37,6 +37,7 @@ import { offloadBlocks } from "../notebooks/offload";
 import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { RepoRequiredError } from "../apps/config";
 import {
   notebookCommitChanges,
   notebookFileVersions,
@@ -470,6 +471,12 @@ notebookRoutes.openapi(
       publishTreeUpdated(loaded.workspaceId);
       return c.json({ success: true as const, ...result });
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json(
+          { success: false, code: error.code, error: error.message },
+          error.status as 412,
+        );
+      }
       logger.error("Notebook restore failed", { error });
       return c.json(
         {

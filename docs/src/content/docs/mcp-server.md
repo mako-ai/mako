@@ -5,15 +5,15 @@ description: Connect Claude Code, Cursor, Codex, or ChatGPT to your Mako workspa
 
 Mako is itself an [MCP](https://modelcontextprotocol.io) **server**: point Claude Code, Cursor, Codex, ChatGPT, or any MCP client at your workspace and your agent can explore your databases, validate queries, and build full Mako apps — using **your** AI subscription's tokens, not Mako's in-product agent.
 
-Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' tools, the MCP server is the reverse: it lets *your* agent use Mako.
+Where [MCP Connectors](/mcp-connectors/) let Mako's agent use _other_ systems' tools, the MCP server is the reverse: it lets _your_ agent use Mako.
 
 Want Claude Code or Codex **inside** the Mako UI instead? See [Coding Agents (ACP)](/coding-agents-acp/).
 
-**Data access over MCP is read-only by default, everywhere.** OAuth sign-in grants are *always* read-only — no scope can change that. Writes exist only as narrow, double-gated API-key opt-ins a workspace admin must configure deliberately: governed dbt runs (`warehouse:write` scope), dbt Git mutations (`git:write` scope), and — narrowest of all — SQL writes, which require **both** a key with the `query:write` scope **and** a connection explicitly marked *Allow agent writes*. A default key can touch none of these.
+**Data access over MCP is read-only by default, everywhere.** A client may request `warehouse:write` during OAuth sign-in to run governed dbt models and jobs; the consent screen shows that permission as its own option — ticked because the client asked for it, and yours to untick — and warns that it can modify warehouse relations. A client that does not request it never gets the option. Raw SQL writes remain a narrower, double-gated API-key opt-in requiring **both** a key with `query:write` and a connection explicitly marked _Allow agent writes_. Neither write permission is granted by default.
 
 ## Connect by signing in (no API key)
 
-Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, approve **read-only** access. Done.
+Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, and approve the requested access. Normal connections are read-only against warehouse data; clients requesting dbt execution show a separate `warehouse:write` option, pre-ticked because they asked for it; untick it to connect read-only.
 
 Inside the app, everything lives at **Settings → Connect Agents**: per-client setup with one-click **Add to Claude** / **Add to Cursor** buttons, plus a **Connected agents** list showing every agent with access (who connected it, when it was last used) with one-click disconnect.
 
@@ -52,7 +52,12 @@ url = "https://your-mako-host/api/mcp"
 
 Verify the connection (Claude Code): `claude mcp list` should show `mako … ✓ Connected`.
 
-Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Grants are always scoped to the read-only MCP set — an OAuth token can never do more than a fresh MCP API key.
+CLI and external MCP sign-ins stay connected until you revoke them, even after
+long periods of inactivity. Access tokens last 8 hours and clients renew them
+automatically with a rotating refresh token that has no expiry. You can revoke
+a connection from your workspace settings.
+
+Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Grants default to `mcp query:read`; `warehouse:write` is the only OAuth write scope and must be requested and approved explicitly.
 
 ## Headless / CI: API keys
 
@@ -83,7 +88,7 @@ Keys created before scopes existed keep working for the REST API but cannot conn
 
 ## What your agent can do
 
-Try: *"Using the mako tools, explore my data and build a dashboard app showing revenue by month, then give me a preview link."*
+Try: _"Using the mako tools, explore my data and build a dashboard app showing revenue by month, then give me a preview link."_
 
 The server ships usage instructions with the handshake, so agents discover this workflow on their own:
 
@@ -93,9 +98,10 @@ The server ships usage instructions with the handshake, so agents discover this 
 4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
 5. **Publish** — `app_commit` (durability, `git push` semantics) and `app_merge_to_main` (`main` is what publishes buildable state).
 6. **Dashboards** — `search_dashboards` finds existing dashboards and `update_data_source_query` edits them in place: rewrite a source query (replace/patch/append), toggle live vs. materialized (`parquet`), and set the dashboard-level cron refresh schedule (`materializationSchedule`). Server writes bump the dashboard version, push a `dashboard.updated` realtime poke to open tabs, and queue a Parquet rebuild when the definition changes (schedule-only changes don't). Widget/layout editing stays in-product — those tools are client-only.
-7. **dbt** — `read_dbt_project_tree` and the dbt file tools author models headlessly; `dbt_parse` / `dbt_compile_model` / `dbt_show` validate them asynchronously (start a run, poll `dbt_get_run`). Warehouse-mutating runs (`dbt_run_model`, `dbt_run_job`, plus `dbt_cancel_run`) only appear for API keys carrying the opt-in `warehouse:write` scope — see the security model below.
-8. **Connectors and connections** — a *connector* is code (`stripe`, `ws:vercel-ai-gateway`); a *connection* is a credential configured with one. `list_connectors` is the catalog of code available to the workspace, with the connections configured with each; `inspect_connector` describes a type (entities, incremental support, config field names — never values); `inspect_connection` describes one configured connection of either kind; and `probe_connection` runs a source connection *live* against the platform behind it: the credential check plus one bounded page of an entity (default 20 records, max 200; `fields` to keep only some columns, `since` where the connector supports it), written nowhere. That is how an agent verifies a freshly configured key, sees the real shape of an entity before authoring a `flows/<slug>.yml`, or answers an exploratory question from a platform that is not in the warehouse yet. Credential values never appear in a result; the probe scrubs them even out of vendor error messages. `probe_connection` reads external data, so like `sql_execute_query` it needs the `query:read` scope.
-9. **dbt Git** — `dbt_git_status` / `dbt_list_branches` / `dbt_compare_branches` / `dbt_list_pull_requests` are always available, so a headless agent can see that its edits are uncommitted working-tree drafts instead of leaving them stranded on the tracked branch. Git mutations (`dbt_commit_to_branch`, `dbt_commit_and_push`, branch create/switch/delete, PR open/update/merge/close, `dbt_sync_from_repo`) require the opt-in `git:write` scope.
+7. **dbt** — `dbt_create_project` and `read_dbt_project_tree` manage projects; `create_dbt_file` / `read_dbt_file` / `edit_dbt_file` / `modify_dbt_file` / `delete_dbt_file` provide model and config CRUD; `dbt_parse` / `dbt_compile_model` / `dbt_show` validate asynchronously (start a run, poll `dbt_get_run`); and `dbt_create_job` / `dbt_update_job` / `dbt_delete_job` manage jobs and schedules. Project and job mutations require an admin/owner role; file mutations and runs require at least member. Warehouse-mutating operations (`dbt_ensure_dev_environment`, `dbt_run_model`, `dbt_run_job`, `dbt_cancel_run`, and job create/update/delete — a scheduled job is executed against the warehouse) additionally require the explicit `warehouse:write` OAuth/API-key scope.
+8. **Connectors and connections** — a _connector_ is code (`stripe`, `ws:vercel-ai-gateway`); a _connection_ is a credential configured with one. `list_connectors` is the catalog of code available to the workspace, with the connections configured with each; `inspect_connector` describes a type (entities, incremental support, config field names — never values); `inspect_connection` describes one configured connection of either kind; and `probe_connection` runs a source connection _live_ against the platform behind it: the credential check plus one bounded page of an entity (default 20 records, max 200; `fields` to keep only some columns, `since` where the connector supports it), written nowhere. That is how an agent verifies a freshly configured key, sees the real shape of an entity before authoring a `flows/<slug>.yml`, or answers an exploratory question from a platform that is not in the warehouse yet. Credential values never appear in a result; the probe scrubs them even out of vendor error messages. `probe_connection` reads external data, so like `sql_execute_query` it needs the `query:read` scope.
+
+If an expected tool is absent, call `get_mcp_capabilities`. It reports the connection's effective scopes and grants, every available tool, and hidden grant-gated tools with the exact scope needed to enable them.
 
 Optional helpers: `web_search` / `fetch_url` for public docs (annotated `openWorldHint`).
 
@@ -107,12 +113,11 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 
 ## Security model
 
-- **SQL is read-only unless double-gated otherwise.** By default SQL must be a single `SELECT`/`WITH` statement; enforcement also happens *inside the database* where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only. SQL writes require an API key with the `query:write` scope **and** a connection a workspace admin marked `allowAgentWrites` — the key scope alone stays read-only against every other connection, the connection flag alone does nothing for read-scoped keys, and console runs, app data bindings, and materializations stay read-only regardless.
-- **Warehouse mutations are opt-in and governed.** The only write path to a warehouse over MCP is dbt execution (`dbt_run_model` / `dbt_run_job`), which builds committed, reviewable model definitions — never ad-hoc SQL. These tools are hidden unless a workspace admin creates an API key with the `warehouse:write` scope (never granted by default; OAuth grants stay pinned to the read-only set).
-- **Git mutations are opt-in the same way.** dbt repository writes (commits, branches, pull requests) require the `git:write` scope; without it the agent can read Git state but every mutation tool stays hidden. Repository-side protections (protected branches, PR reviews) apply on top.
+- **SQL is read-only unless double-gated otherwise.** By default SQL must be a single `SELECT`/`WITH` statement; enforcement also happens _inside the database_ where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only. SQL writes require an API key with the `query:write` scope **and** a connection a workspace admin marked `allowAgentWrites` — the key scope alone stays read-only against every other connection, the connection flag alone does nothing for read-scoped keys, and console runs, app data bindings, and materializations stay read-only regardless.
+- **Warehouse mutations are opt-in and governed.** The only write path to a warehouse over MCP is dbt execution, which builds committed, reviewable model definitions — never ad-hoc SQL. These tools are hidden unless the OAuth client requests `warehouse:write` and the user checks its separate consent option, or a workspace admin creates an API key with that scope. It is never granted by default.
 - **Non-SQL engines fail closed** (MongoDB shell code, Cloudflare KV): the lexical analyzer cannot validate them, so read-only execution refuses them outright. SQL engines without a session-level read-only mode (BigQuery, MSSQL, Cloudflare D1) rely on the validated single-`SELECT`/`WITH` statement instead.
 - **MCP credentials are MCP-only.** OAuth access tokens and scoped keys are rejected on every other API endpoint, so an MCP credential can never be replayed against REST mutation routes.
-- **OAuth grants are least-privilege by construction**: public clients with mandatory PKCE, single-use authorization codes, rotating refresh tokens, hashed at rest, always scoped to the read-only MCP set, and bound to the one workspace chosen at consent.
+- **OAuth grants are least-privilege by construction**: public clients use mandatory PKCE, single-use authorization codes, rotating refresh tokens hashed at rest, and a binding to the one workspace chosen at consent. Grants default to read-only warehouse access; `warehouse:write` requires an explicit request and a conspicuous consent warning.
 - **Key management requires a browser session** — API keys cannot create or delete other API keys.
 - App data bindings and materializations are always read-only.
 - **Dashboard writes edit definitions, never data.** `update_data_source_query` changes the dashboard document (query text, live/parquet toggle, refresh schedule) under the same query-access check as app bindings — an agent can point a source at a different saved query, but the query itself still executes read-only. Widget and layout mutations stay client-only and are not bridged.
@@ -136,21 +141,51 @@ vendored `@makoai/app-sdk`. The whole setup, no key to paste:
 
 ```bash
 git clone <your workspace repo> && cd <repo>
-claude                 # the mako MCP server prompts a browser sign-in (read-only)
+claude                 # the mako MCP server prompts a browser sign-in
 npx @makoai/cli login    # same sign-in for the app dev server, kept in ~/.mako/credentials.json
 npx @makoai/cli dev <app>   # or: cd apps/<app> && npm install && npm run dev
 ```
 
 The app renders with **real data**: the scaffold's `vite.config.ts` includes
 `makoData()` from `@makoai/app-sdk/vite`, which serves `__data/<binding>.parquet`
-by streaming the binding's materialized artifact from your Mako host with that
-login (a binding that was never materialized is built on first request;
-results are cached for five minutes under `node_modules/.mako-data/`,
-`?refresh` bypasses). This is the one place MCP credentials — OAuth tokens and
-scoped keys alike — are accepted outside `/api/mcp`: with `query:read` they may
-call the three read-only binding routes (`GET …/bindings`,
-`GET …/bindings/<name>/artifact`, `POST …/bindings/<name>/materialize`) and
-nothing else.
+from your Mako host with that login, built from your **local**
+`bindings/<binding>.sql`: unchanged text is the committed artifact (built on
+first request if it never was), edited text is a draft built from your SQL and
+never stored, so you see real data for a query before committing it. Results
+are cached under `node_modules/.mako-data/` next to a fingerprint of the text
+they came from (five minutes; `?refresh` bypasses). `MAKO_DBT_ENV=<env>` (or
+`makoData({ dbtEnvironment })`) renders `{{ dbt_schema }}` against that dbt
+environment, such as your personal one, instead of production — per relation,
+like `dbt --defer`: a `{{ dbt_schema }}.<model>` your environment has not built
+reads the production schema instead (BigQuery; other warehouses render every
+reference to the environment). This is the one
+place MCP credentials — OAuth tokens and scoped keys alike — are accepted
+outside `/api/mcp`: with `query:read` they may call the read-only binding
+routes (`GET …/bindings`, `GET …/bindings/<name>/artifact`,
+`POST …/bindings/<name>/materialize`, `POST …/bindings/<name>/dev-build`,
+`GET …/binding-jobs/<jobId>[/artifact]`, `GET …/viewer`) and nothing else —
+except `mako dbt`, below. Builds longer than a proxy's request limit run as
+jobs: `?async=1` on materialize (or `"async": true` on dev-build) answers 202
+with a `jobId` to poll; the plugin does this for you.
+
+**dbt from your checkout.** `npx @makoai/cli dbt run -s <selector>` (also
+`build` and `test`; `--full-refresh`, `--no-defer`) runs dbt in Mako's runner
+on your checkout's `dbt/` folder, uncommitted edits included: the CLI sends
+the files that differ from where your branch forked from `main` along with the
+run request, nothing is committed or pushed, and the log streams to your
+terminal (Ctrl-C cancels the run; the exit code is dbt's). No warehouse
+credentials on your laptop. It needs the `warehouse:write` scope
+(`mako login --warehouse-write`, which asks for it; the consent screen shows it as its own option, pre-ticked and yours to untick): your dbt
+code runs with the target environment's warehouse credentials, and macros,
+hooks and schema configs can write beyond your own schema — personal
+environments currently share the production connection, so this is not a
+sandbox. It builds your **personal environment** by default (created on first
+use, schema `dbt_<you>`; `--env` picks a shared development one), never
+another person's, and never production — production is built from `main` by a
+job. Known connection secrets are redacted from the streamed log. Runs appear
+in the project's run history as `local checkout on <branch>`. The routes:
+`POST /api/workspaces/:id/dbt/local-runs`, `GET …/local-runs/:runId`,
+`POST …/local-runs/:runId/cancel` (your own runs only).
 
 Headless / CI: put a workspace API key in the repo's gitignored `.env`
 (`MAKO_API_KEY=revops_…`, scopes `mcp` + `query:read`) and register the server
@@ -163,7 +198,7 @@ dev server picks the key up automatically. Self-hosted: `MAKO_API_URL` in
 Two things `AGENTS.md` tells the agent that are easy to get wrong:
 
 - Edit files with your own tools. The `app_*` file tools (`app_write_file`,
-  `app_bash`, `app_commit`, …) act on Mako's *sandbox* copy of the repo, not
+  `app_bash`, `app_commit`, …) act on Mako's _sandbox_ copy of the repo, not
   on your checkout.
 - Push to deploy. `main` is production; a commit on `main` — from your
   terminal, a merged PR, or the Publish button — is what builds and serves the
@@ -189,13 +224,13 @@ systems must not be mixed on one app.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-| --- | --- |
-| Client never opens the sign-in browser | The client predates MCP OAuth support — update it, or fall back to an API key header. |
-| `401 Invalid or expired MCP access token` | The OAuth grant was revoked or fully expired — reconnect the server in your client (it re-runs the sign-in). |
-| `403 … created before MCP scopes existed` | Legacy key. Sign in via OAuth or create a new key under Workspace Settings → API Keys. |
-| `403 … does not include the mcp scope` | Key was created without the `mcp` scope — create a new key. |
-| `Mako MCP access is read-only: the query was rejected…` | The agent attempted a write (`UPDATE`/`INSERT`/DDL). Expected — run writes with your own database tooling. |
+| Symptom                                                                  | Cause / fix                                                                                                                                                                            |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client never opens the sign-in browser                                   | The client predates MCP OAuth support — update it, or fall back to an API key header.                                                                                                  |
+| `401 Invalid or expired MCP access token`                                | The access token expired or the connection was revoked. The client should refresh automatically; reconnect if the grant was revoked or the client lost its saved credentials.                                                                           |
+| `403 … created before MCP scopes existed`                                | Legacy key. Sign in via OAuth or create a new key under Workspace Settings → API Keys.                                                                                                 |
+| `403 … does not include the mcp scope`                                   | Key was created without the `mcp` scope — create a new key.                                                                                                                            |
+| `Mako MCP access is read-only: the query was rejected…`                  | The agent attempted a write (`UPDATE`/`INSERT`/DDL). Expected — run writes with your own database tooling.                                                                             |
 | `Read-only execution is not supported for mongodb…` (or `cloudflare-kv`) | Non-SQL engine — the SQL analyzer can't validate it, so it fails closed. For MongoDB, use the discovery/inspection tools instead; arbitrary Mongo execution is not available over MCP. |
-| Client shows the server but tools error with 401 | The OAuth token or `Authorization: Bearer` key is missing/revoked — reconnect or rotate. |
-| ChatGPT rejects the connector ("does not implement our spec") | The deployment predates the `search` / `fetch` connector tools — update Mako. Custom MCP connectors also require Developer mode to be enabled under ChatGPT's connector settings. |
+| Client shows the server but tools error with 401                         | The OAuth token or `Authorization: Bearer` key is missing/revoked — reconnect or rotate.                                                                                               |
+| ChatGPT rejects the connector ("does not implement our spec")            | The deployment predates the `search` / `fetch` connector tools — update Mako. Custom MCP connectors also require Developer mode to be enabled under ChatGPT's connector settings.      |

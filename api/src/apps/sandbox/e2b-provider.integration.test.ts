@@ -22,6 +22,9 @@ import {
   readFile,
   scopeOf,
 } from "../worktree.service";
+import { initRepo, repoDirFor } from "../repository.service";
+import { seededTemplateFiles } from "../workspace-template";
+import { bindTestWorkspaceRepo } from "../bind-test-workspace-repo";
 
 const HAS_KEY = Boolean(process.env.E2B_API_KEY);
 const suite = HAS_KEY ? describe : describe.skip;
@@ -39,6 +42,8 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "e2b";
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  await initRepo(repoDirFor(WS), seededTemplateFiles());
+  await bindTestWorkspaceRepo(WS);
 }, 120_000);
 
 afterAll(async () => {

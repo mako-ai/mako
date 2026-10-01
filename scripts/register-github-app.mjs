@@ -11,7 +11,7 @@
  *
  * Usage (prod, org-owned, writes JSON for CI wiring):
  *   BASE_URL=https://app.mako.ai CLIENT_URL=https://app.mako.ai \
- *   GITHUB_APP_NAME="Mako Transforms" GITHUB_APP_ORG=mako-ai \
+ *   GITHUB_APP_NAME="Mako AI" GITHUB_APP_ORG=mako-ai \
  *   GITHUB_APP_PUBLIC=1 GITHUB_APP_OUTPUT_JSON=.secrets/prod-github-app.json \
  *   node scripts/register-github-app.mjs
  *
@@ -111,7 +111,7 @@ const baseUrl =
   process.env.BASE_URL || fileEnv.BASE_URL || "http://localhost:8080";
 const clientUrl =
   process.env.CLIENT_URL || fileEnv.CLIENT_URL || "http://localhost:5173";
-const appName = process.env.GITHUB_APP_NAME || "Mako Transforms (Dev)";
+const appName = process.env.GITHUB_APP_NAME || "Mako AI (Dev)";
 const ownerOrg = process.env.GITHUB_APP_ORG || "";
 const outputJson = process.env.GITHUB_APP_OUTPUT_JSON || "";
 const isPublic = process.env.GITHUB_APP_PUBLIC === "1";
@@ -119,7 +119,7 @@ const isPublic = process.env.GITHUB_APP_PUBLIC === "1";
 const manifest = {
   name: appName,
   description:
-    "Import dbt projects from GitHub, sync on push, Slim CI on pull requests.",
+    "Connect a workspace GitHub repo for apps, consoles, dbt, and skills.",
   url: clientUrl.replace(/\/$/, ""),
   hook_attributes: {
     url: `${baseUrl.replace(/\/$/, "")}/api/github/webhook`,
