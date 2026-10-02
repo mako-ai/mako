@@ -1631,6 +1631,7 @@ flowRoutes.openapi(
             typeof sched.timezone === "string" && sched.timezone.trim()
               ? sched.timezone.trim()
               : flow.backfillSchedule?.timezone || "UTC",
+          entities: flow.backfillSchedule?.entities,
           lastRunAt: flow.backfillSchedule?.lastRunAt,
         };
       }
@@ -2192,6 +2193,7 @@ flowRoutes.openapi(
         enabled,
         cron: enabled ? cron : flow.backfillSchedule?.cron,
         timezone,
+        entities: flow.backfillSchedule?.entities,
         lastRunAt: flow.backfillSchedule?.lastRunAt,
       };
       {

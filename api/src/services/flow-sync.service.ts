@@ -571,6 +571,7 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     enabled: Boolean(file.backfillSchedule),
     cron: file.backfillSchedule?.cron,
     timezone: file.backfillSchedule?.timezone,
+    entities: file.backfillSchedule?.entities,
   } as IFlow["backfillSchedule"];
 
   // Enabled-ness only. The endpoint is inbound URL identity minted once in

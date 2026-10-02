@@ -56,6 +56,11 @@ export interface FlowFileSchedule {
   timezone: string;
 }
 
+export interface FlowFileBackfillSchedule extends FlowFileSchedule {
+  /** Limit each scheduled backfill to these entities; absent = all. */
+  entities?: string[];
+}
+
 export interface FlowFile {
   name: string;
   type: "scheduled" | "webhook";
@@ -85,7 +90,7 @@ export interface FlowFile {
     };
   };
   schedule?: FlowFileSchedule | null;
-  backfillSchedule?: FlowFileSchedule | null;
+  backfillSchedule?: FlowFileBackfillSchedule | null;
   /** Only whether inbound delivery is on; never the endpoint or secret. */
   webhookEnabled?: boolean;
   sync: {
@@ -242,6 +247,9 @@ export function serializeFlowFile(flow: FlowFile): string {
     doc.backfill_schedule = {
       cron: flow.backfillSchedule.cron,
       timezone: flow.backfillSchedule.timezone,
+      ...(flow.backfillSchedule.entities?.length
+        ? { entities: flow.backfillSchedule.entities }
+        : {}),
     };
   }
   if (flow.type === "webhook") {
@@ -298,6 +306,16 @@ function scheduleFrom(v: unknown): FlowFileSchedule | null {
   const cron = str(s.cron);
   if (!cron) return null;
   return { cron, timezone: str(s.timezone) ?? "UTC" };
+}
+
+function backfillScheduleFrom(v: unknown): FlowFileBackfillSchedule | null {
+  const schedule = scheduleFrom(v);
+  if (!schedule) return null;
+  const raw = (v as Record<string, unknown>).entities;
+  const entities = Array.isArray(raw)
+    ? raw.map(str).filter((e): e is string => Boolean(e))
+    : [];
+  return entities.length > 0 ? { ...schedule, entities } : schedule;
 }
 
 /**
@@ -400,7 +418,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     source,
     destination,
     schedule: scheduleFrom(doc.schedule),
-    backfillSchedule: scheduleFrom(doc.backfill_schedule),
+    backfillSchedule: backfillScheduleFrom(doc.backfill_schedule),
     webhookEnabled: webhookDoc ? webhookDoc.enabled !== false : undefined,
     sync: {
       mode: str(syncDoc.mode),
