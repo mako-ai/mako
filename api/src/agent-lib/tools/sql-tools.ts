@@ -1263,7 +1263,7 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: tool({
       description:
-        "Execute a SQL query and return results as a markdown table (columns with types listed separately; long cells shortened; `note` says what was left out). Shows up to 50 rows by default within a size budget — pass maxRows for more, but prefer aggregating in SQL. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results as a markdown table, fenced as untrusted data (columns with types listed separately; long cells shortened; `note` says what was left out). Shows up to 50 rows by default within a size budget — pass maxRows for more, but prefer aggregating in SQL. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
       execute: async ({ connectionId, database, query, maxRows }) => {
         try {

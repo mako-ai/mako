@@ -63,7 +63,10 @@ async function testTerminalReturnsImmediately() {
   assert.equal(result.durationMs, 1234);
   // Rows come back as a markdown table (query-result-format.ts), and the
   // note says the saved sample is smaller than the full result.
-  assert.equal(result.table, "| a |\n|---|\n| 1 |\n| 2 |");
+  assert.match(
+    String(result.table),
+    /<(untrusted-data-[0-9a-f]{16})>\n\| a \|\n\|---\|\n\| 1 \|\n\| 2 \|\n<\/\1>$/,
+  );
   assert.equal(result.shownRows, 2);
   assert.match(String(result.note), /produced 42 rows; 2 were kept/);
   assert.equal(reads, 1, "should read exactly once");

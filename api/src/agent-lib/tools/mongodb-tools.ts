@@ -28,6 +28,7 @@ import {
   QUERY_RESULT_DEFAULT_ROWS,
   QUERY_RESULT_MAX_ROWS,
   budgetDocumentsForModel,
+  documentsForModel,
 } from "./shared/query-result-format";
 
 // Define schemas separately to avoid inline inference overhead
@@ -422,9 +423,11 @@ async function executeQueryImpl(
       .slice(0, QUERY_RESULT_MAX_ROWS)
       .map((doc: unknown) => truncateDocument(doc));
     const budgeted = budgetDocumentsForModel(documents, { maxRows });
+    const { data: _rawData, ...rest } = result;
     return {
-      ...result,
-      data: budgeted.documents,
+      ...rest,
+      shownDocuments: budgeted.shown,
+      documents: documentsForModel(budgeted.documents),
       ...(budgeted.shown < total
         ? {
             _warning: `Showing ${budgeted.shown} of ${total} documents. Use $group/$project/.limit() in the query to narrow it, or pass maxRows (up to ${QUERY_RESULT_MAX_ROWS}).`,
@@ -558,7 +561,7 @@ export const createMongoToolsV2 = (
 
     execute_query: tool({
       description:
-        "Execute a MongoDB query and return results. Write queries in JavaScript using MongoDB Node.js driver syntax (e.g., db.collection('users').find({}).limit(10).toArray()).",
+        "Execute a MongoDB query and return results (`documents`: one JSON document per line, fenced as untrusted data; up to 50 within a size budget — pass maxRows for more). Write queries in JavaScript using MongoDB Node.js driver syntax (e.g., db.collection('users').find({}).limit(10).toArray()).",
       inputSchema: executeQuerySchema,
       execute: async ({ query, connectionId, databaseName, maxRows }) => {
         try {
