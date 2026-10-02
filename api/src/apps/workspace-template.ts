@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 18;
+export const WORKSPACE_TEMPLATE_VERSION = 19;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -56,10 +56,18 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 - \`apps/<folder>/…/<slug>/\` — one app per folder holding a \`mako.json\`:
   a real Vite + React + TypeScript project. \`mako.json\` (\`id\`, title,
   entry), \`bindings/<name>.sql\` (data), \`src/\`, \`package.json\` +
-  \`package-lock.json\` (commit the lockfile). Folders between \`apps/\` and
+  its lockfile (commit it). Folders between \`apps/\` and
   the app are plain organisation — move an app with \`git mv\` and it keeps
   its identity, which is the \`id\` in its manifest, never its path.
   \`users/<userId>/apps/…\` are personal apps.
+- **Package manager: pnpm.** Use \`pnpm install\`, \`pnpm add <pkg>\`,
+  \`pnpm dev\`, \`pnpm build\` — never \`npm install\` in a pnpm app: it
+  ignores \`pnpm-lock.yaml\` and writes a competing \`package-lock.json\`.
+  Mako installs each app with what its folder says (\`pnpm-lock.yaml\` or
+  \`"packageManager": "pnpm@…"\` → pnpm, otherwise npm), so an app still on
+  \`package-lock.json\` keeps working; convert it with \`pnpm import\`, then
+  delete \`package-lock.json\` and set \`packageManager\`. Every new app is
+  pnpm.
 - \`packages/app-sdk/\` — \`@makoai/app-sdk\` (managed by Mako, do not edit).
   Apps depend on the published package (\`"@makoai/app-sdk": "^2"\`); older
   apps may still reference it via \`file:../../packages/app-sdk\`.
@@ -125,7 +133,7 @@ You are an ordinary developer in an ordinary checkout.
   The SDK API (\`useQuery\`, \`useDuckDB\`), binding front matter, chart and
   dialect guidance live there — not in this file. \`load_skill("apps")\` is
   the one to read first.
-- **Eyes**: run the app yourself — \`npm install && npm run dev\` inside
+- **Eyes**: run the app yourself — \`pnpm install && pnpm dev\` inside
   \`apps/<slug>\` — and look at it with your own browser tooling. \`run_app\`,
   \`app_open_app\`, \`app_browse\` render the sandbox's checkout, not yours.
 - **Memory**: durable workspace knowledge (schema quirks, conventions) goes
@@ -176,7 +184,7 @@ name, role }, app: { id, slug, role } }\`, or \`null\` on an anonymous share.
 Mako knows nothing else about people on purpose — team, country, seniority
 are YOUR data: put a roster in a binding (\`email\` + the columns the app's
 logic needs) and join it on the email in \`useDuckDB\`. \`MAKO_VIEWER_AS=<email>\`
-in \`.env\` previews the app as another member during \`npm run dev\`. See
+in \`.env\` previews the app as another member during \`pnpm dev\`. See
 \`packages/app-sdk/README.md\`.
 
 ## Shipping

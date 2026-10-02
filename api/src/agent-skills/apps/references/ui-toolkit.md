@@ -7,8 +7,8 @@ no CDN tricks. This is the proven setup (first shipped in
 ## Install
 
 ```bash
-npm i -D tailwindcss @tailwindcss/vite
-npm i clsx tailwind-merge class-variance-authority lucide-react
+pnpm add -D tailwindcss @tailwindcss/vite
+pnpm add clsx tailwind-merge class-variance-authority lucide-react
 ```
 
 `vite.config.ts` — add the plugin and the `@/` alias (keep `makoData()`):
@@ -81,7 +81,7 @@ Import it once from `main.tsx` (`import "./index.css"`).
 ## shadcn/ui
 
 Current shadcn components pass refs as props — they need **React 19**
-(`npm i react@^19 react-dom@^19 && npm i -D @types/react@^19 @types/react-dom@^19`;
+(`pnpm add react@^19 react-dom@^19 && pnpm add -D @types/react@^19 @types/react-dom@^19`;
 the SDK's peer range allows it). Under React 18 a `PopoverTrigger asChild`
 cannot anchor and fails silently.
 
@@ -141,4 +141,4 @@ Delete the runtime-injected CSS string and any `<link>`/`<script>` to
 unpkg/CDN, move styles to Tailwind utilities, and replace hand-rolled
 popovers/segmented controls with shadcn `Popover` / `Tabs`. Keep custom SVG
 charts if they are good — restyle their HTML tooltips with utilities. Then
-`npx tsc -b && npm run build` must both pass.
+`pnpm exec tsc -b && pnpm build` must both pass.

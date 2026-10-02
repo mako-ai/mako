@@ -8,6 +8,18 @@ Every Mako workspace repository carries this package at `packages/app-sdk`;
 apps depend on it with `"@makoai/app-sdk": "file:../../packages/app-sdk"`. Mako
 keeps the vendored copy current — do not edit it in a workspace repo.
 
+## Install
+
+Apps use **pnpm** (new apps pin it in `packageManager`; Mako installs each
+app with the package manager its lockfile names):
+
+```bash
+pnpm add @makoai/app-sdk
+```
+
+Do not run `npm install` in a pnpm app — it ignores `pnpm-lock.yaml` and
+writes a competing `package-lock.json`.
+
 ## In the app
 
 ```tsx

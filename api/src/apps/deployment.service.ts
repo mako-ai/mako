@@ -50,6 +50,7 @@ import {
 } from "./worktree.service";
 import { readBoxDir } from "./box";
 import { resolveAppEnv } from "./env.service";
+import { INSTALL_IS_FRESH, installCommand } from "./package-manager";
 
 const logger = loggers.api("apps-deployment");
 
@@ -582,22 +583,21 @@ export async function buildApp(
   );
   const install = await exec(
     handle,
-    // `--loglevel=http` so the install streams progress into the log (npm is
-    // near-silent when its stdout is a pipe), and `--foreground-scripts` so
-    // lifecycle-script output shows too — the client is watching this live.
+    // npm or pnpm, as the app's own lockfile says (package-manager.ts), in
+    // its verbose form — the client is watching this log live.
     //
     // Freshness via OUR stamp, written only after a SUCCESSFUL install: npm
     // writes .package-lock.json early during reify, so a killed install left
     // a "fresh" stamp over a half-written tree (no vite binary) and every
     // later publish skipped the install forever. Stamp-after-success plus
     // rm -rf on miss makes the tree either complete or absent.
-    `set -o pipefail; ( [ node_modules/.mako-installed -nt package.json ] || (rm -rf node_modules && npm install --no-audit --no-fund --loglevel=http --foreground-scripts && touch node_modules/.mako-installed) ) 2>&1 | tee -a ${log}`,
+    `set -o pipefail; ( ${INSTALL_IS_FRESH} || (rm -rf node_modules && ${installCommand({ verbose: true })} && touch node_modules/.mako-installed) ) 2>&1 | tee -a ${log}`,
     { timeoutMs: 300_000 },
   );
   if (install.exitCode !== 0) {
     return {
       ok: false,
-      output: `npm install failed\n${(install.stdout + install.stderr).slice(-4000)}`,
+      output: `dependency install failed\n${(install.stdout + install.stderr).slice(-4000)}`,
     };
   }
   const build = await exec(

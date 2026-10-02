@@ -165,6 +165,7 @@ import {
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
 import { DevBuildError, planDevBuild } from "../apps/binding-dev-build";
+import { installCommand } from "../apps/package-manager";
 import {
   getBindingJob,
   serializeBindingJob,
@@ -2231,7 +2232,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Build the app in its session and mint a preview link",
     description:
-      "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
+      "Installs dependencies (npm or pnpm, per the app's lockfile; when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -2265,7 +2266,7 @@ appsRoutes.openapi(
         );
       }
 
-      // npm install can leave a new/updated lockfile in the worktree (e.g.
+      // The install can leave a new/updated lockfile in the worktree (e.g.
       // the scaffold ships without one). Commit it immediately rather than
       // leaving it as WIP — every mutating action here should end in a real
       // commit, same as chat turns, not just an in-progress build.
@@ -2314,7 +2315,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Start (or reuse) a live `vite dev` preview for this app",
     description:
-      "Live dev preview (apps.md §12.4). Runs `npm install` if needed, starts a persistent `vite dev` inside the app's sandbox, and returns the sandbox's own public origin for the browser to iframe — HMR rides that origin, so edits show up with no rebuild step and nothing of the tenant's runs on the API host.",
+      "Live dev preview (apps.md §12.4). Installs dependencies (npm or pnpm, per the app's lockfile) if needed, starts a persistent `vite dev` inside the app's sandbox, and returns the sandbox's own public origin for the browser to iframe — HMR rides that origin, so edits show up with no rebuild step and nothing of the tenant's runs on the API host.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -2363,14 +2364,14 @@ appsRoutes.openapi(
         const logPath = devLogPath(handle);
         const install = await execInWorktree(
           handle,
-          `: > ${logPath}; printf '=== mako dev boot: cd ${handle.appRoot} && vite (Mako launcher: bindings + eyes + HMR host) ===\\n\\n' >> ${logPath}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${logPath}`,
+          `: > ${logPath}; printf '=== mako dev boot: cd ${handle.appRoot} && vite (Mako launcher: bindings + eyes + HMR host) ===\\n\\n' >> ${logPath}; set -o pipefail; ( [ -d node_modules ] || ${installCommand()} ) 2>&1 | tee -a ${logPath}`,
           { timeoutMs: 300_000 },
         );
         if (install.exitCode !== 0) {
           return c.json(
             {
               success: false,
-              error: "npm install failed",
+              error: "Dependency install failed",
               stdout: install.stdout.slice(-4000),
               stderr: install.stderr.slice(-4000),
             },
@@ -2653,7 +2654,7 @@ appsRoutes.openapi(
     method: "get",
     path: "/{id}/dev-preview/log",
     tags: ["Apps"],
-    summary: "Tail the dev-session boot log (npm install + vite output)",
+    summary: "Tail the dev-session boot log (dependency install + vite output)",
     description:
       "Returns the sandbox's real boot output from `offset` onward, plus the log's current size for the next poll. This is what the boot screen shows — the actual output, not a stand-in. Never starts a sandbox; with none running it returns an empty chunk.",
     security: AUTH_SECURITY,
@@ -2698,7 +2699,8 @@ appsRoutes.openapi(
     method: "get",
     path: "/{id}/build/log",
     tags: ["Apps"],
-    summary: "Tail the publish/preview build log (npm install + build output)",
+    summary:
+      "Tail the publish/preview build log (dependency install + build output)",
     description:
       "Returns the sandbox's live build output from `offset` onward, plus the log's current size for the next poll — what the Publish button streams so you can watch the build run. Never starts a sandbox.",
     security: AUTH_SECURITY,

@@ -94,7 +94,7 @@ app "should" render when you can check what it DOES render.
    new state in an `app_browse` screenshot. If you claim "the badge now
    says Live", a screenshot must have shown it.
 
-For an app with NO dev session running, `npm run build` via `app_bash` is
+For an app with NO dev session running, `pnpm build` via `app_bash` is
 the correctness check before telling the user it works. When a dev session IS
 running, prefer looking (`app_browse`) — it verifies runtime behavior, not
 just compilation.
@@ -114,17 +114,23 @@ just compilation.
    and renames go through `app_bash` (`rm`, `mv`) — the flush picks them up.
 4. `app_bash` runs real bash in the app's sandbox (E2B microVM). **cwd is the
    app's own folder** (`apps/<slug>`), not the repo root — `package.json` and
-   `src/` are right there. `npm install <pkg>`, `npm run build`, `node`,
+   `src/` are right there. `pnpm add <pkg>`, `pnpm build`, `node`,
    `git log/diff/status`. The sandbox has a real remote with credentials, so
    `git commit` and `git push` in the shell are legitimate — commits you make
    there are auto-pushed after the command. Prefer `app_commit` for
    checkpoints (it commits AND pushes in one step) and rely on the automatic
    end-of-turn commit for everything else.
 5. Dev servers are managed by `app_open_app`, not by the shell: do NOT
-   background `vite` or `npm run dev` from `app_bash` — a shell-started
+   background `vite` or `pnpm dev` from `app_bash` — a shell-started
    server is invisible to the preview controls and gets replaced. If
-   `app_open_app` fails on missing dependencies, run `npm install` via
+   `app_open_app` fails on missing dependencies, run `pnpm install` via
    `app_bash` and call `app_open_app` again.
+   **Package manager: pnpm.** New apps pin it (`"packageManager": "pnpm@…"`)
+   and commit `pnpm-lock.yaml`; Mako installs with whatever the app's folder
+   says. Never run `npm install` in a pnpm app — it ignores `pnpm-lock.yaml`
+   and writes a competing `package-lock.json`. An app still on
+   `package-lock.json` installs with npm until converted: `pnpm import`,
+   delete `package-lock.json`, add the `packageManager` field, commit.
 6. `app_list_branches` / `app_merge_to_main` manage the branch model; merge
    only when the user asks for the changes to land on main.
 
@@ -206,7 +212,7 @@ and branch the UI on the result. Never propose adding such fields to Mako
 users or members. Every binding the app can read is downloaded whole into
 the browser, so this shapes the UI; it is not access control — say so
 when the user asks for "hiding" data. `MAKO_VIEWER_AS=<email>` in the
-repo's `.env` previews the app as another member during `npm run dev`.
+repo's `.env` previews the app as another member during `pnpm dev`.
 
 ## The SDK's name
 
