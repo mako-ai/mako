@@ -335,3 +335,29 @@ console.log("flow-config-files tests passed");
   assert.match(emitted, /connection_id: 6a2bd881b6f8c41ea17e9bc7/);
   assert.doesNotMatch(emitted, /connector_id/);
 }
+
+// ── scoped backfill schedule ──
+// Entities with no webhook (Close users) only refresh on a backfill; the
+// schedule's entity list must survive the file round-trip and be dropped
+// when empty so unscoped flows keep a byte-identical file.
+{
+  const scoped = parseFlowFile(
+    "name: scoped\ntype: webhook\nsource:\n  type: connector\n  connection_id: 6a2bd881b6f8c41ea17e9bc7\ndestination:\n  connection_id: 69c2719490eb18199aafa882\nbackfill_schedule:\n  cron: 0 4 * * *\n  timezone: Europe/Paris\n  entities:\n    - users\n    - '  '\n    - groups\n",
+  );
+  assert.ok(scoped);
+  assert.deepEqual(scoped.backfillSchedule, {
+    cron: "0 4 * * *",
+    timezone: "Europe/Paris",
+    entities: ["users", "groups"],
+  });
+  const again = parseFlowFile(serializeFlowFile(scoped));
+  assert.deepEqual(again?.backfillSchedule, scoped.backfillSchedule);
+
+  const unscoped = serializeFlowFile(
+    flowToFile({
+      ...flowWithTraps(),
+      backfillSchedule: { enabled: true, cron: "0 3 * * *", entities: [] },
+    } as never),
+  );
+  assert.doesNotMatch(unscoped, /entities:\n\s+- /);
+}

@@ -2181,8 +2181,14 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
           { _id: new Types.ObjectId(flowId) },
           { $set: { "backfillSchedule.lastRunAt": now } },
         );
+        const entities = schedule?.entities?.length
+          ? schedule.entities
+          : undefined;
         await cdcBackfillService.startBackfill(workspaceId, flowId, {
-          reason: "Scheduled full backfill",
+          entities,
+          reason: entities
+            ? `Scheduled backfill (${entities.join(", ")})`
+            : "Scheduled full backfill",
         });
       });
 

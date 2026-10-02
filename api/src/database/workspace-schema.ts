@@ -995,6 +995,8 @@ export interface IFlow extends Document {
     enabled: boolean;
     cron?: string;
     timezone?: string;
+    /** Scope each scheduled backfill to these entities; empty = all. */
+    entities?: string[];
     lastRunAt?: Date;
   };
   webhookConfig?: {
@@ -2425,6 +2427,7 @@ const FlowSchema = new Schema<IFlow>(
         type: String,
         default: "UTC",
       },
+      entities: { type: [String], default: undefined },
       lastRunAt: Date,
     },
     webhookConfig: {
