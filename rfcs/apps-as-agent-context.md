@@ -5,7 +5,7 @@
 the "improvement loop" (published apps and dashboards feed the agent with
 reusable logic). Not yet validated against production.
 **Depends on:** `rfcs/endorsements.md` (trust tiers). **Complements:**
-`rfcs/answer-provenance.md`.
+`rfcs/context-improvement-loop.md`.
 
 ## The problem
 
@@ -88,7 +88,7 @@ interface IAppBindingIndexEntry {
   bindingName: string;
   sql: string;                         // truncated for storage, full text read on demand
   connectionId?: ObjectId;
-  tablesReferenced: string[];          // parsed; ties into endorsements + provenance
+  tablesReferenced: string[];          // parsed; ties into endorsements + the improvement loop
   description?: string;
   descriptionSource: "authored" | "generated";
   descriptionEmbedding?: number[]; embeddingModel?: string;
@@ -153,9 +153,9 @@ This indexes *logic* that people wrote, so leaks are the main risk:
   (`query:read`) as bridged read tools already do.
 - Workspace scoping on every query (project principle 1).
 
-### 6. Provenance link
+### 6. Improvement-loop link
 
-When the agent reuses a binding, the answer trace (provenance RFC) records
+When the agent reuses a binding, the interaction record (context improvement loop RFC) records
 `{kind: "app", ref: appId, via: "search_apps", blobSha}` plus the tables
 referenced. This closes the loop: admins see which published apps are actually
 carrying answers and are therefore the best endorsement candidates, and which
@@ -185,7 +185,7 @@ bindings are stale relative to their sources.
   collection; check what the dev/prod clusters allow before committing to a
   separate collection versus extending `app_index`.
 - **Parsing `tablesReferenced` across dialects.** Needed for endorsements
-  gating and provenance both. Reuse any existing SQL parsing in the
+  gating and the improvement loop both. Reuse any existing SQL parsing in the
   codebase before adding a dependency; this is shared infrastructure with the
   other two RFCs and should be built once.
 - **Dashboards.** They are Mongo-native and already searchable by regex. Do they
@@ -195,7 +195,7 @@ bindings are stale relative to their sources.
 ## Risks
 
 - **Reinforcing mistakes.** If a published binding is wrong, the agent now
-  propagates it faster. The endorsement tier and the provenance signals are
+  propagates it faster. The endorsement tier and the improvement loop's signals are
   the counterweight; ship this RFC after, or alongside, endorsements, not before.
 - **Prompt bloat.** Returning SQL excerpts for many bindings into context is
   expensive. Cap results and excerpt length; the tool-weight tool

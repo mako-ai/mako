@@ -4,7 +4,7 @@
 **Written from:** the code as it stands at `f0ab587`, plus Hex's public docs
 (Threads, Notebook Agent, Context Studio). Not yet validated against a
 production census — see "Open questions".
-**Related:** `rfcs/answer-provenance.md`, `rfcs/apps-as-agent-context.md`
+**Related:** `rfcs/context-improvement-loop.md`, `rfcs/apps-as-agent-context.md`
 
 ## The problem
 
@@ -146,7 +146,7 @@ a raw table and nothing checks it. Two layers:
 3. **`context/endorsements.yml` for tables**, and the schema-tree badge.
 4. **`agentSourcePolicy` setting** with `prefer-endorsed` default.
 5. **`endorsed-only` query gating**, last, because it is the only step that can
-   break a working flow and needs the provenance trace (next RFC) to debug.
+   break a working flow and needs the interaction records from the context improvement loop RFC to debug.
 
 ## Open questions
 
@@ -169,7 +169,7 @@ a raw table and nothing checks it. Two layers:
 
 - **A trust signal nobody maintains is worse than none.** If 80% of assets are
   endorsed on day one, the ranking carries no information. Ship the UI so
-  endorsement is a deliberate act, and let the audit trail show unendorsed
+  endorsement is a deliberate act, and let the improvement loop surface unendorsed
   assets being used so admins know what to endorse next.
 - **False confidence.** "Endorsed" must not read as "correct." The agent should
   say *which* source it used, not that the answer is verified.
