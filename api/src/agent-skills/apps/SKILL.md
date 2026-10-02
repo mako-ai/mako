@@ -109,6 +109,13 @@ just compilation.
    both read straight from git so they work even when the sandbox is paused or
    dead. Read files with `app_read_file` (line-numbered by default, so you can
    anchor edits precisely). `app_bash` also works for ad-hoc exploration.
+   Tool output is capped before it enters the context: `app_read_file` returns
+   at most 2000 lines / ~50k chars per call (pass `offset`/`limit`; the result
+   gives `nextOffset` when more remains), `app_grep` returns at most 200
+   matches (narrow the pattern if `truncated` is set), and `app_bash` keeps
+   only the head and tail of long output (stdout 16k chars, stderr 8k) — when
+   cut, the full output is saved in the sandbox and the result names the path,
+   so `grep`/`tail`/`sed` it instead of re-running the command.
 3. Edit with `app_edit_file` (anchored oldString/newString; re-read after a
    failed anchor) or `app_write_file` for new files / full rewrites. Deletes
    and renames go through `app_bash` (`rm`, `mv`) — the flush picks them up.
