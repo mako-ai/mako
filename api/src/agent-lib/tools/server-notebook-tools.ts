@@ -53,10 +53,7 @@ import {
 import type { KernelOutput } from "../../services/kernel-provider";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
-import {
-  formatRowsForModel,
-  isTabularRows,
-} from "./shared/query-result-format";
+import { formatRowsForModel } from "./shared/query-result-format";
 
 const logger = loggers.api("notebook-server-tools");
 
@@ -682,15 +679,6 @@ export function createNotebookServerTools({
         }
         // The cell keeps up to MAX_SQL_ROWS for the notebook UI; the model
         // gets a small markdown preview (query-result-format.ts).
-        if (!isTabularRows(rows as unknown)) {
-          return {
-            success: true,
-            cellId: input.cellId,
-            rowCount: rows.length,
-            columns,
-            sampleRows: rows.slice(0, NOTEBOOK_SQL_PREVIEW_ROWS),
-          };
-        }
         return {
           success: true,
           cellId: input.cellId,

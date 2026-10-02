@@ -15,10 +15,7 @@
  * testable in isolation with a fake run reader.
  */
 
-import {
-  formatRowsForModel,
-  isTabularRows,
-} from "./shared/query-result-format";
+import { formatRowsForModel } from "./shared/query-result-format";
 
 /** What the model is told when a console preview leaves rows out. */
 export const CONSOLE_MORE_ROWS_HINT =
@@ -27,22 +24,20 @@ export const CONSOLE_MORE_ROWS_HINT =
 
 /**
  * A console run's rows as the model sees them: a markdown table under the
- * shared row/char budget (query-result-format.ts). Non-tabular results (a
- * scalar, a list of values) keep their raw preview.
+ * shared row/char budget (query-result-format.ts).
  */
 export function consoleRowsForModel(
   rows: unknown[],
   fields: unknown,
   maxRows: number,
   rowCount?: number,
-): Record<string, unknown> {
-  if (!isTabularRows(rows)) return { preview: rows.slice(0, maxRows) };
+) {
   return formatRowsForModel(rows, {
     fields,
     maxRows,
-    totalRowCount: rowCount,
+    totalRows: rowCount,
     moreHint: CONSOLE_MORE_ROWS_HINT,
-  }) as unknown as Record<string, unknown>;
+  });
 }
 
 /** Subset of the persisted `SavedConsole.lastRun` artifact this poll reads. */

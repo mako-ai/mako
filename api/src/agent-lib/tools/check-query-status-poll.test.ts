@@ -68,7 +68,7 @@ async function testTerminalReturnsImmediately() {
     /<(untrusted-data-[0-9a-f]{16})>\n\| a \|\n\|---\|\n\| 1 \|\n\| 2 \|\n<\/\1>$/,
   );
   assert.equal(result.shownRows, 2);
-  assert.match(String(result.note), /produced 42 rows; 2 were kept/);
+  assert.match(String(result.note), /Showing 2 of 42 rows/);
   assert.equal(reads, 1, "should read exactly once");
   assert.equal(sleeps, 0, "should never sleep for a settled run");
 }

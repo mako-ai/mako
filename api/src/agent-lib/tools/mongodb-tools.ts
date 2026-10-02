@@ -27,7 +27,6 @@ import {
 import {
   QUERY_RESULT_DEFAULT_ROWS,
   QUERY_RESULT_MAX_ROWS,
-  budgetDocumentsForModel,
   documentsForModel,
 } from "./shared/query-result-format";
 
@@ -419,18 +418,20 @@ async function executeQueryImpl(
     // truncateDocument) but stop once the size budget is spent. Slice before
     // truncating: a Mongo query has no automatic LIMIT.
     const total = result.data.length;
-    const documents = result.data
-      .slice(0, QUERY_RESULT_MAX_ROWS)
-      .map((doc: unknown) => truncateDocument(doc));
-    const budgeted = budgetDocumentsForModel(documents, { maxRows });
+    const { text, shown } = documentsForModel(
+      result.data
+        .slice(0, QUERY_RESULT_MAX_ROWS)
+        .map((doc: unknown) => truncateDocument(doc)),
+      { maxRows },
+    );
     const { data: _rawData, ...rest } = result;
     return {
       ...rest,
-      shownDocuments: budgeted.shown,
-      documents: documentsForModel(budgeted.documents),
-      ...(budgeted.shown < total
+      shownDocuments: shown,
+      documents: text,
+      ...(shown < total
         ? {
-            _warning: `Showing ${budgeted.shown} of ${total} documents. Use $group/$project/.limit() in the query to narrow it, or pass maxRows (up to ${QUERY_RESULT_MAX_ROWS}).`,
+            _warning: `Showing ${shown} of ${total} documents. Use $group/$project/.limit() in the query to narrow it, or pass maxRows (up to ${QUERY_RESULT_MAX_ROWS}).`,
           }
         : {}),
     };

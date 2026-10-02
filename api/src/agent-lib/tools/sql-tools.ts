@@ -17,10 +17,8 @@ import {
   QUERY_RESULT_DEFAULT_ROWS,
   QUERY_RESULT_MAX_ROWS,
   formatRowsForModel,
-  isTabularRows,
 } from "./shared/query-result-format";
 import {
-  truncateSamples,
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
   AGENT_QUERY_TIMEOUT_MS,
@@ -866,35 +864,18 @@ async function inspectTableInner(
 
   // Sample rows as one markdown table (column names once, cells shortened)
   // under a small budget: they show the data's shape, not the data.
-  if (isTabularRows(samples)) {
-    const sampleTable = formatRowsForModel(samples, {
-      maxRows: MAX_SAMPLE_ROWS,
-      maxChars: INSPECT_SAMPLE_MAX_CHARS,
-    });
-    return {
-      sqlDialect: dialect,
-      entityKind,
-      entityName: tableName,
-      database: databaseName,
-      fields: columns,
-      samples: sampleTable.table,
-      ...(sampleTable.note ? { _note: sampleTable.note } : {}),
-    };
-  }
-
-  const { samples: truncatedSamples, _note } = truncateSamples(
-    samples,
-    MAX_SAMPLE_ROWS,
-  );
-
+  const sampleTable = formatRowsForModel(samples, {
+    maxRows: MAX_SAMPLE_ROWS,
+    maxChars: INSPECT_SAMPLE_MAX_CHARS,
+  });
   return {
     sqlDialect: dialect,
     entityKind,
     entityName: tableName,
     database: databaseName,
     fields: columns,
-    samples: truncatedSamples,
-    _note,
+    samples: sampleTable.table,
+    ...(sampleTable.note ? { _note: sampleTable.note } : {}),
   };
 }
 
@@ -1084,7 +1065,7 @@ async function executeQueryImpl(
       });
     }
 
-    if (result && result.success && isTabularRows(result.data)) {
+    if (result && result.success && Array.isArray(result.data)) {
       // Result sets go to the model as one markdown table (column names
       // once) under a row/char budget — see query-result-format.ts.
       return {
