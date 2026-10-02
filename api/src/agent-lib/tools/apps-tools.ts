@@ -98,6 +98,12 @@ import { loggers } from "../../logging";
 
 const logger = loggers.agent();
 
+/**
+ * Full app_bash outputs kept in the sandbox's scratch dir (oldest pruned).
+ * Each is at most ~1 MB (the exec output cap) and the box disk is small.
+ */
+const FULL_OUTPUT_FILES_KEPT = 20;
+
 /** A tool call id as a file name: provider ids are not guaranteed path-safe. */
 function safeFileStem(id: string | undefined): string {
   const stem = (id ?? "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
@@ -370,6 +376,7 @@ export function createAppsTools({
                 handle,
                 `mako-tool-output/${safeFileStem(toolCallId)}.log`,
                 `$ ${command}\n\n=== stdout ===\n${result.stdout}\n\n=== stderr ===\n${result.stderr}\n`,
+                { keepNewest: FULL_OUTPUT_FILES_KEPT },
               );
             } catch (error) {
               logger.warn("Could not save full app_bash output", {

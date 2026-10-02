@@ -52,6 +52,7 @@ export default defineConfig({
       // Tool-output caps: no single result may flood the prompt.
       "src/agent-lib/tools/apps-tools-output-caps.test.ts",
       "src/agent-lib/tools/shared/output-cap.test.ts",
+      "src/agent-lib/tools/shared/query-result-format.test.ts",
       "src/agent-lib/capabilities/runtime.test.ts",
       "src/apps/preview.service.test.ts",
       "src/apps/deployment.service.test.ts",

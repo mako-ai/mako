@@ -1,5 +1,15 @@
 import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
 import type { AgentContext } from "../types";
+import { formatRowsForModel } from "../../agent-lib/tools/shared/query-result-format";
+
+/**
+ * Sample rows for the screen context: two rows as a markdown table with
+ * shortened cells. The block is re-sent on every step, so one wide JSON cell
+ * must not be able to bloat it.
+ */
+function promptSampleTable(rows: Array<Record<string, unknown>>): string {
+  return formatRowsForModel(rows, { maxRows: 2, maxChars: 2_000 }).table;
+}
 
 export const UNIFIED_SYSTEM_PROMPT = `You are Mako's unified workspace assistant.
 
@@ -162,10 +172,7 @@ function buildConsoleContext(context: AgentContext): string[] {
       }
       if (context.activeConsoleResults.sampleRows.length > 0) {
         parts.push(
-          `- Sample rows: ${context.activeConsoleResults.sampleRows
-            .slice(0, 2)
-            .map(row => JSON.stringify(row))
-            .join(" | ")}`,
+          `- Sample rows:\n${promptSampleTable(context.activeConsoleResults.sampleRows)}`,
         );
       }
       if (context.activeConsoleResults.chartSpec) {
@@ -243,12 +250,7 @@ function buildDashboardContext(context: AgentContext): string[] {
         );
       }
       if (ds.sampleRows && ds.sampleRows.length > 0) {
-        parts.push(
-          `    - Sample rows: ${ds.sampleRows
-            .slice(0, 2)
-            .map(row => JSON.stringify(row))
-            .join(" | ")}`,
-        );
+        parts.push(`    - Sample rows:\n${promptSampleTable(ds.sampleRows)}`);
       }
     });
   } else {

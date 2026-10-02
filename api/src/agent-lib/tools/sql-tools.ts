@@ -14,7 +14,11 @@ import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
 import {
-  truncateSamples,
+  QUERY_RESULT_DEFAULT_ROWS,
+  QUERY_RESULT_MAX_ROWS,
+  formatRowsForModel,
+} from "./shared/query-result-format";
+import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
   AGENT_QUERY_TIMEOUT_MS,
@@ -35,6 +39,14 @@ import {
   escapeSqliteIdentifier,
 } from "./shared/sql-dialects";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../databases/drivers/mysql/driver";
+
+/** Budget for inspect_table's sample rows: enough to show the data's shape. */
+const INSPECT_SAMPLE_MAX_CHARS = 8_000;
+
+const SQL_MORE_ROWS_HINT =
+  "To see more: aggregate or filter in SQL, pass maxRows (up to " +
+  `${QUERY_RESULT_MAX_ROWS}), or put the query in a console and run_console ` +
+  "so the user gets the full result in the results panel.";
 
 // LIMIT enforcement (kept local as it has sql-tools specific logic)
 const needsDefaultLimit = (sql: string): boolean => {
@@ -123,6 +135,14 @@ const executeQuerySchema = z.object({
         "For Cloudflare D1, pass the database UUID from list_databases.",
     ),
   query: z.string().describe("The SQL query to execute"),
+  maxRows: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      `Rows to show in the result table (default ${QUERY_RESULT_DEFAULT_ROWS}, at most ${QUERY_RESULT_MAX_ROWS}). Prefer aggregating in SQL over raising this.`,
+    ),
 });
 
 // ============================================================================
@@ -842,19 +862,20 @@ async function inspectTableInner(
     }
   }
 
-  const { samples: truncatedSamples, _note } = truncateSamples(
-    samples,
-    MAX_SAMPLE_ROWS,
-  );
-
+  // Sample rows as one markdown table (column names once, cells shortened)
+  // under a small budget: they show the data's shape, not the data.
+  const sampleTable = formatRowsForModel(samples, {
+    maxRows: MAX_SAMPLE_ROWS,
+    maxChars: INSPECT_SAMPLE_MAX_CHARS,
+  });
   return {
     sqlDialect: dialect,
     entityKind,
     entityName: tableName,
     database: databaseName,
     fields: columns,
-    samples: truncatedSamples,
-    _note,
+    samples: sampleTable.table,
+    ...(sampleTable.note ? { _note: sampleTable.note } : {}),
   };
 }
 
@@ -897,6 +918,7 @@ async function executeQueryImpl(
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
   queryAccess: QueryAccess = "write",
+  maxRows?: number,
 ) {
   const startTime = Date.now();
 
@@ -1041,6 +1063,21 @@ async function executeQueryImpl(
         rowCount,
         errorType,
       });
+    }
+
+    if (result && result.success && Array.isArray(result.data)) {
+      // Result sets go to the model as one markdown table (column names
+      // once) under a row/char budget — see query-result-format.ts.
+      return {
+        success: true,
+        rowCount: result.rowCount ?? result.data.length,
+        ...formatRowsForModel(result.data, {
+          fields: result.fields,
+          maxRows,
+          moreHint: SQL_MORE_ROWS_HINT,
+        }),
+        sqlDialect: dialect,
+      };
     }
 
     if (result && result.success && result.data) {
@@ -1207,9 +1244,9 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: tool({
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results as a markdown table, fenced as untrusted data (columns with types listed separately; long cells shortened; `note` says what was left out). Shows up to 50 rows by default within a size budget — pass maxRows for more, but prefer aggregating in SQL. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
-      execute: async ({ connectionId, database, query }) => {
+      execute: async ({ connectionId, database, query, maxRows }) => {
         try {
           return await executeQueryImpl(
             connectionId,
@@ -1219,6 +1256,7 @@ export const createSqlToolsV2 = (
             userId,
             toolExecutionContext,
             queryAccess,
+            maxRows,
           );
         } catch (error) {
           return {

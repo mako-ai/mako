@@ -19,6 +19,11 @@ import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-t
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { createScheduleQueryTool } from "../../agent-lib/tools/schedule-query-tool";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
+import { formatRowsForModel } from "../../agent-lib/tools/shared/query-result-format";
+
+/** Active-console sample rows in the system prompt (re-sent every step). */
+const PROMPT_SAMPLE_ROWS = 5;
+const PROMPT_SAMPLE_MAX_CHARS = 4_000;
 
 /**
  * Console agent metadata for UI and routing
@@ -115,14 +120,14 @@ function buildRuntimeContext(
         runtimeContext += `- Columns: ${activeConsoleResults.columns.join(", ")}\n`;
       }
       if (activeConsoleResults.sampleRows.length > 0) {
-        runtimeContext += `- Sample data (first ${activeConsoleResults.sampleRows.length} rows):\n`;
-        runtimeContext += "```json\n";
-        runtimeContext += JSON.stringify(
-          activeConsoleResults.sampleRows,
-          null,
-          2,
-        );
-        runtimeContext += "\n```\n";
+        // Same table shape as query tool results; this block is re-sent on
+        // every step, so cells are shortened and the size is bounded.
+        const sample = formatRowsForModel(activeConsoleResults.sampleRows, {
+          maxRows: PROMPT_SAMPLE_ROWS,
+          maxChars: PROMPT_SAMPLE_MAX_CHARS,
+        });
+        runtimeContext += `- Sample data (first ${sample.shownRows} rows):\n`;
+        runtimeContext += `${sample.table}\n`;
       }
       if (
         activeConsoleResults.viewMode === "chart" &&

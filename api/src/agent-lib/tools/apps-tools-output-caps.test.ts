@@ -199,6 +199,9 @@ describe("app_bash output cap", () => {
       .calls[0];
     expect(relPath).toBe("mako-tool-output/call_2.log");
     expect(saved).toContain(stdout);
+    expect(vi.mocked(writeWorktreeScratchFile).mock.calls[0][3]).toEqual({
+      keepNewest: 20,
+    });
 
     const capped = result.outputCapped as Record<string, unknown>;
     expect(capped.fullOutputPath).toBe("/tmp/mako-tool-output/call_2.log");
