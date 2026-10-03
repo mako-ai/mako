@@ -93,7 +93,7 @@ Try: _"Using the mako tools, explore my data and build a dashboard app showing r
 The server ships usage instructions with the handshake, so agents discover this workflow on their own:
 
 1. **Discover** — `list_connections` lists every configured credential, of two kinds: `database` connections (BigQuery, Postgres, MongoDB, …) that `list_databases` / `list_tables` / `inspect_table` describe (schemas + sample rows; they dispatch on engine) and SQL queries, and `source` connections (a Stripe key, a Vercel key, …) that flows read from and `probe_connection` reads live. Every row names its `kind` and its `connector` — the code it was configured with. `search_consoles` / `search_dashboards` find existing workspace work. Skills: `list_skills` (index), `get_relevant_skills` (ranked bodies for your task — same retrieval as the in-product agent), then `load_skill` / `read_skill_resource` as needed.
-2. **Validate queries** — `sql_execute_query` (read-only, short exploration timeout). Slow warehouse? `create_console` → `run_console` → `check_query_status` for long-running queries.
+2. **Validate queries** — `sql_execute_query` (read-only, short exploration timeout). Results come back as one compact markdown table (column names once, long cells shortened, rows added until a size budget runs out — 50 rows by default; pass `maxRows` up to 200 for more, but prefer aggregating in SQL), with a note saying what was left out. Slow warehouse? `create_console` → `run_console` → `check_query_status` for long-running queries.
 3. **Build apps** — `app_list_apps` / `app_create_app` to discover or scaffold (`apps/<slug>/`, a real Vite project), then `app_write_file` / `app_edit_file` / `app_bash` for ordinary file and shell work, and `app_materialize` to build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with the validated query).
 4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
 5. **Publish** — `app_commit` (durability, `git push` semantics) and `app_merge_to_main` (`main` is what publishes buildable state).
@@ -143,7 +143,7 @@ vendored `@makoai/app-sdk`. The whole setup, no key to paste:
 git clone <your workspace repo> && cd <repo>
 claude                 # the mako MCP server prompts a browser sign-in
 npx @makoai/cli login    # same sign-in for the app dev server, kept in ~/.mako/credentials.json
-npx @makoai/cli dev <app>   # or: cd apps/<app> && npm install && npm run dev
+npx @makoai/cli dev <app>   # or: cd apps/<app> && pnpm install && pnpm dev
 ```
 
 The app renders with **real data**: the scaffold's `vite.config.ts` includes
