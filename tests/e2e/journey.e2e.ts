@@ -30,9 +30,12 @@ describe("Mako new user", { serial: true }, () => {
   });
 
   test("02 create workspace", async ({ screen, agent }) => {
-    await agent.act("Create a workspace named {name}.", {
-      params: { name: `Mako E2E ${Date.now()}` },
-    });
+    await agent.act(
+      "Create a workspace named {name}. This goal succeeds as soon as the What's your role? question appears. Stop there without answering any onboarding questions.",
+      {
+        params: { name: `Mako E2E ${Date.now()}` },
+      },
+    );
     await expect(
       screen.getByText("What's your role?", { exact: true }),
     ).toBeVisible();
@@ -42,13 +45,13 @@ describe("Mako new user", { serial: true }, () => {
     const [saved] = await Promise.all([
       browser.waitForResponse("**/api/auth/onboarding", { timeout: 240_000 }),
       agent.act(
-        "Complete the qualification quiz with role {role}, use case {useCase}, database {database}, and company website {website}. Stop on Choose your path.",
+        "Complete the qualification quiz with role {role}, company size {companySize}, primary database {database}, and data warehouse {warehouse}. Stop on Choose your path without selecting a path.",
         {
           params: {
             role: "Developer / Engineer",
-            useCase: "Hobby / Personal project",
+            companySize: "Hobby / Personal project",
             database: "PostgreSQL",
-            website: "I don't have one yet",
+            warehouse: "I don't have one yet",
           },
         },
       ),
@@ -66,7 +69,7 @@ describe("Mako new user", { serial: true }, () => {
     const [created] = await Promise.all([
       browser.waitForResponse("**/databases/demo", { timeout: 240_000 }),
       agent.act(
-        "Start Exploring with the demo database and reach the workspace.",
+        "Start Exploring with the demo database. Stop as soon as the workspace shows the Chinook Music Store connection; do not open GitHub settings or send a chat.",
       ),
     ]);
     expect(created.status).toBe(201);
