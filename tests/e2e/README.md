@@ -57,7 +57,22 @@ Browser actions use deterministic selectors and do not need an AI key. The
 Mako API itself needs `AI_GATEWAY_API_KEY` for the real chat assertion. The
 preview run creates only its fresh test user/workspace and uses read-only SQL.
 
-## GitHub session
+## GitHub authentication modes
+
+`MAKO_E2E_GITHUB_AUTH=oauth` (default) exercises the real browser OAuth flow.
+`MAKO_E2E_GITHUB_AUTH=installation` is for isolated CI only: it derives the real
+installation from the configured GitHub App and test repository, checks its App
+ID/account/status, and inserts that installation only into the freshly created
+user's workspace in local `mako_e2e`. It does not seed or verify the user.
+The fixture is refused on previews, remote MongoDB hosts and other database names.
+
+In CI, navigation to GitHub's personal login is blocked. Mako's sync-URL/status
+endpoints, repository picker, repository link, chat and query remain real. Test
+05 is explicitly named **CI fixture; excludes OAuth** in reports; a CI pass is
+not a claim that GitHub browser authentication passed. This follows the
+[Playwright guidance on third-party dependencies](https://playwright.dev/docs/best-practices#avoid-testing-third-party-dependencies).
+
+### Real OAuth check
 
 Use a dedicated GitHub identity that has already authorized the configured
 Mako App, installed only on the disposable test repository. Save that identity's
@@ -95,24 +110,17 @@ The repository's API suites also passed: 339 dbt/integration tests and 519 apps
 tests (two pre-existing gated dbt tests skipped). TypeScript, formatting and
 workflow syntax checks passed. No production deployment was performed.
 
-The hosted E2E workflow has not been executed: it requires the dedicated test
-identity secret below. A successful preview run is not proof that a GitHub
-session will remain valid from a different runner/IP.
-
 ## Manual GitHub Actions run
 
-`.github/workflows/e2e-journey.yml` runs the same complete journey on an
-isolated runner with local MongoDB and PostgreSQL. It uses the repository's
-existing `AI_GATEWAY_API_KEY`, `MAKO_GITHUB_APP_PRIVATE_KEY` and
-`MAKO_GITHUB_APP_CLIENT_SECRET` secrets, plus the matching App ID, slug and
-client ID repository variables. It does not read secrets back through `gh`,
-deploy Mako, push to the connected repository, or access a shared database.
+`.github/workflows/e2e-journey.yml` runs the Mako journey on an isolated runner
+with local MongoDB and PostgreSQL, using the installation fixture above.
+It reuses the existing `AI_GATEWAY_API_KEY` and `MAKO_GITHUB_APP_PRIVATE_KEY`
+secrets and the App ID, slug and client ID repository variables. No additional
+secret, personal session, PAT or automation user is required. App installation
+access tokens are minted by Mako and expire; they are not persisted as CI secrets.
 
-One additional secret is required: `MAKO_E2E_GITHUB_STATE_JSON`, containing
-the storage-state JSON of a **dedicated test identity** already authorized for
-the Mako App. Do not upload a personal browser session. The workflow filters
-the state to github.com cookies and never uploads it, OAuth traces or API logs.
-Expired or missing state fails the run; it is not a skipped passing check.
+The job does not deploy Mako, push to the connected repository or access a shared
+database. It never uploads browser state, OAuth traces or API logs.
 
 The default repository input is `mako-ai/test-workspace` (the existing Mako
 test repository); it can be overridden at dispatch. CLI read access to that

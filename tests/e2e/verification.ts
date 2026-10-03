@@ -1,4 +1,4 @@
-import { MongoClient } from "mongodb";
+import { localTestDatabase } from "./local-database";
 import { readFile } from "node:fs/promises";
 import { setTimeout } from "node:timers/promises";
 
@@ -27,23 +27,7 @@ export async function registrationCode(email: string): Promise<string> {
       "Timed out waiting for the fresh account's emailed verification code.",
     );
   }
-  const uri = process.env.MAKO_E2E_MONGODB_URI;
-  if (!uri) {
-    throw new Error(
-      "Set MAKO_E2E_MONGODB_URI to the local mako_e2e database used by the API.",
-    );
-  }
-  const url = new URL(uri);
-  if (
-    url.protocol !== "mongodb:" ||
-    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
-    url.pathname !== "/mako_e2e"
-  ) {
-    throw new Error(
-      "Automatic OTP lookup is restricted to a loopback MongoDB database named mako_e2e.",
-    );
-  }
-  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5_000 });
+  const client = localTestDatabase();
   try {
     await client.connect();
     const record = await client

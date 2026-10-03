@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { describe, test, type Cookie } from "@e2e-dev/web";
 import { credentials, expect, secrets } from "e2e";
+import { prepareGitHubInstallation } from "./github-fixture";
+
+const installationFixture = process.env.MAKO_E2E_GITHUB_AUTH === "installation";
 
 // Serial steps share the freshly registered user's browser, never an admin seed.
 describe("Mako new user", { serial: true }, () => {
@@ -83,70 +86,94 @@ describe("Mako new user", { serial: true }, () => {
     expect(probe as unknown).toMatchObject({ success: true });
   });
 
-  test("05 connect GitHub account", async ({ app, browser, screen }) => {
-    const statePath = process.env.MAKO_E2E_GITHUB_STATE;
-    const repo = process.env.MAKO_E2E_GITHUB_REPO;
-    if (!statePath || !repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
-      throw new Error(
-        "Full journey requires MAKO_E2E_GITHUB_STATE (dedicated GitHub test account, Mako App already authorized) and MAKO_E2E_GITHUB_REPO=owner/test-repo. See tests/e2e/README.md.",
-      );
-    }
-    const state = JSON.parse(await readFile(statePath, "utf8")) as {
-      cookies: Cookie[];
-    };
-    const githubCookies = state.cookies.filter(
-      cookie =>
-        cookie.domain === "github.com" || cookie.domain === ".github.com",
-    );
-    expect(githubCookies.length).toBeGreaterThan(0);
-    await browser.setCookies(githubCookies);
-    const [configuration] = await Promise.all([
-      browser.waitForResponse("**/apps/github-status"),
-      app.open("/settings/github"),
-    ]);
-    expect(configuration.status).toBe(200);
-    const github = (await configuration.json()) as {
-      appConfigured: boolean;
-      appSlug: string | null;
-    };
-    if (!github.appConfigured || !github.appSlug) {
-      throw new Error(
-        "Mako API is missing GitHub App configuration (GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_SLUG). The saved browser session cannot replace these server credentials.",
-      );
-    }
-    const [sync] = await Promise.all([
-      browser.waitForResponse("**/apps/github-sync-url"),
-      screen.getByRole("button", "Connect GitHub repository").tap(),
-    ]);
-    if (sync.status !== 200) {
-      const result = (await sync.json()) as { error?: string };
-      throw new Error(
-        `Mako GitHub OAuth setup failed (${sync.status}): ${result.error ?? "unknown error"}`,
-      );
-    }
-    // The real OAuth sync runs in Mako's popup using the dedicated GitHub session.
-    await expect
-      .poll(
-        async () =>
-          browser.evaluate(async () => {
-            const id = localStorage.getItem("activeWorkspaceId");
-            const response = await fetch(
-              `/api/workspaces/${id}/apps/github-status`,
-            );
-            if (!response.ok)
-              throw new Error(`GitHub status failed: ${response.status}`);
-            return response.json();
-          }),
-        { timeout: 60_000 },
-      )
-      .toMatchObject({
-        installations: expect.arrayContaining([
-          expect.objectContaining({ accountLogin: repo.split("/")[0] }),
-        ]),
-      });
-    await browser.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect(screen.getByLabel("GitHub account")).toBeVisible();
-  });
+  test(
+    installationFixture
+      ? "05 prepare real GitHub App installation (CI fixture; excludes OAuth)"
+      : "05 connect GitHub account through OAuth",
+    async ({ app, browser, screen }) => {
+      const statePath = process.env.MAKO_E2E_GITHUB_STATE;
+      const repo = process.env.MAKO_E2E_GITHUB_REPO;
+      if (
+        (!installationFixture && !statePath) ||
+        !repo ||
+        !/^[\w.-]+\/[\w.-]+$/.test(repo)
+      ) {
+        throw new Error(
+          "Full journey requires MAKO_E2E_GITHUB_STATE (dedicated GitHub test account, Mako App already authorized) and MAKO_E2E_GITHUB_REPO=owner/test-repo. See tests/e2e/README.md.",
+        );
+      }
+      if (installationFixture) {
+        const workspaceId = await browser.evaluate(() =>
+          localStorage.getItem("activeWorkspaceId"),
+        );
+        if (!workspaceId)
+          throw new Error("Fresh workspace missing from browser.");
+        await prepareGitHubInstallation(workspaceId, repo);
+        // No personal login in CI. Only the third-party OAuth navigation is
+        // blocked; Mako's sync URL, installation status and repository APIs stay real.
+        await browser.route("https://github.com/login/**", route =>
+          route.abort(),
+        );
+      } else {
+        const state = JSON.parse(await readFile(statePath!, "utf8")) as {
+          cookies: Cookie[];
+        };
+        const githubCookies = state.cookies.filter(
+          cookie =>
+            cookie.domain === "github.com" || cookie.domain === ".github.com",
+        );
+        expect(githubCookies.length).toBeGreaterThan(0);
+        await browser.setCookies(githubCookies);
+      }
+      const [configuration] = await Promise.all([
+        browser.waitForResponse("**/apps/github-status"),
+        app.open("/settings/github"),
+      ]);
+      expect(configuration.status).toBe(200);
+      const github = (await configuration.json()) as {
+        appConfigured: boolean;
+        appSlug: string | null;
+      };
+      if (!github.appConfigured || !github.appSlug) {
+        throw new Error(
+          "Mako API is missing GitHub App configuration (GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_SLUG). The saved browser session cannot replace these server credentials.",
+        );
+      }
+      const [sync] = await Promise.all([
+        browser.waitForResponse("**/apps/github-sync-url"),
+        screen.getByRole("button", "Connect GitHub repository").tap(),
+      ]);
+      if (sync.status !== 200) {
+        const result = (await sync.json()) as { error?: string };
+        throw new Error(
+          `Mako GitHub OAuth setup failed (${sync.status}): ${result.error ?? "unknown error"}`,
+        );
+      }
+      // OAuth mode discovers the installation via the real popup. CI checks
+      // the same authenticated status API against its explicit local fixture.
+      await expect
+        .poll(
+          async () =>
+            browser.evaluate(async () => {
+              const id = localStorage.getItem("activeWorkspaceId");
+              const response = await fetch(
+                `/api/workspaces/${id}/apps/github-status`,
+              );
+              if (!response.ok)
+                throw new Error(`GitHub status failed: ${response.status}`);
+              return response.json();
+            }),
+          { timeout: 60_000 },
+        )
+        .toMatchObject({
+          installations: expect.arrayContaining([
+            expect.objectContaining({ accountLogin: repo.split("/")[0] }),
+          ]),
+        });
+      await browser.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect(screen.getByLabel("GitHub account")).toBeVisible();
+    },
+  );
 
   test("06 link GitHub repository", async ({ screen, browser }) => {
     const repo = process.env.MAKO_E2E_GITHUB_REPO!;

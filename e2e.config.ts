@@ -9,6 +9,13 @@ const baseURL = new URL(
   process.env.MAKO_E2E_BASE_URL ?? "http://localhost:5173",
 );
 const local = ["localhost", "127.0.0.1", "[::1]"].includes(baseURL.hostname);
+const githubAuth = process.env.MAKO_E2E_GITHUB_AUTH ?? "oauth";
+if (!["oauth", "installation"].includes(githubAuth)) {
+  throw new Error("MAKO_E2E_GITHUB_AUTH must be oauth or installation.");
+}
+if (githubAuth === "installation" && !local) {
+  throw new Error("GitHub installation fixtures are restricted to localhost.");
+}
 const preview =
   baseURL.protocol === "https:" && /^pr-\d+\.mako\.ai$/.test(baseURL.hostname);
 if (!local && !preview)
