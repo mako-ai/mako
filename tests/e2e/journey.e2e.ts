@@ -11,43 +11,43 @@ describe("Mako new user", { serial: true }, () => {
     app,
     screen,
     browser,
+    agent,
   }) => {
     await app.open("/register");
     const user = credentials.user("signup");
-    await screen.getByPlaceholder("youremail@email.com").fill(user.username);
-    await screen
-      .getByPlaceholder("Enter a unique password")
-      .fill(user.password);
-    await screen.getByRole("button", "Continue", { exact: true }).tap();
+    await agent.act("Register a new account with {email} and {password}.", {
+      params: { email: user.username, password: user.password },
+    });
     await expect(browser).toHaveURL(/\/verify-email/);
-    await screen
-      .getByLabel("Verification Code")
-      .fill(secrets.get("verificationCode"));
-    await screen.getByRole("button", "Verify Email").tap();
+    await agent.act("Verify the email using verification code {code}.", {
+      params: { code: secrets.get("verificationCode") },
+    });
     await expect(screen.getByLabel("Workspace name")).toBeVisible();
   });
 
-  test("02 create workspace", async ({ screen }) => {
-    await screen.getByLabel("Workspace name").fill(`Mako E2E ${Date.now()}`);
-    await screen.getByRole("button", "Create Workspace").tap();
+  test("02 create workspace", async ({ screen, agent }) => {
+    await agent.act("Create a workspace named {name}.", {
+      params: { name: `Mako E2E ${Date.now()}` },
+    });
     await expect(
       screen.getByText("What's your role?", { exact: true }),
     ).toBeVisible();
   });
 
-  test("03 answer qualification quiz", async ({ screen, browser }) => {
-    for (const answer of [
-      "Developer / Engineer",
-      "Hobby / Personal project",
-      "PostgreSQL",
-    ]) {
-      await screen.getByText(answer, { exact: true }).tap();
-      await screen.getByRole("button", "Next", { exact: true }).tap();
-    }
-    await screen.getByText("I don't have one yet", { exact: true }).tap();
+  test("03 answer qualification quiz", async ({ screen, browser, agent }) => {
     const [saved] = await Promise.all([
-      browser.waitForResponse("**/api/auth/onboarding"),
-      screen.getByRole("button", "Continue", { exact: true }).tap(),
+      browser.waitForResponse("**/api/auth/onboarding", { timeout: 240_000 }),
+      agent.act(
+        "Complete the qualification quiz with role {role}, use case {useCase}, database {database}, and company website {website}. Stop on Choose your path.",
+        {
+          params: {
+            role: "Developer / Engineer",
+            useCase: "Hobby / Personal project",
+            database: "PostgreSQL",
+            website: "I don't have one yet",
+          },
+        },
+      ),
     ]);
     // The UI intentionally tolerates a failed save; verify the real response too.
     expect(saved.status).toBe(200);
@@ -57,11 +57,13 @@ describe("Mako new user", { serial: true }, () => {
     ).toBeVisible();
   });
 
-  test("04 connect demo database", async ({ screen, browser }) => {
+  test("04 connect demo database", async ({ screen, browser, agent }) => {
     // Onboarding requires a database before Settings > GitHub is available.
     const [created] = await Promise.all([
-      browser.waitForResponse("**/databases/demo"),
-      screen.getByRole("button", "Start Exploring", { exact: true }).tap(),
+      browser.waitForResponse("**/databases/demo", { timeout: 240_000 }),
+      agent.act(
+        "Start Exploring with the demo database and reach the workspace.",
+      ),
     ]);
     expect(created.status).toBe(201);
     const connection = (await created.json()) as { data: { id: string } };
@@ -90,7 +92,7 @@ describe("Mako new user", { serial: true }, () => {
     installationFixture
       ? "05 prepare real GitHub App installation (CI fixture; excludes OAuth)"
       : "05 connect GitHub account through OAuth",
-    async ({ app, browser, screen }) => {
+    async ({ app, browser, screen, agent }) => {
       const statePath = process.env.MAKO_E2E_GITHUB_STATE;
       const repo = process.env.MAKO_E2E_GITHUB_REPO;
       if (
@@ -140,8 +142,12 @@ describe("Mako new user", { serial: true }, () => {
         );
       }
       const [sync] = await Promise.all([
-        browser.waitForResponse("**/apps/github-sync-url"),
-        screen.getByRole("button", "Connect GitHub repository").tap(),
+        browser.waitForResponse("**/apps/github-sync-url", {
+          timeout: 240_000,
+        }),
+        agent.act(
+          "Open Connect GitHub repository. Stop once the Add GitHub repository dialog is open; do not link a repository yet.",
+        ),
       ]);
       if (sync.status !== 200) {
         const result = (await sync.json()) as { error?: string };
@@ -175,38 +181,36 @@ describe("Mako new user", { serial: true }, () => {
     },
   );
 
-  test("06 link GitHub repository", async ({ screen, browser }) => {
+  test("06 link GitHub repository", async ({ screen, browser, agent }) => {
     const repo = process.env.MAKO_E2E_GITHUB_REPO!;
-    await screen.getByLabel("GitHub account").tap();
-    await screen
-      .getByRole("option")
-      .getByText(repo.split("/")[0], { exact: true })
-      .tap();
-    await screen.getByRole("combobox", "Repository").fill(repo);
-    await screen.getByRole("option", repo, { exact: true }).tap();
-    await screen.getByRole("button", "Connect", { exact: true }).tap();
+    await agent.act(
+      "Connect the existing GitHub repository {repo} under account {owner} to this workspace. Do not create or modify any repository.",
+      {
+        params: { repo, owner: repo.split("/")[0] },
+      },
+    );
     await expect(
       screen.getByRole("dialog", "Add GitHub repository"),
     ).not.toBeVisible({ timeout: 60_000 });
     await browser.reload();
     await expect(screen.getByText(repo, { exact: true })).toBeVisible();
-    await screen
-      .getByRole("tab", "GitHub", { exact: true })
-      .getByRole("button")
-      .tap();
   });
 
   test("07 send chat and receive assistant response", async ({
     app,
     screen,
+    agent,
   }) => {
     await app.open("/");
-    await screen
-      .getByPlaceholder("Ask Chat...")
-      .fill(
-        "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files.",
-      );
-    await screen.getByRole("button", "Send message", { exact: true }).tap();
+    await agent.act(
+      "Send {message} in a new Mako chat and wait for the assistant's answer. Close the GitHub settings tab if it hides the chat.",
+      {
+        params: {
+          message:
+            "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files.",
+        },
+      },
+    );
     // The expected reply is deliberately absent from the user message.
     await expect(screen.getByText("42", { exact: true })).toBeVisible({
       timeout: 120_000,
@@ -216,12 +220,14 @@ describe("Mako new user", { serial: true }, () => {
     ).not.toBeVisible();
   });
 
-  test("08 execute SQL and inspect results", async ({ screen, browser }) => {
-    await screen.getByRole("button", "Open Console", { exact: true }).tap();
-    await screen
-      .getByPlaceholder("Select connection")
-      .fill("Chinook Music Store");
-    await screen.getByRole("option", /Chinook Music Store/).tap();
+  test("08 execute SQL and inspect results", async ({
+    screen,
+    browser,
+    agent,
+  }) => {
+    await agent.act(
+      "Open a SQL Console and select the Chinook Music Store connection.",
+    );
     await expect(
       screen.getByRole("button", "Run (⌘/Ctrl+Enter)", { exact: true }),
     ).toBeVisible();
@@ -229,9 +235,9 @@ describe("Mako new user", { serial: true }, () => {
     await editor.tap();
     await browser.keyboard.press("ControlOrMeta+A");
     await browser.keyboard.type("SELECT 19 + 23 AS mako_e2e_answer");
-    await screen
-      .getByRole("button", "Run (⌘/Ctrl+Enter)", { exact: true })
-      .tap();
+    await agent.act(
+      "Run the SQL already present in the console editor and display its result table. Do not edit the SQL.",
+    );
     await expect(
       screen.getByRole("columnheader", /mako_e2e_answer/),
     ).toBeVisible({ timeout: 60_000 });

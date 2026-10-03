@@ -2,6 +2,10 @@
 
 Uses [TesterArmy e2e](https://tester.army/e2e), its Playwright engine and the
 official skill at `.agents/skills/e2e/SKILL.md`. Node >=22.12 is required.
+The browser is driven by `agent.act` goals through Vercel AI Gateway. Exact UI,
+API and SQL assertions verify the agent's outcomes. Only the exact SQL text is
+entered directly into Monaco; the agent opens the console, selects its connection
+and executes the query. Credentials and email codes use TesterArmy's opaque secrets.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -30,6 +34,8 @@ normal development instructions in `CLAUDE.md`.
 | Variable                              | Purpose                                                                                                                  |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `MAKO_E2E_BASE_URL`                   | Running Mako URL; defaults to `http://localhost:5173`.                                                                   |
+| `AI_GATEWAY_API_KEY`                  | Vercel AI Gateway authentication for the browser agent; required locally even when testing a preview.                    |
+| `MAKO_E2E_MODEL`                      | Agent model; defaults to `openai/gpt-6-luna-fast`.                                                                       |
 | `MAKO_E2E_MONGODB_URI`                | Isolated loopback MongoDB replica set named **mako_e2e**: reads the email code; CI also writes the installation fixture. |
 | `MAKO_E2E_EMAIL`, `MAKO_E2E_PASSWORD` | Optional fresh test identity; otherwise randomly generated. Keep SendGrid disabled locally.                              |
 | `MAKO_E2E_GITHUB_AUTH`                | `oauth` (default) for real OAuth; `installation` for the isolated CI fixture.                                            |
@@ -54,8 +60,8 @@ The runner waits up to two minutes and rejects codes for another identity.
 Never commit this file. Preview runs use the preview server's existing GitHub,
 email, demo database and AI configuration; no server secrets are copied locally.
 
-Browser actions use deterministic selectors and do not need an AI key. The
-Mako API itself needs `AI_GATEWAY_API_KEY` for the real chat assertion. The
+The runner needs `AI_GATEWAY_API_KEY` to drive the browser agent. The Mako API
+also needs its own `AI_GATEWAY_API_KEY` for the real chat assertion. The
 preview run creates only its fresh test user/workspace and uses read-only SQL.
 
 ## GitHub authentication modes
@@ -96,6 +102,11 @@ fail the check; they are never replaced with a fabricated installation.
 The JSON report is `.e2e/report.json`; failures include the step and artifact
 paths. The runner suppresses screenshots after a secret has been entered.
 All reports, browser state and local credentials are ignored by Git.
+Replay caching is disabled, so each run exercises the live browser agent.
+Each agent step is bounded to 25 actions/model calls, with a five-minute test
+deadline and no retries. The report records agent steps and model usage; an
+8/8 pass alone does not establish that AI was used. Provider failures fail the
+run, with no fallback to a deterministic journey.
 
 A failed serial step skips its dependants. Selecting a member of a serial
 group selects the entire group, so a filtered run is not an onboarding-only
@@ -104,14 +115,16 @@ journey successful. Missing GitHub/AI configuration must fail, not skip.
 
 ## Validation
 
-On 2026-10-03, all eight checks passed against PR #1031's preview with a fresh
+Before conversion to agent-driven navigation, all eight checks passed on
+2026-10-03 against PR #1031's preview with a fresh
 account, a real emailed verification code, GitHub OAuth and
 `mako-ai/test-workspace`, a real assistant response and SQL result `42`.
 The hosted installation-fixture run also passed **8/8, no skips or flaky tests**
 on [GitHub Actions](https://github.com/mako-ai/mako/actions/runs/37139829098).
 The repository's API suites also passed: 339 dbt/integration tests and 519 apps
 tests (two pre-existing gated dbt tests skipped). TypeScript, formatting and
-workflow syntax checks passed. No production deployment was performed.
+workflow syntax checks passed. These earlier results validate the deterministic
+journey, not the new browser agent. No production deployment was performed.
 
 ## Manual GitHub Actions run
 
