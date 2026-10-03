@@ -136,7 +136,7 @@ attribute isn't part of the viewer shape by design; join a roster binding
 on `lower(viewer.email)` if the app needs it.
 
 For local development, set `MAKO_VIEWER_AS=<email>` in the app's `.env` to
-preview the app as a specific workspace member during `npm run dev`.
+preview the app as a specific workspace member during `pnpm dev`.
 
 ## Security Model
 

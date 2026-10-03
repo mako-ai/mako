@@ -108,6 +108,7 @@ destination:
 backfill_schedule:            # this is what makes a new CDC flow START — see "What live means"
   cron: 0 3 * * *
   timezone: UTC
+  # entities: [users]       # optional: limit each scheduled backfill to these entities (default: all)
 webhook:
   enabled: true
 sync:

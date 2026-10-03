@@ -45,6 +45,19 @@ In addition to scheduled batch syncing, Mako supports experimental Change Data C
 - **Backfills** — historical data backfills run robustly within 1Gi Cloud Run memory limits, safely handling bulk flushes by cycling DuckDB instances
 - **BigQuery Staging** — streams events into region-aligned BigQuery staging tables (safely preserved during recovery)
 
+### Scoped Backfill Schedules
+
+A flow's `backfill_schedule` normally re-pulls every entity. Some entities are never reported by webhooks (for example Close users, groups and statuses) and only refresh on a backfill, so a whole-flow backfill is a heavy way to keep them current. Add an optional `entities` list to limit each scheduled backfill to those entities:
+
+```yaml
+backfill_schedule:
+  cron: 0 4 * * *
+  timezone: Europe/Paris
+  entities: [users]
+```
+
+This uses the same scoped path as the per-entity **Sync** button. Leave `entities` out (or empty) for a full backfill. Schedules saved from the UI keep the list.
+
 ### Schema Evolution (BigQuery)
 
 When a connector's expected column types drift from the live BigQuery table (for example, a column created as `STRING` in a legacy run that should now be `TIMESTAMP`), Mako auto-corrects the drift before merging CDC events. This prevents merge failures from type mismatches.
