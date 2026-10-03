@@ -1,5 +1,6 @@
 # Local secrets (GitHub App PEM, etc.)
 .secrets/
+.e2e/
 
 # Logs
 logs
@@ -85,6 +86,7 @@ web_modules/
 .env.production.local
 .env.production
 .env.local
+.env.e2e.local
 env.yaml
 
 # parcel-bundler cache (https://parceljs.org/)

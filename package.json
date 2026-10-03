@@ -67,7 +67,10 @@
     "secrets:diff": "tsx scripts/secrets.ts diff",
     "secrets:salvage-prod": "tsx scripts/secrets.ts salvage-prod",
     "sandbox:tunnel:setup": "bash scripts/sandbox-tunnel-setup.sh",
-    "flows:validate": "pnpm --filter api exec tsx src/services/flow-validate.cli.ts"
+    "flows:validate": "pnpm --filter api exec tsx src/services/flow-validate.cli.ts",
+    "test:e2e": "e2e run",
+    "test:e2e:list": "e2e list",
+    "test:e2e:check": "tsc -p tests/e2e/tsconfig.json"
   },
   "keywords": [
     "analytics",
@@ -113,16 +116,19 @@
     ]
   },
   "devDependencies": {
+    "@e2e-dev/web": "^0.11.1",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.10.4",
     "@typescript-eslint/eslint-plugin": "^6.13.2",
     "@typescript-eslint/parser": "^6.13.2",
     "concurrently": "^8.2.2",
+    "e2e": "^0.15.1",
     "eslint": "^8.55.0",
     "eslint-config-prettier": "^10.1.5",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "nodemon": "^3.0.2",
+    "playwright": "^1.63.0",
     "prettier": "^3.1.0",
     "ts-node": "^10.9.1",
     "tsx": "^4.19.4",
