@@ -2,6 +2,8 @@ name: Mako E2E journey
 
 # Explicit runs only: uses live AI and GitHub, with disposable local databases.
 on:
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       repository:
@@ -13,8 +15,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: e2e-journey-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   journey:
+    # Adding this label is an explicit request by a repository collaborator.
+    # Never expose test credentials to a fork's workflow/code.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'run-e2e' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -30,7 +42,17 @@ jobs:
           --health-cmd "pg_isready -U mako -d demo"
           --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
+      - name: Check GitHub test session is configured
+        env:
+          MAKO_E2E_GITHUB_STATE_JSON: ${{ secrets.MAKO_E2E_GITHUB_STATE_JSON }}
+        run: |
+          if [ -z "$MAKO_E2E_GITHUB_STATE_JSON" ]; then
+            echo '::error::Missing MAKO_E2E_GITHUB_STATE_JSON; see tests/e2e/README.md'
+            exit 1
+          fi
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -69,7 +91,7 @@ jobs:
           GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
           MAKO_E2E_GITHUB_STATE_JSON: ${{ secrets.MAKO_E2E_GITHUB_STATE_JSON }}
-          MAKO_E2E_GITHUB_REPO: ${{ inputs.repository }}
+          MAKO_E2E_GITHUB_REPO: ${{ inputs.repository || 'mako-ai/test-workspace' }}
           MAKO_E2E_GITHUB_STATE: .e2e/github-state.json
           MAKO_E2E_BASE_URL: http://localhost:5173
           MAKO_E2E_MONGODB_URI: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
