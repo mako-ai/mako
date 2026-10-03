@@ -27,14 +27,15 @@ Copy `.env.e2e.example` to the ignored `.env.e2e.local`. These variables are
 for the runner; configure Mako's API separately in the root `.env` using the
 normal development instructions in `CLAUDE.md`.
 
-| Variable                              | Purpose                                                                                                                             |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `MAKO_E2E_BASE_URL`                   | Running Mako URL; defaults to `http://localhost:5173`.                                                                              |
-| `MAKO_E2E_MONGODB_URI`                | For automatic email-code lookup: the API's isolated, loopback MongoDB replica set, database **mako_e2e**. Only a read is performed. |
-| `MAKO_E2E_EMAIL`, `MAKO_E2E_PASSWORD` | Optional fresh test identity; otherwise randomly generated. Keep SendGrid disabled locally.                                         |
-| `MAKO_E2E_GITHUB_STATE`               | Path to a Playwright storage-state JSON from a dedicated GitHub test account. Only github.com cookies are restored.                 |
-| `MAKO_E2E_GITHUB_REPO`                | Exact `owner/repo` of an existing disposable test repository accessible to the Mako GitHub App.                                     |
-| `MAKO_E2E_VERIFICATION_FILE`          | For previews: ignored JSON file containing the fresh identity and its real emailed code.                                            |
+| Variable                              | Purpose                                                                                                                  |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `MAKO_E2E_BASE_URL`                   | Running Mako URL; defaults to `http://localhost:5173`.                                                                   |
+| `MAKO_E2E_MONGODB_URI`                | Isolated loopback MongoDB replica set named **mako_e2e**: reads the email code; CI also writes the installation fixture. |
+| `MAKO_E2E_EMAIL`, `MAKO_E2E_PASSWORD` | Optional fresh test identity; otherwise randomly generated. Keep SendGrid disabled locally.                              |
+| `MAKO_E2E_GITHUB_AUTH`                | `oauth` (default) for real OAuth; `installation` for the isolated CI fixture.                                            |
+| `MAKO_E2E_GITHUB_STATE`               | Path to a Playwright storage-state JSON from a dedicated GitHub test account. Only github.com cookies are restored.      |
+| `MAKO_E2E_GITHUB_REPO`                | Exact `owner/repo` of an existing disposable test repository accessible to the Mako GitHub App.                          |
+| `MAKO_E2E_VERIFICATION_FILE`          | For previews: ignored JSON file containing the fresh identity and its real emailed code.                                 |
 
 The Mako API needs `DEMO_DATABASE_URL` pointing at a dedicated PostgreSQL
 database. The final query is `SELECT 19 + 23 AS mako_e2e_answer`; no Chinook
@@ -106,6 +107,8 @@ journey successful. Missing GitHub/AI configuration must fail, not skip.
 On 2026-10-03, all eight checks passed against PR #1031's preview with a fresh
 account, a real emailed verification code, GitHub OAuth and
 `mako-ai/test-workspace`, a real assistant response and SQL result `42`.
+The hosted installation-fixture run also passed **8/8, no skips or flaky tests**
+on [GitHub Actions](https://github.com/mako-ai/mako/actions/runs/37139829098).
 The repository's API suites also passed: 339 dbt/integration tests and 519 apps
 tests (two pre-existing gated dbt tests skipped). TypeScript, formatting and
 workflow syntax checks passed. No production deployment was performed.
@@ -127,8 +130,7 @@ test repository); it can be overridden at dispatch. CLI read access to that
 repository alone does not prove the Mako App has access: the journey verifies
 the real installation and repository picker.
 
-Once the workflow is present on the default branch and the test session is
-configured, launch **Mako E2E journey** in GitHub Actions, or:
+Once the workflow is present on the default branch, launch **Mako E2E journey** in GitHub Actions, or:
 
 ```sh
 gh workflow run e2e-journey.yml --repo mako-ai/mako --ref <trusted-branch>
