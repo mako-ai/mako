@@ -126,7 +126,12 @@ configured, launch **Mako E2E journey** in GitHub Actions, or:
 gh workflow run e2e-journey.yml --repo mako-ai/mako --ref <trusted-branch>
 ```
 
-It is manual-only; no schedule or automatic PR trigger is enabled. The job
+Before merging the workflow, a repository collaborator can explicitly run it
+by adding the `run-e2e` label to a same-repository PR. Remove and re-add the
+label for another run. Fork PRs are refused. An existing label does not rerun
+tests on subsequent pushes; label again to test the new commit.
+
+It is manual-only; no schedule or automatic push trigger is enabled. The job
 uploads only the test JSON and JUnit reports, with seven-day retention.
 
 Test accounts/workspaces are retained for inspection; dispose of the dedicated
