@@ -151,7 +151,10 @@ describe("Mako new user", { serial: true }, () => {
   test("06 link GitHub repository", async ({ screen, browser }) => {
     const repo = process.env.MAKO_E2E_GITHUB_REPO!;
     await screen.getByLabel("GitHub account").tap();
-    await screen.getByRole("option", repo.split("/")[0], { exact: true }).tap();
+    await screen
+      .getByRole("option")
+      .getByText(repo.split("/")[0], { exact: true })
+      .tap();
     await screen.getByRole("combobox", "Repository").fill(repo);
     await screen.getByRole("option", repo, { exact: true }).tap();
     await screen.getByRole("button", "Connect", { exact: true }).tap();

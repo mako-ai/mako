@@ -86,6 +86,19 @@ group selects the entire group, so a filtered run is not an onboarding-only
 pass. Check the report's passed/failed/skipped counts before calling the
 journey successful. Missing GitHub/AI configuration must fail, not skip.
 
+## Validation
+
+On 2026-10-03, all eight checks passed against PR #1031's preview with a fresh
+account, a real emailed verification code, GitHub OAuth and
+`mako-ai/test-workspace`, a real assistant response and SQL result `42`.
+The repository's API suites also passed: 339 dbt/integration tests and 519 apps
+tests (two pre-existing gated dbt tests skipped). TypeScript, formatting and
+workflow syntax checks passed. No production deployment was performed.
+
+The hosted E2E workflow has not been executed: it requires the dedicated test
+identity secret below. A successful preview run is not proof that a GitHub
+session will remain valid from a different runner/IP.
+
 ## Manual GitHub Actions run
 
 `.github/workflows/e2e-journey.yml` runs the same complete journey on an
