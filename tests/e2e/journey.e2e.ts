@@ -15,13 +15,17 @@ describe("Mako new user", { serial: true }, () => {
   }) => {
     await app.open("/register");
     const user = credentials.user("signup");
-    await agent.act("Register a new account with {email} and {password}.", {
-      params: { email: user.username, password: user.password },
-    });
+    await agent.act(
+      "Submit the registration form with {email} and {password}. This goal succeeds when the email verification code form appears. Stop there; email verification is a separate next step.",
+      { params: { email: user.username, password: user.password } },
+    );
     await expect(browser).toHaveURL(/\/verify-email/);
-    await agent.act("Verify the email using verification code {code}.", {
-      params: { code: secrets.get("verificationCode") },
-    });
+    await agent.act(
+      "Verify the email using verification code {code}. Stop when the workspace creation form appears.",
+      {
+        params: { code: secrets.get("verificationCode") },
+      },
+    );
     await expect(screen.getByLabel("Workspace name")).toBeVisible();
   });
 
