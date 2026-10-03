@@ -1,0 +1,130 @@
+name: Mako E2E journey
+
+# Explicit runs only: uses live AI and GitHub, with disposable local databases.
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Existing test repository accessible to the Mako App
+        required: true
+        default: mako-ai/test-workspace
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  journey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mako
+          POSTGRES_PASSWORD: e2e-local-only
+          POSTGRES_DB: demo
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mako -d demo"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 11.9.0
+      - name: Install dependencies and browser
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e:check
+
+      - name: Start isolated MongoDB replica set
+        run: |
+          docker run --detach --name mako-e2e-mongo \
+            --publish 127.0.0.1:27017:27017 mongo:8 \
+            --replSet rs0 --bind_ip_all
+          for attempt in {1..30}; do
+            if docker exec mako-e2e-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec mako-e2e-mongo mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for attempt in {1..30}; do
+            if docker exec mako-e2e-mongo mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Run complete user journey
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+          GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+          GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
+          GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+          MAKO_E2E_GITHUB_STATE_JSON: ${{ secrets.MAKO_E2E_GITHUB_STATE_JSON }}
+          MAKO_E2E_GITHUB_REPO: ${{ inputs.repository }}
+          MAKO_E2E_GITHUB_STATE: .e2e/github-state.json
+          MAKO_E2E_BASE_URL: http://localhost:5173
+          MAKO_E2E_MONGODB_URI: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
+          DATABASE_URL: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
+          DEMO_DATABASE_URL: postgresql://mako:e2e-local-only@127.0.0.1:5432/demo
+          NODE_ENV: development
+          WEB_API_PORT: 8080
+          CLIENT_URL: http://localhost:5173
+          BASE_URL: http://localhost:8080
+          PUBLIC_URL: http://localhost:5173
+          DISABLE_OAUTH: "true"
+          BILLING_ENABLED: "false"
+          APPS_SANDBOX_PROVIDER: local
+          APPS_CONNECTED_REPO_PUSH: ""
+          E2E_TELEMETRY_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .e2e/logs
+          node <<'JS'
+          const fs = require('node:fs');
+          for (const key of ['AI_GATEWAY_API_KEY', 'GITHUB_APP_ID', 'GITHUB_APP_SLUG', 'GITHUB_APP_CLIENT_ID', 'GITHUB_APP_CLIENT_SECRET', 'GITHUB_APP_PRIVATE_KEY', 'MAKO_E2E_GITHUB_STATE_JSON']) {
+            if (!process.env[key]) throw new Error(`Missing ${key}; see tests/e2e/README.md`);
+          }
+          const state = JSON.parse(process.env.MAKO_E2E_GITHUB_STATE_JSON);
+          const cookies = state.cookies.filter(c => ['github.com', '.github.com'].includes(c.domain));
+          if (!cookies.length) throw new Error('GitHub test session has no github.com cookies');
+          fs.writeFileSync(process.env.MAKO_E2E_GITHUB_STATE, JSON.stringify({cookies, origins: []}), {mode: 0o600});
+          JS
+          unset MAKO_E2E_GITHUB_STATE_JSON
+          export SESSION_SECRET="$(openssl rand -hex 32)"
+          export ENCRYPTION_KEY="$(openssl rand -hex 32)"
+          export APPS_GIT_ROOT="$RUNNER_TEMP/mako-e2e-git"
+          export APPS_SESSIONS_ROOT="$RUNNER_TEMP/mako-e2e-sessions"
+          pnpm --filter api exec tsx src/index.ts > .e2e/logs/api.log 2>&1 &
+          api_pid=$!
+          pnpm --filter app exec vite --port 5173 --strictPort > .e2e/logs/app.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$api_pid" "$app_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..90}; do
+            if curl --fail --silent http://localhost:8080/health >/dev/null && curl --fail --silent http://localhost:5173 >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://localhost:8080/health >/dev/null
+          curl --fail --silent http://localhost:5173 >/dev/null
+          pnpm test:e2e --trace=off --reporter list,junit
+
+      # Never upload storage state, API logs, or OAuth network traces.
+      - name: Save test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mako-e2e-results
+          path: |
+            .e2e/report.json
+            .e2e/junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
