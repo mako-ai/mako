@@ -160,6 +160,10 @@ describe("Mako new user", { serial: true }, () => {
     ).not.toBeVisible({ timeout: 60_000 });
     await browser.reload();
     await expect(screen.getByText(repo, { exact: true })).toBeVisible();
+    await screen
+      .getByRole("tab", "GitHub", { exact: true })
+      .getByRole("button")
+      .tap();
   });
 
   test("07 send chat and receive assistant response", async ({
@@ -189,13 +193,15 @@ describe("Mako new user", { serial: true }, () => {
       .fill("Chinook Music Store");
     await screen.getByRole("option", /Chinook Music Store/).tap();
     await expect(
-      screen.getByRole("button", "Run query", { exact: true }),
+      screen.getByRole("button", "Run (⌘/Ctrl+Enter)", { exact: true }),
     ).toBeVisible();
-    const editor = browser.locator(".monaco-editor textarea").first();
+    const editor = browser.locator(".monaco-editor .view-lines").first();
     await editor.tap();
-    await editor.press("ControlOrMeta+A");
+    await browser.keyboard.press("ControlOrMeta+A");
     await browser.keyboard.type("SELECT 19 + 23 AS mako_e2e_answer");
-    await screen.getByRole("button", "Run query", { exact: true }).tap();
+    await screen
+      .getByRole("button", "Run (⌘/Ctrl+Enter)", { exact: true })
+      .tap();
     await expect(
       screen.getByRole("columnheader", /mako_e2e_answer/),
     ).toBeVisible({ timeout: 60_000 });
