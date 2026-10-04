@@ -120,6 +120,7 @@ jobs:
           path: |
             .e2e/report.json
             .e2e/junit.xml
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
       - name: Save browser diagnostics
@@ -128,6 +129,7 @@ jobs:
         with:
           name: mako-e2e-artifacts
           path: .e2e/artifacts
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
       - name: Save replay recordings for review
@@ -136,5 +138,6 @@ jobs:
         with:
           name: mako-e2e-cache
           path: .e2e/cache
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
