@@ -91,6 +91,9 @@ export default {
             env: {
               ...Object.fromEntries(
                 [
+                  // pnpm must retain its installed store and noninteractive mode.
+                  "CI",
+                  "PNPM_HOME",
                   "AI_GATEWAY_API_KEY",
                   "GITHUB_APP_ID",
                   "GITHUB_APP_SLUG",
