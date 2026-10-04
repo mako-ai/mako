@@ -1,0 +1,117 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:54:51.181Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"Consoles\"",
+        "target": {
+          "role": "button",
+          "name": "Consoles"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Workspace\"",
+        "target": {
+          "role": "button",
+          "name": "Workspace"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Databases\"",
+        "target": {
+          "role": "button",
+          "name": "Databases"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"postgresql Chinook Music Store\"",
+        "target": {
+          "role": "button",
+          "name": "postgresql Chinook Music Store"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Consoles\"",
+        "target": {
+          "role": "button",
+          "name": "Consoles"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"956 956-live-1788371444.sql\"",
+        "target": {
+          "role": "button",
+          "name": "956 956-live-1788371444.sql"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap combobox \"Select connection\"",
+        "target": {
+          "role": "combobox",
+          "name": "Select connection",
+          "placeholder": "Select connection"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap option \"postgresql Chinook Music Store\"",
+        "target": {
+          "role": "option",
+          "name": "postgresql Chinook Music Store"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::08%20execute%20SQL%20and%20inspect%20results",
+      "targetId": "chromium",
+      "instructionDigest": "430f834dbc93275cd59d1f842bf0050c5684582d480a1b6314814195bc66435b"
+    },
+    "summary": "Opened a SQL Console and selected the Chinook Music Store connection; the connection selector displays “Chinook Music Store.”",
+    "startPath": "/settings/github",
+    "endPath": "/c/35d9e282328f815b9f357a4a",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Consoles"
+      },
+      {
+        "role": "button",
+        "name": "Add new folder"
+      },
+      {
+        "role": "button",
+        "name": "Refresh"
+      },
+      {
+        "text": "My Consoles"
+      },
+      {
+        "text": "Nothing here yet"
+      },
+      {
+        "text": "Workspace"
+      },
+      {
+        "role": "image",
+        "name": "db icon"
+      },
+      {
+        "role": "button",
+        "name": "Unsaved console"
+      }
+    ],
+    "endWaitMs": 11697
+  }
+}

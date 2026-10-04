@@ -1,0 +1,112 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:53:49.368Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap node \"Developer / Engineer\"",
+        "target": {
+          "text": "Developer / Engineer"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Next\"",
+        "target": {
+          "role": "button",
+          "name": "Next"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap node \"Hobby / Personal project\"",
+        "target": {
+          "text": "Hobby / Personal project"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Next\"",
+        "target": {
+          "role": "button",
+          "name": "Next"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap node \"PostgreSQL\"",
+        "target": {
+          "text": "PostgreSQL"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Next\"",
+        "target": {
+          "role": "button",
+          "name": "Next"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap node \"I don't have one yet\"",
+        "target": {
+          "text": "I don't have one yet"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Continue\"",
+        "target": {
+          "role": "button",
+          "name": "Continue"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::03%20answer%20qualification%20quiz",
+      "targetId": "chromium",
+      "instructionDigest": "da07f952a790da6ce1783c2169a1b9ea5d3b7b28e033f57be8a7a10f3535bc19"
+    },
+    "summary": "Completed the qualification quiz with Developer / Engineer, Hobby / Personal project, PostgreSQL, and I don't have one yet; stopped on Choose your path without selecting a path.",
+    "startPath": "/",
+    "endPath": "/",
+    "endAnchors": [
+      {
+        "role": "button",
+        "name": "Back"
+      },
+      {
+        "role": "heading",
+        "name": "Choose your path"
+      },
+      {
+        "text": "Connect your database to start querying your data with AI"
+      },
+      {
+        "text": "Recommended"
+      },
+      {
+        "role": "heading",
+        "name": "Connect Your Database"
+      },
+      {
+        "text": "Connect your real database and start querying your data with AI immediately."
+      },
+      {
+        "role": "button",
+        "name": "Connect Now"
+      },
+      {
+        "role": "heading",
+        "name": "Try with Demo Database"
+      }
+    ],
+    "endWaitMs": 12340
+  }
+}

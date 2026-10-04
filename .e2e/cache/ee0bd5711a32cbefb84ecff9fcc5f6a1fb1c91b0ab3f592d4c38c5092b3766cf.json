@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:54:28.227Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"New chat\"",
+        "target": {
+          "role": "button",
+          "name": "New chat"
+        }
+      },
+      {
+        "name": "type",
+        "summary": "type \"What is 19 plus 23? Reply with the numb…\" into textbox \"Ask Chat...\"",
+        "target": {
+          "role": "textbox",
+          "name": "Ask Chat...",
+          "placeholder": "Ask Chat..."
+        },
+        "value": "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files."
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Send message\"",
+        "target": {
+          "role": "button",
+          "name": "Send message"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::07%20send%20chat%20and%20receive%20assistant%20response",
+      "targetId": "chromium",
+      "instructionDigest": "40236a9e4482ac6f675216a484a166b6b7f5dc9d1506c1cabd3afc0b55b580bb"
+    },
+    "summary": "Sent the message in a new chat and waited for the assistant’s answer. The chat shows “42.”",
+    "startPath": "/settings/github",
+    "endPath": "/settings/github",
+    "endAnchors": [
+      {
+        "text": "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files."
+      },
+      {
+        "role": "button",
+        "name": "Copy message"
+      },
+      {
+        "name": "Session usage",
+        "text": "13.6k · $0.0020"
+      },
+      {
+        "role": "log",
+        "name": "Chat messages"
+      },
+      {
+        "role": "listitem",
+        "name": "What is 19 plus 23? Reply with the number only. Do not use tools or modify any files."
+      },
+      {
+        "role": "listitem",
+        "name": "42 Copy message"
+      }
+    ],
+    "endWaitMs": 14786
+  }
+}

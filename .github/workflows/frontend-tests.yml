@@ -27,6 +27,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
+      - "package.json"
+      - "pnpm-lock.yaml"
       - "app/src/**"
       - "app/package.json"
       - "app/vite.config.ts"

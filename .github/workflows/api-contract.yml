@@ -17,6 +17,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
+      - "package.json"
+      - "pnpm-lock.yaml"
       - "api/**"
       - "app/src/api/**"
       - "app/src/store/**"
