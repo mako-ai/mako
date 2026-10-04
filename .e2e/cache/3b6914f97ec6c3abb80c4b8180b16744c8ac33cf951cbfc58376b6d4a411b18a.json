@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-04T10:54:13.327Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap combobox \"Repository\" in \"Add GitHub repository\"",
+        "target": {
+          "role": "combobox",
+          "name": "Repository",
+          "placeholder": "Search repositories...",
+          "within": "Add GitHub repository"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap option \"mako-ai/test-workspace\"",
+        "target": {
+          "role": "option",
+          "name": "mako-ai/test-workspace"
+        }
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Connect\" in \"Add GitHub repository\"",
+        "target": {
+          "role": "button",
+          "name": "Connect",
+          "within": "Add GitHub repository"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/e2e/journey.e2e.ts::Mako%20new%20user::06%20link%20GitHub%20repository",
+      "targetId": "chromium",
+      "instructionDigest": "bcf8b0b71cce5792945ef99436ca85f374762db00e4abafd11dfa8291afa5512"
+    },
+    "summary": "Connected the existing repository mako-ai/test-workspace to the workspace. The GitHub settings page now lists it as the workspace repository; no repository was created or modified.",
+    "startPath": "/settings/github",
+    "endPath": "/settings/github",
+    "endAnchors": [
+      {
+        "role": "button",
+        "name": "Databases"
+      },
+      {
+        "role": "button",
+        "name": "Source Control"
+      },
+      {
+        "role": "button",
+        "name": "Consoles"
+      },
+      {
+        "role": "button",
+        "name": "Flows"
+      },
+      {
+        "role": "button",
+        "name": "Transforms"
+      },
+      {
+        "role": "button",
+        "name": "Sources"
+      },
+      {
+        "role": "button",
+        "name": "Dashboards"
+      },
+      {
+        "role": "button",
+        "name": "Notebooks"
+      }
+    ],
+    "endWaitMs": 13339
+  }
+}

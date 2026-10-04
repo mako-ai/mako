@@ -28,9 +28,9 @@ describe("Mako new user", { serial: true }, () => {
     );
     await expect(browser).toHaveURL(/\/verify-email/);
     await agent.act(
-      "Verify the email using verification code {code}. Stop when the workspace creation form appears.",
+      "Verify the email {email} using verification code {code}. Stop when the workspace creation form appears.",
       {
-        params: { code: secrets.get("verificationCode") },
+        params: { email: unique(email), code: secrets.get("verificationCode") },
       },
     );
     await expect(screen.getByLabel("Workspace name")).toBeVisible();

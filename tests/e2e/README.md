@@ -2,6 +2,10 @@
 
 Uses [TesterArmy e2e](https://tester.army/e2e), its Playwright engine and the
 official skill at `.agents/skills/e2e/SKILL.md`. Node >=22.12 is required.
+The lockfile pins the tested runner/engine. The current engine uses
+`pnpm exec playwright install --with-deps chromium`; newer documentation uses
+`e2e-web install`, introduced after this pinned engine. Dependency updates must
+respect the repository's 24-hour minimum release age.
 The browser is driven by `agent.act` goals through Vercel AI Gateway. Exact UI,
 API and SQL assertions verify the agent's outcomes. Only the exact SQL text is
 entered directly into Monaco; the agent opens the console, selects its connection
@@ -104,6 +108,8 @@ fail the check; they are never replaced with a fabricated installation.
 `pnpm test:e2e:check` checks TypeScript. `pnpm test:e2e:list` lists the checks.
 The JSON report is `.e2e/report.json`; failures include the step and artifact
 paths. The runner suppresses screenshots after a secret has been entered.
+With the pinned runner, a failure before tests start appears in the Actions log
+but does not write a new report; upload steps warn when files are absent.
 Reports, browser state and local credentials are ignored by Git. Reviewed replay
 recordings in `.e2e/cache/` are committed, as recommended by the
 [replay guide](https://e2e.tester.army/docs/cache). Dynamic email/workspace values
