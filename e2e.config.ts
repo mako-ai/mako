@@ -4,12 +4,18 @@ import type { E2EConfig } from "e2e";
 import { web } from "@e2e-dev/web";
 import { gateway } from "ai";
 import { registrationCode } from "./tests/e2e/verification";
+import { localTestDatabase } from "./tests/e2e/local-database";
 
 config({ path: ".env.e2e.local" });
 const baseURL = new URL(
   process.env.MAKO_E2E_BASE_URL ?? "http://localhost:5173",
 );
 const local = ["localhost", "127.0.0.1", "[::1]"].includes(baseURL.hostname);
+const startApp = process.env.MAKO_E2E_START_APP === "1";
+if (startApp) {
+  if (!local) throw new Error("MAKO_E2E_START_APP is restricted to localhost.");
+  localTestDatabase(); // Reject shared DBs before spawning Mako.
+}
 const githubAuth = process.env.MAKO_E2E_GITHUB_AUTH ?? "oauth";
 if (!["oauth", "installation"].includes(githubAuth)) {
   throw new Error("MAKO_E2E_GITHUB_AUTH must be oauth or installation.");
@@ -37,10 +43,9 @@ process.env.MAKO_E2E_PASSWORD ??= randomBytes(24).toString("hex");
 
 export default {
   tests: "tests/e2e/**/*.e2e.ts",
-  workers: 1,
-  retries: 0,
   timeout: 300_000,
-  cache: "off",
+  // Defaults: record locally, read-only replay and one retry in CI.
+  cache: process.env.MAKO_E2E_RECORD_CACHE === "1" ? "read-write" : undefined,
   agents: {
     default: {
       model: gateway(process.env.MAKO_E2E_MODEL ?? "openai/gpt-6-luna-fast"),
@@ -53,7 +58,6 @@ export default {
     },
   },
   assertionTimeout: 15_000,
-  trace: "retain-on-failure",
   credentials: {
     signup: {
       username: process.env.MAKO_E2E_EMAIL,
@@ -67,7 +71,56 @@ export default {
     {
       name: "chromium",
       engine: web(),
-      app: { url: baseURL.href },
+      app: {
+        url: baseURL.href,
+        ...(startApp && {
+          readyUrl: "http://localhost:8080/health",
+          command: {
+            executable: "pnpm",
+            args: [
+              "exec",
+              "concurrently",
+              "--kill-others",
+              "--success",
+              "all",
+              "pnpm --filter api exec tsx src/index.ts",
+              "pnpm --filter app exec vite --port 5173 --strictPort",
+            ],
+            startupTimeout: 90_000,
+            log: ".e2e/logs/app.log",
+            env: {
+              ...Object.fromEntries(
+                [
+                  "AI_GATEWAY_API_KEY",
+                  "GITHUB_APP_ID",
+                  "GITHUB_APP_SLUG",
+                  "GITHUB_APP_CLIENT_ID",
+                  "GITHUB_APP_PRIVATE_KEY",
+                  "DEMO_DATABASE_URL",
+                  "SESSION_SECRET",
+                  "ENCRYPTION_KEY",
+                  "APPS_GIT_ROOT",
+                  "APPS_SESSIONS_ROOT",
+                ].flatMap(key =>
+                  process.env[key] === undefined
+                    ? []
+                    : [[key, process.env[key]!]],
+                ),
+              ),
+              DATABASE_URL: process.env.MAKO_E2E_MONGODB_URI!,
+              NODE_ENV: "development",
+              WEB_API_PORT: "8080",
+              CLIENT_URL: baseURL.origin,
+              BASE_URL: "http://localhost:8080",
+              PUBLIC_URL: baseURL.origin,
+              DISABLE_OAUTH: "true",
+              BILLING_ENABLED: "false",
+              APPS_SANDBOX_PROVIDER: "local",
+              APPS_CONNECTED_REPO_PUSH: "",
+            },
+          },
+        }),
+      },
     },
   ],
 } satisfies E2EConfig;

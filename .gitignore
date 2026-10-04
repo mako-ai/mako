@@ -1,6 +1,7 @@
 # Local secrets (GitHub App PEM, etc.)
 .secrets/
-.e2e/
+.e2e/*
+!.e2e/cache/
 
 # Logs
 logs

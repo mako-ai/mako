@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { describe, test, type Cookie } from "@e2e-dev/web";
-import { credentials, expect, secrets } from "e2e";
+import { credentials, expect, secrets, unique } from "e2e";
 import { prepareGitHubInstallation } from "./github-fixture";
 
 const installationFixture = process.env.MAKO_E2E_GITHUB_AUTH === "installation";
@@ -15,9 +16,15 @@ describe("Mako new user", { serial: true }, () => {
   }) => {
     await app.open("/register");
     const user = credentials.user("signup");
+    // Serial retries restart at registration against the same local database.
+    // Each attempt therefore needs a new account, also shared with OTP/fixture helpers.
+    const email = installationFixture
+      ? `mako-e2e+${randomUUID()}@example.test`
+      : user.username;
+    process.env.MAKO_E2E_EMAIL = email;
     await agent.act(
       "Submit the registration form with {email} and {password}. This goal succeeds when the email verification code form appears. Stop there; email verification is a separate next step.",
-      { params: { email: user.username, password: user.password } },
+      { params: { email: unique(email), password: user.password } },
     );
     await expect(browser).toHaveURL(/\/verify-email/);
     await agent.act(
@@ -33,7 +40,7 @@ describe("Mako new user", { serial: true }, () => {
     await agent.act(
       "Create a workspace named {name}. This goal succeeds as soon as the What's your role? question appears. Stop there without answering any onboarding questions.",
       {
-        params: { name: `Mako E2E ${Date.now()}` },
+        params: { name: unique(`Mako E2E ${randomUUID()}`) },
       },
     );
     await expect(

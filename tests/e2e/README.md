@@ -28,16 +28,19 @@ requires a database before the user can access GitHub settings.
 ## Configuration
 
 Copy `.env.e2e.example` to the ignored `.env.e2e.local`. These variables are
-for the runner; configure Mako's API separately in the root `.env` using the
-normal development instructions in `CLAUDE.md`.
+for the runner. By default, start Mako separately using `CLAUDE.md`. With
+`MAKO_E2E_START_APP=1`, TesterArmy starts/stops the API and Vite through
+`app.command`; provide the API variables listed in `e2e.config.ts` explicitly.
+The command only forwards that allowlist and requires local `mako_e2e`.
 
 | Variable                              | Purpose                                                                                                                  |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `MAKO_E2E_BASE_URL`                   | Running Mako URL; defaults to `http://localhost:5173`.                                                                   |
+| `MAKO_E2E_START_APP`                  | `1` starts/stops Mako through the runner; default `0` uses an existing server.                                           |
 | `AI_GATEWAY_API_KEY`                  | Vercel AI Gateway authentication for the browser agent; required locally even when testing a preview.                    |
 | `MAKO_E2E_MODEL`                      | Agent model; defaults to `openai/gpt-6-luna-fast`.                                                                       |
 | `MAKO_E2E_MONGODB_URI`                | Isolated loopback MongoDB replica set named **mako_e2e**: reads the email code; CI also writes the installation fixture. |
-| `MAKO_E2E_EMAIL`, `MAKO_E2E_PASSWORD` | Optional fresh test identity; otherwise randomly generated. Keep SendGrid disabled locally.                              |
+| `MAKO_E2E_EMAIL`, `MAKO_E2E_PASSWORD` | Optional fresh OAuth test identity; installation mode generates a new email per attempt. Keep SendGrid disabled locally. |
 | `MAKO_E2E_GITHUB_AUTH`                | `oauth` (default) for real OAuth; `installation` for the isolated CI fixture.                                            |
 | `MAKO_E2E_GITHUB_STATE`               | Path to a Playwright storage-state JSON from a dedicated GitHub test account. Only github.com cookies are restored.      |
 | `MAKO_E2E_GITHUB_REPO`                | Exact `owner/repo` of an existing disposable test repository accessible to the Mako GitHub App.                          |
@@ -101,12 +104,20 @@ fail the check; they are never replaced with a fabricated installation.
 `pnpm test:e2e:check` checks TypeScript. `pnpm test:e2e:list` lists the checks.
 The JSON report is `.e2e/report.json`; failures include the step and artifact
 paths. The runner suppresses screenshots after a secret has been entered.
-All reports, browser state and local credentials are ignored by Git.
-Replay caching is disabled, so each run exercises the live browser agent.
-Each agent step is bounded to 25 actions/model calls, with a five-minute test
-deadline and no retries. The report records agent steps and model usage; an
-8/8 pass alone does not establish that AI was used. Provider failures fail the
-run, with no fallback to a deterministic journey.
+Reports, browser state and local credentials are ignored by Git. Reviewed replay
+recordings in `.e2e/cache/` are committed, as recommended by the
+[replay guide](https://e2e.tester.army/docs/cache). Dynamic email/workspace values
+use `unique()` so replay substitutes a fresh identity. Passwords and OTPs are
+opaque secret references, not literal values in recordings.
+
+The runner uses its documented defaults: read-write cache locally; read-only
+cache, one worker, one retry and traces on the first retry in CI. A serial retry
+starts again at registration with a fresh account in installation mode. Each
+agent step is bounded to 25 actions/model calls, with a five-minute test deadline.
+A cache miss or stale recording falls back to the live agent; provider failures
+fail the run. Use `pnpm test:e2e --no-cache` when you specifically need evidence
+of fresh AI planning. Reports distinguish replay from model calls; an 8/8 pass
+alone does not prove fresh AI was used.
 
 A failed serial step skips its dependants. Selecting a member of a serial
 group selects the entire group, so a filtered run is not an onboarding-only
@@ -115,18 +126,21 @@ journey successful. Missing GitHub/AI configuration must fail, not skip.
 
 ## Validation
 
-Before conversion to agent-driven navigation, all eight checks passed on
-2026-10-03 against PR #1031's preview with a fresh
-account, a real emailed verification code, GitHub OAuth and
-`mako-ai/test-workspace`, a real assistant response and SQL result `42`.
-The hosted installation-fixture run also passed **8/8, no skips or flaky tests**
-on [GitHub Actions](https://github.com/mako-ai/mako/actions/runs/37139829098).
-The repository's API suites also passed: 339 dbt/integration tests and 519 apps
-tests (two pre-existing gated dbt tests skipped). TypeScript, formatting and
-workflow syntax checks passed. These earlier results validate the deterministic
-journey, not the new browser agent. No production deployment was performed.
+The fresh AI journey passed twice before the CI-default alignment:
+[runs 37143123234](https://github.com/mako-ai/mako/actions/runs/37143123234)
+and [37143369841](https://github.com/mako-ai/mako/actions/runs/37143369841),
+each with 8/8 tests, 10 agent goals and 42 Vercel AI Gateway model calls.
+The PR records validation of the current CI configuration. An earlier preview
+run exercised real emailed verification and GitHub OAuth before conversion to
+agent navigation; it is not evidence of agent-driven OAuth.
 
-## Manual GitHub Actions run
+## GitHub Actions
+
+The workflow follows the [TesterArmy CI guide](https://e2e.tester.army/docs/ci):
+automatic same-repository PR and default-branch (`master`) push runs, minimum
+permissions, SHA-pinned Actions, frozen dependencies, separate browser setup,
+runner-managed app startup, CI replay/retry/trace defaults, and seven-day reports
+and browser diagnostics. Superseded PR runs are cancelled. Fork PRs are refused.
 
 `.github/workflows/e2e-journey.yml` runs the Mako journey on an isolated runner
 with local MongoDB and PostgreSQL, using the installation fixture above.
@@ -136,7 +150,8 @@ secret, personal session, PAT or automation user is required. App installation
 access tokens are minted by Mako and expire; they are not persisted as CI secrets.
 
 The job does not deploy Mako, push to the connected repository or access a shared
-database. It never uploads browser state, OAuth traces or API logs.
+database. It uploads runner-redacted browser artifacts, including retry traces when
+available. It never uploads browser state, `.e2e/sessions`, or unredacted app logs.
 
 The default repository input is `mako-ai/test-workspace` (the existing Mako
 test repository); it can be overridden at dispatch. CLI read access to that
@@ -149,13 +164,13 @@ Once the workflow is present on the default branch, launch **Mako E2E journey** 
 gh workflow run e2e-journey.yml --repo mako-ai/mako --ref <trusted-branch>
 ```
 
-Before merging the workflow, a repository collaborator can explicitly run it
-by adding the `run-e2e` label to a same-repository PR. Remove and re-add the
-label for another run. Fork PRs are refused. An existing label does not rerun
-tests on subsequent pushes; label again to test the new commit.
-
-It is manual-only; no schedule or automatic push trigger is enabled. The job
-uploads only the test JSON and JUnit reports, with seven-day retention.
+To refresh recordings locally, run with the normal read-write cache, inspect the
+changed `.e2e/cache/` files and commit them. After merge, `workflow_dispatch` also
+accepts `record_cache=true`; download `mako-e2e-cache`, review its actions and
+literal typed values, then commit the reviewed files. Normal CI only reads the
+committed cache and never silently updates it. Reports and diagnostics upload
+unless the run is cancelled, including when tests fail. Missing diagnostics are
+reported as a warning (a first-attempt pass does not need a retry trace).
 
 Test accounts/workspaces are retained for inspection; dispose of the dedicated
 local test database between runs when appropriate. CI databases disappear
