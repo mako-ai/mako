@@ -1,9 +1,10 @@
 name: Mako E2E journey
 
-# Explicit runs only: uses live AI and GitHub, with disposable local databases.
+# Uses live AI and GitHub, with disposable local databases.
 on:
   pull_request:
-    types: [labeled]
+  push:
+    branches: [master]
   workflow_dispatch:
     inputs:
       repository:
@@ -11,23 +12,25 @@ on:
         required: true
         default: mako-ai/test-workspace
         type: string
+      record_cache:
+        description: Record replay actions for review and commit
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
   group: e2e-journey-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   journey:
     name: User journey (GitHub App fixture)
-    # Adding this label is an explicit request by a repository collaborator.
     # Never expose test credentials to a fork's workflow/code.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.label.name == 'run-e2e' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -43,20 +46,22 @@ jobs:
           --health-cmd "pg_isready -U mako -d demo"
           --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           version: 11.9.0
-      - name: Install dependencies and browser
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm exec playwright install --with-deps chromium
-          pnpm test:e2e:check
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Check E2E types
+        run: pnpm test:e2e:check
 
       - name: Start isolated MongoDB replica set
         run: |
@@ -86,17 +91,10 @@ jobs:
           MAKO_E2E_GITHUB_AUTH: installation
           MAKO_E2E_BASE_URL: http://localhost:5173
           MAKO_E2E_MONGODB_URI: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
-          DATABASE_URL: mongodb://127.0.0.1:27017/mako_e2e?replicaSet=rs0
           DEMO_DATABASE_URL: postgresql://mako:e2e-local-only@127.0.0.1:5432/demo
-          NODE_ENV: development
-          WEB_API_PORT: 8080
-          CLIENT_URL: http://localhost:5173
-          BASE_URL: http://localhost:8080
-          PUBLIC_URL: http://localhost:5173
-          DISABLE_OAUTH: "true"
-          BILLING_ENABLED: "false"
-          APPS_SANDBOX_PROVIDER: local
-          APPS_CONNECTED_REPO_PUSH: ""
+          MAKO_E2E_START_APP: "1"
+          # Bootstrap recordings; normal CI will consume the reviewed cache read-only.
+          MAKO_E2E_RECORD_CACHE: "1"
           E2E_TELEMETRY_DISABLED: "1"
         run: |
           set -euo pipefail
@@ -111,27 +109,32 @@ jobs:
           export ENCRYPTION_KEY="$(openssl rand -hex 32)"
           export APPS_GIT_ROOT="$RUNNER_TEMP/mako-e2e-git"
           export APPS_SESSIONS_ROOT="$RUNNER_TEMP/mako-e2e-sessions"
-          pnpm --filter api exec tsx src/index.ts > .e2e/logs/api.log 2>&1 &
-          api_pid=$!
-          pnpm --filter app exec vite --port 5173 --strictPort > .e2e/logs/app.log 2>&1 &
-          app_pid=$!
-          trap 'kill "$api_pid" "$app_pid" 2>/dev/null || true' EXIT
-          for attempt in {1..90}; do
-            if curl --fail --silent http://localhost:8080/health >/dev/null && curl --fail --silent http://localhost:5173 >/dev/null; then break; fi
-            sleep 1
-          done
-          curl --fail --silent http://localhost:8080/health >/dev/null
-          curl --fail --silent http://localhost:5173 >/dev/null
-          pnpm test:e2e --trace=off --reporter list,junit
+          pnpm test:e2e --reporter list,junit
 
-      # Never upload storage state, API logs, or OAuth network traces.
+      # Upload runner-redacted diagnostics, never app logs or browser state.
       - name: Save test results
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mako-e2e-results
           path: |
             .e2e/report.json
             .e2e/junit.xml
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Save browser diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-artifacts
+          path: .e2e/artifacts
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Save replay recordings for review
+        if: ${{ success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mako-e2e-cache
+          path: .e2e/cache
+          if-no-files-found: warn
           retention-days: 7
