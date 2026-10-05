@@ -1,6 +1,6 @@
 ---
 name: flows-as-code
-description: Load when adding, changing or removing a sync flow by editing flows/<slug>.yml in a workspace repo — "add a Stripe connection and sync it to BigQuery", "sync the new Close account", "stop syncing X" — or when a pushed flow file did nothing.
+description: Load when adding, changing or removing a sync flow by editing flows/<slug>.yml in a workspace repo — "add a Stripe connection and sync it to BigQuery", "sync the new Close account", "stop syncing X" — when a pushed flow file did nothing, or to start, pause or debug a flow's backfill over MCP.
 entities:
   - flows/
   - flow file
@@ -16,6 +16,15 @@ entities:
   - list_connections
   - inspect_connection
   - probe_connection
+  - create_source_connection
+  - update_source_connection
+  - sources:write
+  - list_flows
+  - inspect_flow
+  - list_flow_runs
+  - flow_backfill
+  - flow_stream
+  - WORKER_TIMEOUT
   - cdc flow
   - webhook flow
   - scheduled flow
@@ -44,8 +53,10 @@ checkout of that repo, over MCP. For the in-product flow form, load `flows`.
   in Mongo on first create from `workspaceId` + flow `_id`, never the slug);
   run state — cursors, `lastRunAt`, checkpoints, counters.
 
-## The loop: discover → write → check → push → verify
+## The loop: connect → discover → write → check → push → start → verify
 
+0. **Create the source connection if it does not exist** —
+   `create_source_connection` (see "Creating the connection" below).
 1. **Discover the ids.** Ids cannot be guessed and a NAME where an id
    belongs (`connection_id: close`) is refused.
    - `list_connections` → every configured credential, with `kind`: a
@@ -83,7 +94,9 @@ checkout of that repo, over MCP. For the in-product flow form, load `flows`.
 4. **Push to main.** The push reactor upserts rows and reconciles streams. A
    push with a bad file does not fail: the reactor keeps the current row and
    logs a warning you cannot see. Step 3 is the only feedback.
-5. **Verify it is live** — below. "The file appeared" and "data is flowing"
+5. **Start it** if the file does not start itself (below): `flow_backfill
+   { flowId: "<slug>", action: "start" }`.
+6. **Verify it is live** — below. "The file appeared" and "data is flowing"
    are different claims.
 
 ## Format
@@ -163,9 +176,23 @@ if it carries the field the cron looks for:
 | `type: scheduled` + `schedule: { cron, timezone }` | runs on the cron |
 | `type: webhook` | row is *addressable* (endpoint minted, shown on the flow's page) but inbound deliveries are rejected with 400 until (a) the provider's signing secret is pasted in the UI — never from the file — and (b) the provider is pointed at the minted URL. Push first, then do both. |
 
-Verify: there is no flow-status tool over MCP yet — open the Flows page:
-`streamState` should leave `idle` and a backfill run should appear; then
-`SELECT count(*)` in the destination via `execute_query`.
+Start without waiting for the cron: `flow_backfill({ flowId, action:
+"start" })` (optionally `entities: [...]`) — the CDC Pipeline page's Start
+button, same service. `pause` / `resume` / `cancel` are the other buttons;
+`flow_stream({ flowId, action: "start" | "pause" })` drives the live stream.
+Both need the `sources:write` scope and an owner/admin; `flowId` is the id
+from `list_flows` or the file slug.
+
+Verify, without the UI:
+- `inspect_flow({ flowId })` — `streamState` should leave `idle`,
+  `backfill.status` should go `running` → `completed`, and each entity's
+  `backfill` / `rowsWritten` / `destinationRows` should move. `lastError`
+  and `syncError` say why it did not.
+- `list_flow_runs({ flowId })` — the Run History: each execution's
+  `status`, `error.code` (`WORKER_TIMEOUT` = the run was abandoned: worker
+  crash or a connector that timed out), `lastErrorLog`, per-entity counts.
+  A nightly backfill that dies the same way every night shows up here first.
+- Then `SELECT count(*)` in the destination via `sql_execute_query`.
 
 ## Removing and renaming
 
@@ -180,12 +207,27 @@ Verify: there is no flow-status tool over MCP yet — open the Flows page:
 
 ## Creating the connection (the step the file cannot do)
 
-A flow file references a source connection that must already exist. **No
-MCP or CLI tool creates one**; `POST /api/workspaces/{id}/connectors` behind
-a signed-in session is the only construction site, and it takes the API key.
-So: ask the user to configure the connection in Mako (Sources → Add),
-`list_connections({ kind: "source" })` for its id, `probe_connection` to
-see it work, then write the file. Never write an API key into a repo file.
+A flow file references a source connection that must already exist.
+`create_source_connection({ connector, name, config })` creates one — the
+same validation and encryption as the UI's "New source connection" form —
+and returns `{ id, check }` (the connector's credential check, unless
+`check: false`). `inspect_connector({ connector })` lists the `config`
+fields and which are secrets; unknown or missing required fields are
+refused. `update_source_connection({ connectionId, config })` is a patch:
+omit a secret (or pass `__mako_secret_kept__`) to keep the stored one.
+
+- Both need the **`sources:write`** scope (never a default — the user ticks
+  it at OAuth consent, or a workspace admin puts it on the API key) AND that
+  the user behind the credential is an **owner or admin**, checked on every
+  call. Without them the tools are not listed; `get_mcp_capabilities` says
+  which is missing. Then ask the user to add the connection in Mako
+  (Sources → Add) instead.
+- **Secrets are write-only**: never returned, logged or echoed in an error.
+  To keep a secret VALUE out of your own context too, call the tool by
+  posting the JSON-RPC `tools/call` request to the MCP endpoint from a shell
+  pipeline that reads the value from a secret manager.
+- Then `probe_connection` to see it read an entity, then write the file.
+  Never write an API key into a repo file.
 
 ## Gotchas that have bitten
 

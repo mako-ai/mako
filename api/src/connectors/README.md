@@ -27,7 +27,7 @@ Where the vocabulary is already applied:
 
 | Surface | Connector (code) | Connection (credential) |
 | --- | --- | --- |
-| Agent / MCP tools | `list_connectors`, `inspect_connector({ connector })` | `list_connections` (both kinds, `kind` + `connector` on every row), `inspect_connection`, `probe_connection` |
+| Agent / MCP tools | `list_connectors`, `inspect_connector({ connector })` | `list_connections` (both kinds, `kind` + `connector` on every row), `inspect_connection`, `probe_connection`; writes: `create_source_connection` / `update_source_connection` (MCP only, scope `sources:write` + live owner/admin; secrets write-only, same `services/source-connection.service.ts` path as the REST route) |
 | Flow files | `source.type: connector` | `source.connection_id`, `destination.connection_id` (`connector_id` is the pre-2026-09 key and still parses) |
 | CLI | `mako connector test <path>` | `mako connection probe <id\|name>` |
 | REST | `/api/connectors` catalog | `/api/workspaces/:wid/connections/sources` (source connections); `/api/workspaces/:wid/connectors` is the deprecated alias. Database connections stay under `/databases`. |
