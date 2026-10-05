@@ -223,15 +223,29 @@ repo's `.env` previews the app as another member during `pnpm dev`.
 
 ## The SDK's name
 
-New apps depend on `@makoai/app-sdk` (npm) — vendored at `packages/app-sdk`.
-Apps created before 2026-09 import the same package as `@makoai/app-sdk`
-(older alias): keep whatever the app's `package.json` already uses.
+Apps depend on `@makoai/app-sdk` from npm with a caret range
+(`"^2.7.0"`); Mako's deploys move every app to the newest release inside that
+range, so never vendor or copy the package into the repo. Its README
+(`node_modules/@makoai/app-sdk/README.md` after an install) documents the
+version the app has. Apps created before 2026-09 may still import an older
+alias or a `file:` path: keep whatever the app's `package.json` already uses
+unless you are migrating it.
 
 ## Styling & UI components
 
-For Tailwind v4 + shadcn/ui in an app — install, mapping Tailwind onto the
-SDK's theme tokens, the cursor-pointer base rule, the multi-select
-filter-dropdown pattern, and v1-CDN migration notes — read
+**Default to the house style.** The SDK injects Mako's theme tokens (stone,
+warm `--canvas`, `#527df2` `--brand`, `--positive`/`--warning`/`--negative`,
+`--chart-1…5`; light and dark), and `@makoai/app-sdk/ui` is the dashboard kit
+every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
+`KpiTile`, `Button`, `StatusDot`, `MultiSelect` (filters), `FreshnessBadge`
+(data age per source), `RefreshAllButton` (rebuild every binding, with a
+progress modal). Import `@makoai/app-sdk/ui.css` before the app's own CSS.
+New apps are scaffolded on it. Do NOT paste a token block into an app or
+fork these components — override a single token, or ask for the kit to grow.
+
+For anything beyond the kit (tables, sheets, dialogs, command menus): Tailwind
+v4 + shadcn/ui — install, mapping Tailwind onto the SDK's theme tokens, the
+cursor-pointer base rule, and v1-CDN migration notes — read
 `references/ui-toolkit.md`
 (`read_skill_resource("apps", "references/ui-toolkit.md")`).
 

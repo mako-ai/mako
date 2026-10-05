@@ -66,6 +66,35 @@ export function installCommand(options: { verbose?: boolean } = {}): string {
   return `if ${IS_PNPM_APP}; then ${pnpm}; else ${npm}; fi`;
 }
 
+/** Shell test that succeeds when the app in the cwd depends on a `@makoai/*` package. */
+export const DEPENDS_ON_MAKO_PACKAGES = `grep -q '"@makoai/' package.json 2>/dev/null`;
+
+/**
+ * Move the app's `@makoai/*` dependencies to the newest release INSIDE the
+ * range its package.json declares (`^2.7.0` → newest 2.x), after the install.
+ *
+ * Why: every app commits a lockfile, and a lockfile freezes a caret range at
+ * whatever version it first resolved — 83 apps sat on SDK 2.4.0 while 2.6 was
+ * out. Our own packages follow semver, so floating them inside the declared
+ * range is what lets SDK fixes and the house style reach apps without a
+ * per-app bump commit or a vendored copy. Third-party dependencies stay
+ * exactly as locked.
+ *
+ * Best effort: a registry hiccup must not fail a deploy, so a failed update
+ * is logged and the build uses the versions the install put there. The
+ * box's lockfile change is never committed back.
+ */
+export function updateMakoPackagesCommand(): string {
+  const names = `$(node -p "const p=require('./package.json');Object.keys({...p.dependencies,...p.devDependencies}).filter(n=>n.startsWith('@makoai/')).join(' ')")`;
+  const pnpm = `${PNPM} update '@makoai/*' --config.confirmModulesPurge=false --reporter=append-only`;
+  const npm = `npm update --no-audit --no-fund ${names}`;
+  return (
+    `if ${DEPENDS_ON_MAKO_PACKAGES}; then ` +
+    `{ if ${IS_PNPM_APP}; then ${pnpm}; else ${npm}; fi; } || ` +
+    `echo "mako: could not update @makoai packages; building with the installed versions"; fi`
+  );
+}
+
 /**
  * Shell test that succeeds when `node_modules` is still current: our stamp
  * (written only after a successful install) is newer than package.json AND

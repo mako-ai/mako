@@ -1,12 +1,13 @@
 # @makoai/app-sdk
 
 The runtime SDK for [Mako](https://mako.ai) data apps — React hooks over an
-app's data bindings, plus a Vite plugin that serves those bindings during a
-local `vite dev`.
+app's data bindings, a Vite plugin that serves those bindings during a local
+`vite dev`, and Mako's house dashboard kit (`@makoai/app-sdk/ui`).
 
-Every Mako workspace repository carries this package at `packages/app-sdk`;
-apps depend on it with `"@makoai/app-sdk": "file:../../packages/app-sdk"`. Mako
-keeps the vendored copy current — do not edit it in a workspace repo.
+Apps depend on the published package with a caret range
+(`"@makoai/app-sdk": "^2.7.0"`), and Mako's deploys move every app to the
+newest release within that range — fixes and design updates reach apps
+without anyone copying files. Do not vendor it into a workspace repo.
 
 ## Install
 
@@ -98,6 +99,72 @@ binding the app can read is downloaded whole into the viewer's browser, so
 this shapes the UI rather than enforcing access. Who may *open* the app is
 the app's access setting in Mako; server-side row filtering is a follow-up
 on the same identity (apps.md §28).
+
+## The house style: `@makoai/app-sdk/ui`
+
+Importing the SDK injects Mako's theme tokens (stone, warm canvas, `#527df2`
+brand; light and dark): `--background`, `--foreground`, `--card`, `--border`,
+`--muted-foreground`, `--brand`, `--canvas`, `--positive` / `--warning` /
+`--negative`, `--chart-1`…`--chart-5`, … Style with these names and the app
+follows the house palette and dark mode for free. Override a token in your own
+stylesheet to re-theme; do not paste the whole block.
+
+The kit is the dashboard furniture every app was re-forking:
+
+```tsx
+import "@makoai/app-sdk/ui.css"; // before ./styles.css, so the app wins
+import {
+  PageHeader, Card, KpiRow, KpiTile, Button, StatusDot,
+  MultiSelect, FreshnessBadge, RefreshAllButton,
+} from "@makoai/app-sdk/ui";
+
+<PageHeader
+  title="Spain renewals"
+  subtitle="Contracts up for renewal in the next 90 days"
+  actions={<>
+    <FreshnessBadge tone="ok" headline="Synced 12m ago"
+      title="Data as of 09:05" schedule="Refreshes 06:30 / 18:30 Europe/Zurich"
+      sources={[{ label: "Stripe", value: "09:05", tone: "ok" }]} />
+    <RefreshAllButton bindings={__APP_BINDING_NAMES__}
+      labels={{ renewals: "Renewals" }} last={["data_freshness*"]} />
+  </>}
+/>
+<KpiRow>
+  <KpiTile label="Up for renewal" value="412" delta="+8%" tone="ok" hint="vs last quarter" />
+</KpiRow>
+<MultiSelect options={["CH", "ES", "IT"]} value={countries} onChange={setCountries} allLabel="All countries" />
+```
+
+- `MultiSelect` — controlled (`value` / `onChange`). An empty selection means
+  "all" unless `emptyMeansAll={false}` (then "all" = every value selected).
+  Options are strings or `{ value, label, color }`; `showOnly` adds an "Only"
+  button per row. On phones the menu is a bottom sheet.
+- `FreshnessBadge` — presentational: the app decides what fresh means and
+  passes `tone` (`ok` / `warn` / `bad`, or `green` / `amber` / `red`), a
+  `headline`, and per-source rows; `action` is a callout slot (e.g. a "Load
+  latest" button).
+- `RefreshAllButton` — rebuilds every binding (`refreshBinding`),
+  `concurrency` at a time (default 3 — keep it low), `first` / `last` / `skip`
+  patterns (`*` suffix = prefix), with a progress modal. Give it the binding
+  names with a build-time define in `vite.config.ts`:
+
+  ```ts
+  import { readdirSync } from "node:fs";
+  // inside defineConfig({ … }):
+  define: {
+    __APP_BINDING_NAMES__: JSON.stringify(
+      readdirSync(new URL("./bindings", import.meta.url))
+        .filter(f => f.endsWith(".sql")).map(f => f.slice(0, -4)),
+    ),
+  },
+  ```
+
+  and declare it once (`src/vite-env.d.ts`):
+  `declare const __APP_BINDING_NAMES__: string[];`
+
+`ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
+every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on
+the warm `--canvas`.
 
 ## In `vite.config.ts`
 

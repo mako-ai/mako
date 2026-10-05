@@ -1,7 +1,7 @@
 {
   "name": "@makoai/app-sdk",
-  "version": "2.6.0",
-  "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme.",
+  "version": "2.7.0",
+  "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme, and the house dashboard kit (/ui).",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -31,7 +31,12 @@
     "./credentials": {
       "types": "./credentials.d.ts",
       "default": "./credentials.js"
-    }
+    },
+    "./ui": {
+      "types": "./ui.d.ts",
+      "default": "./ui.js"
+    },
+    "./ui.css": "./ui.css"
   },
   "files": [
     "index.js",
@@ -40,10 +45,15 @@
     "vite.d.ts",
     "credentials.js",
     "credentials.d.ts",
+    "ui.js",
+    "ui-core.js",
+    "ui.d.ts",
+    "ui.css",
     "README.md"
   ],
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=18",
+    "react-dom": ">=18"
   },
   "publishConfig": {
     "access": "public"

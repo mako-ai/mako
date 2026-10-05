@@ -97,8 +97,11 @@ export function createAppsScaffold(
 </html>
 `,
     "vite.config.ts": `import { defineConfig } from "vite";
+import { existsSync, readdirSync } from "node:fs";
 import react from "@vitejs/plugin-react";
 import { makoData } from "@makoai/app-sdk/vite";
+
+const bindingsDir = new URL("./bindings", import.meta.url);
 
 export default defineConfig({
   // makoData serves this app's data bindings (__data/*.parquet) during a
@@ -106,6 +109,17 @@ export default defineConfig({
   // Inside Mako's own sandbox the launcher answers those paths itself and
   // the plugin stays idle.
   plugins: [react(), makoData()],
+  // The binding names, for RefreshAllButton (@makoai/app-sdk/ui): a new
+  // bindings/<name>.sql is picked up without touching the code.
+  define: {
+    __APP_BINDING_NAMES__: JSON.stringify(
+      existsSync(bindingsDir)
+        ? readdirSync(bindingsDir)
+            .filter(name => name.endsWith(".sql"))
+            .map(name => name.slice(0, -4))
+        : [],
+    ),
+  },
   // Relative asset URLs so builds work under any hosting prefix
   // (including Mako's token-scoped preview paths).
   base: "./",
@@ -139,9 +153,16 @@ export default defineConfig({
       null,
       2,
     )}\n`,
+    "src/vite-env.d.ts": `/// <reference types="vite/client" />
+
+/** bindings/*.sql names, defined in vite.config.ts. */
+declare const __APP_BINDING_NAMES__: string[];
+`,
     "src/main.tsx": `import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+// The house style first, the app's own rules after it so they win.
+import "@makoai/app-sdk/ui.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -150,111 +171,53 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   </React.StrictMode>,
 );
 `,
-    "src/App.tsx": `export default function App() {
+    "src/App.tsx": `import {
+  Card,
+  KpiRow,
+  KpiTile,
+  PageHeader,
+  RefreshAllButton,
+} from "@makoai/app-sdk/ui";
+
+// Mako's house dashboard kit — see node_modules/@makoai/app-sdk/README.md.
+export default function App() {
   return (
-    <main className="container">
-      <h1>${safeTitle.replace(/[<>&]/g, "")}</h1>
-      <p>Built with Mako Apps — edit src/App.tsx to get started.</p>
+    <main className="page">
+      <PageHeader
+        title="${safeTitle.replace(/[<>&"{}]/g, "")}"
+        subtitle="Built with Mako Apps — edit src/App.tsx to get started."
+        actions={<RefreshAllButton bindings={__APP_BINDING_NAMES__} />}
+      />
+      <KpiRow>
+        <KpiTile label="Your first KPI" value="—" hint="Add a binding, then useQuery()" />
+      </KpiRow>
+      <Card
+        title="Getting started"
+        description="Data comes from bindings/<name>.sql; read it with useQuery('<name>')."
+      >
+        <p className="muted">
+          The theme tokens (--background, --brand, --chart-1…) and the kit
+          come from @makoai/app-sdk: style with the tokens, reuse the kit.
+        </p>
+      </Card>
     </main>
   );
 }
 `,
-    "src/styles.css": `/* Mako theme tokens — same contract the SDK injects (explicit here so the
-   scaffold works without the SDK, and apps can see what to override). */
-:root {
-  color-scheme: light;
-  --background: hsl(0 0% 100%);
-  --foreground: hsl(240 10% 3.9%);
-  --card: hsl(0 0% 100%);
-  --card-foreground: hsl(240 10% 3.9%);
-  --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(240 10% 3.9%);
-  --primary: hsl(240 5.9% 10%);
-  --primary-foreground: hsl(0 0% 98%);
-  --secondary: hsl(240 4.8% 95.9%);
-  --secondary-foreground: hsl(240 5.9% 10%);
-  --muted: hsl(240 4.8% 95.9%);
-  --muted-foreground: hsl(240 3.8% 46.1%);
-  --accent: hsl(240 4.8% 95.9%);
-  --accent-foreground: hsl(240 5.9% 10%);
-  --destructive: hsl(0 84.2% 60.2%);
-  --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 5.9% 90%);
-  --input: hsl(240 5.9% 90%);
-  --ring: hsl(240 5.9% 10%);
-  --chart-1: hsl(12 76% 61%);
-  --chart-2: hsl(173 58% 39%);
-  --chart-3: hsl(197 37% 24%);
-  --chart-4: hsl(43 74% 66%);
-  --chart-5: hsl(27 87% 67%);
-  --radius: 0.5rem;
-}
-:root.dark {
-  color-scheme: dark;
-  --background: hsl(240 10% 3.9%);
-  --foreground: hsl(0 0% 98%);
-  --card: hsl(240 10% 3.9%);
-  --card-foreground: hsl(0 0% 98%);
-  --popover: hsl(240 10% 3.9%);
-  --popover-foreground: hsl(0 0% 98%);
-  --primary: hsl(0 0% 98%);
-  --primary-foreground: hsl(240 5.9% 10%);
-  --secondary: hsl(240 3.7% 15.9%);
-  --secondary-foreground: hsl(0 0% 98%);
-  --muted: hsl(240 3.7% 15.9%);
-  --muted-foreground: hsl(240 5% 64.9%);
-  --accent: hsl(240 3.7% 15.9%);
-  --accent-foreground: hsl(0 0% 98%);
-  --destructive: hsl(0 62.8% 30.6%);
-  --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 3.7% 15.9%);
-  --input: hsl(240 3.7% 15.9%);
-  --ring: hsl(240 4.9% 83.9%);
-  --chart-1: hsl(220 70% 50%);
-  --chart-2: hsl(160 60% 45%);
-  --chart-3: hsl(30 80% 55%);
-  --chart-4: hsl(280 65% 60%);
-  --chart-5: hsl(340 75% 55%);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
-    color-scheme: dark;
-    --background: hsl(240 10% 3.9%);
-    --foreground: hsl(0 0% 98%);
-    --card: hsl(240 10% 3.9%);
-    --card-foreground: hsl(0 0% 98%);
-    --popover: hsl(240 10% 3.9%);
-    --popover-foreground: hsl(0 0% 98%);
-    --primary: hsl(0 0% 98%);
-    --primary-foreground: hsl(240 5.9% 10%);
-    --secondary: hsl(240 3.7% 15.9%);
-    --secondary-foreground: hsl(0 0% 98%);
-    --muted: hsl(240 3.7% 15.9%);
-    --muted-foreground: hsl(240 5% 64.9%);
-    --accent: hsl(240 3.7% 15.9%);
-    --accent-foreground: hsl(0 0% 98%);
-    --destructive: hsl(0 62.8% 30.6%);
-    --destructive-foreground: hsl(0 0% 98%);
-    --border: hsl(240 3.7% 15.9%);
-    --input: hsl(240 3.7% 15.9%);
-    --ring: hsl(240 4.9% 83.9%);
-    --chart-1: hsl(220 70% 50%);
-    --chart-2: hsl(160 60% 45%);
-    --chart-3: hsl(30 80% 55%);
-    --chart-4: hsl(280 65% 60%);
-    --chart-5: hsl(340 75% 55%);
-  }
-}
-body { background: var(--background); color: var(--foreground); }
+    "src/styles.css": `/* The theme tokens (--background, --card, --brand, --canvas, --chart-1…5,
+   light and dark) are injected by @makoai/app-sdk, and the house base and kit
+   styles come from @makoai/app-sdk/ui.css (imported before this file).
+   Override a token here to re-theme; keep app layout below. */
 
-:root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
 }
 
-.container {
-  max-width: 720px;
-  margin: 4rem auto;
-  padding: 0 1rem;
+.muted {
+  margin: 0;
+  color: var(--muted-foreground);
 }
 `,
     ".gitignore": `node_modules

@@ -112,6 +112,12 @@ export function useViewer(): ViewerState;
 export function getViewer(): Promise<Viewer | null>;
 
 export function useTheme(): { theme: "light" | "dark" };
+
+/**
+ * The theme tokens the SDK injects into <head> on import (Mako's house
+ * palette: --background, --brand, --canvas, --positive, --chart-1…5, …).
+ */
+export const MAKO_THEME_TOKENS_CSS: string;
 export function useLocation(): MakoLocation;
 export function useSearchParams(): [
   URLSearchParams,
