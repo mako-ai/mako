@@ -35,17 +35,15 @@ import {
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
   closestCenter,
   pointerWithin,
-  useSensor,
-  useSensors,
   type CollisionDetection,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { filterTree } from "../store/lib/tree-helpers";
+import { useDragSensors } from "../hooks/useDragSensors";
 import {
   DraggableFolderScope,
   DraggableTreeItem,
@@ -395,11 +393,7 @@ function ResourceTreeInner(
     getFolderExpansionKey,
   });
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 },
-    }),
-  );
+  const sensors = useDragSensors(8);
 
   useEffect(() => {
     setSectionExpanded(prev => {
