@@ -62,7 +62,9 @@ export const FLOW_CAPABILITIES = [
   define({
     name: "flow_backfill",
     pack: "flow-control",
-    risk: "write",
+    // `cancel` discards the run's checkpoints: the next start re-reads from
+    // scratch. Destructive, so MCP clients annotate and confirm it as such.
+    risk: "destructive",
     minimumWorkspaceRole: "admin",
     requiredGrant: "sources-write",
     surfaces: EXTERNAL_MCP_ONLY,

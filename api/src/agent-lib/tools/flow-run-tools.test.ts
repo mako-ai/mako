@@ -40,7 +40,25 @@ const state = vi.hoisted(() => ({
     id: unknown;
   }>,
   workspaceId: "",
+  failRedactOnce: false,
 }));
+
+// Lets a test make run-text scrubbing throw once, AFTER the credentials were
+// loaded, to see the failure path reuse that list rather than load again.
+vi.mock("../../connectors/probe.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../connectors/probe.service")>();
+  return {
+    ...actual,
+    redactSecrets: vi.fn((text: string, secrets: readonly string[]) => {
+      if (state.failRedactOnce) {
+        state.failRedactOnce = false;
+        throw new Error("scrubber exploded");
+      }
+      return actual.redactSecrets(text, secrets);
+    }),
+  };
+});
 
 vi.mock("../../auth/unified-auth.middleware", () => ({
   unifiedAuthMiddleware: async (
@@ -137,6 +155,11 @@ vi.mock("../../sync/database-data-source-manager", async importOriginal => {
           headers: JSON.stringify({
             Authorization: "Bearer tok_HEADER_bearer_1234567890",
           }),
+          // NON-secret fields carrying credentials: a key in a URL, a token
+          // inside a params JSON string.
+          base_url:
+            "https://api.example.com/v1?api_key=sk_live_BASEURL_123456&v=2",
+          params: JSON.stringify({ token: "tok_PARAMS_abcdef12", page: 1 }),
         },
       })),
     },
@@ -159,6 +182,7 @@ import {
   MCP_BRIDGE_POLICY,
   assertBridgePolicyCovers,
   assertBridgePolicyNotStale,
+  mcpDestructiveHint,
   mcpReadOnlyHint,
 } from "../../mcp/bridge-policy";
 import { collectLiveAgentToolNames } from "../../mcp/bridge-inventory";
@@ -178,7 +202,11 @@ import {
   loadLiveFlows,
 } from "../../services/flow-sync.service";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
-import { connectionCredentialValues } from "../../utils/connection-secrets";
+import {
+  connectionCredentialValues,
+  credentialFragments,
+} from "../../utils/connection-secrets";
+import { loggers } from "../../logging";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -258,6 +286,8 @@ beforeEach(async () => {
       { name: "account", type: "string" },
       { name: "region", type: "string" },
       { name: "headers", type: "textarea", encrypted: true },
+      { name: "base_url", type: "string" },
+      { name: "params", type: "textarea" },
     ],
   });
   WS = new Types.ObjectId().toString();
@@ -625,15 +655,93 @@ describe("scrubbing, second review", () => {
     expect(result.lastError).toBe(
       "401 Unauthorized: token [redacted] rejected",
     );
-    // Same for a JSON string in a database connection's credential field.
-    expect(
-      connectionCredentialValues({
-        service_account_json: JSON.stringify({
-          private_key: "-----BEGIN PRIVATE KEY-----abc",
-          type: "x",
-        }),
+  });
+
+  it("collects only credential-named leaves of a service-account JSON", () => {
+    const values = connectionCredentialValues({
+      service_account_json: JSON.stringify({
+        type: "service_account",
+        project_id: "my-project-prod",
+        private_key_id: "0123456789abcdef",
+        private_key: "-----BEGIN PRIVATE KEY-----abc",
+        client_email: "svc@my-project-prod.iam.gserviceaccount.com",
+        token_uri: "https://oauth2.googleapis.com/token",
       }),
-    ).toContain("-----BEGIN PRIVATE KEY-----abc");
+    });
+    const scrub = makeRunTextScrubber(values);
+    expect(
+      scrub(
+        "svc@my-project-prod.iam.gserviceaccount.com in my-project-prod via https://oauth2.googleapis.com/token used -----BEGIN PRIVATE KEY-----abc (0123456789abcdef)",
+      ),
+    ).toBe(
+      "svc@my-project-prod.iam.gserviceaccount.com in my-project-prod via https://oauth2.googleapis.com/token used [redacted] ([redacted])",
+    );
+  });
+
+  it("redacts the percent-encoded form of a secret", () => {
+    const scrub = makeRunTextScrubber(["ab+cd/ef=="]);
+    expect(scrub("GET /x?k=ab%2Bcd%2Fef%3D%3D and ab+cd/ef==")).toBe(
+      "GET /x?k=[redacted] and [redacted]",
+    );
+    expect(credentialFragments("ab+cd/ef==")).toContain("ab%2Bcd%2Fef%3D%3D");
+  });
+
+  it("scrubs credentials embedded in NON-secret source fields", async () => {
+    await setLastError(
+      "GET https://api.example.com/v1?api_key=sk_live_BASEURL_123456&v=2 failed; params token tok_PARAMS_abcdef12",
+    );
+    const result = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    const text = String(result.lastError);
+    expect(text).not.toContain("sk_live_BASEURL_123456");
+    expect(text).not.toContain("tok_PARAMS_abcdef12");
+    expect(text).toContain("https://api.example.com/v1?api_key=[redacted]&v=2");
+  });
+
+  it("never withholds a control's refusal; scrubs it with what did load and logs the original", async () => {
+    vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
+      null,
+    );
+    const flowLogger = loggers.api("flow-run-tools");
+    const warn = vi.spyOn(flowLogger, "warn");
+    vi.mocked(cdcBackfillService.startBackfill).mockRejectedValueOnce(
+      new Error(`A backfill is already running (key ${SENTINEL})`),
+    );
+    const result = await tools().flow_backfill.execute({
+      flowId: FLOW._id.toString(),
+      action: "start",
+    });
+    expect(result.error).toBe("A backfill is already running (key [redacted])");
+    const logged = warn.mock.calls.find(([message]) =>
+      String(message).startsWith("flow_backfill failed"),
+    );
+    expect(logged?.[1]).toMatchObject({
+      workspaceId: WS,
+      flowId: FLOW._id.toString(),
+      action: "start",
+      userId: "user-1",
+      error: "A backfill is already running (key [redacted])",
+    });
+    // Run text, by contrast, is withheld while the list is incomplete.
+    const inspected = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(inspected.lastError).toBe(RUN_TEXT_WITHHELD);
+    warn.mockRestore();
+  });
+
+  it("the failure path reuses the credential list the call already built", async () => {
+    state.failRedactOnce = true;
+    const result = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(String(result.error)).toBe(
+      "Failed to inspect flow: scrubber exploded",
+    );
+    expect(sourceConnectionManager.getSourceConnection).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it("withholds run text when the source schema cannot be loaded (fail closed)", async () => {
@@ -893,6 +1001,22 @@ describe("gating and classification", () => {
       expect(capability?.surfaces).toEqual(["external-mcp"]);
       expect(MCP_BRIDGE_POLICY[name]?.status).toBe("bridge");
     }
+    // cancel discards checkpoints: flow_backfill is destructive, the stream
+    // control is not.
+    expect(AGENT_CAPABILITY_BY_NAME.get("flow_backfill")?.risk).toBe(
+      "destructive",
+    );
+    expect(MCP_BRIDGE_POLICY.flow_backfill).toMatchObject({
+      destructiveHint: true,
+    });
+    expect(mcpDestructiveHint("flow_backfill")).toBe(true);
+    expect(mcpDestructiveHint("flow_stream")).toBe(false);
+    expect(
+      String(
+        (createFlowRunTools(WS) as Record<string, { description?: string }>)
+          .flow_backfill.description,
+      ),
+    ).toMatch(/cancel: DESTRUCTIVE .*DISCARD its checkpoints/);
     const policySource = readFileSync(
       join(__dirname, "../../mcp/bridge-policy.ts"),
       "utf8",

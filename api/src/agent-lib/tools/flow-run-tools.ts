@@ -53,6 +53,7 @@ import { sourceConnectionManager } from "../../sync/database-data-source-manager
 import { secretConfigValues } from "../../services/source-connection.service";
 import {
   connectionCredentialValues,
+  embeddedCredentialValues,
   maskUriPasswords,
 } from "../../utils/connection-secrets";
 import { authorizeSourceWriter } from "./source-connection-tools";
@@ -106,6 +107,16 @@ const MIN_SCRUB_CHARS = 4;
 export const RUN_TEXT_WITHHELD =
   "[run text withheld: credentials could not be loaded to scrub it]";
 
+/**
+ * The credential values of the connections a flow touches, and whether the
+ * list is COMPLETE — built for every one of them. An incomplete list still
+ * carries whatever did load.
+ */
+export interface FlowCredentials {
+  values: string[];
+  complete: boolean;
+}
+
 /** Scrub-then-clip for run-derived text; null for an empty value. */
 export type RunTextScrubber = (value: unknown) => string | null;
 
@@ -113,20 +124,24 @@ export type RunTextScrubber = (value: unknown) => string | null;
  * Redact FIRST, then clip. Clipping first would cut a credential that
  * straddles the limit and leave its head in clear, out of reach of the
  * redaction that runs on the full value. Longest secret first, so one that
- * contains another is redacted whole rather than leaving its tail.
+ * contains another is redacted whole rather than leaving its tail; each
+ * also in its percent-encoded form, as it appears inside a URL.
  *
- * `secrets === null` means the scrub list could not be built reliably: then
- * no run text is returned at all, only {@link RUN_TEXT_WITHHELD}.
+ * `withhold` (for run-derived text over an INCOMPLETE credential list)
+ * returns {@link RUN_TEXT_WITHHELD} instead of any text at all.
  */
 export function makeRunTextScrubber(
-  secrets: readonly string[] | null,
+  secrets: readonly string[],
+  options: { withhold?: boolean } = {},
 ): RunTextScrubber {
-  const known = (secrets ?? [])
+  const known = [
+    ...new Set(secrets.flatMap(secret => [secret, encodeURIComponent(secret)])),
+  ]
     .filter(secret => secret.length >= MIN_SCRUB_CHARS)
     .sort((a, b) => b.length - a.length);
   return (value: unknown) => {
     if (value === undefined || value === null || value === "") return null;
-    if (secrets === null) return RUN_TEXT_WITHHELD;
+    if (options.withhold) return RUN_TEXT_WITHHELD;
     const raw = typeof value === "string" ? value : JSON.stringify(value);
     const text = maskUriPasswords(redactSecrets(raw, known));
     return text.length > MAX_MESSAGE_CHARS
@@ -135,52 +150,78 @@ export function makeRunTextScrubber(
   };
 }
 
+/**
+ * One call's credential list, loaded at most once and only when first asked
+ * for — shared by the run-text scrubber and the failure path of that call.
+ */
+type CredentialLoader = () => Promise<FlowCredentials>;
+
+function credentialLoader(
+  workspaceId: string,
+  row: IFlow | null | undefined,
+): CredentialLoader {
+  let loaded: Promise<FlowCredentials> | null = null;
+  return () => {
+    loaded ??= row
+      ? flowCredentialValues(workspaceId, row)
+      : Promise.resolve({ values: [], complete: true });
+    return loaded;
+  };
+}
+
 /** Async scrubber that loads the credentials only for non-empty text. */
 type LazyRunTextScrubber = (value: unknown) => Promise<string | null>;
 
 /**
- * Build the scrub list on first use, i.e. only when there is run text to
- * scrub: a healthy flow's inspect decrypts no credential at all.
+ * Scrub RUN-DERIVED text (last errors, execution errors, log lines, failure
+ * reasons), loading the credentials on first use only — a healthy flow's
+ * inspect decrypts nothing — and withholding the text entirely when the
+ * list is incomplete (fail closed).
  */
-function lazyRunTextScrubber(
-  load: () => Promise<string[] | null>,
-): LazyRunTextScrubber {
+function lazyRunTextScrubber(load: CredentialLoader): LazyRunTextScrubber {
   let scrubber: Promise<RunTextScrubber> | null = null;
   return async value => {
     if (value === undefined || value === null || value === "") return null;
-    scrubber ??= load().then(makeRunTextScrubber);
+    scrubber ??= load().then(credentials =>
+      makeRunTextScrubber(credentials.values, {
+        withhold: !credentials.complete,
+      }),
+    );
     return (await scrubber)(value);
   };
 }
 
 /**
  * The credential values of every connection a flow touches, for scrubbing
- * its run-derived text: the source connection's SCHEMA-SECRET fields only
- * (an account id or an entity name in its config is not a credential), and
- * the credentials of the database source and the destination(s), passwords
- * embedded in connection strings included.
+ * its run-derived text:
+ * - the source connection's SCHEMA-SECRET fields (and the credentials inside
+ *   them), plus credentials embedded in its NON-secret fields — a `?api_key=`
+ *   in a base URL, a `token` key inside a `params` / `headers` JSON string —
+ *   never a non-secret value as such (an account id or an entity name);
+ * - the credentials of the database source and the destination(s),
+ *   passwords inside connection strings included.
  *
- * Fails CLOSED: `null` when the list cannot be built reliably for ANY of
- * those connections (unreadable, missing, or a source with no schema to say
- * which fields are secret) — the caller then withholds run text instead of
- * returning it half-scrubbed.
+ * `complete: false` when any of those connections could not be read (or the
+ * source's schema could not say which fields are secret). Run text is then
+ * withheld; failure messages are still scrubbed with what did load.
  */
 async function flowCredentialValues(
   workspaceId: string,
-  row: IFlow | null,
-): Promise<string[] | null> {
-  if (!row) return [];
+  row: IFlow,
+): Promise<FlowCredentials> {
   const found = new Set<string>();
-  const unreliable = (what: string, error?: unknown): null => {
-    logger.warn(`Withholding flow run text: could not load ${what}`, {
+  let complete = true;
+  const incomplete = (what: string, error?: unknown): void => {
+    complete = false;
+    logger.warn(`Flow run text will be withheld: could not load ${what}`, {
       workspaceId,
       flowId: String(row._id),
       ...(error !== undefined
         ? { error: error instanceof Error ? error.message : String(error) }
         : {}),
     });
-    return null;
   };
+  const add = (values: string[]) => values.forEach(value => found.add(value));
 
   const sourceId = row.dataSourceId?.toString();
   if (sourceId) {
@@ -188,19 +229,22 @@ async function flowCredentialValues(
       const source =
         await sourceConnectionManager.getSourceConnection(sourceId);
       if (!source || source.workspaceId !== workspaceId) {
-        return unreliable("the source connection");
+        incomplete("the source connection");
+      } else {
+        add(embeddedCredentialValues(source.connection));
+        const schema = await syncConnectorRegistry
+          .getConfigSchemaForType(source.type, workspaceId)
+          .catch(() => null);
+        if (Array.isArray(schema?.fields)) {
+          add(secretConfigValues(source.connection, schema));
+        } else {
+          // Best effort for failure messages; run text is withheld.
+          add(connectionCredentialValues(source.connection));
+          incomplete("the source connector's config schema");
+        }
       }
-      const schema = await syncConnectorRegistry
-        .getConfigSchemaForType(source.type, workspaceId)
-        .catch(() => null);
-      if (!Array.isArray(schema?.fields)) {
-        return unreliable("the source connector's config schema");
-      }
-      secretConfigValues(source.connection, schema).forEach(value =>
-        found.add(value),
-      );
     } catch (error) {
-      return unreliable("the source connection", error);
+      incomplete("the source connection", error);
     }
   }
 
@@ -211,41 +255,43 @@ async function flowCredentialValues(
   ]
     .map(id => (id ? String(id) : ""))
     .filter((id, index, all) => id && all.indexOf(id) === index);
-  if (databaseIds.length > 0) {
-    if (!databaseIds.every(id => Types.ObjectId.isValid(id))) {
-      return unreliable("a database connection (invalid id)");
-    }
+  const validIds = databaseIds.filter(id => Types.ObjectId.isValid(id));
+  if (validIds.length !== databaseIds.length) {
+    incomplete("a database connection (invalid id)");
+  }
+  if (validIds.length > 0) {
     try {
       // Not `.lean()`: the model decrypts `connection` through a getter.
       const databases = await DatabaseConnection.find({
-        _id: { $in: databaseIds.map(id => new Types.ObjectId(id)) },
+        _id: { $in: validIds.map(id => new Types.ObjectId(id)) },
         workspaceId: new Types.ObjectId(workspaceId),
       }).select("_id connection");
-      if (databases.length !== databaseIds.length) {
-        return unreliable("a database connection (not found)");
+      if (databases.length !== validIds.length) {
+        incomplete("a database connection (not found)");
       }
       for (const database of databases) {
-        const connection = (
-          database as unknown as {
-            connection?: Record<string, unknown>;
-          }
-        ).connection;
-        connectionCredentialValues(connection).forEach(value =>
-          found.add(value),
+        add(
+          connectionCredentialValues(
+            (database as unknown as { connection?: Record<string, unknown> })
+              .connection,
+          ),
         );
       }
     } catch (error) {
-      return unreliable("the database connections", error);
+      incomplete("the database connections", error);
     }
   }
-  return [...found];
+  return { values: [...found], complete };
 }
 
 /**
- * A tool's failure, as the caller and the log see it: scrubbed with the
- * flow's credentials when a flow was resolved (withheld if they cannot be
- * loaded), URI passwords masked, clipped — the same treatment as run text,
- * for both what is returned and what is logged.
+ * A tool's failure, as the caller and the log see it. A failure is NOT run
+ * text: the backfill service's refusals ("already running", an invalid
+ * transition, not found) must reach the caller, so it is never replaced by
+ * the withheld placeholder — it is scrubbed with whatever credentials this
+ * call loaded (reusing its list when one was built), URI passwords masked,
+ * clipped. What is logged is that same scrubbed original, so operators keep
+ * the cause.
  */
 async function toolFailure(
   tool: string,
@@ -255,15 +301,20 @@ async function toolFailure(
     action?: string;
     userId?: string;
     flowId?: string;
-    row?: IFlow | null;
+    credentials?: CredentialLoader;
   },
   error: unknown,
 ): Promise<string> {
-  const credentials = context.row
-    ? await flowCredentialValues(context.workspaceId, context.row)
-    : [];
+  let values: string[] = [];
+  if (context.credentials) {
+    try {
+      values = (await context.credentials()).values;
+    } catch {
+      // Mask URI passwords and clip regardless.
+    }
+  }
   const message =
-    makeRunTextScrubber(credentials)(
+    makeRunTextScrubber(values)(
       error instanceof Error ? error.message : String(error),
     ) ?? "Unknown error";
   logger.warn(`${tool} failed`, {
@@ -371,7 +422,11 @@ function entityBackfillStatus(state: EntityStateRow | undefined): string {
 }
 
 /** The whole state of one flow — what the CDC Pipeline page shows. */
-async function inspectFlow(workspaceId: string, live: LiveFlow) {
+async function inspectFlow(
+  workspaceId: string,
+  live: LiveFlow,
+  credentials: CredentialLoader,
+) {
   const plain = liveFlowToPlain(live, workspaceId);
   const definition = describeDefinition(plain, live);
   const row = live.row;
@@ -399,9 +454,7 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
       .select({ _id: 1, startedAt: 1, lastHeartbeat: 1 })
       .lean(),
   ]);
-  const scrub = lazyRunTextScrubber(() =>
-    flowCredentialValues(workspaceId, row),
-  );
+  const scrub = lazyRunTextScrubber(credentials);
 
   const stateByEntity = new Map(states.map(state => [state.entity, state]));
   const configured = resolveConfiguredEntities(row as never).entities;
@@ -623,7 +676,9 @@ async function controlFailure(
         action: context.action,
         userId: context.userId,
         flowId: context.target?.flowId,
-        row: context.target?.row,
+        credentials: context.target
+          ? credentialLoader(context.workspaceId, context.target.row)
+          : undefined,
       },
       error,
     ),
@@ -722,11 +777,13 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
       inputSchema: z.object({ flowId: flowRefInput }),
       execute: async ({ flowId }: { flowId: string }) => {
         let live: LiveFlow | null = null;
+        let credentials: CredentialLoader | undefined;
         try {
           const resolved = await resolveFlowRef(workspaceId, flowId);
           if (!resolved.ok) return { error: resolved.error };
           live = resolved.live;
-          return await inspectFlow(workspaceId, resolved.live);
+          credentials = credentialLoader(workspaceId, live.row);
+          return await inspectFlow(workspaceId, resolved.live, credentials);
         } catch (error) {
           const message = await toolFailure(
             "inspect_flow",
@@ -735,7 +792,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
               flowRef: flowId,
               userId,
               flowId: live?.id.toString(),
-              row: live?.row,
+              credentials,
             },
             error,
           );
@@ -767,10 +824,12 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
         limit?: number;
       }) => {
         let live: LiveFlow | null = null;
+        let credentials: CredentialLoader | undefined;
         try {
           const resolved = await resolveFlowRef(workspaceId, flowId);
           if (!resolved.ok) return { error: resolved.error };
           live = resolved.live;
+          credentials = credentialLoader(workspaceId, live.row);
           const row = resolved.live.row;
           if (!row) {
             return {
@@ -806,9 +865,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
               .lean() as unknown as Promise<ExecutionRow[]>,
             FlowExecution.countDocuments(filter),
           ]);
-          const scrub = lazyRunTextScrubber(() =>
-            flowCredentialValues(workspaceId, row),
-          );
+          const scrub = lazyRunTextScrubber(credentials);
           return {
             flowId: row._id.toString(),
             slug: resolved.live.def.slug,
@@ -825,7 +882,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
               flowRef: flowId,
               userId,
               flowId: live?.id.toString(),
-              row: live?.row,
+              credentials,
             },
             error,
           );
@@ -840,7 +897,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
         "- start: begin a backfill (optionally only `entities`); resumes an existing run id when one is pending.",
         "- pause: stop between steps, keeping the run's checkpoints, so resume continues it.",
         "- resume: continue a paused backfill and drain pending events.",
-        "- cancel: stop and drop the run, so the next start is a new run rather than a resume.",
+        "- cancel: DESTRUCTIVE — stop the run and DISCARD its checkpoints; the next start is a new run that re-reads everything from scratch. Prefer pause when you may want to continue.",
         "Follow it with inspect_flow / list_flow_runs. Requires the 'sources:write' scope AND that the credential's user is an owner or admin of the workspace.",
       ].join("\n"),
       inputSchema: z.object({

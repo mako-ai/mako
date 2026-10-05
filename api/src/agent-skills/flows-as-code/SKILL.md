@@ -178,7 +178,9 @@ if it carries the field the cron looks for:
 
 Start without waiting for the cron: `flow_backfill({ flowId, action:
 "start" })` (optionally `entities: [...]`) — the CDC Pipeline page's Start
-button, same service. `pause` / `resume` / `cancel` are the other buttons;
+button, same service. `pause` / `resume` / `cancel` are the other buttons
+(`cancel` is destructive: it discards the run's checkpoints, so the next
+start re-reads everything — `pause` when you may continue);
 `flow_stream({ flowId, action: "start" | "pause" })` drives the live stream.
 Both need the `sources:write` scope and an owner/admin; `flowId` is the id
 from `list_flows` or the file slug.
