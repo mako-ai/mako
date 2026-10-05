@@ -27,6 +27,18 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * on each execution rather than trusted from the key. A key cannot invite
  * above its owner's own role either — see invite_workspace_member.
  *
+ * `sources:write` maps to the `sources-write` grant behind the operational
+ * half of source connections and flows: create_source_connection /
+ * update_source_connection (a credential goes in, encrypted with the same
+ * path as the UI's form, and never comes back out — not in a result, a log
+ * line or an error) and flow_backfill / flow_stream (start, pause, resume,
+ * cancel — the CDC Pipeline page's buttons). It is gated exactly like
+ * `members:write`: the key must carry it AND the key's owner must still be
+ * an owner/admin of the workspace at call time — the role the UI's routes
+ * for the same actions require. The flow READS (list_flows, inspect_flow,
+ * list_flow_runs) need no write scope, only query:read — run errors carry
+ * data from the platform behind the source.
+ *
  * None of the write scopes are granted by default; workspace admins opt a
  * key in explicitly.
  */
@@ -37,6 +49,7 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "warehouse:write",
   "git:write",
   "members:write",
+  "sources:write",
 ] as const;
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
@@ -141,6 +154,9 @@ export function capabilityGrantsFromScopes(
   }
   if (hasWorkspaceApiKeyScope(scopes, "members:write")) {
     grants.push("members-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "sources:write")) {
+    grants.push("sources-write");
   }
   return grants;
 }

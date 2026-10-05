@@ -246,8 +246,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_dashboard: exclude("client-only", "Dashboard builder UI."),
   // NOT a connector tool, despite the name. This creates a DASHBOARD-LOCAL
   // data source: a query materialized into the browser's DuckDB for widgets.
-  // It cannot create a Stripe/Close/GCS connector — that is
-  // `POST /workspaces/{id}/sources`, which no agent tool exposes. The old
+  // It cannot create a Stripe/Close/GCS connection — that is
+  // `create_source_connection` (sources:write, capability registry). The old
   // note here ("Dashboard builder UI.") was true and misleading: it reads as
   // "the UI way to do the thing you want" rather than "a different thing",
   // and it led an RFC to plan connector creation as a one-line
@@ -314,10 +314,22 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // next to the discovery pair it completes: discover ids, write the file,
   // check it, then push.
   check_flow_files: bridge(),
+  // The write half of connections — create_source_connection /
+  // update_source_connection — is classified by the capability registry
+  // (connector-capabilities.ts: sources-write grant, admin role,
+  // external-MCP only); see the flow operations note below.
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
   ),
+
+  // ── Flow operations (the flow page's state, Run History and buttons) ──
+  // list_flows / inspect_flow / list_flow_runs / flow_backfill / flow_stream
+  // are NOT listed here on purpose: their entries derive from the capability
+  // registry (flow-capabilities.ts), so query access for the reads, the
+  // sources-write grant + admin role for the controls, and the surface
+  // (external MCP only) live in one place. A hand-written entry here would
+  // override the derived one and silently drop those flags.
 
   // ── Skills / memory / modes / plan ────────────────────────────────────
   ask_clarifying_questions: exclude(

@@ -54,7 +54,8 @@ indexes it: it runs `spec`, captures the credential form, and offers the
 connector in the picker. Test it first with `npx @makoai/cli connector test
 connectors/<slug>`. A connector is code; a *connection* is a credential a
 workspace configures with it. Once a connection exists (a credential entered
-in the UI), `npx @makoai/cli connection probe <name> --entity <entity>` runs
+in the UI, or created over MCP with `create_source_connection`, which needs
+the `sources:write` scope), `npx @makoai/cli connection probe <name> --entity <entity>` runs
 it live against the platform — the check plus one bounded page, written
 nowhere — and the same probe is the `probe_connection` MCP tool and
 `POST /connectors/:id/probe`, so a flow is not the only thing that can ever

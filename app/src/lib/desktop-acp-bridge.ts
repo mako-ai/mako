@@ -6,12 +6,16 @@ import { type CapabilityGrant } from "@mako/agent-tools";
 
 /**
  * The grants a plan approval may confer. Every capability grant EXCEPT
- * `members-write`: approving a plan is a one-off decision in chat, and
- * changing who can reach the workspace is not a decision that should be made
- * that way. Written as an Exclude so a future grant is opted OUT of ACP
- * deliberately rather than swept in by widening a list.
+ * `members-write` and `sources-write`: approving a plan is a one-off decision
+ * in chat, and changing who can reach the workspace — or writing its
+ * credentials and driving its running flows — is not a decision that should
+ * be made that way. Written as an Exclude so a future grant is opted OUT of
+ * ACP deliberately rather than swept in by widening a list.
  */
-type AcpGrantableCapability = Exclude<CapabilityGrant, "members-write">;
+type AcpGrantableCapability = Exclude<
+  CapabilityGrant,
+  "members-write" | "sources-write"
+>;
 import { useConsoleStore } from "../store/consoleStore";
 import {
   useDesktopHitlStore,

@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { isSecretField } from "../agent-lib/tools/connector-tools";
+import { isSecretConfigField } from "../services/source-connection.service";
 
 /**
  * Every connector's credential fields must be marked for encryption.
@@ -134,14 +135,27 @@ async function main() {
 
   // The tool that TELLS an agent which fields are secret must use the same
   // rule the route uses to encrypt them, or the two drift apart silently.
-  const source = readFileSync(
-    join(__dirname, "../routes/source-connections.ts"),
-    "utf8",
+  // There is exactly one predicate; everything else must use it.
+  assert.equal(
+    isSecretField,
+    isSecretConfigField,
+    "isSecretField in connector-tools.ts must BE the service's isSecretConfigField, not a copy",
   );
-  assert.ok(
-    /field\.encrypted === true \|\| field\.type === "password"/.test(source),
-    "applySchemaEncryption's rule changed — isSecretField in connector-tools.ts mirrors it and must be updated together",
-  );
+  for (const file of [
+    "../routes/source-connections.ts",
+    "../services/source-connection.service.ts",
+    "../agent-lib/tools/connector-tools.ts",
+  ]) {
+    const source = readFileSync(join(__dirname, file), "utf8");
+    const copies =
+      source.match(/encrypted === true \|\| [a-z.]*type === "password"/g) ?? [];
+    const allowed = file.includes("source-connection.service") ? 1 : 0;
+    assert.equal(
+      copies.length,
+      allowed,
+      `${file} spells out the secret-field rule again — use isSecretConfigField`,
+    );
+  }
 
   console.log(
     `connector credential census passed: ${types.length} connectors, ${schemaCount} with schemas, ${fieldCount} fields, 0 unencrypted credentials`,

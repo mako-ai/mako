@@ -507,9 +507,12 @@ would fall through to the SPA fallback and poison client discovery.
   needs to build a laptop checkout through `/api/workspaces/:id/dbt/local-runs`
   (the caller's own environment by default; never another person's, never
   the prod-like one): the uploaded dbt code runs with the environment's
-  warehouse credentials, so no narrower scope is offered. Raw `query:write`,
-  membership, and other administrative scopes are never available through
-  browser OAuth.
+  warehouse credentials, so no narrower scope is offered. Clients may also
+  request `sources:write` (create/update source connections, start/pause
+  flow backfills and streams); its option is shown only when requested and
+  arrives UNTICKED, and the authorize POST refuses it unless the user is an
+  owner/admin of the chosen workspace. Raw `query:write`, membership, and
+  other administrative scopes are never available through browser OAuth.
 - An MCP OAuth token on the dbt routes acts with its user's LIVE workspace
   role, not the owner role a workspace API key gets.
 - Redirect URIs accepted at registration: `https` anywhere, `http` on
@@ -532,6 +535,14 @@ through an explicit OAuth request or scoped API key) maps to the
 external MCP surface, exposing governed dbt executions (`dbt_run_model`,
 `dbt_run_job`, `dbt_cancel_run`). That scope alone does not unlock raw SQL
 writes; those use the separate, double-gated `query:write` API-key scope.
+
+The opt-in `sources:write` scope maps to the `sources-write` grant behind
+`create_source_connection` / `update_source_connection` (secrets are
+write-only: never returned, logged or echoed in an error) and
+`flow_backfill` / `flow_stream`. Like `members:write` it is double-gated:
+the tools also refuse unless the credential's user is an owner/admin of the
+workspace at call time. It is withheld from the blanket Desktop ACP grant
+set and is not grantable by approving a plan.
 
 The opt-in `query:write` scope is double-gated: it yields "write-opt-in"
 query access, which `sql_execute_query` resolves per connection — write

@@ -111,10 +111,14 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
   `connectors/<slug>/`, see [Connectors](/connectors/)). Webhook secrets and
   endpoints are minted in Mongo on first create and are never read from or
   written to the file.
-- **The connection must already exist.** No MCP tool or CLI creates one: ask
-  for it to be configured in Mako (Sources → Add), find its id with
-  `list_connections({ kind: "source" })`, confirm it works with
+- **The connection must already exist.** Create it in Mako (Sources → Add),
+  or over MCP with `create_source_connection` (needs the opt-in
+  `sources:write` scope and an owner/admin; secrets are write-only), find its
+  id with `list_connections({ kind: "source" })`, confirm it works with
   `probe_connection`, then write the file.
+- **Start and watch it without the UI.** `flow_backfill` / `flow_stream`
+  (also `sources:write`) are the CDC Pipeline page's buttons;
+  `inspect_flow` and `list_flow_runs` show its state and Run History.
 - Validate before pushing with the `check_flow_files` MCP tool, which reports
   parse/id-resolution problems, schema issues, and the reconciliation plan
   (`wouldCreate` / `wouldReconfigure` / `wouldTeardown`) against currently

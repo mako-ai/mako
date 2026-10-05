@@ -16,6 +16,7 @@ export type CapabilityGrant =
   | "git-write"
   | "members-write"
   | "schedule-write"
+  | "sources-write"
   | "warehouse-write";
 
 export const CAPABILITY_GRANTS = [
@@ -25,6 +26,11 @@ export const CAPABILITY_GRANTS = [
   // set of people holding every other one. Never implicit on any surface.
   "members-write",
   "schedule-write",
+  // Workspace credentials and the flows that run on them: create/update a
+  // source connection, start/pause a flow's backfill or stream. Never
+  // implicit on any surface, and re-checked against the caller's live
+  // owner/admin role at execution.
+  "sources-write",
   "warehouse-write",
 ] as const satisfies readonly CapabilityGrant[];
 
