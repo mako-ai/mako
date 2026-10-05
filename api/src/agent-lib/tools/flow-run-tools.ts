@@ -102,20 +102,31 @@ export async function resolveFlowRef(
 /** Shorter "secrets" would shred ordinary words; real credentials are longer. */
 const MIN_SCRUB_CHARS = 4;
 
+/** What run text becomes when the credentials to scrub it are unavailable. */
+export const RUN_TEXT_WITHHELD =
+  "[run text withheld: credentials could not be loaded to scrub it]";
+
 /** Scrub-then-clip for run-derived text; null for an empty value. */
 export type RunTextScrubber = (value: unknown) => string | null;
 
 /**
  * Redact FIRST, then clip. Clipping first would cut a credential that
  * straddles the limit and leave its head in clear, out of reach of the
- * redaction that runs on the full value.
+ * redaction that runs on the full value. Longest secret first, so one that
+ * contains another is redacted whole rather than leaving its tail.
+ *
+ * `secrets === null` means the scrub list could not be built reliably: then
+ * no run text is returned at all, only {@link RUN_TEXT_WITHHELD}.
  */
 export function makeRunTextScrubber(
-  secrets: readonly string[],
+  secrets: readonly string[] | null,
 ): RunTextScrubber {
-  const known = secrets.filter(secret => secret.length >= MIN_SCRUB_CHARS);
+  const known = (secrets ?? [])
+    .filter(secret => secret.length >= MIN_SCRUB_CHARS)
+    .sort((a, b) => b.length - a.length);
   return (value: unknown) => {
     if (value === undefined || value === null || value === "") return null;
+    if (secrets === null) return RUN_TEXT_WITHHELD;
     const raw = typeof value === "string" ? value : JSON.stringify(value);
     const text = maskUriPasswords(redactSecrets(raw, known));
     return text.length > MAX_MESSAGE_CHARS
@@ -124,46 +135,72 @@ export function makeRunTextScrubber(
   };
 }
 
+/** Async scrubber that loads the credentials only for non-empty text. */
+type LazyRunTextScrubber = (value: unknown) => Promise<string | null>;
+
+/**
+ * Build the scrub list on first use, i.e. only when there is run text to
+ * scrub: a healthy flow's inspect decrypts no credential at all.
+ */
+function lazyRunTextScrubber(
+  load: () => Promise<string[] | null>,
+): LazyRunTextScrubber {
+  let scrubber: Promise<RunTextScrubber> | null = null;
+  return async value => {
+    if (value === undefined || value === null || value === "") return null;
+    scrubber ??= load().then(makeRunTextScrubber);
+    return (await scrubber)(value);
+  };
+}
+
 /**
  * The credential values of every connection a flow touches, for scrubbing
  * its run-derived text: the source connection's SCHEMA-SECRET fields only
  * (an account id or an entity name in its config is not a credential), and
  * the credentials of the database source and the destination(s), passwords
- * embedded in connection strings included. Best effort per connection: one
- * that cannot be read is logged and contributes nothing, rather than failing
- * the read.
+ * embedded in connection strings included.
+ *
+ * Fails CLOSED: `null` when the list cannot be built reliably for ANY of
+ * those connections (unreadable, missing, or a source with no schema to say
+ * which fields are secret) — the caller then withholds run text instead of
+ * returning it half-scrubbed.
  */
 async function flowCredentialValues(
   workspaceId: string,
   row: IFlow | null,
-): Promise<string[]> {
+): Promise<string[] | null> {
   if (!row) return [];
   const found = new Set<string>();
-  const warn = (what: string, error: unknown) =>
-    logger.warn(`Could not load ${what} to scrub flow output`, {
+  const unreliable = (what: string, error?: unknown): null => {
+    logger.warn(`Withholding flow run text: could not load ${what}`, {
       workspaceId,
       flowId: String(row._id),
-      error: error instanceof Error ? error.message : String(error),
+      ...(error !== undefined
+        ? { error: error instanceof Error ? error.message : String(error) }
+        : {}),
     });
+    return null;
+  };
 
   const sourceId = row.dataSourceId?.toString();
   if (sourceId) {
     try {
       const source =
         await sourceConnectionManager.getSourceConnection(sourceId);
-      if (source && source.workspaceId === workspaceId) {
-        const schema = await syncConnectorRegistry
-          .getConfigSchemaForType(source.type, workspaceId)
-          .catch(() => null);
-        const values = Array.isArray(schema?.fields)
-          ? secretConfigValues(source.connection, schema)
-          : // No schema: fall back to the credential-NAMED keys, the rule
-            // database connections are redacted by.
-            connectionCredentialValues(source.connection);
-        values.forEach(value => found.add(value));
+      if (!source || source.workspaceId !== workspaceId) {
+        return unreliable("the source connection");
       }
+      const schema = await syncConnectorRegistry
+        .getConfigSchemaForType(source.type, workspaceId)
+        .catch(() => null);
+      if (!Array.isArray(schema?.fields)) {
+        return unreliable("the source connector's config schema");
+      }
+      secretConfigValues(source.connection, schema).forEach(value =>
+        found.add(value),
+      );
     } catch (error) {
-      warn("source connection", error);
+      return unreliable("the source connection", error);
     }
   }
 
@@ -173,17 +210,20 @@ async function flowCredentialValues(
     row.tableDestination?.connectionId,
   ]
     .map(id => (id ? String(id) : ""))
-    .filter(
-      (id, index, all) =>
-        id && Types.ObjectId.isValid(id) && all.indexOf(id) === index,
-    );
+    .filter((id, index, all) => id && all.indexOf(id) === index);
   if (databaseIds.length > 0) {
+    if (!databaseIds.every(id => Types.ObjectId.isValid(id))) {
+      return unreliable("a database connection (invalid id)");
+    }
     try {
       // Not `.lean()`: the model decrypts `connection` through a getter.
       const databases = await DatabaseConnection.find({
         _id: { $in: databaseIds.map(id => new Types.ObjectId(id)) },
         workspaceId: new Types.ObjectId(workspaceId),
       }).select("_id connection");
+      if (databases.length !== databaseIds.length) {
+        return unreliable("a database connection (not found)");
+      }
       for (const database of databases) {
         const connection = (
           database as unknown as {
@@ -195,10 +235,45 @@ async function flowCredentialValues(
         );
       }
     } catch (error) {
-      warn("database connections", error);
+      return unreliable("the database connections", error);
     }
   }
   return [...found];
+}
+
+/**
+ * A tool's failure, as the caller and the log see it: scrubbed with the
+ * flow's credentials when a flow was resolved (withheld if they cannot be
+ * loaded), URI passwords masked, clipped — the same treatment as run text,
+ * for both what is returned and what is logged.
+ */
+async function toolFailure(
+  tool: string,
+  context: {
+    workspaceId: string;
+    flowRef?: string;
+    action?: string;
+    userId?: string;
+    flowId?: string;
+    row?: IFlow | null;
+  },
+  error: unknown,
+): Promise<string> {
+  const credentials = context.row
+    ? await flowCredentialValues(context.workspaceId, context.row)
+    : [];
+  const message =
+    makeRunTextScrubber(credentials)(
+      error instanceof Error ? error.message : String(error),
+    ) ?? "Unknown error";
+  logger.warn(`${tool} failed`, {
+    workspaceId: context.workspaceId,
+    flowId: context.flowId ?? context.flowRef,
+    ...(context.action ? { action: context.action } : {}),
+    userId: context.userId,
+    error: message,
+  });
+  return message;
 }
 
 function idOf(value: unknown): string | null {
@@ -308,7 +383,7 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
     };
   }
 
-  const [states, running, credentials] = await Promise.all([
+  const [states, running] = await Promise.all([
     CdcEntityState.find({
       workspaceId: new Types.ObjectId(workspaceId),
       flowId: row._id,
@@ -323,9 +398,10 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
       .sort({ startedAt: -1 })
       .select({ _id: 1, startedAt: 1, lastHeartbeat: 1 })
       .lean(),
-    flowCredentialValues(workspaceId, row),
   ]);
-  const scrub = makeRunTextScrubber(credentials);
+  const scrub = lazyRunTextScrubber(() =>
+    flowCredentialValues(workspaceId, row),
+  );
 
   const stateByEntity = new Map(states.map(state => [state.entity, state]));
   const configured = resolveConfiguredEntities(row as never).entities;
@@ -334,6 +410,21 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
   ).filter(Boolean);
 
   const meta = row.syncStateMeta;
+  const [lastError, syncErrorMessage, syncErrorReason, entityErrors] =
+    await Promise.all([
+      scrub(row.lastError),
+      scrub(meta?.lastErrorMessage),
+      scrub(meta?.lastReason),
+      Promise.all(
+        entityNames.map(async entity => {
+          const state = stateByEntity.get(entity);
+          return {
+            lastFailureError: await scrub(state?.lastFailureError),
+            repartitionError: await scrub(state?.repartition?.error),
+          };
+        }),
+      ),
+    ]);
   const result = {
     ...definition,
     indexed: true,
@@ -355,13 +446,13 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
       : null,
     lastRunAt: row.lastRunAt ?? null,
     lastSuccessAt: row.lastSuccessAt ?? null,
-    lastError: scrub(row.lastError),
+    lastError,
     syncError:
       meta?.lastErrorMessage || meta?.lastErrorCode
         ? {
-            message: scrub(meta.lastErrorMessage),
+            message: syncErrorMessage,
             code: meta.lastErrorCode ?? null,
-            reason: scrub(meta.lastReason),
+            reason: syncErrorReason,
             event: meta.lastEvent ?? null,
           }
         : null,
@@ -373,7 +464,7 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
           totalReceived: row.webhookConfig.totalReceived ?? 0,
         }
       : null,
-    entities: entityNames.map(entity => {
+    entities: entityNames.map((entity, index) => {
       const state = stateByEntity.get(entity);
       return {
         entity,
@@ -388,12 +479,12 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
         destinationRows: state?.destinationRowCount ?? null,
         consecutiveFailures: state?.consecutiveFailures ?? 0,
         lastFailedAt: state?.lastFailedAt ?? null,
-        lastFailureError: scrub(state?.lastFailureError),
+        lastFailureError: entityErrors[index].lastFailureError,
         ...(state?.repartition?.status
           ? {
               repartition: {
                 status: state.repartition.status,
-                error: scrub(state.repartition.error),
+                error: entityErrors[index].repartitionError,
               },
             }
           : {}),
@@ -425,11 +516,18 @@ interface ExecutionRow {
   logs?: Array<{ level?: string; message?: string; timestamp?: Date }>;
 }
 
-function describeExecution(run: ExecutionRow, scrub: RunTextScrubber) {
+async function describeExecution(
+  run: ExecutionRow,
+  scrub: LazyRunTextScrubber,
+) {
   const logs = Array.isArray(run.logs) ? run.logs : [];
   const lastErrorLog = [...logs]
     .reverse()
     .find(line => line?.level === "error");
+  const [errorMessage, lastErrorLogMessage] = await Promise.all([
+    scrub(run.error?.message),
+    scrub(lastErrorLog?.message),
+  ]);
   return {
     id: String(run._id),
     status: run.status ?? null,
@@ -440,12 +538,12 @@ function describeExecution(run: ExecutionRow, scrub: RunTextScrubber) {
     durationMs: run.duration ?? null,
     // Message + code only: the stack is server internals, not a diagnosis.
     error: run.error
-      ? { message: scrub(run.error.message), code: run.error.code ?? null }
+      ? { message: errorMessage, code: run.error.code ?? null }
       : null,
     lastErrorLog: lastErrorLog
       ? {
           at: lastErrorLog.timestamp ?? null,
-          message: scrub(lastErrorLog.message),
+          message: lastErrorLogMessage,
         }
       : null,
     syncMode: run.context?.syncMode ?? null,
@@ -501,11 +599,9 @@ async function resolveWritableCdcFlow(
 }
 
 /**
- * A control's failure, as the caller sees it: the service's refusals ("a
- * backfill is already running", an invalid transition) are meant to be read,
- * but they can carry a vendor or driver message, so they are scrubbed and
- * clipped like any other run-derived text — and logged, since nothing else
- * records that the call was made and failed.
+ * A control's failure: the service's refusals ("a backfill is already
+ * running", an invalid transition) are meant to be read, but they can carry
+ * a vendor or driver message — see {@link toolFailure}.
  */
 async function controlFailure(
   tool: "flow_backfill" | "flow_stream",
@@ -518,21 +614,20 @@ async function controlFailure(
   },
   error: unknown,
 ): Promise<{ error: string }> {
-  const credentials = context.target
-    ? await flowCredentialValues(context.workspaceId, context.target.row)
-    : [];
-  const message =
-    makeRunTextScrubber(credentials)(
-      error instanceof Error ? error.message : String(error),
-    ) ?? "Unknown error";
-  logger.warn(`${tool} failed`, {
-    workspaceId: context.workspaceId,
-    flowId: context.target?.flowId ?? context.flowRef,
-    action: context.action,
-    userId: context.userId,
-    error: message,
-  });
-  return { error: message };
+  return {
+    error: await toolFailure(
+      tool,
+      {
+        workspaceId: context.workspaceId,
+        flowRef: context.flowRef,
+        action: context.action,
+        userId: context.userId,
+        flowId: context.target?.flowId,
+        row: context.target?.row,
+      },
+      error,
+    ),
+  };
 }
 
 export function createFlowRunTools(workspaceId: string, userId?: string) {
@@ -609,9 +704,11 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
             }),
           };
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Unknown error";
-          logger.error("list_flows failed", { workspaceId, error: message });
+          const message = await toolFailure(
+            "list_flows",
+            { workspaceId },
+            error,
+          );
           return { error: `Failed to list flows: ${message}` };
         }
       },
@@ -624,14 +721,24 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
       ].join("\n"),
       inputSchema: z.object({ flowId: flowRefInput }),
       execute: async ({ flowId }: { flowId: string }) => {
+        let live: LiveFlow | null = null;
         try {
           const resolved = await resolveFlowRef(workspaceId, flowId);
           if (!resolved.ok) return { error: resolved.error };
+          live = resolved.live;
           return await inspectFlow(workspaceId, resolved.live);
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Unknown error";
-          logger.error("inspect_flow failed", { workspaceId, error: message });
+          const message = await toolFailure(
+            "inspect_flow",
+            {
+              workspaceId,
+              flowRef: flowId,
+              userId,
+              flowId: live?.id.toString(),
+              row: live?.row,
+            },
+            error,
+          );
           return { error: `Failed to inspect flow: ${message}` };
         }
       },
@@ -659,9 +766,11 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
         flowId: string;
         limit?: number;
       }) => {
+        let live: LiveFlow | null = null;
         try {
           const resolved = await resolveFlowRef(workspaceId, flowId);
           if (!resolved.ok) return { error: resolved.error };
+          live = resolved.live;
           const row = resolved.live.row;
           if (!row) {
             return {
@@ -676,7 +785,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
             flowId: row._id,
             workspaceId: new Types.ObjectId(workspaceId),
           };
-          const [runs, total, credentials] = await Promise.all([
+          const [runs, total] = await Promise.all([
             FlowExecution.find(filter)
               .sort({ startedAt: -1 })
               .limit(limit ?? DEFAULT_RUN_LIMIT)
@@ -696,22 +805,30 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
               })
               .lean() as unknown as Promise<ExecutionRow[]>,
             FlowExecution.countDocuments(filter),
-            flowCredentialValues(workspaceId, row),
           ]);
-          const scrub = makeRunTextScrubber(credentials);
+          const scrub = lazyRunTextScrubber(() =>
+            flowCredentialValues(workspaceId, row),
+          );
           return {
             flowId: row._id.toString(),
             slug: resolved.live.def.slug,
             total,
-            runs: runs.map(run => describeExecution(run, scrub)),
+            runs: await Promise.all(
+              runs.map(run => describeExecution(run, scrub)),
+            ),
           };
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Unknown error";
-          logger.error("list_flow_runs failed", {
-            workspaceId,
-            error: message,
-          });
+          const message = await toolFailure(
+            "list_flow_runs",
+            {
+              workspaceId,
+              flowRef: flowId,
+              userId,
+              flowId: live?.id.toString(),
+              row: live?.row,
+            },
+            error,
+          );
           return { error: `Failed to list flow runs: ${message}` };
         }
       },

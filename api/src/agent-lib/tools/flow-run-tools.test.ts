@@ -133,6 +133,10 @@ vi.mock("../../sync/database-data-source-manager", async importOriginal => {
           api_key: SENTINEL,
           account: "campaigns",
           region: "openai-ads",
+          // A secret holding a JSON blob: errors echo the token inside it.
+          headers: JSON.stringify({
+            Authorization: "Bearer tok_HEADER_bearer_1234567890",
+          }),
         },
       })),
     },
@@ -158,9 +162,25 @@ import {
   mcpReadOnlyHint,
 } from "../../mcp/bridge-policy";
 import { collectLiveAgentToolNames } from "../../mcp/bridge-inventory";
-import { READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
+import {
+  AGENT_CAPABILITY_BY_NAME,
+  READ_ONLY_TOOL_NAMES,
+} from "@mako/agent-tools";
 import type { WorkspaceApiKeyScope } from "../../auth/api-key-scopes";
-import { createFlowRunTools, normalizeFlowRef } from "./flow-run-tools";
+import {
+  RUN_TEXT_WITHHELD,
+  createFlowRunTools,
+  makeRunTextScrubber,
+  normalizeFlowRef,
+} from "./flow-run-tools";
+import {
+  liveFlowToPlain,
+  loadLiveFlows,
+} from "../../services/flow-sync.service";
+import { sourceConnectionManager } from "../../sync/database-data-source-manager";
+import { connectionCredentialValues } from "../../utils/connection-secrets";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 let mongo: MongoMemoryServer;
 let WS: string;
@@ -237,6 +257,7 @@ beforeEach(async () => {
       { name: "api_key", type: "password" },
       { name: "account", type: "string" },
       { name: "region", type: "string" },
+      { name: "headers", type: "textarea", encrypted: true },
     ],
   });
   WS = new Types.ObjectId().toString();
@@ -576,6 +597,121 @@ describe("scrubbing run-derived text", () => {
   });
 });
 
+describe("scrubbing, second review", () => {
+  async function setLastError(lastError: string | null) {
+    await Flow.updateOne(
+      { _id: FLOW._id },
+      lastError === null
+        ? { $unset: { lastError: 1 } }
+        : { $set: { lastError } },
+    );
+    state.live[0].row = await Flow.findById(FLOW._id);
+  }
+
+  it("redacts the longest secret first, so one containing another goes whole", () => {
+    const scrub = makeRunTextScrubber(["abcd1234", "abcd1234Zq9!x"]);
+    expect(scrub("got abcd1234Zq9!x and abcd1234")).toBe(
+      "got [redacted] and [redacted]",
+    );
+  });
+
+  it("scrubs a bearer token held inside a JSON headers secret", async () => {
+    await setLastError(
+      "401 Unauthorized: token tok_HEADER_bearer_1234567890 rejected",
+    );
+    const result = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(result.lastError).toBe(
+      "401 Unauthorized: token [redacted] rejected",
+    );
+    // Same for a JSON string in a database connection's credential field.
+    expect(
+      connectionCredentialValues({
+        service_account_json: JSON.stringify({
+          private_key: "-----BEGIN PRIVATE KEY-----abc",
+          type: "x",
+        }),
+      }),
+    ).toContain("-----BEGIN PRIVATE KEY-----abc");
+  });
+
+  it("withholds run text when the source schema cannot be loaded (fail closed)", async () => {
+    vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
+      null,
+    );
+    const inspected = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(inspected.lastError).toBe(RUN_TEXT_WITHHELD);
+    expect(JSON.stringify(inspected)).not.toContain("timed out");
+    const runs = await tools().list_flow_runs.execute({
+      flowId: FLOW._id.toString(),
+    });
+    const abandoned = (runs.runs as Array<Record<string, unknown>>)[0];
+    expect(abandoned.error).toEqual({
+      message: RUN_TEXT_WITHHELD,
+      code: "WORKER_TIMEOUT",
+    });
+    expect((abandoned.lastErrorLog as { message: string }).message).toBe(
+      RUN_TEXT_WITHHELD,
+    );
+    // Run state that is not run TEXT is still returned.
+    expect(inspected.streamState).toBe("active");
+  });
+
+  it("withholds run text when a connection the flow touches is missing", async () => {
+    await DatabaseConnection.deleteMany({ name: "warehouse" });
+    const inspected = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(inspected.lastError).toBe(RUN_TEXT_WITHHELD);
+  });
+
+  it("does not load credentials for a flow with no run text", async () => {
+    await setLastError(null);
+    await CdcEntityState.updateMany({}, { $unset: { lastFailureError: 1 } });
+    const healthy = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(healthy.lastError).toBeNull();
+    expect(sourceConnectionManager.getSourceConnection).not.toHaveBeenCalled();
+    expect(syncConnectorRegistry.getConfigSchemaForType).not.toHaveBeenCalled();
+
+    // With run text, the list is built once however many texts there are.
+    const runs = await tools().list_flow_runs.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(runs.total).toBe(2);
+    expect(sourceConnectionManager.getSourceConnection).toHaveBeenCalledTimes(
+      1,
+    );
+  });
+
+  it("scrubs, masks and clips the read tools' own failures", async () => {
+    vi.mocked(loadLiveFlows).mockRejectedValueOnce(
+      new Error(
+        "repo read failed via mongodb://svc:RepoPw0rd123@git.example " +
+          "z".repeat(3_000),
+      ),
+    );
+    const listed = await tools().list_flows.execute({});
+    expect(String(listed.error)).toContain("svc:[redacted]@git.example");
+    expect(String(listed.error)).not.toContain("RepoPw0rd123");
+    expect(String(listed.error).length).toBeLessThan(1_100);
+
+    vi.mocked(liveFlowToPlain).mockImplementationOnce(() => {
+      throw new Error(`overlay failed for key ${SENTINEL}`);
+    });
+    const inspected = await tools().inspect_flow.execute({
+      flowId: FLOW._id.toString(),
+    });
+    expect(String(inspected.error)).toBe(
+      "Failed to inspect flow: overlay failed for key [redacted]",
+    );
+  });
+});
+
 describe("writes call the same service as the UI's routes", () => {
   const cases: Array<{
     tool: "flow_backfill" | "flow_stream";
@@ -736,6 +872,38 @@ describe("gating and classification", () => {
     const external = toolsetFor(["mcp", "query:read", "sources:write"]);
     for (const name of [...READS, ...WRITES]) {
       expect(external[name]).toBeTruthy();
+    }
+  });
+
+  it("takes its bridge entries from the capability registry, not hand-written ones", () => {
+    for (const name of READS) {
+      expect(MCP_BRIDGE_POLICY[name]).toEqual({
+        status: "bridge",
+        requiresQueryAccess: true,
+        destructiveHint: false,
+      });
+      expect(AGENT_CAPABILITY_BY_NAME.get(name)?.requiresQueryAccess).toBe(
+        true,
+      );
+    }
+    for (const name of WRITES) {
+      const capability = AGENT_CAPABILITY_BY_NAME.get(name);
+      expect(capability?.requiredGrant).toBe("sources-write");
+      expect(capability?.minimumWorkspaceRole).toBe("admin");
+      expect(capability?.surfaces).toEqual(["external-mcp"]);
+      expect(MCP_BRIDGE_POLICY[name]?.status).toBe("bridge");
+    }
+    const policySource = readFileSync(
+      join(__dirname, "../../mcp/bridge-policy.ts"),
+      "utf8",
+    );
+    for (const name of [
+      ...READS,
+      ...WRITES,
+      "create_source_connection",
+      "update_source_connection",
+    ]) {
+      expect(policySource).not.toMatch(new RegExp(`^\\s*${name}:`, "m"));
     }
   });
 

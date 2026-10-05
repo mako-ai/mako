@@ -247,7 +247,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // NOT a connector tool, despite the name. This creates a DASHBOARD-LOCAL
   // data source: a query materialized into the browser's DuckDB for widgets.
   // It cannot create a Stripe/Close/GCS connection — that is
-  // `create_source_connection` (sources:write), classified below. The old
+  // `create_source_connection` (sources:write, capability registry). The old
   // note here ("Dashboard builder UI.") was true and misleading: it reads as
   // "the UI way to do the thing you want" rather than "a different thing",
   // and it led an RFC to plan connector creation as a one-line
@@ -314,29 +314,22 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // next to the discovery pair it completes: discover ids, write the file,
   // check it, then push.
   check_flow_files: bridge(),
-  // The write half of connections: hidden from any key without the
-  // sources:write scope (the sources-write grant), refused at execution
-  // below the admin role, and re-checked against the caller's LIVE role
-  // inside the tools. Credentials go in and never come back out.
-  create_source_connection: bridge(),
-  update_source_connection: bridge(),
+  // The write half of connections — create_source_connection /
+  // update_source_connection — is classified by the capability registry
+  // (connector-capabilities.ts: sources-write grant, admin role,
+  // external-MCP only); see the flow operations note below.
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
   ),
 
   // ── Flow operations (the flow page's state, Run History and buttons) ──
-  // Reads need query access (run errors carry platform data, as a probe
-  // does) and return run state only; MCP-only, so never listed to Desktop
-  // ACP (the listing skips a capability's absent surfaces). The two
-  // controls call the same cdcBackfillService methods as the UI's routes and
-  // carry the same gate as the connection writes above (sources:write +
-  // live owner/admin) — at least as strict as those routes.
-  list_flows: bridge({ requiresQueryAccess: true }),
-  inspect_flow: bridge({ requiresQueryAccess: true }),
-  list_flow_runs: bridge({ requiresQueryAccess: true }),
-  flow_backfill: bridge(),
-  flow_stream: bridge(),
+  // list_flows / inspect_flow / list_flow_runs / flow_backfill / flow_stream
+  // are NOT listed here on purpose: their entries derive from the capability
+  // registry (flow-capabilities.ts), so query access for the reads, the
+  // sources-write grant + admin role for the controls, and the surface
+  // (external MCP only) live in one place. A hand-written entry here would
+  // override the derived one and silently drop those flags.
 
   // ── Skills / memory / modes / plan ────────────────────────────────────
   ask_clarifying_questions: exclude(
