@@ -9,15 +9,9 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import {
-  decryptEncrypted,
-  encryptString,
-  isEncryptedValue,
-} from "../services/crypto.service";
+import { decryptEncrypted, isEncryptedValue } from "../services/crypto.service";
 import { SourceConnection } from "../database/workspace-schema";
-import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import {
   PROBE_DEFAULT_LIMIT,
   PROBE_MAX_LIMIT,
@@ -25,7 +19,6 @@ import {
   probeConnection,
   runConnectionCheck,
 } from "../connectors/probe.service";
-import { connectorTypeExists } from "../connectors/workspace/catalog";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -36,8 +29,14 @@ import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   SECRET_KEPT,
   redactConnectionSecrets,
-  restoreKeptSecrets,
 } from "../utils/connection-secrets";
+import {
+  type ConnectorFieldSchema,
+  applySchemaEncryption,
+  checkSourceConnectorType,
+  createSourceConnection,
+  mergeSourceConnectionConfig,
+} from "../services/source-connection.service";
 
 const logger = loggers.connector();
 
@@ -121,79 +120,13 @@ sourceConnectionRoutes.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-// --- Helper: encrypt config values based on connector schema ---
-export type ConnectorFieldSchema = {
-  name: string;
-  type: string;
-  encrypted?: boolean;
-  itemFields?: ConnectorFieldSchema[];
-};
-
-/**
- * Thrown when a credential field cannot be encrypted. Names the field, never
- * the value — this message ends up in a 500 body and a log line.
- */
-export class SecretEncryptionError extends Error {
-  constructor(
-    public readonly field: string,
-    cause: unknown,
-  ) {
-    super(
-      `could not encrypt credential field "${field}": ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-    this.name = "SecretEncryptionError";
-  }
-}
-
-/**
- * Encrypt every field the connector's own schema marks as a secret.
- *
- * Fails CLOSED. This used to catch the encryption error and store the value
- * as-is — "if encryption fails, leave as-is" — which meant a missing or
- * malformed ENCRYPTION_KEY stored the customer's API key in plaintext and
- * returned 201. The only realistic error here is that misconfiguration, and
- * the right answer to it is a 500 with nothing written, not a quiet success.
- * Both call sites sit inside the route's try/catch, which already maps a
- * throw to 500.
- */
-export function applySchemaEncryption(
-  config: any,
-  schema: { fields: ConnectorFieldSchema[] } | null,
-): any {
-  if (!schema || !schema.fields || !config) return config;
-  const clone: any = { ...config };
-
-  const processFields = (target: any, fields: ConnectorFieldSchema[]): void => {
-    for (const field of fields) {
-      const key = field.name;
-      const val = target?.[key];
-      if (val === undefined) continue;
-
-      // Recurse into object_array items
-      if (field.type === "object_array" && Array.isArray(val)) {
-        if (field.itemFields && field.itemFields.length > 0) {
-          val.forEach((item: any) =>
-            processFields(item, field.itemFields as ConnectorFieldSchema[]),
-          );
-        }
-        continue;
-      }
-
-      const requiresEncryption =
-        field.encrypted === true || field.type === "password";
-      if (requiresEncryption && typeof val === "string" && val) {
-        try {
-          target[key] = encryptString(val);
-        } catch (error) {
-          throw new SecretEncryptionError(key, error);
-        }
-      }
-    }
-  };
-
-  processFields(clone, schema.fields);
-  return clone;
-}
+// Schema-driven encryption and the create/merge path live in the service,
+// shared with the MCP tools; re-exported for existing importers.
+export {
+  applySchemaEncryption,
+  SecretEncryptionError,
+} from "../services/source-connection.service";
+export type { ConnectorFieldSchema } from "../services/source-connection.service";
 
 function applySecretPlaceholders(
   target: Record<string, unknown>,
@@ -418,25 +351,9 @@ sourceConnectionRoutes.openapi(
       // workspace wrote, so the answer comes from its index rather than from
       // the global registry, and a blocked connector is refused here rather
       // than at the first sync.
-      if (isWorkspaceConnectorType(body.type)) {
-        if (!workspaceId) {
-          return c.json(
-            { success: false, error: "workspaceId is required" },
-            400,
-          );
-        }
-        const exists = await connectorTypeExists(body.type, workspaceId);
-        if (!exists.ok) {
-          return c.json({ success: false, error: exists.reason }, 400);
-        }
-      } else if (!connectorRegistry.hasConnector(body.type)) {
-        return c.json(
-          {
-            success: false,
-            error: `Unsupported source type: ${body.type}`,
-          },
-          400,
-        );
+      const supported = await checkSourceConnectorType(body.type, workspaceId);
+      if (!supported.ok) {
+        return c.json({ success: false, error: supported.error }, 400);
       }
 
       // Load connector schema for schema-driven encryption
@@ -445,26 +362,18 @@ sourceConnectionRoutes.openapi(
         workspaceId,
       );
 
-      // Create source connection
-      const sourceConnection = new SourceConnection({
-        workspaceId,
+      const sourceConnection = await createSourceConnection({
+        workspaceId: workspaceId as string,
+        createdBy: user.id,
         name: body.name,
         type: body.type,
         description: body.description,
-        config: applySchemaEncryption(body.config || {}, schema),
-        settings: {
-          sync_batch_size: body.settings?.sync_batch_size || 100,
-          rate_limit_delay_ms: body.settings?.rate_limit_delay_ms || 200,
-          max_retries: body.settings?.max_retries || 3,
-          timeout_ms: body.settings?.timeout_ms || 30000,
-          timezone: body.settings?.timezone || "UTC",
-        },
-        targetDatabases: body.targetDatabases || [],
-        createdBy: user.id,
-        isActive: body.isActive !== false,
+        config: body.config || {},
+        schema,
+        settings: body.settings,
+        targetDatabases: body.targetDatabases,
+        isActive: body.isActive,
       });
-
-      await sourceConnection.save();
 
       return c.json(
         {
@@ -560,24 +469,13 @@ sourceConnectionRoutes.openapi(
           string,
           unknown
         >;
-        let configChanged = false;
-
-        // Create a new config object starting with current values.
         // Echoed {@link SECRET_KEPT} sentinels become the stored secret again
         // so editing a non-secret field cannot wipe or re-encrypt the key.
-        const incoming = restoreKeptSecrets(
-          body.config as Record<string, unknown>,
-          currentConfig,
-        );
-        const newConfig = { ...currentConfig };
-
-        // Only update fields that are different
-        for (const key in incoming) {
-          if (incoming[key] !== currentConfig[key]) {
-            newConfig[key] = incoming[key];
-            configChanged = true;
-          }
-        }
+        const { config: newConfig, changed: configChanged } =
+          mergeSourceConnectionConfig(
+            currentConfig,
+            body.config as Record<string, unknown>,
+          );
 
         // Only update config if something changed
         if (configChanged) {
