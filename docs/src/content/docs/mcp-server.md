@@ -213,7 +213,7 @@ The app is a folder in the workspace's git monorepo and the agent works like
 a developer in a checkout:
 
 1. `app_list_apps` / `app_create_app` — discover or scaffold (`apps/<slug>/`, a real Vite project).
-2. `app_read_file` / `app_write_file` / `app_edit_file` / `app_glob` / `app_grep` — ordinary file work; `app_bash` runs any shell command in the app's sandbox.
+2. `app_read_file` / `app_write_file` / `app_edit_file` / `app_glob` / `app_grep` — ordinary file work; `app_bash` runs any shell command in the app's sandbox. Output is capped (same limits as the in-app agent): `app_read_file` takes `offset`/`limit` and returns at most 2000 lines or ~50k chars per call, `app_grep` returns at most 200 matches, and `app_bash` keeps the head and tail of long output, saving the full text to a sandbox file whose path is in the result.
 3. `app_materialize` — build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with front matter, not documents).
 4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
 5. `app_status` / `app_commit` / `app_merge_to_main` — commits are durability (`git push` semantics); merging to `main` is what publishes buildable state.
