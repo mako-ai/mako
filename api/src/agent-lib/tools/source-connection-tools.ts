@@ -367,7 +367,9 @@ export function createSourceConnectionTools(
     update_source_connection: tool({
       description: [
         "Update the config of an existing SOURCE connection (id from list_connections, kind `source`) — e.g. rotate an API key or change an account id.",
-        `\`config\` is a PATCH: fields you omit keep their stored value, so omit a secret (or pass "${SECRET_KEPT}") to keep it. Unknown fields are refused, and the merged config must still carry every required field.`,
+        `\`config\` is a PATCH at the top level: a field you omit keeps its stored value, so omit a top-level secret (or pass "${SECRET_KEPT}") to keep it. "${SECRET_KEPT}" over a secret that is not stored is refused.`,
+        `A list field (an array of items) is REPLACED by the array you send. Inside it, an item's secret that you omit or pass as "${SECRET_KEPT}" keeps its stored value only when exactly ONE stored item has all the same non-secret fields as your item (never matched by position). Otherwise an explicit "${SECRET_KEPT}" is refused and an omitted secret is saved empty — refused if that field is required. To change an item's non-secret fields AND keep its secret, send the secret again.`,
+        "Unknown fields are refused, and the merged config must still carry every required field.",
         "Secret fields are WRITE-ONLY — never returned, logged or echoed in an error. Unless `check: false`, the connector's credential check runs after saving.",
         "Requires the 'sources:write' scope AND that the credential's user is an owner or admin of the workspace.",
       ].join("\n"),
@@ -420,11 +422,15 @@ export function createSourceConnectionTools(
             string,
             unknown
           >;
-          const merged = mergeSourceConnectionConfig(current, config);
+          const merged = mergeSourceConnectionConfig(
+            current,
+            config,
+            loaded.schema,
+          );
           const problems = [
             ...patchProblems,
-            // Never store the literal sentinel: where there is nothing at
-            // that position to keep, say so instead of dropping it quietly.
+            // Never store the literal sentinel: where there is no stored
+            // secret it can stand for, say so instead of dropping it.
             ...merged.unresolved.map(
               path =>
                 `${SECRET_KEPT} at ${path} has no stored secret to keep; pass the value.`,

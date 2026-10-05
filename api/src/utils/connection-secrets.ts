@@ -123,6 +123,46 @@ const URI_PASSWORD_ANYWHERE =
 const CREDENTIAL_PARAMETER_VALUE =
   /[?&;]\s*[a-z0-9_.-]*(?:pass(?:word|wd)?|pwd|secret|token|auth|api[_-]?key|credential)[a-z0-9_.-]*\s*=\s*([^&;\s]+)/gi;
 
+/** `Bearer X` / `Basic X` / `Token X`: capture 1 is the credential part. */
+const AUTH_SCHEME_TOKEN = /^\s*(?:bearer|basic|token|bot)\s+(\S+)\s*$/i;
+
+/** Shortest JSON leaf treated as a credential (a header name is shorter). */
+const MIN_JSON_LEAF_CHARS = 8;
+
+/**
+ * A secret VALUE and the credentials inside it. A secret field often holds a
+ * JSON blob (REST/GraphQL `headers`, a service-account JSON string), and an
+ * error echoes the token inside it, not the blob — so besides the whole
+ * value this yields every string leaf of 8+ characters when it parses as
+ * JSON, and the token part of any `Bearer X` / `Basic X` value.
+ */
+export function credentialFragments(value: string): string[] {
+  const found = new Set<string>();
+  if (!value) return [];
+  found.add(value);
+  const leaf = (text: string): void => {
+    const scheme = text.match(AUTH_SCHEME_TOKEN);
+    if (scheme) found.add(scheme[1]);
+    if (text.length >= MIN_JSON_LEAF_CHARS) found.add(text);
+  };
+  leaf(value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [...found];
+  }
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") leaf(node);
+    else if (Array.isArray(node)) node.forEach(walk);
+    else if (node && typeof node === "object") {
+      Object.values(node as Record<string, unknown>).forEach(walk);
+    }
+  };
+  if (parsed && typeof parsed === "object") walk(parsed);
+  return [...found];
+}
+
 /**
  * The credential VALUES a decrypted database connection holds, for scrubbing
  * text that may echo them (a driver error quoting its connection string):
@@ -136,7 +176,7 @@ export function connectionCredentialValues(
   const found = new Set<string>();
   const leaves = (value: unknown): void => {
     if (typeof value === "string") {
-      if (value) found.add(value);
+      credentialFragments(value).forEach(fragment => found.add(fragment));
     } else if (Array.isArray(value)) {
       value.forEach(leaves);
     } else if (value && typeof value === "object") {

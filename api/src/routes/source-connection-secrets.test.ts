@@ -273,10 +273,10 @@ describe("source-connection reads never return a credential", () => {
     expect(JSON.stringify(body)).not.toContain(ciphertext);
   });
   // The edit form gets {@link SECRET_KEPT} inside object_array items too
-  // (applySecretPlaceholders recurses). Echoing it back used to be restored
-  // only at the top level, so the literal sentinel was encrypted and stored
-  // as the item's credential.
-  it("PUT echoing SECRET_KEPT inside an array item keeps that item's secret", async () => {
+  // (applySecretPlaceholders recurses). A kept item secret is restored from
+  // the stored item with the same non-secret fields — never by position,
+  // because the form can remove or reorder items.
+  describe("SECRET_KEPT inside array items", () => {
     const nested = {
       fields: [
         {
@@ -289,44 +289,118 @@ describe("source-connection reads never return a credential", () => {
         },
       ],
     };
-    vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
-      nested,
-    );
-    const ciphertext = encryptString(SECRET);
+    let euCipher = "";
+    let usCipher = "";
+
+    async function seedAccounts(): Promise<string> {
+      vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
+        nested,
+      );
+      euCipher = encryptString("tok_eu_" + SECRET);
+      usCipher = encryptString("tok_us_" + SECRET);
+      const row = await Connector.create({
+        workspaceId: new Types.ObjectId(WS),
+        name: "REST",
+        type: "rest",
+        config: {
+          accounts: [
+            { label: "eu", token: euCipher },
+            { label: "us", token: usCipher },
+          ],
+        },
+        isActive: true,
+        createdBy: "u1",
+        settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      });
+      return row._id.toString();
+    }
+
+    async function storedAccounts(id: string) {
+      const stored = (await Connector.findById(id).lean()) as {
+        name: string;
+        config: { accounts: Array<Record<string, string>> };
+      };
+      return stored;
+    }
+
+    it("after remove(0), the remaining item keeps its OWN secret", async () => {
+      const id = await seedAccounts();
+      const read = (await (await req("GET", `/${id}`)).json()) as {
+        data: { config: { accounts: Array<Record<string, unknown>> } };
+      };
+      expect(read.data.config.accounts[1].token).toBe(SECRET_KEPT);
+
+      const res = await req("PUT", `/${id}`, {
+        config: { accounts: [{ label: "us", token: SECRET_KEPT }] },
+      });
+      expect(res.status).toBe(200);
+      const stored = await storedAccounts(id);
+      expect(stored.config.accounts).toEqual([
+        { label: "us", token: usCipher },
+      ]);
+    });
+
+    it("a reorder keeps each item's secret", async () => {
+      const id = await seedAccounts();
+      const res = await req("PUT", `/${id}`, {
+        config: {
+          accounts: [
+            { label: "us", token: SECRET_KEPT },
+            { label: "eu", token: SECRET_KEPT },
+          ],
+        },
+      });
+      expect(res.status).toBe(200);
+      expect((await storedAccounts(id)).config.accounts).toEqual([
+        { label: "us", token: usCipher },
+        { label: "eu", token: euCipher },
+      ]);
+    });
+
+    it("an unmatched sentinel is a 400 naming the path, and nothing is saved", async () => {
+      const id = await seedAccounts();
+      const res = await req("PUT", `/${id}`, {
+        name: "renamed too",
+        config: {
+          accounts: [
+            { label: "us", token: SECRET_KEPT },
+            { label: "new", token: SECRET_KEPT },
+          ],
+        },
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        unresolved: string[];
+      };
+      expect(body.unresolved).toEqual(["accounts[1].token"]);
+      expect(body.error).toContain("accounts[1].token");
+      expect(JSON.stringify(body)).not.toContain(SECRET);
+      const stored = await storedAccounts(id);
+      expect(stored.name).toBe("REST");
+      expect(stored.config.accounts).toHaveLength(2);
+      expect(JSON.stringify(stored)).not.toContain(SECRET_KEPT);
+    });
+  });
+
+  it("PUT with a top-level SECRET_KEPT over an absent secret is a 400", async () => {
     const row = await Connector.create({
       workspaceId: new Types.ObjectId(WS),
-      name: "REST",
-      type: "rest",
-      config: { accounts: [{ label: "eu", token: ciphertext }] },
+      name: "Stripe",
+      type: "stripe",
+      config: { account: "acct_1" },
       isActive: true,
       createdBy: "u1",
       settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
     });
-    const id = row._id.toString();
-
-    const read = (await (await req("GET", `/${id}`)).json()) as {
-      data: { config: { accounts: Array<Record<string, unknown>> } };
-    };
-    expect(read.data.config.accounts[0].token).toBe(SECRET_KEPT);
-
-    const res = await req("PUT", `/${id}`, {
-      config: {
-        accounts: [
-          { label: "eu-renamed", token: SECRET_KEPT },
-          { label: "new", token: SECRET_KEPT },
-        ],
-      },
+    const res = await req("PUT", `/${row._id.toString()}`, {
+      config: { api_key: SECRET_KEPT },
     });
-    expect(res.status).toBe(200);
-    const stored = (await Connector.findById(id).lean()) as {
-      config: { accounts: Array<Record<string, string>> };
+    expect(res.status).toBe(400);
+    const stored = (await Connector.findById(row._id).lean()) as {
+      config: Record<string, unknown>;
     };
-    expect(stored.config.accounts).toEqual([
-      { label: "eu-renamed", token: ciphertext },
-      // Nothing stored at that position: dropped, never stored as the secret.
-      { label: "new" },
-    ]);
-    expect(JSON.stringify(stored)).not.toContain(SECRET_KEPT);
+    expect(stored.config).toEqual({ account: "acct_1" });
   });
 
   it("POST with SECRET_KEPT anywhere in the config is refused, not stored", async () => {

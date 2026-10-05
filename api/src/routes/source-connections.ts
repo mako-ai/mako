@@ -470,20 +470,39 @@ sourceConnectionRoutes.openapi(
           string,
           unknown
         >;
+        // The schema says which item fields are secrets, which is what
+        // matches a kept secret inside an array item to its stored item.
+        const schema = await syncConnectorRegistry.getConfigSchemaForType(
+          sourceConnection.type,
+          workspaceId,
+        );
         // Echoed {@link SECRET_KEPT} sentinels become the stored secret again
         // so editing a non-secret field cannot wipe or re-encrypt the key.
-        const { config: newConfig, changed: configChanged } =
-          mergeSourceConnectionConfig(
-            currentConfig,
-            body.config as Record<string, unknown>,
+        const {
+          config: newConfig,
+          changed: configChanged,
+          unresolved,
+        } = mergeSourceConnectionConfig(
+          currentConfig,
+          body.config as Record<string, unknown>,
+          schema,
+        );
+        // A sentinel with no stored secret to stand for: refuse, save
+        // nothing (no field above has been persisted yet). Paths, never
+        // values.
+        if (unresolved.length > 0) {
+          return c.json(
+            {
+              success: false,
+              error: `${SECRET_KEPT} has no stored secret to keep at: ${unresolved.join(", ")}. Send the value instead.`,
+              unresolved,
+            },
+            400,
           );
+        }
 
         // Only update config if something changed
         if (configChanged) {
-          const schema = await syncConnectorRegistry.getConfigSchemaForType(
-            sourceConnection.type,
-            workspaceId,
-          );
           sourceConnection.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
         }

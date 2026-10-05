@@ -16,7 +16,11 @@ import { connectorRegistry } from "../connectors/registry";
 import { connectorTypeExists } from "../connectors/workspace/catalog";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import { encryptString } from "./crypto.service";
-import { SECRET_KEPT, restoreKeptSecrets } from "../utils/connection-secrets";
+import {
+  SECRET_KEPT,
+  credentialFragments,
+  restoreKeptSecrets,
+} from "../utils/connection-secrets";
 
 export type ConnectorFieldSchema = {
   name: string;
@@ -58,8 +62,10 @@ export function isSecretConfigField(field: {
 
 /**
  * The plaintext values of every schema-secret field in `config`, including
- * inside `object_array` items. Secret fields only — a region, an account id
- * or an entity name is not a credential and must not be scrubbed as one.
+ * inside `object_array` items, plus the credentials inside each (a JSON
+ * blob's string leaves, a `Bearer X` token — see credentialFragments).
+ * Secret fields only — a region, an account id or an entity name is not a
+ * credential and must not be scrubbed as one.
  */
 export function secretConfigValues(
   config: unknown,
@@ -78,7 +84,7 @@ export function secretConfigValues(
         value &&
         value !== SECRET_KEPT
       ) {
-        found.add(value);
+        credentialFragments(value).forEach(fragment => found.add(fragment));
       }
     }
   };
@@ -230,86 +236,141 @@ export async function createSourceConnection(
   return sourceConnection;
 }
 
+const sameValue = (a: unknown, b: unknown): boolean =>
+  a === b || JSON.stringify(a) === JSON.stringify(b);
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
 /**
- * Put stored values back wherever a nested value is the sentinel — inside
- * `object_array` items (matched by index, the order the read returned them
- * in, which is how the edit form round-trips them) and nested objects.
- * A sentinel with no stored string at the same position cannot be restored:
- * it is DROPPED, never stored, and its path is reported in `unresolved`.
+ * Merge an incoming `object_array` over the stored one, item by item.
+ *
+ * A kept secret inside an item — an explicit {@link SECRET_KEPT}, or the
+ * secret field simply omitted — is restored ONLY from the stored item whose
+ * non-secret fields are ALL equal to the incoming item's, and only when
+ * exactly one stored item matches. Never by position: the edit form can
+ * remove or reorder items, and matching by index would hand one account's
+ * token to another. An explicit sentinel with no unique match is dropped and
+ * reported in `unresolved`; an omitted secret with no unique match is left
+ * absent (a required one is refused by validation).
  */
-function restoreKeptNested(
-  incoming: unknown,
-  previous: unknown,
+function mergeObjectArray(
+  incoming: unknown[],
+  stored: unknown,
+  itemFields: ConnectorFieldSchema[],
   path: string,
   unresolved: string[],
-): unknown {
-  if (incoming === SECRET_KEPT) {
-    if (typeof previous === "string" && previous) return previous;
-    unresolved.push(path);
-    return undefined;
-  }
-  if (Array.isArray(incoming)) {
-    const before = Array.isArray(previous) ? previous : [];
-    return incoming
-      .map((item, index) =>
-        restoreKeptNested(item, before[index], `${path}[${index}]`, unresolved),
-      )
-      .filter(item => item !== undefined);
-  }
-  if (incoming && typeof incoming === "object") {
-    const before =
-      previous && typeof previous === "object" && !Array.isArray(previous)
-        ? (previous as Record<string, unknown>)
-        : {};
-    const out: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(
-      incoming as Record<string, unknown>,
-    )) {
-      const restored = restoreKeptNested(
-        value,
-        before[key],
-        path ? `${path}.${key}` : key,
-        unresolved,
+): unknown[] {
+  const secretNames = itemFields
+    .filter(field => isSecretConfigField(field))
+    .map(field => field.name);
+  const storedItems = (Array.isArray(stored) ? stored : []).filter(
+    isPlainObject,
+  );
+  return incoming.map((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    if (!isPlainObject(item)) {
+      if (containsSecretSentinel(item)) unresolved.push(itemPath);
+      return item;
+    }
+    const nonSecretKeys = (other: Record<string, unknown>) =>
+      new Set(
+        [...Object.keys(item), ...Object.keys(other)].filter(
+          key => !secretNames.includes(key),
+        ),
       );
-      if (restored !== undefined) out[key] = restored;
+    const matches = storedItems.filter(candidate =>
+      [...nonSecretKeys(candidate)].every(key =>
+        sameValue(item[key], candidate[key]),
+      ),
+    );
+    const match = matches.length === 1 ? matches[0] : null;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(item)) {
+      if (secretNames.includes(key)) continue;
+      if (containsSecretSentinel(value)) {
+        // A sentinel in a non-secret field has nothing it could stand for.
+        unresolved.push(`${itemPath}.${key}`);
+        continue;
+      }
+      out[key] = value;
+    }
+    for (const name of secretNames) {
+      const value = item[name];
+      const kept = match?.[name];
+      const keptValue = typeof kept === "string" && kept ? kept : undefined;
+      if (value === SECRET_KEPT) {
+        if (keptValue !== undefined) out[name] = keptValue;
+        else unresolved.push(`${itemPath}.${name}`);
+      } else if (value === undefined) {
+        if (keptValue !== undefined) out[name] = keptValue;
+      } else {
+        out[name] = value;
+      }
     }
     return out;
-  }
-  return incoming;
+  });
 }
 
 /**
  * Merge an incoming config patch over the stored one.
  *
- * Keys the patch omits keep their stored value, and an echoed
- * {@link SECRET_KEPT} sentinel becomes the stored secret again — at the top
- * level and inside array items — so editing a non-secret field can neither
- * wipe nor re-encrypt the key. A sentinel with nothing stored to restore is
- * dropped (never stored) and listed in `unresolved`. Only keys whose value
- * actually differs count as a change. The result is NOT yet encrypted: pass
- * it through {@link applySchemaEncryption} before saving.
+ * - Keys the patch omits keep their stored value.
+ * - A top-level {@link SECRET_KEPT} keeps the stored secret; over a stored
+ *   value that is empty or absent there is nothing to keep, so it is
+ *   reported in `unresolved` (and dropped, never stored).
+ * - Inside an `object_array` (per the connector `schema`), items are matched
+ *   to stored items by their non-secret fields, never by position — see
+ *   {@link mergeObjectArray}.
+ * - A sentinel anywhere else it cannot stand for a stored secret is reported
+ *   in `unresolved` and dropped.
+ *
+ * Callers must refuse a non-empty `unresolved` rather than save. Only keys
+ * whose value actually differs count as a change. The result is NOT yet
+ * encrypted: pass it through {@link applySchemaEncryption} before saving.
  */
 export function mergeSourceConnectionConfig(
   currentConfig: Record<string, unknown>,
   patch: Record<string, unknown>,
+  schema: { fields: ConnectorFieldSchema[] } | null,
 ): {
   config: Record<string, unknown>;
   changed: boolean;
   unresolved: string[];
 } {
-  const unresolved = Object.entries(patch)
-    .filter(
-      ([key, value]) =>
-        value === SECRET_KEPT && typeof currentConfig[key] !== "string",
-    )
-    .map(([key]) => key);
-  const topLevel = restoreKeptSecrets(patch, currentConfig);
-  const incoming = restoreKeptNested(
-    topLevel,
-    currentConfig,
-    "",
-    unresolved,
-  ) as Record<string, unknown>;
+  const unresolved: string[] = [];
+  const fieldsByName = new Map(
+    (schema?.fields ?? []).map(field => [field.name, field]),
+  );
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    const field = fieldsByName.get(key);
+    if (value === SECRET_KEPT) {
+      const stored = currentConfig[key];
+      if (typeof stored === "string" && stored) resolved[key] = stored;
+      else unresolved.push(key);
+    } else if (
+      field?.type === "object_array" &&
+      Array.isArray(value) &&
+      field.itemFields?.length
+    ) {
+      resolved[key] = mergeObjectArray(
+        value,
+        currentConfig[key],
+        field.itemFields,
+        key,
+        unresolved,
+      );
+    } else if (containsSecretSentinel(value)) {
+      // Nested somewhere no schema says how to match: never guess.
+      unresolved.push(key);
+    } else {
+      resolved[key] = value;
+    }
+  }
+  // The masked `scheme://user:*****@` connection string the read returned
+  // gets its stored password back (no sentinels are left to restore here).
+  const incoming = restoreKeptSecrets(resolved, currentConfig);
   const config = { ...currentConfig };
   let changed = false;
   for (const key in incoming) {
