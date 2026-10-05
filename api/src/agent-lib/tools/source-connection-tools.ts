@@ -28,11 +28,7 @@ import { tool } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
 
-import {
-  probeConnection,
-  redactSecrets,
-  secretValuesOf,
-} from "../../connectors/probe.service";
+import { probeConnection, redactSecrets } from "../../connectors/probe.service";
 import { SourceConnection } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import {
@@ -42,6 +38,7 @@ import {
   createSourceConnection,
   isSecretConfigField,
   mergeSourceConnectionConfig,
+  secretConfigValues,
   type ConnectorFieldSchema,
 } from "../../services/source-connection.service";
 import { workspaceService } from "../../services/workspace.service";
@@ -202,6 +199,17 @@ async function loadConfigSchema(
   return { ok: true, schema: { fields: fields as ConnectorFieldSchema[] } };
 }
 
+/**
+ * What a tool's messages are scrubbed of: the values of the connector's
+ * secret fields in `config` (and the credentials inside them), longest first.
+ */
+function scrubListFor(
+  config: Record<string, unknown>,
+  schema: ConfigSchema,
+): string[] {
+  return secretConfigValues(config, schema).sort((a, b) => b.length - a.length);
+}
+
 /** Field names, whether each is a secret, and whether a value is stored. */
 function describeStoredFields(
   schema: ConfigSchema,
@@ -292,7 +300,10 @@ export function createSourceConnectionTools(
         config: Record<string, unknown>;
         check?: boolean;
       }) => {
-        const secrets = secretValuesOf(config);
+        // Filled once the schema says which fields are secrets: their
+        // values only — never the sentinel, never a non-secret value, so a
+        // message naming __mako_secret_kept__ or a field path stays intact.
+        let secrets: string[] = [];
         const scrub = (message: string) => redactSecrets(message, secrets);
 
         const auth = await authorizeSourceWriter(workspaceId, userId);
@@ -307,6 +318,7 @@ export function createSourceConnectionTools(
 
           const loaded = await loadConfigSchema(workspaceId, connector);
           if (!loaded.ok) return { error: scrub(loaded.error) };
+          secrets = scrubListFor(config, loaded.schema);
           const problems = validateSourceConfig(loaded.schema, config, {
             requireAll: true,
           });
@@ -368,7 +380,7 @@ export function createSourceConnectionTools(
       description: [
         "Update the config of an existing SOURCE connection (id from list_connections, kind `source`) — e.g. rotate an API key or change an account id.",
         `\`config\` is a PATCH at the top level: a field you omit keeps its stored value, so omit a top-level secret (or pass "${SECRET_KEPT}") to keep it. "${SECRET_KEPT}" over a secret that is not stored is refused.`,
-        `A list field (an array of items) is REPLACED by the array you send. Inside it, an item's secret that you omit or pass as "${SECRET_KEPT}" keeps its stored value only when exactly ONE stored item has all the same non-secret fields as your item (never matched by position). Otherwise an explicit "${SECRET_KEPT}" is refused and an omitted secret is saved empty — refused if that field is required. To change an item's non-secret fields AND keep its secret, send the secret again.`,
+        `A list field (an array of items) is REPLACED by the array you send. Inside it, an item's secret that you omit or pass as "${SECRET_KEPT}" keeps its stored value only when exactly ONE stored item agrees with your item on every non-secret field that is non-empty on both sides (strings compared as text; never matched by position). Otherwise an explicit "${SECRET_KEPT}" is refused, and an omitted or empty secret is refused if that field is required, else saved without a value and listed in \`warnings\`. To change an item's non-secret fields AND keep its secret, send the secret again.`,
         "Unknown fields are refused, and the merged config must still carry every required field.",
         "Secret fields are WRITE-ONLY — never returned, logged or echoed in an error. Unless `check: false`, the connector's credential check runs after saving.",
         "Requires the 'sources:write' scope AND that the credential's user is an owner or admin of the workspace.",
@@ -389,7 +401,10 @@ export function createSourceConnectionTools(
         config: Record<string, unknown>;
         check?: boolean;
       }) => {
-        const secrets = secretValuesOf(config);
+        // Filled once the schema says which fields are secrets: their
+        // values only — never the sentinel, never a non-secret value, so a
+        // message naming __mako_secret_kept__ or a field path stays intact.
+        let secrets: string[] = [];
         const scrub = (message: string) => redactSecrets(message, secrets);
 
         const auth = await authorizeSourceWriter(workspaceId, userId);
@@ -414,6 +429,7 @@ export function createSourceConnectionTools(
           const connector = doc.type;
           const loaded = await loadConfigSchema(workspaceId, connector);
           if (!loaded.ok) return { error: scrub(loaded.error) };
+          secrets = scrubListFor(config, loaded.schema);
 
           const patchProblems = validateSourceConfig(loaded.schema, config, {
             requireAll: false,
@@ -467,6 +483,14 @@ export function createSourceConnectionTools(
             connector,
             updated: merged.changed,
             updatedFields,
+            ...(merged.omitted.length > 0
+              ? {
+                  warnings: merged.omitted.map(
+                    path =>
+                      `${path}: no value sent and no stored item with the same fields to keep one from — saved without it.`,
+                  ),
+                }
+              : {}),
             configFields: describeStoredFields(loaded.schema, merged.config),
             ...(check === false
               ? {}

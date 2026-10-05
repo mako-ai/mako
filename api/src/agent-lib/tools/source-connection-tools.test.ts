@@ -765,4 +765,66 @@ describe("the sentinel inside object_array items is never stored", () => {
     expect(String(result.error)).toMatch(/at api_key has no stored secret/);
     expect((await storedConfig(id)).api_key).toBe("");
   });
+  it("matches the edit form's shape: empty optional fields and stringified primitives", () => {
+    const schema = {
+      fields: [
+        {
+          name: "accounts",
+          type: "object_array",
+          itemFields: [
+            { name: "region", type: "string" },
+            { name: "label", type: "string" },
+            { name: "enabled", type: "select" },
+            { name: "token", type: "password" },
+          ],
+        },
+      ],
+    };
+    const merged = mergeSourceConnectionConfig(
+      { accounts: [{ region: "eu", enabled: true, token: "AAA-stored" }] },
+      {
+        accounts: [
+          { region: "eu", label: "", enabled: "true", token: SECRET_KEPT },
+        ],
+      },
+      schema,
+    );
+    expect(merged.unresolved).toEqual([]);
+    expect(merged.config.accounts).toEqual([
+      { region: "eu", label: "", enabled: "true", token: "AAA-stored" },
+    ]);
+  });
+
+  it("update saves an omitted, unmatched, optional item secret without it — and warns", async () => {
+    const id = await seedNested();
+    const result = await tools().update_source_connection.execute({
+      connectionId: id,
+      config: {
+        accounts: [{ label: "eu", token: SECRET_KEPT }, { label: "brand-new" }],
+      },
+      check: false,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/^accounts\[1\]\.token: no value sent/),
+    ]);
+    const accounts = await storedAccounts(id);
+    expect(decryptString(accounts[0].token)).toBe(T_EU);
+    expect(accounts[1]).toEqual({ label: "brand-new" });
+  });
+
+  it("update error messages keep the sentinel and field paths intact", async () => {
+    const id = await seedNested();
+    // A non-secret value ("accounts") equal to a word of the path: only
+    // secret VALUES are scrubbed, never the sentinel or a non-secret value.
+    const result = await tools().update_source_connection.execute({
+      connectionId: id,
+      config: { accounts: [{ label: "accounts", token: SECRET_KEPT }] },
+      check: false,
+    });
+    expect(String(result.error)).toContain(
+      `${SECRET_KEPT} at accounts[0].token has no stored secret to keep`,
+    );
+    expect(String(result.error)).not.toContain("[redacted]");
+  });
 });

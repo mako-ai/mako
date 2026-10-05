@@ -439,6 +439,9 @@ sourceConnectionRoutes.openapi(
 
       // Track if any changes were made
       let hasChanges = false;
+      // Item secrets saved WITHOUT a value (sent empty or omitted, with no
+      // stored item to keep them from): saved as before, but said out loud.
+      let warnings: string[] = [];
 
       // Update only fields that have changed
       if (body.name !== undefined && body.name !== currentValues.name) {
@@ -482,6 +485,7 @@ sourceConnectionRoutes.openapi(
           config: newConfig,
           changed: configChanged,
           unresolved,
+          omitted,
         } = mergeSourceConnectionConfig(
           currentConfig,
           body.config as Record<string, unknown>,
@@ -500,6 +504,11 @@ sourceConnectionRoutes.openapi(
             400,
           );
         }
+
+        warnings = omitted.map(
+          path =>
+            `${path}: no value sent and no stored item with the same fields to keep one from — saved without it.`,
+        );
 
         // Only update config if something changed
         if (configChanged) {
@@ -562,6 +571,7 @@ sourceConnectionRoutes.openapi(
         message: hasChanges
           ? "Connector updated successfully"
           : "No changes detected",
+        ...(warnings.length > 0 ? { warnings } : {}),
       });
     } catch (error) {
       return c.json(

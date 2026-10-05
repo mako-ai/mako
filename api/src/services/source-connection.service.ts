@@ -236,8 +236,24 @@ export async function createSourceConnection(
   return sourceConnection;
 }
 
-const sameValue = (a: unknown, b: unknown): boolean =>
-  a === b || JSON.stringify(a) === JSON.stringify(b);
+/** undefined, null and "" all mean "no value" to the edit form. */
+const isEmptyValue = (value: unknown): boolean =>
+  value === undefined || value === null || value === "";
+
+/**
+ * Do two non-secret item values agree, the way the edit form round-trips
+ * them? Primitives compare as strings (a select stringifies `true`, a
+ * number input may send "5"); structured values compare as JSON. Callers
+ * skip empty values on either side before asking.
+ */
+const sameItemValue = (a: unknown, b: unknown): boolean => {
+  const primitive = (value: unknown) =>
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean";
+  if (primitive(a) && primitive(b)) return String(a) === String(b);
+  return JSON.stringify(a) === JSON.stringify(b);
+};
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -246,13 +262,18 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
  * Merge an incoming `object_array` over the stored one, item by item.
  *
  * A kept secret inside an item — an explicit {@link SECRET_KEPT}, or the
- * secret field simply omitted — is restored ONLY from the stored item whose
- * non-secret fields are ALL equal to the incoming item's, and only when
- * exactly one stored item matches. Never by position: the edit form can
+ * secret field omitted or empty — is restored ONLY from the stored item
+ * whose declared NON-secret fields agree with the incoming item's, and only
+ * when exactly one stored item does. Never by position: the edit form can
  * remove or reorder items, and matching by index would hand one account's
- * token to another. An explicit sentinel with no unique match is dropped and
- * reported in `unresolved`; an omitted secret with no unique match is left
- * absent (a required one is refused by validation).
+ * token to another. Agreement is normalised to what the form sends: a field
+ * empty (undefined / null / "") on either side is ignored, primitives
+ * compare as strings, and only fields declared in `itemFields` count.
+ *
+ * An explicit sentinel with no unique match is dropped and reported in
+ * `unresolved`; an omitted/empty secret with no unique match is left out and
+ * reported in `omitted` (callers decide: MCP refuses a required one, the
+ * REST route saves and warns).
  */
 function mergeObjectArray(
   incoming: unknown[],
@@ -260,9 +281,13 @@ function mergeObjectArray(
   itemFields: ConnectorFieldSchema[],
   path: string,
   unresolved: string[],
+  omitted: string[],
 ): unknown[] {
   const secretNames = itemFields
     .filter(field => isSecretConfigField(field))
+    .map(field => field.name);
+  const matchNames = itemFields
+    .filter(field => !isSecretConfigField(field))
     .map(field => field.name);
   const storedItems = (Array.isArray(stored) ? stored : []).filter(
     isPlainObject,
@@ -273,15 +298,12 @@ function mergeObjectArray(
       if (containsSecretSentinel(item)) unresolved.push(itemPath);
       return item;
     }
-    const nonSecretKeys = (other: Record<string, unknown>) =>
-      new Set(
-        [...Object.keys(item), ...Object.keys(other)].filter(
-          key => !secretNames.includes(key),
-        ),
-      );
     const matches = storedItems.filter(candidate =>
-      [...nonSecretKeys(candidate)].every(key =>
-        sameValue(item[key], candidate[key]),
+      matchNames.every(
+        name =>
+          isEmptyValue(item[name]) ||
+          isEmptyValue(candidate[name]) ||
+          sameItemValue(item[name], candidate[name]),
       ),
     );
     const match = matches.length === 1 ? matches[0] : null;
@@ -302,8 +324,12 @@ function mergeObjectArray(
       if (value === SECRET_KEPT) {
         if (keptValue !== undefined) out[name] = keptValue;
         else unresolved.push(`${itemPath}.${name}`);
-      } else if (value === undefined) {
+      } else if (isEmptyValue(value)) {
         if (keptValue !== undefined) out[name] = keptValue;
+        else {
+          if (value !== undefined) out[name] = value;
+          omitted.push(`${itemPath}.${name}`);
+        }
       } else {
         out[name] = value;
       }
@@ -325,7 +351,9 @@ function mergeObjectArray(
  * - A sentinel anywhere else it cannot stand for a stored secret is reported
  *   in `unresolved` and dropped.
  *
- * Callers must refuse a non-empty `unresolved` rather than save. Only keys
+ * Callers must refuse a non-empty `unresolved` rather than save; `omitted`
+ * lists item secrets left out or empty with no stored item to keep them
+ * from (saved without them). Only keys
  * whose value actually differs count as a change. The result is NOT yet
  * encrypted: pass it through {@link applySchemaEncryption} before saving.
  */
@@ -337,8 +365,10 @@ export function mergeSourceConnectionConfig(
   config: Record<string, unknown>;
   changed: boolean;
   unresolved: string[];
+  omitted: string[];
 } {
   const unresolved: string[] = [];
+  const omitted: string[] = [];
   const fieldsByName = new Map(
     (schema?.fields ?? []).map(field => [field.name, field]),
   );
@@ -360,6 +390,7 @@ export function mergeSourceConnectionConfig(
         field.itemFields,
         key,
         unresolved,
+        omitted,
       );
     } else if (containsSecretSentinel(value)) {
       // Nested somewhere no schema says how to match: never guess.
@@ -379,5 +410,5 @@ export function mergeSourceConnectionConfig(
       changed = true;
     }
   }
-  return { config, changed, unresolved };
+  return { config, changed, unresolved, omitted };
 }

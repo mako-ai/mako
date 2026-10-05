@@ -383,6 +383,88 @@ describe("source-connection reads never return a credential", () => {
     });
   });
 
+  describe("the edit form's real shape", () => {
+    const formSchema = {
+      fields: [
+        {
+          name: "accounts",
+          type: "object_array",
+          itemFields: [
+            { name: "region", type: "string" },
+            { name: "label", type: "string" },
+            { name: "token", type: "password" },
+          ],
+        },
+      ],
+    };
+
+    async function seedOne(): Promise<{ id: string; cipher: string }> {
+      vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
+        formSchema,
+      );
+      const cipher = encryptString("AAA_" + SECRET);
+      const row = await Connector.create({
+        workspaceId: new Types.ObjectId(WS),
+        name: "REST",
+        type: "rest",
+        config: { accounts: [{ region: "eu", token: cipher }] },
+        isActive: true,
+        createdBy: "u1",
+        settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      });
+      return { id: row._id.toString(), cipher };
+    }
+
+    it("an unchanged item sent with empty optional fields keeps its secret (200)", async () => {
+      const { id, cipher } = await seedOne();
+      const res = await req("PUT", `/${id}`, {
+        config: {
+          accounts: [{ region: "eu", label: "", token: SECRET_KEPT }],
+        },
+      });
+      expect(res.status).toBe(200);
+      const stored = (await Connector.findById(id).lean()) as {
+        config: { accounts: Array<Record<string, string>> };
+      };
+      expect(stored.config.accounts[0].token).toBe(cipher);
+    });
+
+    it("an omitted, unmatched item secret saves as before, with a warning", async () => {
+      const { id, cipher } = await seedOne();
+      const res = await req("PUT", `/${id}`, {
+        config: {
+          accounts: [
+            { region: "eu", label: "", token: SECRET_KEPT },
+            { region: "us", label: "" },
+          ],
+        },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { warnings?: string[] };
+      expect(body.warnings).toEqual([
+        expect.stringMatching(/^accounts\[1\]\.token: no value sent/),
+      ]);
+      const stored = (await Connector.findById(id).lean()) as {
+        config: { accounts: Array<Record<string, string>> };
+      };
+      expect(stored.config.accounts).toEqual([
+        { region: "eu", label: "", token: cipher },
+        { region: "us", label: "" },
+      ]);
+    });
+
+    it("a normal PUT carries no warnings", async () => {
+      const { id } = await seedOne();
+      const res = await req("PUT", `/${id}`, {
+        config: { accounts: [{ region: "eu", token: "new-token" }] },
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { warnings?: string[] }).warnings).toBe(
+        undefined,
+      );
+    });
+  });
+
   it("PUT with a top-level SECRET_KEPT over an absent secret is a 400", async () => {
     const row = await Connector.create({
       workspaceId: new Types.ObjectId(WS),
