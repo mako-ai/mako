@@ -30,31 +30,19 @@ import {
   bottomNavigationItems,
   type NavigationView,
 } from "../lib/explorer-nav";
-import { tabRevealTarget } from "../lib/explorer-reveal";
 import { railButtonColors } from "./sidebar-rail";
 
 /**
- * The rail answers TWO questions, and conflating them is confusing.
- *
- * `isActive` is "this explorer's panel is the one on screen". `ownsActiveTab`
- * is "the tab you are looking at lives in here". They are independent by
- * design — browsing the Databases tree while editing a console is a real
- * workflow, and a reload deliberately restores the panel you had rather than
- * the one the URL implies (see UrlSync's isReload note).
- *
  * The highlight (full-contrast icon on the selected background, neutral — no
- * brand colour anywhere on the rail) always follows the open panel; the
- * explorer holding the open tab gets only a quieter hint. See
- * `railButtonColors` for why the emphasis is that way round.
+ * brand colour anywhere on the rail) follows the explorer panel on screen and
+ * nothing else. Which explorer holds the open tab is deliberately not shown:
+ * browsing the Databases tree while editing a console is a real workflow, and
+ * a second marker read as a second selection.
  */
 const NavButton = styled(Button, {
-  shouldForwardProp: prop => prop !== "isActive" && prop !== "ownsActiveTab",
-})<{ isActive?: boolean; ownsActiveTab?: boolean }>(({
-  theme,
-  isActive,
-  ownsActiveTab,
-}) => {
-  const colors = railButtonColors(theme, { isActive, ownsActiveTab });
+  shouldForwardProp: prop => prop !== "isActive",
+})<{ isActive?: boolean }>(({ theme, isActive }) => {
+  const colors = railButtonColors(theme, { isActive });
   return {
     minWidth: 40,
     width: 40,
@@ -227,15 +215,6 @@ function Sidebar() {
   // the last-selected view retained across collapse — to decide which icon
   // is highlighted, so collapsing the pane clears the highlight.
   const activeExplorer = useUIStore(selectActiveExplorer);
-  // Which explorer holds the tab currently in the editor. Returns a primitive
-  // so this only re-renders when the answer actually changes, not on every
-  // keystroke in the tab. Tabs with no sidebar home (settings, plans) map to
-  // null and mark nothing.
-  const activeTabExplorer = useConsoleStore(state => {
-    const id = state.activeTabId;
-    const tab = id ? state.tabs[id] : null;
-    return tabRevealTarget(tab)?.explorer ?? null;
-  });
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const setLeftPane = useUIStore(state => state.setLeftPane);
@@ -298,27 +277,16 @@ function Sidebar() {
           {topNavigationItems.map(item => {
             const Icon = item.icon;
             const isActive = activeExplorer === item.view;
-            const ownsActiveTab = activeTabExplorer === item.view;
 
             return (
-              <Tooltip
-                key={item.view}
-                title={
-                  ownsActiveTab && !isActive
-                    ? `${item.label} — holds the open tab`
-                    : item.label
-                }
-                placement="right"
-              >
+              <Tooltip key={item.view} title={item.label} placement="right">
                 <NavButton
                   isActive={isActive}
-                  ownsActiveTab={ownsActiveTab}
-                  // Stable hooks for tests: the two states are otherwise only
+                  // Stable hooks for tests: the state is otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
                   aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
-                  data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
                   onMouseEnter={
                     item.view === "dashboards"
@@ -389,27 +357,16 @@ function Sidebar() {
             // Settings is now a real explorer — track `activeExplorer` like
             // every other rail so collapsing the pane clears the highlight.
             const isActive = activeExplorer === item.view;
-            const ownsActiveTab = activeTabExplorer === item.view;
 
             return (
-              <Tooltip
-                key={item.view}
-                title={
-                  ownsActiveTab && !isActive
-                    ? `${item.label} — holds the open tab`
-                    : item.label
-                }
-                placement="right"
-              >
+              <Tooltip key={item.view} title={item.label} placement="right">
                 <NavButton
                   isActive={isActive}
-                  ownsActiveTab={ownsActiveTab}
-                  // Stable hooks for tests: the two states are otherwise only
+                  // Stable hooks for tests: the state is otherwise only
                   // visible as emotion-generated colours.
                   data-view={item.view}
                   aria-current={isActive ? "true" : undefined}
                   data-open-explorer={isActive ? "true" : "false"}
-                  data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
                 >
                   <Icon strokeWidth={1.5} />

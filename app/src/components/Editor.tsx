@@ -5,14 +5,8 @@ import React, {
   useState,
   useCallback,
 } from "react";
-import {
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  closestCenter,
-  type DragEndEvent,
-} from "@dnd-kit/core";
+import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
+import { useDragSensors } from "../hooks/useDragSensors";
 import {
   SortableContext,
   useSortable,
@@ -284,7 +278,6 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
 
   const dragStyle: React.CSSProperties = {
     opacity: isDragging ? 0.4 : 1,
-    touchAction: "none",
   };
 
   const indicatorSx = showIndicator
@@ -1041,12 +1034,9 @@ function Editor({
   };
 
   // Drag-to-reorder tabs
-  const dndSensors = useSensors(
-    useSensor(PointerSensor, {
-      // Keep click-to-select working: only start a drag after 4px of movement.
-      activationConstraint: { distance: 4 },
-    }),
-  );
+  // Keep click-to-select working: a mouse drag starts after 4px; on touch a
+  // long-press, so the tab bar still swipes sideways.
+  const dndSensors = useDragSensors(4);
   const sortableTabIds = useMemo(
     () => consoleTabs.map(t => t.id),
     [consoleTabs],

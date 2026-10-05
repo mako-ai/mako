@@ -28,6 +28,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  LinearProgress,
   Tooltip,
   Typography,
   styled,
@@ -56,6 +57,8 @@ import {
 } from "../store/appsStore";
 import AppHistoryPopover from "./AppHistoryPopover";
 import AppPublishedChip from "./AppPublishedChip";
+import EntityLoadErrorState from "./EntityLoadErrorState";
+import { EXPLORER_ICONS } from "../lib/entity-icons";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
@@ -1141,6 +1144,12 @@ export default function AppWorkspace({
     devServerKeyMatches(k, { id: appId, slug: slug ?? undefined }),
   );
   const viewUrl = useAppsStore(s => s.viewUrlByApp[appId]);
+  const viewUrlError = useAppsStore(s => s.viewUrlErrorByApp[appId]);
+  // The view URL the published iframe last finished loading. A new token
+  // (a publish moved the app on) shows the opening card again until it loads.
+  const [pubLoadedUrl, setPubLoadedUrl] = useState<string | null>(null);
+  const pubLoaded = !!viewUrl && pubLoadedUrl === viewUrl;
+  const appsLoading = useAppsStore(s => s.appsLoading);
   const hiddenPaused = useHiddenPause();
   // Durable, session-authorized URL for the published app — for normal tabs.
   // The token URL (viewUrl) exists ONLY for the sandboxed iframe, whose
@@ -1164,12 +1173,17 @@ export default function AppWorkspace({
   // disagreed with the green dot — the exact multi-source drift §13.11 bans.
   // Editing a stopped app is a deliberate click now, not a restored side
   // effect.
+  //
+  // Until that probe answers, an unpublished app is not yet "never built":
+  // it may be about to open its running dev server instead.
+  const [devCheckedFor, setDevCheckedFor] = useState<string | null>(null);
   useEffect(() => {
     if (!workspaceId) return;
     void useAppsStore
       .getState()
       .checkDevStatus(workspaceId, appId)
       .then(() => {
+        setDevCheckedFor(appId);
         const p = useAppsStore.getState().previewByApp[appId];
         if (p?.mode === "dev" && p.url && !editing) {
           setEditing(workspaceId, appId, true);
@@ -1600,35 +1614,72 @@ export default function AppWorkspace({
           suggests the machine is part of viewing. DEV MODE is the workbench:
           preview on top, terminal below. */}
       {!editing ? (
-        <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <Box
+          sx={{ flex: 1, minHeight: 0, display: "flex", position: "relative" }}
+        >
           {viewUrl ? (
-            // Consumer view: the PUBLISHED app, which is what everyone who is
-            // not working on it should see. It comes from the deployment
-            // store, so opening someone's app costs a static file read and
-            // starts no machine — the same reason a hundred viewers can open
-            // one app without a hundred microVMs.
-            //
-            // No allow-same-origin: this is served from Mako's own origin, so
-            // granting it would hand app code our origin and let it out of
-            // the sandbox entirely.
-            <iframe
-              key={`pub-${seedKey}`}
-              ref={pubIframeRef}
-              title={`${app?.title ?? "App"} (published)`}
-              // The view URL never carries a query of its own; the app's
-              // rides on it so the SDK reads it at mount (the preview route
-              // resolves the asset from the path alone).
-              src={
-                seededSearch
-                  ? viewUrl +
-                    (viewUrl.includes("?")
-                      ? `&${seededSearch.slice(1)}`
-                      : seededSearch)
-                  : viewUrl
+            <>
+              {/* Consumer view: the PUBLISHED app, which is what everyone who
+                  is not working on it should see. It comes from the
+                  deployment store, so opening someone's app costs a static
+                  file read and starts no machine — the same reason a hundred
+                  viewers can open one app without a hundred microVMs.
+
+                  No allow-same-origin: this is served from Mako's own origin,
+                  so granting it would hand app code our origin and let it out
+                  of the sandbox entirely. */}
+              <iframe
+                key={`pub-${seedKey}`}
+                ref={pubIframeRef}
+                title={`${app?.title ?? "App"} (published)`}
+                // The view URL never carries a query of its own; the app's
+                // rides on it so the SDK reads it at mount (the preview route
+                // resolves the asset from the path alone).
+                src={
+                  seededSearch
+                    ? viewUrl +
+                      (viewUrl.includes("?")
+                        ? `&${seededSearch.slice(1)}`
+                        : seededSearch)
+                    : viewUrl
+                }
+                sandbox="allow-scripts allow-forms"
+                onLoad={() => setPubLoadedUrl(viewUrl)}
+                style={{
+                  border: 0,
+                  width: "100%",
+                  height: "100%",
+                  // Held invisible until the bundle has loaded, so the
+                  // opening card hands straight over to the app instead of
+                  // to a blank white frame.
+                  opacity: pubLoaded ? 1 : 0,
+                  transition: "opacity 150ms ease",
+                }}
+              />
+              {!pubLoaded && (
+                <Box sx={{ position: "absolute", inset: 0, display: "flex" }}>
+                  <AppOpeningState title={app?.title} />
+                </Box>
+              )}
+            </>
+          ) : publishedSha && viewUrlError ? (
+            <EntityLoadErrorState
+              error={viewUrlError}
+              entityLabel="app"
+              onRetry={
+                workspaceId
+                  ? () => void fetchViewUrl(workspaceId, appId)
+                  : undefined
               }
-              sandbox="allow-scripts allow-forms"
-              style={{ border: 0, width: "100%", height: "100%" }}
             />
+          ) : publishedSha ||
+            (!app && appsLoading) ||
+            devCheckedFor !== appId ? (
+            // Built, or not known yet: the token, the app list or the
+            // dev-server probe is still in flight. Never the never-built
+            // screen — it offered "Launch dev mode" on every published app
+            // for as long as its view token took.
+            <AppOpeningState title={app?.title} />
           ) : (
             // Never deployed: say so plainly, and make the one meaningful
             // next action the obvious thing on the page.
@@ -1752,6 +1803,40 @@ export default function AppWorkspace({
           }}
         />
       )}
+    </Box>
+  );
+}
+
+/**
+ * What an app tab shows while it opens: the app's name over an indeterminate
+ * bar, so a loading app reads as "opening", never as an empty or
+ * never-built one.
+ */
+function AppOpeningState({ title }: { title?: string }) {
+  const AppIcon = EXPLORER_ICONS.apps;
+  return (
+    <Box
+      role="status"
+      aria-live="polite"
+      sx={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 1.5,
+        p: 4,
+        textAlign: "center",
+        bgcolor: "background.default",
+        color: "text.secondary",
+      }}
+    >
+      <AppIcon size={32} strokeWidth={1.5} />
+      <Typography variant="subtitle1" color="text.primary">
+        {title ?? "App"}
+      </Typography>
+      <LinearProgress sx={{ width: 160, borderRadius: 1 }} />
+      <Typography variant="caption">Opening…</Typography>
     </Box>
   );
 }

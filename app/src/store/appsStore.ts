@@ -13,7 +13,14 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { api, unwrapBody, ApiError, toErrorMessage as message } from "../api";
+import {
+  api,
+  unwrapBody,
+  ApiError,
+  toErrorMessage as message,
+  toLoadError,
+  type LoadError,
+} from "../api";
 import {
   focusAppsTab,
   healAppsTabs,
@@ -361,6 +368,12 @@ interface AppsStore {
    * the app renders as a blank page.
    */
   viewUrlByApp: Record<string, string | undefined>;
+  /**
+   * Why the last view-token request failed. The view shows it (with Retry)
+   * for a published app instead of the never-built screen, which a failed
+   * request used to fall through to.
+   */
+  viewUrlErrorByApp: Record<string, LoadError | undefined>;
   historyByApp: Record<string, AppCommit[]>;
   /** The published chip's context: commit, age, what main has that is not live. */
   publishStateByApp: Record<string, AppPublishState | undefined>;
@@ -679,6 +692,7 @@ export const useAppsStore = create<AppsStore>()(
       statusByApp: {},
       editingByApp: {},
       viewUrlByApp: {},
+      viewUrlErrorByApp: {},
       historyByApp: {},
       publishStateByApp: {},
       commitFilesByApp: {},
@@ -1355,6 +1369,12 @@ export const useAppsStore = create<AppsStore>()(
       },
 
       fetchViewUrl: async (workspaceId, appId) => {
+        // A retry reads as loading again, not as the old error.
+        if (get().viewUrlErrorByApp[appId]) {
+          set(s => {
+            s.viewUrlErrorByApp[appId] = undefined;
+          });
+        }
         try {
           const body = unwrapBody(
             await api.POST(
@@ -1366,12 +1386,18 @@ export const useAppsStore = create<AppsStore>()(
           ) as { url?: string };
           set(s => {
             s.viewUrlByApp[appId] = body.url;
+            s.viewUrlErrorByApp[appId] = undefined;
           });
-        } catch {
+        } catch (e) {
           // Not published, or the token could not be minted. The workspace
-          // shows its "nothing to view yet" state rather than a broken frame.
+          // shows the error for a published app and its "nothing to view
+          // yet" state otherwise — never a broken frame.
           set(s => {
             s.viewUrlByApp[appId] = undefined;
+            s.viewUrlErrorByApp[appId] = toLoadError(
+              e,
+              "The published app could not be opened.",
+            );
           });
         }
       },

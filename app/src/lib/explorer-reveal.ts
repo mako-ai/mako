@@ -103,11 +103,11 @@ export function tabRevealTarget(
       // Database explorer node ids depend on the (lazily-loaded) schema tree,
       // so there is no stable reveal id to scroll to.
       return null;
-    case "members":
     case "notebook": {
       const id = meta.notebookId as string | undefined;
       return id ? { explorer: "notebooks", nodeId: id } : null;
     }
+    case "members":
     case "plan":
     case "settings":
       return null;
