@@ -65,6 +65,32 @@ describe("MCP consent page", () => {
     );
   });
 
+  // sources:write writes credentials and drives running flows: offered only
+  // when requested, and even then the user has to tick it themselves.
+  it("offers source management UNTICKED, and only when requested", () => {
+    const sourcesCheckbox = (html: string) =>
+      html.match(/<input[^>]*name="grant_sources_write"[^>]*>/)?.[0];
+    const box = sourcesCheckbox(consentFor("mcp query:read sources:write"));
+    expect(box).toBeDefined();
+    expect(box).toMatch(/type="checkbox"/);
+    expect(box).not.toMatch(/\bchecked\b/);
+
+    for (const scope of [undefined, "mcp query:read warehouse:write"]) {
+      const html = consentFor(scope);
+      expect(sourcesCheckbox(html)).toBeUndefined();
+      expect(html).toContain("Cannot change source connections or flow runs");
+    }
+
+    const requested = parseMcpOAuthScopes("mcp sources:write");
+    expect(requested).toContain("sources:write");
+    expect(resolveMcpOAuthConsentScopes(requested, false)).not.toContain(
+      "sources:write",
+    );
+    expect(resolveMcpOAuthConsentScopes(requested, false, true)).toContain(
+      "sources:write",
+    );
+  });
+
   it("carries the flow's parameters through the form, unchanged", () => {
     const html = consentFor("mcp query:read warehouse:write");
     for (const [name, value] of [

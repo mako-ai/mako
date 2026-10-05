@@ -6,6 +6,11 @@
  * requested one arrives TICKED — `mako login --warehouse-write` asked for it
  * on purpose — while staying uncheckable: what is granted is what is still
  * ticked when Allow is pressed (resolveMcpOAuthConsentScopes).
+ *
+ * `sources:write` is the exception: it is shown only when requested too, but
+ * arrives UNTICKED. Writing workspace credentials and driving running flows
+ * is the kind of authority a person should add on purpose, not one a client
+ * that asks for every advertised scope should receive by default.
  */
 import type { WorkspaceApiKeyScope } from "./api-key-scopes";
 import { authPage, escapeHtml, iconSvg } from "./auth-page";
@@ -132,6 +137,7 @@ export function consentPage(input: {
   const { clientName, params, workspaces } = input;
   const client = escapeHtml(clientName);
   const warehouseWrite = params.scopes.includes("warehouse:write");
+  const sourcesWrite = params.scopes.includes("sources:write");
   const hidden = (name: string, value?: string) =>
     value
       ? `<input type="hidden" name="${name}" value="${escapeHtml(value)}" />`
@@ -156,6 +162,13 @@ export function consentPage(input: {
         Build, run and cancel dbt models and jobs. These can create, replace or modify tables in your warehouse. Untick to connect read-only.</span>
       </label>`
     : `<ul class="perms"><li class="off">${iconSvg("cross")}<span>Cannot run dbt or change warehouse data (not requested).</span></li></ul>`;
+  const sources = sourcesWrite
+    ? `<label class="option">
+        <input type="checkbox" name="grant_sources_write" value="yes" />
+        <span><strong>Allow managing source connections and flows<em class="requested">requested</em></strong>
+        Create and update source connections — credentials are write-only and never shown back — and start, pause or cancel flow backfills and streams. Needs the owner or admin role in the chosen workspace. Tick to allow.</span>
+      </label>`
+    : `<ul class="perms"><li class="off">${iconSvg("cross")}<span>Cannot change source connections or flow runs (not requested).</span></li></ul>`;
 
   const body = `<p class="lede"><strong>${client}</strong> wants to connect to a Mako workspace.</p>
   <div class="client">${iconSvg("link")}<span>Approving returns you to <code>${escapeHtml(describeRedirect(params.redirectUri))}</code></span></div>
@@ -176,6 +189,7 @@ export function consentPage(input: {
         <li>${check}<span>Create and edit Mako apps, notebooks and dbt files</span></li>
       </ul>
       ${warehouse}
+      ${sources}
     </div>
     <div class="actions">
       <button class="deny" type="submit" name="decision" value="deny">Deny</button>

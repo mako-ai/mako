@@ -6,7 +6,10 @@
  * client (Claude, Cursor, Codex) implement. Tokens are opaque `mcpat_`/
  * `mcprt_` strings. OAuth grants default to the read-only MCP set; clients
  * may explicitly request the narrower `warehouse:write` scope for governed
- * dbt execution, which is shown prominently on the consent screen.
+ * dbt execution, which is shown prominently on the consent screen, and
+ * `sources:write` (source-connection credentials + flow run control), which
+ * the consent screen shows UNTICKED even when requested and which only an
+ * owner/admin of the chosen workspace can grant.
  */
 import * as crypto from "crypto";
 
@@ -40,6 +43,7 @@ export const MCP_OAUTH_SCOPES = [
   "mcp",
   "query:read",
   "warehouse:write",
+  "sources:write",
 ] as const satisfies readonly WorkspaceApiKeyScope[];
 
 const MCP_OAUTH_SCOPE_SET = new Set<string>(MCP_OAUTH_SCOPES);
@@ -68,16 +72,27 @@ export function parseMcpOAuthScopes(value?: string): WorkspaceApiKeyScope[] {
     ...(requested.includes("warehouse:write")
       ? (["warehouse:write"] as const)
       : []),
+    ...(requested.includes("sources:write")
+      ? (["sources:write"] as const)
+      : []),
   ];
 }
 
-/** Never turn a client request into warehouse authority without user opt-in. */
+/**
+ * Never turn a client request into warehouse or credential authority
+ * without user opt-in: an optional scope survives only when its box was
+ * still ticked when Allow was pressed. `sourcesWriteApproved` defaults to
+ * false so a caller that does not know about it fails closed.
+ */
 export function resolveMcpOAuthConsentScopes(
   requested: readonly WorkspaceApiKeyScope[],
   warehouseWriteApproved: boolean,
+  sourcesWriteApproved = false,
 ): WorkspaceApiKeyScope[] {
   return requested.filter(
-    scope => scope !== "warehouse:write" || warehouseWriteApproved,
+    scope =>
+      (scope !== "warehouse:write" || warehouseWriteApproved) &&
+      (scope !== "sources:write" || sourcesWriteApproved),
   );
 }
 

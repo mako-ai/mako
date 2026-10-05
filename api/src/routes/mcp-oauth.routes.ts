@@ -382,6 +382,7 @@ mcpOAuthRoutes.post("/authorize", async c => {
   const scopes = resolveMcpOAuthConsentScopes(
     parsed.value.scopes,
     form.grant_warehouse_write === "yes",
+    form.grant_sources_write === "yes",
   );
   if (
     scopes.includes("warehouse:write") &&
@@ -390,6 +391,19 @@ mcpOAuthRoutes.post("/authorize", async c => {
     return c.html(
       cannotConnectPage(
         "Running dbt in the warehouse needs at least the member role in this workspace. Untick it to connect read-only, or ask an admin for access.",
+      ),
+      403,
+    );
+  }
+  // Same floor the tools enforce at every call; refusing here keeps a
+  // member from minting a grant that could never be used.
+  if (
+    scopes.includes("sources:write") &&
+    !hasMinimumWorkspaceRole(member.role, "admin")
+  ) {
+    return c.html(
+      cannotConnectPage(
+        "Managing source connections and flows needs the owner or admin role in this workspace. Untick it to connect without it, or ask an admin.",
       ),
       403,
     );

@@ -136,7 +136,31 @@ async function main() {
     "mcp",
     "query:read",
     "warehouse:write",
+    "sources:write",
   ]);
+  // sources:write is requestable over OAuth like warehouse:write, but the
+  // consent default is to drop it: only a box the user ticked survives.
+  assert.deepEqual(parseMcpOAuthScopes("offline_access sources:write"), [
+    "mcp",
+    "query:read",
+    "sources:write",
+  ]);
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(
+      ["mcp", "query:read", "warehouse:write", "sources:write"],
+      true,
+    ),
+    ["mcp", "query:read", "warehouse:write"],
+    "a caller that does not pass the sources:write decision fails closed",
+  );
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(
+      ["mcp", "query:read", "sources:write"],
+      false,
+      true,
+    ),
+    ["mcp", "query:read", "sources:write"],
+  );
   // query:write is double-gated: the scope alone yields "write-opt-in",
   // which resolves to write ONLY against connections a workspace admin
   // marked allowAgentWrites — and can never upgrade a plain query:read key.
