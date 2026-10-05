@@ -560,7 +560,7 @@ export class CloseConnector extends BaseConnector {
   private static flattenCustomFields(record: Record<string, unknown>): void {
     // Flat dotted keys from explicit `_fields` selectors: custom.cf_x → custom_cf_x
     for (const rawKey of Object.keys(record)) {
-      if (!/^custom\.cf_[A-Za-z0-9]+$/.test(rawKey)) continue;
+      if (!/^custom\.(?:cf|lcf)_[A-Za-z0-9]+$/.test(rawKey)) continue;
       const flatKey = rawKey.replace(/\./g, "_");
       if (!(flatKey in record)) {
         record[flatKey] = record[rawKey];
@@ -576,7 +576,7 @@ export class CloseConnector extends BaseConnector {
     ) {
       const customObj = record.custom as Record<string, unknown>;
       for (const [cfKey, cfValue] of Object.entries(customObj)) {
-        if (!/^cf_[A-Za-z0-9]+$/.test(cfKey)) continue;
+        if (!/^(?:cf|lcf)_[A-Za-z0-9]+$/.test(cfKey)) continue;
         const flatKey = `custom_${cfKey}`;
         if (!(flatKey in record)) {
           record[flatKey] = cfValue;
@@ -600,7 +600,8 @@ export class CloseConnector extends BaseConnector {
       const key = rawKey.replace(/\./g, "_");
       if (
         CloseConnector.LEAD_ALLOWED_NORMALIZED_FIELDS.has(key) ||
-        key.startsWith("custom_cf_")
+        key.startsWith("custom_cf_") ||
+        key.startsWith("custom_lcf_")
       ) {
         normalized[key] = value;
       }

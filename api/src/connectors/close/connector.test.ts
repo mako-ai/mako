@@ -354,6 +354,59 @@ function testContactBackfillFlattensCustomFields() {
   assert.equal(payload.custom_cf_linkedin, "https://linkedin.com/in/x");
 }
 
+// Legacy lead-only fields use lcf_ IDs, which the schema and API selectors
+// already support. Both ingestion paths must preserve them as flat columns.
+function testLeadBackfillPreservesLegacyCustomFields() {
+  const connector = createConnector();
+  const records: Record<string, unknown>[] = [
+    { "custom.lcf_owner": "user_legacy" },
+    { custom_lcf_owner: "user_legacy" },
+    { custom: { lcf_owner: "user_legacy" } },
+    { custom_lcf_owner: null, custom: { lcf_owner: "user_old" } },
+  ];
+
+  for (const [index, record] of records.entries()) {
+    const normalized = connector.normalizeBackfillRecord("leads", {
+      id: "lead_legacy",
+      date_updated: "2026-10-05T10:00:00.000Z",
+      "custom.cf_current": "user_current",
+      ...record,
+    });
+    assert.ok(normalized);
+    const payload = normalized.payload as Record<string, unknown>;
+    assert.equal(payload.custom_lcf_owner, index === 3 ? null : "user_legacy");
+    assert.equal(payload.custom_cf_current, "user_current");
+    assert.ok(!("custom.lcf_owner" in payload));
+  }
+}
+
+function testLeadWebhookPreservesLegacyCustomFields() {
+  const connector = createConnector();
+  for (const customFields of [
+    { "custom.lcf_owner": "user_legacy" },
+    { custom: { lcf_owner: "user_legacy" } },
+  ]) {
+    const records = connector.extractWebhookCdcRecords(
+      {
+        event: {
+          id: "ev_legacy",
+          object_type: "lead",
+          action: "updated",
+          object_id: "lead_legacy",
+          date_updated: "2026-10-05T10:00:00.000Z",
+          data: { id: "lead_legacy", ...customFields },
+        },
+      },
+      "lead.updated",
+    );
+    assert.equal(records.length, 1);
+    assert.equal(records[0].entity, "leads");
+    const payload = records[0].payload as Record<string, unknown>;
+    assert.equal(payload.custom_lcf_owner, "user_legacy");
+    assert.ok(!("custom.lcf_owner" in payload));
+  }
+}
+
 // The Search API field selection must enumerate every custom field as an
 // explicit `custom.cf_<id>` selector (plus keep the `custom` blob fallback),
 // so no field is silently missing from backfill payloads.
@@ -1069,6 +1122,8 @@ async function main() {
   testOpportunityBackfillFlattensCustomFields();
   testOpportunityWebhookFlattensCustomFields();
   testContactBackfillFlattensCustomFields();
+  testLeadBackfillPreservesLegacyCustomFields();
+  testLeadWebhookPreservesLegacyCustomFields();
   testSearchFieldSelectionIncludesCustomFieldSelectors();
   await testOpportunitySearchBackfillRequestsAndFlattensCustomFields();
   testSplitFieldSelectionRespectsBudget();
