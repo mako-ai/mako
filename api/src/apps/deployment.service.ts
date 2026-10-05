@@ -50,7 +50,11 @@ import {
 } from "./worktree.service";
 import { readBoxDir } from "./box";
 import { resolveAppEnv } from "./env.service";
-import { INSTALL_IS_FRESH, installCommand } from "./package-manager";
+import {
+  INSTALL_IS_FRESH,
+  installCommand,
+  updateMakoPackagesCommand,
+} from "./package-manager";
 
 const logger = loggers.api("apps-deployment");
 
@@ -600,6 +604,14 @@ export async function buildApp(
       output: `dependency install failed\n${(install.stdout + install.stderr).slice(-4000)}`,
     };
   }
+  // Newest @makoai/* inside the app's declared range, on every build — also
+  // when node_modules was fresh, or a published SDK fix would wait for the
+  // app's next dependency change. Never fails the build (see the command).
+  await exec(
+    handle,
+    `set -o pipefail; ( ${updateMakoPackagesCommand()} ) 2>&1 | tee -a ${log}`,
+    { timeoutMs: 120_000 },
+  ).catch(() => undefined);
   const build = await exec(
     handle,
     `set -o pipefail; npm run build -- --base=./ 2>&1 | tee -a ${log}`,

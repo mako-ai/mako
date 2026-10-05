@@ -1,5 +1,11 @@
 # UI toolkit: Tailwind v4 + shadcn/ui in a Mako app
 
+> Start from the house kit: `@makoai/app-sdk/ui` (+ `ui.css`) already covers
+> page header, cards, KPI tiles, buttons, the multi-select filter, the
+> freshness badge and the refresh-all button, in the house style. Reach for
+> shadcn below only for what the kit does not have — and map it onto the
+> SDK's tokens, never onto a pasted palette.
+
 Apps are ordinary Vite projects, so the standard modern React toolkit works —
 no CDN tricks. This is the proven setup (first shipped in
 `event-reconciliation-explorer`, 2026-08).
@@ -109,6 +115,10 @@ Because the theme block above maps shadcn's expected token names onto the
 SDK's, generated components are correctly themed with zero edits.
 
 ## Filter controls: the dropdown pattern
+
+Use the kit's `MultiSelect` (`@makoai/app-sdk/ui`) — it is this pattern,
+already built. The shadcn recipe below is for an app that has its own
+shadcn setup and needs a variant the kit does not offer.
 
 Multi-select filters (countries, teams, …) are a `DropdownMenu`, not a chip
 row: trigger shows the selection summary (`All countries` / `FR, CH`), the

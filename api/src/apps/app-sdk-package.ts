@@ -1,6 +1,9 @@
 /**
- * `@makoai/app-sdk` — a REAL package committed into every workspace repo at
- * `packages/app-sdk`, consumed by apps as a `file:` dependency.
+ * `@makoai/app-sdk` — the published package apps depend on from npm.
+ *
+ * It used to be committed into every workspace repo at `packages/app-sdk`
+ * (a vendored copy the template overwrote); since template v20 it is not,
+ * and the refresh retires the old copy once no app references it.
  *
  * v1 injected this module at runtime: the host resolved the import from an
  * import map and bridged every call over postMessage. A v2 app is a real
@@ -11,14 +14,15 @@
  * DuckDB-WASM.
  *
  * The SOURCE is the workspace package at `packages/app-sdk` in this monorepo
- * (plain ESM + .d.ts, no build step, publishable to npm). This module vendors
- * those exact files into workspace repos: the API build copies them to
- * `dist/app-sdk`, so the same relative lookup works under `tsx src/index.ts`
- * and `node dist/index.js` (the pattern system skills use).
+ * (plain ESM + .d.ts, no build step, published to npm by publish-npm.yml).
+ * The API only needs its version: the build copies `package.json` to
+ * `dist/app-sdk`, so the same lookup works under `tsx src/index.ts` and
+ * `node dist/index.js`.
  */
 import fs from "node:fs";
 import path from "node:path";
 
+/** Where the retired vendored copy lives in older workspace repos. */
 export const APP_SDK_DIR = "packages/app-sdk";
 
 /**
@@ -26,8 +30,8 @@ export const APP_SDK_DIR = "packages/app-sdk";
  * pinned to the major of the version this API ships with. Not the vendored
  * `file:../../packages/app-sdk` any more — that path is relative to the app's
  * depth, so it broke the first time an app was filed into a folder, and a
- * laptop clone wants a registry package anyway. `packages/app-sdk` stays in
- * the workspace repo for apps that still reference it.
+ * laptop clone wants a registry package anyway. Deploys move the app to the
+ * newest release inside this range (package-manager.ts).
  */
 export function appSdkDependency(): Record<string, string> {
   return { "@makoai/app-sdk": `^${appSdkVersion()}` };
@@ -42,18 +46,6 @@ export const APP_SDK_DEPENDENCY: Record<string, string> = {
   "@makoai/app-sdk": "file:../../packages/app-sdk",
 };
 
-/** Files of the package that ship into workspace repos (the npm `files`). */
-const SHIPPED_FILES = [
-  "package.json",
-  "index.js",
-  "index.d.ts",
-  "vite.js",
-  "vite.d.ts",
-  "credentials.js",
-  "credentials.d.ts",
-  "README.md",
-] as const;
-
 function candidateDirs(): string[] {
   return [
     // Source tree: api/src/apps → packages/app-sdk
@@ -66,28 +58,55 @@ function candidateDirs(): string[] {
   ];
 }
 
-let resolvedDir: string | null = null;
+let cachedVersion: string | null = null;
 
-/** Where the package's files live in this deployment. */
-export function appSdkSourceDir(): string {
-  if (resolvedDir) return resolvedDir;
+/**
+ * The package version this API ships with — new apps get a caret range on
+ * it. Only `package.json` is read: the package itself reaches apps from npm,
+ * never as a copy in the workspace repo.
+ */
+export function appSdkVersion(): string {
+  if (cachedVersion) return cachedVersion;
   for (const dir of candidateDirs()) {
-    if (fs.existsSync(path.join(dir, "index.js"))) {
-      resolvedDir = dir;
-      return dir;
-    }
+    const file = path.join(dir, "package.json");
+    if (!fs.existsSync(file)) continue;
+    const pkg = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      version?: string;
+    };
+    cachedVersion = pkg.version ?? "0.0.0";
+    return cachedVersion;
   }
   throw new Error(
-    `@makoai/app-sdk package files not found (looked in ${candidateDirs().join(", ")})`,
+    `@makoai/app-sdk package.json not found (looked in ${candidateDirs().join(", ")})`,
   );
 }
 
-let cached: Record<string, string> | null = null;
+/** Files of the package as the retired vendored copy shipped them. */
+const SHIPPED_FILES = [
+  "package.json",
+  "index.js",
+  "index.d.ts",
+  "vite.js",
+  "vite.d.ts",
+  "credentials.js",
+  "credentials.d.ts",
+  "README.md",
+] as const;
 
-/** Every file of the packaged SDK, ready for a commit. */
+/**
+ * Every file of the old vendored copy, ready for a commit. Kept ONLY for the
+ * applied 2026-08-25 migration (migrations are never edited once applied);
+ * nothing writes `packages/app-sdk` into a workspace repo any more.
+ */
 export function appSdkFiles(): Record<string, string> {
-  if (cached) return cached;
-  const dir = appSdkSourceDir();
+  const dir = candidateDirs().find(d =>
+    fs.existsSync(path.join(d, "index.js")),
+  );
+  if (!dir) {
+    throw new Error(
+      `@makoai/app-sdk package files not found (looked in ${candidateDirs().join(", ")})`,
+    );
+  }
   const out: Record<string, string> = {};
   for (const name of SHIPPED_FILES) {
     out[`${APP_SDK_DIR}/${name}`] = fs.readFileSync(
@@ -95,14 +114,5 @@ export function appSdkFiles(): Record<string, string> {
       "utf8",
     );
   }
-  cached = out;
   return out;
-}
-
-/** The package version, for logs and the template stamp. */
-export function appSdkVersion(): string {
-  const pkg = JSON.parse(appSdkFiles()[`${APP_SDK_DIR}/package.json`]) as {
-    version?: string;
-  };
-  return pkg.version ?? "0.0.0";
 }

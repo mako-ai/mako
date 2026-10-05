@@ -492,16 +492,107 @@ export function useSearchParams() {
 }
 
 // ---------------------------------------------------------------------------
-// Theme tokens — the same shadcn-style palette the v1 runtime injected around
-// every app (app/src/app-runtime/preview.ts THEME_TOKENS_CSS). The v1 skill
-// taught agents to write var(--background) / var(--border) / var(--chart-N)
-// directly, so migrated apps DEPEND on these names existing; without them a
-// v2 build renders with no backgrounds or borders at all. The SDK restores
-// the contract wherever it loads: prepended to <head> so any app stylesheet
-// overrides it, keyed by id so double-imports no-op, dark on :root.dark (the
-// v1 toggle) plus the system preference for standalone.
+// Theme tokens — Mako's house palette, injected wherever the SDK loads.
+//
+// The NAMES are the shadcn-style contract the v1 runtime injected
+// (app/src/app-runtime/preview.ts THEME_TOKENS_CSS): migrated apps write
+// var(--background) / var(--border) / var(--chart-N) directly, so every name
+// must keep existing. The VALUES are the house style the workspace converged
+// on (INTL Sales → Spain Renewals → 0 Moments, Cohort MRR): stone, a warm
+// canvas, #527df2 as the one brand colour. Before 2.7 these were shadcn's zinc
+// defaults and every styled app pasted the same ~90-line override block.
+//
+// Added on top of the v1 names: --brand, --canvas (the page behind cards),
+// --positive / --warning / --negative (status tones). --brand, --ring and
+// --chart-N are the same in light and dark, exactly as the house apps had them. Prepended to <head> so
+// any app stylesheet still overrides it, keyed by id so double-imports no-op,
+// dark on :root.dark (the v1 toggle) plus the system preference.
 // ---------------------------------------------------------------------------
-const MAKO_THEME_TOKENS_CSS = ":root {\n  color-scheme: light;\n  --background: hsl(0 0% 100%);\n  --foreground: hsl(240 10% 3.9%);\n  --card: hsl(0 0% 100%);\n  --card-foreground: hsl(240 10% 3.9%);\n  --popover: hsl(0 0% 100%);\n  --popover-foreground: hsl(240 10% 3.9%);\n  --primary: hsl(240 5.9% 10%);\n  --primary-foreground: hsl(0 0% 98%);\n  --secondary: hsl(240 4.8% 95.9%);\n  --secondary-foreground: hsl(240 5.9% 10%);\n  --muted: hsl(240 4.8% 95.9%);\n  --muted-foreground: hsl(240 3.8% 46.1%);\n  --accent: hsl(240 4.8% 95.9%);\n  --accent-foreground: hsl(240 5.9% 10%);\n  --destructive: hsl(0 84.2% 60.2%);\n  --destructive-foreground: hsl(0 0% 98%);\n  --border: hsl(240 5.9% 90%);\n  --input: hsl(240 5.9% 90%);\n  --ring: hsl(240 5.9% 10%);\n  --chart-1: hsl(12 76% 61%);\n  --chart-2: hsl(173 58% 39%);\n  --chart-3: hsl(197 37% 24%);\n  --chart-4: hsl(43 74% 66%);\n  --chart-5: hsl(27 87% 67%);\n  --radius: 0.5rem;\n}\n:root.dark {\n  color-scheme: dark;\n  --background: hsl(240 10% 3.9%);\n  --foreground: hsl(0 0% 98%);\n  --card: hsl(240 10% 3.9%);\n  --card-foreground: hsl(0 0% 98%);\n  --popover: hsl(240 10% 3.9%);\n  --popover-foreground: hsl(0 0% 98%);\n  --primary: hsl(0 0% 98%);\n  --primary-foreground: hsl(240 5.9% 10%);\n  --secondary: hsl(240 3.7% 15.9%);\n  --secondary-foreground: hsl(0 0% 98%);\n  --muted: hsl(240 3.7% 15.9%);\n  --muted-foreground: hsl(240 5% 64.9%);\n  --accent: hsl(240 3.7% 15.9%);\n  --accent-foreground: hsl(0 0% 98%);\n  --destructive: hsl(0 62.8% 30.6%);\n  --destructive-foreground: hsl(0 0% 98%);\n  --border: hsl(240 3.7% 15.9%);\n  --input: hsl(240 3.7% 15.9%);\n  --ring: hsl(240 4.9% 83.9%);\n  --chart-1: hsl(220 70% 50%);\n  --chart-2: hsl(160 60% 45%);\n  --chart-3: hsl(30 80% 55%);\n  --chart-4: hsl(280 65% 60%);\n  --chart-5: hsl(340 75% 55%);\n}\n@media (prefers-color-scheme: dark) {\n  :root:not(.light) {\n    color-scheme: dark;\n    --background: hsl(240 10% 3.9%);\n    --foreground: hsl(0 0% 98%);\n    --card: hsl(240 10% 3.9%);\n    --card-foreground: hsl(0 0% 98%);\n    --popover: hsl(240 10% 3.9%);\n    --popover-foreground: hsl(0 0% 98%);\n    --primary: hsl(0 0% 98%);\n    --primary-foreground: hsl(240 5.9% 10%);\n    --secondary: hsl(240 3.7% 15.9%);\n    --secondary-foreground: hsl(0 0% 98%);\n    --muted: hsl(240 3.7% 15.9%);\n    --muted-foreground: hsl(240 5% 64.9%);\n    --accent: hsl(240 3.7% 15.9%);\n    --accent-foreground: hsl(0 0% 98%);\n    --destructive: hsl(0 62.8% 30.6%);\n    --destructive-foreground: hsl(0 0% 98%);\n    --border: hsl(240 3.7% 15.9%);\n    --input: hsl(240 3.7% 15.9%);\n    --ring: hsl(240 4.9% 83.9%);\n    --chart-1: hsl(220 70% 50%);\n    --chart-2: hsl(160 60% 45%);\n    --chart-3: hsl(30 80% 55%);\n    --chart-4: hsl(280 65% 60%);\n    --chart-5: hsl(340 75% 55%);\n  }\n}\nbody { background: var(--background); color: var(--foreground); }";
+export const MAKO_THEME_TOKENS_CSS = `:root {
+  color-scheme: light;
+  --radius: 0.5rem;
+  --background: hsl(40 33% 98.5%);
+  --foreground: hsl(24 14% 10%);
+  --card: hsl(40 40% 99.5%);
+  --card-foreground: hsl(24 14% 10%);
+  --popover: hsl(40 40% 99.5%);
+  --popover-foreground: hsl(24 14% 10%);
+  --primary: hsl(24 14% 12%);
+  --primary-foreground: hsl(40 33% 98.5%);
+  --secondary: hsl(36 24% 92.5%);
+  --secondary-foreground: hsl(24 14% 10%);
+  --muted: hsl(36 24% 92.5%);
+  --muted-foreground: hsl(28 10% 38%);
+  --accent: hsl(36 24% 92.5%);
+  --accent-foreground: hsl(24 14% 10%);
+  --destructive: hsl(0 72% 51%);
+  --destructive-foreground: hsl(0 0% 98%);
+  --border: hsl(34 16% 83%);
+  --input: hsl(34 16% 83%);
+  --ring: #527df2;
+  --brand: #527df2;
+  --canvas: color-mix(in srgb, var(--foreground) 4%, var(--background));
+  --positive: hsl(160 52% 36%);
+  --warning: hsl(33 80% 42%);
+  --negative: hsl(0 66% 48%);
+  --chart-1: #527df2;
+  --chart-2: hsl(160 52% 36%);
+  --chart-3: hsl(33 80% 42%);
+  --chart-4: hsl(262 52% 55%);
+  --chart-5: hsl(0 66% 48%);
+}
+:root.dark {
+  color-scheme: dark;
+  --background: hsl(28 9% 7%);
+  --foreground: hsl(38 22% 93%);
+  --card: hsl(28 8% 10.5%);
+  --card-foreground: hsl(38 22% 93%);
+  --popover: hsl(28 8% 12%);
+  --popover-foreground: hsl(38 22% 93%);
+  --primary: hsl(38 22% 93%);
+  --primary-foreground: hsl(28 9% 7%);
+  --secondary: hsl(28 7% 17%);
+  --secondary-foreground: hsl(38 22% 93%);
+  --muted: hsl(28 7% 17%);
+  --muted-foreground: hsl(34 10% 67%);
+  --accent: hsl(28 7% 17%);
+  --accent-foreground: hsl(38 22% 93%);
+  --destructive: hsl(0 62% 50%);
+  --destructive-foreground: hsl(0 0% 98%);
+  --border: hsl(28 7% 24%);
+  --input: hsl(28 7% 24%);
+  --positive: hsl(158 48% 52%);
+  --warning: hsl(36 85% 60%);
+  --negative: hsl(0 75% 66%);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    color-scheme: dark;
+    --background: hsl(28 9% 7%);
+    --foreground: hsl(38 22% 93%);
+    --card: hsl(28 8% 10.5%);
+    --card-foreground: hsl(38 22% 93%);
+    --popover: hsl(28 8% 12%);
+    --popover-foreground: hsl(38 22% 93%);
+    --primary: hsl(38 22% 93%);
+    --primary-foreground: hsl(28 9% 7%);
+    --secondary: hsl(28 7% 17%);
+    --secondary-foreground: hsl(38 22% 93%);
+    --muted: hsl(28 7% 17%);
+    --muted-foreground: hsl(34 10% 67%);
+    --accent: hsl(28 7% 17%);
+    --accent-foreground: hsl(38 22% 93%);
+    --destructive: hsl(0 62% 50%);
+    --destructive-foreground: hsl(0 0% 98%);
+    --border: hsl(28 7% 24%);
+    --input: hsl(28 7% 24%);
+    --positive: hsl(158 48% 52%);
+    --warning: hsl(36 85% 60%);
+    --negative: hsl(0 75% 66%);
+  }
+}
+body { background: var(--background); color: var(--foreground); }
+`;
 if (
   typeof document !== "undefined" &&
   !document.getElementById("mako-theme-tokens")

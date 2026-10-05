@@ -8,9 +8,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  DEPENDS_ON_MAKO_PACKAGES,
   INSTALL_IS_FRESH,
   IS_PNPM_APP,
   installCommand,
+  updateMakoPackagesCommand,
 } from "./package-manager";
 
 function appDir(files: Record<string, string>): string {
@@ -121,5 +123,47 @@ assert.doesNotMatch(installCommand(), /append-only|loglevel/);
     "no stamp, no fresh install",
   );
 }
+
+// Floating @makoai/* inside the declared range: only apps that depend on one.
+assert.equal(
+  succeeds(
+    appDir({
+      "package.json": pkg({ dependencies: { "@makoai/app-sdk": "^2.7.0" } }),
+    }),
+    DEPENDS_ON_MAKO_PACKAGES,
+  ),
+  true,
+);
+assert.equal(
+  succeeds(
+    appDir({
+      "package.json": pkg({
+        dependencies: { "@mako/app-sdk": "file:./vendor/app-sdk" },
+      }),
+    }),
+    DEPENDS_ON_MAKO_PACKAGES,
+  ),
+  false,
+  "a vendored @mako/ copy is not ours to float",
+);
+{
+  // No @makoai dependency: the command is a no-op that never reaches a
+  // package manager (so it cannot fail or touch the network).
+  const dir = appDir({
+    "package.json": pkg({ dependencies: { react: "^18" } }),
+  });
+  const run = spawnSync("bash", ["-c", updateMakoPackagesCommand()], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 0);
+  assert.equal(run.stdout, "");
+}
+assert.match(updateMakoPackagesCommand(), /update '@makoai\/\*'/);
+assert.doesNotMatch(
+  updateMakoPackagesCommand(),
+  /--latest/,
+  "stay inside the declared range",
+);
 
 console.log("package-manager: ok");
