@@ -326,13 +326,15 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
 
   // ── Flow operations (the flow page's state, Run History and buttons) ──
-  // Reads are open to any MCP credential and return run state only. The two
+  // Reads need query access (run errors carry platform data, as a probe
+  // does) and return run state only; MCP-only, so never listed to Desktop
+  // ACP (the listing skips a capability's absent surfaces). The two
   // controls call the same cdcBackfillService methods as the UI's routes and
   // carry the same gate as the connection writes above (sources:write +
   // live owner/admin) — at least as strict as those routes.
-  list_flows: bridge(),
-  inspect_flow: bridge(),
-  list_flow_runs: bridge(),
+  list_flows: bridge({ requiresQueryAccess: true }),
+  inspect_flow: bridge({ requiresQueryAccess: true }),
+  list_flow_runs: bridge({ requiresQueryAccess: true }),
   flow_backfill: bridge(),
   flow_stream: bridge(),
 

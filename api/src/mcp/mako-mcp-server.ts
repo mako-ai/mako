@@ -95,7 +95,7 @@ Typical loop:
 
 dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
 
-Flows (EL syncs, flows/<slug>.yml): create_source_connection → probe_connection → write flows/<slug>.yml → check_flow_files → push → flow_backfill start → inspect_flow / list_flow_runs. list_flows / inspect_flow / list_flow_runs are reads; create/update_source_connection and flow_backfill / flow_stream appear only with the sources:write scope and run only for an owner/admin. Secret config values are write-only. Load skill flows-as-code first.
+Flows (EL syncs, flows/<slug>.yml): create_source_connection → probe_connection → write flows/<slug>.yml → check_flow_files → push → flow_backfill start → inspect_flow / list_flow_runs. list_flows / inspect_flow / list_flow_runs are reads (query:read); create/update_source_connection and flow_backfill / flow_stream appear only with the sources:write scope and run only for an owner/admin. Secret config values are write-only. Load skill flows-as-code first.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
@@ -346,6 +346,17 @@ export function buildMakoMcpToolset(
     if (entry.acpDesktopOnly && !context.acpDesktop) continue;
     if (entry.omitForAcpDesktop && context.acpDesktop) continue;
     const capability = AGENT_CAPABILITY_BY_NAME.get(name);
+    // A registered capability that does not include this session's surface
+    // is refused at CallTool time by authorizeAgentCapability — never list
+    // it (e.g. the external-MCP-only flow tools on Desktop ACP).
+    if (
+      capability &&
+      !capability.surfaces.includes(
+        context.acpDesktop ? "desktop-acp" : "external-mcp",
+      )
+    ) {
+      continue;
+    }
     // Same rule authorizeAgentCapability applies at CallTool time; the
     // listing only adds the reason so get_mcp_capabilities can explain.
     const missingRole = missingWorkspaceRole(name, context.memberRole);

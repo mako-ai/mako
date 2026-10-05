@@ -127,7 +127,13 @@ vi.mock("../../sync/database-data-source-manager", async importOriginal => {
         name: "openai",
         type: "ws:openai-ads",
         workspaceId: state.workspaceId,
-        connection: { api_key: SENTINEL },
+        // Non-secret values deliberately equal to an entity name and to
+        // part of the flow's slug: scrubbing must not touch those.
+        connection: {
+          api_key: SENTINEL,
+          account: "campaigns",
+          region: "openai-ads",
+        },
       })),
     },
   };
@@ -135,11 +141,13 @@ vi.mock("../../sync/database-data-source-manager", async importOriginal => {
 
 import {
   CdcEntityState,
+  DatabaseConnection,
   Flow,
   FlowExecution,
   SourceConnection,
   type IFlow,
 } from "../../database/workspace-schema";
+import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { flowRoutes } from "../../routes/flows";
 import { buildMakoMcpToolset } from "../../mcp/mako-mcp-server";
@@ -190,6 +198,15 @@ function toolsetFor(
 }
 
 const READS = ["list_flows", "inspect_flow", "list_flow_runs"];
+const DEST_PASSWORD = "Hunter2DestinationPw";
+const DB_SOURCE_PASSWORD = "PgSourcePassw0rdXYZ";
+
+/** No 8-character run of `secret` may survive, not even a prefix. */
+function expectNoFragment(text: string, secret: string) {
+  for (let i = 0; i + 8 <= secret.length; i += 1) {
+    expect(text).not.toContain(secret.slice(i, i + 8));
+  }
+}
 const WRITES = ["flow_backfill", "flow_stream"];
 
 beforeAll(async () => {
@@ -211,8 +228,17 @@ beforeEach(async () => {
     FlowExecution.deleteMany({}),
     CdcEntityState.deleteMany({}),
     SourceConnection.deleteMany({}),
+    DatabaseConnection.deleteMany({}),
   ]);
   vi.clearAllMocks();
+  // The source connector's form schema: only api_key is a secret.
+  vi.spyOn(syncConnectorRegistry, "getConfigSchemaForType").mockResolvedValue({
+    fields: [
+      { name: "api_key", type: "password" },
+      { name: "account", type: "string" },
+      { name: "region", type: "string" },
+    ],
+  });
   WS = new Types.ObjectId().toString();
   state.workspaceId = WS;
   state.role = "admin";
@@ -226,6 +252,24 @@ beforeEach(async () => {
     settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
     createdBy: "u1",
   });
+  // The destination (a password inside a connection string) and a database
+  // source: their credentials must be scrubbed from run output too.
+  const destination = await DatabaseConnection.create({
+    workspaceId: new Types.ObjectId(WS),
+    name: "warehouse",
+    type: "mongodb",
+    connection: {
+      connectionString: `mongodb://reporter:${DEST_PASSWORD}@db.example:27017/app`,
+    },
+    createdBy: "u1",
+  });
+  const databaseSource = await DatabaseConnection.create({
+    workspaceId: new Types.ObjectId(WS),
+    name: "pg",
+    type: "postgresql",
+    connection: { host: "pg.example", password: DB_SOURCE_PASSWORD },
+    createdBy: "u1",
+  });
   FLOW = await Flow.create({
     workspaceId: new Types.ObjectId(WS),
     type: "webhook",
@@ -233,7 +277,8 @@ beforeEach(async () => {
     slug: "openai-ads-bigquery-write",
     sourceType: "connector",
     dataSourceId: SOURCE,
-    destinationDatabaseId: new Types.ObjectId(),
+    destinationDatabaseId: destination._id,
+    databaseSource: { connectionId: databaseSource._id },
     syncMode: "incremental",
     syncEngine: "cdc",
     streamState: "active",
@@ -245,7 +290,7 @@ beforeEach(async () => {
       consecutiveFailures: 3,
     },
     entityFilter: ["campaigns", "ad_groups"],
-    lastError: `The connector timed out (key ${SENTINEL})`,
+    lastError: `The connector timed out on campaigns for openai-ads (key ${SENTINEL})`,
     lastSuccessAt: new Date("2026-10-01T03:10:00Z"),
     createdBy: "u1",
     runCount: 4,
@@ -420,6 +465,117 @@ describe("reads", () => {
   });
 });
 
+describe("scrubbing run-derived text", () => {
+  async function setLastError(lastError: string) {
+    await Flow.updateOne({ _id: FLOW._id }, { $set: { lastError } });
+    state.live[0].row = await Flow.findById(FLOW._id);
+  }
+
+  it("redacts BEFORE clipping: a secret across the 1,000-char cut leaves no fragment", async () => {
+    for (const offset of [992, 995, 999, 1000]) {
+      const message = "x".repeat(offset) + SENTINEL + " tail";
+      await setLastError(message);
+      await FlowExecution.collection.insertOne({
+        flowId: FLOW._id,
+        workspaceId: new Types.ObjectId(WS),
+        startedAt: new Date(`2026-10-06T00:00:0${offset % 10}Z`),
+        status: "failed",
+        success: false,
+        error: { message },
+        logs: [{ timestamp: new Date(), level: "error", message }],
+      });
+      const inspected = await tools().inspect_flow.execute({
+        flowId: FLOW._id.toString(),
+      });
+      expectNoFragment(JSON.stringify(inspected), SENTINEL);
+      const runs = await tools().list_flow_runs.execute({
+        flowId: FLOW._id.toString(),
+        limit: 1,
+      });
+      expectNoFragment(JSON.stringify(runs), SENTINEL);
+    }
+  });
+
+  it("scrubs only schema-secret values: ids, slugs, entity names and keys stay intact", async () => {
+    const result = await tools().inspect_flow.execute({
+      flowId: "openai-ads-bigquery-write",
+    });
+    // `account: "campaigns"` and `region: "openai-ads"` are non-secret
+    // config values equal to an entity name and to part of the slug.
+    expect(result.slug).toBe("openai-ads-bigquery-write");
+    expect(result.path).toBe("flows/openai-ads-bigquery-write.yml");
+    const entities = result.entities as Array<Record<string, unknown>>;
+    expect(entities.map(e => e.entity)).toEqual(["campaigns", "ad_groups"]);
+    expect(result.lastError).toBe(
+      "The connector timed out on campaigns for openai-ads (key [redacted])",
+    );
+    const runs = await tools().list_flow_runs.execute({
+      flowId: "openai-ads-bigquery-write",
+    });
+    expect(runs.slug).toBe("openai-ads-bigquery-write");
+    const completed = (runs.runs as Array<Record<string, unknown>>)[1];
+    expect(completed.stats).toMatchObject({ perEntity: { campaigns: 118 } });
+  });
+
+  it("scrubs the destination's and the database source's credentials, and any URI password", async () => {
+    await FlowExecution.collection.insertOne({
+      flowId: FLOW._id,
+      workspaceId: new Types.ObjectId(WS),
+      startedAt: new Date("2026-10-07T00:00:00Z"),
+      status: "failed",
+      success: false,
+      error: {
+        message: `MongoServerError: auth failed for mongodb://reporter:${DEST_PASSWORD}@db.example:27017/app`,
+      },
+      logs: [
+        {
+          timestamp: new Date(),
+          level: "error",
+          message: `password authentication failed (${DB_SOURCE_PASSWORD}); retry via mongodb://other:UnknownPw123@x.example`,
+        },
+      ],
+    });
+    const result = await tools().list_flow_runs.execute({
+      flowId: FLOW._id.toString(),
+      limit: 1,
+    });
+    const text = JSON.stringify(result);
+    for (const secret of [DEST_PASSWORD, DB_SOURCE_PASSWORD, "UnknownPw123"]) {
+      expect(text).not.toContain(secret);
+    }
+    // The host is not a credential and stays legible.
+    expect(text).toContain("mongodb://reporter:[redacted]@db.example");
+    expect(text).toContain("mongodb://other:[redacted]@x.example");
+  });
+
+  it("scrubs and clips a control's failure instead of returning it raw", async () => {
+    vi.mocked(cdcBackfillService.startBackfill).mockRejectedValueOnce(
+      new Error(
+        `vendor said ${SENTINEL} via mongodb://reporter:${DEST_PASSWORD}@db.example ` +
+          "y".repeat(2_000),
+      ),
+    );
+    const result = await tools().flow_backfill.execute({
+      flowId: FLOW._id.toString(),
+      action: "start",
+    });
+    const error = String(result.error);
+    expect(error).toContain("vendor said [redacted]");
+    expect(error).not.toContain(DEST_PASSWORD);
+    expectNoFragment(error, SENTINEL);
+    expect(error.length).toBeLessThan(1_100);
+
+    vi.mocked(cdcBackfillService.pauseStream).mockRejectedValueOnce(
+      new Error(`stream refused: ${SENTINEL}`),
+    );
+    const stream = await tools().flow_stream.execute({
+      flowId: FLOW._id.toString(),
+      action: "pause",
+    });
+    expect(String(stream.error)).toBe("stream refused: [redacted]");
+  });
+});
+
 describe("writes call the same service as the UI's routes", () => {
   const cases: Array<{
     tool: "flow_backfill" | "flow_stream";
@@ -542,10 +698,14 @@ describe("writes call the same service as the UI's routes", () => {
 });
 
 describe("gating and classification", () => {
-  it("reads are open to any MCP credential; controls need sources:write and admin", () => {
+  it("reads need query access; controls need sources:write and admin", () => {
     const base = toolsetFor(["mcp"]);
-    for (const name of READS) expect(base[name]).toBeTruthy();
-    for (const name of WRITES) expect(base[name]).toBeUndefined();
+    for (const name of [...READS, ...WRITES]) {
+      expect(base[name]).toBeUndefined();
+    }
+    const read = toolsetFor(["mcp", "query:read"]);
+    for (const name of READS) expect(read[name]).toBeTruthy();
+    for (const name of WRITES) expect(read[name]).toBeUndefined();
 
     const scoped = toolsetFor(["mcp", "query:read", "sources:write"]);
     for (const name of WRITES) expect(scoped[name]).toBeTruthy();
@@ -553,6 +713,30 @@ describe("gating and classification", () => {
     const member = toolsetFor(["mcp", "query:read", "sources:write"], "member");
     for (const name of WRITES) expect(member[name]).toBeUndefined();
     for (const name of READS) expect(member[name]).toBeTruthy();
+  });
+
+  it("is never listed to a Desktop ACP session, where it would be refused", async () => {
+    const desktop = buildMakoMcpToolset({
+      workspaceId: WS,
+      userId: "user-1",
+      memberRole: "owner",
+      scopes: ["mcp", "query:read", "sources:write"],
+      acpDesktop: true,
+    }) as Record<string, Executable>;
+    for (const name of [...READS, ...WRITES]) {
+      expect(desktop[name]).toBeUndefined();
+    }
+    const report = (await desktop.get_mcp_capabilities.execute({})) as {
+      availableTools: string[];
+    };
+    for (const name of [...READS, ...WRITES]) {
+      expect(report.availableTools).not.toContain(name);
+    }
+    // Still listed on the external surface with the same credential.
+    const external = toolsetFor(["mcp", "query:read", "sources:write"]);
+    for (const name of [...READS, ...WRITES]) {
+      expect(external[name]).toBeTruthy();
+    }
   });
 
   it("is classified on the bridge, in the inventory, and read-only where it reads", () => {

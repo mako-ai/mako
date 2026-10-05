@@ -8,7 +8,9 @@
  *
  *   - reads: `list_flows`, `inspect_flow` (stream + backfill state, per-entity
  *     progress, last error) and `list_flow_runs` (recent executions). They
- *     return run state only — never a credential, never a webhook secret.
+ *     return run state only — never a credential, never a webhook secret —
+ *     but run errors carry data from the platform behind the source, so like
+ *     `probe_connection` they require query access.
  *   - writes: `flow_backfill` / `flow_stream` start, pause, resume or cancel
  *     a CDC flow through the same service the UI's routes call. They are
  *     gated exactly as strictly as those routes (owner/admin, checked live)
@@ -37,6 +39,7 @@ export const FLOW_CAPABILITIES = [
     name: "list_flows",
     pack: "flow-runs",
     risk: "read",
+    requiresQueryAccess: true,
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
   }),
@@ -44,6 +47,7 @@ export const FLOW_CAPABILITIES = [
     name: "inspect_flow",
     pack: "flow-runs",
     risk: "read",
+    requiresQueryAccess: true,
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
   }),
@@ -51,6 +55,7 @@ export const FLOW_CAPABILITIES = [
     name: "list_flow_runs",
     pack: "flow-runs",
     risk: "read",
+    requiresQueryAccess: true,
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
   }),

@@ -7,11 +7,16 @@
  *
  *   - reads (`list_flows`, `inspect_flow`, `list_flow_runs`): stream and
  *     backfill state, per-entity progress, the last error, recent executions.
- *     Read-only, available to any MCP credential. They never return a
- *     credential or the webhook secret, and every message that came from a
- *     run (an execution error, an entity's last failure) is scrubbed of the
- *     values the flow's source connection holds — a vendor error can echo a
- *     token, which is why the probe service scrubs, and these follow it.
+ *     Read-only; like `probe_connection` they need query access, because run
+ *     errors carry data from the platform behind the source. They never
+ *     return a credential or the webhook secret, and every message that came
+ *     from a run (an execution error, a log line, an entity's last failure)
+ *     is scrubbed — before it is clipped — of the credentials of every
+ *     connection the flow touches (the source's schema-secret fields, the
+ *     database source's and the destination's credentials, passwords in
+ *     connection strings) and of any `scheme://user:pass@` userinfo. Only
+ *     that text is scrubbed: ids, slugs, entity names and keys are returned
+ *     as they are.
  *   - writes (`flow_backfill`, `flow_stream`): the Start / Pause / Resume /
  *     Cancel buttons. Each calls the SAME `cdcBackfillService` method the
  *     route behind that button calls, and is at least as strict as that
@@ -26,9 +31,10 @@ import { tool } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
 
-import { redactValue, secretValuesOf } from "../../connectors/probe.service";
+import { redactSecrets } from "../../connectors/probe.service";
 import {
   CdcEntityState,
+  DatabaseConnection,
   FlowExecution,
   SourceConnection,
   type IFlow,
@@ -38,12 +44,17 @@ import {
   liveFlowToPlain,
   loadLiveFlowById,
   loadLiveFlows,
-  resolveLiveFlowRow,
   type LiveFlow,
 } from "../../services/flow-sync.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
+import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
+import { secretConfigValues } from "../../services/source-connection.service";
+import {
+  connectionCredentialValues,
+  maskUriPasswords,
+} from "../../utils/connection-secrets";
 import { authorizeSourceWriter } from "./source-connection-tools";
 
 const logger = loggers.api("flow-run-tools");
@@ -88,36 +99,106 @@ export async function resolveFlowRef(
     : { ok: false, error: FLOW_NOT_FOUND };
 }
 
+/** Shorter "secrets" would shred ordinary words; real credentials are longer. */
+const MIN_SCRUB_CHARS = 4;
+
+/** Scrub-then-clip for run-derived text; null for an empty value. */
+export type RunTextScrubber = (value: unknown) => string | null;
+
 /**
- * Every string the flow's source connection holds, for scrubbing run-derived
- * text. Best effort: an unreadable connection scrubs nothing rather than
- * failing a read, and the text it would have scrubbed is our own logging.
+ * Redact FIRST, then clip. Clipping first would cut a credential that
+ * straddles the limit and leave its head in clear, out of reach of the
+ * redaction that runs on the full value.
  */
-async function sourceSecretsFor(
+export function makeRunTextScrubber(
+  secrets: readonly string[],
+): RunTextScrubber {
+  const known = secrets.filter(secret => secret.length >= MIN_SCRUB_CHARS);
+  return (value: unknown) => {
+    if (value === undefined || value === null || value === "") return null;
+    const raw = typeof value === "string" ? value : JSON.stringify(value);
+    const text = maskUriPasswords(redactSecrets(raw, known));
+    return text.length > MAX_MESSAGE_CHARS
+      ? `${text.slice(0, MAX_MESSAGE_CHARS)}… [truncated]`
+      : text;
+  };
+}
+
+/**
+ * The credential values of every connection a flow touches, for scrubbing
+ * its run-derived text: the source connection's SCHEMA-SECRET fields only
+ * (an account id or an entity name in its config is not a credential), and
+ * the credentials of the database source and the destination(s), passwords
+ * embedded in connection strings included. Best effort per connection: one
+ * that cannot be read is logged and contributes nothing, rather than failing
+ * the read.
+ */
+async function flowCredentialValues(
   workspaceId: string,
   row: IFlow | null,
 ): Promise<string[]> {
-  const sourceId = row?.dataSourceId?.toString();
-  if (!sourceId) return [];
-  try {
-    const source = await sourceConnectionManager.getSourceConnection(sourceId);
-    if (!source || source.workspaceId !== workspaceId) return [];
-    return secretValuesOf(source.connection);
-  } catch (error) {
-    logger.warn("Could not load source connection to scrub flow output", {
+  if (!row) return [];
+  const found = new Set<string>();
+  const warn = (what: string, error: unknown) =>
+    logger.warn(`Could not load ${what} to scrub flow output`, {
       workspaceId,
+      flowId: String(row._id),
       error: error instanceof Error ? error.message : String(error),
     });
-    return [];
-  }
-}
 
-function clip(value: unknown): string | null {
-  if (value === undefined || value === null || value === "") return null;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length > MAX_MESSAGE_CHARS
-    ? `${text.slice(0, MAX_MESSAGE_CHARS)}… [truncated]`
-    : text;
+  const sourceId = row.dataSourceId?.toString();
+  if (sourceId) {
+    try {
+      const source =
+        await sourceConnectionManager.getSourceConnection(sourceId);
+      if (source && source.workspaceId === workspaceId) {
+        const schema = await syncConnectorRegistry
+          .getConfigSchemaForType(source.type, workspaceId)
+          .catch(() => null);
+        const values = Array.isArray(schema?.fields)
+          ? secretConfigValues(source.connection, schema)
+          : // No schema: fall back to the credential-NAMED keys, the rule
+            // database connections are redacted by.
+            connectionCredentialValues(source.connection);
+        values.forEach(value => found.add(value));
+      }
+    } catch (error) {
+      warn("source connection", error);
+    }
+  }
+
+  const databaseIds = [
+    row.databaseSource?.connectionId,
+    row.destinationDatabaseId,
+    row.tableDestination?.connectionId,
+  ]
+    .map(id => (id ? String(id) : ""))
+    .filter(
+      (id, index, all) =>
+        id && Types.ObjectId.isValid(id) && all.indexOf(id) === index,
+    );
+  if (databaseIds.length > 0) {
+    try {
+      // Not `.lean()`: the model decrypts `connection` through a getter.
+      const databases = await DatabaseConnection.find({
+        _id: { $in: databaseIds.map(id => new Types.ObjectId(id)) },
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).select("_id connection");
+      for (const database of databases) {
+        const connection = (
+          database as unknown as {
+            connection?: Record<string, unknown>;
+          }
+        ).connection;
+        connectionCredentialValues(connection).forEach(value =>
+          found.add(value),
+        );
+      }
+    } catch (error) {
+      warn("database connections", error);
+    }
+  }
+  return [...found];
 }
 
 function idOf(value: unknown): string | null {
@@ -227,7 +308,7 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
     };
   }
 
-  const [states, running, secrets] = await Promise.all([
+  const [states, running, credentials] = await Promise.all([
     CdcEntityState.find({
       workspaceId: new Types.ObjectId(workspaceId),
       flowId: row._id,
@@ -242,8 +323,9 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
       .sort({ startedAt: -1 })
       .select({ _id: 1, startedAt: 1, lastHeartbeat: 1 })
       .lean(),
-    sourceSecretsFor(workspaceId, row),
+    flowCredentialValues(workspaceId, row),
   ]);
+  const scrub = makeRunTextScrubber(credentials);
 
   const stateByEntity = new Map(states.map(state => [state.entity, state]));
   const configured = resolveConfiguredEntities(row as never).entities;
@@ -273,13 +355,13 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
       : null,
     lastRunAt: row.lastRunAt ?? null,
     lastSuccessAt: row.lastSuccessAt ?? null,
-    lastError: clip(row.lastError),
+    lastError: scrub(row.lastError),
     syncError:
       meta?.lastErrorMessage || meta?.lastErrorCode
         ? {
-            message: clip(meta.lastErrorMessage),
+            message: scrub(meta.lastErrorMessage),
             code: meta.lastErrorCode ?? null,
-            reason: meta.lastReason ?? null,
+            reason: scrub(meta.lastReason),
             event: meta.lastEvent ?? null,
           }
         : null,
@@ -306,12 +388,12 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
         destinationRows: state?.destinationRowCount ?? null,
         consecutiveFailures: state?.consecutiveFailures ?? 0,
         lastFailedAt: state?.lastFailedAt ?? null,
-        lastFailureError: clip(state?.lastFailureError),
+        lastFailureError: scrub(state?.lastFailureError),
         ...(state?.repartition?.status
           ? {
               repartition: {
                 status: state.repartition.status,
-                error: clip(state.repartition.error),
+                error: scrub(state.repartition.error),
               },
             }
           : {}),
@@ -319,7 +401,7 @@ async function inspectFlow(workspaceId: string, live: LiveFlow) {
     }),
     next: "list_flow_runs for recent executions and their errors; flow_backfill / flow_stream (sources:write) to start or pause.",
   };
-  return redactValue(result, secrets);
+  return result;
 }
 
 interface ExecutionRow {
@@ -343,7 +425,7 @@ interface ExecutionRow {
   logs?: Array<{ level?: string; message?: string; timestamp?: Date }>;
 }
 
-function describeExecution(run: ExecutionRow) {
+function describeExecution(run: ExecutionRow, scrub: RunTextScrubber) {
   const logs = Array.isArray(run.logs) ? run.logs : [];
   const lastErrorLog = [...logs]
     .reverse()
@@ -358,12 +440,12 @@ function describeExecution(run: ExecutionRow) {
     durationMs: run.duration ?? null,
     // Message + code only: the stack is server internals, not a diagnosis.
     error: run.error
-      ? { message: clip(run.error.message), code: run.error.code ?? null }
+      ? { message: scrub(run.error.message), code: run.error.code ?? null }
       : null,
     lastErrorLog: lastErrorLog
       ? {
           at: lastErrorLog.timestamp ?? null,
-          message: clip(lastErrorLog.message),
+          message: scrub(lastErrorLog.message),
         }
       : null,
     syncMode: run.context?.syncMode ?? null,
@@ -396,26 +478,61 @@ async function resolveWritableCdcFlow(
   workspaceId: string,
   ref: string,
 ): Promise<
-  { ok: true; flowId: string; slug: string } | { ok: false; error: string }
+  | { ok: true; flowId: string; slug: string; row: IFlow }
+  | { ok: false; error: string }
 > {
   const resolved = await resolveFlowRef(workspaceId, ref);
   if (!resolved.ok) return resolved;
-  const row = await resolveLiveFlowRow(
-    workspaceId,
-    resolved.live.id.toString(),
-  );
-  if (!row.ok) return { ok: false, error: row.error };
-  if (row.row.syncEngine !== "cdc") {
+  const { def, row } = resolved.live;
+  if (!row) {
+    // Same refusal `resolveLiveFlowRow` gives the run button.
     return {
       ok: false,
-      error: `Flow "${resolved.live.def.slug}" uses sync.engine: ${row.row.syncEngine ?? "legacy"}. Backfill and stream controls drive CDC flows only (sync.engine: cdc).`,
+      error: `Flow "${def.slug}" exists only in git so far (${def.path}); it becomes runnable and editable once the push is synced.`,
     };
   }
-  return {
-    ok: true,
-    flowId: row.row._id.toString(),
-    slug: resolved.live.def.slug,
-  };
+  if (row.syncEngine !== "cdc") {
+    return {
+      ok: false,
+      error: `Flow "${def.slug}" uses sync.engine: ${row.syncEngine ?? "legacy"}. Backfill and stream controls drive CDC flows only (sync.engine: cdc).`,
+    };
+  }
+  return { ok: true, flowId: row._id.toString(), slug: def.slug, row };
+}
+
+/**
+ * A control's failure, as the caller sees it: the service's refusals ("a
+ * backfill is already running", an invalid transition) are meant to be read,
+ * but they can carry a vendor or driver message, so they are scrubbed and
+ * clipped like any other run-derived text — and logged, since nothing else
+ * records that the call was made and failed.
+ */
+async function controlFailure(
+  tool: "flow_backfill" | "flow_stream",
+  context: {
+    workspaceId: string;
+    flowRef: string;
+    action: string;
+    userId?: string;
+    target?: { flowId: string; row: IFlow };
+  },
+  error: unknown,
+): Promise<{ error: string }> {
+  const credentials = context.target
+    ? await flowCredentialValues(context.workspaceId, context.target.row)
+    : [];
+  const message =
+    makeRunTextScrubber(credentials)(
+      error instanceof Error ? error.message : String(error),
+    ) ?? "Unknown error";
+  logger.warn(`${tool} failed`, {
+    workspaceId: context.workspaceId,
+    flowId: context.target?.flowId ?? context.flowRef,
+    action: context.action,
+    userId: context.userId,
+    error: message,
+  });
+  return { error: message };
 }
 
 export function createFlowRunTools(workspaceId: string, userId?: string) {
@@ -423,7 +540,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
     list_flows: tool({
       description: [
         "List the workspace's FLOWS (EL syncs defined by flows/<slug>.yml at main): id, slug, file path, name, source and destination connection ids, sync engine, stream state and backfill status.",
-        "Use inspect_flow for one flow's full state (per-entity progress, last error) and list_flow_runs for its executions.",
+        "Use inspect_flow for one flow's full state (per-entity progress, last error) and list_flow_runs for its executions. Needs query access.",
       ].join("\n"),
       inputSchema: z.object({}),
       execute: async () => {
@@ -503,7 +620,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
     inspect_flow: tool({
       description: [
         "One FLOW's full run state — what its CDC Pipeline page shows: definition (source/destination connection ids, schedule, backfill_schedule), stream state, backfill (status, runId, startedAt, completedAt, consecutive failures), the running execution if any, lastError / lastSuccessAt, and per entity: backfill status, rows written, destination rows, events processed, last failure.",
-        "Address the flow by id or by file slug. Read-only. Run-derived messages are scrubbed of the source connection's credential values.",
+        "Address the flow by id or by file slug. Read-only; needs query access. Run-derived messages are scrubbed of the flow's connection credentials.",
       ].join("\n"),
       inputSchema: z.object({ flowId: flowRefInput }),
       execute: async ({ flowId }: { flowId: string }) => {
@@ -523,7 +640,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
     list_flow_runs: tool({
       description: [
         "Recent EXECUTIONS of one flow, newest first — the flow's Run History: status (running / completed / failed / cancelled / abandoned), started / finished, duration, the error message and code (e.g. WORKER_TIMEOUT), the last error log line, and per-entity record counts.",
-        `Address the flow by id or by file slug. \`limit\` defaults to ${DEFAULT_RUN_LIMIT} (max ${MAX_RUN_LIMIT}). Read-only; messages are scrubbed of the source connection's credential values.`,
+        `Address the flow by id or by file slug. \`limit\` defaults to ${DEFAULT_RUN_LIMIT} (max ${MAX_RUN_LIMIT}). Read-only; needs query access. Messages are scrubbed of the flow's connection credentials.`,
       ].join("\n"),
       inputSchema: z.object({
         flowId: flowRefInput,
@@ -559,7 +676,7 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
             flowId: row._id,
             workspaceId: new Types.ObjectId(workspaceId),
           };
-          const [runs, total, secrets] = await Promise.all([
+          const [runs, total, credentials] = await Promise.all([
             FlowExecution.find(filter)
               .sort({ startedAt: -1 })
               .limit(limit ?? DEFAULT_RUN_LIMIT)
@@ -579,17 +696,15 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
               })
               .lean() as unknown as Promise<ExecutionRow[]>,
             FlowExecution.countDocuments(filter),
-            sourceSecretsFor(workspaceId, row),
+            flowCredentialValues(workspaceId, row),
           ]);
-          return redactValue(
-            {
-              flowId: row._id.toString(),
-              slug: resolved.live.def.slug,
-              total,
-              runs: runs.map(describeExecution),
-            },
-            secrets,
-          );
+          const scrub = makeRunTextScrubber(credentials);
+          return {
+            flowId: row._id.toString(),
+            slug: resolved.live.def.slug,
+            total,
+            runs: runs.map(run => describeExecution(run, scrub)),
+          };
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "Unknown error";
@@ -635,8 +750,10 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
         if (entities?.length && action !== "start") {
           return { error: "`entities` applies to action: start only." };
         }
+        let target: Awaited<ReturnType<typeof resolveWritableCdcFlow>> | null =
+          null;
         try {
-          const target = await resolveWritableCdcFlow(workspaceId, flowId);
+          target = await resolveWritableCdcFlow(workspaceId, flowId);
           if (!target.ok) return { error: target.error };
           let result: Record<string, unknown>;
           switch (action) {
@@ -682,11 +799,17 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
             next: "inspect_flow shows the backfill status and per-entity progress; list_flow_runs shows the execution.",
           };
         } catch (error) {
-          // The service's refusals ("a backfill is already running", an
-          // invalid state transition) are meant to be read.
-          return {
-            error: error instanceof Error ? error.message : "Unknown error",
-          };
+          return controlFailure(
+            "flow_backfill",
+            {
+              workspaceId,
+              flowRef: flowId,
+              action,
+              userId,
+              target: target?.ok ? target : undefined,
+            },
+            error,
+          );
         }
       },
     }),
@@ -709,8 +832,10 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
       }) => {
         const auth = await authorizeSourceWriter(workspaceId, userId);
         if (!auth.ok) return { error: auth.reason };
+        let target: Awaited<ReturnType<typeof resolveWritableCdcFlow>> | null =
+          null;
         try {
-          const target = await resolveWritableCdcFlow(workspaceId, flowId);
+          target = await resolveWritableCdcFlow(workspaceId, flowId);
           if (!target.ok) return { error: target.error };
           const result =
             action === "start"
@@ -735,9 +860,17 @@ export function createFlowRunTools(workspaceId: string, userId?: string) {
             ...(result as Record<string, unknown>),
           };
         } catch (error) {
-          return {
-            error: error instanceof Error ? error.message : "Unknown error",
-          };
+          return controlFailure(
+            "flow_stream",
+            {
+              workspaceId,
+              flowRef: flowId,
+              action,
+              userId,
+              target: target?.ok ? target : undefined,
+            },
+            error,
+          );
         }
       },
     }),

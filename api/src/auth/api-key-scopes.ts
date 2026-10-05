@@ -36,7 +36,8 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * `members:write`: the key must carry it AND the key's owner must still be
  * an owner/admin of the workspace at call time — the role the UI's routes
  * for the same actions require. The flow READS (list_flows, inspect_flow,
- * list_flow_runs) need no write scope.
+ * list_flow_runs) need no write scope, only query:read — run errors carry
+ * data from the platform behind the source.
  *
  * None of the write scopes are granted by default; workspace admins opt a
  * key in explicitly.

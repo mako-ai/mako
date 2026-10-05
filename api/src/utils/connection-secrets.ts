@@ -115,6 +115,63 @@ export function connectionStringGroupKey(connectionString: string): string {
   return `opaque:${createHash("sha256").update(connectionString).digest("hex").slice(0, 16)}`;
 }
 
+/** `scheme://user:password@` anywhere in a text; capture 2 is the password. */
+const URI_PASSWORD_ANYWHERE =
+  /([a-z][a-z0-9+.-]*:\/\/[^:/@\s]+:)([^@\s/]+)(@)/gi;
+
+/** `?password=…` / `;pwd=…` / `&api_key=…`; capture 1 is the value. */
+const CREDENTIAL_PARAMETER_VALUE =
+  /[?&;]\s*[a-z0-9_.-]*(?:pass(?:word|wd)?|pwd|secret|token|auth|api[_-]?key|credential)[a-z0-9_.-]*\s*=\s*([^&;\s]+)/gi;
+
+/**
+ * The credential VALUES a decrypted database connection holds, for scrubbing
+ * text that may echo them (a driver error quoting its connection string):
+ * values of credential-named keys (string leaves of credential-named objects
+ * too, e.g. a service-account JSON), and passwords embedded in any string
+ * value — `scheme://user:pass@` userinfo and credential query parameters.
+ */
+export function connectionCredentialValues(
+  connection: Record<string, unknown> | undefined,
+): string[] {
+  const found = new Set<string>();
+  const leaves = (value: unknown): void => {
+    if (typeof value === "string") {
+      if (value) found.add(value);
+    } else if (Array.isArray(value)) {
+      value.forEach(leaves);
+    } else if (value && typeof value === "object") {
+      Object.values(value as Record<string, unknown>).forEach(leaves);
+    }
+  };
+  const embedded = (value: unknown): void => {
+    if (typeof value === "string") {
+      for (const match of value.matchAll(URI_PASSWORD_ANYWHERE)) {
+        found.add(match[2]);
+      }
+      for (const match of value.matchAll(CREDENTIAL_PARAMETER_VALUE)) {
+        found.add(match[1]);
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach(embedded);
+    } else if (value && typeof value === "object") {
+      Object.values(value as Record<string, unknown>).forEach(embedded);
+    }
+  };
+  for (const [key, value] of Object.entries(connection ?? {})) {
+    if (SECRET_FIELD.test(key)) leaves(value);
+    embedded(value);
+  }
+  return [...found];
+}
+
+/**
+ * Mask `scheme://user:password@` userinfo anywhere in a text, whether or not
+ * the password is one we know — the shape alone says it is a credential.
+ */
+export function maskUriPasswords(text: string): string {
+  return text.replace(URI_PASSWORD_ANYWHERE, "$1[redacted]$3");
+}
+
 /** Strip every credential from a decrypted connection, keeping its shape. */
 export function redactConnectionSecrets(
   connection: Record<string, unknown> | undefined,
