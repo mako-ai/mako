@@ -347,7 +347,9 @@ export function FreshnessBadge({
   const ref = React.useRef(null);
   usePopover(open, setOpen, ref, align);
   const t = normalizeTone(tone);
-  const hasPanel = title != null || schedule != null || sources.length > 0 || action || footer;
+  // A footer alone is not a panel: while the app is still checking, the
+  // badge must not open onto an empty box.
+  const hasPanel = title != null || schedule != null || sources.length > 0 || !!action;
 
   return h(
     "div",
