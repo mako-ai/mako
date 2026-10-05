@@ -257,6 +257,12 @@ export {
 } from "./capabilities/connector-capabilities";
 
 export {
+  FLOW_CAPABILITIES,
+  type FlowCapabilityDefinition,
+  type FlowCapabilityPack,
+} from "./capabilities/flow-capabilities";
+
+export {
   MEMBER_CAPABILITIES,
   type MemberCapabilityDefinition,
   type MemberCapabilityPack,

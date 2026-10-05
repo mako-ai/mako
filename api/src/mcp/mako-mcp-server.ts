@@ -51,6 +51,8 @@ import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
+import { createSourceConnectionTools } from "../agent-lib/tools/source-connection-tools";
+import { createFlowRunTools } from "../agent-lib/tools/flow-run-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import {
@@ -92,6 +94,8 @@ Typical loop:
 5. app_commit → app_merge_to_main (main is what publishes buildable state).
 
 dbt: create/read projects → create/read/edit/delete model files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run) → create/update/delete jobs. Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job, dbt_cancel_run) appear only with the explicit warehouse:write OAuth/API-key scope.
+
+Flows (EL syncs, flows/<slug>.yml): create_source_connection → probe_connection → write flows/<slug>.yml → check_flow_files → push → flow_backfill start → inspect_flow / list_flow_runs. list_flows / inspect_flow / list_flow_runs are reads; create/update_source_connection and flow_backfill / flow_stream appear only with the sources:write scope and run only for an owner/admin. Secret config values are write-only. Load skill flows-as-code first.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
@@ -217,9 +221,20 @@ export function buildMakoMcpCandidateTools(
   // Gated by the members-write grant AND a live owner/admin check inside the
   // tools themselves — a key outlives the membership that justified it.
   const memberTools = createMemberTools(workspaceId, userId);
+  // Source-connection writes and flow run control: hidden without the
+  // sources-write grant (scope sources:write), refused at execution below
+  // the admin role, and re-checked live inside the tools. The flow reads
+  // (list_flows / inspect_flow / list_flow_runs) need no grant.
+  const sourceConnectionTools = createSourceConnectionTools(
+    workspaceId,
+    userId,
+  );
+  const flowRunTools = createFlowRunTools(workspaceId, userId);
   return {
     ...connectorTools,
+    ...sourceConnectionTools,
     ...flowFileTools,
+    ...flowRunTools,
     ...appsTools,
     ...memberTools,
     ...consoleTools,
@@ -277,7 +292,12 @@ const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
  * added.
  */
 const ACP_DESKTOP_WITHHELD_GRANTS: ReadonlySet<CapabilityGrant> =
-  new Set<CapabilityGrant>(["members-write"]);
+  new Set<CapabilityGrant>([
+    "members-write",
+    // Writes workspace credentials and drives running flows; opted into per
+    // key via `sources:write` like members-write, never by the blanket grant.
+    "sources-write",
+  ]);
 
 function sessionCapabilityGrants(
   context: MakoMcpContext,
@@ -382,8 +402,9 @@ export function buildMakoMcpToolset(
         a.name.localeCompare(b.name),
       ),
       hint:
-        "warehouse:write is never granted by default. Request it during " +
-        "OAuth authorization or use a workspace API key carrying that scope.",
+        "warehouse:write and sources:write are never granted by default. " +
+        "Request them during OAuth authorization or use a workspace API key " +
+        "carrying the scope; sources:write also needs an owner/admin.",
     }),
   };
 
@@ -396,6 +417,7 @@ function capabilityScopeForGrant(
   if (grant === "warehouse-write") return "warehouse:write";
   if (grant === "git-write") return "git:write";
   if (grant === "members-write") return "members:write";
+  if (grant === "sources-write") return "sources:write";
   return undefined;
 }
 

@@ -246,8 +246,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_dashboard: exclude("client-only", "Dashboard builder UI."),
   // NOT a connector tool, despite the name. This creates a DASHBOARD-LOCAL
   // data source: a query materialized into the browser's DuckDB for widgets.
-  // It cannot create a Stripe/Close/GCS connector — that is
-  // `POST /workspaces/{id}/sources`, which no agent tool exposes. The old
+  // It cannot create a Stripe/Close/GCS connection — that is
+  // `create_source_connection` (sources:write), classified below. The old
   // note here ("Dashboard builder UI.") was true and misleading: it reads as
   // "the UI way to do the thing you want" rather than "a different thing",
   // and it led an RFC to plan connector creation as a one-line
@@ -314,10 +314,27 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // next to the discovery pair it completes: discover ids, write the file,
   // check it, then push.
   check_flow_files: bridge(),
+  // The write half of connections: hidden from any key without the
+  // sources:write scope (the sources-write grant), refused at execution
+  // below the admin role, and re-checked against the caller's LIVE role
+  // inside the tools. Credentials go in and never come back out.
+  create_source_connection: bridge(),
+  update_source_connection: bridge(),
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
   ),
+
+  // ── Flow operations (the flow page's state, Run History and buttons) ──
+  // Reads are open to any MCP credential and return run state only. The two
+  // controls call the same cdcBackfillService methods as the UI's routes and
+  // carry the same gate as the connection writes above (sources:write +
+  // live owner/admin) — at least as strict as those routes.
+  list_flows: bridge(),
+  inspect_flow: bridge(),
+  list_flow_runs: bridge(),
+  flow_backfill: bridge(),
+  flow_stream: bridge(),
 
   // ── Skills / memory / modes / plan ────────────────────────────────────
   ask_clarifying_questions: exclude(

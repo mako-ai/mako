@@ -1,0 +1,574 @@
+/**
+ * Flow operations over MCP: state, Run History, and the pipeline buttons.
+ *
+ * READS — `inspect_flow` reports backfill/stream state, per-entity progress
+ * and the last error; `list_flow_runs` reports executions newest first (the
+ * WORKER_TIMEOUT an agent previously had to ask the in-app chat for); both
+ * address a flow by id or by file slug, and scrub the source connection's
+ * credential values out of every run-derived message.
+ *
+ * WRITES — `flow_backfill` / `flow_stream` call the SAME `cdcBackfillService`
+ * method as the REST route behind each UI button. That is asserted by driving
+ * the real route and the tool against one mocked service and comparing the
+ * calls. Both refuse a caller whose LIVE role is below admin, and the tools
+ * are hidden from a credential without `sources:write`.
+ *
+ * Real Mongo for flows, entity state and executions; the git overlay
+ * (`flow-sync.service`), the backfill service, auth and the role lookup are
+ * mocked.
+ */
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { Hono } from "hono";
+import mongoose, { Types } from "mongoose";
+import { MongoMemoryServer } from "mongodb-memory-server";
+
+const SENTINEL = "sk_live_SENTINEL_flow_never_echo_42";
+
+const state = vi.hoisted(() => ({
+  role: "admin" as string | null,
+  live: [] as Array<{
+    def: { slug: string; path: string };
+    row: unknown;
+    id: unknown;
+  }>,
+  workspaceId: "",
+}));
+
+vi.mock("../../auth/unified-auth.middleware", () => ({
+  unifiedAuthMiddleware: async (
+    c: { set: (k: string, v: unknown) => void },
+    next: () => Promise<void>,
+  ) => {
+    c.set("user", { id: "user-1" });
+    await next();
+  },
+}));
+
+vi.mock("../../services/workspace.service", () => ({
+  workspaceService: {
+    hasAccess: vi.fn(async () => true),
+    hasRole: vi.fn(
+      async (_ws: string, _user: string, roles: string[]) =>
+        state.role !== null && roles.includes(state.role),
+    ),
+    getMember: vi.fn(async () => (state.role ? { role: state.role } : null)),
+  },
+}));
+
+vi.mock("../../services/flow-sync.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../services/flow-sync.service")>();
+  return {
+    ...actual,
+    loadLiveFlows: vi.fn(async () => state.live),
+    loadLiveFlowById: vi.fn(
+      async (_ws: string, id: string) =>
+        state.live.find(item => String(item.id) === id) ?? null,
+    ),
+    resolveLiveFlowRow: vi.fn(async (_ws: string, id: string) => {
+      const live = state.live.find(item => String(item.id) === id);
+      if (!live) return { ok: false, status: 404, error: "Flow not found" };
+      if (!live.row) {
+        return { ok: false, status: 409, error: "exists only in git so far" };
+      }
+      return { ok: true, live, row: live.row };
+    }),
+    liveFlowToPlain: vi.fn(
+      (live: {
+        row: { toObject: () => object } | null;
+        id: unknown;
+        def: { slug: string };
+      }) => ({
+        ...(live.row ? live.row.toObject() : { name: live.def.slug }),
+        _id: live.id,
+        slug: live.def.slug,
+      }),
+    ),
+  };
+});
+
+vi.mock("../../sync-cdc/backfill", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../sync-cdc/backfill")>();
+  return {
+    ...actual,
+    cdcBackfillService: {
+      startBackfill: vi.fn(async () => ({
+        runId: "run-1",
+        reusedRunId: false,
+      })),
+      pauseBackfill: vi.fn(async () => ({ paused: true })),
+      resumeBackfill: vi.fn(async () => ({ resumed: true })),
+      cancelBackfill: vi.fn(async () => ({ cancelled: true })),
+      pauseStream: vi.fn(async () => ({ paused: true })),
+      resumeStream: vi.fn(async () => ({ started: true })),
+    },
+  };
+});
+
+vi.mock("../../sync/database-data-source-manager", async importOriginal => {
+  const actual =
+    await importOriginal<
+      typeof import("../../sync/database-data-source-manager")
+    >();
+  return {
+    ...actual,
+    sourceConnectionManager: {
+      getSourceConnection: vi.fn(async () => ({
+        id: "src",
+        name: "openai",
+        type: "ws:openai-ads",
+        workspaceId: state.workspaceId,
+        connection: { api_key: SENTINEL },
+      })),
+    },
+  };
+});
+
+import {
+  CdcEntityState,
+  Flow,
+  FlowExecution,
+  SourceConnection,
+  type IFlow,
+} from "../../database/workspace-schema";
+import { cdcBackfillService } from "../../sync-cdc/backfill";
+import { flowRoutes } from "../../routes/flows";
+import { buildMakoMcpToolset } from "../../mcp/mako-mcp-server";
+import {
+  MCP_BRIDGE_POLICY,
+  assertBridgePolicyCovers,
+  assertBridgePolicyNotStale,
+  mcpReadOnlyHint,
+} from "../../mcp/bridge-policy";
+import { collectLiveAgentToolNames } from "../../mcp/bridge-inventory";
+import { READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
+import type { WorkspaceApiKeyScope } from "../../auth/api-key-scopes";
+import { createFlowRunTools, normalizeFlowRef } from "./flow-run-tools";
+
+let mongo: MongoMemoryServer;
+let WS: string;
+let FLOW: IFlow;
+let SOURCE: Types.ObjectId;
+
+type Executable = {
+  execute: (input: unknown) => Promise<Record<string, unknown>>;
+};
+const tools = () =>
+  createFlowRunTools(WS, "user-1") as unknown as Record<string, Executable>;
+
+const app = new Hono();
+app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
+function post(path: string, body?: unknown): Promise<Response> {
+  return Promise.resolve(
+    app.request(`/api/workspaces/${WS}/flows/${FLOW._id}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    }),
+  );
+}
+
+function toolsetFor(
+  scopes: WorkspaceApiKeyScope[],
+  memberRole = "admin",
+): Record<string, unknown> {
+  return buildMakoMcpToolset({
+    workspaceId: WS,
+    userId: "user-1",
+    memberRole,
+    scopes,
+  });
+}
+
+const READS = ["list_flows", "inspect_flow", "list_flow_runs"];
+const WRITES = ["flow_backfill", "flow_stream"];
+
+beforeAll(async () => {
+  process.env.ENCRYPTION_KEY =
+    process.env.ENCRYPTION_KEY ??
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  mongo = await MongoMemoryServer.create();
+  await mongoose.connect(mongo.getUri());
+}, 120_000);
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongo.stop();
+});
+
+beforeEach(async () => {
+  await Promise.all([
+    Flow.deleteMany({}),
+    FlowExecution.deleteMany({}),
+    CdcEntityState.deleteMany({}),
+    SourceConnection.deleteMany({}),
+  ]);
+  vi.clearAllMocks();
+  WS = new Types.ObjectId().toString();
+  state.workspaceId = WS;
+  state.role = "admin";
+  SOURCE = new Types.ObjectId();
+  await SourceConnection.create({
+    _id: SOURCE,
+    workspaceId: new Types.ObjectId(WS),
+    name: "openai",
+    type: "ws:openai-ads",
+    config: { api_key: "ciphertext-not-read-here" },
+    settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+    createdBy: "u1",
+  });
+  FLOW = await Flow.create({
+    workspaceId: new Types.ObjectId(WS),
+    type: "webhook",
+    name: "OpenAI ads → BigQuery",
+    slug: "openai-ads-bigquery-write",
+    sourceType: "connector",
+    dataSourceId: SOURCE,
+    destinationDatabaseId: new Types.ObjectId(),
+    syncMode: "incremental",
+    syncEngine: "cdc",
+    streamState: "active",
+    backfillSchedule: { enabled: true, cron: "0 3 * * *", timezone: "UTC" },
+    backfillState: {
+      status: "error",
+      runId: "run-0",
+      startedAt: new Date("2026-10-04T03:00:00Z"),
+      consecutiveFailures: 3,
+    },
+    entityFilter: ["campaigns", "ad_groups"],
+    lastError: `The connector timed out (key ${SENTINEL})`,
+    lastSuccessAt: new Date("2026-10-01T03:10:00Z"),
+    createdBy: "u1",
+    runCount: 4,
+  });
+  state.live = [
+    {
+      def: {
+        slug: "openai-ads-bigquery-write",
+        path: "flows/openai-ads-bigquery-write.yml",
+      },
+      row: FLOW,
+      id: FLOW._id,
+    },
+  ];
+  await CdcEntityState.create({
+    workspaceId: new Types.ObjectId(WS),
+    flowId: FLOW._id,
+    entity: "campaigns",
+    mode: "steady",
+    backfillStartedAt: new Date("2026-10-04T03:00:00Z"),
+    backfillCompletedAt: new Date("2026-10-04T03:05:00Z"),
+    lastIngestSeq: 10,
+    lastMaterializedSeq: 10,
+    backlogCount: 0,
+    lifetimeEventsProcessed: 120,
+    lifetimeRowsApplied: 118,
+    mergeIntervalSeconds: 60,
+    consecutiveFailures: 0,
+  });
+  // Raw insert, as the flow runner writes them: `stats` is not on the
+  // mongoose schema (the runner sets it through the driver), so create()
+  // would silently drop it.
+  await FlowExecution.collection.insertMany([
+    {
+      flowId: FLOW._id,
+      workspaceId: new Types.ObjectId(WS),
+      startedAt: new Date("2026-10-03T03:00:00Z"),
+      completedAt: new Date("2026-10-03T03:12:00Z"),
+      status: "completed",
+      success: true,
+      duration: 720_000,
+      logs: [],
+      stats: { recordsProcessed: 118, entityStats: { campaigns: 118 } },
+    },
+    {
+      flowId: FLOW._id,
+      workspaceId: new Types.ObjectId(WS),
+      startedAt: new Date("2026-10-04T03:00:00Z"),
+      completedAt: new Date("2026-10-04T03:10:00Z"),
+      status: "abandoned",
+      success: false,
+      error: {
+        message: "Flow execution abandoned due to worker crash or timeout",
+        code: "WORKER_TIMEOUT",
+        stack: "Error: at secret/internal/path.ts:1",
+      },
+      logs: [
+        { timestamp: new Date(), level: "info", message: "started" },
+        {
+          timestamp: new Date(),
+          level: "error",
+          message: `The connector timed out calling /v1?key=${SENTINEL}`,
+        },
+      ],
+      stats: {
+        recordsProcessed: 0,
+        entityStats: { campaigns: 0 },
+        entityStatus: { campaigns: "syncing" },
+      },
+    },
+    {
+      // Another workspace's execution of a same-id flow never shows up.
+      flowId: FLOW._id,
+      workspaceId: new Types.ObjectId(),
+      startedAt: new Date("2026-10-05T03:00:00Z"),
+      status: "failed",
+      success: false,
+      logs: [],
+    },
+  ]);
+});
+
+describe("addressing", () => {
+  it("normalizes a file path to its slug", () => {
+    expect(normalizeFlowRef("flows/stripe-bq.yml")).toBe("stripe-bq");
+    expect(normalizeFlowRef(" stripe-bq.yaml ")).toBe("stripe-bq");
+    expect(normalizeFlowRef("64b7f0c2a1b2c3d4e5f60718")).toBe(
+      "64b7f0c2a1b2c3d4e5f60718",
+    );
+  });
+});
+
+describe("reads", () => {
+  it("inspect_flow reports state by id and by slug, scrubbed", async () => {
+    for (const ref of [
+      FLOW._id.toString(),
+      "openai-ads-bigquery-write",
+      "flows/openai-ads-bigquery-write.yml",
+    ]) {
+      const result = await tools().inspect_flow.execute({ flowId: ref });
+      expect(result.id).toBe(FLOW._id.toString());
+      expect(result.slug).toBe("openai-ads-bigquery-write");
+      expect(result.streamState).toBe("active");
+      expect(result.backfill).toMatchObject({
+        status: "error",
+        runId: "run-0",
+        consecutiveFailures: 3,
+      });
+      expect(result.source).toEqual({
+        type: "connector",
+        connectionId: SOURCE.toString(),
+      });
+      expect(result.backfillSchedule).toMatchObject({ cron: "0 3 * * *" });
+      const entities = result.entities as Array<Record<string, unknown>>;
+      expect(entities.map(e => [e.entity, e.backfill, e.rowsWritten])).toEqual([
+        ["campaigns", "completed", 118],
+        ["ad_groups", "not_started", 0],
+      ]);
+      expect(String(result.lastError)).toContain("The connector timed out");
+      expect(JSON.stringify(result)).not.toContain(SENTINEL);
+    }
+    const missing = await tools().inspect_flow.execute({ flowId: "nope" });
+    expect(String(missing.error)).toMatch(/list_flows/);
+  });
+
+  it("list_flow_runs returns this workspace's executions, newest first, scrubbed", async () => {
+    const result = await tools().list_flow_runs.execute({
+      flowId: "openai-ads-bigquery-write",
+    });
+    expect(result.total).toBe(2);
+    const runs = result.runs as Array<Record<string, unknown>>;
+    expect(runs.map(run => run.status)).toEqual(["abandoned", "completed"]);
+    expect(runs[0].error).toEqual({
+      message: "Flow execution abandoned due to worker crash or timeout",
+      code: "WORKER_TIMEOUT",
+    });
+    expect(
+      String((runs[0].lastErrorLog as { message: string }).message),
+    ).toMatch(/connector timed out/);
+    expect(runs[1].stats).toMatchObject({
+      recordsProcessed: 118,
+      perEntity: { campaigns: 118 },
+    });
+    const text = JSON.stringify(result);
+    expect(text).not.toContain(SENTINEL);
+    expect(text).not.toContain("secret/internal/path.ts"); // no stack
+
+    const limited = await tools().list_flow_runs.execute({
+      flowId: FLOW._id.toString(),
+      limit: 1,
+    });
+    expect((limited.runs as unknown[]).length).toBe(1);
+  });
+
+  it("list_flows lists slug, path and source connection", async () => {
+    const result = await tools().list_flows.execute({});
+    const flows = result.flows as Array<Record<string, unknown>>;
+    expect(flows).toHaveLength(1);
+    expect(flows[0]).toMatchObject({
+      id: FLOW._id.toString(),
+      slug: "openai-ads-bigquery-write",
+      path: "flows/openai-ads-bigquery-write.yml",
+      syncEngine: "cdc",
+      streamState: "active",
+      backfillStatus: "error",
+      source: {
+        connectionId: SOURCE.toString(),
+        name: "openai",
+        connector: "ws:openai-ads",
+      },
+    });
+  });
+});
+
+describe("writes call the same service as the UI's routes", () => {
+  const cases: Array<{
+    tool: "flow_backfill" | "flow_stream";
+    action: string;
+    route: string;
+    method: keyof typeof cdcBackfillService;
+    body?: Record<string, unknown>;
+  }> = [
+    {
+      tool: "flow_backfill",
+      action: "start",
+      route: "/sync-cdc/backfill/start",
+      method: "startBackfill",
+      body: { entities: ["campaigns"] },
+    },
+    {
+      tool: "flow_backfill",
+      action: "pause",
+      route: "/sync-cdc/pause",
+      method: "pauseBackfill",
+    },
+    {
+      tool: "flow_backfill",
+      action: "resume",
+      route: "/sync-cdc/resume",
+      method: "resumeBackfill",
+    },
+    {
+      tool: "flow_backfill",
+      action: "cancel",
+      route: "/sync-cdc/backfill/cancel",
+      method: "cancelBackfill",
+    },
+    {
+      tool: "flow_stream",
+      action: "start",
+      route: "/sync-cdc/stream/start",
+      method: "resumeStream",
+    },
+    {
+      tool: "flow_stream",
+      action: "pause",
+      route: "/sync-cdc/stream/pause",
+      method: "pauseStream",
+    },
+  ];
+
+  for (const c of cases) {
+    it(`${c.tool} ${c.action} → cdcBackfillService.${String(c.method)}, like POST ${c.route}`, async () => {
+      const service = vi.mocked(
+        cdcBackfillService[c.method] as unknown as (
+          ...args: unknown[]
+        ) => unknown,
+      );
+      const response = await post(c.route, c.body);
+      expect(response.status).toBe(200);
+      expect(service).toHaveBeenCalledTimes(1);
+      const routeCall = service.mock.calls[0];
+
+      service.mockClear();
+      const result = await tools()[c.tool].execute({
+        flowId: "openai-ads-bigquery-write",
+        action: c.action,
+        ...(c.body ?? {}),
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.action).toBe(c.action);
+      expect(service).toHaveBeenCalledTimes(1);
+      expect(service.mock.calls[0]).toEqual(routeCall);
+    });
+  }
+
+  it("refuses a caller whose live role is below admin, as the route does", async () => {
+    state.role = "member";
+    const response = await post("/sync-cdc/backfill/start");
+    expect(response.status).toBe(403);
+    const result = await tools().flow_backfill.execute({
+      flowId: FLOW._id.toString(),
+      action: "start",
+    });
+    expect(String(result.error)).toMatch(/owner or admin/);
+    const stream = await tools().flow_stream.execute({
+      flowId: FLOW._id.toString(),
+      action: "pause",
+    });
+    expect(String(stream.error)).toMatch(/owner or admin/);
+    expect(cdcBackfillService.startBackfill).not.toHaveBeenCalled();
+    expect(cdcBackfillService.pauseStream).not.toHaveBeenCalled();
+  });
+
+  it("refuses a non-CDC flow and a flow that exists only in git", async () => {
+    await Flow.updateOne({ _id: FLOW._id }, { $set: { syncEngine: "legacy" } });
+    // The mocked overlay serves the in-memory row; hand it the updated one.
+    state.live[0].row = await Flow.findById(FLOW._id);
+    const legacy = await tools().flow_backfill.execute({
+      flowId: FLOW._id.toString(),
+      action: "start",
+    });
+    expect(String(legacy.error)).toMatch(/CDC flows only/);
+
+    state.live[0].row = null;
+    const gitOnly = await tools().flow_stream.execute({
+      flowId: FLOW._id.toString(),
+      action: "start",
+    });
+    expect(String(gitOnly.error)).toMatch(/only in git/);
+    expect(cdcBackfillService.startBackfill).not.toHaveBeenCalled();
+    expect(cdcBackfillService.resumeStream).not.toHaveBeenCalled();
+  });
+
+  it("entities apply to start only", async () => {
+    const result = await tools().flow_backfill.execute({
+      flowId: FLOW._id.toString(),
+      action: "pause",
+      entities: ["campaigns"],
+    });
+    expect(String(result.error)).toMatch(/start only/);
+    expect(cdcBackfillService.pauseBackfill).not.toHaveBeenCalled();
+  });
+});
+
+describe("gating and classification", () => {
+  it("reads are open to any MCP credential; controls need sources:write and admin", () => {
+    const base = toolsetFor(["mcp"]);
+    for (const name of READS) expect(base[name]).toBeTruthy();
+    for (const name of WRITES) expect(base[name]).toBeUndefined();
+
+    const scoped = toolsetFor(["mcp", "query:read", "sources:write"]);
+    for (const name of WRITES) expect(scoped[name]).toBeTruthy();
+
+    const member = toolsetFor(["mcp", "query:read", "sources:write"], "member");
+    for (const name of WRITES) expect(member[name]).toBeUndefined();
+    for (const name of READS) expect(member[name]).toBeTruthy();
+  });
+
+  it("is classified on the bridge, in the inventory, and read-only where it reads", () => {
+    const live = collectLiveAgentToolNames();
+    assertBridgePolicyCovers(live);
+    assertBridgePolicyNotStale(live);
+    for (const name of [...READS, ...WRITES]) {
+      expect(MCP_BRIDGE_POLICY[name]?.status).toBe("bridge");
+      expect(live).toContain(name);
+    }
+    for (const name of READS) {
+      expect(READ_ONLY_TOOL_NAMES.has(name)).toBe(true);
+      expect(mcpReadOnlyHint(name, "none")).toBe(true);
+    }
+    for (const name of WRITES) {
+      expect(READ_ONLY_TOOL_NAMES.has(name)).toBe(false);
+    }
+  });
+});
