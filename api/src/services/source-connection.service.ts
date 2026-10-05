@@ -16,7 +16,7 @@ import { connectorRegistry } from "../connectors/registry";
 import { connectorTypeExists } from "../connectors/workspace/catalog";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import { encryptString } from "./crypto.service";
-import { restoreKeptSecrets } from "../utils/connection-secrets";
+import { SECRET_KEPT, restoreKeptSecrets } from "../utils/connection-secrets";
 
 export type ConnectorFieldSchema = {
   name: string;
@@ -39,6 +39,75 @@ export class SecretEncryptionError extends Error {
       `could not encrypt credential field "${field}": ${cause instanceof Error ? cause.message : String(cause)}`,
     );
     this.name = "SecretEncryptionError";
+  }
+}
+
+/**
+ * THE rule for "is this config field a credential?" — what is encrypted at
+ * rest, what reads replace with {@link SECRET_KEPT}, what the agent tools
+ * call a secret, and what flow tools scrub from run output. One predicate so
+ * those can never disagree. (A workspace connector's `airbyte_secret: true`
+ * arrives here as `encrypted: true`, see spec-translation.ts.)
+ */
+export function isSecretConfigField(field: {
+  encrypted?: boolean;
+  type?: string;
+}): boolean {
+  return field.encrypted === true || field.type === "password";
+}
+
+/**
+ * The plaintext values of every schema-secret field in `config`, including
+ * inside `object_array` items. Secret fields only — a region, an account id
+ * or an entity name is not a credential and must not be scrubbed as one.
+ */
+export function secretConfigValues(
+  config: unknown,
+  schema: { fields: ConnectorFieldSchema[] },
+): string[] {
+  const found = new Set<string>();
+  const walk = (target: unknown, fields: ConnectorFieldSchema[]): void => {
+    if (!target || typeof target !== "object") return;
+    for (const field of fields) {
+      const value = (target as Record<string, unknown>)[field.name];
+      if (field.type === "object_array" && Array.isArray(value)) {
+        for (const item of value) walk(item, field.itemFields ?? []);
+      } else if (
+        isSecretConfigField(field) &&
+        typeof value === "string" &&
+        value &&
+        value !== SECRET_KEPT
+      ) {
+        found.add(value);
+      }
+    }
+  };
+  walk(config, schema.fields);
+  return [...found];
+}
+
+/** True when the sentinel appears anywhere in `value` (nested included). */
+export function containsSecretSentinel(value: unknown): boolean {
+  if (value === SECRET_KEPT) return true;
+  if (Array.isArray(value)) return value.some(containsSecretSentinel);
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some(
+      containsSecretSentinel,
+    );
+  }
+  return false;
+}
+
+/**
+ * A config that would store the literal {@link SECRET_KEPT} sentinel as a
+ * credential. Names the problem, never a value.
+ */
+export class SecretSentinelError extends Error {
+  constructor() {
+    super(
+      `config contains ${SECRET_KEPT} where there is no stored secret to keep`,
+    );
+    this.name = "SecretSentinelError";
   }
 }
 
@@ -75,9 +144,7 @@ export function applySchemaEncryption(
         continue;
       }
 
-      const requiresEncryption =
-        field.encrypted === true || field.type === "password";
-      if (requiresEncryption && typeof val === "string" && val) {
+      if (isSecretConfigField(field) && typeof val === "string" && val) {
         try {
           target[key] = encryptString(val);
         } catch (error) {
@@ -133,10 +200,15 @@ export interface CreateSourceConnectionInput {
   isActive?: boolean;
 }
 
-/** Construct and save a source connection, secrets encrypted by schema. */
+/**
+ * Construct and save a source connection, secrets encrypted by schema. A new
+ * connection has no stored secret, so a {@link SECRET_KEPT} anywhere in its
+ * config is refused rather than encrypted and stored as the credential.
+ */
 export async function createSourceConnection(
   input: CreateSourceConnectionInput,
 ) {
+  if (containsSecretSentinel(input.config)) throw new SecretSentinelError();
   const sourceConnection = new SourceConnection({
     workspaceId: input.workspaceId,
     name: input.name,
@@ -159,19 +231,85 @@ export async function createSourceConnection(
 }
 
 /**
+ * Put stored values back wherever a nested value is the sentinel — inside
+ * `object_array` items (matched by index, the order the read returned them
+ * in, which is how the edit form round-trips them) and nested objects.
+ * A sentinel with no stored string at the same position cannot be restored:
+ * it is DROPPED, never stored, and its path is reported in `unresolved`.
+ */
+function restoreKeptNested(
+  incoming: unknown,
+  previous: unknown,
+  path: string,
+  unresolved: string[],
+): unknown {
+  if (incoming === SECRET_KEPT) {
+    if (typeof previous === "string" && previous) return previous;
+    unresolved.push(path);
+    return undefined;
+  }
+  if (Array.isArray(incoming)) {
+    const before = Array.isArray(previous) ? previous : [];
+    return incoming
+      .map((item, index) =>
+        restoreKeptNested(item, before[index], `${path}[${index}]`, unresolved),
+      )
+      .filter(item => item !== undefined);
+  }
+  if (incoming && typeof incoming === "object") {
+    const before =
+      previous && typeof previous === "object" && !Array.isArray(previous)
+        ? (previous as Record<string, unknown>)
+        : {};
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(
+      incoming as Record<string, unknown>,
+    )) {
+      const restored = restoreKeptNested(
+        value,
+        before[key],
+        path ? `${path}.${key}` : key,
+        unresolved,
+      );
+      if (restored !== undefined) out[key] = restored;
+    }
+    return out;
+  }
+  return incoming;
+}
+
+/**
  * Merge an incoming config patch over the stored one.
  *
  * Keys the patch omits keep their stored value, and an echoed
- * {@link SECRET_KEPT} sentinel becomes the stored secret again, so editing a
- * non-secret field can neither wipe nor re-encrypt the key. Only keys whose
- * value actually differs count as a change. The result is NOT yet encrypted:
- * pass it through {@link applySchemaEncryption} before saving.
+ * {@link SECRET_KEPT} sentinel becomes the stored secret again — at the top
+ * level and inside array items — so editing a non-secret field can neither
+ * wipe nor re-encrypt the key. A sentinel with nothing stored to restore is
+ * dropped (never stored) and listed in `unresolved`. Only keys whose value
+ * actually differs count as a change. The result is NOT yet encrypted: pass
+ * it through {@link applySchemaEncryption} before saving.
  */
 export function mergeSourceConnectionConfig(
   currentConfig: Record<string, unknown>,
   patch: Record<string, unknown>,
-): { config: Record<string, unknown>; changed: boolean } {
-  const incoming = restoreKeptSecrets(patch, currentConfig);
+): {
+  config: Record<string, unknown>;
+  changed: boolean;
+  unresolved: string[];
+} {
+  const unresolved = Object.entries(patch)
+    .filter(
+      ([key, value]) =>
+        value === SECRET_KEPT && typeof currentConfig[key] !== "string",
+    )
+    .map(([key]) => key);
+  const topLevel = restoreKeptSecrets(patch, currentConfig);
+  const incoming = restoreKeptNested(
+    topLevel,
+    currentConfig,
+    "",
+    unresolved,
+  ) as Record<string, unknown>;
   const config = { ...currentConfig };
   let changed = false;
   for (const key in incoming) {
@@ -180,5 +318,5 @@ export function mergeSourceConnectionConfig(
       changed = true;
     }
   }
-  return { config, changed };
+  return { config, changed, unresolved };
 }

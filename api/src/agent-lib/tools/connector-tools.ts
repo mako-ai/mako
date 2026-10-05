@@ -38,6 +38,7 @@ import {
   probeConnection,
 } from "../../connectors/probe.service";
 import { connectorRegistry } from "../../connectors/registry";
+import { isSecretConfigField } from "../../services/source-connection.service";
 import { listWorkspaceConnectors } from "../../connectors/workspace/catalog";
 import { isWorkspaceConnectorType } from "../../connectors/workspace/SandboxedConnector";
 import {
@@ -62,18 +63,11 @@ export interface ConnectorConfigField {
 /**
  * Describe a connector's config fields without their values.
  *
- * `secret` mirrors exactly the rule `applySchemaEncryption` uses to decide
- * what to encrypt (`encrypted === true || type === "password"`), so what an
- * agent is told is a secret is the same set the route protects. If those two
- * ever disagree, the honest failure is here — hence the shared predicate
- * rather than a second hand-written list.
+ * `secret` IS the rule `applySchemaEncryption` uses to decide what to
+ * encrypt — the one predicate exported by the source-connection service — so
+ * what an agent is told is a secret is the same set the route protects.
  */
-export function isSecretField(field: {
-  encrypted?: boolean;
-  type?: string;
-}): boolean {
-  return field.encrypted === true || field.type === "password";
-}
+export const isSecretField = isSecretConfigField;
 
 function describeFields(fields: unknown): ConnectorConfigField[] {
   if (!Array.isArray(fields)) return [];

@@ -38,14 +38,15 @@ import { loggers } from "../../logging";
 import {
   applySchemaEncryption,
   checkSourceConnectorType,
+  containsSecretSentinel,
   createSourceConnection,
+  isSecretConfigField,
   mergeSourceConnectionConfig,
   type ConnectorFieldSchema,
 } from "../../services/source-connection.service";
 import { workspaceService } from "../../services/workspace.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { SECRET_KEPT } from "../../utils/connection-secrets";
-import { isSecretField } from "./connector-tools";
 
 const logger = loggers.api("source-connection-tools");
 
@@ -100,7 +101,8 @@ function hasValue(value: unknown): boolean {
 /**
  * Check a config against the connector's form schema: no unknown field, the
  * right primitive per declared type, and — for the config that would be
- * STORED — every required field present. Problems name fields, never values.
+ * STORED — every required field present. Recurses into `object_array` items
+ * by their `itemFields`. Problems name fields, never values.
  */
 export function validateSourceConfig(
   schema: ConfigSchema,
@@ -108,42 +110,64 @@ export function validateSourceConfig(
   options: { requireAll: boolean },
 ): string[] {
   const problems: string[] = [];
-  const byName = new Map(schema.fields.map(field => [field.name, field]));
-  const unknown = Object.keys(config).filter(key => !byName.has(key));
-  if (unknown.length > 0) {
-    problems.push(
-      `Unknown config field(s): ${unknown.join(", ")}. This connector takes: ${[...byName.keys()].join(", ") || "(no fields)"}.`,
-    );
-  }
-  for (const field of schema.fields) {
-    const value = config[field.name];
-    if (!hasValue(value)) {
-      if (options.requireAll && field.required === true) {
-        problems.push(`Missing required config field: ${field.name}.`);
-      }
-      continue;
-    }
-    if (value === SECRET_KEPT) continue;
-    if (isSecretField(field) && typeof value !== "string") {
+  const check = (
+    fields: ConnectorFieldSchema[],
+    target: Record<string, unknown>,
+    prefix: string,
+  ): void => {
+    const byName = new Map(fields.map(field => [field.name, field]));
+    const unknown = Object.keys(target).filter(key => !byName.has(key));
+    if (unknown.length > 0) {
       problems.push(
-        `Config field ${field.name} is a secret and must be a string.`,
+        `Unknown config field(s): ${unknown.map(key => prefix + key).join(", ")}. ${prefix ? `Items of ${prefix.replace(/\[\d+\]\.$/, "")} take` : "This connector takes"}: ${[...byName.keys()].join(", ") || "(no fields)"}.`,
       );
-    } else if (
-      field.type === "number" &&
-      typeof value !== "number" &&
-      !(
-        typeof value === "string" &&
-        value.trim() !== "" &&
-        Number.isFinite(Number(value))
-      )
-    ) {
-      problems.push(`Config field ${field.name} must be a number.`);
-    } else if (field.type === "boolean" && typeof value !== "boolean") {
-      problems.push(`Config field ${field.name} must be a boolean.`);
-    } else if (field.type === "object_array" && !Array.isArray(value)) {
-      problems.push(`Config field ${field.name} must be an array.`);
     }
-  }
+    for (const field of fields) {
+      const name = prefix + field.name;
+      const value = target[field.name];
+      if (!hasValue(value)) {
+        if (options.requireAll && field.required === true) {
+          problems.push(`Missing required config field: ${name}.`);
+        }
+        continue;
+      }
+      if (value === SECRET_KEPT) continue;
+      if (isSecretConfigField(field) && typeof value !== "string") {
+        problems.push(`Config field ${name} is a secret and must be a string.`);
+      } else if (
+        field.type === "number" &&
+        typeof value !== "number" &&
+        !(
+          typeof value === "string" &&
+          value.trim() !== "" &&
+          Number.isFinite(Number(value))
+        )
+      ) {
+        problems.push(`Config field ${name} must be a number.`);
+      } else if (field.type === "boolean" && typeof value !== "boolean") {
+        problems.push(`Config field ${name} must be a boolean.`);
+      } else if (field.type === "object_array") {
+        if (!Array.isArray(value)) {
+          problems.push(`Config field ${name} must be an array.`);
+        } else if (field.itemFields?.length) {
+          value.forEach((item, index) => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) {
+              problems.push(
+                `Config field ${name}[${index}] must be an object.`,
+              );
+            } else {
+              check(
+                field.itemFields as ConnectorFieldSchema[],
+                item as Record<string, unknown>,
+                `${name}[${index}].`,
+              );
+            }
+          });
+        }
+      }
+    }
+  };
+  check(schema.fields, config, "");
   return problems;
 }
 
@@ -185,7 +209,7 @@ function describeStoredFields(
 ) {
   return schema.fields.map(field => ({
     name: field.name,
-    secret: isSecretField(field),
+    secret: isSecretConfigField(field),
     set: hasValue(config[field.name]),
   }));
 }
@@ -286,7 +310,7 @@ export function createSourceConnectionTools(
           const problems = validateSourceConfig(loaded.schema, config, {
             requireAll: true,
           });
-          if (Object.values(config).some(value => value === SECRET_KEPT)) {
+          if (containsSecretSentinel(config)) {
             problems.push(
               `${SECRET_KEPT} only keeps a stored secret on update_source_connection; a new connection has none to keep.`,
             );
@@ -399,6 +423,12 @@ export function createSourceConnectionTools(
           const merged = mergeSourceConnectionConfig(current, config);
           const problems = [
             ...patchProblems,
+            // Never store the literal sentinel: where there is nothing at
+            // that position to keep, say so instead of dropping it quietly.
+            ...merged.unresolved.map(
+              path =>
+                `${SECRET_KEPT} at ${path} has no stored secret to keep; pass the value.`,
+            ),
             ...validateSourceConfig(loaded.schema, merged.config, {
               requireAll: true,
             }).filter(problem => problem.startsWith("Missing required")),

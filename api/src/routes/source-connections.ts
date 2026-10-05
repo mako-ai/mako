@@ -32,9 +32,11 @@ import {
 } from "../utils/connection-secrets";
 import {
   type ConnectorFieldSchema,
+  SecretSentinelError,
   applySchemaEncryption,
   checkSourceConnectorType,
   createSourceConnection,
+  isSecretConfigField,
   mergeSourceConnectionConfig,
 } from "../services/source-connection.service";
 
@@ -148,11 +150,7 @@ function applySecretPlaceholders(
       }
       continue;
     }
-    if (
-      (field.encrypted === true || field.type === "password") &&
-      typeof val === "string" &&
-      val
-    ) {
+    if (isSecretConfigField(field) && typeof val === "string" && val) {
       target[field.name] = SECRET_KEPT;
     }
   }
@@ -387,6 +385,9 @@ sourceConnectionRoutes.openapi(
         201,
       );
     } catch (error) {
+      if (error instanceof SecretSentinelError) {
+        return c.json({ success: false, error: error.message }, 400);
+      }
       return c.json(
         {
           success: false,
@@ -1139,9 +1140,7 @@ sourceConnectionRoutes.openapi(
       const declared = (schema?.fields ?? []).find(
         (f: ConnectorFieldSchema) => f.name === field,
       );
-      const isSecret =
-        declared &&
-        (declared.encrypted === true || declared.type === "password");
+      const isSecret = declared && isSecretConfigField(declared);
       if (!isSecret) {
         return c.json(
           {

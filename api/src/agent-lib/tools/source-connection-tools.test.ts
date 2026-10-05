@@ -20,6 +20,7 @@
  */
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -75,6 +76,11 @@ import {
   type WorkspaceApiKeyScope,
 } from "../../auth/api-key-scopes";
 import { createSourceConnectionTools } from "./source-connection-tools";
+import { syncConnectorRegistry } from "../../sync/connector-registry";
+import {
+  containsSecretSentinel,
+  mergeSourceConnectionConfig,
+} from "../../services/source-connection.service";
 
 const SENTINEL = "sk_live_SENTINEL_never_echo_0123456789";
 const ROTATED = "sk_live_ROTATED_never_echo_9876543210";
@@ -489,5 +495,137 @@ describe("update_source_connection: a patch, secrets kept unless replaced", () =
     expect(String(result.error)).toMatch(/owner or admin/);
     const stored = await storedConfig(id);
     expect(decryptString(String(stored.api_key))).toBe(SENTINEL);
+  });
+});
+
+describe("the sentinel inside object_array items is never stored", () => {
+  const ITEM_SECRET = "tok_item_SENTINEL_never_echo_1234";
+  // A connector whose secret lives INSIDE array items (the shape the REST and
+  // BigQuery connectors use for their entity/query lists).
+  const nestedSchema = {
+    fields: [
+      { name: "api_key", type: "password", required: true },
+      {
+        name: "accounts",
+        type: "object_array",
+        itemFields: [
+          { name: "label", type: "string", required: true },
+          { name: "token", type: "password" },
+        ],
+      },
+    ],
+  };
+
+  let schemaSpy: { mockRestore: () => void } | undefined;
+  beforeEach(() => {
+    schemaSpy = vi
+      .spyOn(syncConnectorRegistry, "getConfigSchemaForType")
+      .mockResolvedValue(nestedSchema);
+  });
+  afterEach(() => schemaSpy?.mockRestore());
+
+  async function storedAccounts(id: string) {
+    return (await storedConfig(id)).accounts as Array<Record<string, string>>;
+  }
+
+  it("merge restores a kept item secret by index, and drops one with nothing to keep", () => {
+    const merged = mergeSourceConnectionConfig(
+      { api_key: "k", accounts: [{ label: "eu", token: "stored-eu" }] },
+      {
+        accounts: [
+          { label: "eu-renamed", token: SECRET_KEPT },
+          { label: "us", token: SECRET_KEPT },
+        ],
+      },
+    );
+    expect(merged.config.accounts).toEqual([
+      { label: "eu-renamed", token: "stored-eu" },
+      { label: "us" },
+    ]);
+    expect(merged.unresolved).toEqual(["accounts[1].token"]);
+    expect(containsSecretSentinel(merged.config)).toBe(false);
+  });
+
+  it("create refuses a sentinel inside an item and stores nothing", async () => {
+    const result = await tools().create_source_connection.execute({
+      connector: "stripe",
+      name: "nested",
+      config: {
+        api_key: SENTINEL,
+        accounts: [{ label: "eu", token: SECRET_KEPT }],
+      },
+      check: false,
+    });
+    expect(String(result.error)).toMatch(/has none to keep/);
+    expect(await SourceConnection.countDocuments({})).toBe(0);
+  });
+
+  it("validation recurses into item fields", async () => {
+    const result = await tools().create_source_connection.execute({
+      connector: "stripe",
+      name: "nested",
+      config: {
+        api_key: SENTINEL,
+        accounts: [{ token: 42, secret_tokn: ITEM_SECRET }],
+      },
+      check: false,
+    });
+    const error = String(result.error);
+    expect(error).toMatch(
+      /Unknown config field\(s\): accounts\[0\]\.secret_tokn/,
+    );
+    expect(error).toMatch(
+      /Missing required config field: accounts\[0\]\.label/,
+    );
+    expect(error).toMatch(
+      /accounts\[0\]\.token is a secret and must be a string/,
+    );
+    expect(error).not.toContain(ITEM_SECRET);
+    expect(await SourceConnection.countDocuments({})).toBe(0);
+  });
+
+  it("update keeps an item secret echoed as the sentinel and refuses one it cannot restore", async () => {
+    const created = await tools().create_source_connection.execute({
+      connector: "stripe",
+      name: "nested",
+      config: {
+        api_key: SENTINEL,
+        accounts: [{ label: "eu", token: ITEM_SECRET }],
+      },
+      check: false,
+    });
+    const id = String(created.id);
+    const encrypted = (await storedAccounts(id))[0].token;
+    expect(isEncryptedValue(encrypted)).toBe(true);
+
+    const kept = await tools().update_source_connection.execute({
+      connectionId: id,
+      config: { accounts: [{ label: "eu-1", token: SECRET_KEPT }] },
+      check: false,
+    });
+    expect(kept.error).toBeUndefined();
+    const afterKeep = await storedAccounts(id);
+    expect(afterKeep[0].label).toBe("eu-1");
+    expect(decryptString(afterKeep[0].token)).toBe(ITEM_SECRET);
+    expect(JSON.stringify(await storedConfig(id))).not.toContain(SECRET_KEPT);
+
+    const unresolvable = await tools().update_source_connection.execute({
+      connectionId: id,
+      config: {
+        accounts: [
+          { label: "eu-1", token: SECRET_KEPT },
+          { label: "us", token: SECRET_KEPT },
+        ],
+      },
+      check: false,
+    });
+    expect(String(unresolvable.error)).toMatch(
+      /accounts\[1\]\.token has no stored secret to keep/,
+    );
+    const unchanged = await storedAccounts(id);
+    expect(unchanged).toHaveLength(1);
+    expect(decryptString(unchanged[0].token)).toBe(ITEM_SECRET);
+    expect(JSON.stringify(await storedConfig(id))).not.toContain(SECRET_KEPT);
+    expect(JSON.stringify([kept, unresolvable])).not.toContain(ITEM_SECRET);
   });
 });

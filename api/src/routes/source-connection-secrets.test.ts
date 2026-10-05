@@ -272,4 +272,70 @@ describe("source-connection reads never return a credential", () => {
     expect(body.data.config.api_key).toBe(SECRET_KEPT);
     expect(JSON.stringify(body)).not.toContain(ciphertext);
   });
+  // The edit form gets {@link SECRET_KEPT} inside object_array items too
+  // (applySecretPlaceholders recurses). Echoing it back used to be restored
+  // only at the top level, so the literal sentinel was encrypted and stored
+  // as the item's credential.
+  it("PUT echoing SECRET_KEPT inside an array item keeps that item's secret", async () => {
+    const nested = {
+      fields: [
+        {
+          name: "accounts",
+          type: "object_array",
+          itemFields: [
+            { name: "label", type: "string" },
+            { name: "token", type: "password" },
+          ],
+        },
+      ],
+    };
+    vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
+      nested,
+    );
+    const ciphertext = encryptString(SECRET);
+    const row = await Connector.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "REST",
+      type: "rest",
+      config: { accounts: [{ label: "eu", token: ciphertext }] },
+      isActive: true,
+      createdBy: "u1",
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+    });
+    const id = row._id.toString();
+
+    const read = (await (await req("GET", `/${id}`)).json()) as {
+      data: { config: { accounts: Array<Record<string, unknown>> } };
+    };
+    expect(read.data.config.accounts[0].token).toBe(SECRET_KEPT);
+
+    const res = await req("PUT", `/${id}`, {
+      config: {
+        accounts: [
+          { label: "eu-renamed", token: SECRET_KEPT },
+          { label: "new", token: SECRET_KEPT },
+        ],
+      },
+    });
+    expect(res.status).toBe(200);
+    const stored = (await Connector.findById(id).lean()) as {
+      config: { accounts: Array<Record<string, string>> };
+    };
+    expect(stored.config.accounts).toEqual([
+      { label: "eu-renamed", token: ciphertext },
+      // Nothing stored at that position: dropped, never stored as the secret.
+      { label: "new" },
+    ]);
+    expect(JSON.stringify(stored)).not.toContain(SECRET_KEPT);
+  });
+
+  it("POST with SECRET_KEPT anywhere in the config is refused, not stored", async () => {
+    const res = await req("POST", "", {
+      name: "Stripe",
+      type: "stripe",
+      config: { api_key: SECRET_KEPT },
+    });
+    expect(res.status).toBe(400);
+    expect(await Connector.countDocuments({})).toBe(0);
+  });
 });
