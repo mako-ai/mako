@@ -503,7 +503,8 @@ export function useSearchParams() {
 // defaults and every styled app pasted the same ~90-line override block.
 //
 // Added on top of the v1 names: --brand, --canvas (the page behind cards),
-// --positive / --warning / --negative (status tones). Prepended to <head> so
+// --positive / --warning / --negative (status tones). --brand, --ring and
+// --chart-N are the same in light and dark, exactly as the house apps had them. Prepended to <head> so
 // any app stylesheet still overrides it, keyed by id so double-imports no-op,
 // dark on :root.dark (the v1 toggle) plus the system preference.
 // ---------------------------------------------------------------------------
@@ -560,15 +561,9 @@ export const MAKO_THEME_TOKENS_CSS = `:root {
   --destructive-foreground: hsl(0 0% 98%);
   --border: hsl(28 7% 24%);
   --input: hsl(28 7% 24%);
-  --brand: #6f94f6;
   --positive: hsl(158 48% 52%);
   --warning: hsl(36 85% 60%);
   --negative: hsl(0 75% 66%);
-  --chart-1: #6f94f6;
-  --chart-2: hsl(158 48% 52%);
-  --chart-3: hsl(36 85% 60%);
-  --chart-4: hsl(262 60% 70%);
-  --chart-5: hsl(0 75% 66%);
 }
 @media (prefers-color-scheme: dark) {
   :root:not(.light) {
@@ -591,15 +586,9 @@ export const MAKO_THEME_TOKENS_CSS = `:root {
     --destructive-foreground: hsl(0 0% 98%);
     --border: hsl(28 7% 24%);
     --input: hsl(28 7% 24%);
-    --brand: #6f94f6;
     --positive: hsl(158 48% 52%);
     --warning: hsl(36 85% 60%);
     --negative: hsl(0 75% 66%);
-    --chart-1: #6f94f6;
-    --chart-2: hsl(158 48% 52%);
-    --chart-3: hsl(36 85% 60%);
-    --chart-4: hsl(262 60% 70%);
-    --chart-5: hsl(0 75% 66%);
   }
 }
 body { background: var(--background); color: var(--foreground); }
