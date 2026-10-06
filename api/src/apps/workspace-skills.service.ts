@@ -27,6 +27,7 @@ import {
 import {
   BlobPreconditionError,
   DEFAULT_BRANCH,
+  blobOidAt,
   commitBlobsOnBranch,
   globTree,
   listTree,
@@ -378,8 +379,13 @@ export async function commitSkillSave(
   }
   writes[skillFilePath(skill.name)] = serializeSkillFile(skill);
   let message = `Save skill "${skill.name}"`;
+  const expectBlobs: Record<string, string | null> = {};
   if (options.retireAliasFrom) {
     const path = skillFilePath(options.retireAliasFrom);
+    // Pinned: the other skill's file is edited from what was read here,
+    // and a save racing this one must refuse, not be overwritten.
+    const head = await resolveCommit(repoDir, MAIN);
+    expectBlobs[path] = head ? await blobOidAt(repoDir, head, path) : null;
     const raw = await readRepoFile(repoDir, path);
     const parsed =
       raw === null ? null : parseSkillFile(options.retireAliasFrom, raw);
@@ -407,12 +413,19 @@ export async function commitSkillSave(
     writes[path] = edited.contents;
     message += ` (retires the alias from "${options.retireAliasFrom}")`;
   }
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes },
-    { message, author: options.author },
-  );
+  try {
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes },
+      { message, author: options.author, expectBlobs },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new Error(`${error.path} changed on main while saving — retry.`);
+    }
+    throw error;
+  }
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
 }
@@ -493,8 +506,13 @@ export async function commitSkillFlags(
   if (next.pinned !== parsed.pinned) verbs.push(next.pinned ? "Pin" : "Unpin");
   const writes: Record<string, string> = { [path]: serializeSkillFile(next) };
   let message = `${verbs.join(" + ")} skill "${name}"`;
+  const expectBlobs: Record<string, string | null> = {};
   if (options.retireAliasFrom && !next.suppressed) {
     const otherPath = skillFilePath(options.retireAliasFrom);
+    const head = await resolveCommit(repoDir, MAIN);
+    expectBlobs[otherPath] = head
+      ? await blobOidAt(repoDir, head, otherPath)
+      : null;
     const otherRaw = await readRepoFile(repoDir, otherPath);
     const other =
       otherRaw === null
@@ -517,15 +535,19 @@ export async function commitSkillFlags(
     writes[otherPath] = edited.contents;
     message += ` (retires the alias from "${options.retireAliasFrom}")`;
   }
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes },
-    {
-      message,
-      author,
-    },
-  );
+  try {
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes },
+      { message, author, expectBlobs },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new Error(`${error.path} changed on main while saving — retry.`);
+    }
+    throw error;
+  }
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
   return true;

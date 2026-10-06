@@ -33,7 +33,7 @@ vi.mock("./repository.service", async importOriginal => {
     commitBlobsOnBranch: async (
       ...args: Parameters<typeof actual.commitBlobsOnBranch>
     ) => {
-      if (race.before && /^Rename skill/.test(args[3]?.message ?? "")) {
+      if (race.before && /^(Rename|Save) skill/.test(args[3]?.message ?? "")) {
         const fn = race.before;
         race.before = undefined;
         await fn();
@@ -83,6 +83,7 @@ import {
   renameSkill,
   saveSkill,
   toggleSkillSuppressed,
+  updateSkillById,
 } from "../services/skills.service";
 import { skillRenameHandler } from "../rename/handlers/skill";
 import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
@@ -678,6 +679,133 @@ describe("an unapproved proposal under a renamed skill's old name does not hijac
       skill: { name: "acme", body: "UNAPPROVED BODY" },
     });
     expect((await findSkill(WS, "acme_v2"))?.aliases).toBeUndefined();
+  });
+});
+
+describe("a pending proposal under a retired name: write paths act on the file they name", () => {
+  async function proposalUnderRetiredName() {
+    await commitSkillSave(WS, skill("acme"));
+    await renameSkill(WS, "acme", "acme_v2", "u1");
+    await saveSkill(
+      WS,
+      { name: "acme", loadWhen: "x", body: "PROPOSAL" },
+      "agent",
+      { origin: "agent" },
+    );
+  }
+
+  it("rename by id renames the proposal, not the live skill the name resolves to", async () => {
+    await proposalUnderRetiredName();
+    const r = await skillRenameHandler.rename(ctx, {
+      ref: skillId(WS, "acme"),
+      slug: "acme_proposal",
+    });
+    expect(r.before.slug).toBe("acme");
+    expect(r.after.slug).toBe("acme_proposal");
+    expect(
+      (await listSkillsForAdmin(WS)).map(s => [
+        s.name,
+        s.suppressed,
+        s.aliases,
+      ]),
+    ).toEqual([
+      ["acme_proposal", true, ["acme"]],
+      ["acme_v2", false, ["acme"]],
+    ]);
+    // `acme` is now claimed by both files: the suppressed proposal's alias
+    // does not shadow the live skill's.
+    expect(await loadSkill(WS, "acme")).toMatchObject({
+      success: true,
+      skill: { name: "acme_v2" },
+    });
+  });
+
+  it("PUT /skills/:id (updateSkillById) edits the proposal in place: stays pending, retires nothing", async () => {
+    await proposalUnderRetiredName();
+    const before = await log(repoDirFor(WS), MAIN, 50);
+    const r = await updateSkillById(
+      WS,
+      skillId(WS, "acme"),
+      { body: "PROPOSAL (typo fixed)" },
+      "u1",
+    );
+    expect(r).toMatchObject({ success: true, skill: { name: "acme" } });
+    expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(
+      before.length + 1,
+    );
+    expect(
+      (await listSkillsForAdmin(WS)).map(s => [
+        s.name,
+        s.suppressed,
+        s.aliases,
+      ]),
+    ).toEqual([
+      ["acme", true, []],
+      ["acme_v2", false, ["acme"]],
+    ]);
+    expect(await loadSkill(WS, "acme")).toMatchObject({
+      success: true,
+      skill: { name: "acme_v2", body: "Do the acme thing." },
+    });
+    expect(
+      await updateSkillById(
+        WS,
+        "000000000000000000000000",
+        { body: "x" },
+        "u1",
+      ),
+    ).toMatchObject({ success: false, status: 404 });
+  });
+
+  it("saveSkill by name of a pending proposal keeps it pending and retires nothing", async () => {
+    await proposalUnderRetiredName();
+    const r = await saveSkill(
+      WS,
+      { name: "acme", loadWhen: "x", body: "edited by a user" },
+      "u1",
+    );
+    expect(r).toMatchObject({
+      success: true,
+      skill: { name: "acme", created: false },
+    });
+    expect((await findSkillById(WS, skillId(WS, "acme")))?.suppressed).toBe(
+      true,
+    );
+    expect((await findSkill(WS, "acme_v2"))?.aliases).toEqual(["acme"]);
+    expect(await loadSkill(WS, "acme")).toMatchObject({
+      success: true,
+      skill: { name: "acme_v2" },
+    });
+  });
+
+  it("retiring another skill's alias is pinned: a save racing it refuses instead of overwriting", async () => {
+    await commitSkillSave(WS, skill("revenue"));
+    await renameSkill(WS, "revenue", "revenue_v1", "u1");
+    const path = skillFilePath("revenue_v1");
+    const raw = (await fileAt(path))!;
+    race.before = async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        {
+          writes: {
+            [path]: raw.replace("Do the revenue thing.", "edited concurrently"),
+          },
+        },
+        { message: "concurrent edit" },
+      );
+    };
+    const saved = await saveSkill(
+      WS,
+      { name: "revenue", loadWhen: "new", body: "New." },
+      "u1",
+    );
+    expect(saved).toMatchObject({
+      success: false,
+      error: expect.stringContaining("changed on main while saving"),
+    });
+    expect(await fileAt(path)).toContain("edited concurrently");
+    expect(await fileAt(skillFilePath("revenue"))).toBeNull();
   });
 });
 

@@ -83,8 +83,10 @@ export function SkillsSection() {
     setRenameBusy(true);
     setRenameError(null);
     try {
+      // By id: a pending proposal can share a retired name with a live
+      // skill, and the name would rename the live one.
       await renameObject(workspaceId, "skill", {
-        ref: renaming.name,
+        ref: renaming.id,
         slug: next,
       });
       setRenaming(null);

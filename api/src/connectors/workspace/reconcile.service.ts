@@ -152,6 +152,11 @@ async function reconcile(
       );
     }
     row.slug = to;
+    // Git detected this rename (the file may carry no alias): remembered
+    // apart from the file's list so a later file edit cannot drop it.
+    row.detectedAliases = [
+      ...new Set([...(row.detectedAliases ?? []), from]),
+    ].filter(a => a !== to);
     row.aliases = [...new Set([...(row.aliases ?? []), from])].filter(
       a => a !== to && !(row.retiredAliases ?? []).includes(a),
     );
@@ -236,9 +241,18 @@ async function reconcile(
     }
 
     const sourceSha = sourceShaOf(files);
-    // The file's `aliases` are the record that travels; the row mirrors
-    // them (plus any rename git detected on a push that carried none).
-    const aliases = mergedAliases(row, parsed.value.aliases, slug);
+    // The row's aliases = the file's (the record that travels) ∪ what git
+    // detected on a push that carried none − retired ones − anything a
+    // live slug or another row already answers to (first claimant keeps
+    // it; a copied folder's aliases are dropped, and retired, for the
+    // copy — as a copied flow or app loses its identity).
+    const aliases = await mergedAliases(
+      workspaceId,
+      row,
+      parsed.value.aliases,
+      slug,
+      rowBySlug,
+    );
     if (row && row.sourceSha === sourceSha && row.status !== "blocked") {
       // Unchanged content: keep the row, and with it a `verified` status that
       // a real connection test earned. Re-running spec here would demote it.
@@ -292,7 +306,7 @@ async function reconcile(
         result.updated++;
       } else {
         await releaseAliasClaim(workspaceId, slug);
-        await ConnectorDefinition.create({
+        const created = await ConnectorDefinition.create({
           workspaceId,
           slug,
           runtime: parsed.value.runtime,
@@ -304,7 +318,13 @@ async function reconcile(
           entities,
           hasIcon: files.has("icon.svg"),
           aliases,
+          // What the file listed but another connector already holds is
+          // retired for this newcomer, so it never comes back from the file.
+          retiredAliases: parsed.value.aliases.filter(
+            a => !aliases.includes(a) && a !== slug,
+          ),
         });
+        rowBySlug.set(slug, created);
         result.created++;
       }
     } catch (error) {
@@ -336,18 +356,27 @@ async function reconcile(
     // deleted code. Retire the slug on every claimant (durably), so
     // `ws:<slug>` resolves to nothing until a connector takes the name.
     for (const row of stale) {
-      const retired = await ConnectorDefinition.updateMany(
-        { workspaceId, aliases: row.slug, _id: { $ne: row._id } },
-        {
-          $pull: { aliases: row.slug },
-          $addToSet: { retiredAliases: row.slug },
-        },
-      );
-      if (retired.modifiedCount > 0) {
-        logger.warn(
-          "A deleted workspace connector's slug was retired from other connectors' aliases",
-          { workspaceId, slug: row.slug, claimants: retired.modifiedCount },
+      // Its slug AND every alias it answered to: a connection typed by any
+      // of them was created for the deleted code.
+      for (const name of [row.slug, ...(row.aliases ?? [])]) {
+        const retired = await ConnectorDefinition.updateMany(
+          { workspaceId, aliases: name, _id: { $ne: row._id } },
+          {
+            $pull: { aliases: name, detectedAliases: name },
+            $addToSet: { retiredAliases: name },
+          },
         );
+        if (retired.modifiedCount > 0) {
+          logger.warn(
+            "A deleted workspace connector's name was retired from other connectors' aliases",
+            {
+              workspaceId,
+              slug: row.slug,
+              name,
+              claimants: retired.modifiedCount,
+            },
+          );
+        }
       }
     }
     await ConnectorDefinition.deleteMany({
@@ -357,6 +386,7 @@ async function reconcile(
     result.removed = stale.length;
   }
 
+  await adoptSoleClaims(workspaceId);
   return result;
 }
 
@@ -364,15 +394,66 @@ async function reconcile(
 export const CONNECTOR_RENAME_SIMILARITY = 75;
 
 /** The row's alias list after a pass: the file's, plus what git detected. */
-function mergedAliases(
+async function mergedAliases(
+  workspaceId: string,
   row: IConnectorDefinition | undefined,
   fromFile: string[],
   slug: string,
-): string[] {
+  rowBySlug: Map<string, IConnectorDefinition>,
+): Promise<string[]> {
   const retired = new Set(row?.retiredAliases ?? []);
-  return [...new Set([...fromFile, ...(row?.aliases ?? [])])].filter(
-    a => a !== slug && !retired.has(a),
+  const held = new Set(row?.aliases ?? []);
+  const out: string[] = [];
+  for (const alias of new Set([...fromFile, ...(row?.detectedAliases ?? [])])) {
+    if (alias === slug || retired.has(alias)) continue;
+    if (held.has(alias)) {
+      out.push(alias);
+      continue;
+    }
+    // New to this row: nobody else may already answer to it.
+    const other =
+      rowBySlug.get(alias) ??
+      [...rowBySlug.values()].find(
+        r => r !== row && (r.aliases ?? []).includes(alias),
+      );
+    if (other) {
+      retired.add(alias);
+      logger.warn(
+        "A workspace connector lists an alias another connector already answers to; dropped for it",
+        { workspaceId, slug, alias, owner: other.slug },
+      );
+      continue;
+    }
+    out.push(alias);
+  }
+  if (row) row.retiredAliases = [...retired];
+  return out;
+}
+
+/**
+ * (c) of the alias lifecycle: a row that is the SOLE claimant of an alias
+ * — by whatever path it got there — takes the connections typed by it,
+ * so no connection stays typed `ws:<alias>` where a future folder of
+ * that name could claim it. Runs after the pass, over the rows that
+ * remain, in slug order (deterministic, never Mongo's).
+ */
+async function adoptSoleClaims(workspaceId: string): Promise<void> {
+  const rows = (await ConnectorDefinition.find({ workspaceId })).sort((a, b) =>
+    a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0,
   );
+  const live = new Set(rows.map(r => r.slug));
+  const claimants = new Map<string, IConnectorDefinition[]>();
+  for (const r of rows) {
+    for (const alias of r.aliases ?? []) {
+      const list = claimants.get(alias) ?? [];
+      list.push(r);
+      claimants.set(alias, list);
+    }
+  }
+  for (const [alias, list] of claimants) {
+    if (live.has(alias) || list.length !== 1) continue;
+    await migrateSourceConnectionType(workspaceId, alias, list[0].slug);
+  }
 }
 
 function sameList(a: string[], b: string[]): boolean {
@@ -584,13 +665,23 @@ async function releaseAliasClaim(
     aliases: slug,
     ...(exceptId ? { _id: { $ne: exceptId } } : {}),
   });
-  for (const claimant of claimants) {
-    const moved = await migrateSourceConnectionType(
-      workspaceId,
-      slug,
-      claimant.slug,
+  if (claimants.length > 1) {
+    // Nobody can say whose connections those are: left typed ws:<slug>,
+    // which resolves to nothing once the claims are retired below.
+    logger.warn(
+      "A slug taken by a new connector was claimed by several connectors; their connections were left unresolvable",
+      { workspaceId, slug, claimants: claimants.map(c => c.slug) },
     );
+  }
+  for (const claimant of claimants) {
+    const moved =
+      claimants.length === 1
+        ? await migrateSourceConnectionType(workspaceId, slug, claimant.slug)
+        : 0;
     claimant.aliases = (claimant.aliases ?? []).filter(a => a !== slug);
+    claimant.detectedAliases = (claimant.detectedAliases ?? []).filter(
+      a => a !== slug,
+    );
     // Durable: the file still lists the alias and a sync cannot edit the
     // file, so the row remembers the retirement and `mergedAliases`
     // subtracts it on every later pass. Deleting the newcomer must not

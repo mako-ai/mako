@@ -33,6 +33,8 @@ import {
   repoExists,
   resolveCommit,
   updateRefCas,
+  type IndexEntry,
+  type IndexMode,
 } from "../apps/repository.service";
 
 /** Repo-relative root of the dbt project inside the workspace repo. */
@@ -158,10 +160,19 @@ export async function readWorkingFile(
  * Commit a mutation to the dbt tree on the actor's session branch and queue
  * the mirror push. The one write path for saves, deletes and renames.
  */
+export interface DbtMutation {
+  writes?: Record<string, string>;
+  deletes?: string[];
+  /** Blobs moved as they are (oid + mode): an executable or a symlink. */
+  entries?: IndexEntry[];
+  /** Mode for a written path (default 100644). */
+  modes?: Record<string, IndexMode>;
+}
+
 async function commitDbtMutation(
   project: IDbtProject,
   userId: string,
-  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  mutation: DbtMutation,
   message: string,
   expectBlobs?: Record<string, string | null>,
 ): Promise<WriteWorkingFileResult> {
@@ -192,6 +203,13 @@ async function commitDbtMutation(
         Object.entries(mutation.writes ?? {}).map(([p, c]) => [repoPath(p), c]),
       ),
       deletes: (mutation.deletes ?? []).map(repoPath),
+      entries: (mutation.entries ?? []).map(e => ({
+        ...e,
+        path: repoPath(e.path),
+      })),
+      modes: Object.fromEntries(
+        Object.entries(mutation.modes ?? {}).map(([p, m]) => [repoPath(p), m]),
+      ),
     },
     {
       message,
@@ -218,7 +236,7 @@ async function commitDbtMutation(
 export async function commitDbtChanges(
   project: IDbtProject,
   userId: string,
-  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  mutation: DbtMutation,
   message: string,
   expectBlobs?: Record<string, string | null>,
 ): Promise<WriteWorkingFileResult> {
@@ -226,6 +244,7 @@ export async function commitDbtChanges(
     assertSafeDbtPath(path);
   }
   for (const path of mutation.deletes ?? []) assertSafeDbtPath(path);
+  for (const entry of mutation.entries ?? []) assertSafeDbtPath(entry.path);
   return commitDbtMutation(project, userId, mutation, message, expectBlobs);
 }
 

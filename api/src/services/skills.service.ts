@@ -157,18 +157,23 @@ export async function saveSkill(
   // answer from now on. (Updating a renamed skill means naming it by its
   // current name; `renameSkill` is the way to move it.)
   const name = input.name.trim();
-  const resolved = await resolveSkillRef(workspaceId, name);
-  const existing = resolved?.via === "current" ? resolved.skill : null;
+  // A write under `name` acts on the skill whose CURRENT name it is —
+  // suppressed or not — and keeps its flags: editing a pending proposal
+  // keeps it pending; only an explicit approval (toggleSkillSuppressed)
+  // retires another skill's alias. With no such skill, the save creates
+  // one, and a NEW unsuppressed skill under a retired name retires that
+  // alias in the same commit (the live name beats the alias).
+  const catalog = await loadSkillCatalog(workspaceId);
+  const existing = catalog.skills.find(skill => skill.name === name) ?? null;
   const pendingApproval = options.origin === "agent" && !existing;
-  // A SUPPRESSED proposal does not take the name yet: the alias stays on
-  // the real skill until a person activates the proposal (which retires
-  // it then) or saves it non-suppressed.
+  const aliasOwner = existing
+    ? null
+    : ((await resolveSkillRef(workspaceId, name))?.skill ?? null);
   const retireAliasFrom =
-    resolved?.via === "alias" && !pendingApproval
-      ? resolved.skill.name
+    aliasOwner && aliasOwner.name !== name && !pendingApproval
+      ? aliasOwner.name
       : undefined;
   if (!existing) {
-    const catalog = await loadSkillCatalog(workspaceId);
     if (catalog.skills.length >= MAX_WORKSPACE_SKILLS) {
       return {
         success: false,
@@ -208,6 +213,64 @@ export async function saveSkill(
       ...(pendingApproval ? { pendingApproval: true } : {}),
     },
   };
+}
+
+/**
+ * Update a skill by its id — the admin route's path. The id names ONE
+ * file, so a pending proposal that shares a retired name with a live
+ * skill is edited in place and stays pending; nothing is created, no
+ * alias is retired.
+ */
+export async function updateSkillById(
+  workspaceId: string,
+  id: string,
+  patch: {
+    loadWhen?: string;
+    body?: string;
+    entities?: string[];
+    pinned?: boolean;
+  },
+  actorId?: string,
+): Promise<
+  | { success: true; skill: { id: string; name: string } }
+  | { success: false; status: 400 | 404; error: string }
+> {
+  const existing = await findSkillById(workspaceId, id);
+  if (!existing || existing.id !== id) {
+    return { success: false, status: 404, error: "Skill not found" };
+  }
+  const input: SkillInput = {
+    name: existing.name,
+    loadWhen: patch.loadWhen ?? existing.loadWhen,
+    body: patch.body ?? existing.body,
+    entities: patch.entities ?? existing.entities,
+    pinned: patch.pinned ?? existing.pinned,
+  };
+  const validation = validateInput(input);
+  if (validation) return { success: false, status: 400, error: validation };
+  try {
+    await commitSkillSave(
+      workspaceId,
+      {
+        name: existing.name,
+        loadWhen: input.loadWhen.trim(),
+        entities: normalizeEntities(input.entities),
+        suppressed: existing.suppressed,
+        pinned: input.pinned ?? false,
+        aliases: existing.aliases,
+        body: input.body.trim(),
+      },
+      { author: await skillCommitAuthor(actorId) },
+    );
+  } catch (error) {
+    logger.error("Skill update: git commit failed", { workspaceId, error });
+    return {
+      success: false,
+      status: 400,
+      error: `Could not commit the skill to the workspace repository: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  return { success: true, skill: { id: existing.id, name: existing.name } };
 }
 
 export async function skillExists(

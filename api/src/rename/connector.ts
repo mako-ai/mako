@@ -105,6 +105,15 @@ export async function resolveConnector(
   const wsId = new Types.ObjectId(ctx.workspaceId);
   let found = await findConnectorDefinitionRow(ctx.workspaceId, slug);
   if (!found) {
+    // Nothing answers to the name. If that is because the name is claimed
+    // by several rows, or was retired (a deleted connector's name, or one
+    // another connector took), git history must NOT reopen it: resolving
+    // to "where the folder went" would hand the name back.
+    const contested = await ConnectorDefinition.exists({
+      workspaceId: wsId,
+      $or: [{ aliases: slug }, { retiredAliases: slug }],
+    });
+    if (contested) return null;
     // A bare `git mv` not yet reconciled, or older than the index: git
     // still knows where the folder went.
     const repoDir = repoDirFor(ctx.workspaceId);
@@ -318,15 +327,19 @@ export async function renameWorkspaceConnector(
     type: `${WORKSPACE_TYPE_PREFIX}${from}`,
   });
 
-  // Let the index pass see the new tree (it finds the row already re-keyed
-  // and the content hash unchanged, so nothing re-runs; done in the
-  // background so a rename never waits on the sync box).
-  void syncConnectorsFromRepo(ctx.workspaceId, ctx.userId).catch(error => {
+  // Let the index pass see the new tree now, AWAITED: the row is already
+  // re-keyed and the content hash ignores aliases, so the pass runs no
+  // spec and is cheap — and a pass left running in the background outlives
+  // the rename, so a later caller could be handed its stale result (what a
+  // CI run saw: a row from a previous test's tree resurrected).
+  try {
+    await syncConnectorsFromRepo(ctx.workspaceId, ctx.userId);
+  } catch (error) {
     logger.warn("Connector re-index after rename failed", {
       workspaceId: ctx.workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
-  });
+  }
 
   const warnings: string[] = [];
   if (movedConnections > 0) {

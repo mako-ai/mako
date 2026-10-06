@@ -382,6 +382,86 @@ export async function treeOidAt(
   return blobOidAt(repoDir, commit, relPath);
 }
 
+/**
+ * Thrown by `commitBlobsOnBranch` when a written path collides with the
+ * tree: a parent of it is an existing FILE, or it is itself an existing
+ * DIRECTORY. `update-index` would silently replace the one with the other
+ * (`models/a.sql` → `models/a.sql/b.sql` deletes `a.sql`), so it is refused.
+ */
+export class PathConflictError extends Error {
+  constructor(
+    readonly path: string,
+    readonly conflict: string,
+    readonly kind: "file" | "directory",
+  ) {
+    super(
+      kind === "file"
+        ? `${path}: ${conflict} is an existing file, not a folder`
+        : `${path} is an existing folder, not a file`,
+    );
+    this.name = "PathConflictError";
+  }
+}
+
+/** `blob` | `tree` | null for what sits at `path` in `commit`. */
+async function objectTypeAt(
+  repoDir: string,
+  commit: string,
+  relPath: string,
+): Promise<"blob" | "tree" | null> {
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "cat-file",
+      "-t",
+      `${commit}:${relPath}`,
+    ]);
+    const type = stdout.trim();
+    return type === "blob" || type === "tree" ? type : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Refuse a mutation that would turn a file into a folder or a folder into
+ * a file, unless the mutation itself deletes what is in the way.
+ */
+async function assertNoPathConflicts(
+  repoDir: string,
+  head: string,
+  targets: string[],
+  deletes: string[],
+): Promise<void> {
+  const deleted = new Set(deletes);
+  for (const target of targets) {
+    const segments = target.split("/");
+    for (let i = 1; i < segments.length; i++) {
+      const parent = segments.slice(0, i).join("/");
+      if (deleted.has(parent)) continue;
+      if ((await objectTypeAt(repoDir, head, parent)) === "blob") {
+        throw new PathConflictError(target, parent, "file");
+      }
+    }
+    if ((await objectTypeAt(repoDir, head, target)) === "tree") {
+      const { stdout } = await runGit([
+        "-C",
+        repoDir,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        `${head}:${target}`,
+      ]);
+      const inside = stdout.split("\0").filter(Boolean);
+      if (inside.some(rel => !deleted.has(`${target}/${rel}`))) {
+        throw new PathConflictError(target, target, "directory");
+      }
+    }
+  }
+}
+
 export async function commitBlobsOnBranch(
   repoDir: string,
   branch: string,
@@ -445,6 +525,12 @@ export async function commitBlobsOnBranch(
         throw new BlobPreconditionError(rel, expected, actual);
       }
     }
+    await assertNoPathConflicts(
+      repoDir,
+      head,
+      [...writes.map(([rel]) => rel), ...entries.map(e => e.path)],
+      deletes,
+    );
     const headTree = await treeOfCommit(repoDir, head);
     const indexFile = path.join(
       os.tmpdir(),

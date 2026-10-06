@@ -37,8 +37,10 @@ const describe = (block: string) => {
 
 const mutatesGit = (block: string) =>
   block.includes("saveSkill(") ||
+  block.includes("updateSkillById(") ||
   block.includes("deleteSkillById(") ||
-  block.includes("toggleSkillSuppressed(");
+  block.includes("toggleSkillSuppressed(") ||
+  block.includes("setSkillPinned(");
 
 let mutating = 0;
 for (const block of blocks) {

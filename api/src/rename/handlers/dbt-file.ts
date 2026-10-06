@@ -11,7 +11,16 @@ export const dbtFileRenameHandler: RenameHandler = {
     "`ref` is a project-relative path (`models/orders.sql`), `dbt/<path>`, `<projectId>/<path>` or the `/x/<projectId>/file/<path>` URL; `slug` = the new project-relative path (a move), `title` = a new file name in the same folder. Renaming a model or seed renames the dbt node (a snapshot is named by its `{% snapshot %}` block, so its file is just moved): `options.updateRefs` (default true) rewrites `ref('old')` across the project and `--select old` in dbt/jobs/*.yml in the same commit. Commits on the caller's session branch (a workspace API key acts as the user who created it, so on that user's branch). `warnings` list the old warehouse relation and consoles/bindings/dashboards whose SQL still names it.",
   resolve: resolveDbtFile,
   async rename(ctx, request) {
-    const parsed = parseDbtFileRef(request.ref);
+    // Whatever `resolve` accepts — the current path, a URL, or a path the
+    // file has since moved away from — names the file; the move is always
+    // from its CURRENT path.
+    const resolved = await resolveDbtFile(ctx, request.ref);
+    const parsed = resolved
+      ? {
+          projectId: resolved.id.slice(0, resolved.id.indexOf("/")),
+          path: resolved.current.slug as string,
+        }
+      : parseDbtFileRef(request.ref);
     if (!parsed) throw new RenameError("A dbt file path is required", 400);
     let to: string;
     if (request.slug) {

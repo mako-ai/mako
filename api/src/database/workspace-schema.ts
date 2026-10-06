@@ -4380,6 +4380,12 @@ export interface IConnectorDefinition extends Document {
    * index subtracts this list on every pass. Durable without a commit.
    */
   retiredAliases: string[];
+  /**
+   * Aliases git detected on a push that carried none in connector.yaml
+   * (a bare `git mv`). Kept apart from the file's so that editing the
+   * file can remove what the file added, while a detected one stays.
+   */
+  detectedAliases: string[];
   lastCheckedAt?: Date;
   /**
    * Why the last real connection test failed. Distinct from `blockedReason`
@@ -4415,6 +4421,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     hasIcon: { type: Boolean, default: false },
     aliases: { type: [String], default: [] },
     retiredAliases: { type: [String], default: [] },
+    detectedAliases: { type: [String], default: [] },
     lastCheckedAt: { type: Date },
     lastCheckError: { type: String, maxlength: 4000 },
   },
