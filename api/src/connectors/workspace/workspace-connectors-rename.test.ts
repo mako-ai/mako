@@ -168,7 +168,7 @@ const OTHER_TS = [
 ].join("\n");
 
 async function push(
-  mutation: { writes?: Record<string, string | Buffer>; deletes?: string[] },
+  mutation: Parameters<typeof commitBlobsOnBranch>[2],
   message = "push",
 ): Promise<string> {
   const repoDir = repoDirFor(WS);

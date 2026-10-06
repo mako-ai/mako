@@ -62,7 +62,11 @@ beforeEach(async () => {
   ]);
 });
 
-async function definition(slug: string, sha: string, secret: string) {
+async function definition(
+  slug: string,
+  sha: string,
+  secret: string,
+): Promise<{ _id: Types.ObjectId }> {
   return ConnectorDefinition.create({
     workspaceId: WS,
     slug,
@@ -71,7 +75,7 @@ async function definition(slug: string, sha: string, secret: string) {
     status: "indexed",
     entities: [],
     spec: spec(secret),
-  });
+  }) as unknown as Promise<{ _id: Types.ObjectId }>;
 }
 
 async function connection(definitionId: Types.ObjectId | undefined) {
@@ -95,9 +99,9 @@ describe("getSourceConnection honours the connector binding", () => {
       conn._id.toString(),
     );
     expect(ds?.connectorDefinitionId).toBe(a._id.toString());
-    const connector = (await syncConnectorRegistry.getConnectorFor(ds!)) as {
-      definition: () => Promise<{ sha: string }>;
-    };
+    const connector = (await syncConnectorRegistry.getConnectorFor(
+      ds!,
+    )) as unknown as { definition: () => Promise<{ sha: string }> };
     expect((await connector.definition()).sha).toBe("a");
   });
 
