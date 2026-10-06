@@ -221,6 +221,12 @@ export async function checkpointNotebook(
 
   const deletes =
     index.path && index.path !== wantedPath ? [index.path] : undefined;
+  // Writing to a path this notebook does not hold yet — a move, OR its
+  // very first checkpoint — must find that path free at commit time: a
+  // file that lands there between the unique-name check and the commit
+  // (a laptop push) is not overwritten; the next checkpoint picks the
+  // next free name.
+  const newPath = wantedPath !== index.path;
   let result: Awaited<ReturnType<typeof commitBlobsOnBranch>>;
   try {
     result = await commitBlobsOnBranch(
@@ -232,11 +238,7 @@ export async function checkpointNotebook(
           ? `notebook: move to ${wantedPath}`
           : `notebook: checkpoint "${index.name}"`,
         author: actorUserId ? await authorForUser(actorUserId) : undefined,
-        // A move onto a new path must find it free at commit time: a file
-        // that lands there between the unique-name check and the commit
-        // (a laptop push) is not overwritten; the next checkpoint picks
-        // the next free name.
-        expectBlobs: deletes?.length ? { [wantedPath]: null } : undefined,
+        expectBlobs: newPath ? { [wantedPath]: null } : undefined,
       },
     );
   } catch (error) {

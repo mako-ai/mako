@@ -24,7 +24,22 @@ import { NotebookIndex } from "../database/workspace-schema";
 // appear. Delegates to the real freshen afterwards.
 const hooks = vi.hoisted(() => ({
   freshen: vi.fn<(workspaceId: string) => Promise<void> | void>(),
+  // Runs inside the window between a checkpoint's name choice and its
+  // commit (`authorForUser` is awaited exactly there): a test lands a
+  // laptop file from here to exercise the commit's precondition.
+  beforeCommit: vi.fn<() => Promise<void> | void>(),
 }));
+vi.mock("../apps/workspace-consoles.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/workspace-consoles.service")>();
+  return {
+    ...actual,
+    authorForUser: async (...args: Parameters<typeof actual.authorForUser>) => {
+      await hooks.beforeCommit();
+      return actual.authorForUser(...args);
+    },
+  };
+});
 vi.mock("../apps/cloud-repo.service", async importOriginal => {
   const actual =
     await importOriginal<typeof import("../apps/cloud-repo.service")>();
@@ -375,6 +390,49 @@ describe("laptop renames (git mv pushed from a checkout)", () => {
       parseNotebookFile((await fileAt("notebooks/beta-2.deepnote"))!)?.id,
     ).toBe(id);
     expect(await fileAt("notebooks/alpha.deepnote")).toBeNull();
+  });
+
+  it("a FIRST checkpoint also refuses to overwrite a file that lands at its path before the commit", async () => {
+    const id = await seedNotebook("Alpha", "workspace");
+    const laptopId = "44444444-4444-4444-8444-444444444444";
+    const laptop = serializeNotebookFile({
+      id: laptopId,
+      name: "Alpha",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      version: 1,
+      blocks: [{ id: "b1", type: "markdown", source: "# laptop alpha" }],
+    } as never);
+    // The name was chosen (alpha.deepnote, free); a push lands a different
+    // notebook there just before the commit.
+    hooks.beforeCommit.mockImplementationOnce(async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "notebooks/alpha.deepnote": laptop } },
+        { message: "lands in the window" },
+      );
+    });
+    const first = await checkpointNotebook(WS, id, "u1");
+    expect(first).toEqual({ committed: false, skippedReason: "target_taken" });
+    expect(
+      parseNotebookFile((await fileAt("notebooks/alpha.deepnote"))!)?.id,
+    ).toBe(laptopId);
+    expect(
+      (await NotebookIndex.findOne({ notebookId: id }))?.path,
+    ).toBeUndefined();
+    // The next checkpoint sees the file and takes the next free name.
+    const second = await checkpointNotebook(WS, id, "u1");
+    expect(second.committed).toBe(true);
+    expect((await NotebookIndex.findOne({ notebookId: id }))?.path).toBe(
+      "notebooks/alpha-2.deepnote",
+    );
+    expect(
+      parseNotebookFile((await fileAt("notebooks/alpha-2.deepnote"))!)?.id,
+    ).toBe(id);
+    expect(
+      parseNotebookFile((await fileAt("notebooks/alpha.deepnote"))!)?.id,
+    ).toBe(laptopId);
   });
 
   it("a later file with its OWN id never takes over a live notebook whose file vanished", async () => {
