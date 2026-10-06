@@ -126,17 +126,19 @@ export function appPathOf(app: RefApp): string {
 }
 
 /**
- * Find an app by whatever a link carries, exactly as the API resolves it:
- * a 24-hex id → by id; something with a slash → by repo path (with or
- * without the leading `apps/`); a bare slug → the one app with that folder
- * name, else the top-level `apps/<slug>`, else nothing. An ambiguous nested
- * name must NOT silently pick a folder — the server refuses it too, and a
- * client that guessed would open one app while the address bar named another.
- *
- * Only when nothing current matches are `aliases` (previous names of a
- * renamed app) tried, so an old name can never shadow a live one, and only
- * when exactly ONE app claims the alias. Mirrors `findAppInSnapshot` in
- * api/src/apps/app-index.service.ts; keep the two in step.
+ * Find an app by whatever a link carries, exactly as the API resolves it
+ * (`findAppInSnapshot` in api/src/apps/app-index.service.ts; keep the two
+ * in step): a 24-hex id → by id; something with a slash → by repo path
+ * (with or without the leading `apps/`), else the one app whose aliases
+ * name that path; a bare name → the app at `apps/<name>` today, else the
+ * one app whose aliases say `apps/<name>` was its folder (a renamed
+ * top-level app keeps its link even when a nested app has since taken the
+ * bare name — nested apps never had it as a link), else the one app
+ * anywhere with that folder name. A bare name several nested apps share is
+ * ambiguous and final: nothing, never a third app's alias — the server
+ * refuses it too, and a client that guessed would open one app while the
+ * address bar named another. An alias claimed by two apps resolves to
+ * neither.
  */
 export function resolveAppRef<T extends RefApp>(
   apps: readonly T[],
@@ -152,39 +154,45 @@ export function resolveAppRefVia<T extends RefApp>(
 ): { app: T; via: "current" | "alias" } | null {
   const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
   if (!clean) return null;
-  const current = findCurrentApp(apps, clean);
-  if (current) return { app: current, via: "current" };
-  const claimants = apps.filter(a =>
-    (a.aliases ?? []).some(alias => aliasMatchesRef(alias, clean)),
-  );
-  return claimants.length === 1 ? { app: claimants[0], via: "alias" } : null;
-}
-
-function findCurrentApp<T extends RefApp>(
-  apps: readonly T[],
-  clean: string,
-): T | null {
+  const current = (app: T | undefined) =>
+    app ? { app, via: "current" as const } : null;
+  const alias = (app: T | null) =>
+    app ? { app, via: "alias" as const } : null;
   if (/^[0-9a-f]{24}$/i.test(clean)) {
     const lower = clean.toLowerCase();
-    const byId = apps.find(a => a.id.toLowerCase() === lower);
+    const byId = current(apps.find(a => a.id.toLowerCase() === lower));
     if (byId) return byId;
   }
   if (clean.includes("/")) {
     return (
-      apps.find(a => appPathOf(a) === clean) ??
-      apps.find(a => appPathOf(a) === `apps/${clean}`) ??
-      null
+      current(apps.find(a => appPathOf(a) === clean)) ??
+      current(apps.find(a => appPathOf(a) === `apps/${clean}`)) ??
+      alias(findByAlias(apps, clean))
     );
   }
+  const topLevel = current(apps.find(a => appPathOf(a) === `apps/${clean}`));
+  if (topLevel) return topLevel;
+  const wasTopLevel = alias(findByAlias(apps, clean));
+  if (wasTopLevel) return wasTopLevel;
   const matches = apps.filter(a => basenameOf(appPathOf(a)) === clean);
-  if (matches.length === 1) return matches[0];
-  return matches.find(a => appPathOf(a) === `apps/${clean}`) ?? null;
+  return matches.length === 1 ? current(matches[0]) : null;
+}
+
+function findByAlias<T extends RefApp>(
+  apps: readonly T[],
+  clean: string,
+): T | null {
+  const claimants = apps.filter(a =>
+    (a.aliases ?? []).some(alias => aliasMatchesRef(alias, clean)),
+  );
+  return claimants.length === 1 ? claimants[0] : null;
 }
 
 /**
  * Does an alias name the (cleaned) ref? Equal, or equal with or without
- * the leading `apps/`: a bare-slug alias `x` answers `apps/x`, a path alias
- * `apps/S/x` answers `S/x`.
+ * the leading `apps/`: a slug alias `x` (a top-level old name) answers `x`
+ * and `apps/x`; a path alias `apps/S/x` answers `apps/S/x` and `S/x` — and
+ * never the bare `x`.
  */
 export function aliasMatchesRef(alias: string, clean: string): boolean {
   return (
