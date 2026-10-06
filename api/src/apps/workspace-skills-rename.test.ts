@@ -21,6 +21,28 @@ import {
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
+// A commit landing on main inside a rename's read→commit window (another
+// window's save, a laptop push). Fired once, only for the rename's commit.
+const race = vi.hoisted(() => ({
+  before: undefined as undefined | (() => Promise<void>),
+}));
+vi.mock("./repository.service", async importOriginal => {
+  const actual = await importOriginal<typeof import("./repository.service")>();
+  return {
+    ...actual,
+    commitBlobsOnBranch: async (
+      ...args: Parameters<typeof actual.commitBlobsOnBranch>
+    ) => {
+      if (race.before && /^Rename skill/.test(args[3]?.message ?? "")) {
+        const fn = race.before;
+        race.before = undefined;
+        await fn();
+      }
+      return actual.commitBlobsOnBranch(...args);
+    },
+  };
+});
+
 // Spy on the git scan (real implementation) to prove the history cache.
 vi.mock("../rename/git-renames", async importOriginal => {
   const actual = await importOriginal<typeof import("../rename/git-renames")>();
@@ -56,6 +78,7 @@ import {
   skillId,
 } from "./workspace-skills.service";
 import {
+  listSkillsForAdmin,
   loadSkill,
   renameSkill,
   saveSkill,
@@ -526,6 +549,135 @@ describe("commitSkillRename", () => {
     );
     // Nothing moved in any refused case.
     expect(await fileAt(skillFilePath("alpha"))).not.toBeNull();
+  });
+});
+
+describe("moves keep modes and refuse a racing commit", () => {
+  it("an executable helper stays executable, a symlink stays a symlink, blobs move by oid", async () => {
+    await commitSkillSave(WS, skill("tooling"));
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          "skills/tooling/scripts/run.sh": "#!/bin/sh\necho hi\n",
+          "skills/tooling/latest": "SKILL.md",
+          "skills/tooling/references/a.md": "# a\n",
+        },
+        modes: {
+          "skills/tooling/scripts/run.sh": "100755",
+          "skills/tooling/latest": "120000",
+        },
+      },
+      { message: "helpers" },
+    );
+    invalidateSkillCatalog(WS);
+    const head0 = await resolveCommit(repoDirFor(WS), MAIN);
+    const before = Object.fromEntries(
+      (await listTree(repoDirFor(WS), head0!))
+        .filter(e => e.path.startsWith("skills/tooling/"))
+        .map(e => [e.path.slice("skills/tooling/".length), [e.mode, e.oid]]),
+    );
+    expect(before["scripts/run.sh"][0]).toBe("100755");
+    expect(before.latest[0]).toBe("120000");
+    expect((await commitSkillRename(WS, "tooling", "tooling_v2")).ok).toBe(
+      true,
+    );
+    const head1 = await resolveCommit(repoDirFor(WS), MAIN);
+    const after = Object.fromEntries(
+      (await listTree(repoDirFor(WS), head1!))
+        .filter(e => e.path.startsWith("skills/tooling_v2/"))
+        .map(e => [e.path.slice("skills/tooling_v2/".length), [e.mode, e.oid]]),
+    );
+    for (const rel of ["scripts/run.sh", "latest", "references/a.md"]) {
+      expect(after[rel], rel).toEqual(before[rel]);
+    }
+    expect(after["SKILL.md"][1]).not.toBe(before["SKILL.md"][1]);
+  });
+
+  it("an edit to SKILL.md plus an added file landing before the commit: rename refused (409), both kept at the old path", async () => {
+    await commitSkillSave(WS, skill("alpha", undefined));
+    const original = (await fileAt(skillFilePath("alpha")))!;
+    race.before = async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        {
+          writes: {
+            [skillFilePath("alpha")]: original.replace(
+              "Do the alpha thing.",
+              "Body v2 — concurrent edit.",
+            ),
+            "skills/alpha/notes.md": "added concurrently\n",
+          },
+        },
+        { message: "concurrent edit" },
+      );
+    };
+    const refused = await renameSkill(WS, "alpha", "beta", "u1");
+    expect(refused).toMatchObject({
+      success: false,
+      status: 409,
+      error: expect.stringContaining("changed on main while renaming"),
+    });
+    expect(await fileAt(skillFilePath("alpha"))).toContain(
+      "Body v2 — concurrent edit.",
+    );
+    expect(await fileAt("skills/alpha/notes.md")).toBe("added concurrently\n");
+    expect(await fileAt(skillFilePath("beta"))).toBeNull();
+    // With the window closed the rename goes through, carrying both.
+    invalidateSkillCatalog(WS);
+    expect((await renameSkill(WS, "alpha", "beta", "u1")).success).toBe(true);
+    expect(await fileAt(skillFilePath("beta"))).toContain(
+      "Body v2 — concurrent edit.",
+    );
+    expect(await fileAt("skills/beta/notes.md")).toBe("added concurrently\n");
+  });
+});
+
+describe("an unapproved proposal under a renamed skill's old name does not hijack it", () => {
+  it("load_skill(old) still answers with the approved skill; the proposal stays listed and approvable", async () => {
+    await commitSkillSave(WS, skill("acme"));
+    expect((await renameSkill(WS, "acme", "acme_v2", "u1")).success).toBe(true);
+    const proposal = await saveSkill(
+      WS,
+      { name: "acme", loadWhen: "x", body: "UNAPPROVED BODY" },
+      "agent",
+      { origin: "agent" },
+    );
+    expect(proposal).toMatchObject({
+      success: true,
+      skill: { pendingApproval: true },
+    });
+    // Resolution: the suppressed current-name proposal loses to the live alias.
+    expect(await loadSkill(WS, "acme")).toMatchObject({
+      success: true,
+      skill: { name: "acme_v2", suppressed: false },
+    });
+    expect(await resolveSkillRef(WS, "acme")).toMatchObject({
+      via: "alias",
+      skill: { name: "acme_v2" },
+    });
+    // Still in the catalog for the admin UI, by its own id.
+    expect(
+      (await listSkillsForAdmin(WS)).map(s => [s.name, s.suppressed]),
+    ).toEqual([
+      ["acme", true],
+      ["acme_v2", false],
+    ]);
+    expect(await findSkillById(WS, skillId(WS, "acme"))).toMatchObject({
+      name: "acme",
+      suppressed: true,
+    });
+    // Approving it takes the name: the alias is retired and the live name wins.
+    expect(
+      await toggleSkillSuppressed(WS, skillId(WS, "acme"), false, "u1"),
+    ).toBe(true);
+    expect(await loadSkill(WS, "acme")).toMatchObject({
+      success: true,
+      skill: { name: "acme", body: "UNAPPROVED BODY" },
+    });
+    expect((await findSkill(WS, "acme_v2"))?.aliases).toBeUndefined();
   });
 });
 

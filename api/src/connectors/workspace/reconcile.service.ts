@@ -135,6 +135,22 @@ async function reconcile(
   )) {
     const row = rowBySlug.get(from);
     if (!row || rowBySlug.has(to)) continue;
+    // Taking `to` as a live slug: whoever still answered to it as an alias
+    // must stop, and ITS connections typed ws:<to> move to its current
+    // slug first — never over to this connector's code.
+    await releaseAliasClaim(workspaceId, to, String(row._id));
+    const orphans = await SourceConnection.countDocuments({
+      workspaceId,
+      type: `${WORKSPACE_TYPE_PREFIX}${to}`,
+    });
+    if (orphans > 0) {
+      // Connections of a connector that was deleted under this slug: a
+      // push cannot refuse (the UI rename does, with 409), so say it.
+      logger.warn(
+        "A moved workspace connector took a slug that still has connections of a deleted connector",
+        { workspaceId, from, to, connections: orphans },
+      );
+    }
     row.slug = to;
     row.aliases = [...new Set([...(row.aliases ?? []), from])].filter(
       a => a !== to && !(row.retiredAliases ?? []).includes(a),
@@ -314,6 +330,26 @@ async function reconcile(
 
   const stale = rows.filter(row => !seen.has(row.slug));
   if (stale.length > 0) {
+    // A deleted connector's slug is nobody's: a row that still lists it as
+    // an alias (it once held the name) must not inherit the deleted
+    // connector's connections — their credentials were entered for the
+    // deleted code. Retire the slug on every claimant (durably), so
+    // `ws:<slug>` resolves to nothing until a connector takes the name.
+    for (const row of stale) {
+      const retired = await ConnectorDefinition.updateMany(
+        { workspaceId, aliases: row.slug, _id: { $ne: row._id } },
+        {
+          $pull: { aliases: row.slug },
+          $addToSet: { retiredAliases: row.slug },
+        },
+      );
+      if (retired.modifiedCount > 0) {
+        logger.warn(
+          "A deleted workspace connector's slug was retired from other connectors' aliases",
+          { workspaceId, slug: row.slug, claimants: retired.modifiedCount },
+        );
+      }
+    }
     await ConnectorDefinition.deleteMany({
       workspaceId,
       _id: { $in: stale.map(row => row._id) },
@@ -540,10 +576,13 @@ async function runSpec(
 async function releaseAliasClaim(
   workspaceId: string,
   slug: string,
+  /** The row taking the slug — its own alias is handled by the caller. */
+  exceptId?: string,
 ): Promise<void> {
   const claimants = await ConnectorDefinition.find({
     workspaceId,
     aliases: slug,
+    ...(exceptId ? { _id: { $ne: exceptId } } : {}),
   });
   for (const claimant of claimants) {
     const moved = await migrateSourceConnectionType(

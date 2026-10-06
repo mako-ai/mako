@@ -257,8 +257,9 @@ export function stripConnectorAliases(contents: string): string {
   // not the file minus its aliases — the rest must read exactly the same.
   const before = parseConnectorFile(contents);
   const after = parseConnectorFile(stripped);
-  if (!before.ok || !after.ok || after.value.aliases.length > 0)
+  if (!before.ok || !after.ok || after.value.aliases.length > 0) {
     return contents;
+  }
   const rest = (v: ConnectorFile) =>
     JSON.stringify({ ...v, aliases: undefined });
   return rest(before.value) === rest(after.value) ? stripped : contents;

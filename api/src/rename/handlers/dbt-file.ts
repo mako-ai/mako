@@ -8,7 +8,7 @@ import { parseDbtFileRef, renameDbtFile, resolveDbtFile } from "../dbt-file";
 export const dbtFileRenameHandler: RenameHandler = {
   kind: "dbt_file",
   describe:
-    "`ref` is a project-relative path (`models/orders.sql`), `dbt/<path>`, `<projectId>/<path>` or the `/x/<projectId>/file/<path>` URL; `slug` = the new project-relative path (a move), `title` = a new file name in the same folder. Renaming a model/seed/snapshot renames the dbt node: `options.updateRefs` (default true) rewrites `ref('old')` across the project and `--select old` in dbt/jobs/*.yml in the same commit. Commits on your session branch (main for an API key). `warnings` list the old warehouse relation and consoles/bindings/dashboards whose SQL still names it.",
+    "`ref` is a project-relative path (`models/orders.sql`), `dbt/<path>`, `<projectId>/<path>` or the `/x/<projectId>/file/<path>` URL; `slug` = the new project-relative path (a move), `title` = a new file name in the same folder. Renaming a model or seed renames the dbt node (a snapshot is named by its `{% snapshot %}` block, so its file is just moved): `options.updateRefs` (default true) rewrites `ref('old')` across the project and `--select old` in dbt/jobs/*.yml in the same commit. Commits on the caller's session branch (a workspace API key acts as the user who created it, so on that user's branch). `warnings` list the old warehouse relation and consoles/bindings/dashboards whose SQL still names it.",
   resolve: resolveDbtFile,
   async rename(ctx, request) {
     const parsed = parseDbtFileRef(request.ref);

@@ -8,7 +8,8 @@
  * actor's branch:
  *
  *   1. move the file (delete + add, which git shows as a rename);
- *   2. when the file is a model/seed/snapshot and `updateRefs` is on
+ *   2. when the file is a model or seed (not a snapshot — those are named
+ *      by their `{% snapshot %}` block) and `updateRefs` is on
  *      (default), rewrite `ref('old')` across the project and `--select old`
  *      in `dbt/jobs/*.yml` (dbt-ref-rewrite.ts) so the project still
  *      parses;
@@ -17,13 +18,14 @@
  *      dashboards whose SQL names the old relation.
  *
  * WHICH BRANCH. Exactly where the existing dbt writes land
- * (dbt-working-tree.service.ts): the actor's SESSION branch when there is a
- * user, the default branch when there is none (a workspace API key over
- * MCP, which the dbt tools treat as the "agent" actor). Not main by fiat —
- * a rename is an edit like any other, and forcing it onto main would make
- * it the one dbt change teammates on other branches see before it is
- * merged. `result.commit` is the sha on that branch; a warning names the
- * branch when it is not the default one.
+ * (dbt-working-tree.service.ts): the actor's SESSION branch. A workspace
+ * API key over MCP carries its creator as the user, so it commits on
+ * that user's branch; only a caller with no user at all (none today)
+ * falls to the "agent" actor, which the branch policy sends to the
+ * default branch. Not main by fiat — a rename is an edit like any other,
+ * and forcing it onto main would make it the one dbt change teammates on
+ * other branches see before it is merged. `result.commit` is the sha on
+ * that branch; a warning names the branch when it is not the default one.
  *
  * OLD LINKS. There is no alias file for a path, so an old `/x/…/file/<old>`
  * link resolves through git's rename detection (git-renames.ts): the chain
@@ -319,6 +321,10 @@ export async function renameDbtFile(
   const sourceText = sourceRaw.toString("utf8");
   const warnings: string[] = [];
   const rewritten: string[] = [];
+  // Files that still name the old model as a whole word after the rewrite
+  // (plain SQL, YAML selectors, a config key under another folder, …):
+  // Mako does not know what they mean by it, so they are listed.
+  const stillMentioning: string[] = [];
   let jobsTouched = false;
 
   const oldModel = refNameForDbtPath(from);
@@ -365,6 +371,7 @@ export async function renameDbtFile(
               `${path}: command ${JSON.stringify(cmd)} names '${oldModel}' but could not be rewritten in place — edit it by hand.`,
             );
           }
+          if (mentionsName(job.text, oldModel)) stillMentioning.push(path);
           for (const line of job.text.split("\n")) {
             for (const hit of selectorsStillNaming(line, oldModel)) {
               warnings.push(
@@ -381,16 +388,7 @@ export async function renameDbtFile(
             newModel,
             packageName,
           );
-          if (path === "dbt_project.yml" && mentionsName(next.text, oldModel)) {
-            warnings.push(
-              `dbt_project.yml still mentions '${oldModel}' — only the model's own config key (by path) is rewritten.`,
-            );
-          }
-          if (path === "selectors.yml" && mentionsName(next.text, oldModel)) {
-            warnings.push(
-              `selectors.yml still mentions '${oldModel}' — YAML selectors are not rewritten.`,
-            );
-          }
+          if (mentionsName(next.text, oldModel)) stillMentioning.push(path);
         }
         if (next.count > 0) {
           writes[path] = next.text;
@@ -406,9 +404,17 @@ export async function renameDbtFile(
         newModel,
         packageName,
       ).text;
+      if (mentionsName(movedContent, oldModel)) stillMentioning.push(to);
     } else {
       warnings.push(
         `ref('${oldModel}') calls and job selectors were NOT rewritten (updateRefs: false); the project will not parse until they name '${newModel}'.`,
+      );
+    }
+    if (updateRefs && stillMentioning.length > 0) {
+      const shown = stillMentioning.slice(0, WARN_LIST_MAX);
+      const rest = stillMentioning.length - shown.length;
+      warnings.push(
+        `${stillMentioning.length} file${stillMentioning.length === 1 ? " still mentions" : "s still mention"} '${oldModel}' as a whole word after the rewrite — check ${shown.join(", ")}${rest > 0 ? ` and ${rest} more` : ""}.`,
       );
     }
     warnings.push(
