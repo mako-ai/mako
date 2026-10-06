@@ -61,8 +61,9 @@ export interface RemovedSlug {
    */
   target?: string | null;
   /**
-   * The file's contents as last synced (read back from git by the row's
-   * `sourceBlobSha`, or the row's own projection when the blob is gone).
+   * The file's contents as last synced (read back from git by
+   * {@link pairingBaseBlob}, or the row's own projection when the blob is
+   * gone).
    * Absent when neither is available; rule 3 then cannot match this slug.
    */
   contents?: string;
@@ -286,6 +287,42 @@ export async function readBlobByOid(
   }
 }
 
+/**
+ * The blob a removed row is paired against: what main last had for it —
+ * normally its `sourceBlobSha`. But while a rename the row records is NOT
+ * in `head`'s history, the tree being judged grew from the file as it was
+ * BEFORE that rename (a laptop `git mv` that won the mirror moved that
+ * file), and the rename re-stamped `sourceBlobSha` to a blob only the
+ * renaming instance ever had. Then the pre-rename blob (`renameFromBlobSha`,
+ * which was on the mirror's main, so on every instance) is the one git's
+ * rename detection and the identical rule compare against. Falls back to
+ * the other blob; null when neither is in this repo.
+ */
+export async function pairingBaseBlob(
+  repoDir: string,
+  head: string,
+  row: {
+    sourceBlobSha?: string;
+    renameFromBlobSha?: string;
+    lastRenameCommit?: string;
+  },
+): Promise<{ oid: string; contents: string } | null> {
+  const candidates: string[] = [];
+  if (
+    row.renameFromBlobSha &&
+    row.lastRenameCommit &&
+    !(await isAncestorCommit(repoDir, row.lastRenameCommit, head))
+  ) {
+    candidates.push(row.renameFromBlobSha);
+  }
+  if (row.sourceBlobSha) candidates.push(row.sourceBlobSha);
+  for (const oid of candidates) {
+    const contents = await readBlobByOid(repoDir, oid);
+    if (contents !== null) return { oid, contents };
+  }
+  return null;
+}
+
 async function blobExists(repoDir: string, oid: string): Promise<boolean> {
   if (!/^[0-9a-f]{40}$/.test(oid)) return false;
   try {
@@ -331,8 +368,8 @@ async function writeTreeOf(
  * Confining the diff is deliberate. A whole-tree diff between "the commit we
  * last reconciled" and main would need that commit remembered somewhere, and
  * would let an unrelated file that happens to resemble a flow count as a
- * candidate. The row's `sourceBlobSha` IS the last-synced content, and git
- * keeps the blob, so the two trees can be built on the spot.
+ * candidate. The row's last-synced blob ({@link pairingBaseBlob}) IS that
+ * content, and git keeps it, so the two trees can be built on the spot.
  *
  * Entries whose blob is not in the repo are dropped (nothing to compare);
  * a git failure yields no renames rather than an error — this is an input

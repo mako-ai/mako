@@ -74,7 +74,7 @@ import {
   isAncestorCommit,
   mergedAliases,
   pairRenamedSlugs,
-  readBlobByOid,
+  pairingBaseBlob,
   type RemovedSlug,
   type SlugRenamePair,
 } from "../rename/flow-dbt-job-pairing";
@@ -358,18 +358,24 @@ function joinLiveFlows(
   workspaceId: string,
   defs: FlowDefinitionAtMain[],
   rows: IFlow[],
+  /** Rows whose new name another file holds (`foreignHeldFlowIds`). */
+  foreignHeld: ReadonlySet<string> = new Set(),
 ): LiveFlow[] {
   const bySlug = new Map<string, IFlow>();
   for (const row of rows) {
-    if (row.slug) bySlug.set(row.slug, row);
+    if (row.slug && !foreignHeld.has(String(row._id))) {
+      bySlug.set(row.slug, row);
+    }
   }
   // A row whose own file is not here (this instance's cache predates its
-  // rename) and whose old name IS: that file is the row, not a git-only
-  // stranger — listed and opened as the row, under the name this tree has.
+  // rename, or another file took its new name first) and whose old name IS:
+  // that file is the row, not a git-only stranger — listed and opened as
+  // the row, under the name this tree has.
   const defSlugs = new Set(defs.map(def => def.slug));
   const byAliasOfOrphan = new Map<string, IFlow>();
   for (const row of rows) {
-    if (!row.slug || defSlugs.has(row.slug)) continue;
+    if (!row.slug) continue;
+    if (defSlugs.has(row.slug) && !foreignHeld.has(String(row._id))) continue;
     for (const alias of row.aliases ?? []) {
       if (!bySlug.has(alias)) byAliasOfOrphan.set(alias, row);
     }
@@ -395,7 +401,44 @@ export async function loadLiveFlows(workspaceId: string): Promise<LiveFlow[]> {
   if (status === "unbound") return [];
   const defs = await listFlowDefinitionsAtMain(workspaceId);
   const rows = await Flow.find({ workspaceId });
-  return joinLiveFlows(workspaceId, defs, rows);
+  return joinLiveFlows(
+    workspaceId,
+    defs,
+    rows,
+    await foreignHeldFlowIds(workspaceId, defs, rows),
+  );
+}
+
+/**
+ * Rows (by id) whose new name another file holds while their rename has not
+ * landed here — what is left of that race on a tree the read path could not
+ * verify (on a verified one it has been settled away by now). Their slug's
+ * file is listed as what it is, a file of its own; the row is listed under
+ * its old-name file, as on any instance whose view predates its rename.
+ */
+async function foreignHeldFlowIds(
+  workspaceId: string,
+  defs: FlowDefinitionAtMain[],
+  rows: IFlow[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const guarded = rows.filter(row => row.lastRenameCommit && row.slug);
+  if (guarded.length === 0) return out;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return out;
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!head) return out;
+  const bySlug = new Map(defs.map(def => [def.slug, def] as const));
+  for (const row of guarded) {
+    const def = bySlug.get(row.slug as string);
+    if (
+      def &&
+      (await foreignFileAtRenamedSlug(repoDir, head, row, def.parsed))
+    ) {
+      out.add(String(row._id));
+    }
+  }
+  return out;
 }
 
 /**
@@ -436,6 +479,28 @@ export async function loadLiveFlowById(
         const fresh = await Flow.findById(current._id);
         if (fresh) current = fresh;
         def = defs.find(item => item.slug === current.slug);
+      }
+    }
+    if (def && current.lastRenameCommit) {
+      // Another file holding the row's new name is not its file (see
+      // foreignFileAtRenamedSlug): settled away from it on a verified tree,
+      // else the row is served as if its file were missing here.
+      const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+      if (
+        head &&
+        (await foreignFileAtRenamedSlug(repoDir, head, current, def.parsed))
+      ) {
+        const settled = await settleLostRenamesForRead({
+          workspaceId,
+          repoDir,
+          defs,
+          rows: [current],
+        });
+        const fresh = settled ? await Flow.findById(current._id) : null;
+        if (fresh) current = fresh;
+        def = settled
+          ? defs.find(item => item.slug === current.slug)
+          : undefined;
       }
     }
     if (!def) {
@@ -562,8 +627,11 @@ export async function ensureFlowDerivedCache(flow: {
     return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
   }
   const path = `flows/${flow.slug}.yml`;
+  // The commit the file was last read at (set inside readAtMain).
+  const read: { head: string | null } = { head: null };
   const readAtMain = async () => {
     const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+    read.head = head ?? null;
     if (!head) return null;
     try {
       return await readBlob(repoDir, head, path);
@@ -638,9 +706,37 @@ export async function ensureFlowDerivedCache(flow: {
   const parsed = parseFlowFile(contents);
   const row = await Flow.findById(flow._id);
   if (!row) return "missing";
+  // Re-keyed since the caller read it (a settle step moved it, possibly in
+  // this very pass): `path` is no longer its file. Judged where it is now.
+  if (row.slug !== flow.slug) return ensureFlowDerivedCache(row);
   if (!parsed) {
     await markFlowInvalid(row, "unparseable flow file", path, sha);
     return "invalid";
+  }
+  if (
+    read.head &&
+    (await foreignFileAtRenamedSlug(repoDir, read.head, row, parsed))
+  ) {
+    // Another file took this row's new name before its rename landed: not
+    // this row's definition (see foreignFileAtRenamedSlug). Settled as the
+    // sync would — on a verified tree the row goes back to an old name —
+    // and the settled row judged; otherwise this run is refused and nothing
+    // changes, as for a missing file.
+    const defs = await listFlowDefinitionsAtMain(workspaceId);
+    if (
+      await settleLostRenamesForRead({
+        workspaceId,
+        repoDir,
+        defs,
+        rows: [row],
+      })
+    ) {
+      const settled = await Flow.findById(flow._id);
+      if (settled && settled.slug !== flow.slug) {
+        return ensureFlowDerivedCache(settled);
+      }
+    }
+    return "missing";
   }
   let refusal: string | null;
   try {
@@ -868,6 +964,9 @@ export async function rekeyFlowSlug(
           : {}),
       },
       ...(recordOldAsAlias ? { $addToSet: { aliases: from } } : {}),
+      // A new guard is a move the tree already holds: the blob an earlier,
+      // unlanded rename started from no longer describes anything.
+      ...(commit ? { $unset: { renameFromBlobSha: 1 } } : {}),
     },
   );
 }
@@ -991,6 +1090,38 @@ async function renameGuardActive(
   return !(await isAncestorCommit(repoDir, row.lastRenameCommit, head));
 }
 
+/**
+ * Whether the file under a renamed row's NEW name is that row's: the same
+ * stream (source and destination), or a file that says it used to be one of
+ * the row's old names. Anything else there is another file that took the
+ * name first — a laptop push that won the mirror — and is not this row's
+ * definition, whatever its slug.
+ */
+function renamedRowOwnsFile(row: IFlow, file: FlowFile): boolean {
+  if (sameFlowTarget(row, file)) return true;
+  const aliases = row.aliases ?? [];
+  return (file.aliases ?? []).some(alias => aliases.includes(alias));
+}
+
+/**
+ * The row's recorded rename is not in `head`'s history (whatever its age)
+ * and the parsed file under its current slug is someone else's (see
+ * `renamedRowOwnsFile`). Such a file is never applied to the row — not by
+ * the push-sync, not by a read path: it would hand the row's checkpoints and
+ * webhook URL to an unrelated stream. A file that does not parse is never
+ * applied anyway and is not judged here.
+ */
+async function foreignFileAtRenamedSlug(
+  repoDir: string,
+  head: string,
+  row: IFlow,
+  file: FlowFile | null,
+): Promise<boolean> {
+  if (!row.lastRenameCommit || file === null) return false;
+  if (renamedRowOwnsFile(row, file)) return false;
+  return !(await isAncestorCommit(repoDir, row.lastRenameCommit, head));
+}
+
 /** What the settle step needs to know about the tree it judges. */
 interface RenameSettleContext {
   workspaceId: string;
@@ -1008,7 +1139,17 @@ interface RenameSettleContext {
  *
  *  - The commit is in `head`'s history, or the file at the row's current
  *    slug is in the tree under some other commit (a history rewrite kept
- *    the tree): the rename landed. The guard is cleared.
+ *    the tree) AND is the row's own (`renamedRowOwnsFile`: same stream, or
+ *    it lists one of the row's old names): the rename landed. The guard is
+ *    cleared.
+ *  - The file at the row's current slug is SOMEONE ELSE's (another source or
+ *    destination, no shared old name — a laptop push that took the name
+ *    first): the rename can never land (the mirror refuses its push, and
+ *    the name is taken), so it is lost now, whatever the guard's age. The
+ *    row must vacate the name — that file is a flow of its own — and goes
+ *    back as below; failing a same-stream file, to the name it had before
+ *    the rename (one with no file in this tree first), as if the rename had
+ *    never been made, and is then judged on this tree like any other row.
  *  - The guard has expired and the tree still has the file under one of
  *    the row's OLD names: the rename commit never reached main, and the
  *    tree is the truth. The row is re-keyed back — to the most recent old
@@ -1020,7 +1161,12 @@ interface RenameSettleContext {
  *    candidate like any other.
  *  - Recent and absent: kept; the callers honour it.
  *
- * `clear` is scoped to the guard that was judged (`lastRenameCommit:
+ * A LOST rename also hands the row back the blob it started from
+ * (`renameFromBlobSha` → `sourceBlobSha`): the rename never happened on
+ * main, so that is what main last had for this row, and it is the blob a
+ * laptop move is paired against afterwards — one every instance has.
+ *
+ * The clears are scoped to the guard that was judged (`lastRenameCommit:
  * <commit>`), so a newer guard written concurrently by another rename
  * survives.
  */
@@ -1030,55 +1176,97 @@ async function settleFlowRenameGuard(
 ): Promise<"kept" | "cleared" | "rekeyed"> {
   const { workspaceId, repoDir, head, fileSlugs, parsedFileAt } = ctx;
   const commit = row.lastRenameCommit as string;
-  const clear = () =>
-    Flow.updateOne(
-      { _id: row._id, lastRenameCommit: commit },
-      { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
-    );
-  if (await isAncestorCommit(repoDir, commit, head)) {
-    await clear();
-    return "cleared";
-  }
-  if (row.slug && fileSlugs.has(row.slug)) {
-    logger.info("Flow rename present in the tree under another commit", {
-      workspaceId,
-      slug: row.slug,
-      lastRenameCommit: commit,
+  const guard = { _id: row._id, lastRenameCommit: commit };
+  const unsetGuard = {
+    lastRenameCommit: 1,
+    lastRenameAt: 1,
+    renameFromBlobSha: 1,
+  } as const;
+  const clearLanded = () => Flow.updateOne(guard, { $unset: unsetGuard });
+  const clearLost = () =>
+    Flow.updateOne(guard, {
+      $unset: unsetGuard,
+      ...(row.renameFromBlobSha
+        ? { $set: { sourceBlobSha: row.renameFromBlobSha } }
+        : {}),
     });
-    await clear();
+  if (await isAncestorCommit(repoDir, commit, head)) {
+    await clearLanded();
     return "cleared";
   }
-  const age = row.lastRenameAt
-    ? Date.now() - row.lastRenameAt.getTime()
-    : Infinity;
-  if (age <= RENAME_GUARD_MS) return "kept";
-  const oldSlug = [...(row.aliases ?? [])].reverse().find(alias => {
+  const sameStreamOldSlug = [...(row.aliases ?? [])].reverse().find(alias => {
     if (!fileSlugs.has(alias)) return false;
     const parsed = parsedFileAt(alias);
     return parsed !== null && sameFlowTarget(row, parsed);
   });
-  if (row.slug && oldSlug) {
+  let lostNow = false;
+  if (row.slug && fileSlugs.has(row.slug)) {
+    const atSlug = parsedFileAt(row.slug);
+    // A file that does not parse is never applied, so it cannot hand this
+    // row someone else's definition: it counts as landed (marked invalid
+    // by the loop) unless the row's stream is still under an old name.
+    const landed =
+      atSlug === null
+        ? sameStreamOldSlug === undefined
+        : renamedRowOwnsFile(row, atSlug);
+    if (landed) {
+      logger.info("Flow rename present in the tree under another commit", {
+        workspaceId,
+        slug: row.slug,
+        lastRenameCommit: commit,
+      });
+      await clearLanded();
+      return "cleared";
+    }
+    lostNow = true;
+  }
+  const age = row.lastRenameAt
+    ? Date.now() - row.lastRenameAt.getTime()
+    : Infinity;
+  if (!lostNow && age <= RENAME_GUARD_MS) return "kept";
+  let back = sameStreamOldSlug;
+  if (back === undefined && lostNow) {
+    const newestFirst = [...(row.aliases ?? [])].reverse();
+    const free: string[] = [];
+    for (const alias of newestFirst) {
+      const held = await Flow.exists({
+        workspaceId,
+        slug: alias,
+        _id: { $ne: row._id },
+      });
+      if (!held) free.push(alias);
+    }
+    back = free.find(alias => !fileSlugs.has(alias)) ?? free[0];
+  }
+  if (row.slug && back !== undefined) {
     logger.error(
-      "Flow rename commit never reached main; re-keying the row back to the file the tree has",
+      lostNow
+        ? "Flow rename lost its new name to another file on main; re-keying the row back so that file can be a flow of its own"
+        : "Flow rename commit never reached main; re-keying the row back to the file the tree has",
       {
         workspaceId,
         flowId: String(row._id),
         renamedTo: row.slug,
-        revertedTo: oldSlug,
+        revertedTo: back,
+        sameStream: back === sameStreamOldSlug,
         lastRenameCommit: commit,
       },
     );
-    await rekeyFlowSlug(
-      row._id as Types.ObjectId,
-      row.slug,
-      oldSlug,
-      undefined,
-      {
-        recordOldAsAlias: false,
-      },
-    );
-    await clear();
+    await rekeyFlowSlug(row._id as Types.ObjectId, row.slug, back, undefined, {
+      recordOldAsAlias: false,
+    });
+    await clearLost();
     return "rekeyed";
+  }
+  if (lostNow) {
+    // No old name to go back to (none recorded, or every one held by
+    // another row): kept as it is. The sync and the read paths still never
+    // apply the other file to it (`foreignFileAtRenamedSlug`).
+    logger.error(
+      "Flow rename lost its new name to another file on main, and the row has no free old name to go back to; keeping it",
+      { workspaceId, flowId: String(row._id), slug: row.slug },
+    );
+    return "kept";
   }
   logger.warn("Flow rename commit never reached main; trusting the tree", {
     workspaceId,
@@ -1086,7 +1274,7 @@ async function settleFlowRenameGuard(
     slug: row.slug,
     lastRenameCommit: commit,
   });
-  await clear();
+  await clearLost();
   return "cleared";
 }
 
@@ -1129,10 +1317,10 @@ async function settleRenameGuards(args: {
  * check): a rename whose commit never reached main, with no push after the
  * guard expired, would otherwise stay wedged — the row's file is nowhere,
  * so runs are refused, the list shows the old name as a placeholder and
- * the row 404s — until some unrelated push ran the sync. Rows whose file
- * is missing from `defs` and that carry a guard are settled here exactly
- * as the sync would, on a verified tree. Returns true when a row was
- * re-keyed (the caller re-reads).
+ * the row 404s — until some unrelated push ran the sync. Rows that carry a
+ * guard and whose file is missing from `defs` — or whose new name another
+ * file holds — are settled here exactly as the sync would, on a verified
+ * tree. Returns true when a row was re-keyed (the caller re-reads).
  */
 export async function settleLostRenamesForRead(args: {
   workspaceId: string;
@@ -1143,16 +1331,23 @@ export async function settleLostRenamesForRead(args: {
 }): Promise<boolean> {
   const { workspaceId, repoDir, defs } = args;
   const fileSlugs = new Set(defs.map(def => def.slug));
+  const bySlug = new Map(defs.map(def => [def.slug, def] as const));
+  // Its file is missing — or another file holds its new name (a rename
+  // that lost that name: settled the same way, see settleFlowRenameGuard).
   const candidates = (
     args.rows ??
     (await Flow.find({ workspaceId, lastRenameCommit: { $exists: true } }))
-  ).filter(row => row.lastRenameCommit && row.slug && !fileSlugs.has(row.slug));
+  ).filter(row => {
+    if (!row.lastRenameCommit || !row.slug) return false;
+    if (!fileSlugs.has(row.slug)) return true;
+    const parsed = bySlug.get(row.slug)?.parsed ?? null;
+    return parsed !== null && !renamedRowOwnsFile(row, parsed);
+  });
   if (candidates.length === 0) return false;
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) return false;
   const treeIsCurrent = currentTreeCheck(workspaceId, head);
   if (!(await treeIsCurrent())) return false;
-  const bySlug = new Map(defs.map(def => [def.slug, def] as const));
   let rekeyed = false;
   for (const row of candidates) {
     const outcome = await settleFlowRenameGuard(row, {
@@ -1331,14 +1526,17 @@ export async function rekeyRenamedFlows(args: {
   if (removedRows.length === 0 || addedFiles.length === 0) return [];
 
   const removed: RemovedSlug[] = [];
+  const baseOids: Array<string | undefined> = [];
   for (const row of removedRows) {
     const slug = row.slug as string;
-    // The file as it was when last synced: git still has the blob. When it
-    // does not (a row stamped before blobs were recorded), the row's own
-    // projection stands in — the same bytes the write-through would commit.
-    let contents = row.sourceBlobSha
-      ? await readBlobByOid(repoDir, row.sourceBlobSha)
-      : null;
+    // The file as main last had it: git still has the blob — the one the
+    // rename started from when the tree does not hold the row's rename
+    // (`pairingBaseBlob`). When neither is here (a row stamped before blobs
+    // were recorded), the row's own projection stands in — the same bytes
+    // the write-through would commit.
+    const base = await pairingBaseBlob(repoDir, head, row);
+    baseOids.push(base?.oid);
+    let contents = base?.contents ?? null;
     if (contents === null) {
       try {
         contents = serializeFlowFile(flowToFile(row));
@@ -1366,9 +1564,9 @@ export async function rekeyRenamedFlows(args: {
   const gitRenames = new Map<string, string>();
   for (const [from, to] of await detectGitRenames(
     repoDir,
-    removedRows.map(row => ({
+    removedRows.map((row, i) => ({
       path: flowFilePath(row.slug as string),
-      oid: row.sourceBlobSha,
+      oid: baseOids[i],
     })),
     addedFiles.map(([slug, file]) => ({
       path: flowFilePath(slug),
@@ -1643,20 +1841,21 @@ export async function syncFlowsFromRepo(
       reason,
     });
   });
+  const parsedCache = new Map<string, FlowFile | null>();
+  const parsedFileAt = (slug: string): FlowFile | null => {
+    if (!parsedCache.has(slug)) {
+      const file = files.find(f => slugFromFlowFilePath(f.path) === slug);
+      parsedCache.set(slug, file ? parseFlowFile(file.contents) : null);
+    }
+    return parsedCache.get(slug) ?? null;
+  };
   try {
-    const parsedCache = new Map<string, FlowFile | null>();
     await settleRenameGuards({
       workspaceId,
       repoDir,
       head,
       fileSlugs,
-      parsedFileAt: slug => {
-        if (!parsedCache.has(slug)) {
-          const file = files.find(f => slugFromFlowFilePath(f.path) === slug);
-          parsedCache.set(slug, file ? parseFlowFile(file.contents) : null);
-        }
-        return parsedCache.get(slug) ?? null;
-      },
+      parsedFileAt,
       treeIsCurrent,
     });
   } catch (error) {
@@ -1691,6 +1890,32 @@ export async function syncFlowsFromRepo(
     const sha = oid;
     const parsedForDesired = parseFlowFile(contents);
     let row = await Flow.findOne({ workspaceId, slug });
+    // Another file under the new name of a rename that has not landed here
+    // (the settle step re-keys such a row away on a verified tree; this is
+    // what is left on one it could not verify): never this row's
+    // definition. The row is kept exactly as it is — its own definition
+    // stands in for the reconciler — and the file waits for the name to be
+    // free; it becomes a flow of its own then, not a takeover of this one.
+    if (
+      row &&
+      (await foreignFileAtRenamedSlug(repoDir, head, row, parsedForDesired))
+    ) {
+      logger.warn(
+        "Another file holds a renamed flow's new name; not applying it to that flow",
+        {
+          workspaceId,
+          path,
+          flowId: String(row._id),
+          lastRenameCommit: row.lastRenameCommit,
+        },
+      );
+      const flowId = String(row._id);
+      if (!desired.some(d => d.flowId === flowId)) {
+        desired.push({ slug, file: flowToFile(row), flowId });
+      }
+      result.unchanged++;
+      continue;
+    }
     // The desired set is EVERY file present, not only the changed ones: the
     // reconciler derives removals from it, so omitting an unchanged file would
     // read as "this flow was deleted" and tear down a live stream.
@@ -1774,8 +1999,18 @@ export async function syncFlowsFromRepo(
         // a name flip is recoverable, a teardown (checkpoints, executions,
         // webhook URL) is not. An unrelated file that merely reuses the
         // name (a different target) is created normally.
+        // ("Not in this tree" includes another file holding its new name:
+        // that one is not its file — see foreignFileAtRenamedSlug.)
+        const claimantFileHere =
+          fileSlugs.has(claimant.slug) &&
+          !(await foreignFileAtRenamedSlug(
+            repoDir,
+            head,
+            claimant,
+            parsedFileAt(claimant.slug),
+          ));
         const sameStream =
-          !fileSlugs.has(claimant.slug) && sameFlowTarget(claimant, parsed);
+          !claimantFileHere && sameFlowTarget(claimant, parsed);
         const keep = guarded || (sameStream && !(await treeIsCurrent()));
         if (keep) {
           logger.info("Tree predates a flow rename; keeping the renamed row", {

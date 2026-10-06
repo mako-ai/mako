@@ -981,6 +981,14 @@ export interface IFlow extends Document {
    */
   lastRenameAt?: Date;
   /**
+   * Git blob id of the file BEFORE the last rename moved it — the blob every
+   * instance has, since it was on the mirror's main. While the guard holds,
+   * the push-sync's pairing compares against this (not `sourceBlobSha`,
+   * which the rename re-stamps to a blob only the renaming instance may
+   * have), so a laptop move that won the mirror still re-keys the row.
+   */
+  renameFromBlobSha?: string;
+  /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
    * file itself. Derived cache — git is the store.
@@ -2363,6 +2371,7 @@ const FlowSchema = new Schema<IFlow>(
     },
     lastRenameCommit: { type: String },
     lastRenameAt: { type: Date },
+    renameFromBlobSha: { type: String },
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
@@ -4723,6 +4732,8 @@ export interface IDbtJob extends Document {
   lastRenameCommit?: string;
   /** When it was made; see IFlow.lastRenameAt. */
   lastRenameAt?: Date;
+  /** The file's blob before the last rename; see IFlow.renameFromBlobSha. */
+  renameFromBlobSha?: string;
   sourceBlobSha?: string;
   /** The blob at main this row last saw, valid or not; see IFlow.lastSeenBlobSha. */
   lastSeenBlobSha?: string;
@@ -4775,6 +4786,7 @@ const DbtJobSchema = new Schema<IDbtJob>(
     aliases: { type: [String], default: undefined },
     lastRenameCommit: { type: String },
     lastRenameAt: { type: Date },
+    renameFromBlobSha: { type: String },
     sourceBlobSha: { type: String },
     lastSeenBlobSha: { type: String },
     definitionInvalid: {
