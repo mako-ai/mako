@@ -460,6 +460,71 @@ describe("names that differ only in letter case are one name (one file on macOS 
   });
 });
 
+describe("a console in the trash holds no name", () => {
+  it("a first save (Save dialog, and a draft's) under a trashed console's name goes through; the trashed one comes back as 'name (2)'", async () => {
+    const w = await save("Weekly", "SELECT 'old'\n", OWNER, "workspace");
+    expect((await req("DELETE", `/${w._id}`, {}, OWNER)).status).toBe(200);
+
+    // The Save dialog's first save: POST with the new console's id.
+    const fresh = new Types.ObjectId().toString();
+    const post = await req(
+      "POST",
+      "",
+      {
+        id: fresh,
+        path: "Weekly",
+        content: "SELECT 'new'\n",
+        access: "workspace",
+        isPrivate: false,
+      },
+      OWNER,
+    );
+    expect(post.status).toBe(201);
+    expect((await SavedConsole.findById(fresh))?.path).toBe(
+      "consoles/Weekly.sql",
+    );
+
+    // A draft's first save under another trashed name.
+    const m = await save("Monthly", "SELECT 'm'\n", OWNER, "workspace");
+    expect((await req("DELETE", `/${m._id}`, {}, OWNER)).status).toBe(200);
+    const draft = await SavedConsole.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "Untitled",
+      code: "SELECT 'draft'",
+      language: "sql",
+      isSaved: false,
+      access: "workspace",
+      isPrivate: false,
+      owner_id: OWNER,
+      createdBy: OWNER,
+    });
+    const put = await req(
+      "PUT",
+      `/${draft._id}`,
+      {
+        content: "SELECT 'draft'\n",
+        path: "Monthly",
+        isSaved: true,
+        access: "workspace",
+      },
+      OWNER,
+    );
+    expect(put.status).toBe(200);
+    expect((await SavedConsole.findById(draft._id))?.path).toBe(
+      "consoles/Monthly.sql",
+    );
+
+    // Restoring the trashed one does not take the name back.
+    expect((await req("PATCH", `/${w._id}/restore`, {}, OWNER)).status).toBe(
+      200,
+    );
+    expect((await SavedConsole.findById(w._id))?.path).toBe(
+      "consoles/Weekly (2).sql",
+    );
+    expect(await fileAt("consoles/Weekly.sql")).toContain("'new'");
+  });
+});
+
 describe("a save never moves a console back", () => {
   it("a stale tab's save (old name, old revision) is refused BEFORE anything moves", async () => {
     const c = await save("Revenue Daily", "SELECT 1\n", OWNER, "workspace");

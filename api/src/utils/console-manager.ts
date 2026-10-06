@@ -2472,6 +2472,9 @@ export class ConsoleManager {
         name: consoleName,
         workspaceId: new Types.ObjectId(workspaceId),
         isSaved: true, // Only match saved consoles, not drafts
+        // A console in the trash holds no name: its file is gone, nothing
+        // shows there, and a restore picks "name (2)" when it is taken.
+        is_deleted: { $ne: true },
       };
 
       if (folderId) {
