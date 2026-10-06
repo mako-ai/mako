@@ -1370,6 +1370,45 @@ export function syncConsolesIndexFromRepo(
   return run;
 }
 
+/**
+ * Give each console file that sits in a folder with no folder record (in
+ * the file's scope) that record, and point its row at it — what the index
+ * sync does for a pushed file, for files whose rows it skips as current: a
+ * copy made before copies were filed in the copier's own folders kept the
+ * ORIGINAL's folder id (another member's private folder) while its file
+ * sits under the copier's `users/<id>/consoles/Team Drafts/`; the tree
+ * listed it at the root, the breadcrumb (from the file) said "My Consoles
+ * › Team Drafts". Serialized with the sync, so a folder is created once.
+ */
+export function ensureConsoleFolderRecords(
+  workspaceId: string,
+  files: Array<{
+    rowId?: Types.ObjectId;
+    segments: string[];
+    access: ConsoleAccessLevel;
+    ownerId?: string;
+  }>,
+): Promise<void> {
+  if (files.length === 0) return Promise.resolve();
+  return serialized(workspaceId, async () => {
+    for (const file of files) {
+      const folderId = await ensureFolderChain(file.segments, workspaceId, {
+        access: file.access,
+        ownerId: file.ownerId,
+      });
+      if (file.rowId && folderId) {
+        await SavedConsole.updateOne(
+          {
+            _id: file.rowId,
+            workspaceId: new Types.ObjectId(workspaceId),
+          },
+          { $set: { folderId } },
+        );
+      }
+    }
+  });
+}
+
 /** The newest sync queued per workspace, while it is still pending. */
 const latestSync = new Map<string, Promise<ConsoleSyncStats | null>>();
 
