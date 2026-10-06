@@ -129,6 +129,28 @@ export async function validateFlowFile(input: {
     );
   }
 
+  // ---- aliases: old names this file still answers to ----------------------
+  for (const alias of file.aliases ?? []) {
+    if (alias === slug) {
+      add(
+        `\`aliases:\` lists \`${slug}\`, which is this file's own slug — an alias is a PREVIOUS name`,
+      );
+      continue;
+    }
+    // Harmless but pointless: a current slug always beats an alias, so this
+    // entry would never resolve. Said as a note, not a refusal.
+    const holder = await Flow.findOne({ workspaceId, slug: alias })
+      .select("_id")
+      .lean();
+    if (holder) {
+      problems.push({
+        path,
+        slug,
+        reason: `note: alias \`${alias}\` is another flow's current slug, so it resolves to that flow, not this one`,
+      });
+    }
+  }
+
   // ---- the slug is identity: free, or already this flow's ----------------
   const existing = await Flow.findOne({ workspaceId, slug })
     .select("_id")
@@ -154,6 +176,7 @@ export async function validateFlowFiles(input: {
 }): Promise<FlowValidation> {
   const problems: FlowFileProblem[] = [];
   const seen = new Map<string, string>();
+  const aliasSeen = new Map<string, string>();
 
   for (const f of input.files) {
     const one = await validateFlowFile({
@@ -162,6 +185,24 @@ export async function validateFlowFiles(input: {
       contents: f.contents,
     });
     problems.push(...one.problems);
+
+    // One old name claimed by two files resolves to NEITHER (an ambiguous
+    // alias is never guessed), so every old link to it goes dead.
+    const parsed = parseFlowFileResult(f.contents);
+    if (parsed.ok) {
+      for (const alias of parsed.file.aliases ?? []) {
+        const first = aliasSeen.get(alias);
+        if (first && first !== f.path) {
+          problems.push({
+            path: f.path,
+            slug: slugFromFlowFilePath(f.path) ?? undefined,
+            reason: `alias \`${alias}\` is also claimed by \`${first}\`; an alias two flows claim resolves to neither`,
+          });
+        } else {
+          aliasSeen.set(alias, f.path);
+        }
+      }
+    }
 
     // Two files claiming one slug is not visible file-by-file, and the loser
     // would be silently overwritten by whichever the tree walk reached last.

@@ -352,11 +352,17 @@ async function computePlan(input: {
   });
 
   const bySlug = new Map<string, IFlow>();
+  const byId = new Map<string, IFlow>();
   for (const flow of existing) {
     if (flow.slug) bySlug.set(flow.slug, flow);
+    byId.set((flow._id as Types.ObjectId).toString(), flow);
   }
+  // A desired slug with no row of that slug is a create — unless it names
+  // an existing row by id: that is a rename in flight (the live path has
+  // re-keyed the row by now; a dry-run hands the paired row's id over), and
+  // it would be wrong to promise a new flow for it.
   const wouldCreate = desired
-    .filter(d => !bySlug.has(d.slug))
+    .filter(d => !bySlug.has(d.slug) && !(d.flowId && byId.has(d.flowId)))
     .map(d => d.slug)
     .sort();
 
@@ -364,7 +370,9 @@ async function computePlan(input: {
   // both sit behind the same guard and both belong in the same plan.
   const perFlowStale = new Map<string, { flow: IFlow; stale: string[] }>();
   for (const item of desired) {
-    const flow = bySlug.get(item.slug);
+    const flow =
+      bySlug.get(item.slug) ??
+      (item.flowId ? byId.get(item.flowId) : undefined);
     if (!flow) continue;
     const stale = await staleEntitiesFor(
       flow,

@@ -91,20 +91,30 @@ export async function resolveResourceDisplayName(params: {
   }
 }
 
+/**
+ * The in-app path a run notification links to. These are the client's real
+ * routes (`app/src/lib/tab-routing.ts`): `/f/:flowId` for a flow and
+ * `/c/:consoleId` for a scheduled query. The `/workspace/<ws>/flows/<id>`
+ * and `/workspace/<ws>/console/<id>` forms this used to emit never existed
+ * as routes; the client still accepts them (tab-routing maps the legacy
+ * shapes) so links already sitting in inboxes and Slack keep opening.
+ */
+export function notificationDeepLinkPath(
+  resourceType: FlowRunTerminalEventData["resourceType"],
+  resourceId: string,
+): string {
+  return resourceType === "flow" ? `/f/${resourceId}` : `/c/${resourceId}`;
+}
+
 export function buildOutboundPayload(params: {
   event: FlowRunTerminalEventData;
   resourceName: string;
   trigger: NotificationTrigger;
 }): NotificationOutboundPayload {
   const base = clientUrl();
-  const deepLink =
-    params.event.resourceType === "flow"
-      ? base
-        ? `${base}/workspace/${params.event.workspaceId}/flows/${params.event.resourceId}`
-        : undefined
-      : base
-        ? `${base}/workspace/${params.event.workspaceId}/console/${params.event.resourceId}`
-        : undefined;
+  const deepLink = base
+    ? `${base}${notificationDeepLinkPath(params.event.resourceType, params.event.resourceId)}`
+    : undefined;
 
   return {
     version: 1,
