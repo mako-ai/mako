@@ -1286,6 +1286,36 @@ describe("walkHistory (pure)", () => {
     ).toEqual({ aliases: ["y", "x"], superseded: [] });
   });
 
+  it("gives a name back when the newcomer is deleted: the newest event at the old name decides", () => {
+    const del = (path: string, id?: string) =>
+      ({ kind: "delete", path, id }) as ManifestHistoryEvent;
+    const apps = [row("apps/bar", { appId: A, hasManifestId: true })];
+    const base = [rename("apps/foo", "apps/bar", A), create("apps/foo", A)];
+    // B created at foo, then deleted: foo is A's again.
+    expect(
+      walkHistory(apps, [del("apps/foo"), create("apps/foo"), ...base]).get(
+        "apps/bar",
+      ),
+    ).toEqual({ aliases: ["foo"], superseded: [] });
+    // …unless someone else arrived after that deletion.
+    expect(
+      walkHistory(apps, [
+        create("apps/foo", C),
+        del("apps/foo"),
+        create("apps/foo"),
+        ...base,
+      ]).get("apps/bar"),
+    ).toEqual({ aliases: [], superseded: ["foo"] });
+    // B renamed away keeps the name (its alias): still held, superseded.
+    expect(
+      walkHistory(apps, [
+        rename("apps/foo", "apps/foo-v2"),
+        create("apps/foo"),
+        ...base,
+      ]).get("apps/bar"),
+    ).toEqual({ aliases: [], superseded: ["foo"] });
+  });
+
   it("records a folder moved under the same name by its old path, so the bare name still finds it", () => {
     // A was apps/report, moved (laptop, before the upgrade) into
     // apps/Sales/report; B is apps/Ops/report.
@@ -2041,6 +2071,86 @@ describe("a name reused after a rename", () => {
       via: "alias",
       app: { appId: C_ID },
     });
+  });
+});
+
+describe("a name reused and then given up", () => {
+  // A: foo → bar in the UI (manifest alias "foo"); an id-less B created at
+  // apps/foo; then B goes. The name returns to A — on the incremental
+  // sync, on a rebuild from history, and whether or not the index was read
+  // between the commits (what the sync sees must not change the answer).
+  const setup = async () => {
+    const aManifest = await fileAt("apps/a/mako.json");
+    await externalCommit(
+      { "apps/foo/mako.json": aManifest! },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "a is foo",
+    );
+    const A = (await resolveProjectRef(WS, "foo"))!;
+    await renameProject(A, { slug: "bar" }, { userId: USER });
+    expect(
+      parseAppManifest(await fileAt("apps/bar/mako.json"), "bar").aliases,
+    ).toEqual(["foo"]);
+    return A._id.toString();
+  };
+  const who = async (ref: string) => {
+    const found = findAppInSnapshotVia(await loadAppsIndex(WS), ref);
+    return found ? `${found.app.path} via=${found.via}` : null;
+  };
+  const rebuilt = async (ref: string) => {
+    await AppIndexEntry.deleteMany({ workspaceId: WS });
+    await AppIndexHead.deleteMany({ workspaceId: WS });
+    invalidateAppsIndexCache();
+    return who(ref);
+  };
+
+  for (const readBetween of [false, true]) {
+    it(`deleted newcomer, ${readBetween ? "with" : "without"} an index read between the commits`, async () => {
+      await setup();
+      await externalCommit({ "apps/foo/mako.json": manifest("Newcomer") });
+      if (readBetween) expect(await who("foo")).toBe("apps/foo via=current");
+      await externalCommit({}, ["apps/foo/mako.json"], "delete newcomer");
+      expect(await who("foo")).toBe("apps/bar via=alias");
+      expect(
+        (
+          await AppIndexEntry.findOne({
+            workspaceId: WS,
+            path: "apps/bar",
+          }).lean()
+        )?.supersededAliases,
+      ).toEqual([]);
+      expect(await rebuilt("foo")).toBe("apps/bar via=alias");
+      await externalCommit({ "README.md": "y\n" });
+      expect(await who("foo")).toBe("apps/bar via=alias");
+      // The scan says the newcomer ended.
+      const events = await manifestRenamesInHistory(
+        repoDirFor(WS),
+        (await resolveCommit(repoDirFor(WS), MAIN))!,
+        { workspaceId: WS },
+      );
+      expect(events).toContainEqual({
+        kind: "delete",
+        path: "apps/foo",
+        id: undefined,
+      });
+    });
+  }
+
+  it("a newcomer that moves away keeps the name (its own alias) — consistently, incremental and rebuilt", async () => {
+    await setup();
+    await externalCommit({ "apps/foo/mako.json": manifest("Newcomer") });
+    expect(await who("foo")).toBe("apps/foo via=current");
+    await externalCommit(
+      { "apps/foo-v2/mako.json": manifest("Newcomer") },
+      ["apps/foo/mako.json"],
+      "git mv foo foo-v2",
+    );
+    expect(await who("foo")).toBe("apps/foo-v2 via=alias");
+    expect(await rebuilt("foo")).toBe("apps/foo-v2 via=alias");
+    // And when THAT app is deleted too, the name is A's again.
+    await externalCommit({}, ["apps/foo-v2/mako.json"], "delete newcomer");
+    expect(await who("foo")).toBe("apps/bar via=alias");
+    expect(await rebuilt("foo")).toBe("apps/bar via=alias");
   });
 });
 
