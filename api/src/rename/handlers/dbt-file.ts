@@ -1,13 +1,50 @@
+/**
+ * `dbt_file` — a file in the workspace's dbt project, addressed by path.
+ * The work is in ../dbt-file.ts (shared with `POST /dbt/projects/:id/files/rename`).
+ */
 import { RenameError, type RenameHandler } from "../types";
+import { parseDbtFileRef, renameDbtFile, resolveDbtFile } from "../dbt-file";
 
-// STUB — replaced by the dbt_file workstream.
 export const dbtFileRenameHandler: RenameHandler = {
   kind: "dbt_file",
-  describe: "dbt_file: not implemented yet.",
-  async resolve() {
-    return null;
-  },
-  async rename() {
-    throw new RenameError("Renaming a dbt_file is not supported yet.", 400);
+  describe:
+    "dbt_file: `ref` is a project-relative path (`models/orders.sql`), `dbt/<path>`, `<projectId>/<path>` or the `/x/<projectId>/file/<path>` URL; `slug` = the new project-relative path (a move), `title` = a new file name in the same folder. Renaming a model/seed/snapshot renames the dbt node: `options.updateRefs` (default true) rewrites `ref('old')` across the project and `--select old` in dbt/jobs/*.yml in the same commit. Commits on your session branch (main for an API key). `warnings` list the old warehouse relation and consoles/bindings/dashboards whose SQL still names it.",
+  resolve: resolveDbtFile,
+  async rename(ctx, request) {
+    const parsed = parseDbtFileRef(request.ref);
+    if (!parsed) throw new RenameError("A dbt file path is required", 400);
+    let to: string;
+    if (request.slug) {
+      to = request.slug;
+    } else if (request.title) {
+      // A new file NAME keeps the folder; a title with a slash is a move
+      // in disguise and is refused so nobody renames into a folder by typo.
+      if (request.title.includes("/")) {
+        throw new RenameError(
+          "title is a file name; use slug to move the file to another folder",
+          400,
+        );
+      }
+      const dir = parsed.path.includes("/")
+        ? parsed.path.slice(0, parsed.path.lastIndexOf("/") + 1)
+        : "";
+      to = `${dir}${request.title}`;
+    } else {
+      throw new RenameError(
+        "Give a new title (file name) or slug (path).",
+        400,
+      );
+    }
+    const updateRefs = request.options?.updateRefs;
+    return renameDbtFile(ctx, {
+      projectId: parsed.projectId,
+      from: parsed.path,
+      to,
+      updateRefs: typeof updateRefs === "boolean" ? updateRefs : true,
+      clientId:
+        typeof request.options?.clientId === "string"
+          ? request.options.clientId
+          : undefined,
+    });
   },
 };

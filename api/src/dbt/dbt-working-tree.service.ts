@@ -198,6 +198,24 @@ async function commitDbtMutation(
   return { commitOid: result.unchanged ? undefined : result.commitOid };
 }
 
+/**
+ * Commit writes AND deletes in one commit (a rename with its ref rewrites —
+ * api/src/rename/dbt-file.ts). Paths are project-relative like every other
+ * entry point here.
+ */
+export async function commitDbtChanges(
+  project: IDbtProject,
+  userId: string,
+  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  message: string,
+): Promise<WriteWorkingFileResult> {
+  for (const path of Object.keys(mutation.writes ?? {})) {
+    assertSafeDbtPath(path);
+  }
+  for (const path of mutation.deletes ?? []) assertSafeDbtPath(path);
+  return commitDbtMutation(project, userId, mutation, message);
+}
+
 /** Commit a batch of files in one commit (scaffold, imports). */
 export async function commitDbtFiles(
   project: IDbtProject,
