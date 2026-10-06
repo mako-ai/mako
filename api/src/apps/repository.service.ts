@@ -312,21 +312,6 @@ const INDEX_MODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Commit a set of whole-file writes and deletes onto `branch` with index
- * plumbing only — no clone, no work tree: `hash-object -w` the blobs, load
- * the head tree into a throwaway index, splice the entries in with
- * `update-index --index-info`, `write-tree`, `commit-tree`, CAS the ref.
- * A few milliseconds for a small change against any size of repo, which is
- * what a console save needs (§16.3); `commitFilesOnBranch` clones and is
- * for lifecycle-sized changes.
- *
- * Returns `unchanged: true` (and the head oid) when the mutation produces
- * the tree already at head, so re-runs and no-op saves leave no commit —
- * unless `allowEmpty` is set: a replayed version whose content equals its
- * predecessor still happened (its author, date and message are the record),
- * and dropping it would silently renumber history (§13.18 doctrine).
- */
-/**
  * Thrown by `commitBlobsOnBranch` when an `expectBlobs` precondition fails:
  * the branch moved and the file the caller read is no longer what is at
  * head. The caller re-reads and retries (or reports a conflict); it must
@@ -462,6 +447,21 @@ async function assertNoPathConflicts(
   }
 }
 
+/**
+ * Commit a set of whole-file writes and deletes onto `branch` with index
+ * plumbing only — no clone, no work tree: `hash-object -w` the blobs, load
+ * the head tree into a throwaway index, splice the entries in with
+ * `update-index --index-info`, `write-tree`, `commit-tree`, CAS the ref.
+ * A few milliseconds for a small change against any size of repo, which is
+ * what a console save needs (§16.3); `commitFilesOnBranch` clones and is
+ * for lifecycle-sized changes.
+ *
+ * Returns `unchanged: true` (and the head oid) when the mutation produces
+ * the tree already at head, so re-runs and no-op saves leave no commit —
+ * unless `allowEmpty` is set: a replayed version whose content equals its
+ * predecessor still happened (its author, date and message are the record),
+ * and dropping it would silently renumber history (§13.18 doctrine).
+ */
 export async function commitBlobsOnBranch(
   repoDir: string,
   branch: string,

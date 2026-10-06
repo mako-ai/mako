@@ -1326,7 +1326,11 @@ export async function renameProject(
   title: string;
   commit?: string;
   aliasesAdded: string[];
-  /** Other apps' older claims to the names added, dropped in this commit. */
+  /**
+   * Other apps' older claims to the names added: reported, never rewritten
+   * (their manifests are not this caller's to change); the index records
+   * the supersession.
+   */
   superseded: SupersededAlias[];
 }> {
   const workspaceId = project.workspaceId.toString();

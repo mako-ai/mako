@@ -842,7 +842,6 @@ export default function AppsExplorer() {
     ],
   );
 
-  /** May this person rename the app row (not pinned, not shared with them, in a tree they write to)? */
   /**
    * May this person rename the app row? The server's rule (resource-acl
    * canWriteResource + the tree rule of authorizeAppMove), without side

@@ -23,12 +23,14 @@ export const dbtFileRenameHandler: RenameHandler = {
       : parseDbtFileRef(request.ref);
     if (!parsed) throw new RenameError("A dbt file path is required", 400);
     let to: string;
-    if (request.slug) {
-      to = request.slug;
-    } else if (request.title) {
+    const slug = request.slug?.trim();
+    const title = request.title?.trim();
+    if (slug) {
+      to = slug;
+    } else if (title) {
       // A new file NAME keeps the folder; a title with a slash is a move
       // in disguise and is refused so nobody renames into a folder by typo.
-      if (request.title.includes("/")) {
+      if (title.includes("/")) {
         throw new RenameError(
           "title is a file name; use slug to move the file to another folder",
           400,
@@ -37,7 +39,7 @@ export const dbtFileRenameHandler: RenameHandler = {
       const dir = parsed.path.includes("/")
         ? parsed.path.slice(0, parsed.path.lastIndexOf("/") + 1)
         : "";
-      to = `${dir}${request.title}`;
+      to = `${dir}${title}`;
     } else {
       throw new RenameError(
         "Give a new title (file name) or slug (path).",
