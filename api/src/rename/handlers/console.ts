@@ -37,6 +37,7 @@ import {
   type LiveConsole,
 } from "../../apps/workspace-consoles.service";
 import {
+  consoleExtension,
   consoleRepoPath,
   parseConsoleRepoPath,
   splitConsoleFileName,
@@ -179,13 +180,28 @@ function targetFor(
   if (slug !== undefined) {
     const clean = slug.trim().replace(/^\/+|\/+$/g, "");
     if (!clean) throw new RenameError("Give a non-empty slug (path).");
-    const parsed = parseConsoleRepoPath(clean);
+    // A full repo path may come without its extension
+    // (`consoles/Team/report`, `users/<me>/consoles/Team/report`): that is
+    // the console's current file type, not a folder chain starting with a
+    // folder called "consoles".
+    const rooted =
+      /^consoles\//.test(clean) ||
+      /^users\/[A-Za-z0-9_-]+\/consoles\//.test(clean);
+    const withExt =
+      rooted && !splitConsoleFileName(clean.split("/").pop() ?? "")
+        ? `${clean}${consoleExtension(language)}`
+        : clean;
+    const parsed = parseConsoleRepoPath(withExt);
     if (parsed) {
       target.scope = parsed.scope;
       target.ownerId = parsed.ownerId;
       target.folderSegments = parsed.folderSegments;
       target.name = parsed.name;
       target.language = parsed.language;
+    } else if (rooted || /^(consoles|users)(\/|$)/.test(clean)) {
+      throw new RenameError(
+        "A full path is `consoles/<folders>/<name>` or `users/<you>/consoles/<folders>/<name>`.",
+      );
     } else {
       const segments = clean.split("/");
       const file = segments.pop() ?? "";
