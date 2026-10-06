@@ -42,6 +42,7 @@ import {
 } from "../apps/cloud-repo.service";
 import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
   listTree,
@@ -49,6 +50,9 @@ import {
   repoDirFor,
   repoExists,
   resolveCommit,
+  treeOidAt,
+  type IndexEntry,
+  type IndexMode,
 } from "../apps/repository.service";
 import {
   isValidSlug,
@@ -188,6 +192,19 @@ export async function renameWorkspaceConnector(
       409,
     );
   }
+  // Connections typed ws:<to> with no connector behind them belong to a
+  // DELETED connector; renaming into the slug would hand their
+  // credentials to this code. Refuse until they are gone or re-pointed.
+  const orphans = await SourceConnection.countDocuments({
+    workspaceId: wsId,
+    type: `${WORKSPACE_TYPE_PREFIX}${to}`,
+  });
+  if (orphans > 0) {
+    throw new RenameError(
+      `${orphans} connection${orphans === 1 ? " still points" : "s still point"} at ws:${to} from a deleted connector; delete or re-point them first`,
+      409,
+    );
+  }
 
   const repoDir = await requireWorkspaceRepo(ctx.workspaceId);
   await freshenBeforeMainWrite(ctx.workspaceId);
@@ -207,7 +224,10 @@ export async function renameWorkspaceConnector(
     throw new RenameError(`connectors/${to}/ already has files on main`, 409);
   }
 
-  const blobs = await readBlobsBatch(repoDir, head, oldPaths);
+  const oldEntries = tree.filter(e => e.path.startsWith(oldPrefix));
+  const blobs = await readBlobsBatch(repoDir, head, [
+    `${oldPrefix}connector.yaml`,
+  ]);
   const yamlBuf = blobs.get(`${oldPrefix}connector.yaml`);
   const nextYaml =
     yamlBuf && !yamlBuf.includes(0)
@@ -222,22 +242,58 @@ export async function renameWorkspaceConnector(
       409,
     );
   }
+  // Every untouched file moves by oid with its mode (an executable stays
+  // executable, a symlink stays a symlink); only connector.yaml is
+  // rewritten.
   const writes: Record<string, string | Buffer> = {};
-  for (const oldPath of oldPaths) {
-    const buf = blobs.get(oldPath);
-    if (!buf) continue;
-    const newPath = `${newPrefix}${oldPath.slice(oldPrefix.length)}`;
-    writes[newPath] = oldPath === `${oldPrefix}connector.yaml` ? nextYaml : buf;
+  const modes: Record<string, IndexMode> = {};
+  const entries: IndexEntry[] = [];
+  // The old folder's TREE oid as listed, and the new folder absent: an
+  // edit, an added file or a delete inside the folder in the window
+  // changes the oid and refuses the rename, so nothing is dropped or
+  // left behind.
+  const expectBlobs: Record<string, string | null> = {
+    [`${CONNECTORS_DIR}/${from}`]: await treeOidAt(
+      repoDir,
+      head,
+      `${CONNECTORS_DIR}/${from}`,
+    ),
+    [`${CONNECTORS_DIR}/${to}`]: null,
+  };
+  for (const entry of oldEntries) {
+    const newPath = `${newPrefix}${entry.path.slice(oldPrefix.length)}`;
+    if (entry.path === `${oldPrefix}connector.yaml`) {
+      writes[newPath] = nextYaml;
+      if (entry.mode !== "100644") modes[newPath] = entry.mode as IndexMode;
+    } else {
+      entries.push({
+        path: newPath,
+        oid: entry.oid,
+        mode: entry.mode as IndexMode,
+      });
+    }
   }
-  const commit = await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes, deletes: oldPaths },
-    {
-      message: `Rename connector "${from}" -> "${to}"`,
-      author: await authorForUser(ctx.userId),
-    },
-  );
+  let commit: Awaited<ReturnType<typeof commitBlobsOnBranch>>;
+  try {
+    commit = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes, modes, entries, deletes: oldPaths },
+      {
+        message: `Rename connector "${from}" -> "${to}"`,
+        author: await authorForUser(ctx.userId),
+        expectBlobs,
+      },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new RenameError(
+        `${error.path} changed on main while renaming — retry.`,
+        409,
+      );
+    }
+    throw error;
+  }
   queueMirrorPush(ctx.workspaceId);
 
   // Re-key the index now (the push-time reconcile would find the same

@@ -37,6 +37,29 @@ const SPEC = {
   mako: { name: "Acme CRM", version: "1.0.0", entities: { widgets: {} } },
 };
 
+// A commit landing on main inside a rename's read→commit window (another
+// window's save, a laptop push). Fired once, only for the rename's commit.
+const race = vi.hoisted(() => ({
+  before: undefined as undefined | (() => Promise<void>),
+}));
+vi.mock("../../apps/repository.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../apps/repository.service")>();
+  return {
+    ...actual,
+    commitBlobsOnBranch: async (
+      ...args: Parameters<typeof actual.commitBlobsOnBranch>
+    ) => {
+      if (race.before && /^Rename connector/.test(args[3]?.message ?? "")) {
+        const fn = race.before;
+        race.before = undefined;
+        await fn();
+      }
+      return actual.commitBlobsOnBranch(...args);
+    },
+  };
+});
+
 vi.mock("./sync-box", async importOriginal => ({
   ...(await importOriginal<typeof import("./sync-box")>()),
   hasConnectorRuntime: vi.fn(async () => true),
@@ -574,12 +597,104 @@ describe("reconcile detects a rename instead of deleting", () => {
     expect(await rowsNow()).toEqual([["acme-crm", [], ["acme"]]]);
     expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
     expect((await SourceConnection.findById(fresh))?.type).toBe("ws:acme");
-    // Renaming acme-crm back to acme makes it the live owner again.
+    // Renaming acme-crm back to acme is refused while the deleted
+    // newcomer's connection still points at ws:acme (it would adopt it)…
+    await expect(
+      renameWorkspaceConnector(ctx, { from: "acme-crm", to: "acme" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message:
+        "1 connection still points at ws:acme from a deleted connector; delete or re-point them first",
+    });
+    // …and allowed once that connection is gone: the live owner again.
+    await SourceConnection.deleteOne({ _id: fresh });
     await renameWorkspaceConnector(ctx, { from: "acme-crm", to: "acme" });
     expect(await rowsNow()).toEqual([["acme", ["acme-crm"], []]]);
     expect(await findConnectorDefinitionRow(WS, "acme")).toMatchObject({
       via: "current",
     });
+  }, 120_000);
+
+  it("laptop git mv INTO another connector's retired/alias slug, then delete: the moved connector's connections are stranded, never adopted", async () => {
+    // Z starts life as acme and is renamed to z (alias acme recorded).
+    await pushAcme();
+    await syncConnectorsFromRepo(WS);
+    await renameWorkspaceConnector(ctx, { from: "acme", to: "z" });
+    await syncConnectorsFromRepo(WS);
+    // An unrelated connector foo with its own connection.
+    await push({
+      writes: {
+        "connectors/foo/connector.yaml": YAML,
+        "connectors/foo/connector.ts": OTHER_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    const fooConn = await connection("ws:foo");
+    // Laptop: git mv connectors/foo connectors/acme (the UI refuses this).
+    await push({
+      writes: {
+        "connectors/acme/connector.yaml": YAML,
+        "connectors/acme/connector.ts": OTHER_TS,
+      },
+      deletes: ["connectors/foo/connector.yaml", "connectors/foo/connector.ts"],
+    });
+    const pass = await syncConnectorsFromRepo(WS);
+    expect(pass.renamed).toEqual([{ from: "foo", to: "acme" }]);
+    expect((await SourceConnection.findById(fooConn))?.type).toBe("ws:acme");
+    // Z released the name BEFORE foo took it: no two owners of `acme`.
+    const z = await ConnectorDefinition.findOne({ workspaceId: WS, slug: "z" });
+    expect(z?.aliases).toEqual([]);
+    expect(z?.retiredAliases).toEqual(["acme"]);
+    expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme");
+    // The (renamed) foo connector is deleted.
+    await push({
+      deletes: [
+        "connectors/acme/connector.yaml",
+        "connectors/acme/connector.ts",
+      ],
+    });
+    await syncConnectorsFromRepo(WS);
+    // ws:acme resolves to NOTHING — foo's credentials never reach Z's code.
+    expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
+    await expect(loadConnectorDefinition(WS, "acme")).rejects.toThrow(
+      /No connector "acme"/,
+    );
+    expect((await SourceConnection.findById(fooConn))?.type).toBe("ws:acme");
+    // Even after more syncs with Z's yaml still saying `aliases: [acme]`.
+    await push({ writes: { "README.md": "# touched\n" } });
+    await syncConnectorsFromRepo(WS);
+    expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
+  }, 120_000);
+
+  it("deleting a connector retires its slug from every other connector's aliases", async () => {
+    // `old` is deleted while `keeper` still lists it as an alias by hand.
+    await pushAcme("old");
+    await push({
+      writes: {
+        "connectors/keeper/connector.yaml": `${YAML}aliases: [old]\n`,
+        "connectors/keeper/connector.ts": OTHER_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    // `old` is live, so keeper's alias claim was released at index time;
+    // now delete `old` and make sure keeper never inherits it.
+    const orphan = await connection("ws:old");
+    await push({
+      deletes: [
+        "connectors/old/connector.yaml",
+        "connectors/old/connector.ts",
+        "connectors/old/lib/util.ts",
+      ],
+    });
+    await syncConnectorsFromRepo(WS);
+    const keeper = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "keeper",
+    });
+    expect(keeper?.aliases).toEqual([]);
+    expect(keeper?.retiredAliases).toEqual(["old"]);
+    expect(await findConnectorDefinitionRow(WS, "old")).toBeNull();
+    expect((await SourceConnection.findById(orphan))?.type).toBe("ws:old");
   }, 120_000);
 
   it("migrateSourceConnectionType is idempotent", async () => {
@@ -721,6 +836,92 @@ describe("renameWorkspaceConnector (UI / REST / MCP)", () => {
     expect((await ConnectorDefinition.findById(row!._id))!.status).toBe(
       "verified",
     );
+  }, 60_000);
+
+  it("moves keep file modes: an executable stays executable, a symlink stays a symlink, blobs move by oid", async () => {
+    await pushAcme();
+    await push({
+      writes: {
+        "connectors/acme/run.sh": "#!/bin/sh\necho hi\n",
+        "connectors/acme/link": "connector.ts",
+      },
+      modes: {
+        "connectors/acme/run.sh": "100755",
+        "connectors/acme/link": "120000",
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    const head0 = await resolveCommit(repoDirFor(WS), MAIN);
+    const before = Object.fromEntries(
+      (await listTree(repoDirFor(WS), head0!))
+        .filter(e => e.path.startsWith("connectors/acme/"))
+        .map(e => [e.path.slice("connectors/acme/".length), [e.mode, e.oid]]),
+    );
+    expect(before["run.sh"][0]).toBe("100755");
+    expect(before.link[0]).toBe("120000");
+
+    await renameWorkspaceConnector(ctx, { from: "acme", to: "acme-crm" });
+    const head1 = await resolveCommit(repoDirFor(WS), MAIN);
+    const after = Object.fromEntries(
+      (await listTree(repoDirFor(WS), head1!))
+        .filter(e => e.path.startsWith("connectors/acme-crm/"))
+        .map(e => [
+          e.path.slice("connectors/acme-crm/".length),
+          [e.mode, e.oid],
+        ]),
+    );
+    for (const rel of ["run.sh", "link", "connector.ts", "lib/util.ts"]) {
+      expect(after[rel], rel).toEqual(before[rel]); // same mode, same oid
+    }
+    expect(after["connector.yaml"][0]).toBe("100644");
+    expect(after["connector.yaml"][1]).not.toBe(before["connector.yaml"][1]);
+  }, 60_000);
+
+  it("a commit landing inside the rename window (an edit AND an added file) refuses the rename; nothing moved, nothing lost", async () => {
+    await pushAcme();
+    await syncConnectorsFromRepo(WS);
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    });
+    race.before = async () => {
+      await push(
+        {
+          writes: {
+            "connectors/acme/connector.ts":
+              "export const VERSION = 2; // concurrent fix\n",
+            "connectors/acme/extra.ts": "export const added = true;\n",
+          },
+        },
+        "concurrent fix",
+      );
+    };
+    await expect(
+      renameWorkspaceConnector(ctx, { from: "acme", to: "acme-crm" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("changed on main while renaming"),
+    });
+    const paths = await pathsAtMain();
+    expect(paths.filter(p => p.startsWith("connectors/acme-crm/"))).toEqual([]);
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "connectors/acme/connector.ts",
+        "connectors/acme/extra.ts",
+      ]),
+    );
+    expect(
+      (await readBlob(repoDirFor(WS), MAIN, "connectors/acme/connector.ts"))
+        .contents,
+    ).toContain("VERSION = 2");
+    expect((await ConnectorDefinition.findById(row!._id))?.slug).toBe("acme");
+    // With the window closed, the same rename goes through.
+    const ok = await renameWorkspaceConnector(ctx, {
+      from: "acme",
+      to: "acme-crm",
+    });
+    expect(ok.after.slug).toBe("acme-crm");
+    expect(await pathsAtMain()).toContain("connectors/acme-crm/extra.ts");
   }, 60_000);
 
   it("refuses bad slugs, unknown sources, live targets, another connector's alias, and title changes", async () => {

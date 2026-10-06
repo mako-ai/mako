@@ -205,6 +205,40 @@ describe("rewriteNodeProperties", () => {
     );
   });
 
+  it("rewrites `model: old` in unit_tests items, not inputs or nested keys", () => {
+    const unit = [
+      "unit_tests:",
+      "  - name: test_orders_total",
+      "    model: orders",
+      "    given:",
+      "      - input: ref('stg_orders')",
+      "        rows: []",
+      "      - input: ref('orders')",
+      "        rows: []",
+      "    overrides:",
+      "      macros:",
+      "        model: orders",
+      "  - name: other",
+      "    model: 'orders'  # quoted",
+      "  - name: unrelated",
+      "    model: orders_v2",
+      "",
+    ].join("\n");
+    const r = rewriteNodeProperties(unit, "orders", "fct_orders");
+    expect(r.count).toBe(2);
+    expect(r.text).toBe(
+      unit
+        .replace(
+          "    model: orders\n    given",
+          "    model: fct_orders\n    given",
+        )
+        .replace(
+          "    model: 'orders'  # quoted",
+          "    model: 'fct_orders'  # quoted",
+        ),
+    );
+  });
+
   it("keeps quotes, and leaves unrelated files byte-identical", () => {
     const quoted = 'models:\n  - name: "customers"\n';
     expect(

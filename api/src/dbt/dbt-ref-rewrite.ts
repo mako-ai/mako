@@ -190,7 +190,8 @@ const NODE_LIST_KEYS = new Set(["models", "seeds"]);
 
 /**
  * Rewrite `- name: old` → `- name: new` for the node's own entry in a dbt
- * properties file (`models/schema.yml`). Line-based on purpose: a YAML
+ * properties file (`models/schema.yml`), and `model: old` → `model: new`
+ * in `unit_tests:` items (a unit test names the model it tests). Line-based on purpose: a YAML
  * round trip would drop the author's comments and reflow their file, and
  * the entry we want is always a list item directly under a top-level
  * `models:` / `seeds:` / `snapshots:` key. The item indent is learned from
@@ -210,14 +211,35 @@ export function rewriteNodeProperties(
   const nameRe = new RegExp(
     `^(\\s*-\\s*name:\\s*)(['"]?)${escapeRegExp(oldName)}\\2(\\s*(?:#.*)?)$`,
   );
+  // `unit_tests:` items name the model they test with `model: old` — a key
+  // at the item's key column (`- name: t` puts keys at indent + 2).
+  let inUnitTests = false;
+  let keyIndent: number | null = null;
+  const modelRe = new RegExp(
+    `^(\\s+model:\\s*)(['"]?)${escapeRegExp(oldName)}\\2(\\s*(?:#.*)?)$`,
+  );
   const out = lines.map(line => {
     const topLevel = /^([A-Za-z_][\w-]*):\s*(#.*)?$/.exec(line);
     if (topLevel) {
       inNodeList = NODE_LIST_KEYS.has(topLevel[1]);
+      inUnitTests = topLevel[1] === "unit_tests";
       itemIndent = null;
+      keyIndent = null;
       return line;
     }
-    if (!inNodeList || line.trim() === "") return line;
+    if (line.trim() === "") return line;
+    if (inUnitTests) {
+      const item = /^(\s*)(-\s+)/.exec(line);
+      if (item && itemIndent === null) {
+        itemIndent = item[1].length;
+        keyIndent = item[1].length + item[2].length;
+      }
+      const m = modelRe.exec(line);
+      if (!m || line.search(/\S/) !== keyIndent) return line;
+      count++;
+      return `${m[1]}${m[2]}${newName}${m[2]}${m[3]}`;
+    }
+    if (!inNodeList) return line;
     const item = /^(\s*)-\s/.exec(line);
     if (item && itemIndent === null) itemIndent = item[1].length;
     if (!item || item[1].length !== itemIndent) return line;

@@ -157,7 +157,8 @@ async function seedProject(extra: Record<string, string> = {}) {
     "models/customers.sql": "select 1 as id, 'x' as name\n",
     "models/orders_archive.sql": "select * from {{ ref('orders') }}\n",
     "models/mart.sql": MART,
-    "models/schema.yml": "version: 2\nmodels:\n  - name: orders\n",
+    "models/schema.yml":
+      "version: 2\nmodels:\n  - name: orders\nunit_tests:\n  - name: t_orders\n    model: orders\n    given:\n      - input: ref('customers')\n        rows: []\n",
     "jobs/daily.yml": JOB,
     "jobs/long.yml": serializeJobFile({
       name: "Long",
@@ -259,15 +260,16 @@ describe("renameDbtFile", () => {
     expect(await fileAt("dbt_project.yml")).toBe(
       PROJECT_YML.replace("    orders:\n", "    fct_orders:\n"),
     );
+    // Every file still naming the old model as a whole word is listed.
     expect(result.warnings.join("\n")).toMatch(
-      /dbt_project.yml still mentions 'orders'/,
+      /3 files still mention 'orders' as a whole word after the rewrite — check dbt_project.yml, jobs\/daily.yml, selectors.yml\./,
     );
     expect(await fileAt("selectors.yml")).toBe(SELECTORS);
-    expect(result.warnings.join("\n")).toMatch(
-      /selectors.yml still mentions 'orders'/,
+    expect(result.warnings.join("\n")).not.toMatch(/models\/mart.sql/);
+    // The model's own schema.yml entry and its unit test follow.
+    expect(await fileAt("models/schema.yml")).toBe(
+      "version: 2\nmodels:\n  - name: fct_orders\nunit_tests:\n  - name: t_orders\n    model: fct_orders\n    given:\n      - input: ref('customers')\n        rows: []\n",
     );
-    // The model's own schema.yml entry follows, so its tests stay attached.
-    expect(await fileAt("models/schema.yml")).toContain("name: fct_orders\n");
 
     expect(result.kind).toBe("dbt_file");
     expect(result.id).toBe(`${project._id}/models/fct_orders.sql`);

@@ -284,7 +284,32 @@ export interface BlobMutation {
   writes?: Record<string, string | Buffer>;
   /** repo-relative paths to remove; absent paths are ignored. */
   deletes?: string[];
+  /**
+   * Index entries written AS THEY ARE — an existing blob oid with its
+   * mode — so a move keeps the executable bit and keeps a symlink a
+   * symlink (`120000`) instead of re-hashing its target as a regular
+   * file. A rename of a folder is `entries` for every untouched file plus
+   * `writes` for the one it edits.
+   */
+  entries?: IndexEntry[];
+  /** Mode for a path in `writes` (default `100644`). */
+  modes?: Record<string, IndexMode>;
 }
+
+/** The blob modes git stores: regular, executable, symlink. */
+export type IndexMode = "100644" | "100755" | "120000";
+
+export interface IndexEntry {
+  path: string;
+  oid: string;
+  mode: IndexMode;
+}
+
+const INDEX_MODES: ReadonlySet<string> = new Set([
+  "100644",
+  "100755",
+  "120000",
+]);
 
 /**
  * Commit a set of whole-file writes and deletes onto `branch` with index
@@ -342,6 +367,21 @@ export async function blobOidAt(
   }
 }
 
+/**
+ * Oid of the TREE at `relPath` in `commit` (null when absent). `rev-parse
+ * commit:path` names whatever object sits there, so `blobOidAt` already
+ * does this; the name says what a caller means when it pins a folder: one
+ * oid that changes if anything inside is added, edited or removed —
+ * exactly the precondition a folder move needs.
+ */
+export async function treeOidAt(
+  repoDir: string,
+  commit: string,
+  relPath: string,
+): Promise<string | null> {
+  return blobOidAt(repoDir, commit, relPath);
+}
+
 export async function commitBlobsOnBranch(
   repoDir: string,
   branch: string,
@@ -365,6 +405,19 @@ export async function commitBlobsOnBranch(
     ([rel, contents]) => [assertSafeRelPath(rel), contents] as const,
   );
   const deletes = (mutation.deletes ?? []).map(p => assertSafeRelPath(p));
+  const modeOf = (rel: string): IndexMode => {
+    const mode = mutation.modes?.[rel] ?? "100644";
+    if (!INDEX_MODES.has(mode))
+      throw new Error(`Unsupported mode ${mode} for ${rel}`);
+    return mode;
+  };
+  const entries = (mutation.entries ?? []).map(entry => {
+    if (!isOid(entry.oid)) throw new Error(`Not a blob oid: ${entry.oid}`);
+    if (!INDEX_MODES.has(entry.mode)) {
+      throw new Error(`Unsupported mode ${entry.mode} for ${entry.path}`);
+    }
+    return { ...entry, path: assertSafeRelPath(entry.path) };
+  });
   // Blobs first: they are content-addressed, so writing them before knowing
   // the head is safe and keeps the CAS window short.
   const oids = new Map<string, string>();
@@ -378,7 +431,8 @@ export async function commitBlobsOnBranch(
   const indexInfo =
     [
       ...deletes.map(rel => `0 ${ZERO_OID}\t${rel}`),
-      ...writes.map(([rel]) => `100644 ${oids.get(rel)}\t${rel}`),
+      ...entries.map(e => `${e.mode} ${e.oid}\t${e.path}`),
+      ...writes.map(([rel]) => `${modeOf(rel)} ${oids.get(rel)}\t${rel}`),
     ].join("\n") + "\n";
 
   for (let attempt = 0; attempt < 3; attempt++) {
