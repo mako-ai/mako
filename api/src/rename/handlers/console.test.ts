@@ -129,6 +129,23 @@ describe("resolve", () => {
     );
   });
 
+  it("a ref that names a folder must match that folder; only a bare name falls back to the leaf", async () => {
+    const report = await seed("report");
+    await renameObject(owner, "console", {
+      ref: report._id.toString(),
+      slug: "Live/report",
+    });
+    expect(
+      await resolveObjectRef(owner, "console", "Archive/report"),
+    ).toBeNull();
+    expect((await resolveObjectRef(owner, "console", "Live/report"))?.id).toBe(
+      report._id.toString(),
+    );
+    expect((await resolveObjectRef(owner, "console", "report"))?.id).toBe(
+      report._id.toString(),
+    );
+  });
+
   it("does not leak a private console to another member", async () => {
     const mine = await seed("secret", "private");
     expect(

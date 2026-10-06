@@ -12,11 +12,14 @@ import { canReadResource, canWriteResource } from "./resource-acl";
 import {
   commitConsoleBatch,
   commitConsoleMoves,
+  commitConsoleRelocation,
   commitConsoleRemoval,
   commitConsoleState,
   descriptionIsAuthored,
   loadLiveConsoleById,
   loadLiveConsoles,
+  readConsoleDefinitionAtMain,
+  repoPathForRow,
   type LiveConsole,
 } from "../apps/workspace-consoles.service";
 import { chartSidecarPath } from "../apps/console-files";
@@ -140,6 +143,18 @@ function metadataFromRow(savedConsole: ISavedConsole, consolePath: string) {
     owner_id: savedConsole.owner_id || savedConsole.createdBy,
     _raw: savedConsole,
   };
+}
+
+/**
+ * A rename/move's target file is already another console's. Surfaced as a
+ * 409 by every caller; never resolved by overwriting.
+ */
+export class ConsolePathTakenError extends Error {
+  readonly status = 409 as const;
+  constructor(readonly path: string) {
+    super(`A console already exists at ${path}`);
+    this.name = "ConsolePathTakenError";
+  }
 }
 
 export class ConsoleManager {
@@ -1041,15 +1056,26 @@ export class ConsoleManager {
 
   /**
    * THE console rename/move: a new name, folder and/or access level applied
-   * to the row and projected onto the repo as ONE commit (the old file goes
-   * in the same commit — brief rule 4). Every path that changes where a
-   * console lives — the explorer's rename and "Move to…", the REST routes,
+   * to the row and the file moved on the repo in ONE commit (the old file
+   * goes in the same commit — brief rule 4). Every path that changes where
+   * a console lives — the explorer's rename and "Move to…", the REST routes,
    * the agent's `modify_console` title and `rename_object` — ends here, so
    * the id, shares, schedule and telemetry never detach and the file never
-   * moves twice. Returns the updated row (and the commit, when the file
-   * moved), or null when the console does not exist in the workspace. A
-   * draft (unsaved) console is renamed in the index only; it reaches git on
-   * its first save.
+   * moves twice.
+   *
+   * The file is moved AS IT IS AT MAIN (`commitConsoleRelocation`): a
+   * rename never commits the row's working copy, which may hold an
+   * unreviewed draft. The draft stays a draft. Only a saved console whose
+   * file is missing from main is (re)projected from the row, since nothing
+   * else defines it.
+   *
+   * Throws `ConsolePathTakenError` when another console already occupies
+   * the target path — names are sanitized into file names, so two names
+   * can mean one file, and a silent overwrite would lose the other
+   * console's definition. Returns the updated row (and the commit, when
+   * the file moved), or null when the console does not exist in the
+   * workspace. A draft (unsaved) console is renamed in the index only; it
+   * reaches git on its first save.
    */
   async relocateConsole(
     consoleId: string,
@@ -1064,6 +1090,11 @@ export class ConsoleManager {
       userId?: string;
       /** Commit subject prefix: `<verb>: <new name>` (default `rename`). */
       verb?: "rename" | "move";
+      /**
+       * Poke `console.updated` subscribers (default). A caller that writes
+       * more in the same step (`modify_console`) publishes once itself.
+       */
+      publish?: boolean;
     } = {},
   ): Promise<{ row: ISavedConsole; commit?: string } | null> {
     if (!Types.ObjectId.isValid(consoleId)) return null;
@@ -1094,15 +1125,38 @@ export class ConsoleManager {
     }
     let commit: string | undefined;
     if (current.isSaved) {
-      const committed = await commitConsoleState({
-        row: current,
-        previousPath: current.path,
-        actorUserId: options.userId,
-        message: `${options.verb ?? "rename"}: ${current.name}`,
-      });
-      updateFields.path = committed.path;
-      updateFields.sourceBlobSha = committed.sourceBlobSha;
-      if (!committed.unchanged) commit = committed.commitOid;
+      const toPath = await repoPathForRow(current);
+      const message = `${options.verb ?? "rename"}: ${current.name}`;
+      if (toPath !== current.path) {
+        await this.assertConsolePathFree(workspaceId, toPath, current._id);
+      }
+      const relocated =
+        current.path && toPath !== current.path
+          ? await commitConsoleRelocation({
+              workspaceId,
+              fromPath: current.path,
+              toPath,
+              actorUserId: options.userId,
+              message,
+            })
+          : null;
+      if (relocated) {
+        updateFields.path = relocated.path;
+        updateFields.sourceBlobSha = relocated.sourceBlobSha;
+        if (!relocated.unchanged) commit = relocated.commitOid;
+      } else if (toPath !== current.path || !current.path) {
+        // No file at main to move (never projected, or removed from git):
+        // the row is the only definition — project it, as a save would.
+        const committed = await commitConsoleState({
+          row: current,
+          previousPath: current.path,
+          actorUserId: options.userId,
+          message,
+        });
+        updateFields.path = committed.path;
+        updateFields.sourceBlobSha = committed.sourceBlobSha;
+        if (!committed.unchanged) commit = committed.commitOid;
+      }
     }
 
     // Bump the draft revision so revision-sync catches the rename, then
@@ -1116,15 +1170,36 @@ export class ConsoleManager {
       { new: true },
     );
     if (!updated) return null;
-    publishRealtimeEvent(workspaceId, {
-      type: "console.updated",
-      consoleId,
-      draftRevision: updated.draftRevision ?? 1,
-      name: updated.name,
-      updatedBy: options.userId ?? "agent",
-      origin: "save",
-    });
+    if (options.publish !== false) {
+      publishRealtimeEvent(workspaceId, {
+        type: "console.updated",
+        consoleId,
+        draftRevision: updated.draftRevision ?? 1,
+        name: updated.name,
+        updatedBy: options.userId ?? "agent",
+        origin: "save",
+      });
+    }
     return { row: updated, commit };
+  }
+
+  /** Throw `ConsolePathTakenError` when a file or a live saved row holds `path`. */
+  private async assertConsolePathFree(
+    workspaceId: string,
+    path: string,
+    self: Types.ObjectId,
+  ): Promise<void> {
+    const [def, row] = await Promise.all([
+      readConsoleDefinitionAtMain(workspaceId, path),
+      SavedConsole.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        path,
+        _id: { $ne: self },
+        isSaved: true,
+        is_deleted: { $ne: true },
+      }).select("_id"),
+    ]);
+    if (def || row) throw new ConsolePathTakenError(path);
   }
 
   /**
@@ -1160,7 +1235,12 @@ export class ConsoleManager {
       );
       return updated !== null;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof ConsolePathTakenError
+      ) {
+        throw error;
+      }
       logger.error("Error renaming console", { error });
       return false;
     }

@@ -10,7 +10,7 @@
  * then rewrote the address bar to the persisted active tab's URL. This asserts
  * hydration actually opens the notebook tab for a /n/:id deep link.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 const h = vi.hoisted(() => {
@@ -27,7 +27,6 @@ const h = vi.hoisted(() => {
     closeNotebookTabsFor: vi.fn(),
     focusDashboardTab: vi.fn(),
     closeDashboardTabsFor: vi.fn(),
-    fetchDashboards: vi.fn().mockResolvedValue([]),
     resolveObjectRef: vi.fn().mockResolvedValue(null),
     setLeftPane: vi.fn(),
     captureOAuthReturn: vi.fn(),
@@ -126,11 +125,6 @@ vi.mock("../lib/source-connection-tabs", () => ({
 
 // Stores/shells only touched by branches the notebook path never enters; stub
 // their named exports so module import resolves without pulling real deps.
-vi.mock("../store/dashboardStore", () => ({
-  useDashboardStore: {
-    getState: () => ({ fetchDashboards: h.fetchDashboards }),
-  },
-}));
 vi.mock("../store/dbtStore", () => ({ useDbtStore: { getState: () => ({}) } }));
 vi.mock("../dashboard-runtime/shell", () => ({
   focusDashboardDataSourceTab: vi.fn(),
@@ -179,6 +173,9 @@ describe("UrlSync hydration", () => {
     h.consoleState.activeTabId = null;
     h.consoleState.tabs = {};
   });
+  // Unmount between tests: the dead-link Snackbar portals into body, and a
+  // notice left open by one test must not be read by the next.
+  afterEach(cleanup);
 
   /**
    * A shared app link carries the app's own query string. The published app
@@ -343,6 +340,36 @@ describe("UrlSync hydration", () => {
     expect(await screen.findByText(/doesn't resolve/)).toBeTruthy();
   });
 
+  it("does not call an app link dead when the server cannot answer", async () => {
+    h.resolveObjectRef.mockRejectedValueOnce(new Error("503"));
+    window.history.replaceState({}, "", "/apps/ghost");
+
+    render(<UrlSync />);
+
+    await waitFor(() => expect(h.resolveObjectRef).toHaveBeenCalled());
+    await new Promise(resolve => setTimeout(resolve, 20));
+    // No "doesn't resolve" verdict and no tab closed on an unknown answer
+    // (the address bar then follows the active tab, as after any hydration).
+    expect(h.closeAppsTabsFor).not.toHaveBeenCalled();
+    expect(screen.queryByText(/doesn't resolve/)).toBeNull();
+  });
+
+  it("opens an old name the list knows when the server cannot answer", async () => {
+    h.resolveObjectRef.mockRejectedValueOnce(new Error("503"));
+    window.history.replaceState({}, "", "/apps/seller-media-buying-3");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "app1",
+        "Seller Media",
+        "seller-media",
+        "",
+      ),
+    );
+  });
+
   it("treats the legacy /a/<ref> address as /apps/<ref>", async () => {
     window.history.replaceState({}, "", "/a/seller-media");
 
@@ -413,9 +440,28 @@ describe("UrlSync hydration", () => {
     );
   });
 
+  it("opens the placeholder notebook tab, with no notice, when the resolve call itself fails", async () => {
+    const id = "ce545d56-98d3-4d13-b1b5-0fd640fc1f5d";
+    h.resolveObjectRef.mockRejectedValue(new Error("HTTP error! status: 502"));
+    window.history.replaceState({}, "", `/n/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusNotebookTab).toHaveBeenCalledWith(id, "Untitled notebook"),
+    );
+    expect(h.closeNotebookTabsFor).not.toHaveBeenCalled();
+    expect(document.body.textContent?.includes("doesn't resolve")).toBe(false);
+  });
+
   it("opens a dashboard tab with its title when /d/:id exists", async () => {
     const id = "507f1f77bcf86cd799439021";
-    h.fetchDashboards.mockResolvedValue([{ _id: id, title: "Revenue" }]);
+    h.resolveObjectRef.mockResolvedValue({
+      kind: "dashboard",
+      id,
+      via: "current",
+      current: { title: "Revenue", url: `/d/${id}` },
+    });
     window.history.replaceState({}, "", `/d/${id}`);
 
     render(<UrlSync />);
@@ -423,13 +469,28 @@ describe("UrlSync hydration", () => {
     await waitFor(() =>
       expect(h.focusDashboardTab).toHaveBeenCalledWith(id, "Revenue"),
     );
+    expect(h.resolveObjectRef).toHaveBeenCalledWith("ws1", "dashboard", id);
     expect(h.setLeftPane).toHaveBeenCalledWith("dashboards");
     expect(h.closeDashboardTabsFor).not.toHaveBeenCalled();
   });
 
+  it("opens the placeholder dashboard tab, with no notice, when the resolve call itself fails", async () => {
+    const id = "507f1f77bcf86cd799439023";
+    h.resolveObjectRef.mockRejectedValue(new Error("HTTP error! status: 500"));
+    window.history.replaceState({}, "", `/d/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusDashboardTab).toHaveBeenCalledWith(id, "Dashboard"),
+    );
+    expect(h.closeDashboardTabsFor).not.toHaveBeenCalled();
+    expect(document.body.textContent?.includes("doesn't resolve")).toBe(false);
+  });
+
   it("shows the dead-link notice instead of a blank 'Dashboard' tab when /d/:id is gone", async () => {
     const id = "507f1f77bcf86cd799439022";
-    h.fetchDashboards.mockResolvedValue([]);
+    h.resolveObjectRef.mockResolvedValue(null);
     window.history.replaceState({}, "", `/d/${id}`);
 
     render(<UrlSync />);

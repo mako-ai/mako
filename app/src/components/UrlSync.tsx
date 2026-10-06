@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
-import { useDashboardStore } from "../store/dashboardStore";
 import { appUrlSlug, useAppsStore } from "../store/appsStore";
 import { resolveAppRefVia } from "../lib/apps-explorer-tree";
 import { resolveObjectRef } from "../lib/object-links";
@@ -70,7 +69,24 @@ async function resolveAppLink(
       via: "current",
     };
   }
-  const remote = await resolveObjectRef(workspaceId, "app", ref);
+  let remote: Awaited<ReturnType<typeof resolveObjectRef>>;
+  try {
+    remote = await resolveObjectRef(workspaceId, "app", ref);
+  } catch (error) {
+    // The server could not answer (network, 5xx). "Unknown" is not "gone":
+    // an old name the list already resolves is trusted as it was before the
+    // server had a say; anything else is rethrown and the caller leaves the
+    // link alone rather than calling it dead.
+    if (local) {
+      return {
+        id: local.app.id,
+        title: local.app.title,
+        slug: appUrlSlug(local.app),
+        via: local.via,
+      };
+    }
+    throw error;
+  }
   if (!remote) return null;
   // The list may still be catching up with a push: refetch once so the
   // tab has a row to render, then take the handle from whichever is fresher.
@@ -257,18 +273,17 @@ export function UrlSync() {
       const dashboardId = dashboardMatch[1];
       setLeftPane("dashboards");
 
-      // Focus if open; else resolve the title, then open (focusDashboardTab
-      // dedupes again in case a tab appeared while the list was loading).
-      // A dashboard the list does not know (deleted, or another workspace)
-      // used to open a blank "Dashboard" tab with no word why — the same
-      // dead-link notice apps and source connections show is due here.
+      // Focus if open; else ask the server what the id is (the same small
+      // resolve call the rename service answers), then open. A dashboard
+      // that is really gone (404: deleted, or another workspace) used to
+      // open a blank "Dashboard" tab with no word why — the same dead-link
+      // notice apps and source connections show is due here. Any OTHER
+      // failure (network, 5xx) means "unknown", not "gone": open the tab as
+      // before and let its own loader report.
       if (!focusOrOpenTab({ kind: "dashboard", metadata: { dashboardId } })) {
-        useDashboardStore
-          .getState()
-          .fetchDashboards(currentWorkspace.id)
-          .then(dashboards => {
-            const dashboard = dashboards.find(d => d._id === dashboardId);
-            if (!dashboard) {
+        resolveObjectRef(currentWorkspace.id, "dashboard", dashboardId).then(
+          resolved => {
+            if (!resolved) {
               closeDashboardTabsFor(dashboardId);
               window.history.replaceState(null, "", "/");
               setDeadLinkNotice(
@@ -276,8 +291,13 @@ export function UrlSync() {
               );
               return;
             }
-            focusDashboardTab(dashboardId, dashboard.title || "Dashboard");
-          });
+            focusDashboardTab(
+              resolved.id,
+              resolved.current.title || "Dashboard",
+            );
+          },
+          () => focusDashboardTab(dashboardId, "Dashboard"),
+        );
       }
     } else if (tableMatch) {
       // /t/:connectionId/:schema/:table (+ ?db=<name>&dbid=<id>)
@@ -337,7 +357,9 @@ export function UrlSync() {
             );
             setDeadLinkNotice(MOVED_APP_LINK);
           }
-        });
+        })
+        // Server unreachable: leave the link as it is; no dead-link notice.
+        .catch(() => undefined);
     } else if (appMatch) {
       // /apps/:ref — Apps (git-backed)
       const appRef = decodeUrlSegment(appMatch[1]);
@@ -383,7 +405,9 @@ export function UrlSync() {
             );
             setDeadLinkNotice(MOVED_APP_LINK);
           }
-        });
+        })
+        // Server unreachable: leave the link as it is; no dead-link notice.
+        .catch(() => undefined);
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path
       const projectId = dbtFileMatch[1];
@@ -407,11 +431,13 @@ export function UrlSync() {
             focusDbtFileTab(projectId, filePath);
             return;
           }
+          // A failed lookup (network, 5xx) is "unknown", not "moved":
+          // open the path as linked and let the editor report it.
           const resolved = await resolveObjectRef(
             currentWorkspace.id,
             "dbt_file",
             `${projectId}/${filePath}`,
-          );
+          ).catch(() => null);
           const moved =
             resolved?.via === "alias" ? resolved.current.slug : null;
           if (!moved) {
@@ -461,13 +487,14 @@ export function UrlSync() {
       // /n/:notebookId — focusNotebookTab dedupes against an existing tab and
       // activates it. A tab already open is focused as-is; a cold deep link
       // first asks the server what the id is (one small resolve call — the
-      // same lookup the rename service answers), so a deleted notebook gets
-      // the dead-link notice instead of a placeholder tab that 404s inside.
-      // NotebookRenderer still loads the doc and syncs the live name.
+      // same lookup the rename service answers), so a deleted notebook
+      // (404) gets the dead-link notice instead of a placeholder tab that
+      // 404s inside. Any other failure is "unknown": open the placeholder
+      // as before — NotebookRenderer loads the doc and reports itself.
       const notebookId = notebookMatch[1];
       setLeftPane("notebooks");
       if (!focusOrOpenTab({ kind: "notebook", metadata: { notebookId } })) {
-        void resolveObjectRef(currentWorkspace.id, "notebook", notebookId).then(
+        resolveObjectRef(currentWorkspace.id, "notebook", notebookId).then(
           resolved => {
             if (!resolved) {
               closeNotebookTabsFor(notebookId);
@@ -482,6 +509,7 @@ export function UrlSync() {
               resolved.current.title || "Untitled notebook",
             );
           },
+          () => focusNotebookTab(notebookId, "Untitled notebook"),
         );
       }
     } else if (planMatch) {

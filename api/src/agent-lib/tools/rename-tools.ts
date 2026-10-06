@@ -36,7 +36,7 @@ export function createRenameTools(
           .describe(
             "The object: its id, current name/slug/path, or an old name.",
           ),
-        title: z.string().min(1).max(200).optional(),
+        title: z.string().min(1).max(1000).optional(),
         slug: z.string().min(1).max(500).optional(),
         options: z
           .record(z.string(), z.unknown())

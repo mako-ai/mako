@@ -7,6 +7,7 @@
  * so the next copy of the link is the new one.
  */
 import { apiClient } from "./api-client";
+import { ApiError } from "../api/result";
 
 export type ObjectKind =
   | "app"
@@ -44,7 +45,12 @@ export interface RenameObjectResult {
   warnings: string[];
 }
 
-/** `null` when nothing (or more than one object) answers to `ref`. */
+/**
+ * `null` when the server says nothing (or more than one object) answers
+ * to `ref` — a 404. Any other failure (network, 5xx, 401/403) is THROWN:
+ * "unknown" is not "gone", and a caller that shows a dead-link notice or
+ * rewrites the address bar must do so only on a real not-found.
+ */
 export async function resolveObjectRef(
   workspaceId: string,
   kind: ObjectKind,
@@ -56,8 +62,9 @@ export async function resolveObjectRef(
       resolved?: ResolvedObjectRef;
     }>(`/workspaces/${workspaceId}/objects/resolve`, { kind, ref });
     return response.success && response.resolved ? response.resolved : null;
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
   }
 }
 

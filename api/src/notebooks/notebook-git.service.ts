@@ -16,11 +16,11 @@
  * history, and the next checkpoint records the resolution. A hot-document
  * system must never clobber the screen someone is typing into.
  *
- * A file MOVED by that push (laptop `git mv`) is recognised — by the
- * notebook id the file carries, else by git's rename detection — and its
- * index row re-keyed to the new path; the next checkpoint keeps that path
- * as long as the name is unchanged (`checkpointPathFor`). The notebook's
- * id, shares and `/n/<id>` links are untouched by a rename from any side.
+ * A file MOVED by that push (laptop `git mv`) is recognised by the notebook
+ * id the file carries — never by content similarity — and its index row
+ * re-keyed to the new path; the next checkpoint keeps that path as long as
+ * the name is unchanged (`checkpointPathFor`). The notebook's id, shares
+ * and `/n/<id>` links are untouched by a rename from any side.
  */
 import { Types } from "mongoose";
 import {
@@ -48,10 +48,7 @@ import { EMPTY_TREE } from "../apps/git";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { getNotebookStore } from "./store";
-import { detectRenamedPaths } from "../rename/git-renames";
-import { USERS_DIR } from "../apps/console-files";
 import {
-  NOTEBOOKS_ROOT,
   NOTEBOOK_FILE_EXTENSION,
   isNotebookRepoPath,
   notebookRepoPath,
@@ -321,11 +318,11 @@ async function syncNotebooksNow(
   if (paths.length === 0) return;
 
   // Index rows whose file is gone from the tree: a laptop rename's "from"
-  // side. A file at a path no row claims is matched against them below —
-  // by the notebook id the file carries, else by git's rename detection —
-  // and re-keyed in place, so `/n/<id>` and the row's shares survive a
-  // `git mv` (brief rule 3). Rows nothing claims keep their stale path:
-  // their store document is untouched (a push never deletes a notebook).
+  // side. A file at a path no row claims is matched against them below by
+  // the notebook id the file carries and re-keyed in place, so `/n/<id>`
+  // and the row's shares survive a `git mv` (brief rule 3). Rows nothing
+  // claims keep their stale path: their store document is untouched (a
+  // push never deletes a notebook).
   const present = new Set(paths);
   const vanished = (
     await NotebookIndex.find({
@@ -333,7 +330,6 @@ async function syncNotebooksNow(
       path: { $exists: true, $ne: null },
     })
   ).filter(row => row.path && !present.has(row.path));
-  let renamedTo: Map<string, string> | null = null;
 
   const store = getNotebookStore();
   for (const path of paths) {
@@ -348,19 +344,15 @@ async function syncNotebooksNow(
       const parsed = parseNotebookFile(blob.contents);
 
       if (!index) {
-        const moved = vanished.find(row => row.notebookId === parsed?.id);
-        let candidate = moved;
-        if (!candidate && vanished.length > 0) {
-          renamedTo ??= await detectRenamedPaths(
-            repoDir,
-            head,
-            vanished.map(row => row.path as string),
-            [NOTEBOOKS_ROOT, USERS_DIR],
-          );
-          candidate = vanished.find(
-            row => renamedTo?.get(row.path as string) === path,
-          );
-        }
+        // A `.deepnote` file always carries its notebook id (the schema
+        // rejects one without), and that id is the WHOLE answer: the file
+        // is the vanished row with that id, or a notebook Mako does not
+        // know. Content similarity is never consulted — a different id
+        // merely similar to a row whose file vanished long ago must not
+        // take over that row and its live store document.
+        const candidate = parsed?.id
+          ? vanished.find(row => row.notebookId === parsed.id)
+          : undefined;
         // Files with no index row and no vanished row to inherit are
         // externally-created notebooks; creating store documents for them
         // is a follow-up (the store API cannot yet create with a
@@ -370,11 +362,10 @@ async function syncNotebooksNow(
         candidate.path = path;
         await candidate.save();
         index = candidate;
-        logger.info("Notebook file rename detected; row re-keyed", {
+        logger.info("Notebook file rename detected by id; row re-keyed", {
           workspaceId,
           notebookId: index.notebookId,
           path,
-          by: moved ? "file id" : "git -M",
         });
       }
 

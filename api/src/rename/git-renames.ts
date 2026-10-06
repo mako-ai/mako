@@ -243,9 +243,14 @@ function escapeRegExp(s: string): string {
  * Git already knows the answer: `diff -M` pairs a deletion with an addition
  * of similar content. The sync does not store the commit it last reconciled,
  * so for each vanished path the last commit that touched it (its deletion)
- * is found and its parent — the last tree that still had the file — is
- * diffed against head. One diff per deletion commit, however many files it
- * removed, and nothing at all when no path vanished.
+ * is found, and THAT commit is diffed against its parent — the last tree
+ * that still had the file. The range is deliberately one commit, never
+ * "deletion..head": diffing all the way to head paired a console deleted
+ * months ago with an unrelated, merely similar file another user pushed
+ * later, and resurrected the old row (with its shares) onto their file. A
+ * rename is one `git mv` in one commit; a move split across commits is
+ * matched by identical blob or not at all. One diff per deletion commit,
+ * however many files it removed, and nothing at all when no path vanished.
  */
 
 /** vanished path → the path git says it was renamed to. */
@@ -253,10 +258,12 @@ export type RenamedPaths = Map<string, string>;
 
 /**
  * Which of `vanishedPaths` (present at some earlier commit, absent at
- * `head`) git sees as renamed, and to what. `roots` limits the diff to the
- * directories the kind lives in; a rename out of them is not a rename of
- * that kind. Unknown paths and git failures yield no match — the caller
- * then falls back to treating the path as deleted, exactly as before.
+ * `head`) git sees as renamed IN THE COMMIT THAT REMOVED THEM, and to what.
+ * `roots` limits the diff to the directories the kind lives in; a rename
+ * out of them is not a rename of that kind. Unknown paths and git failures
+ * yield no match — the caller then falls back to treating the path as
+ * deleted, exactly as before. Callers decide which rows are candidates
+ * (live ones only) and whether a pair may cross an ownership boundary.
  */
 export async function detectRenamedPaths(
   repoDir: string,
@@ -283,7 +290,9 @@ export async function detectRenamedPaths(
   for (const [deletion, paths] of byDeletion) {
     const base = (await parentOf(repoDir, deletion)) ?? EMPTY_TREE;
     if (base === EMPTY_TREE) continue; // nothing existed before: no rename
-    const pairs = await renamesBetween(repoDir, base, head, roots);
+    // The deletion commit alone (see the module doc): a pair must be a
+    // move inside the push that removed the file, not a later lookalike.
+    const pairs = await renamesBetween(repoDir, base, deletion, roots);
     for (const [from, to] of pairs) {
       if (wanted.has(from) && paths.includes(from)) out.set(from, to);
     }

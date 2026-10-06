@@ -21,7 +21,10 @@ import {
   type ConsoleAccessLevel,
   type ISavedConsole,
 } from "../../database/workspace-schema";
-import { ConsoleManager } from "../../utils/console-manager";
+import {
+  ConsoleManager,
+  ConsolePathTakenError,
+} from "../../utils/console-manager";
 import {
   derivedConsoleId,
   ensureFolderChain,
@@ -106,14 +109,17 @@ async function findRow(
     fileReadable(item, ctx),
   );
   const clean = ref.replace(/^\/+|\/+$/g, "");
-  const leaf = clean.split("/").pop() ?? clean;
+  // A ref that names a folder must match that folder: "Archive/report"
+  // is not an alias for the only "Live/report". Only a bare name may fall
+  // back to a leaf match.
+  const bare = !clean.includes("/");
   const matches = live.filter(item => {
     if (item.path === clean) return true;
     const folders = item.location.folderSegments.join("/");
     const named = folders
       ? `${folders}/${item.location.name}`
       : item.location.name;
-    return named === clean || item.location.name === leaf;
+    return named === clean || (bare && item.location.name === clean);
   });
   // Prefer the exact path / folder-qualified matches over bare-name ones;
   // a bare name that several consoles share resolves to nothing.
@@ -290,16 +296,26 @@ export const consoleRenameHandler: RenameHandler = {
         )?.toString() ?? null)
       : undefined;
 
-    const moved = await consoleManager.relocateConsole(
-      row._id.toString(),
-      ctx.workspaceId,
-      {
-        name: target.name !== row.name ? target.name : undefined,
-        folderId,
-        access,
-      },
-      { userId: ctx.userId, verb: folderChanged ? "move" : "rename" },
-    );
+    let moved: Awaited<ReturnType<typeof consoleManager.relocateConsole>>;
+    try {
+      moved = await consoleManager.relocateConsole(
+        row._id.toString(),
+        ctx.workspaceId,
+        {
+          name: target.name !== row.name ? target.name : undefined,
+          folderId,
+          access,
+        },
+        { userId: ctx.userId, verb: folderChanged ? "move" : "rename" },
+      );
+    } catch (error) {
+      // The service re-checks the target under its own lock-free write;
+      // the pre-check above is for a clearer message, not the guarantee.
+      if (error instanceof ConsolePathTakenError) {
+        throw new RenameError(error.message, 409);
+      }
+      throw error;
+    }
     if (!moved) throw new RenameError("Console not found", 404);
 
     const warnings: string[] = [];
