@@ -15,6 +15,12 @@
  * WINS: the store keeps the newer work, the external version stays in git
  * history, and the next checkpoint records the resolution. A hot-document
  * system must never clobber the screen someone is typing into.
+ *
+ * A file MOVED by that push (laptop `git mv`) is recognised — by the
+ * notebook id the file carries, else by git's rename detection — and its
+ * index row re-keyed to the new path; the next checkpoint keeps that path
+ * as long as the name is unchanged (`checkpointPathFor`). The notebook's
+ * id, shares and `/n/<id>` links are untouched by a rename from any side.
  */
 import { Types } from "mongoose";
 import {
@@ -42,7 +48,11 @@ import { EMPTY_TREE } from "../apps/git";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { getNotebookStore } from "./store";
+import { detectRenamedPaths } from "../rename/git-renames";
+import { USERS_DIR } from "../apps/console-files";
 import {
+  NOTEBOOKS_ROOT,
+  NOTEBOOK_FILE_EXTENSION,
   isNotebookRepoPath,
   notebookRepoPath,
   parseNotebookFile,
@@ -52,6 +62,7 @@ import {
 import type { NotebookDoc } from "./types";
 
 const logger = loggers.api("notebook-git");
+const MAIN_REF = `refs/heads/${DEFAULT_BRANCH}`;
 
 /** Commit after this much quiet following an edit… */
 const CHECKPOINT_DEBOUNCE_MS = 30_000;
@@ -87,6 +98,39 @@ async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
 }
 
 /**
+ * Where the next checkpoint writes the file. The path is derived from the
+ * name — but only when the name (or the access scope) CHANGED since the
+ * file was last written at its current path. A file renamed from a laptop
+ * (`git mv notebooks/a.deepnote notebooks/b.deepnote`, same inner name)
+ * keeps its new path; recomputing it from the unchanged name would move
+ * the file straight back on the next checkpoint and silently undo the
+ * push.
+ */
+async function checkpointPathFor(
+  repoDir: string,
+  index: INotebookIndex,
+): Promise<string> {
+  if (!index.path) return uniqueNotebookPath(index);
+  const slug = index.path.slice(
+    index.path.lastIndexOf("/") + 1,
+    -NOTEBOOK_FILE_EXTENSION.length,
+  );
+  const scoped = notebookRepoPath(slug, {
+    access: index.access,
+    ownerId: index.ownerId,
+  });
+  if (scoped !== index.path) return uniqueNotebookPath(index); // access flip
+  const committed = await readBlob(repoDir, MAIN_REF, index.path).catch(
+    () => null,
+  );
+  const committedName =
+    committed && !committed.isBinary
+      ? parseNotebookFile(committed.contents)?.name
+      : undefined;
+  return committedName === index.name ? index.path : uniqueNotebookPath(index);
+}
+
+/**
  * Commit the notebook's current store document as its `.deepnote` file,
  * reconciling the path (rename/access moves the file in the same commit).
  * No-op when the serialized source is byte-identical to the last checkpoint.
@@ -95,7 +139,11 @@ export async function checkpointNotebook(
   workspaceId: string,
   notebookId: string,
   actorUserId?: string,
-): Promise<{ committed: boolean; skippedReason?: "no_repository" }> {
+): Promise<{
+  committed: boolean;
+  commitOid?: string;
+  skippedReason?: "no_repository";
+}> {
   const repoDir = await repoDirIfExists(workspaceId);
   if (repoDir == null) {
     logger.warn("Notebook checkpoint not committed — connect a repository", {
@@ -117,14 +165,14 @@ export async function checkpointNotebook(
   // in the file so the file stands alone.
   const contents = serializeNotebookFile({ ...doc, name: index.name });
   const sha = blobOid(contents);
-  const wantedPath = await uniqueNotebookPath(index);
+  const wantedPath = await checkpointPathFor(repoDir, index);
   if (index.checkpointBlobSha === sha && index.path === wantedPath) {
     return { committed: false };
   }
 
   const deletes =
     index.path && index.path !== wantedPath ? [index.path] : undefined;
-  await commitBlobsOnBranch(
+  const result = await commitBlobsOnBranch(
     repoDir,
     DEFAULT_BRANCH,
     { writes: { [wantedPath]: contents }, deletes },
@@ -139,7 +187,7 @@ export async function checkpointNotebook(
   index.checkpointBlobSha = sha;
   await index.save();
   queueMirrorPush(workspaceId);
-  return { committed: true };
+  return { committed: true, commitOid: result.commitOid };
 }
 
 /** Remove the notebook's file when the notebook itself is deleted. */
@@ -272,24 +320,67 @@ async function syncNotebooksNow(
     .filter(isNotebookRepoPath);
   if (paths.length === 0) return;
 
+  // Index rows whose file is gone from the tree: a laptop rename's "from"
+  // side. A file at a path no row claims is matched against them below —
+  // by the notebook id the file carries, else by git's rename detection —
+  // and re-keyed in place, so `/n/<id>` and the row's shares survive a
+  // `git mv` (brief rule 3). Rows nothing claims keep their stale path:
+  // their store document is untouched (a push never deletes a notebook).
+  const present = new Set(paths);
+  const vanished = (
+    await NotebookIndex.find({
+      workspaceId: new Types.ObjectId(workspaceId),
+      path: { $exists: true, $ne: null },
+    })
+  ).filter(row => row.path && !present.has(row.path));
+  let renamedTo: Map<string, string> | null = null;
+
   const store = getNotebookStore();
   for (const path of paths) {
     try {
-      const index = await NotebookIndex.findOne({
+      let index = await NotebookIndex.findOne({
         workspaceId: new Types.ObjectId(workspaceId),
         path,
       });
-      // Files with no index row are externally-created notebooks; creating
-      // store documents for them is a follow-up (the store API cannot yet
-      // create with a caller-chosen id). Skip quietly.
-      if (!index) continue;
 
       const blob = await readBlob(repoDir, head, path);
       if (blob.isBinary) continue;
+      const parsed = parseNotebookFile(blob.contents);
+
+      if (!index) {
+        const moved = vanished.find(row => row.notebookId === parsed?.id);
+        let candidate = moved;
+        if (!candidate && vanished.length > 0) {
+          renamedTo ??= await detectRenamedPaths(
+            repoDir,
+            head,
+            vanished.map(row => row.path as string),
+            [NOTEBOOKS_ROOT, USERS_DIR],
+          );
+          candidate = vanished.find(
+            row => renamedTo?.get(row.path as string) === path,
+          );
+        }
+        // Files with no index row and no vanished row to inherit are
+        // externally-created notebooks; creating store documents for them
+        // is a follow-up (the store API cannot yet create with a
+        // caller-chosen id). Skip quietly.
+        if (!candidate) continue;
+        vanished.splice(vanished.indexOf(candidate), 1);
+        candidate.path = path;
+        await candidate.save();
+        index = candidate;
+        logger.info("Notebook file rename detected; row re-keyed", {
+          workspaceId,
+          notebookId: index.notebookId,
+          path,
+          by: moved ? "file id" : "git -M",
+        });
+      }
+
       const sha = blobOid(blob.contents);
       if (index.checkpointBlobSha === sha) continue; // level already
 
-      const parsed = parseNotebookFile(blob.contents);
       if (!parsed) {
         logger.warn("Invalid .deepnote file; keeping current notebook", {
           workspaceId,
@@ -397,8 +488,6 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
 // History: the SAME shapes the apps/consoles History popover consumes
 // (apps.md §24) — one component, three content kinds.
 // ---------------------------------------------------------------------------
-
-const MAIN_REF = `refs/heads/${DEFAULT_BRANCH}`;
 
 /** Commits that touched this notebook's file (moves included via its path). */
 export async function notebookHistory(

@@ -226,6 +226,70 @@ describe("push-sync", () => {
   });
 });
 
+describe("laptop renames (git mv pushed from a checkout)", () => {
+  it("a moved .deepnote re-keys its index row by the id the file carries, and the path sticks", async () => {
+    const id = await seedNotebook("Quarterly", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    const raw = (await fileAt("notebooks/quarterly.deepnote"))!;
+    // `git mv notebooks/quarterly.deepnote notebooks/q3-review.deepnote`
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "notebooks/q3-review.deepnote": raw },
+        deletes: ["notebooks/quarterly.deepnote"],
+      },
+      { message: "laptop rename" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: id });
+    expect(index?.path).toBe("notebooks/q3-review.deepnote");
+    expect(index?.name).toBe("Quarterly");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+    // The next checkpoint must NOT move the file back to the name's slug.
+    const result = await checkpointNotebook(WS, id, "u1");
+    expect(result.committed).toBe(false);
+    expect(await fileAt("notebooks/q3-review.deepnote")).not.toBeNull();
+    expect(await fileAt("notebooks/quarterly.deepnote")).toBeNull();
+    // …until the name itself changes in the UI, which derives a new path.
+    await NotebookIndex.updateOne({ notebookId: id }, { name: "Q3 Review" });
+    const moved = await checkpointNotebook(WS, id, "u1");
+    expect(moved.committed).toBe(true);
+    expect(moved.commitOid).toMatch(/^[0-9a-f]{40}$/);
+    expect(await fileAt("notebooks/q3-review.deepnote")).not.toBeNull();
+    expect((await NotebookIndex.findOne({ notebookId: id }))?.path).toBe(
+      "notebooks/q3-review.deepnote",
+    );
+  });
+
+  it("a moved AND edited file with its ids stripped is matched by git -M", async () => {
+    const id = await seedNotebook("Research notes", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    const raw = (await fileAt("notebooks/research-notes.deepnote"))!;
+    // An external tool rewrote the file without Mako's ids, edited a cell,
+    // and moved it: only content similarity ties it to the old row.
+    const edited = raw
+      .replaceAll(id, "00000000-0000-4000-8000-000000000000")
+      .replace("# Research notes", "# Research notes (v2)");
+    expect(parseNotebookFile(edited)?.id).not.toBe(id);
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "notebooks/research.deepnote": edited },
+        deletes: ["notebooks/research-notes.deepnote"],
+      },
+      { message: "laptop move + edit" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: id });
+    expect(index?.path).toBe("notebooks/research.deepnote");
+    const doc = await getNotebookStore().get(WS, id);
+    expect(doc?.blocks[0]?.source).toBe("# Research notes (v2)");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+});
+
 describe("adoption", () => {
   it("checkpoints every notebook once, re-runnable", async () => {
     await seedNotebook("First", "workspace");
