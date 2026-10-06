@@ -60,6 +60,8 @@ import {
   liveConsoleCode,
   loadLiveConsoleById,
   projectSavedConsole,
+  readConsoleDefinitionAtMain,
+  repoPathForRow,
   requestConsoleDescription,
   restoreConsoleTo,
 } from "../apps/workspace-consoles.service";
@@ -1418,11 +1420,57 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           setOnInsertFields.access = "private" as const;
         }
 
+        // A save that also renames, moves or re-scopes an existing console
+        // ("Rename / Move…") moves the file FIRST through relocateConsole —
+        // free-path check against files at main too, compare-and-swap
+        // commit, owner-only scope rule — then saves the content onto the
+        // path the console owns. The Mongo conflict check above cannot see
+        // a laptop-pushed file, and a plain projection would overwrite it.
+        let current: ISavedConsole | null = existingById;
+        if (current) {
+          try {
+            const moved = await consoleManager.relocateForSave(
+              current,
+              { name: consoleName, folderId, access: body.access },
+              user.id,
+            );
+            if (moved) current = moved.row;
+          } catch (error) {
+            if (error instanceof ConsoleConflictError) {
+              return c.json({ success: false, error: error.message }, 409);
+            }
+            if (error instanceof ConsoleScopeError) {
+              return c.json({ success: false, error: error.message }, 403);
+            }
+            throw error;
+          }
+        } else {
+          // A brand-new console must not land on a file that is already at
+          // main without a row (pushed, not synced yet).
+          const wanted = await repoPathForRow({
+            ...setOnInsertFields,
+            ...setFields,
+            workspaceId: new Types.ObjectId(workspaceId),
+          } as Parameters<typeof repoPathForRow>[0]);
+          if (
+            wanted !== liveFile?.path &&
+            (await readConsoleDefinitionAtMain(workspaceId, wanted))
+          ) {
+            return c.json(
+              {
+                success: false,
+                error: `A console already exists at ${wanted}`,
+              },
+              409,
+            );
+          }
+        }
+
         // Git first (apps.md §16.3), then the guarded row write; a lost
         // guard reverts the commit.
         const projected = await projectSavedConsole({
           workspaceId,
-          current: existingById ?? null,
+          current: current ?? null,
           previousPath: liveFile?.path ?? null,
           set: setFields,
           onInsert: setOnInsertFields,
@@ -3470,11 +3518,23 @@ registerFolderRoutes(consoleRoutes, {
   createdStatus: 201,
   onError: (c, error) => {
     if (error instanceof RepoRequiredError) return repoRequired(c, error);
+    // A destination under the folder is another console's file (or a
+    // laptop-pushed file with no row yet): nothing changed, say which.
+    if (error instanceof ConsoleConflictError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
     // A folder rename/move/access change moves every file under it in one
     // compare-and-swap commit; a concurrent save or push under the folder
     // refuses it as a whole (nothing applied) — the client retries.
     if (error instanceof BlobPreconditionError) {
-      return c.json({ success: false, error: error.message }, 409);
+      return c.json(
+        {
+          success: false,
+          error:
+            "Something changed in the repository under this folder (a push or a save landed meanwhile). Reload and try again.",
+        },
+        409,
+      );
     }
     return undefined;
   },

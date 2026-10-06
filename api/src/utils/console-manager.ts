@@ -188,6 +188,9 @@ export class ConsoleScopeError extends Error {
   }
 }
 
+/** The row shape `repoPathForRow` derives a repo path from. */
+type RowLikeForPath = Parameters<typeof repoPathForRow>[0];
+
 export class ConsoleManager {
   constructor() {}
 
@@ -367,7 +370,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -595,7 +599,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -633,7 +638,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -713,7 +719,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -763,7 +770,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -793,23 +801,39 @@ export class ConsoleManager {
       if (!ownerId || ownerId !== userId) return false;
 
       await this.syncSubtreeIfDrifted(folderId, workspaceId, userId);
+      const before = { access: folder.access, isPrivate: folder.isPrivate };
+      const snapshot = await this.folderSubtreeAccessSnapshot(
+        folderId,
+        workspaceId,
+      );
       folder.access = access;
       folder.isPrivate = access === "private";
       await folder.save();
-
-      await this.propagateFolderAccess(folderId, workspaceId, userId, access);
-      await this.reprojectFolderSubtree(
-        folderId,
-        workspaceId,
-        userId,
-        `access ${access}: folder ${folder.name}`,
-      );
+      try {
+        await this.assertFolderSubtreePathsFree(folderId, workspaceId, access);
+        await this.propagateFolderAccess(folderId, workspaceId, userId, access);
+        await this.reprojectFolderSubtree(
+          folderId,
+          workspaceId,
+          userId,
+          `access ${access}: folder ${folder.name}`,
+        );
+      } catch (error) {
+        // Nothing moved in git: the rows must not say the new access while
+        // their files stay where they were.
+        await this.restoreFolderSubtreeAccess(snapshot);
+        folder.access = before.access;
+        folder.isPrivate = before.isPrivate;
+        await folder.save();
+        throw error;
+      }
 
       return true;
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1071,7 +1095,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1162,6 +1187,8 @@ export class ConsoleManager {
        * more in the same step (`modify_console`) publishes once itself.
        */
       publish?: boolean;
+      /** Bump `draftRevision` (default); the editor's save bumps it itself. */
+      bumpRevision?: boolean;
     } = {},
   ): Promise<{ row: ISavedConsole; commit?: string } | null> {
     if (!Types.ObjectId.isValid(consoleId)) return null;
@@ -1194,11 +1221,20 @@ export class ConsoleManager {
       folderId?: string | null;
       access?: ConsoleAccessLevel;
     },
-    options: { userId?: string; verb?: "rename" | "move"; publish?: boolean },
+    options: {
+      userId?: string;
+      verb?: "rename" | "move";
+      publish?: boolean;
+      bumpRevision?: boolean;
+    },
   ): Promise<{ row: ISavedConsole; commit?: string } | null | "drift"> {
+    // A soft-deleted console is not renamed: it would be projected from its
+    // row (its file is gone) — an unreviewed draft committed under a new
+    // name — and come back to life. Restore it first.
     const current = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
       workspaceId: new Types.ObjectId(workspaceId),
+      is_deleted: { $ne: true },
     });
     if (!current) return null;
 
@@ -1299,13 +1335,17 @@ export class ConsoleManager {
     }
 
     // Bump the draft revision so revision-sync catches the rename, then
-    // poke subscribers (other tabs/users update the tab title live).
+    // poke subscribers (other tabs/users update the tab title live). A
+    // caller whose own guarded write follows (the editor's save) keeps
+    // the revision for that write to bump.
     const updated = await SavedConsole.findOneAndUpdate(
       {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: updateFields, $inc: { draftRevision: 1 } },
+      options.bumpRevision === false
+        ? { $set: updateFields }
+        : { $set: updateFields, $inc: { draftRevision: 1 } },
       { new: true },
     );
     if (!updated) return null;
@@ -1320,6 +1360,52 @@ export class ConsoleManager {
       });
     }
     return { row: updated, commit };
+  }
+
+  /**
+   * The editor's "Rename / Move…" is a save that also changes the console's
+   * name, folder or access. Everything that MOVES the file goes through
+   * `relocateConsole` first — free-path check (a laptop-pushed file with no
+   * row included), compare-and-swap commit, owner-only scope rule — and the
+   * content is saved afterwards onto the path the console then owns. The
+   * Mongo-only conflict check the save route runs cannot see files, and a
+   * plain projection would overwrite them. Returns null when nothing moves.
+   */
+  async relocateForSave(
+    existing: ISavedConsole,
+    target: {
+      name: string;
+      folderId: string | undefined;
+      access: ConsoleAccessLevel | undefined;
+    },
+    userId: string,
+  ): Promise<{ row: ISavedConsole; commit?: string } | null> {
+    if (!existing.isSaved) return null; // a draft has no file to move
+    const probe = {
+      ...(existing.toObject() as Record<string, unknown>),
+      name: target.name,
+      folderId: target.folderId
+        ? new Types.ObjectId(target.folderId)
+        : undefined,
+      ...(target.access
+        ? { access: target.access, isPrivate: target.access === "private" }
+        : {}),
+    } as unknown as RowLikeForPath;
+    const toPath = await repoPathForRow(probe);
+    const accessChanges =
+      target.access !== undefined &&
+      target.access !== ConsoleManager.resolveAccess(existing);
+    if (toPath === existing.path && !accessChanges) return null;
+    return this.relocateConsole(
+      existing._id.toString(),
+      existing.workspaceId.toString(),
+      {
+        name: target.name,
+        folderId: target.folderId ?? null,
+        access: target.access,
+      },
+      { userId, verb: "move", publish: false, bumpRevision: false },
+    );
   }
 
   /** Throw `ConsolePathTakenError` when a file or a live saved row holds `path`. */
@@ -1414,7 +1500,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1443,6 +1530,7 @@ export class ConsoleManager {
       folder.name = newName;
       await folder.save();
       try {
+        await this.assertFolderSubtreePathsFree(folderId, workspaceId);
         await this.reprojectFolderSubtree(
           folderId,
           workspaceId,
@@ -1458,7 +1546,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1502,6 +1591,128 @@ export class ConsoleManager {
       queue.push(...children.map(c => c._id.toString()));
     }
     return out;
+  }
+
+  /**
+   * What a folder operation must be able to put back: the access of every
+   * console and folder under it. The folder's own row is restored by the
+   * operation. A refused move (a target file held by someone else, a
+   * concurrent save) that left the rows re-scoped in Mongo while their
+   * files stayed where they were would make a private console readable by
+   * the workspace, and the next plain save would project it onto the other
+   * console's file.
+   */
+  private async folderSubtreeAccessSnapshot(
+    folderId: string,
+    workspaceId: string,
+  ): Promise<{
+    rows: Array<{
+      _id: Types.ObjectId;
+      access?: ConsoleAccessLevel;
+      isPrivate?: boolean;
+    }>;
+    folders: Array<{
+      _id: Types.ObjectId;
+      access?: ConsoleAccessLevel;
+      isPrivate?: boolean;
+    }>;
+  }> {
+    const wid = new Types.ObjectId(workspaceId);
+    const rows = (await this.consolesUnderFolder(folderId, workspaceId)).map(
+      r => ({ _id: r._id, access: r.access, isPrivate: r.isPrivate }),
+    );
+    const folders: Array<{
+      _id: Types.ObjectId;
+      access?: ConsoleAccessLevel;
+      isPrivate?: boolean;
+    }> = [];
+    const queue = [folderId];
+    while (queue.length > 0) {
+      const children = await ConsoleFolder.find({
+        workspaceId: wid,
+        parentId: new Types.ObjectId(queue.shift() as string),
+      }).select("access isPrivate");
+      for (const child of children) {
+        folders.push({
+          _id: child._id,
+          access: child.access,
+          isPrivate: child.isPrivate,
+        });
+        queue.push(child._id.toString());
+      }
+    }
+    return { rows, folders };
+  }
+
+  private async restoreFolderSubtreeAccess(snapshot: {
+    rows: Array<{
+      _id: Types.ObjectId;
+      access?: ConsoleAccessLevel;
+      isPrivate?: boolean;
+    }>;
+    folders: Array<{
+      _id: Types.ObjectId;
+      access?: ConsoleAccessLevel;
+      isPrivate?: boolean;
+    }>;
+  }): Promise<void> {
+    for (const row of snapshot.rows) {
+      await SavedConsole.updateOne(
+        { _id: row._id },
+        { $set: { access: row.access, isPrivate: row.isPrivate } },
+      );
+    }
+    for (const folder of snapshot.folders) {
+      await ConsoleFolder.updateOne(
+        { _id: folder._id },
+        { $set: { access: folder.access, isPrivate: folder.isPrivate } },
+      );
+    }
+  }
+
+  /**
+   * Before a folder operation re-projects its consoles: every destination
+   * path must be free — a file at main (a laptop-pushed console with no
+   * row included) or a live row outside the subtree refuses it with a
+   * human `ConsolePathTakenError`, before Mongo changes, rather than the
+   * commit's compare-and-swap refusing it afterwards. Called AFTER the
+   * folder row carries its new name/parent/access, so the paths are the
+   * ones the commit would write; `access`, when given, is what the rows
+   * are about to be set to.
+   */
+  private async assertFolderSubtreePathsFree(
+    folderId: string,
+    workspaceId: string,
+    access?: ConsoleAccessLevel,
+  ): Promise<void> {
+    const rows = await this.consolesUnderFolder(folderId, workspaceId);
+    if (rows.length === 0) return;
+    const [defs, outside] = await Promise.all([
+      listConsoleDefinitionsAtMain(workspaceId),
+      SavedConsole.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        _id: { $nin: rows.map(r => r._id) },
+        isSaved: true,
+        is_deleted: { $ne: true },
+        path: { $exists: true, $ne: null },
+      }).select("path"),
+    ]);
+    const ownPaths = new Set(rows.map(r => r.path).filter(Boolean));
+    const taken = new Set<string>([
+      ...defs.map(d => d.path).filter(p => !ownPaths.has(p)),
+      ...outside.map(r => r.path as string),
+    ]);
+    const folderCache = new Map();
+    for (const row of rows) {
+      const probe = {
+        ...(row.toObject() as Record<string, unknown>),
+        ...(access ? { access, isPrivate: access === "private" } : {}),
+      } as unknown as RowLikeForPath;
+      const wanted = await repoPathForRow(probe, folderCache);
+      if (wanted !== row.path && taken.has(wanted)) {
+        throw new ConsolePathTakenError(wanted);
+      }
+    }
   }
 
   /**
@@ -1613,7 +1824,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1670,7 +1882,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1749,7 +1962,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1808,7 +2022,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError
+        error instanceof BlobPreconditionError ||
+        error instanceof ConsoleConflictError
       ) {
         throw error;
       }
@@ -1989,7 +2204,14 @@ export class ConsoleManager {
     );
     if (result.modifiedCount === 0) return false;
 
+    const snapshot = await this.folderSubtreeAccessSnapshot(
+      folderId,
+      workspaceId,
+    );
     try {
+      // Destinations free? Asked with the folder's new parent/access in
+      // place and BEFORE any console row changes.
+      await this.assertFolderSubtreePathsFree(folderId, workspaceId, access);
       if (access) {
         // A folder's access moves its consoles between the workspace and
         // the owner's private root (apps.md §16.2).
@@ -2008,6 +2230,9 @@ export class ConsoleManager {
         `move folder: ${before.name}`,
       );
     } catch (error) {
+      // Nothing moved in git: put every row and folder back as they were,
+      // so no console says "workspace" while its file is still private.
+      await this.restoreFolderSubtreeAccess(snapshot);
       await ConsoleFolder.updateOne(
         { _id: new Types.ObjectId(folderId) },
         {

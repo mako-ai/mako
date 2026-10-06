@@ -394,11 +394,41 @@ export async function consolesAdopted(repoDir: string): Promise<boolean> {
 export function derivedConsoleId(
   workspaceId: string,
   path: string,
+  /**
+   * 1 is the id every git-only file has always had. A higher generation is
+   * used only when that id is already held by a row at ANOTHER path — a
+   * git-born console that was renamed keeps its id, so a new file later
+   * pushed at its old name must not collide with it (`freeDerivedConsoleId`).
+   */
+  generation = 1,
 ): Types.ObjectId {
   const digest = createHash("sha1")
-    .update(`consoles:${workspaceId}:${path}`)
+    .update(
+      `consoles:${workspaceId}:${path}${generation > 1 ? `#${generation}` : ""}`,
+    )
     .digest("hex");
   return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/**
+ * The stable id for a file with no row: the first derivation no row at a
+ * different path holds (a deleted, path-less row holds it too). Read from
+ * the index each time, so GET/list (which hands it out) and push-sync
+ * (which creates the row under it) agree, and a tab opened before the push
+ * keeps resolving after it. Same contract as the flows' `freeDerivedFlowId`.
+ */
+export async function freeDerivedConsoleId(
+  workspaceId: string,
+  path: string,
+): Promise<Types.ObjectId> {
+  for (let generation = 1; generation <= 32; generation++) {
+    const id = derivedConsoleId(workspaceId, path, generation);
+    const holder = await SavedConsole.findById(id)
+      .select("path")
+      .lean<{ path?: string } | null>();
+    if (!holder || holder.path === path) return id;
+  }
+  return new Types.ObjectId();
 }
 
 export interface ConsoleDefinitionAtMain {
@@ -527,23 +557,25 @@ async function savedIndexRows(workspaceId: string): Promise<ISavedConsole[]> {
   });
 }
 
-function joinLiveConsoles(
+async function joinLiveConsoles(
   workspaceId: string,
   defs: ConsoleDefinitionAtMain[],
   rows: ISavedConsole[],
-): LiveConsole[] {
+): Promise<LiveConsole[]> {
   const byPath = new Map<string, ISavedConsole>();
   for (const row of rows) {
-    if (row.path) byPath.set(row.path, row);
+    if (row.path && !row.is_deleted) byPath.set(row.path, row);
   }
-  return defs.map(def => {
+  const out: LiveConsole[] = [];
+  for (const def of defs) {
     const row = byPath.get(def.path) ?? null;
-    return {
+    out.push({
       ...def,
       row,
-      id: row?._id ?? derivedConsoleId(workspaceId, def.path),
-    };
-  });
+      id: row?._id ?? (await freeDerivedConsoleId(workspaceId, def.path)),
+    });
+  }
+  return out;
 }
 
 /**
@@ -1456,9 +1488,13 @@ async function syncNow(
         continue;
       }
 
+      // The first derivation no row at another path holds: a renamed
+      // git-born console keeps its id, and a new file at its old name must
+      // get its own row, never be folded into the renamed one.
+      const newId = await freeDerivedConsoleId(workspaceId, entry.path);
       try {
         const created = await SavedConsole.create({
-          _id: derivedConsoleId(workspaceId, entry.path),
+          _id: newId,
           workspaceId: ws,
           createdBy: actor,
           executionCount: 0,
@@ -1472,16 +1508,14 @@ async function syncNow(
       } catch {
         // Unique-id race with a concurrent list/sync: keep the winner so a
         // git-only file that already appeared under the derived id does not
-        // mint a second row.
+        // mint a second row — but only a winner AT THIS PATH; an id held by
+        // a row elsewhere is not ours.
         const winner =
-          (await SavedConsole.findById(
-            derivedConsoleId(workspaceId, entry.path),
-          )) ??
           (await SavedConsole.findOne({
             workspaceId: ws,
             path: entry.path,
             isSaved: true,
-          }));
+          })) ?? (await SavedConsole.findOne({ _id: newId, path: entry.path }));
         if (!winner) throw new Error("Could not persist the console index row");
         stats.created++;
         seenRows.add(winner._id.toString());
