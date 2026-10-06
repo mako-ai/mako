@@ -20,6 +20,15 @@ describe("flowNameForSave", () => {
         nextAutoName: "Stripe → BigQuery",
       }),
     ).toBe("Stripe → BigQuery");
+    // Unchanged selections: nothing to say about the name, even when it
+    // looks auto-named — the store may be stale (renamed elsewhere).
+    expect(
+      flowNameForSave({
+        existingName: "Stripe → Warehouse",
+        previousAutoName: "Stripe → Warehouse",
+        nextAutoName: "Stripe → Warehouse",
+      }),
+    ).toBeUndefined();
     expect(
       flowNameForSave({
         existingName: "  ",

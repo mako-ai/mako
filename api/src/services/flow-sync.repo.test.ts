@@ -108,6 +108,7 @@ import {
   liveFlowToPlain,
   loadLiveFlowById,
   loadLiveFlows,
+  resetFreshenOnMissThrottle,
   resolveLiveFlowRow,
   syncFlowsFromRepo,
 } from "./flow-sync.service";
@@ -183,6 +184,8 @@ beforeEach(async () => {
   // leak between cases (with it set and no reachable mirror, nothing
   // verifies, and teardowns are silently deferred).
   delete process.env.APPS_CONNECTED_REPO_PUSH;
+  delete process.env.APPS_GITHUB_REMOTE_BASE;
+  resetFreshenOnMissThrottle();
   await Promise.all([
     Flow.deleteMany({}),
     CdcEntityState.deleteMany({}),
@@ -470,6 +473,10 @@ describe("one bad file is that file's problem", () => {
     expect(after!.name).toBe(before!.name);
     expect(after!.writeMode).toBe(before!.writeMode);
     expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);
+    // …and says why, as GET's resync does, recording the blob it saw so a
+    // UI save may fix exactly that version.
+    expect(isFlowMarkedInvalid(after!)).toBe(true);
+    expect(after!.lastSeenBlobSha).not.toBe(before!.sourceBlobSha);
   });
 });
 
@@ -1023,10 +1030,13 @@ describe("round 2: lost and racing renames", () => {
       `refs/heads/${DEFAULT_BRANCH}`,
       pre as string,
     ]);
+    // The laptop edit changes the name and the cron — NOT the source or the
+    // destination: a file under the old name pointing somewhere else is a
+    // different stream and would not be re-keyed onto this row (cycle 2 #5).
     await push({
       "flows/foo.yml": flowYaml("Foo edited on laptop").replace(
-        "schema: raw_close",
-        "schema: raw_edited",
+        "cron: 0 3 * * *",
+        "cron: 0 9 * * *",
       ),
     });
 
@@ -1052,7 +1062,7 @@ describe("round 2: lost and racing renames", () => {
     expect(rows[0]._id.toString()).toBe(row!._id.toString());
     expect(rows[0].slug).toBe("foo");
     expect(rows[0].name).toBe("Foo edited on laptop");
-    expect(rows[0].tableDestination?.schema).toBe("raw_edited");
+    expect(rows[0].backfillSchedule?.cron).toBe("0 9 * * *");
     expect(rows[0].lastRenameCommit).toBeUndefined();
     // "bar" never existed on main: nothing linked to it, so it is not an
     // alias now (and "foo" is the current slug, so not one either).
@@ -1688,3 +1698,212 @@ function editAliases(contents: string, aliases: string[]): string {
     `$1aliases:\n${aliases.map(a => `  - ${a}\n`).join("")}`,
   );
 }
+
+describe("cycle 2: wedges after a lost rename, stale instances, a failed sync save", () => {
+  async function loseRename(slug: string, to: string) {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const pre = (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: slug, slug: to },
+    );
+    const { runGit } = await import("../apps/git");
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    return renamed;
+  }
+  const expireGuard = (id: Types.ObjectId) =>
+    Flow.updateOne(
+      { _id: id },
+      { $set: { lastRenameAt: new Date(Date.now() - 60 * 60_000) } },
+    );
+
+  it("[c2-1] a lost rename with no push afterwards settles on the read paths: runs resume, the list and GET find the row", async () => {
+    await push({ "flows/foo.yml": flowYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    await seedRuntime(row!._id);
+    await loseRename("foo", "bar");
+    await expireGuard(row!._id);
+    // The run / consumer freshness check (no push ran the sync's settle).
+    const freshness = await ensureFlowDerivedCache(
+      (await Flow.findById(row!._id).lean())!,
+    );
+    expect(freshness).not.toBe("missing");
+    const settled = await Flow.findById(row!._id);
+    expect(settled!.slug).toBe("foo");
+    expect(settled!.lastRenameCommit).toBeUndefined();
+    expect(settled!.aliases ?? []).toEqual([]);
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+    // GET and the list see the row under its file again.
+    expect(
+      (await loadLiveFlowById(WS, row!._id.toString()))?.row?._id.toString(),
+    ).toBe(row!._id.toString());
+    expect(
+      (await loadLiveFlows(WS)).map(l => [l.def.slug, l.row?._id.toString()]),
+    ).toEqual([["foo", row!._id.toString()]]);
+    expect((await resolveLiveFlowRow(WS, row!._id.toString())).ok).toBe(true);
+  });
+
+  it("[c2-1] the list path alone settles it too (nobody ran a sync or a run)", async () => {
+    await push({ "flows/foo.yml": flowYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    await loseRename("foo", "bar");
+    await expireGuard(row!._id);
+    const live = await loadLiveFlows(WS);
+    expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
+      ["foo", row!._id.toString()],
+    ]);
+  });
+
+  it("[c2-2] an instance whose cache predates a rename fetches once on a miss and finds the renamed flow", async () => {
+    const { runGit } = await import("../apps/git");
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/foo.yml": flowYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    const pre = (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+    // The mirror has the rename; THIS instance's cache does not.
+    const remotes = path.join(tmpRoot, `remotes-${WS}`);
+    await fs.mkdir(path.join(remotes, "test-owner"), { recursive: true });
+    await runGit([
+      "clone",
+      "--bare",
+      "-q",
+      repoDirFor(WS),
+      path.join(remotes, "test-owner", "test-repo.git"),
+    ]);
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    process.env.APPS_GITHUB_REMOTE_BASE = `file://${remotes}`;
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const live = await loadLiveFlowById(WS, row!._id.toString());
+    expect(live?.def.slug).toBe("bar");
+    expect(live?.row?._id.toString()).toBe(row!._id.toString());
+    expect((await loadLiveFlows(WS)).map(l => l.def.slug)).toEqual(["bar"]);
+    // The second miss within 30 s does not fetch again (throttled), and a
+    // row truly without a file is still "missing".
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
+  });
+
+  it("[c2-4] a push-sync save that failed once does not wedge later UI saves after the file reverts", async () => {
+    const { commitFlowFile } = await import("./flow-config.service");
+    const good = flowYaml("Foo");
+    await push({ "flows/foo.yml": good });
+    await syncFlowsFromRepo(WS, "u1");
+    await push({ "flows/foo.yml": flowYaml("Foo edited") });
+    const spy = vi
+      .spyOn(Flow.prototype, "save")
+      .mockImplementationOnce(async () => {
+        throw new Error("transient: VersionError");
+      });
+    await syncFlowsFromRepo(WS, "u1");
+    spy.mockRestore();
+    // The failed save left the row invalid with the blob it saw…
+    const marked = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    expect(isFlowMarkedInvalid(marked!)).toBe(true);
+    expect(marked!.lastSeenBlobSha).toBe(blobOid(flowYaml("Foo edited")));
+    // …the file reverts before anyone lists; the next sync must re-stamp
+    // both shas (sourceBlobSha alone looks level).
+    await push({ "flows/foo.yml": good });
+    await syncFlowsFromRepo(WS, "u1");
+    const level = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    expect(level!.sourceBlobSha).toBe(blobOid(good));
+    expect(level!.lastSeenBlobSha).toBe(blobOid(good));
+    expect(isFlowMarkedInvalid(level!)).toBe(false);
+    // "Reload" + UI save: allowed.
+    await loadLiveFlowById(WS, level!._id.toString());
+    const row = await Flow.findById(level!._id);
+    row!.name = "UI edit";
+    expect(await commitFlowFile(row!, "u1")).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+  });
+
+  it("[c2-5] an expired guard re-keys to the most recent old name whose file is the SAME stream; an unrelated file under an older name is a new flow", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/x.yml": flowYaml("X") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "x" });
+    await seedRuntime(row!._id);
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "x", slug: "a" },
+    );
+    await syncFlowsFromRepo(WS, "u1"); // lands, guard cleared
+    await loseRename("a", "b");
+    await expireGuard(row!._id);
+    expect((await Flow.findById(row!._id))!.aliases).toEqual(["x", "a"]);
+    // Someone reuses the oldest name for an unrelated stream.
+    const OTHER = new Types.ObjectId().toString();
+    await push({
+      "flows/x.yml": flowYaml("Unrelated X").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${OTHER}`,
+      ),
+    });
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.created).toBe(1);
+    const orig = await Flow.findById(row!._id);
+    expect(orig!.slug).toBe("a");
+    expect(String(orig!.dataSourceId)).toBe(CONNECTOR);
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows.map(r => r.slug).sort()).toEqual(["a", "x"]);
+    expect(rows.find(r => r.slug === "x")!._id.toString()).not.toBe(
+      row!._id.toString(),
+    );
+
+    // And when the only old-name file in the tree is a different stream,
+    // the guard is simply cleared: no re-key, nothing inherited.
+    await Flow.deleteMany({ workspaceId: WS });
+    await CdcEntityState.deleteMany({});
+    await push({ "flows/y.yml": flowYaml("Y") });
+    await syncFlowsFromRepo(WS, "u1");
+    const y = await Flow.findOne({ workspaceId: WS, slug: "y" });
+    await loseRename("y", "z");
+    await expireGuard(y!._id);
+    await push({
+      "flows/y.yml": flowYaml("Other Y").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${OTHER}`,
+      ),
+    });
+    await syncFlowsFromRepo(WS, "u1");
+    const yAfter = await Flow.findById(y!._id);
+    expect(yAfter === null || yAfter.slug === "z").toBe(true);
+    if (yAfter) expect(yAfter.lastRenameCommit).toBeUndefined();
+    expect(
+      (await Flow.findOne({ workspaceId: WS, slug: "y" }))!._id.toString(),
+    ).not.toBe(y!._id.toString());
+  });
+});

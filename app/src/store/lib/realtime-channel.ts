@@ -79,6 +79,11 @@ export type RealtimeEvent =
       forUserId?: string;
     }
   | { type: "dbt.job.updated"; projectId: string; clientId?: string }
+  // A flow's definition, name or file name changed outside the editor
+  // (a rename through api/src/rename, by another session or the agent) —
+  // open flow stores refetch so a later form save does not write a stale
+  // name back.
+  | { type: "flow.updated"; flowId?: string; clientId?: string }
   | {
       type: "dbt.run.updated";
       projectId: string;

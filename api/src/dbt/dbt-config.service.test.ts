@@ -84,6 +84,7 @@ import {
   loadLiveJobs,
   liveJobToPlain,
   reserveJobSlug,
+  resetJobFreshenOnMissThrottle,
   resolveLiveJobRow,
   syncDbtConfigFromRepo,
 } from "./dbt-config.service";
@@ -115,6 +116,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   mirror.main = null;
+  delete process.env.APPS_GITHUB_REMOTE_BASE;
+  delete process.env.APPS_CONNECTED_REPO_PUSH;
+  resetJobFreshenOnMissThrottle();
   await Promise.all([DbtProject.deleteMany({}), DbtJob.deleteMany({})]);
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS.toString()), { "README.md": "x\n" });
@@ -912,7 +916,10 @@ describe("round 2: lost and racing renames (jobs)", () => {
       pre as string,
     ]);
     await c({
-      [jobFilePath("nightly")]: file("Nightly edited", "0 6 * * *", "z"),
+      // The laptop edit changes the name and the cron — not the environment
+      // or the commands: a file under the old name that builds something
+      // else is a different job and is not re-keyed onto this row (#5).
+      [jobFilePath("nightly")]: file("Nightly edited", "0 9 * * *", "x"),
     });
 
     await syncDbtConfigFromRepo(WS.toString());
@@ -930,7 +937,7 @@ describe("round 2: lost and racing renames (jobs)", () => {
     expect(rows[0]._id.toString()).toBe(row!._id.toString());
     expect(rows[0].slug).toBe("nightly");
     expect(rows[0].name).toBe("Nightly edited");
-    expect(rows[0].commands).toEqual(["build --select z"]);
+    expect(rows[0].schedule?.cron).toBe("0 9 * * *");
     expect(rows[0].lastRenameCommit).toBeUndefined();
     const live = await loadLiveJobs(project);
     expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
@@ -1191,6 +1198,119 @@ describe("final: a job rename whose commit is not on the mirror yet; creating on
     expect(await fileAt(jobFilePath("nightly-2"))).toContain("name: Nightly");
     expect(await fileAt(jobFilePath("nightly"))).toContain("oops-not-a-list");
   });
+});
+
+describe("cycle 2 (jobs): lost rename with no push, stale instance, target check", () => {
+  const file = (name: string, sel = "x") =>
+    `name: ${name}\nenvironment: prod\ncommands:\n  - build --select ${sel}\nschedule:\n  cron: "0 6 * * *"\n  timezone: UTC\n`;
+  const c = (writes: Record<string, string>) =>
+    commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes },
+      { message: "push" },
+    );
+  async function loseRename(slug: string, to: string) {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { runGit } = await import("../apps/git");
+    const pre = (await resolveCommit(
+      repoDirFor(WS.toString()),
+      MAIN,
+    )) as string;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: slug, slug: to },
+    );
+    await runGit(["-C", repoDirFor(WS.toString()), "update-ref", MAIN, pre]);
+  }
+
+  it("[c2-1] a lost job rename with no push afterwards is settled by the list: the job is back, same id", async () => {
+    const project = await seedProject();
+    await c({ [jobFilePath("nightly")]: file("Nightly") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const row = (await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly",
+    }))!;
+    await loseRename("nightly", "nightly-2");
+    await DbtJob.updateOne(
+      { _id: row._id },
+      { $set: { lastRenameAt: new Date(Date.now() - 60 * 60_000) } },
+    );
+    const live = await loadLiveJobs(project);
+    expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
+      ["nightly", row._id.toString()],
+    ]);
+    const settled = await DbtJob.findById(row._id);
+    expect(settled!.slug).toBe("nightly");
+    expect(settled!.lastRenameCommit).toBeUndefined();
+  });
+
+  it("[c2-2] an instance whose cache predates a job rename fetches once on a miss", async () => {
+    const { runGit } = await import("../apps/git");
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const project = await seedProject();
+    await c({ [jobFilePath("nightly")]: file("Nightly") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const row = (await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly",
+    }))!;
+    const dir = repoDirFor(WS.toString());
+    const pre = (await resolveCommit(dir, MAIN)) as string;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "nightly", slug: "nightly-2" },
+    );
+    const remotes = path.join(tmpRoot, `remotes-${Date.now()}`);
+    await fs.mkdir(path.join(remotes, "test-owner"), { recursive: true });
+    await runGit([
+      "clone",
+      "--bare",
+      "-q",
+      dir,
+      path.join(remotes, "test-owner", "test-repo.git"),
+    ]);
+    await runGit(["-C", dir, "update-ref", MAIN, pre]);
+    process.env.APPS_GITHUB_REMOTE_BASE = `file://${remotes}`;
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const live = await loadLiveJobs(project);
+    expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
+      ["nightly-2", row._id.toString()],
+    ]);
+    expect((await loadLiveJobById(project, row._id.toString()))?.def.slug).toBe(
+      "nightly-2",
+    );
+  });
+
+  it("[c2-5] an expired job guard re-keys only to an old name whose file builds the same thing", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const project = await seedProject();
+    await c({ [jobFilePath("x")]: file("X") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const row = (await DbtJob.findOne({ projectId: project._id, slug: "x" }))!;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "x", slug: "a" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    await loseRename("a", "b");
+    await DbtJob.updateOne(
+      { _id: row._id },
+      { $set: { lastRenameAt: new Date(Date.now() - 60 * 60_000) } },
+    );
+    // The oldest name reused for a different job (other commands).
+    await c({ [jobFilePath("x")]: file("Unrelated X", "something-else") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const orig = await DbtJob.findById(row._id);
+    expect(orig!.slug).toBe("a");
+    expect(orig!.commands).toEqual(["build --select x"]);
+    const rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => r.slug).sort()).toEqual(["a", "x"]);
+    expect(rows.find(r => r.slug === "x")!._id.toString()).not.toBe(
+      row._id.toString(),
+    );
+  }, 90_000);
 });
 
 describe("adoption", () => {

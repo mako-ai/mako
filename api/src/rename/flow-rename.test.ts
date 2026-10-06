@@ -46,6 +46,12 @@ vi.mock("../apps/cloud-repo.service", async importOriginal => {
 vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => undefined) },
 }));
+const published = vi.hoisted(() => [] as Array<{ type: string }>);
+vi.mock("../services/realtime.service", () => ({
+  publishRealtimeEvent: vi.fn((_ws: string, event: { type: string }) => {
+    published.push(event);
+  }),
+}));
 
 import { CdcEntityState, Flow } from "../database/workspace-schema";
 import {
@@ -234,6 +240,8 @@ describe("rename", () => {
     });
     expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(await commitCount()).toBe(commitsBefore + 1);
+    // Open stores are told, so a stale form does not write the old name back.
+    expect(published.some(e => e.type === "flow.updated")).toBe(true);
 
     // One commit did both halves.
     expect(await fileAt("flows/close-crm.yml")).toBeNull();

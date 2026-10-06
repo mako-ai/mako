@@ -29,6 +29,7 @@ import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
+  freshenForServe,
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
@@ -172,23 +173,115 @@ async function jobRenameGuardActive(
 }
 
 /**
- * Retire rename guards the tree caught up with and resolve the ones it
- * never will — the job twin of `settleRenameGuards` in flow-sync.service.ts:
- * landed (in history, or the current file is in the tree under another
- * commit) → cleared; expired with the file still under an old name → the
- * row is re-keyed back to that name, loudly; expired otherwise → cleared.
+ * Fetch at most once per workspace per 30 s when a job row's file is not at
+ * this instance's main (see flow-sync.service.ts `freshenOnMiss`).
  */
+export const JOB_FRESHEN_ON_MISS_MS = 30 * 1000;
+const lastJobMissFreshenAt = new Map<string, number>();
+async function freshenOnJobMiss(workspaceId: string): Promise<boolean> {
+  const last = lastJobMissFreshenAt.get(workspaceId) ?? 0;
+  if (Date.now() - last < JOB_FRESHEN_ON_MISS_MS) return false;
+  lastJobMissFreshenAt.set(workspaceId, Date.now());
+  try {
+    await freshenForServe(workspaceId, 0);
+    return true;
+  } catch (error) {
+    logger.warn("Could not freshen after a missing job file", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+/** Test seam: forget the on-miss throttle. */
+export function resetJobFreshenOnMissThrottle(): void {
+  lastJobMissFreshenAt.clear();
+}
+
+interface JobRenameSettleContext {
+  workspaceId: string;
+  repoDir: string;
+  head: string;
+  fileSlugs: ReadonlySet<string>;
+  parsedFileAt: (slug: string) => DbtJobFile | null;
+}
+
+/**
+ * One row's guard, on a verified tree — the job twin of
+ * `settleFlowRenameGuard` (flow-sync.service.ts): landed (in history, or the
+ * current file is in the tree under another commit) → cleared; expired with
+ * the file still under the most recent old name that builds the SAME thing
+ * (environment + commands) → re-keyed back, loudly; expired otherwise →
+ * cleared. `clear` is scoped to the guard judged, so a newer one written
+ * concurrently survives.
+ */
+async function settleJobRenameGuard(
+  row: IDbtJob,
+  ctx: JobRenameSettleContext,
+): Promise<"kept" | "cleared" | "rekeyed"> {
+  const { workspaceId, repoDir, head, fileSlugs, parsedFileAt } = ctx;
+  const commit = row.lastRenameCommit as string;
+  const clear = () =>
+    DbtJob.updateOne(
+      { _id: row._id, lastRenameCommit: commit },
+      { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
+    );
+  if (await isAncestorCommit(repoDir, commit, head)) {
+    await clear();
+    return "cleared";
+  }
+  if (row.slug && fileSlugs.has(row.slug)) {
+    await clear();
+    return "cleared";
+  }
+  const age = row.lastRenameAt
+    ? Date.now() - row.lastRenameAt.getTime()
+    : Infinity;
+  if (age <= JOB_RENAME_GUARD_MS) return "kept";
+  const target = jobRenameTarget(jobToFile(row));
+  const oldSlug = [...(row.aliases ?? [])].reverse().find(alias => {
+    if (!fileSlugs.has(alias)) return false;
+    const parsed = parsedFileAt(alias);
+    return parsed !== null && jobRenameTarget(parsed) === target;
+  });
+  if (row.slug && oldSlug) {
+    logger.error(
+      "dbt job rename commit never reached main; re-keying the row back to the file the tree has",
+      {
+        workspaceId,
+        jobId: row._id.toString(),
+        renamedTo: row.slug,
+        revertedTo: oldSlug,
+        lastRenameCommit: commit,
+      },
+    );
+    await rekeyJobSlug(row._id, row.slug, oldSlug, undefined, {
+      recordOldAsAlias: false,
+    });
+    await clear();
+    return "rekeyed";
+  }
+  logger.warn("dbt job rename commit never reached main; trusting the tree", {
+    workspaceId,
+    jobId: row._id.toString(),
+    slug: row.slug,
+  });
+  await clear();
+  return "cleared";
+}
+
+/** The push-sync's settle step: every guarded row, on a verified tree. */
 async function settleJobRenameGuards(args: {
   workspaceId: string;
   projectId: Types.ObjectId;
   repoDir: string;
   head: string;
   fileSlugs: ReadonlySet<string>;
+  parsedFileAt: (slug: string) => DbtJobFile | null;
   /** See `currentTreeCheck`: only the mirror's main may retire a guard. */
   treeIsCurrent: () => Promise<boolean>;
 }): Promise<void> {
-  const { workspaceId, projectId, repoDir, head, fileSlugs, treeIsCurrent } =
-    args;
+  const { workspaceId, projectId, head, treeIsCurrent } = args;
   const guarded = await DbtJob.find({
     projectId,
     lastRenameCommit: { $exists: true },
@@ -204,48 +297,43 @@ async function settleJobRenameGuards(args: {
     );
     return;
   }
-  for (const row of guarded) {
-    const clear = () =>
-      DbtJob.updateOne(
-        { _id: row._id },
-        { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
-      );
-    const commit = row.lastRenameCommit as string;
-    if (await isAncestorCommit(repoDir, commit, head)) {
-      await clear();
-      continue;
-    }
-    if (row.slug && fileSlugs.has(row.slug)) {
-      await clear();
-      continue;
-    }
-    const age = row.lastRenameAt
-      ? Date.now() - row.lastRenameAt.getTime()
-      : Infinity;
-    if (age <= JOB_RENAME_GUARD_MS) continue;
-    const oldSlug = (row.aliases ?? []).find(alias => fileSlugs.has(alias));
-    if (row.slug && oldSlug) {
-      logger.error(
-        "dbt job rename commit never reached main; re-keying the row back to the file the tree has",
-        {
-          workspaceId,
-          jobId: row._id.toString(),
-          renamedTo: row.slug,
-          revertedTo: oldSlug,
-          lastRenameCommit: commit,
-        },
-      );
-      await rekeyJobSlug(row._id, row.slug, oldSlug, undefined, {
-        recordOldAsAlias: false,
-      });
-    } else {
-      logger.warn(
-        "dbt job rename commit never reached main; trusting the tree",
-        { workspaceId, jobId: row._id.toString(), slug: row.slug },
-      );
-    }
-    await clear();
+  for (const row of guarded) await settleJobRenameGuard(row, args);
+}
+
+/**
+ * The read paths' settle step (list/editor): a job whose rename commit never
+ * landed, with no push since, would otherwise vanish from the list while
+ * the scheduler kept running its row. Settled as the sync would, on a
+ * verified tree. Returns true when a row was re-keyed.
+ */
+async function settleLostJobRenamesForRead(args: {
+  workspaceId: string;
+  projectId: Types.ObjectId;
+  repoDir: string;
+  defs: JobDefinitionAtMain[];
+}): Promise<boolean> {
+  const { workspaceId, projectId, repoDir, defs } = args;
+  const fileSlugs = new Set(defs.map(def => def.slug));
+  const candidates = (
+    await DbtJob.find({ projectId, lastRenameCommit: { $exists: true } })
+  ).filter(row => row.slug && !fileSlugs.has(row.slug));
+  if (candidates.length === 0) return false;
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return false;
+  if (!(await currentTreeCheck(workspaceId, head)())) return false;
+  const bySlug = new Map(defs.map(def => [def.slug, def] as const));
+  let rekeyed = false;
+  for (const row of candidates) {
+    const outcome = await settleJobRenameGuard(row, {
+      workspaceId,
+      repoDir,
+      head,
+      fileSlugs,
+      parsedFileAt: slug => bySlug.get(slug)?.parsed ?? null,
+    });
+    if (outcome === "rekeyed") rekeyed = true;
   }
+  return rekeyed;
 }
 
 /** Authored job files at main; unbound workspaces deliberately read empty. */
@@ -426,7 +514,15 @@ export async function ensureJobDerivedCache(
     await markJobInvalid(row, failure, def.path, def.oid);
     return;
   }
-  if (row.sourceBlobSha === def.oid && !isMarkedInvalid(row)) return;
+  // Level only when BOTH shas agree with the blob: `lastSeenBlobSha` is
+  // what the write-through's compare-and-swap checks (see flowIndexDrift).
+  if (
+    row.sourceBlobSha === def.oid &&
+    row.lastSeenBlobSha === def.oid &&
+    !isMarkedInvalid(row)
+  ) {
+    return;
+  }
   const file = def.parsed;
   const reschedule = scheduleDiffers(row, file);
   const unset: Record<string, 1> = { definitionInvalid: 1 };
@@ -497,8 +593,35 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
       error,
     });
   }
-  const defs = await listJobDefinitionsAtMain(workspaceId);
-  const rows = await DbtJob.find({ projectId: project._id });
+  let defs = await listJobDefinitionsAtMain(workspaceId);
+  let rows = await DbtJob.find({ projectId: project._id });
+  // Rows whose file is not at main on THIS instance: a cache that predates
+  // a rename made elsewhere (fetch once, throttled), or a rename whose
+  // commit never landed (settle it, as the push-sync would).
+  const orphaned = (defs: JobDefinitionAtMain[], rows: IDbtJob[]) => {
+    const slugs = new Set(defs.map(def => def.slug));
+    return rows.filter(row => row.slug && !slugs.has(row.slug));
+  };
+  if (
+    orphaned(defs, rows).length > 0 &&
+    (await freshenOnJobMiss(workspaceId))
+  ) {
+    defs = await listJobDefinitionsAtMain(workspaceId);
+  }
+  if (orphaned(defs, rows).length > 0) {
+    const repoDir = await boundRepoDirIfExists(workspaceId);
+    if (
+      repoDir != null &&
+      (await settleLostJobRenamesForRead({
+        workspaceId,
+        projectId: project._id,
+        repoDir,
+        defs,
+      }))
+    ) {
+      rows = await DbtJob.find({ projectId: project._id });
+    }
+  }
   const bySlug = new Map(rows.map(row => [row.slug, row]));
   for (const def of defs) {
     const row = bySlug.get(def.slug);
@@ -1213,12 +1336,23 @@ async function syncDbtConfigNow(
     });
   });
   try {
+    const parsedCache = new Map<string, DbtJobFile | null>();
     await settleJobRenameGuards({
       workspaceId,
       projectId: project._id,
       repoDir,
       head,
       fileSlugs,
+      parsedFileAt: slug => {
+        if (!parsedCache.has(slug)) {
+          const buf = blobs.get(jobFilePath(slug));
+          parsedCache.set(
+            slug,
+            buf ? parseJobFile(buf.toString("utf8")) : null,
+          );
+        }
+        return parsedCache.get(slug) ?? null;
+      },
       treeIsCurrent,
     });
   } catch (error) {
@@ -1261,7 +1395,14 @@ async function syncDbtConfigNow(
     // Level already — unless the row is still flagged from an earlier bad
     // version and the file was reverted to this exact content, in which
     // case the marker must clear.
-    if (row && row.sourceBlobSha === sha && !isMarkedInvalid(row)) continue;
+    if (
+      row &&
+      row.sourceBlobSha === sha &&
+      row.lastSeenBlobSha === sha &&
+      !isMarkedInvalid(row)
+    ) {
+      continue;
+    }
     const parsed = parseJobFile(contents);
     if (!parsed) {
       logger.warn("dbt job file is invalid; not overwriting from Mongo", {
@@ -1381,12 +1522,18 @@ async function syncDbtConfigNow(
         path,
         error: error instanceof Error ? error.message : String(error),
       });
-      // The row still SAW this blob: a UI save that fixes it may overwrite it.
+      // Marked invalid with the blob it SAW, as GET's resync does: the list
+      // says why, and a UI save that fixes it may overwrite this version.
       if (row) {
-        await DbtJob.updateOne(
-          { _id: row._id },
-          { $set: { lastSeenBlobSha: sha } },
-        );
+        const fresh = await DbtJob.findById(row._id);
+        if (fresh) {
+          await markJobInvalid(
+            fresh,
+            error instanceof Error ? error.message : String(error),
+            path,
+            sha,
+          );
+        }
       }
       continue;
     }

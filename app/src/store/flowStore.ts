@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 
 // Zod schemas for validation
 const flowDataSourceSchema = z.object({
@@ -1797,4 +1798,19 @@ export const useFlowStore = create<FlowStore>()(
       }),
     },
   ),
+);
+
+// A rename made elsewhere (api/src/rename, by the agent or another session)
+// must reach an open flow store before its next form save: the save decides
+// whether to send the auto name by comparing the STORED name with the auto
+// name, and a stale store would call a new title "never set" and overwrite
+// it. Refetch, like the dbt store does for jobs.
+onRealtimeEvent(
+  "flow.updated",
+  "flowStore",
+  (_event, ctx) => {
+    if (!ctx.workspaceId) return;
+    void useFlowStore.getState().fetchFlows(ctx.workspaceId);
+  },
+  { suppressOwnEcho: true },
 );

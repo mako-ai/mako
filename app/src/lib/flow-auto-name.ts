@@ -23,6 +23,14 @@ export function flowNameForSave(input: {
 }): string | undefined {
   const existing = input.existingName?.trim() ?? "";
   if (!existing) return input.nextAutoName;
-  if (existing === input.previousAutoName?.trim()) return input.nextAutoName;
+  const previous = input.previousAutoName?.trim();
+  // Only a CHANGED selection has anything to say about the name. When the
+  // selections are what they were, the form has no new name — and must not
+  // send the old auto name either: the store it compares against can be
+  // stale (a rename made by the agent or another session), and "stored
+  // name equals the auto name" would then overwrite the new title.
+  if (existing === previous && input.nextAutoName !== previous) {
+    return input.nextAutoName;
+  }
   return undefined;
 }
