@@ -33,7 +33,6 @@ import { freshenBeforeMainWrite } from "../apps/cloud-repo.service";
 import {
   BlobPreconditionError,
   DEFAULT_BRANCH,
-  blobOid,
   readBlob,
   resolveCommit,
 } from "../apps/repository.service";
@@ -263,10 +262,12 @@ export async function renameFlow(
   }
   const oldPath = flowFilePath(oldSlug);
   let contents: string;
+  let oldOid: string;
   try {
     const blob = await readBlob(repoDir, head, oldPath);
     if (blob.isBinary) throw new Error("binary");
     contents = blob.contents;
+    oldOid = blob.oid; // git's id from the raw bytes, for the CAS below
   } catch {
     throw new RenameError(
       `${oldPath} is not at main (the flow's last push may not have synced, or the file was deleted); nothing was renamed.`,
@@ -343,7 +344,7 @@ export async function renameFlow(
       message,
       ctx.userId ? await authorForUser(ctx.userId) : undefined,
       {
-        [oldPath]: blobOid(contents),
+        [oldPath]: oldOid,
         ...(slugChanged ? { [flowFilePath(nextSlug)]: null } : {}),
       },
     );

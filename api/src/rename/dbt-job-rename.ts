@@ -264,10 +264,12 @@ export async function renameDbtJob(
   }
   const oldPath = jobFilePath(oldSlug);
   let contents: string;
+  let oldOid: string;
   try {
     const blob = await readBlob(repoDir, head, oldPath);
     if (blob.isBinary) throw new Error("binary");
     contents = blob.contents;
+    oldOid = blob.oid; // git's id from the raw bytes, for the CAS below
   } catch {
     throw new RenameError(
       `${oldPath} is not at main (the job's last push may not have synced, or the file was deleted); nothing was renamed.`,
@@ -335,7 +337,7 @@ export async function renameDbtJob(
       message,
       ctx.userId ? await authorForUser(ctx.userId) : undefined,
       {
-        [oldPath]: blobOid(contents),
+        [oldPath]: oldOid,
         ...(slugChanged ? { [jobFilePath(nextSlug)]: null } : {}),
       },
     );

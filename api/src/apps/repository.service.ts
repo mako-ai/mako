@@ -641,6 +641,15 @@ export interface BlobContent {
   contents: string;
   isBinary: boolean;
   size: number;
+  /**
+   * Git's own blob id, computed from the RAW bytes. `blobOid(contents)` is
+   * NOT the same thing for a file that is not valid UTF-8: decoding it
+   * replaces the bad bytes, and the sha of the re-encoded text is one git
+   * has never seen — a row that stores it can never satisfy a
+   * compare-and-swap against the repo. Anything that stores or compares a
+   * sha for a file read from git uses this.
+   */
+  oid: string;
 }
 
 /** Read a file at a ref. Throws when the path does not exist at that ref. */
@@ -661,6 +670,7 @@ export async function readBlob(
     contents: isBinary ? buf.toString("base64") : buf.toString("utf8"),
     isBinary,
     size: buf.length,
+    oid: blobOid(buf),
   };
 }
 
