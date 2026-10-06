@@ -20,6 +20,9 @@ entities:
   - webhook flow
   - scheduled flow
   - teardown
+  - rename flow
+  - rename_object
+  - aliases
 ---
 
 # Flows as code
@@ -28,15 +31,20 @@ entities:
 what to move, from where, to where, on what trigger. It is authoritative — a
 push to main that changes the file changes the flow; a push that removes the
 file tears the stream down **and disposes its checkpoints** (re-adding the
-file re-backfills from scratch). This skill is for the agent working in a
-checkout of that repo, over MCP. For the in-product flow form, load `flows`.
+file re-backfills from scratch) — unless the push pairs it with a new file
+as a rename (see "Removing and renaming"). This skill is for the agent
+working in a checkout of that repo, over MCP. For the in-product flow form,
+load `flows`.
 
 ## Identity and what never goes in a file
 
-- **The filename slug is the identity.** Minted once, never changes. Renaming
-  `close-eu.yml` → `close-europe.yml` is a delete plus a create: the old
-  stream is torn down, the new one starts from zero with a new webhook URL.
-  `name:` inside the file is the display name and is free to change.
+- **The filename slug names the file; the flow's id is its identity.**
+  `name:` inside the file is the display name and is free to change. The
+  slug can change too: a rename keeps the flow's id, so its checkpoints, run
+  history, `/f/<id>` link and inbound webhook URL all survive, and the old
+  slug keeps resolving as an alias. Do it with `rename_object` (kind `flow`),
+  or move the file and keep the old slug in its `aliases:` — see "Removing
+  and renaming".
 - **Never in a file** (the format has no key for them; the sync never writes
   them from a file): credentials — connections are referenced by ObjectId
   only (a *connector* is code, e.g. `stripe`; a *connection* is a credential
@@ -173,8 +181,27 @@ Verify: there is no flow-status tool over MCP yet — open the Flows page:
   reactor **refuses and retries next push** if it cannot verify the tree
   against the GitHub mirror, so a deletion that "did nothing" may be a
   deferred one (API log: "Flow teardown deferred"). It never guesses.
-- Renaming the slug = teardown + fresh create. To rename only what users see,
-  edit `name:`.
+- Renaming is not a teardown. Prefer `rename_object` (kind `flow`, `slug`
+  for the file name, `title` for `name:`): one commit moves
+  `flows/<old>.yml` → `flows/<new>.yml`, adds the old slug to `aliases:`,
+  and re-keys the row in place — same id, checkpoints, run history, webhook
+  URL. To rename only what users see, edit `name:` (or pass `title`).
+- Moving the file yourself (`git mv`) is also a rename when the push can
+  pair the two files: the new file's `aliases:` names the old slug (the
+  explicit way — always add it), or git's rename detection / an otherwise
+  identical definition matches them. Check first: `check_flow_files` with
+  the new file and the old path in `deletedPaths` lists the pairing under
+  `wouldRename`. It sees `aliases:` and identical definitions only — git's
+  similarity is known at push time — so a move with edits and no
+  `aliases:` that it does not list may still be torn down and re-created.
+- What is still a *different* flow: a moved file without `aliases:` whose
+  source (connection, or database) or destination (connection, database,
+  schema, table) changed — it is never paired by git similarity or by
+  content, so the old stream is torn down and the new one backfills from
+  zero under a new id. An old slug that two new files could claim is also
+  not guessed (torn down, with a warning). With `aliases:` the pairing is
+  honoured even across a retarget, carrying the old checkpoints onto the
+  new target — so rename and retarget in separate pushes.
 - An empty or missing `flows/` directory means "this workspace has not
   adopted flows as code" and touches nothing. It is not "delete everything".
 

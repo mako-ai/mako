@@ -33,7 +33,10 @@ Never use a job to test a draft—it silently runs older committed code.
 
 - Add or change a cron schedule only when the user requests recurring
   execution.
-- Deleting a job is destructive and requires explicit approval.
+- Deleting a job is destructive and requires explicit approval. Renaming is
+  not: `rename_object` (kind `dbt_job`; `title` = display name, `slug` =
+  `dbt/jobs/<slug>.yml`) keeps the job's id, schedule and run history and
+  records the old slug in `aliases:`. Never rename by delete + create.
 - Keep job commands within the supported dbt command allowlist.
 - A full refresh for an edited incremental model belongs on
   `dbt_run_model({ fullRefresh: true })` during development, not on a

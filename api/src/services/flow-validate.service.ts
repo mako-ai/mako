@@ -70,7 +70,7 @@ export async function validateFlowFile(input: {
         {
           path,
           reason:
-            "not a flow file: it must be `flows/<slug>.yml`, and the slug in the filename is the flow's permanent identity",
+            "not a flow file: it must be `flows/<slug>.yml` (the slug in the filename names the flow; rename it with `rename_object`)",
         },
       ],
     };
