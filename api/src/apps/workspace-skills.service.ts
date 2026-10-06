@@ -239,8 +239,11 @@ export async function resolveSkillRef(
   // approved playbook, not the proposal's body. The proposal is still in
   // the catalog (listed, approvable by id); approving it retires the alias
   // and then the live name wins as usual.
-  const liveClaimant =
-    claimants.length === 1 && !claimants[0].suppressed ? claimants[0] : null;
+  // Likewise among alias claimants: a suppressed proposal that also lists
+  // the old name (it was saved there, then renamed) does not make the live
+  // skill's claim ambiguous — only live claimants compete.
+  const liveClaimants = claimants.filter(skill => !skill.suppressed);
+  const liveClaimant = liveClaimants.length === 1 ? liveClaimants[0] : null;
   if (current && !(current.suppressed && liveClaimant)) {
     return { skill: current, via: "current" };
   }

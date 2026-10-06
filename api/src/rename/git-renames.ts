@@ -73,7 +73,8 @@ export function parseRenameLog(stdout: string): PathChange[][] {
  * Follow the rename chain of `path` forward through `commits` (newest
  * first, as `parseRenameLog` returns them). Returns the newest name, or
  * null when nothing ever renamed `path` within the scanned window — or
- * when the chain was cut: a DELETE of the current name after a rename
+ * when the chain was cut: `path` itself taken again after it moved, or a
+ * DELETE of the current name after a rename
  * means the file is gone, and a later file created under that name is a
  * different file (a → b, b deleted, a new b: `a` must not open the new b).
  */
@@ -92,6 +93,13 @@ export function followRenames(
         break;
       }
       if (change.status === "D" && moved && change.from === current) {
+        return null;
+      }
+      // The old name was taken again (a new file created there, or another
+      // file renamed onto it): it now belongs to that newcomer, for good —
+      // even after the newcomer is gone. An old link never leads back to
+      // the object that gave the name up.
+      if (moved && change.status !== "D" && change.to === path) {
         return null;
       }
     }

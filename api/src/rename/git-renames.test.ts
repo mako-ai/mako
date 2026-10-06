@@ -194,6 +194,31 @@ async function main() {
     "b",
   );
 
+  // A name taken again after it moved belongs to the newcomer for good: the
+  // chain is cut whether the newcomer is still there or was deleted since.
+  assert.equal(
+    followRenames("a", [
+      [{ status: "A", from: "a", to: "a" }],
+      [{ status: "R", from: "a", to: "b" }],
+    ]),
+    null,
+  );
+  assert.equal(
+    followRenames("a", [
+      [{ status: "D", from: "a", to: "a" }],
+      [{ status: "A", from: "a", to: "a" }],
+      [{ status: "R", from: "a", to: "b" }],
+    ]),
+    null,
+  );
+  assert.equal(
+    followRenames("a", [
+      [{ status: "R", from: "c", to: "a" }],
+      [{ status: "R", from: "a", to: "b" }],
+    ]),
+    null,
+  );
+
   // A bad ref is "not found", never a throw.
   assert.equal(
     await findRenamedPath(repo, "refs/heads/nope", "dbt/models/a.sql", "dbt"),

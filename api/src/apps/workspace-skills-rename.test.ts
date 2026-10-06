@@ -79,6 +79,7 @@ import {
   skillId,
 } from "./workspace-skills.service";
 import {
+  deleteSkill,
   listSkillsForAdmin,
   loadSkill,
   renameSkill,
@@ -453,6 +454,24 @@ describe("resolution: id → current name → alias", () => {
     expect(await findSkill(WS, "legacy")).toBeNull();
     expect(await findSkillById(WS, skillId(WS, "legacy"))).toBeNull();
     expect(await resolveSkillRef(WS, "nobody")).toBeNull();
+  });
+
+  it("a name given up to a newcomer stays given up after the newcomer is deleted", async () => {
+    await commitSkillSave(WS, skill("revenue"));
+    await renameSkill(WS, "revenue", "revenue_v1", "u1");
+    // A new skill takes the old name: revenue_v1 gives it up.
+    const saved = await saveSkill(
+      WS,
+      { name: "revenue", loadWhen: "new revenue skill", body: "Fresh." },
+      "u1",
+    );
+    expect(saved).toMatchObject({ success: true });
+    await deleteSkill(WS, "revenue", "u1");
+    invalidateSkillCatalog(WS);
+    // Neither the alias nor git history hands it back to revenue_v1.
+    expect(await resolveSkillRef(WS, "revenue")).toBeNull();
+    expect(await loadSkill(WS, "revenue")).toMatchObject({ success: false });
+    expect(await skillRenameHandler.resolve(ctx, "revenue")).toBeNull();
   });
 });
 
