@@ -247,7 +247,7 @@ export async function validateFlowFiles(input: {
         problems.push({
           path: f.path,
           slug,
-          reason: `duplicate slug: \`${first}\` already claims \`${slug}\`, and the filename is the identity`,
+          reason: `duplicate slug: \`${first}\` already claims \`${slug}\` — two files cannot share one flow's name`,
         });
       } else {
         seen.set(slug, f.path);
