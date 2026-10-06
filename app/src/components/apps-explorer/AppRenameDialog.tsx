@@ -21,10 +21,16 @@ import { isValidFolderName } from "./AppFolderDialogs";
 
 export interface AppRenameDialogProps {
   open: boolean;
-  /** The app's current display name. */
-  initialTitle: string;
-  /** The app's current folder name. */
-  initialSlug: string;
+  /** The app's current display name — what "changed" is measured against. */
+  currentTitle: string;
+  /** The app's current folder name — what "changed" is measured against. */
+  currentSlug: string;
+  /**
+   * A folder name typed before the dialog opened (an inline edit that got
+   * through): the Link field starts from it, and it counts as a change
+   * when it differs from `currentSlug`.
+   */
+  prefillSlug?: string;
   /** Whether the link is addressed by the slug (`/apps/<slug>`) or the id. */
   slugIsLink: boolean;
   busy?: boolean;
@@ -40,25 +46,26 @@ export interface AppRenameDialogProps {
 
 export function AppRenameDialog({
   open,
-  initialTitle,
-  initialSlug,
+  currentTitle,
+  currentSlug,
+  prefillSlug,
   slugIsLink,
   busy = false,
   error = null,
   onClose,
   onConfirm,
 }: AppRenameDialogProps) {
-  const [title, setTitle] = useState(initialTitle);
-  const [slug, setSlug] = useState(initialSlug);
+  const [title, setTitle] = useState(currentTitle);
+  const [slug, setSlug] = useState(prefillSlug ?? currentSlug);
   useEffect(() => {
     if (open) {
-      setTitle(initialTitle);
-      setSlug(initialSlug);
+      setTitle(currentTitle);
+      setSlug(prefillSlug ?? currentSlug);
     }
-  }, [open, initialTitle, initialSlug]);
+  }, [open, currentTitle, currentSlug, prefillSlug]);
 
-  const titleChanged = title.trim() !== initialTitle && title.trim() !== "";
-  const slugChanged = slug.trim() !== initialSlug;
+  const titleChanged = title.trim() !== currentTitle && title.trim() !== "";
+  const slugChanged = slug.trim() !== currentSlug;
   const slugValid = !slugChanged || isValidFolderName(slug);
   const titleValid = title.trim() !== "";
   const canSubmit =
@@ -109,7 +116,7 @@ export function AppRenameDialog({
             !slugValid
               ? "Letters, numbers, spaces, dots, dashes and underscores; must start with a letter or number."
               : slugIsLink
-                ? `/apps/${slug.trim() || initialSlug}`
+                ? `/apps/${slug.trim() || currentSlug}`
                 : "The folder name in the workspace repo; the link uses the app's id."
           }
           disabled={busy}

@@ -119,6 +119,7 @@ import {
   parseAppManifest,
   setManifestTitle,
   stampManifestId,
+  stripManifestAliases,
   type AppScope,
 } from "./app-paths";
 import { appSdkDependency } from "./app-sdk-package";
@@ -1046,10 +1047,13 @@ function isWithin(candidate: string, root: string): boolean {
 /**
  * Manifest writes that pin every app under `dir` to the id the index already
  * knows it by — so a move never changes an identity, even for an app that
- * predates manifest ids — and record each moved app's previous name as an
- * alias in the SAME commit, so the old link keeps opening it (the planner
- * is {@link aliasesForMoves}; the lookup is findAppInSnapshot). Paths are
- * the NEW ones (post-move).
+ * predates manifest ids — and, when an app's FOLDER NAME changes, record
+ * the old one as an alias in the SAME commit, so the old link keeps opening
+ * it (the planner is {@link aliasesForMoves}; the lookup is
+ * findAppInSnapshot). An app whose name does not change (filed elsewhere,
+ * or carried along by a folder move) gets no write at all: its tree stays
+ * as it was and nothing rebuilds; the index records its old path itself.
+ * Paths are the NEW ones (post-move).
  *
  * A manifest that cannot be parsed stops the move: the alias has to be
  * written INTO it, and writing a fresh manifest over whatever the user had
@@ -1090,7 +1094,7 @@ async function moveWritesUnder(
       if (manifest === null) throw unparseable(app);
     }
     const plan = plans.get(app.path);
-    if (plan) {
+    if (plan && plan.add.length > 0) {
       manifest = addManifestAliases(manifest, plan.add, plan.drop);
       if (manifest === null) throw unparseable(app);
     }
@@ -1184,11 +1188,13 @@ async function commitOnMainDurably(
 /**
  * File an app somewhere else: `git mv` of its folder, as one commit on main.
  * The app keeps its id (stamped into the manifest in the same commit if it
- * had none), so deployments, sharing, env vars and favourites all follow it,
- * and its old folder name becomes an alias in the manifest (same commit),
- * so the old `/apps/<slug>` link and every old ref keep resolving. Nothing
- * is rebuilt: the folder's tree oid is unchanged apart from the manifest,
- * and deploy-on-push keys on that.
+ * had none), so deployments, sharing, env vars and favourites all follow it.
+ * Filed elsewhere under the same name, the folder's tree oid is unchanged
+ * and nothing rebuilds (deploy-on-push keys on that); the index records the
+ * old path so old refs keep resolving. RENAMED (a new folder name), the old
+ * name becomes an alias in the manifest in the same commit — so the old
+ * `/apps/<slug>` link keeps opening it — and that one manifest write is
+ * what deploy-on-push rebuilds once.
  */
 export async function moveProject(
   project: IAppProject,
@@ -1521,7 +1527,12 @@ export async function stampAppId(
   } catch {
     contents = null;
   }
-  const stamped = stampManifestId(contents, app.appId);
+  let stamped = stampManifestId(contents, app.appId);
+  // A copy keeps its source's `aliases` too, and a name two apps claim
+  // resolves to neither: with an id of its own the copy gives them up.
+  if (stamped !== null && app.duplicateOf) {
+    stamped = stripManifestAliases(stamped);
+  }
   if (stamped === null) {
     throw new AppFolderError(
       `${app.path}/${APP_MANIFEST} is not valid JSON; fix it before stamping an id`,

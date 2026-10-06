@@ -44,10 +44,13 @@ import {
 
 /**
  * What an `/apps/<ref>` link points at: the app, and whether the ref is
- * its current name or an old one. The fetched list answers first (its
- * `aliases` mirror the server's); a miss asks the server, which also knows
- * an app pushed a moment ago that the list does not have yet. `null` when
- * nothing (or more than one app) claims the ref.
+ * its current name or an old one. The fetched list answers a CURRENT name
+ * on its own (its `aliases` mirror the server's rule). An alias hit, and a
+ * miss, ask the server — one request, only on an old link: the list is
+ * what this person may see, so an old name it finds unique may be claimed
+ * by an app they cannot see, which the server resolves to nothing; and
+ * the server also knows an app pushed a moment ago that the list lacks.
+ * `null` when nothing (or more than one app) claims the ref.
  */
 async function resolveAppLink(
   workspaceId: string,
@@ -59,20 +62,23 @@ async function resolveAppLink(
   via: "current" | "alias";
 } | null> {
   const local = resolveAppRefVia(useAppsStore.getState().apps, ref);
-  if (local) {
+  if (local?.via === "current") {
     return {
       id: local.app.id,
       title: local.app.title,
       slug: appUrlSlug(local.app),
-      via: local.via,
+      via: "current",
     };
   }
   const remote = await resolveObjectRef(workspaceId, "app", ref);
   if (!remote) return null;
   // The list may still be catching up with a push: refetch once so the
   // tab has a row to render, then take the handle from whichever is fresher.
-  await useAppsStore.getState().fetchApps(workspaceId);
-  const listed = useAppsStore.getState().apps.find(a => a.id === remote.id);
+  let listed = useAppsStore.getState().apps.find(a => a.id === remote.id);
+  if (!listed) {
+    await useAppsStore.getState().fetchApps(workspaceId);
+    listed = useAppsStore.getState().apps.find(a => a.id === remote.id);
+  }
   const current = remote.current;
   return {
     id: remote.id,

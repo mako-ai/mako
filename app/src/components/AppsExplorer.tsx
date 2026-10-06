@@ -1619,14 +1619,13 @@ export default function AppsExplorer() {
 
       <AppRenameDialog
         open={!!renameDialog}
-        initialTitle={
+        currentTitle={
           (renameDialog && appById.get(renameDialog.appId)?.title) ?? ""
         }
-        initialSlug={
-          renameDialog?.slug ??
-          (renameDialog && appById.get(renameDialog.appId)?.slug) ??
-          ""
+        currentSlug={
+          (renameDialog && appById.get(renameDialog.appId)?.slug) ?? ""
         }
+        prefillSlug={renameDialog?.slug}
         slugIsLink={
           !!renameDialog &&
           (() => {
