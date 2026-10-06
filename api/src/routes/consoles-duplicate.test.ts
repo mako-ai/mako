@@ -417,3 +417,73 @@ describe("Duplicate", () => {
     expect(names(list.body.myConsoles)).toEqual(["Alpha copy"]);
   });
 });
+
+describe("the tree listing's folder repair never costs the listing", () => {
+  /** A laptop push straight to main, with NO index sync after it. */
+  const pushOnly = (files: Record<string, string>) =>
+    commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: files },
+      { message: "laptop", author: { name: "L", email: "l@example.com" } },
+    );
+
+  it("a whitespace-only folder name: every member's tree still lists everything, and no record is written", async () => {
+    await save("Anchor", OWNER, "workspace");
+    await save("Mine", EDITOR, "private");
+    await pushOnly({ "consoles/ /y.sql": "SELECT 2\n" });
+
+    // It used to answer 200 with EVERY section empty, for every member
+    // (the repair's ValidationError reached the listing's catch-all).
+    const owner = await req("GET", "", OWNER);
+    expect(owner.status).toBe(200);
+    expect(names(owner.body.sharedWithWorkspace)).toEqual(["Anchor", "y"]);
+    const editor = await req("GET", "", EDITOR);
+    expect(names(editor.body.myConsoles)).toEqual(["Mine"]);
+    expect(names(editor.body.sharedWithWorkspace)).toEqual(["Anchor", "y"]);
+    expect(await ConsoleFolder.countDocuments({})).toBe(0);
+  });
+
+  it("a padded folder name ('Team '): listed at its nearest ancestor, no stray 'Team' record, not repaired on every listing", async () => {
+    await save("Anchor", OWNER, "workspace");
+    const finance = await manager.createFolder(
+      "finance",
+      WS,
+      OWNER,
+      undefined,
+      false,
+      "workspace",
+    );
+    await pushOnly({
+      "consoles/Team /x.sql": "SELECT 1\n",
+      "consoles/finance/ /w.sql": "SELECT 3\n",
+    });
+    for (let i = 0; i < 3; i++) {
+      const list = await req("GET", "", OWNER);
+      expect(list.status).toBe(200);
+      expect(names(list.body.sharedWithWorkspace)).toEqual([
+        "finance",
+        "Anchor",
+        "x",
+      ]);
+      const fin = list.body.sharedWithWorkspace?.find(
+        n => n.name === "finance",
+      );
+      expect(names(fin?.children as ConsoleFile[])).toEqual(["w"]);
+    }
+    const folders = await ConsoleFolder.find({}).lean();
+    expect(folders.map(f => f.name)).toEqual(["finance"]);
+    expect(folders[0]._id.toString()).toBe(finance._id.toString());
+  });
+
+  it("a repair that fails lists what there is", async () => {
+    await save("Anchor", OWNER, "workspace");
+    await pushOnly({ "consoles/Fin/z.sql": "SELECT 4\n" });
+    vi.spyOn(ConsoleFolder, "create").mockRejectedValue(
+      new Error("mongo is down"),
+    );
+    const list = await req("GET", "", OWNER);
+    expect(list.status).toBe(200);
+    expect(names(list.body.sharedWithWorkspace)).toEqual(["Anchor", "z"]);
+  });
+});

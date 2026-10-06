@@ -20,6 +20,7 @@ import {
   descriptionIsAuthored,
   ensureConsoleFolderRecords,
   ensureFolderChain,
+  storableFolderName,
   findFolderChain,
   folderSegmentsFor,
   loadLiveConsoleById,
@@ -110,7 +111,12 @@ function folderIdForLive(
       folder?.ownerId?.toString() !== live.location.ownerId;
     if (folder && !foreignPrivate) return own;
   }
-  const segments = live.location.folderSegments;
+  // Up to the first directory name no folder record can hold (a laptop
+  // pushed "consoles/Team /x.sql"): such a file is listed in its nearest
+  // ancestor that has a record, or at the root.
+  const all = live.location.folderSegments;
+  const bad = all.findIndex(name => !storableFolderName(name));
+  const segments = bad === -1 ? all : all.slice(0, bad);
   if (segments.length === 0) return undefined;
   // In the file's scope, as `ensureFolderChain` files it: a private file's
   // "Team" is its owner's private folder, never the workspace namesake —
@@ -485,26 +491,39 @@ export class ConsoleManager {
     const unfiled = live.filter(
       item =>
         item.location.folderSegments.length > 0 &&
+        // A directory name no record can hold is placed by its nearest
+        // ancestor (`folderIdForLive`), never written.
+        item.location.folderSegments.every(storableFolderName) &&
         folderIdForLive(item, folders) === undefined,
     );
     if (unfiled.length === 0) return folders;
-    await ensureConsoleFolderRecords(
-      workspaceId,
-      unfiled.map(item => {
-        const isPrivate = item.location.scope === "private";
-        return {
-          rowId: item.row?._id,
-          segments: item.location.folderSegments,
-          access: isPrivate ? ("private" as const) : ("workspace" as const),
-          ownerId: isPrivate
-            ? item.location.ownerId
-            : (item.row?.owner_id ?? item.row?.createdBy)?.toString(),
-        };
-      }),
-    );
-    return ConsoleFolder.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).sort({ name: 1 });
+    // A repair that fails lists what there is: it must never blank the
+    // tree (the listing's catch-all answers every section empty).
+    try {
+      await ensureConsoleFolderRecords(
+        workspaceId,
+        unfiled.map(item => {
+          const isPrivate = item.location.scope === "private";
+          return {
+            rowId: item.row?._id,
+            segments: item.location.folderSegments,
+            access: isPrivate ? ("private" as const) : ("workspace" as const),
+            ownerId: isPrivate
+              ? item.location.ownerId
+              : (item.row?.owner_id ?? item.row?.createdBy)?.toString(),
+          };
+        }),
+      );
+      return await ConsoleFolder.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).sort({ name: 1 });
+    } catch (error) {
+      logger.warn("Console folder records could not be repaired", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return folders;
+    }
   }
 
   /**

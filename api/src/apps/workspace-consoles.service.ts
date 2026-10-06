@@ -1393,21 +1393,44 @@ export function ensureConsoleFolderRecords(
   if (files.length === 0) return Promise.resolve();
   return serialized(workspaceId, async () => {
     for (const file of files) {
-      const folderId = await ensureFolderChain(file.segments, workspaceId, {
-        access: file.access,
-        ownerId: file.ownerId,
-      });
-      if (file.rowId && folderId) {
-        await SavedConsole.updateOne(
-          {
-            _id: file.rowId,
-            workspaceId: new Types.ObjectId(workspaceId),
-          },
-          { $set: { folderId } },
-        );
+      // A name a record cannot hold as-is is never written (it would fail
+      // validation, or be stored trimmed and never match the file again).
+      if (!file.segments.every(storableFolderName)) continue;
+      // One file's failure is that file's: the listing that asked for the
+      // repair must still list everything.
+      try {
+        const folderId = await ensureFolderChain(file.segments, workspaceId, {
+          access: file.access,
+          ownerId: file.ownerId,
+        });
+        if (file.rowId && folderId) {
+          await SavedConsole.updateOne(
+            {
+              _id: file.rowId,
+              workspaceId: new Types.ObjectId(workspaceId),
+            },
+            { $set: { folderId } },
+          );
+        }
+      } catch (error) {
+        logger.warn("Console folder record could not be made; skipped", {
+          workspaceId,
+          segments: file.segments,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   });
+}
+
+/**
+ * Whether a ConsoleFolder record holds `name` as it is: the schema trims and
+ * requires names, so " " fails validation and "Team " is stored as "Team"
+ * — a record that never matches the file's folder (a laptop can push any
+ * directory name).
+ */
+export function storableFolderName(name: string): boolean {
+  return name.length > 0 && name.trim() === name;
 }
 
 /** The newest sync queued per workspace, while it is still pending. */
