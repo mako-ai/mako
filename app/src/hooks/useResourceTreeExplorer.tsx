@@ -66,6 +66,9 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
   const workspaceItems: T[] = store(s =>
     workspaceId ? (s.workspaceItems[workspaceId] ?? EMPTY) : EMPTY,
   );
+  const sharedItems: T[] = store(s =>
+    workspaceId ? (s.sharedItems?.[workspaceId] ?? EMPTY) : EMPTY,
+  );
   const loading = store(s => (workspaceId ? !!s.loading[workspaceId] : false));
   const error = store(s => (workspaceId ? s.error[workspaceId] || null : null));
   const fetchTree = store(s => s.fetchTree);
@@ -208,6 +211,7 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
   return {
     myItems,
     workspaceItems,
+    sharedItems,
     loading,
     error,
     clearError,

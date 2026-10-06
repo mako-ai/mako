@@ -142,7 +142,11 @@ function ConsoleTreeInner(
     currentWorkspace?.id,
     { autoFetch: false },
   );
-  const { myItems: myConsoles, workspaceItems: sharedWithWorkspace } = tree;
+  const {
+    myItems: myConsoles,
+    workspaceItems: sharedWithWorkspace,
+    sharedItems: sharedWithMe,
+  } = tree;
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
 
   const activeTabId = useConsoleStore(state => state.activeTabId);
@@ -292,6 +296,9 @@ function ConsoleTreeInner(
 
   // Not `tree.sections`: console sections carry no header icon and are only
   // drop targets when drag-and-drop is on (the picker turns it off).
+  // "Shared with me" — another member's private console shared with this
+  // person — is where the breadcrumb says it is (consolePlacement); it is
+  // no place to save, move or create in, so the picker leaves it out.
   const sections = [
     {
       key: "my",
@@ -307,6 +314,16 @@ function ConsoleTreeInner(
       droppableId: enableDragDrop ? "__section_workspace" : undefined,
       defaultAccess: "workspace" as const,
     },
+    ...(mode === "sidebar" && sharedWithMe.length > 0
+      ? [
+          {
+            key: "shared",
+            label: "Shared with me",
+            nodes: sharedWithMe,
+            noNewFolder: true,
+          },
+        ]
+      : []),
   ] satisfies ResourceTreeSection[];
 
   const resourceTreeRef = useRef<ResourceTreeRef | null>(null);

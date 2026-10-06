@@ -54,12 +54,18 @@ const folder = (
 
 const names = (nodes: ConsoleEntry[]) => nodes.map(n => n.name);
 
-function seed(my: ConsoleEntry[], workspace: ConsoleEntry[] = []) {
+function seed(
+  my: ConsoleEntry[],
+  workspace: ConsoleEntry[] = [],
+  shared: ConsoleEntry[] = [],
+) {
   useConsoleTreeStore.setState({
     myItems: { [WID]: my },
     workspaceItems: { [WID]: workspace },
+    sharedItems: { [WID]: shared },
     loading: {},
     error: {},
+    actionError: {},
   });
 }
 
@@ -400,5 +406,88 @@ describe("Move to…", () => {
         body: { folderId: "g", access: "workspace" },
       }),
     );
+  });
+});
+
+describe("consoleTreeStore — Shared with me and Duplicate", () => {
+  it("lists another member's console shared with me in its own section", async () => {
+    http.GET.mockResolvedValueOnce(
+      ok({
+        success: true,
+        myConsoles: [file("m", "mine")],
+        sharedWithWorkspace: [folder("f", "finance", [file("w", "team")])],
+        sharedWithMe: [file("s", "Secret Margin")],
+      }),
+    );
+    await useConsoleTreeStore.getState().fetchTree(WID);
+    const state = useConsoleTreeStore.getState();
+    expect(names(state.sharedItems[WID])).toEqual(["Secret Margin"]);
+    // Not under Workspace (the breadcrumb says "Shared with me").
+    expect(names(state.workspaceItems[WID])).toEqual(["finance"]);
+  });
+
+  it("files a copy of a shared console in My Consoles, in the folder the server chose", async () => {
+    seed(
+      [folder("mine-td", "Team Drafts")],
+      [folder("f", "finance")],
+      [file("s", "Secret Margin")],
+    );
+    http.POST.mockResolvedValueOnce(
+      ok({
+        success: true,
+        data: {
+          id: "copy",
+          name: "Secret Margin copy",
+          folderId: "mine-td",
+          owner_id: "editor2",
+        },
+      }),
+    );
+
+    const res = await useConsoleTreeStore.getState().duplicateConsole(WID, "s");
+
+    expect(res).toEqual({ id: "copy", name: "Secret Margin copy" });
+    const state = useConsoleTreeStore.getState();
+    const teamDrafts = state.myItems[WID][0];
+    expect(names(teamDrafts.children ?? [])).toEqual(["Secret Margin copy"]);
+    expect(teamDrafts.children?.[0]).toMatchObject({
+      path: "Team Drafts/Secret Margin copy",
+      access: "private",
+      owner_id: "editor2",
+    });
+    // Never next to the original (Shared with me) nor under Workspace.
+    expect(names(state.sharedItems[WID])).toEqual(["Secret Margin"]);
+    expect(names(state.workspaceItems[WID])).toEqual(["finance"]);
+  });
+
+  it("files a copy at the root of My Consoles when the server says so", async () => {
+    seed([], [folder("f", "finance", [file("a", "Alpha")])]);
+    http.POST.mockResolvedValueOnce(
+      ok({
+        success: true,
+        data: { id: "copy", name: "Alpha copy", folderId: null },
+      }),
+    );
+    await useConsoleTreeStore.getState().duplicateConsole(WID, "a");
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
+      "Alpha copy",
+    ]);
+  });
+
+  it("a failed copy says why (it used to fail silently)", async () => {
+    seed([file("a", "Alpha")]);
+    http.POST.mockResolvedValueOnce({
+      data: undefined,
+      error: { success: false, error: "Could not save the copy" },
+      response: { ok: false, status: 500 },
+    });
+    const res = await useConsoleTreeStore.getState().duplicateConsole(WID, "a");
+    expect(res).toBeNull();
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBe(
+      "Could not save the copy",
+    );
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
+      "Alpha",
+    ]);
   });
 });

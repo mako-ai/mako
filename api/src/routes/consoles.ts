@@ -104,6 +104,7 @@ function emptyConsoleTree() {
     success: true as const,
     myConsoles: [] as never[],
     sharedWithWorkspace: [] as never[],
+    sharedWithMe: [] as never[],
     tree: [] as never[],
   };
 }
@@ -339,7 +340,7 @@ consoleRoutes.openapi(
         );
         const userRole = member?.role || "member";
 
-        const { myConsoles, sharedWithWorkspace } =
+        const { myConsoles, sharedWithWorkspace, sharedWithMe } =
           await consoleManager.listConsolesSplit(
             access.workspaceId,
             userId,
@@ -350,6 +351,7 @@ consoleRoutes.openapi(
           success: true,
           myConsoles,
           sharedWithWorkspace,
+          sharedWithMe,
           tree: myConsoles,
         });
       }
@@ -2340,10 +2342,14 @@ consoleRoutes.openapi(
           {
             success: true,
             message: "Console duplicated",
+            // Where the copy is: the caller's My Consoles, in `folderId`
+            // (null = its root) — the tree places it from this answer.
             data: {
               id: copy._id.toString(),
               name: copy.name,
-              folderId: copy.folderId?.toString(),
+              folderId: copy.folderId?.toString() ?? null,
+              access: "private",
+              owner_id: user.id,
             },
           },
           201,

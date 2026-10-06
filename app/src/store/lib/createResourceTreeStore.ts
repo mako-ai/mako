@@ -47,7 +47,13 @@ export interface ResourceTreeEntry {
  * `success: false` should throw on it).
  */
 export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
-  fetch: (workspaceId: string) => Promise<{ my: T[]; workspace: T[] }>;
+  /**
+   * `shared`: items of other members shared with this person, listed in
+   * their own "Shared with me" section (consoles). Nothing moves into it.
+   */
+  fetch: (
+    workspaceId: string,
+  ) => Promise<{ my: T[]; workspace: T[]; shared?: T[] }>;
   moveItem: (
     workspaceId: string,
     id: string,
@@ -84,6 +90,8 @@ export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
 export interface ResourceTreeState<T extends ResourceTreeEntry> {
   myItems: Record<string, T[]>;
   workspaceItems: Record<string, T[]>;
+  /** "Shared with me" (see `ResourceTreeEndpoints.fetch`); flat. */
+  sharedItems: Record<string, T[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
   /**
@@ -158,12 +166,12 @@ export function accessForMove(
 /** The section arrays an extension mutates inside `set`. */
 export type ResourceTreeSections<T extends ResourceTreeEntry> = Pick<
   ResourceTreeState<T>,
-  "myItems" | "workspaceItems"
+  "myItems" | "workspaceItems" | "sharedItems"
 >;
 
 /** The internal section helpers, handed to `extend` so extras compose. */
 export interface ResourceTreeHelpers<T extends ResourceTreeEntry> {
-  /** Both section arrays for a workspace (missing ones read as empty). */
+  /** Every section array for a workspace (missing ones read as empty). */
   allSections: (state: ResourceTreeSections<T>, wid: string) => T[][];
   findInAnySection: (
     state: ResourceTreeSections<T>,
@@ -218,6 +226,7 @@ export function createResourceTreeStore<
   const allSections = (state: Sections, wid: string): T[][] => [
     state.myItems[wid] || [],
     state.workspaceItems[wid] || [],
+    state.sharedItems[wid] || [],
   ];
 
   const findInAnySection = (
@@ -318,6 +327,7 @@ export function createResourceTreeStore<
     immer((set, get) => ({
       myItems: {},
       workspaceItems: {},
+      sharedItems: {},
       loading: {},
       error: {},
       actionError: {},
@@ -342,6 +352,7 @@ export function createResourceTreeStore<
             set(state => {
               state.myItems[workspaceId] = data.my as never;
               state.workspaceItems[workspaceId] = data.workspace as never;
+              state.sharedItems[workspaceId] = (data.shared ?? []) as never;
             });
           } catch (err: unknown) {
             set(state => {

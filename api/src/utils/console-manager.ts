@@ -18,10 +18,12 @@ import {
   consoleFilesDrifted,
   descriptionIsAuthored,
   ensureFolderChain,
+  findFolderChain,
   folderSegmentsFor,
   loadLiveConsoleById,
   listConsoleDefinitionsAtMain,
   loadLiveConsoles,
+  mongoOptionsFromFile,
   readConsoleDefinitionAtMain,
   repoPathForRow,
   restoreConsoleBlob,
@@ -564,10 +566,13 @@ export class ConsoleManager {
     }
 
     for (const console of consoles) {
+      // A console whose folder is not in this tree (another member's, for
+      // a console shared with this user) sits at the root, path = name.
+      const folderPath = console.folderId
+        ? this.getFolderPath(console.folderId.toString(), folderMap)
+        : "";
       const consoleItem: ConsoleFile = {
-        path: console.folderId
-          ? `${this.getFolderPath(console.folderId.toString(), folderMap)}/${console.name}`
-          : console.name,
+        path: folderPath ? `${folderPath}/${console.name}` : console.name,
         name: console.name,
         content: console.code,
         isDirectory: false,
@@ -603,12 +608,20 @@ export class ConsoleManager {
   }
 
   /**
-   * List consoles split into 2 groups: myConsoles and sharedWithWorkspace.
+   * List consoles split into the explorer's three sections: myConsoles,
+   * sharedWithWorkspace and sharedWithMe.
    *
    * Items inherit access from their parent folder. A console inside a
    * "workspace" folder is workspace-visible regardless of the console's own
    * access field. This lets users move items between sections by simply
    * moving them into/out of shared folders — no access field update needed.
+   *
+   * The placement rule, the one the breadcrumb applies too
+   * (app lib/console-relocation `consolePlacement`): effectively workspace →
+   * Workspace; private and mine → My Consoles; private, someone else's,
+   * shared with me → Shared with me, flat (its folder is its owner's). It
+   * used to be listed under Workspace while the breadcrumb said "Shared
+   * with me".
    */
   async listConsolesSplit(
     workspaceId: string,
@@ -617,11 +630,12 @@ export class ConsoleManager {
   ): Promise<{
     myConsoles: ConsoleFile[];
     sharedWithWorkspace: ConsoleFile[];
+    sharedWithMe: ConsoleFile[];
   }> {
     try {
       const bound = await boundRepoDirIfExists(workspaceId);
       if (bound == null) {
-        return { myConsoles: [], sharedWithWorkspace: [] };
+        return { myConsoles: [], sharedWithWorkspace: [], sharedWithMe: [] };
       }
 
       const [folders, live] = await Promise.all([
@@ -670,18 +684,18 @@ export class ConsoleManager {
 
       const myConsolesRaw: ISavedConsole[] = [];
       const sharedWithWorkspaceRaw: ISavedConsole[] = [];
+      const sharedWithMeRaw: ISavedConsole[] = [];
 
       for (const c of consoles) {
         const ownerId = (c.owner_id || c.createdBy)?.toString();
         const ownAccess = ConsoleManager.resolveAccess(c);
-        let section = classify(ownAccess, ownerId, c.folderId);
-        // Private consoles shared explicitly with this user surface in the
-        // shared section so collaborators can find them.
-        if (section === null && ConsoleManager.isCollaborator(c, userId)) {
-          section = "workspace";
-        }
+        const section = classify(ownAccess, ownerId, c.folderId);
         if (section === "my") myConsolesRaw.push(c);
         else if (section === "workspace") sharedWithWorkspaceRaw.push(c);
+        // Another member's private console shared with this user.
+        else if (ConsoleManager.isCollaborator(c, userId)) {
+          sharedWithMeRaw.push(c);
+        }
       }
 
       const myFolders: IConsoleFolder[] = [];
@@ -706,6 +720,8 @@ export class ConsoleManager {
           sharedWithWorkspaceRaw,
           canWrite,
         ),
+        // Flat: the folders are their owners', not this user's to see.
+        sharedWithMe: this.buildTree([], sharedWithMeRaw, canWrite),
       };
     } catch (error) {
       if (
@@ -716,7 +732,7 @@ export class ConsoleManager {
         throw error;
       }
       logger.error("Error listing consoles split", { error });
-      return { myConsoles: [], sharedWithWorkspace: [] };
+      return { myConsoles: [], sharedWithWorkspace: [], sharedWithMe: [] };
     }
   }
 
@@ -2796,6 +2812,17 @@ export class ConsoleManager {
    * Duplicate a console: creates a copy with " copy" appended to the name
    * (" copy (2)" when that file is taken — a second copy must not land on
    * the first one's file). The caller checks the original is readable.
+   *
+   * The copy is the caller's: private, in My Consoles, in the folder
+   * `copyFolderFor` picks — the folder the tree lists it in and the
+   * breadcrumb names are that one folder (a copy kept the ORIGINAL's
+   * folder id, someone else's or a workspace folder, so the tree showed it
+   * at the root of My Consoles while the breadcrumb said "My Consoles ›
+   * Team Drafts").
+   *
+   * The row is validated BEFORE anything is committed, and a row that
+   * still fails to insert takes its commit back: a 500 used to leave the
+   * file on main, and the next sync surfaced the copy unannounced.
    */
   async duplicateConsole(
     consoleId: string,
@@ -2811,7 +2838,7 @@ export class ConsoleManager {
 
     const copy = new SavedConsole({
       workspaceId: original.workspaceId,
-      folderId: original.folderId,
+      folderId: await this.copyFolderFor(original, userId),
       connectionId: original.connectionId,
       databaseName: original.databaseName,
       databaseId: original.databaseId,
@@ -2819,7 +2846,9 @@ export class ConsoleManager {
       description: original.description,
       code: original.code,
       language: original.language,
-      mongoOptions: original.mongoOptions,
+      // A row a push indexed may hold `mongoOptions: null` (older syncs
+      // wrote it): copy a real collection/operation pair or nothing.
+      mongoOptions: mongoOptionsFromFile(original.mongoOptions),
       createdBy: userId,
       isPrivate: true,
       isSaved: true,
@@ -2828,6 +2857,7 @@ export class ConsoleManager {
       executionCount: 0,
     });
     copy.name = await this.freeNameFor(copy, null);
+    await copy.validate();
     const committed = await commitConsoleState({
       row: copy,
       actorUserId: userId,
@@ -2836,8 +2866,56 @@ export class ConsoleManager {
     });
     copy.path = committed.path;
     copy.sourceBlobSha = committed.sourceBlobSha;
-    await copy.save();
+    try {
+      await copy.save();
+    } catch (error) {
+      await commitConsoleRemoval({
+        workspaceId,
+        path: committed.path,
+        actorUserId: userId,
+        message: `revert duplicate: ${copy.name}`,
+      }).catch(revertError => {
+        logger.error("A failed duplicate's file could not be removed", {
+          workspaceId,
+          path: committed.path,
+          error: revertError,
+        });
+      });
+      throw error;
+    }
     return copy;
+  }
+
+  /**
+   * Where a copy of `original` goes in the copier's My Consoles: the
+   * original's folder when it is theirs (a private folder of their own);
+   * else their own folder at the same path, when they have one; else the
+   * root. Never someone else's folder, never a workspace folder — the copy
+   * is private, and a workspace folder would publish it by inheritance.
+   */
+  private async copyFolderFor(
+    original: ISavedConsole,
+    userId: string,
+  ): Promise<Types.ObjectId | null> {
+    if (!original.folderId) return null;
+    const workspaceId = original.workspaceId.toString();
+    const folder = await ConsoleFolder.findOne({
+      _id: original.folderId,
+      workspaceId: original.workspaceId,
+    })
+      .select("access isPrivate ownerId")
+      .lean<Pick<IConsoleFolder, "access" | "isPrivate" | "ownerId"> | null>();
+    if (!folder) return null;
+    const folderAccess =
+      folder.access || (folder.isPrivate ? "private" : "workspace");
+    if (folderAccess === "private" && folder.ownerId?.toString() === userId) {
+      return original.folderId;
+    }
+    const segments = await folderSegmentsFor(original.folderId, workspaceId);
+    return findFolderChain(segments, workspaceId, {
+      access: "private",
+      ownerId: userId,
+    });
   }
 
   /**

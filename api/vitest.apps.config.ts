@@ -37,6 +37,9 @@ export default defineConfig({
       "src/routes/consoles-scope.test.ts",
       // A rename/move answers where the console is; a save never moves it back.
       "src/routes/consoles-location.test.ts",
+      // Duplicate never commits an orphan; a copy is filed where the tree
+      // shows it; a console shared with me is under "Shared with me".
+      "src/routes/consoles-duplicate.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",

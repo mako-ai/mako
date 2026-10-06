@@ -121,6 +121,7 @@ type Body = {
   changed?: Array<Record<string, unknown>>;
   myConsoles?: ConsoleFile[];
   sharedWithWorkspace?: ConsoleFile[];
+  sharedWithMe?: ConsoleFile[];
 };
 
 async function req(
@@ -326,9 +327,12 @@ describe("a rename or a move answers where the console is now", () => {
     );
     const r = await req("GET", "", undefined, EDITOR);
     expect(r.status).toBe(200);
+    // The private console shared with them is under "Shared with me".
+    expect((r.body.sharedWithMe ?? []).map(n => n.name)).toEqual(["shared"]);
     const nodes = [
       ...(r.body.myConsoles ?? []),
       ...(r.body.sharedWithWorkspace ?? []),
+      ...(r.body.sharedWithMe ?? []),
     ];
     const byName = new Map(nodes.map(n => [n.name, n]));
     expect(byName.get("shared")?.canWrite).toBe(true);

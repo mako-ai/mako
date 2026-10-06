@@ -3,6 +3,7 @@ import type { ConsoleEntry } from "../store/consoleTreeStore";
 import {
   consoleNameProblem,
   consoleNameTakenBy,
+  consolePlacement,
   consoleSectionLabel,
   locateInConsoleTree,
   relocationScope,
@@ -137,5 +138,39 @@ describe("consoleSectionLabel — the breadcrumb's section", () => {
     expect(consoleSectionLabel("private", "owner", "editor2")).toBe(
       "Shared with me",
     );
+  });
+});
+
+describe("consolePlacement — one rule for the tree and the breadcrumb", () => {
+  it("lists another member's private console under Shared with me, flat", () => {
+    // The tree lists it at the root of "Shared with me" (its folder is its
+    // owner's); the breadcrumb must not name that folder.
+    expect(
+      consolePlacement({
+        access: "private",
+        ownerId: "tester",
+        currentUserId: "editor2",
+        folders: ["Team Drafts"],
+      }),
+    ).toEqual({ section: "Shared with me", folders: [] });
+  });
+
+  it("keeps the folder trail in My Consoles and Workspace", () => {
+    expect(
+      consolePlacement({
+        access: "private",
+        ownerId: "editor2",
+        currentUserId: "editor2",
+        folders: ["Team Drafts"],
+      }),
+    ).toEqual({ section: "My Consoles", folders: ["Team Drafts"] });
+    expect(
+      consolePlacement({
+        access: "workspace",
+        ownerId: "tester",
+        currentUserId: "editor2",
+        folders: ["finance"],
+      }),
+    ).toEqual({ section: "Workspace", folders: ["finance"] });
   });
 });
