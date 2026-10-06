@@ -163,6 +163,7 @@ async function commitDbtMutation(
   userId: string,
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
+  expectBlobs?: Record<string, string | null>,
 ): Promise<WriteWorkingFileResult> {
   const workspaceId = project.workspaceId.toString();
   // Production: the workspace's own repo is the only durable store (§17).
@@ -192,7 +193,15 @@ async function commitDbtMutation(
       ),
       deletes: (mutation.deletes ?? []).map(repoPath),
     },
-    { message, author },
+    {
+      message,
+      author,
+      expectBlobs: expectBlobs
+        ? Object.fromEntries(
+            Object.entries(expectBlobs).map(([p, oid]) => [repoPath(p), oid]),
+          )
+        : undefined,
+    },
   );
   if (!result.unchanged) queueMirrorPush(workspaceId);
   return { commitOid: result.unchanged ? undefined : result.commitOid };
@@ -201,19 +210,23 @@ async function commitDbtMutation(
 /**
  * Commit writes AND deletes in one commit (a rename with its ref rewrites —
  * api/src/rename/dbt-file.ts). Paths are project-relative like every other
- * entry point here.
+ * entry point here. `expectBlobs` (project path → blob oid read, `null` =
+ * must be absent) makes the commit refuse with `BlobPreconditionError` when
+ * a file changed after it was read — a rewrite decided from stale content
+ * must never overwrite a save that landed in between.
  */
 export async function commitDbtChanges(
   project: IDbtProject,
   userId: string,
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
+  expectBlobs?: Record<string, string | null>,
 ): Promise<WriteWorkingFileResult> {
   for (const path of Object.keys(mutation.writes ?? {})) {
     assertSafeDbtPath(path);
   }
   for (const path of mutation.deletes ?? []) assertSafeDbtPath(path);
-  return commitDbtMutation(project, userId, mutation, message);
+  return commitDbtMutation(project, userId, mutation, message, expectBlobs);
 }
 
 /** Commit a batch of files in one commit (scaffold, imports). */

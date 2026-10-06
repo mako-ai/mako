@@ -23,6 +23,24 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 const realtime = vi.hoisted(() => ({ publishRealtimeEvent: vi.fn() }));
 vi.mock("../services/realtime.service", () => realtime);
 
+// A one-shot hook run inside the rename, after it has read the files it
+// rewrites and before it commits (grepTree is its warnings scan) — where a
+// save from another window can land.
+const race = vi.hoisted(() => ({ hook: null as null | (() => Promise<void>) }));
+vi.mock("../apps/repository.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/repository.service")>();
+  return {
+    ...actual,
+    grepTree: async (...args: Parameters<typeof actual.grepTree>) => {
+      const hook = race.hook;
+      race.hook = null;
+      if (hook) await hook();
+      return actual.grepTree(...args);
+    },
+  };
+});
+
 import { AppWorktree, DbtProject } from "../database/workspace-schema";
 import { seedDbtGitTree } from "./test-support/git-tree";
 import {
@@ -342,6 +360,29 @@ describe("renameDbtFile", () => {
     });
     expect(await fileAt("models/mart.sql")).toBe(MART);
     expect(result.warnings.join("\n")).toMatch(/is not a model path/);
+  });
+
+  it("refuses (409) when a file it rewrites is saved mid-rename, and overwrites nothing", async () => {
+    await seedProject();
+    const saved = MART.replace("select o.*", "select o.id");
+    race.hook = async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "dbt/models/mart.sql": saved } },
+        { message: "a save from another window" },
+      );
+    };
+    await expect(
+      renameDbtFile(member, {
+        from: "models/orders.sql",
+        to: "models/orders_v2.sql",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(race.hook).toBeNull(); // the race really ran
+    expect(await fileAt("models/mart.sql")).toBe(saved);
+    expect(await fileAt("models/orders.sql")).not.toBeNull();
+    expect(await fileAt("models/orders_v2.sql")).toBeNull();
   });
 
   it("refuses viewers, missing sources and occupied targets", async () => {

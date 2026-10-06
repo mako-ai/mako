@@ -31,6 +31,7 @@
  * `c`. A bare `git mv` from a laptop therefore redirects exactly like a UI
  * rename — the move IS the record.
  */
+import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 import {
   Dashboard,
@@ -45,6 +46,7 @@ import {
   readBlobsBatch,
   repoExists,
   resolveCommit,
+  BlobPreconditionError,
 } from "../apps/repository.service";
 import {
   DBT_ROOT,
@@ -241,6 +243,14 @@ async function projectPackageName(
   }
 }
 
+/** Git's blob id for these bytes (`git hash-object`). */
+function gitBlobOid(content: Buffer): string {
+  return createHash("sha1")
+    .update(`blob ${content.length}\0`)
+    .update(content)
+    .digest("hex");
+}
+
 /** Files the rewrite looks at: anything textual dbt parses, plus docs. */
 function isRewritableDbtPath(path: string): boolean {
   return /\.(sql|yml|yaml|md|markdown|py)$/i.test(path);
@@ -271,6 +281,12 @@ export async function renameDbtFile(
 
   const writes: Record<string, string> = {};
   const deletes = [from];
+  // What this rename read, by blob oid: the commit refuses if any of it
+  // changed before the commit lands (a save racing the rename).
+  const expectBlobs: Record<string, string | null> = {
+    [from]: gitBlobOid(Buffer.from(source.content, "utf8")),
+    [to]: null,
+  };
   const warnings: string[] = [];
   const rewritten: string[] = [];
   let jobsTouched = false;
@@ -344,6 +360,7 @@ export async function renameDbtFile(
         }
         if (next.count > 0) {
           writes[path] = next.text;
+          expectBlobs[path] = gitBlobOid(buf);
           rewritten.push(path);
           if (isJob) jobsTouched = true;
         }
@@ -371,12 +388,24 @@ export async function renameDbtFile(
     rewritten.length > 0
       ? `dbt: rename ${from} -> ${to} (+${rewritten.length} ref${rewritten.length === 1 ? "" : "s"} updated)`
       : `dbt: rename ${from} -> ${to}`;
-  const result = await commitDbtChanges(
-    project,
-    actor,
-    { writes, deletes },
-    message,
-  );
+  let result: Awaited<ReturnType<typeof commitDbtChanges>>;
+  try {
+    result = await commitDbtChanges(
+      project,
+      actor,
+      { writes, deletes },
+      message,
+      expectBlobs,
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new RenameError(
+        `${error.path.replace(/^dbt\//, "")} changed while renaming — reload and try again.`,
+        409,
+      );
+    }
+    throw error;
+  }
   const branch = await getCheckoutBranch(project, actor);
   if (branch !== DEFAULT_BRANCH) {
     warnings.push(
