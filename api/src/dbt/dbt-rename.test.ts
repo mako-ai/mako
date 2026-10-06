@@ -38,6 +38,7 @@ import {
   resolveDbtFile,
 } from "../rename/dbt-file";
 import { dbtFileRenameHandler } from "../rename/handlers/dbt-file";
+import { serializeJobFile } from "./dbt-config-files";
 import { RenameError } from "../rename/types";
 
 let mongo: MongoMemoryServer;
@@ -95,13 +96,17 @@ const PROJECT_YML = [
   "name: analytics",
   "models:",
   "  analytics:",
+  "    orders:",
+  "      +materialized: table",
   "    marts:",
-  "      orders:",
-  "        +materialized: table",
+  "      orders: # a different model, models/marts/orders.sql, not this one",
+  "        +enabled: false",
   "",
 ].join("\n");
 const SELECTORS =
   "selectors:\n  - name: nightly\n    definition:\n      method: fqn\n      value: orders+\n";
+const LONG_COMMAND =
+  "dbt build --select orders+ stg_customers stg_payments stg_products stg_suppliers dim_dates fct_events --exclude tag:x";
 const SNAPSHOT =
   "{% snapshot orders_snapshot %}\nselect * from {{ ref('orders') }}\n{% endsnapshot %}\n";
 
@@ -125,6 +130,14 @@ async function seedProject(extra: Record<string, string> = {}) {
     "models/mart.sql": MART,
     "models/schema.yml": "version: 2\nmodels:\n  - name: orders\n",
     "jobs/daily.yml": JOB,
+    "jobs/long.yml": serializeJobFile({
+      name: "Long",
+      environment: "dev",
+      commands: [LONG_COMMAND],
+      schedule: null,
+      enabled: true,
+      deferToProduction: false,
+    }),
     ...extra,
   });
   return project;
@@ -203,8 +216,23 @@ describe("renameDbtFile", () => {
     expect(result.warnings.join("\n")).toMatch(
       /jobs\/daily.yml: selector "marts.orders" still names 'orders'/,
     );
-    // dbt_project.yml model config key follows too.
-    expect(await fileAt("dbt_project.yml")).toContain("      fct_orders:\n");
+    // A Mako-written job with a folded long command is rewritten too.
+    expect(await fileAt("jobs/long.yml")).toContain(
+      `  - ${JSON.stringify(LONG_COMMAND.replace("orders+", "fct_orders+"))}\n`,
+    );
+    // The UI guards its own dirty buffers; an MCP/agent rename (no
+    // clientId) is told about editors it cannot see.
+    expect(result.warnings.join("\n")).toMatch(
+      /Open editors with unsaved changes/,
+    );
+    // dbt_project.yml: the key at the model's PATH follows; the same name
+    // under another folder is another model — kept, and warned about.
+    expect(await fileAt("dbt_project.yml")).toBe(
+      PROJECT_YML.replace("    orders:\n", "    fct_orders:\n"),
+    );
+    expect(result.warnings.join("\n")).toMatch(
+      /dbt_project.yml still mentions 'orders'/,
+    );
     expect(await fileAt("selectors.yml")).toBe(SELECTORS);
     expect(result.warnings.join("\n")).toMatch(
       /selectors.yml still mentions 'orders'/,
@@ -411,6 +439,13 @@ describe("dbtFileRenameHandler", () => {
     });
     expect(renamed.after.slug).toBe("models/fct_orders.sql");
     expect(await fileAt("models/mart.sql")).toContain("ref('fct_orders')");
+    // A UI rename (clientId) already refused dirty buffers: no reload warning.
+    const ui = await renameDbtFile(member, {
+      from: "models/customers.sql",
+      to: "models/dim_customers.sql",
+      clientId: "tab-1",
+    });
+    expect(ui.warnings.join("\n")).not.toMatch(/Open editors/);
 
     const movedOut = await dbtFileRenameHandler.rename(member, {
       ref: "models/fct_orders.sql",

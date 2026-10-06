@@ -84,6 +84,54 @@ export function skillNameFromPath(path: string): string | null {
   return m[1];
 }
 
+/**
+ * Edit a SKILL.md's front matter IN PLACE: set `name` and/or replace the
+ * `aliases` list, keeping every other line (comments, `license`,
+ * `allowed-tools`, `metadata`, keys this code does not know) byte for
+ * byte. The list is written in flow style (`aliases: [a, b]`); an empty
+ * list removes the key. Null when the file has no front matter block —
+ * a rename must not rewrite what it cannot see the shape of.
+ */
+export function editSkillFrontMatter(
+  contents: string,
+  edit: { name?: string; aliases?: string[] },
+): string | null {
+  const normalized = contents.replace(/^\uFEFF/, "");
+  const nl = normalized.includes("\r\n") ? "\r\n" : "\n";
+  const lines = normalized.split(nl);
+  if (!/^---\s*$/.test(lines[0] ?? "")) return null;
+  let close = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (/^---\s*$/.test(lines[i])) {
+      close = i;
+      break;
+    }
+  }
+  if (close < 0) return null;
+  const fm = lines.slice(1, close);
+
+  if (edit.name !== undefined) {
+    const at = fm.findIndex(l => /^name:/.test(l));
+    const line = `name: ${edit.name}`;
+    if (at >= 0) fm[at] = line;
+    else fm.unshift(line);
+  }
+  if (edit.aliases !== undefined) {
+    const at = fm.findIndex(l => /^aliases:/.test(l));
+    if (at >= 0) {
+      let end = at + 1;
+      if (!/^aliases:\s*\[/.test(fm[at])) {
+        while (end < fm.length && /^\s+-\s/.test(fm[end])) end++;
+      }
+      fm.splice(at, end - at);
+    }
+    if (edit.aliases.length > 0) {
+      fm.push(`aliases: [${edit.aliases.join(", ")}]`);
+    }
+  }
+  return ["---", ...fm, ...lines.slice(close)].join(nl);
+}
+
 export function serializeSkillFile(skill: WorkspaceSkillFile): string {
   const frontmatter: Record<string, unknown> = {
     name: skill.name,

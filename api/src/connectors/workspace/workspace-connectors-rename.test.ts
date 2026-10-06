@@ -56,6 +56,7 @@ import {
 } from "../../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  blobOid,
   commitBlobsOnBranch,
   initRepo,
   listTree,
@@ -77,7 +78,11 @@ import {
   loadConnectorDefinition,
 } from "./resolver";
 import { connectorTypeExists, listWorkspaceConnectors } from "./catalog";
-import { parseConnectorFile, withConnectorAlias } from "./connector-file";
+import {
+  parseConnectorFile,
+  stripConnectorAliases,
+  withConnectorAlias,
+} from "./connector-file";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import {
   renameWorkspaceConnector,
@@ -247,6 +252,25 @@ describe("connector.yaml aliases", () => {
     expect(
       withConnectorAlias("runtime: node\naliases: notalist\n", "d"),
     ).toBeNull();
+  });
+
+  it("the hash of a yaml without aliases is the pre-existing formula (deploying re-indexes nothing)", () => {
+    const enc = (t: string) => new TextEncoder().encode(t);
+    const files = new Map([
+      ["connector.yaml", enc(YAML)],
+      ["connector.ts", enc("x")],
+    ]);
+    const legacy = blobOid(
+      [...files.keys()]
+        .sort()
+        .map(n => `${n}:${blobOid(Buffer.from(files.get(n) as Uint8Array))}`)
+        .join("\n"),
+    );
+    expect(sourceShaOf(files)).toBe(legacy);
+    // Block and flow alias lists strip back to the same bytes.
+    expect(stripConnectorAliases(`${YAML}aliases:\n  - a\n  - b\n`)).toBe(YAML);
+    expect(stripConnectorAliases(`${YAML}aliases: [a, b]\n`)).toBe(YAML);
+    expect(stripConnectorAliases(withConnectorAlias(YAML, "a")!)).toBe(YAML);
   });
 
   it("the content hash ignores `aliases`: a rename is not new code", () => {
@@ -485,6 +509,54 @@ describe("reconcile detects a rename instead of deleting", () => {
     expect((await SourceConnection.findById(stale))?.type).toBe("ws:acme-crm");
     expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme");
   }, 60_000);
+
+  it("a released alias stays released: later syncs do not resurrect it, and deleting the newcomer does not hand ws:<slug> back", async () => {
+    await pushAcme();
+    await syncConnectorsFromRepo(WS);
+    await renameWorkspaceConnector(ctx, { from: "acme", to: "acme-crm" });
+    await push({
+      writes: {
+        "connectors/acme/connector.yaml": YAML,
+        "connectors/acme/connector.ts": OTHER_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    const fresh = await connection("ws:acme"); // made for the NEW acme
+    const rowsNow = async () =>
+      (
+        await ConnectorDefinition.find({ workspaceId: WS }).sort({ slug: 1 })
+      ).map(r => [r.slug, r.aliases, r.retiredAliases]);
+    expect(await rowsNow()).toEqual([
+      ["acme", [], []],
+      ["acme-crm", [], ["acme"]],
+    ]);
+    // acme-crm's connector.yaml still says `aliases: [acme]`; two more syncs.
+    await push({ writes: { "README.md": "# touched\n" } });
+    await syncConnectorsFromRepo(WS);
+    await push({ writes: { "README.md": "# touched again\n" } });
+    await syncConnectorsFromRepo(WS);
+    expect(await rowsNow()).toEqual([
+      ["acme", [], []],
+      ["acme-crm", [], ["acme"]],
+    ]);
+    // The newcomer is deleted: ws:acme resolves to NOTHING, never to acme-crm.
+    await push({
+      deletes: [
+        "connectors/acme/connector.yaml",
+        "connectors/acme/connector.ts",
+      ],
+    });
+    await syncConnectorsFromRepo(WS);
+    expect(await rowsNow()).toEqual([["acme-crm", [], ["acme"]]]);
+    expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
+    expect((await SourceConnection.findById(fresh))?.type).toBe("ws:acme");
+    // Renaming acme-crm back to acme makes it the live owner again.
+    await renameWorkspaceConnector(ctx, { from: "acme-crm", to: "acme" });
+    expect(await rowsNow()).toEqual([["acme", ["acme-crm"], []]]);
+    expect(await findConnectorDefinitionRow(WS, "acme")).toMatchObject({
+      via: "current",
+    });
+  }, 120_000);
 
   it("migrateSourceConnectionType is idempotent", async () => {
     const a = await connection("ws:old");

@@ -169,8 +169,9 @@ export async function renameWorkspaceConnector(
         })
       : null;
   }
-  if (!row)
+  if (!row) {
     throw new RenameError(`No connector "${ref}" in this workspace`, 404);
+  }
   const from = row.slug;
   if (from === to) throw new RenameError("The new slug is the old slug", 400);
   if (await ConnectorDefinition.exists({ workspaceId: wsId, slug: to })) {
@@ -242,8 +243,10 @@ export async function renameWorkspaceConnector(
   // verified connector stays verified — a rename is not new code.
   row.slug = to;
   row.aliases = [...new Set([...(row.aliases ?? []), from])].filter(
-    a => a !== to,
+    a => a !== to && !(row.retiredAliases ?? []).includes(a),
   );
+  // Taking `to` as the live slug ends any earlier retirement of it.
+  row.retiredAliases = (row.retiredAliases ?? []).filter(a => a !== to);
   row.sha = commit.commitOid;
   await row.save();
   const movedConnections = await migrateSourceConnectionType(

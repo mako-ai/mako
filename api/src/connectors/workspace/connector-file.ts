@@ -210,24 +210,32 @@ export function withConnectorAlias(
 }
 
 /**
+ * `connector.yaml` with its `aliases` entry removed, as text — the exact
+ * inverse of `withConnectorAlias`. Line-based so the result is byte-equal
+ * to the file before any alias was written.
+ */
+export function stripConnectorAliases(contents: string): string {
+  const nl = contents.includes("\r\n") ? "\r\n" : "\n";
+  const lines = contents.split(nl);
+  const keyAt = lines.findIndex(l => /^aliases:/.test(l));
+  if (keyAt < 0) return contents;
+  let end = keyAt + 1;
+  if (!/^aliases:\s*\[/.test(lines[keyAt])) {
+    while (end < lines.length && /^\s+-\s/.test(lines[end])) end++;
+  }
+  lines.splice(keyAt, end - keyAt);
+  return lines.join(nl);
+}
+
+/**
  * The YAML's identity for the content hash: the file with `aliases`
  * removed. A rename writes an alias and nothing else; hashing it would
  * make every rename look like new code (spec re-run, `verified` lost).
- * Returns the raw text when the file does not parse, so a broken yaml
- * still changes the hash and gets blocked with its reason.
+ * A file with no `aliases` hashes exactly as it always did — its raw
+ * bytes — so deploying this re-indexes nothing.
  */
 export function connectorFileIdentity(contents: string): string {
-  let parsed: unknown;
-  try {
-    parsed = yaml.load(contents);
-  } catch {
-    return contents;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return contents;
-  }
-  const { aliases: _aliases, ...rest } = parsed as Record<string, unknown>;
-  return yaml.dump(rest, { sortKeys: true, lineWidth: -1 });
+  return stripConnectorAliases(contents);
 }
 
 /**

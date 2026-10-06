@@ -9,6 +9,7 @@
  * catalog for the case where the index line did not ring a bell.
  */
 import {
+  aliasClaimantsOf,
   commitSkillDelete,
   commitSkillFlags,
   commitSkillRename,
@@ -158,9 +159,14 @@ export async function saveSkill(
   const name = input.name.trim();
   const resolved = await resolveSkillRef(workspaceId, name);
   const existing = resolved?.via === "current" ? resolved.skill : null;
-  const retireAliasFrom =
-    resolved?.via === "alias" ? resolved.skill.name : undefined;
   const pendingApproval = options.origin === "agent" && !existing;
+  // A SUPPRESSED proposal does not take the name yet: the alias stays on
+  // the real skill until a person activates the proposal (which retires
+  // it then) or saves it non-suppressed.
+  const retireAliasFrom =
+    resolved?.via === "alias" && !pendingApproval
+      ? resolved.skill.name
+      : undefined;
   if (!existing) {
     const catalog = await loadSkillCatalog(workspaceId);
     if (catalog.skills.length >= MAX_WORKSPACE_SKILLS) {
@@ -638,11 +644,20 @@ export async function toggleSkillSuppressed(
 ): Promise<boolean> {
   const skill = await findSkillById(workspaceId, id);
   if (!skill) return false;
+  // Activating a proposal saved under a name another skill still lists
+  // as an alias: now it takes the name, and that alias is retired in the
+  // same commit (a name has one answer).
+  const claimant = suppressed
+    ? undefined
+    : (await aliasClaimantsOf(workspaceId, skill.name)).find(
+        other => other.name !== skill.name,
+      );
   return commitSkillFlags(
     workspaceId,
     skill.name,
     { suppressed },
     await skillCommitAuthor(actorId),
+    { retireAliasFrom: claimant?.name },
   );
 }
 

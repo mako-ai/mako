@@ -76,7 +76,7 @@ async function main() {
   const commits = parseRenameLog(stdout);
   assert.equal(commits.length, 2, "two commits renamed something under dbt/");
   assert.deepEqual(commits[0], [
-    { from: "dbt/models/b.sql", to: "dbt/models/c.sql" },
+    { status: "R", from: "dbt/models/b.sql", to: "dbt/models/c.sql" },
   ]);
   assert.equal(followRenames("dbt/models/a.sql", commits), "dbt/models/c.sql");
   assert.equal(followRenames("dbt/models/b.sql", commits), "dbt/models/c.sql");
@@ -121,6 +121,77 @@ async function main() {
   assert.equal(
     await findRenamedPath(repo, "main", "dbt/models/a.sql", "dbt"),
     null,
+  );
+
+  // a → b, b DELETED, an unrelated b created later: `a` is a dead link,
+  // not a link to the new b.
+  await write(
+    "dbt/models/x.sql",
+    "select 'x' -- a long enough body to match\n",
+  );
+  await commit("add x");
+  await git("mv", "dbt/models/x.sql", "dbt/models/y.sql");
+  await commit("rename x to y");
+  await git("rm", "-q", "dbt/models/y.sql");
+  await commit("delete y");
+  await write("dbt/models/y.sql", "select 'brand new y'\n");
+  await commit("new y");
+  assert.equal(
+    await findRenamedPath(repo, "main", "dbt/models/x.sql", "dbt"),
+    null,
+    "a delete of the renamed-to path cuts the chain",
+  );
+  // …while a chain whose end still exists keeps resolving with adds and
+  // deletes of OTHER paths in the window.
+  await write(
+    "dbt/models/p.sql",
+    "select 'p' -- a long enough body to match\n",
+  );
+  await commit("add p");
+  await git("mv", "dbt/models/p.sql", "dbt/models/q.sql");
+  await commit("rename p to q");
+  await write("dbt/models/unrelated.sql", "select 1\n");
+  await commit("add unrelated");
+  await git("rm", "-q", "dbt/models/unrelated.sql");
+  await commit("delete unrelated");
+  assert.equal(
+    await findRenamedPath(repo, "main", "dbt/models/p.sql", "dbt"),
+    "dbt/models/q.sql",
+  );
+  // The parser carries adds and deletes alongside renames.
+  const scan = await git(
+    "log",
+    "--format=%x01%H",
+    "-M",
+    "--name-status",
+    "--diff-filter=ADR",
+    "-z",
+    "-n",
+    "2",
+    "main",
+    "--",
+    "dbt",
+  );
+  assert.deepEqual(parseRenameLog(scan.stdout)[0], [
+    {
+      status: "D",
+      from: "dbt/models/unrelated.sql",
+      to: "dbt/models/unrelated.sql",
+    },
+  ]);
+  assert.equal(
+    followRenames("a", [
+      [{ status: "D", from: "b", to: "b" }],
+      [{ status: "R", from: "a", to: "b" }],
+    ]),
+    null,
+  );
+  assert.equal(
+    followRenames("a", [
+      [{ status: "A", from: "b", to: "b" }],
+      [{ status: "R", from: "a", to: "b" }],
+    ]),
+    "b",
   );
 
   // A bad ref is "not found", never a throw.

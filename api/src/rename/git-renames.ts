@@ -9,8 +9,8 @@
  * answers "the file you asked for is `c` now", or nothing.
  *
  * Bounded on purpose: the scan is limited to the kind's own directory
- * (pathspec) and to the newest `limit` commits that renamed something
- * there. A rename older than that is not found, which is a stale link, not
+ * (pathspec) and to the newest `limit` commits that added, deleted or
+ * renamed something there. A rename older than that is not found, which is a stale link, not
  * a wrong answer — the caller already tried the current name and the
  * recorded aliases first.
  */
@@ -21,25 +21,42 @@ export interface RenamePair {
   to: string;
 }
 
+/** One change under the scanned directory: a rename, an add or a delete. */
+export interface PathChange {
+  status: "R" | "A" | "D";
+  /** For `A`/`D` both sides are the same path. */
+  from: string;
+  to: string;
+}
+
 /**
- * Parse `git log --format=%x01%H -M --name-status --diff-filter=R -z`:
+ * Parse `git log --format=%x01%H --name-status --diff-filter=ADR -z`:
  * each commit is `\x01<sha>\0\n` followed by `R<score>\0<old>\0<new>\0`
- * triples. Newest commit first, exactly as git prints them.
+ * triples and `A\0<path>\0` / `D\0<path>\0` pairs. Newest commit first,
+ * exactly as git prints them.
  */
-export function parseRenameLog(stdout: string): RenamePair[][] {
-  const commits: RenamePair[][] = [];
+export function parseRenameLog(stdout: string): PathChange[][] {
+  const commits: PathChange[][] = [];
   for (const chunk of stdout.split("\x01")) {
     if (!chunk) continue;
     const headerEnd = chunk.indexOf("\0");
     if (headerEnd < 0) continue;
     const body = chunk.slice(headerEnd + 1).replace(/^\n/, "");
     const fields = body.split("\0");
-    const pairs: RenamePair[] = [];
-    for (let i = 0; i + 2 < fields.length; i += 3) {
-      if (!fields[i].startsWith("R")) continue;
-      pairs.push({ from: fields[i + 1], to: fields[i + 2] });
+    const changes: PathChange[] = [];
+    for (let i = 0; i < fields.length; ) {
+      const code = fields[i];
+      if (code.startsWith("R") && i + 2 < fields.length) {
+        changes.push({ status: "R", from: fields[i + 1], to: fields[i + 2] });
+        i += 3;
+      } else if ((code === "A" || code === "D") && i + 1 < fields.length) {
+        changes.push({ status: code, from: fields[i + 1], to: fields[i + 1] });
+        i += 2;
+      } else {
+        i += 1;
+      }
     }
-    commits.push(pairs);
+    commits.push(changes);
   }
   return commits;
 }
@@ -47,21 +64,27 @@ export function parseRenameLog(stdout: string): RenamePair[][] {
 /**
  * Follow the rename chain of `path` forward through `commits` (newest
  * first, as `parseRenameLog` returns them). Returns the newest name, or
- * null when nothing ever renamed `path` within the scanned window.
+ * null when nothing ever renamed `path` within the scanned window — or
+ * when the chain was cut: a DELETE of the current name after a rename
+ * means the file is gone, and a later file created under that name is a
+ * different file (a → b, b deleted, a new b: `a` must not open the new b).
  */
 export function followRenames(
   path: string,
-  commits: RenamePair[][],
+  commits: PathChange[][],
 ): string | null {
   let current = path;
   let moved = false;
   // Oldest first, so a→b is applied before b→c.
   for (let i = commits.length - 1; i >= 0; i--) {
-    for (const pair of commits[i]) {
-      if (pair.from === current) {
-        current = pair.to;
+    for (const change of commits[i]) {
+      if (change.status === "R" && change.from === current) {
+        current = change.to;
         moved = true;
         break;
+      }
+      if (change.status === "D" && moved && change.from === current) {
+        return null;
       }
     }
   }
@@ -89,7 +112,7 @@ export async function pathExistsAt(
  * "where did it go", never "is it still here".
  */
 export interface RenameScanOptions {
-  /** Newest rename commits to scan (default 200). */
+  /** Newest commits that added, deleted or renamed under the directory to scan (default 500). */
   limit?: number;
   /**
    * Minimum similarity (percent) for git to call a delete + add a rename
@@ -112,7 +135,7 @@ export async function findRenamedPath(
   dirPrefix: string,
   options: RenameScanOptions = {},
 ): Promise<string | null> {
-  const limit = options.limit ?? 200;
+  const limit = options.limit ?? 500;
   let stdout: string;
   try {
     ({ stdout } = await runGit(
@@ -123,10 +146,12 @@ export async function findRenamedPath(
         "--format=%x01%H",
         renameFlag(options),
         "--name-status",
-        "--diff-filter=R",
+        // Adds and deletes too: a delete of the renamed-to path cuts the
+        // chain (see followRenames), and only the log can show it.
+        "--diff-filter=ADR",
         "-z",
         "-n",
-        String(Math.max(1, Math.min(limit, 1000))),
+        String(Math.max(1, Math.min(limit, 2000))),
         ref,
         "--",
         dirPrefix,

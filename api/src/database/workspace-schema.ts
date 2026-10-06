@@ -4331,6 +4331,13 @@ export interface IConnectorDefinition extends Document {
    * live row claims the slug — api/src/rename.
    */
   aliases: string[];
+  /**
+   * Slugs this row USED to answer to and must not again: a new connector
+   * took the name (reconcile `releaseAliasClaim`). The file may still list
+   * them in `aliases` — a push-time sync cannot edit the file — so the
+   * index subtracts this list on every pass. Durable without a commit.
+   */
+  retiredAliases: string[];
   lastCheckedAt?: Date;
   /**
    * Why the last real connection test failed. Distinct from `blockedReason`
@@ -4365,6 +4372,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     entities: { type: [String], default: [] },
     hasIcon: { type: Boolean, default: false },
     aliases: { type: [String], default: [] },
+    retiredAliases: { type: [String], default: [] },
     lastCheckedAt: { type: Date },
     lastCheckError: { type: String, maxlength: 4000 },
   },

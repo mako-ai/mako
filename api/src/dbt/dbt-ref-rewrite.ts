@@ -33,6 +33,8 @@
  * that no longer exists is the stale one.
  */
 
+import yaml from "js-yaml";
+
 /**
  * Resources whose FILE NAME is their `ref()`-able node name: SQL and Python
  * models, and seeds. Snapshots are deliberately absent — a snapshot is
@@ -179,8 +181,12 @@ export function rewriteSelectors(
   return { text: out.join(""), count };
 }
 
-/** Top-level properties-YAML keys whose list entries are `ref()`-able nodes. */
-const NODE_LIST_KEYS = new Set(["models", "seeds", "snapshots"]);
+/**
+ * Top-level properties-YAML keys whose list entries are nodes named by
+ * their file (see REF_ABLE): a `snapshots:` entry is named by its block,
+ * so a model rename never touches it.
+ */
+const NODE_LIST_KEYS = new Set(["models", "seeds"]);
 
 /**
  * Rewrite `- name: old` → `- name: new` for the node's own entry in a dbt
@@ -224,18 +230,27 @@ export function rewriteNodeProperties(
 }
 
 export interface JobRewriteResult extends RewriteResult {
-  /** Command lines that name the model but could not be rewritten in place. */
+  /** Commands that name the model but could not be rewritten in place. */
   unrewritable: string[];
 }
+
+/** A YAML list item line: `<indent>- <scalar>`. */
+const ITEM_RE = /^(\s*)-\s+(.*)$/;
+/** A block-scalar header (`|`, `>`, `|-`, `>+`, `>2-`, …) with an optional comment. */
+const BLOCK_HEADER_RE = /^[|>][0-9+-]*\s*(#.*)?$/;
 
 /**
  * Rewrite selectors in the `commands:` list of a job file, LINE BY LINE.
  * A job file is the author's: parsing and re-serializing it would drop
  * comments, unknown keys and (via `parseJobFile`'s caps) commands past the
- * tenth. Only a plain or single-line quoted list item directly under a
- * top-level `commands:` is touched; a block scalar (`- |`, `- >`) or a
- * quoted scalar with escapes inside is left alone and reported, so the
- * caller can warn instead of guessing.
+ * tenth. Handled in place:
+ *   - a plain or single-line quoted list item directly under `commands:`;
+ *   - a block scalar (`- >-` + indented lines — what `serializeJobFile`
+ *     emits for a command over ~100 chars) is parsed as YAML, rewritten,
+ *     and re-emitted as ONE double-quoted scalar when it changed;
+ *   - a flow sequence on the key line (`commands: ["dbt run"]`).
+ * A quoted scalar with escapes inside, or a block that does not parse,
+ * is left alone and reported only when it actually names the model.
  */
 export function rewriteJobCommands(
   text: string,
@@ -244,48 +259,140 @@ export function rewriteJobCommands(
 ): JobRewriteResult {
   if (oldName === newName) return { text, count: 0, unrewritable: [] };
   const lines = text.split("\n");
+  const out: string[] = [];
   let inCommands = false;
   let itemIndent: number | null = null;
   let count = 0;
   const unrewritable: string[] = [];
   const mentions = new RegExp(`(?<![\\w.])${escapeRegExp(oldName)}(?![\\w])`);
-  const out = lines.map(line => {
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const topLevel = /^([A-Za-z_][\w-]*):\s*(#.*)?$/.exec(line);
     if (topLevel) {
       inCommands = topLevel[1] === "commands";
       itemIndent = null;
-      return line;
+      out.push(line);
+      continue;
     }
-    if (!inCommands || line.trim() === "") return line;
-    const item = /^(\s*)-\s+(.*)$/.exec(line);
+    const flow = /^commands:\s*(\[.*\])\s*(#.*)?$/.exec(line);
+    if (flow) {
+      inCommands = false;
+      let items: unknown;
+      try {
+        items = yaml.load(flow[1]);
+      } catch {
+        items = null;
+      }
+      if (!Array.isArray(items) || !items.every(x => typeof x === "string")) {
+        if (mentions.test(line)) unrewritable.push(line.trim());
+        out.push(line);
+        continue;
+      }
+      let changed = 0;
+      const next = (items as string[]).map(cmd => {
+        const r = rewriteSelectors(cmd, oldName, newName);
+        changed += r.count;
+        return r.text;
+      });
+      count += changed;
+      out.push(
+        changed > 0
+          ? `commands: [${next.map(c => JSON.stringify(c)).join(", ")}]${flow[2] ? `  ${flow[2]}` : ""}`
+          : line,
+      );
+      continue;
+    }
+    if (!inCommands || line.trim() === "") {
+      out.push(line);
+      continue;
+    }
+    const item = ITEM_RE.exec(line);
     if (item && itemIndent === null) itemIndent = item[1].length;
-    if (!item || item[1].length !== itemIndent) return line;
+    if (!item || item[1].length !== itemIndent) {
+      out.push(line);
+      continue;
+    }
     const head = line.slice(0, line.length - item[2].length);
     const scalar = item[2];
-    // Quoted single-line scalar: rewrite inside the quotes when it holds no
-    // escapes (an escaped quote changes where the command's words end).
+
     const quoted = /^(['"])(.*)\1(\s*(?:#.*)?)$/.exec(scalar);
     if (quoted) {
+      // Quoted single-line scalar: rewrite inside the quotes when it holds
+      // no escapes (an escaped quote changes where the command's words end).
       if (quoted[2].includes("\\")) {
         if (mentions.test(quoted[2])) unrewritable.push(scalar);
-        return line;
+        out.push(line);
+        continue;
       }
       const r = rewriteSelectors(quoted[2], oldName, newName);
       count += r.count;
-      return `${head}${quoted[1]}${r.text}${quoted[1]}${quoted[3]}`;
+      out.push(`${head}${quoted[1]}${r.text}${quoted[1]}${quoted[3]}`);
+      continue;
     }
-    if (/^[|>]/.test(scalar)) {
-      // Block scalar: the command continues on the next lines.
-      unrewritable.push(scalar);
-      return line;
+
+    if (BLOCK_HEADER_RE.test(scalar)) {
+      // Block scalar: the command continues on the following lines, more
+      // indented than the item. Parse exactly those lines as YAML.
+      const bodyLines: string[] = [];
+      let j = i + 1;
+      for (; j < lines.length; j++) {
+        const l = lines[j];
+        if (
+          l.trim() === "" ||
+          (/^\s/.test(l) && l.search(/\S/) > item[1].length)
+        ) {
+          bodyLines.push(l);
+          continue;
+        }
+        break;
+      }
+      // Trailing blank lines belong to whatever follows, not the block.
+      while (
+        bodyLines.length > 0 &&
+        bodyLines[bodyLines.length - 1].trim() === ""
+      ) {
+        bodyLines.pop();
+        j--;
+      }
+      let command: unknown;
+      try {
+        const doc = yaml.load(
+          [`- ${scalar}`, ...bodyLines.map(l => l.slice(item[1].length))].join(
+            "\n",
+          ),
+        );
+        command = Array.isArray(doc) ? doc[0] : null;
+      } catch {
+        command = null;
+      }
+      if (typeof command !== "string") {
+        if (mentions.test(bodyLines.join("\n"))) {
+          unrewritable.push(bodyLines.map(l => l.trim()).join(" "));
+        }
+        out.push(line);
+        continue;
+      }
+      // A command is one shell line: a literal block's trailing newline
+      // (or a folded block's inner whitespace) is YAML's, not the command's.
+      const r = rewriteSelectors(command.trim(), oldName, newName);
+      if (r.count === 0) {
+        out.push(line);
+        continue;
+      }
+      count += r.count;
+      out.push(`${head}${JSON.stringify(r.text)}`);
+      i = j - 1; // the block's lines are consumed
+      continue;
     }
+
     // Plain scalar; a trailing ` #comment` is YAML's, not the command's.
     const comment = /\s+#.*$/.exec(scalar);
     const command = comment ? scalar.slice(0, comment.index) : scalar;
     const r = rewriteSelectors(command, oldName, newName);
     count += r.count;
-    return `${head}${r.text}${comment ? comment[0] : ""}`;
-  });
+    out.push(`${head}${r.text}${comment ? comment[0] : ""}`);
+  }
   return { text: out.join("\n"), count, unrewritable };
 }
 
@@ -314,37 +421,62 @@ export function selectorsStillNaming(command: string, name: string): string[] {
 }
 
 /**
- * Rewrite the model's config key in `dbt_project.yml`: under top-level
- * `models:`, a mapping key `old:` nested at least two levels deep (the
- * first level is the project name). `+materialized`-style keys start with
- * `+` and cannot collide; a folder named like the model would — that is
- * the author's ambiguity, and the key is rewritten only when its line is
- * a bare `old:` key.
+ * Rewrite the model's config key in `dbt_project.yml`. Under top-level
+ * `models:` (or `seeds:` for a seed) the keys mirror the resource's path:
+ * `models: <project>: <dir>: …: <model>:`. The key is rewritten only when
+ * its FULL key chain (project name excluded) equals the model's directory
+ * segments plus its name — so `models/customers/customers.sql` renames
+ * the inner `customers:` and keeps the folder key, and a key that merely
+ * shares the name elsewhere is untouched. An inline mapping
+ * (`old: {+materialized: table}`) is handled; a key whose value is on the
+ * same line in any other form is not (and is left for the warning).
+ *
+ * `resourcePath` is project-relative (`models/marts/orders.sql`).
  */
 export function rewriteProjectModelConfig(
   text: string,
-  oldName: string,
+  resourcePath: string,
   newName: string,
 ): RewriteResult {
-  if (oldName === newName) return { text, count: 0 };
+  const oldName = refNameForDbtPath(resourcePath);
+  if (!oldName || oldName === newName) return { text, count: 0 };
+  const segments = resourcePath.split("/");
+  const block = segments[0]; // `models` or `seeds`
+  const wanted = [...segments.slice(1, -1), oldName];
   const lines = text.split("\n");
-  let inModels = false;
+  let inBlock = false;
+  // Key chain by indent inside the block, project level included at [0].
+  const stack: Array<{ indent: number; key: string }> = [];
   let count = 0;
-  const keyRe = new RegExp(
-    `^(\\s{2,})(['"]?)${escapeRegExp(oldName)}\\2:(\\s*(?:#.*)?)$`,
-  );
   const out = lines.map(line => {
     const topLevel = /^([A-Za-z_][\w-]*):\s*(#.*)?$/.exec(line);
     if (topLevel) {
-      inModels = topLevel[1] === "models";
+      inBlock = topLevel[1] === block;
+      stack.length = 0;
       return line;
     }
-    if (!inModels) return line;
-    const m = keyRe.exec(line);
-    // Depth: the project name sits at the first indent; a model key is deeper.
-    if (!m || m[1].length < 4) return line;
+    if (!inBlock || line.trim() === "" || /^\s*#/.test(line)) return line;
+    const key =
+      /^(\s+)(['"]?)([^\s'"#:][^'":]*?)\2:(\s*(?:\{.*\})?\s*(?:#.*)?)$/.exec(
+        line,
+      );
+    if (!key) return line;
+    const indent = key[1].length;
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
+    }
+    stack.push({ indent, key: key[3] });
+    const chain = stack.slice(1).map(s => s.key); // drop the project level
+    if (
+      key[3] !== oldName ||
+      chain.length !== wanted.length ||
+      !chain.every((k, i) => k === wanted[i])
+    ) {
+      return line;
+    }
     count++;
-    return `${m[1]}${m[2]}${newName}${m[2]}:${m[3]}`;
+    stack[stack.length - 1].key = newName;
+    return `${key[1]}${key[2]}${newName}${key[2]}:${key[4]}`;
   });
   return { text: out.join("\n"), count };
 }
