@@ -15,6 +15,7 @@ import {
   commitConsoleRelocation,
   commitConsoleRemoval,
   commitConsoleState,
+  consoleCaseVariantAtMain,
   consoleDeletionSegment,
   consoleFilesDrifted,
   descriptionIsAuthored,
@@ -90,6 +91,11 @@ export interface ConsoleLocation {
   access: ConsoleAccessLevel;
   draftRevision: number;
   isSaved: boolean;
+}
+
+/** `s` as a literal inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function folderIdForLive(
@@ -1281,6 +1287,7 @@ export class ConsoleManager {
             toPath,
             savedConsole._id,
             userId,
+            savedConsole.path,
           );
         }
         // Git first (apps.md §16.3): the file is the record, the row follows.
@@ -1615,6 +1622,7 @@ export class ConsoleManager {
           toPath,
           current._id,
           options.userId,
+          current.path,
         );
       }
       if (!current.path) {
@@ -1885,24 +1893,33 @@ export class ConsoleManager {
     return "private";
   }
 
-  /** Throw `ConsolePathTakenError` when a file or a live saved row holds `path`. */
+  /**
+   * Throw `ConsolePathTakenError` when a file or a live saved row holds
+   * `path` — or a name in its folder that differs only in letter case (one
+   * file on macOS / Windows), other than the console's own (`ownPath`: a
+   * case-only rename of itself is the same file).
+   */
   private async assertConsolePathFree(
     workspaceId: string,
     path: string,
     self: Types.ObjectId,
     actorUserId?: string | null,
+    ownPath?: string | null,
   ): Promise<void> {
-    const [def, row] = await Promise.all([
+    const [def, variant, row] = await Promise.all([
       readConsoleDefinitionAtMain(workspaceId, path),
+      consoleCaseVariantAtMain(workspaceId, path, ownPath),
       SavedConsole.findOne({
         workspaceId: new Types.ObjectId(workspaceId),
-        path,
+        path: new RegExp(`^${escapeRegExp(path)}$`, "i"),
         _id: { $ne: self },
         isSaved: true,
         is_deleted: { $ne: true },
-      }).select("_id"),
+      }).select("_id path"),
     ]);
-    if (def || row) throw new ConsolePathTakenError(path, actorUserId);
+    if (def) throw new ConsolePathTakenError(path, actorUserId);
+    const taken = variant ?? row?.path;
+    if (taken) throw new ConsolePathTakenError(taken, actorUserId);
   }
 
   /**

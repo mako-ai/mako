@@ -384,6 +384,82 @@ describe("a rename or a move answers where the console is now", () => {
   });
 });
 
+describe("names that differ only in letter case are one name (one file on macOS / Windows)", () => {
+  it("a rename to 'typed name keep' next to 'Typed Name Keep' is refused like the exact name", async () => {
+    await save("Typed Name Keep", "SELECT 1\n", OWNER, "workspace");
+    const c = await save("other", "SELECT 2\n", OWNER, "workspace");
+    const before = await consolePaths();
+    for (const name of [
+      "Typed Name Keep",
+      "typed name keep",
+      "TYPED NAME KEEP",
+    ]) {
+      const r = await req("PATCH", `/${c._id}/rename`, { name }, OWNER);
+      expect(r.status).toBe(409);
+      expect(r.body.error).toContain(
+        "A console named 'Typed Name Keep' already exists",
+      );
+      const moved = await req("PATCH", `/${c._id}/move`, { name }, OWNER);
+      expect(moved.status).toBe(409);
+    }
+    expect(await consolePaths()).toEqual(before);
+    expect((await SavedConsole.findById(c._id))?.name).toBe("other");
+  });
+
+  it("a move into a folder holding a case variant of its name is refused", async () => {
+    const team = await manager.createFolder(
+      "Team",
+      WS,
+      OWNER,
+      undefined,
+      false,
+      "workspace",
+    );
+    await save("Report", "SELECT 1\n", OWNER, "workspace", team._id.toString());
+    const c = await save("report", "SELECT 2\n", OWNER, "workspace");
+    const r = await req(
+      "PATCH",
+      `/${c._id}/move`,
+      { folderId: team._id.toString() },
+      OWNER,
+    );
+    expect(r.status).toBe(409);
+    expect((await SavedConsole.findById(c._id))?.path).toBe(
+      "consoles/report.sql",
+    );
+  });
+
+  it("a case-only rename of the console's OWN name is allowed: the same file, renamed", async () => {
+    const c = await save("report", "SELECT 1\n", OWNER, "workspace");
+    const r = await req("PATCH", `/${c._id}/rename`, { name: "Report" }, OWNER);
+    expect(r.status).toBe(200);
+    expect(await consolePaths()).toEqual(["consoles/Report.sql"]);
+    expect((await SavedConsole.findById(c._id))?.path).toBe(
+      "consoles/Report.sql",
+    );
+  });
+
+  it("Duplicate and a restore from the trash pick a name free of case variants", async () => {
+    const a = await save("Alpha", "SELECT 1\n", OWNER, "private");
+    await save("alpha COPY", "SELECT 2\n", OWNER, "private");
+    const dup = await req("POST", `/${a._id}/duplicate`, {}, OWNER);
+    expect(dup.status).toBe(201);
+    expect(dup.body.data?.name).toBe("Alpha copy (2)");
+
+    const w = await save("Weekly", "SELECT 3\n", OWNER, "workspace");
+    expect((await req("DELETE", `/${w._id}`, {}, OWNER)).status).toBe(200);
+    await save("WEEKLY", "SELECT 4\n", OWNER, "workspace");
+    expect((await req("PATCH", `/${w._id}/restore`, {}, OWNER)).status).toBe(
+      200,
+    );
+    expect((await SavedConsole.findById(w._id))?.path).toBe(
+      "consoles/Weekly (2).sql",
+    );
+    const files = (await consolePaths()).map(p => p.toLowerCase());
+    expect(new Set(files).size).toBe(files.length);
+  });
+});
+
 describe("a save never moves a console back", () => {
   it("a stale tab's save (old name, old revision) is refused BEFORE anything moves", async () => {
     const c = await save("Revenue Daily", "SELECT 1\n", OWNER, "workspace");

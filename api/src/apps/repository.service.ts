@@ -427,6 +427,30 @@ async function objectTypeAt(
 }
 
 /**
+ * The file beside `rel` at `ref` whose path differs from it only in letter
+ * case (and is not in `ignore`), or null. Same folder only: its listing is
+ * one `ls-tree` of that directory.
+ */
+export async function caseVariantOf(
+  repoDir: string,
+  ref: string,
+  rel: string,
+  ignore: ReadonlySet<string> = new Set(),
+): Promise<string | null> {
+  const slash = rel.lastIndexOf("/");
+  const dir = slash === -1 ? "" : rel.slice(0, slash + 1);
+  const args = ["-C", repoDir, "ls-tree", "-z", "--name-only", ref];
+  if (dir) args.push("--", assertSafeRelPath(dir.slice(0, -1)) + "/");
+  const { stdout } = await runGit(args);
+  const wanted = rel.toLowerCase();
+  for (const entry of stdout.split("\0")) {
+    if (!entry || entry === rel || ignore.has(entry)) continue;
+    if (entry.toLowerCase() === wanted) return entry;
+  }
+  return null;
+}
+
+/**
  * Refuse a mutation that would turn a file into a folder or a folder into
  * a file, unless the mutation itself deletes what is in the way.
  */
@@ -496,6 +520,15 @@ export async function commitBlobsOnBranch(
      * which is what the CAS on the ref alone cannot see.
      */
     expectBlobs?: Record<string, string | null>;
+    /**
+     * An `expectBlobs` path that must be absent must also have no sibling
+     * that differs from it only in letter case (other than one this
+     * mutation deletes — a case-only rename of the same file). Two such
+     * files make a checkout on a case-insensitive file system (macOS,
+     * Windows) unusable: one overwrites the other, a phantom change, pulls
+     * abort.
+     */
+    foldCase?: boolean;
   },
 ): Promise<{ commitOid: string; previousHead: string; unchanged: boolean }> {
   const writes = Object.entries(mutation.writes ?? {}).map(
@@ -540,6 +573,21 @@ export async function commitBlobsOnBranch(
       const actual = await blobOidAt(repoDir, head, rel);
       if (actual !== expected) {
         throw new BlobPreconditionError(rel, expected, actual);
+      }
+      if (expected === null && options.foldCase) {
+        const variant = await caseVariantOf(
+          repoDir,
+          head,
+          rel,
+          new Set(deletes),
+        );
+        if (variant) {
+          throw new BlobPreconditionError(
+            rel,
+            null,
+            await blobOidAt(repoDir, head, variant),
+          );
+        }
       }
     }
     await assertNoPathConflicts(

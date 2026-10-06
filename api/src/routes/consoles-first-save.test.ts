@@ -175,3 +175,37 @@ describe("first save onto a pushed, unsynced file", () => {
     expect(await fileAt("consoles/mine.sql")).toContain("SELECT 'mine'");
   });
 });
+
+describe("a name that differs only in letter case is taken (one file on macOS / Windows)", () => {
+  it("a brand-new console and a draft's first save are refused next to 'report' as 'Report'", async () => {
+    const fresh = await put(new Types.ObjectId().toString(), {
+      content: "SELECT 'mine'",
+      path: "Report",
+      isSaved: true,
+      access: "workspace",
+    });
+    expect(fresh.status).toBe(409);
+    expect(fresh.body.error).toContain("already exists");
+    const draft = await SavedConsole.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "Untitled",
+      code: "SELECT 'mine'",
+      language: "sql",
+      isSaved: false,
+      access: "private",
+      isPrivate: true,
+      owner_id: USER,
+      createdBy: USER,
+    });
+    const r = await put(draft._id.toString(), {
+      content: "SELECT 'mine'",
+      path: "REPORT",
+      isSaved: true,
+      access: "workspace",
+    });
+    expect(r.status).toBe(409);
+    expect(await fileAt("consoles/Report.sql")).toBeNull();
+    expect(await fileAt("consoles/REPORT.sql")).toBeNull();
+    expect(await fileAt("consoles/report.sql")).toBe(LAPTOP);
+  });
+});
