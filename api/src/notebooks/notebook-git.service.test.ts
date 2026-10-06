@@ -262,16 +262,11 @@ describe("laptop renames (git mv pushed from a checkout)", () => {
     );
   });
 
-  it("a moved AND edited file with its ids stripped is matched by git -M", async () => {
+  it("a moved AND edited file keeps its row by the id it carries (rename + edit in one push)", async () => {
     const id = await seedNotebook("Research notes", "workspace");
     await checkpointNotebook(WS, id, "u1");
     const raw = (await fileAt("notebooks/research-notes.deepnote"))!;
-    // An external tool rewrote the file without Mako's ids, edited a cell,
-    // and moved it: only content similarity ties it to the old row.
-    const edited = raw
-      .replaceAll(id, "00000000-0000-4000-8000-000000000000")
-      .replace("# Research notes", "# Research notes (v2)");
-    expect(parseNotebookFile(edited)?.id).not.toBe(id);
+    const edited = raw.replace("# Research notes", "# Research notes (v2)");
     await commitBlobsOnBranch(
       repoDirFor(WS),
       DEFAULT_BRANCH,
@@ -286,6 +281,59 @@ describe("laptop renames (git mv pushed from a checkout)", () => {
     expect(index?.path).toBe("notebooks/research.deepnote");
     const doc = await getNotebookStore().get(WS, id);
     expect(doc?.blocks[0]?.source).toBe("# Research notes (v2)");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+
+  it("a file with a DIFFERENT id is never paired with a vanished row, however similar", async () => {
+    const id = await seedNotebook("Team plan", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    const raw = (await fileAt("notebooks/team-plan.deepnote"))!;
+    const other = raw.replaceAll(id, "00000000-0000-4000-8000-000000000001");
+    // Same content, new id, old path gone — in one push.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "notebooks/team-plan-copy.deepnote": other },
+        deletes: ["notebooks/team-plan.deepnote"],
+      },
+      { message: "a copy under a new id replaces the file" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: id });
+    expect(index?.path).toBe("notebooks/team-plan.deepnote");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+
+  it("a later file with its OWN id never takes over a live notebook whose file vanished", async () => {
+    const alpha = await seedNotebook("Alpha", "workspace");
+    await checkpointNotebook(WS, alpha, "u1");
+    // A second notebook's file, captured, then its row dropped: an external
+    // file with an id Mako does not know.
+    const beta = await seedNotebook("Beta", "workspace");
+    await checkpointNotebook(WS, beta, "u1");
+    const betaRaw = (await fileAt("notebooks/beta.deepnote"))!;
+    await NotebookIndex.deleteOne({ notebookId: beta });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { deletes: ["notebooks/beta.deepnote", "notebooks/alpha.deepnote"] },
+      { message: "files removed from git; alpha lives on in the app" },
+    );
+    await syncNotebooksFromRepo(WS);
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "notebooks/beta-new.deepnote": betaRaw } },
+      { message: "a different notebook lands later" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: alpha });
+    expect(index?.path).toBe("notebooks/alpha.deepnote");
+    expect(index?.name).toBe("Alpha");
+    const doc = await getNotebookStore().get(WS, alpha);
+    expect(doc?.name).toBe("Alpha");
+    expect(doc?.blocks[0]?.source).toBe("# Alpha");
     expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
   });
 });
