@@ -31,11 +31,21 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
+const inngestSent = vi.hoisted(() => [] as Array<{ name: string }>);
 vi.mock("../inngest/client", () => ({
-  inngest: { send: vi.fn(async () => undefined) },
+  inngest: {
+    send: vi.fn(async (event: { name: string }) => {
+      inngestSent.push(event);
+    }),
+  },
 }));
 
-import { Flow } from "../database/workspace-schema";
+import {
+  CdcEntityState,
+  Flow,
+  FlowExecution,
+  WebhookEvent,
+} from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   blobOid,
@@ -59,6 +69,7 @@ import {
   resolveLiveFlowRow,
   syncFlowsFromRepo,
 } from "./flow-sync.service";
+import { flowFilePath } from "./flow-config-files";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -124,10 +135,68 @@ afterAll(async () => {
 
 beforeEach(async () => {
   WS = new Types.ObjectId().toString();
-  await Flow.deleteMany({});
+  inngestSent.length = 0;
+  await Promise.all([
+    Flow.deleteMany({}),
+    CdcEntityState.deleteMany({}),
+    FlowExecution.deleteMany({}),
+    WebhookEvent.deleteMany({}),
+  ]);
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
 });
+
+/** A commit that moves (and optionally edits) a flow file, like a laptop `git mv`. */
+async function move(from: string, to: string, contents: string): Promise<void> {
+  await commitBlobsOnBranch(
+    repoDirFor(WS),
+    DEFAULT_BRANCH,
+    { writes: { [flowFilePath(to)]: contents }, deletes: [flowFilePath(from)] },
+    { message: `git mv ${from} ${to}` },
+  );
+}
+
+/** Rows keyed by the flow id — the state a teardown would dispose. */
+async function seedRuntime(flowId: Types.ObjectId): Promise<void> {
+  const workspaceId = new Types.ObjectId(WS);
+  await CdcEntityState.create({
+    workspaceId,
+    flowId,
+    entity: "leads",
+    mode: "steady",
+    lastIngestSeq: 42,
+    lastMaterializedSeq: 42,
+    backlogCount: 0,
+    lifetimeEventsProcessed: 1,
+    lifetimeRowsApplied: 1,
+    mergeIntervalSeconds: 30,
+    consecutiveFailures: 0,
+  });
+  await FlowExecution.create({
+    workspaceId,
+    flowId,
+    startedAt: new Date(),
+    status: "completed",
+    success: true,
+  });
+  await WebhookEvent.create({
+    workspaceId,
+    flowId,
+    eventId: "evt_1",
+    eventType: "lead.created",
+    status: "completed",
+    rawPayload: { id: 1 },
+    applyStatus: "applied",
+  });
+}
+
+async function runtimeCounts(flowId: Types.ObjectId): Promise<number[]> {
+  return Promise.all([
+    CdcEntityState.countDocuments({ flowId }),
+    FlowExecution.countDocuments({ flowId }),
+    WebhookEvent.countDocuments({ flowId }),
+  ]);
+}
 
 describe("markers, reverts, and resolution", () => {
   it("an unset marker is not 'invalid': an unbound workspace's run is not refused", async () => {
@@ -522,5 +591,137 @@ describe("GET/list from git", () => {
     );
     expect(leftoverFile.contents).toContain("name: Leftover");
     expect(row!.sourceBlobSha).toBe(blobOid(leftoverFile.contents));
+  });
+});
+
+describe("a moved file is the same flow (graceful rename)", () => {
+  it("an added file whose aliases name the removed slug re-keys the row in place: id, checkpoints, executions, webhook URL survive", async () => {
+    await push({ "flows/close-crm.yml": flowYaml("Close CRM") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-crm" });
+    expect(row).not.toBeNull();
+    const endpoint = row!.webhookConfig?.endpoint;
+    expect(endpoint).toContain(`/api/webhooks/${WS}/${row!._id.toString()}`);
+    await seedRuntime(row!._id);
+
+    await move(
+      "close-crm",
+      "crm-sync",
+      flowYaml("Close CRM (renamed)", "aliases: [close-crm]"),
+    );
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(1);
+
+    const after = await Flow.findById(row!._id);
+    expect(after).not.toBeNull();
+    expect(after!.slug).toBe("crm-sync");
+    expect(after!.name).toBe("Close CRM (renamed)");
+    expect(after!.aliases).toEqual(["close-crm"]);
+    expect(after!.webhookConfig?.endpoint).toBe(endpoint);
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+    expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+
+    // The id GET/list handed out for the new file before the push synced
+    // still opens this flow, and so does the row's own id.
+    const derived = derivedFlowId(WS, "crm-sync").toString();
+    expect((await loadLiveFlowById(WS, derived))?.id.toString()).toBe(
+      row!._id.toString(),
+    );
+    expect((await loadLiveFlowById(WS, row!._id.toString()))?.def.slug).toBe(
+      "crm-sync",
+    );
+  });
+
+  it("git rename detection pairs a file that was moved AND edited in one commit", async () => {
+    await push({ "flows/stripe.yml": flowYaml("Stripe") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "stripe" });
+    await seedRuntime(row!._id);
+
+    // No aliases, and the cron changed, so neither rule 1 nor rule 3 fits.
+    await move(
+      "stripe",
+      "stripe-warehouse",
+      flowYaml("Stripe").replace("cron: 0 3 * * *", "cron: 0 9 * * *"),
+    );
+    await syncFlowsFromRepo(WS, "u1");
+    const after = await Flow.findById(row!._id);
+    expect(after?.slug).toBe("stripe-warehouse");
+    expect(after?.aliases).toEqual(["stripe"]);
+    expect(after?.backfillSchedule?.cron).toBe("0 9 * * *");
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+    expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+
+  it("identical content under a new file name is a rename, and the alias then rides in the write-through", async () => {
+    await push({ "flows/hubspot.yml": flowYaml("HubSpot") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "hubspot" });
+    await move("hubspot", "hubspot-v2", flowYaml("HubSpot v2"));
+    await syncFlowsFromRepo(WS, "u1");
+    const after = await Flow.findById(row!._id);
+    expect(after?.slug).toBe("hubspot-v2");
+    expect(after?.aliases).toEqual(["hubspot"]);
+    // The projection the write-through commits carries the alias, so a
+    // later product edit never drops it from the file.
+    const { flowToFile, serializeFlowFile } = await import(
+      "./flow-config-files"
+    );
+    expect(serializeFlowFile(flowToFile(after!))).toContain(
+      "aliases:\n  - hubspot",
+    );
+  });
+
+  it("two candidates are never guessed: the old flow is torn down as before", async () => {
+    await push({ "flows/pipedrive.yml": flowYaml("Pipedrive") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "pipedrive" });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          "flows/pd-a.yml": flowYaml("A", "aliases: [pipedrive]"),
+          "flows/pd-b.yml": flowYaml("B", "aliases: [pipedrive]"),
+        },
+        deletes: ["flows/pipedrive.yml"],
+      },
+      { message: "ambiguous" },
+    );
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.created).toBe(2);
+    // Torn down (or deferred behind the mirror guard) — never re-keyed.
+    const old = await Flow.findById(row!._id);
+    expect(old === null || old.slug === "pipedrive").toBe(true);
+    expect(
+      await Flow.countDocuments({
+        workspaceId: WS,
+        slug: { $in: ["pd-a", "pd-b"] },
+      }),
+    ).toBe(2);
+    for (const slug of ["pd-a", "pd-b"]) {
+      const created = await Flow.findOne({ workspaceId: WS, slug });
+      expect(created!._id.toString()).not.toBe(row!._id.toString());
+      // The file's aliases still land on the new rows: a later lookup by
+      // `pipedrive` finds two claimants and resolves to neither.
+      expect(created!.aliases).toEqual(["pipedrive"]);
+    }
+  });
+
+  it("renaming back to an old name keeps the current slug out of the aliases", async () => {
+    await push({ "flows/one.yml": flowYaml("One") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "one" });
+    await move("one", "two", flowYaml("One", "aliases: [one]"));
+    await syncFlowsFromRepo(WS, "u1");
+    await move("two", "one", flowYaml("One", "aliases: [two, one]"));
+    await syncFlowsFromRepo(WS, "u1");
+    const after = await Flow.findById(row!._id);
+    expect(after?.slug).toBe("one");
+    expect(after?.aliases).toEqual(["two"]);
+    expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
   });
 });

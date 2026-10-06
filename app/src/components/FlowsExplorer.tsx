@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   IconButton,
+  ListItemIcon,
   Menu,
   MenuItem,
   Tooltip,
@@ -12,6 +13,8 @@ import {
   Activity as CdcIcon,
   Clock3 as ScheduleIcon,
   Database as DatabaseIcon,
+  ExternalLink as OpenIcon,
+  Pencil as RenameIcon,
   Plus as AddIcon,
   RotateCw as RefreshIcon,
   SquareTerminal as ConsoleIcon,
@@ -31,6 +34,10 @@ import {
   selectRevealFor,
 } from "../store/explorerRevealStore";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import {
+  RenameObjectDialog,
+  type RenameObjectDialogTarget,
+} from "./RenameObjectDialog";
 
 interface FlowTreeNode extends ResourceTreeNode {
   itemType: "flow" | "scheduled-query";
@@ -85,6 +92,8 @@ export function FlowsExplorer() {
   const { tabs, activeTabId, openTab, setActiveTab, loadConsole } =
     useConsoleStore();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const [renameTarget, setRenameTarget] =
+    useState<RenameObjectDialogTarget | null>(null);
   const [scheduledQueries, setScheduledQueries] = useState<
     ScheduledQueryListItem[]
   >([]);
@@ -249,6 +258,71 @@ export function FlowsExplorer() {
     }
   };
 
+  // Rename goes through the graceful-rename service (api/src/rename): the
+  // display name, and optionally the file name with the old slug kept as an
+  // alias. The flow keeps its id, so the open tab only needs a new title.
+  const getContextMenuItems = useCallback(
+    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
+      const flowNode = node as FlowTreeNode;
+      if (flowNode.itemType !== "flow" || !flowNode.flowId) return null;
+      const flow = flows.find(item => item._id === flowNode.flowId);
+      if (!flow) return null;
+      return [
+        <MenuItem
+          key="open"
+          onClick={() => {
+            helpers.closeMenu();
+            handleFlowClick(flow._id);
+          }}
+        >
+          <ListItemIcon>
+            <OpenIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Open
+        </MenuItem>,
+        <MenuItem
+          key="rename"
+          onClick={() => {
+            helpers.closeMenu();
+            setRenameTarget({
+              kind: "flow",
+              ref: flow._id,
+              title: getFlowTitle(flow),
+              slug: flow.slug ?? undefined,
+            });
+          }}
+        >
+          <ListItemIcon>
+            <RenameIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Rename…
+        </MenuItem>,
+      ];
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [flows],
+  );
+
+  const handleRenamed = useCallback(
+    (result: { id: string; after: { title?: string } }) => {
+      if (!workspaceId) return;
+      const title = result.after.title;
+      if (title) {
+        const store = useConsoleStore.getState();
+        for (const [tabId, tab] of Object.entries(store.tabs)) {
+          if (
+            tab.kind === "flow-editor" &&
+            tab.metadata?.flowId === result.id
+          ) {
+            store.updateTitle(tabId, title);
+          }
+        }
+      }
+      void refresh(workspaceId);
+    },
+    [workspaceId, refresh],
+  );
+
   const combinedError = error || scheduledError;
   const isBusy = isLoading || scheduledLoading;
 
@@ -327,6 +401,7 @@ export function FlowsExplorer() {
             revealNodeId={reveal?.nodeId}
             revealNonce={reveal?.nonce}
             getItemIcon={getItemIcon}
+            getContextMenuItems={getContextMenuItems}
             enableDragDrop={false}
             enableRename={false}
             enableDelete={false}
@@ -344,6 +419,13 @@ export function FlowsExplorer() {
           />
         )}
       </Box>
+
+      <RenameObjectDialog
+        workspaceId={workspaceId}
+        target={renameTarget}
+        onClose={() => setRenameTarget(null)}
+        onRenamed={handleRenamed}
+      />
 
       <Menu
         anchorEl={anchorEl}

@@ -1,0 +1,310 @@
+/**
+ * The flow rename service, through its handler (what the objects route and
+ * `rename_object` call): old names resolve, the rename is ONE commit that
+ * moves the file and writes the alias, and the row keeps its id.
+ *
+ * Same rig as flow-sync.repo.test.ts: a bare repo at APPS_GIT_ROOT, a
+ * memory Mongo, a test binding so writes are allowed.
+ */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import mongoose, { Types } from "mongoose";
+import { MongoMemoryServer } from "mongodb-memory-server";
+
+vi.mock("../integrations/github/app-auth", () => ({
+  resolveRepoToken: async () => undefined,
+}));
+vi.mock("../inngest/client", () => ({
+  inngest: { send: vi.fn(async () => undefined) },
+}));
+
+import { CdcEntityState, Flow } from "../database/workspace-schema";
+import {
+  DEFAULT_BRANCH,
+  commitBlobsOnBranch,
+  initRepo,
+  log as gitLog,
+  readBlob,
+  repoDirFor,
+  resolveCommit,
+} from "../apps/repository.service";
+import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
+import { syncFlowsFromRepo } from "../services/flow-sync.service";
+import { parseFlowFile } from "../services/flow-config-files";
+import { flowRenameHandler } from "./handlers/flow";
+import { pickFlowByRef } from "./flow-rename";
+import { RenameError } from "./types";
+
+let mongo: MongoMemoryServer;
+let tmpRoot: string;
+let WS: string;
+
+const CONNECTOR = new Types.ObjectId().toString();
+const DEST = new Types.ObjectId().toString();
+
+function flowYaml(name: string, extra = ""): string {
+  return [
+    `name: ${name}`,
+    "type: webhook",
+    "source:",
+    "  type: connector",
+    `  connector_id: ${CONNECTOR}`,
+    "destination:",
+    `  connection_id: ${DEST}`,
+    "webhook:",
+    "  enabled: true",
+    "sync:",
+    "  engine: cdc",
+    extra,
+    "",
+  ].join("\n");
+}
+
+async function push(writes: Record<string, string>): Promise<void> {
+  await commitBlobsOnBranch(
+    repoDirFor(WS),
+    DEFAULT_BRANCH,
+    { writes },
+    { message: "push" },
+  );
+}
+
+async function fileAt(rel: string): Promise<string | null> {
+  const head = await resolveCommit(
+    repoDirFor(WS),
+    `refs/heads/${DEFAULT_BRANCH}`,
+  );
+  try {
+    return (await readBlob(repoDirFor(WS), head as string, rel)).contents;
+  } catch {
+    return null;
+  }
+}
+
+async function commitCount(): Promise<number> {
+  return (await gitLog(repoDirFor(WS), DEFAULT_BRANCH, 100)).length;
+}
+
+const ctx = () => ({ workspaceId: WS, userId: undefined, role: undefined });
+
+beforeAll(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flow-rename-"));
+  process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  mongo = await MongoMemoryServer.create();
+  await mongoose.connect(mongo.getUri());
+}, 120_000);
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongo.stop();
+  await fs.rm(tmpRoot, { recursive: true, force: true });
+});
+
+beforeEach(async () => {
+  WS = new Types.ObjectId().toString();
+  await Promise.all([Flow.deleteMany({}), CdcEntityState.deleteMany({})]);
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
+});
+
+describe("the lookup rule (pure)", () => {
+  const a = {
+    _id: new Types.ObjectId(),
+    slug: "a",
+    aliases: ["old"],
+    name: "A",
+  };
+  const b = {
+    _id: new Types.ObjectId(),
+    slug: "b",
+    aliases: ["old"],
+    name: "B",
+  };
+  const c = { _id: new Types.ObjectId(), slug: "old", aliases: [], name: "C" };
+
+  it("id beats slug beats alias; an alias two rows claim resolves to neither", () => {
+    expect(pickFlowByRef([a, b, c], a._id.toString())?.row).toBe(a);
+    expect(pickFlowByRef([a, b, c], "old")).toEqual({ row: c, via: "current" });
+    expect(pickFlowByRef([a, b], "old")).toBeNull();
+    expect(pickFlowByRef([a, c], "a")).toEqual({ row: a, via: "current" });
+    expect(pickFlowByRef([a], "old")).toEqual({ row: a, via: "alias" });
+    expect(pickFlowByRef([a], "nope")).toBeNull();
+  });
+});
+
+describe("resolve", () => {
+  it("finds a flow by id, by slug, by an old slug, and a git-only file by its derived id", async () => {
+    await push({
+      "flows/close-crm.yml": flowYaml("Close", "aliases: [legacy-close]"),
+      "flows/git-only.yml": flowYaml("Git only"),
+    });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-crm" });
+    // Simulate a git-only file: drop its row.
+    await Flow.deleteOne({ workspaceId: WS, slug: "git-only" });
+
+    const byId = await flowRenameHandler.resolve(ctx(), row!._id.toString());
+    expect(byId).toMatchObject({
+      kind: "flow",
+      id: row!._id.toString(),
+      via: "current",
+      current: {
+        slug: "close-crm",
+        url: `/f/${row!._id}`,
+        path: "flows/close-crm.yml",
+      },
+    });
+    expect((await flowRenameHandler.resolve(ctx(), "close-crm"))?.via).toBe(
+      "current",
+    );
+    const byAlias = await flowRenameHandler.resolve(ctx(), "legacy-close");
+    expect(byAlias?.via).toBe("alias");
+    expect(byAlias?.id).toBe(row!._id.toString());
+    expect(await flowRenameHandler.resolve(ctx(), "nothing-here")).toBeNull();
+
+    const gitOnly = await flowRenameHandler.resolve(ctx(), "git-only");
+    expect(gitOnly?.via).toBe("current");
+    expect(gitOnly?.current.slug).toBe("git-only");
+  });
+});
+
+describe("rename", () => {
+  it("moves the file and writes the alias in ONE commit; the row keeps its id and runtime", async () => {
+    await push({ "flows/close-crm.yml": flowYaml("Close CRM") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-crm" });
+    const endpoint = row!.webhookConfig?.endpoint;
+    await CdcEntityState.create({
+      workspaceId: new Types.ObjectId(WS),
+      flowId: row!._id,
+      entity: "leads",
+      mode: "steady",
+      lastIngestSeq: 1,
+      lastMaterializedSeq: 1,
+      backlogCount: 0,
+      lifetimeEventsProcessed: 0,
+      lifetimeRowsApplied: 0,
+      mergeIntervalSeconds: 30,
+      consecutiveFailures: 0,
+    });
+    const commitsBefore = await commitCount();
+
+    const result = await flowRenameHandler.rename(ctx(), {
+      ref: "close-crm",
+      title: "CRM sync",
+      slug: "crm-sync",
+    });
+    expect(result).toMatchObject({
+      kind: "flow",
+      id: row!._id.toString(),
+      before: { title: "Close CRM", slug: "close-crm" },
+      after: { title: "CRM sync", slug: "crm-sync", url: `/f/${row!._id}` },
+      aliasesAdded: ["close-crm"],
+      warnings: [],
+    });
+    expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(await commitCount()).toBe(commitsBefore + 1);
+
+    // One commit did both halves.
+    expect(await fileAt("flows/close-crm.yml")).toBeNull();
+    const moved = parseFlowFile((await fileAt("flows/crm-sync.yml")) ?? "");
+    expect(moved?.name).toBe("CRM sync");
+    expect(moved?.aliases).toEqual(["close-crm"]);
+
+    const after = await Flow.findById(row!._id);
+    expect(after?.slug).toBe("crm-sync");
+    expect(after?.name).toBe("CRM sync");
+    expect(after?.aliases).toEqual(["close-crm"]);
+    expect(after?.webhookConfig?.endpoint).toBe(endpoint);
+    expect(await CdcEntityState.countDocuments({ flowId: row!._id })).toBe(1);
+    expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
+
+    // Old and new names both resolve, and the row is level with the file
+    // (the push-sync that follows the mirror push changes nothing).
+    expect((await flowRenameHandler.resolve(ctx(), "close-crm"))?.id).toBe(
+      row!._id.toString(),
+    );
+    const sync = await syncFlowsFromRepo(WS, "u1");
+    expect(sync).toMatchObject({ created: 0, updated: 0, unchanged: 1 });
+  });
+
+  it("a title-only rename rewrites name: and leaves the file where it is", async () => {
+    await push({ "flows/stripe.yml": flowYaml("Stripe") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "stripe" });
+    const result = await flowRenameHandler.rename(ctx(), {
+      ref: row!._id.toString(),
+      title: "Stripe → BigQuery",
+    });
+    expect(result.aliasesAdded).toEqual([]);
+    expect(result.after.slug).toBe("stripe");
+    expect(await fileAt("flows/stripe.yml")).toContain(
+      "name: Stripe → BigQuery",
+    );
+    expect((await Flow.findById(row!._id))?.name).toBe("Stripe → BigQuery");
+    // Nothing to change → no commit, says so.
+    const again = await flowRenameHandler.rename(ctx(), {
+      ref: "stripe",
+      title: "Stripe → BigQuery",
+    });
+    expect(again.commit).toBeUndefined();
+    expect(again.warnings[0]).toMatch(/Nothing changed/);
+  });
+
+  it("refuses a taken slug — current or an old name another flow still answers to — and an invalid one", async () => {
+    await push({
+      "flows/a.yml": flowYaml("A", "aliases: [a-old]"),
+      "flows/b.yml": flowYaml("B"),
+    });
+    await syncFlowsFromRepo(WS, "u1");
+    for (const [slug, status, pattern] of [
+      ["a", 409, /already the file name/],
+      ["a-old", 409, /old name of flow "A"/],
+      ["Not Valid", 400, /not a valid file name/],
+      ["double--dash", 400, /not a valid file name/],
+    ] as const) {
+      await expect(
+        flowRenameHandler.rename(ctx(), { ref: "b", slug }),
+      ).rejects.toMatchObject({
+        status,
+        message: expect.stringMatching(pattern),
+      });
+    }
+    // A git-only file under the new slug is taken too.
+    await push({ "flows/c.yml": flowYaml("C") });
+    await expect(
+      flowRenameHandler.rename(ctx(), { ref: "b", slug: "c" }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await Flow.findOne({ workspaceId: WS, slug: "b" })).not.toBeNull();
+  });
+
+  it("refuses to touch a file it cannot parse, and reports unknown refs", async () => {
+    await push({ "flows/ok.yml": flowYaml("Ok") });
+    await syncFlowsFromRepo(WS, "u1");
+    const broken = "name: [unclosed";
+    await push({ "flows/ok.yml": broken });
+    await expect(
+      flowRenameHandler.rename(ctx(), { ref: "ok", slug: "renamed" }),
+    ).rejects.toSatisfy(
+      (e: unknown) => e instanceof RenameError && e.status === 409,
+    );
+    // User content untouched.
+    expect(await fileAt("flows/ok.yml")).toBe(broken);
+    expect(await fileAt("flows/renamed.yml")).toBeNull();
+    expect(await Flow.findOne({ workspaceId: WS, slug: "ok" })).not.toBeNull();
+
+    await expect(
+      flowRenameHandler.rename(ctx(), { ref: "ghost", title: "x" }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+});

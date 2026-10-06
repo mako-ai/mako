@@ -37,12 +37,17 @@ import {
 
 const logger = loggers.api("flow-config");
 
-async function commitConfig(
+/**
+ * One commit on main for a flow config mutation. The rename service
+ * (api/src/rename/flow-rename.ts) uses it so a `git mv` + alias write is ONE
+ * commit through the same freshen/push path as every other write here.
+ */
+export async function commitFlowConfig(
   workspaceId: string,
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
   author?: GitAuthor,
-): Promise<void> {
+): Promise<{ commitOid: string; unchanged: boolean }> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
@@ -50,6 +55,16 @@ async function commitConfig(
     author,
   });
   if (!result.unchanged) queueMirrorPush(workspaceId);
+  return { commitOid: result.commitOid, unchanged: result.unchanged };
+}
+
+async function commitConfig(
+  workspaceId: string,
+  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  message: string,
+  author?: GitAuthor,
+): Promise<void> {
+  await commitFlowConfig(workspaceId, mutation, message, author);
 }
 
 /** Write-through: the file is committed first; the caller then updates the index. */

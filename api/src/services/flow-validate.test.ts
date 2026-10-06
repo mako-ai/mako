@@ -44,6 +44,28 @@ for (const [label, contents] of [
   );
 }
 
+// `aliases:` (graceful rename): optional, a list of slugs, nothing else. A
+// malformed list is refused rather than dropped — an alias silently lost is
+// an old link that silently stops resolving.
+for (const [label, extra, ok] of [
+  ["list of slugs", "aliases: [old-name, older]", true],
+  ["empty list", "aliases: []", true],
+  ["not a list", "aliases: old-name", false],
+  ["not a slug", "aliases: [Old Name]", false],
+  ["not a string", "aliases: [1]", false],
+] as const) {
+  const result = parseFlowFileResult(`${VALID}${extra}\n`);
+  assert.equal(result.ok, ok, `aliases ${label}: expected ok=${ok}`);
+  if (!result.ok) {
+    assert.match(result.reason, /aliases/, `${label}: reason names the key`);
+  }
+}
+{
+  const parsed = parseFlowFileResult(`${VALID}aliases: [b, a, b]\n`);
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.file.aliases, ["b", "a"], "aliases are deduplicated");
+}
+
 // Every rejection carries something the author can act on.
 const reasons: Record<string, string> = {};
 for (const [label, contents] of [

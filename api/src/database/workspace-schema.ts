@@ -948,6 +948,14 @@ export interface IFlow extends Document {
    */
   slug?: string;
   /**
+   * Previous slugs (graceful rename, api/src/rename). An old `flows/<slug>.yml`
+   * name keeps resolving to this row — by alias, and only when no row holds it
+   * as its current slug. Mirrored into the file's `aliases:` by the
+   * write-through, and recorded here alone for a laptop `git mv` the sync
+   * re-keyed in place.
+   */
+  aliases?: string[];
+  /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
    * file itself. Derived cache — git is the store.
@@ -2308,6 +2316,12 @@ const FlowSchema = new Schema<IFlow>(
       trim: true,
       match: /^[a-z0-9][a-z0-9-]*$/,
     },
+    // Old slugs that still resolve to this row (graceful rename). `default:
+    // undefined` so a row that was never renamed carries no empty array.
+    aliases: {
+      type: [String],
+      default: undefined,
+    },
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
@@ -2627,6 +2641,9 @@ FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
 // One file per slug per workspace. Sparse so rows awaiting the backfill
 // (no slug yet) do not collide with each other on null.
 FlowSchema.index({ workspaceId: 1, slug: 1 }, { unique: true, sparse: true });
+// Old-name lookups (`api/src/rename`): one alias may legitimately appear on
+// two rows (then it resolves to neither), so not unique.
+FlowSchema.index({ workspaceId: 1, aliases: 1 }, { sparse: true });
 FlowSchema.index({ workspaceId: 1, sourceType: 1 });
 FlowSchema.index({ dataSourceId: 1 }, { sparse: true }); // Sparse since not required for database sources
 FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });
@@ -4635,6 +4652,8 @@ export interface IDbtJob extends Document {
   name: string;
   /** Filename identity in dbt/jobs/<slug>.yml (apps.md §23). */
   slug?: string;
+  /** Previous slugs that still resolve to this job (graceful rename). */
+  aliases?: string[];
   sourceBlobSha?: string;
   /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
   definitionInvalid?: {
@@ -4682,6 +4701,7 @@ const DbtJobSchema = new Schema<IDbtJob>(
     },
     name: { type: String, required: true, trim: true },
     slug: { type: String },
+    aliases: { type: [String], default: undefined },
     sourceBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },
@@ -4716,6 +4736,7 @@ DbtJobSchema.index(
   { unique: true, partialFilterExpression: { slug: { $type: "string" } } },
 );
 DbtJobSchema.index({ "scheduledRun.nextAt": 1, enabled: 1 }, { sparse: true });
+DbtJobSchema.index({ projectId: 1, aliases: 1 }, { sparse: true });
 
 export const DbtJob = mongoose.model<IDbtJob>("DbtJob", DbtJobSchema);
 

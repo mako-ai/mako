@@ -26,6 +26,8 @@ export default defineConfig({
       "src/routes/connector-probe.test.ts",
       "src/routes/connector-catalog-tenancy.test.ts",
       "src/agent-lib/tools/dbt-*.test.ts",
+      // Graceful rename of dbt jobs (same rig as dbt-config.service.test.ts).
+      "src/rename/dbt-job-rename.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

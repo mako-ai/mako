@@ -69,6 +69,10 @@ import {
 } from "../lib/explorer-reveal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import {
+  RenameObjectDialog,
+  type RenameObjectDialogTarget,
+} from "./RenameObjectDialog";
 import ExplorerShell from "./ExplorerShell";
 import { dirname } from "../utils/path";
 
@@ -309,6 +313,12 @@ export function DbtExplorer() {
     name: string;
   } | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // Job rename: display name + file name through the graceful-rename
+  // service (api/src/rename), so the job keeps its id and the old slug
+  // keeps resolving. dbt FILES use the dialog above (a model's name is its
+  // table name; that rename has its own route).
+  const [renameJobTarget, setRenameJobTarget] =
+    useState<RenameObjectDialogTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{
     parsed: ParsedNode;
     name: string;
@@ -591,6 +601,33 @@ export function DbtExplorer() {
         );
       }
 
+      if (parsed.kind === "job") {
+        const job = (jobsByProject[parsed.projectId] ?? []).find(
+          j => j._id === parsed.path,
+        );
+        if (job) {
+          items.push(
+            <MenuItem
+              key="rename-job"
+              onClick={() => {
+                setRenameJobTarget({
+                  kind: "dbt_job",
+                  ref: job._id,
+                  title: job.name,
+                  slug: job.slug ?? undefined,
+                });
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <RenameIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Rename…
+            </MenuItem>,
+          );
+        }
+      }
+
       if (
         parsed.kind === "file" ||
         parsed.kind === "job" ||
@@ -613,7 +650,33 @@ export function DbtExplorer() {
       }
       return items;
     },
-    [handleItemClick, openProjectSettingsFromMenu, projects, handleNewJob],
+    [
+      handleItemClick,
+      openProjectSettingsFromMenu,
+      projects,
+      handleNewJob,
+      jobsByProject,
+    ],
+  );
+
+  const handleJobRenamed = useCallback(
+    (result: { id: string; after: { title?: string } }) => {
+      if (!workspaceId || !renameJobTarget) return;
+      const title = result.after.title;
+      if (title) {
+        const store = useConsoleStore.getState();
+        for (const [tabId, tab] of Object.entries(store.tabs)) {
+          if (tab.kind === "dbt-job" && tab.metadata?.jobId === result.id) {
+            store.updateTitle(tabId, title);
+          }
+        }
+      }
+      const projectId = Object.keys(jobsByProject).find(pid =>
+        (jobsByProject[pid] ?? []).some(j => j._id === result.id),
+      );
+      if (projectId) void fetchJobs(workspaceId, projectId);
+    },
+    [workspaceId, renameJobTarget, jobsByProject, fetchJobs],
   );
 
   // Hover kebab: same actions as the right-click menu, but discoverable.
@@ -1261,6 +1324,13 @@ export function DbtExplorer() {
           <Button onClick={handleRenameConfirm}>Rename</Button>
         </DialogActions>
       </Dialog>
+
+      <RenameObjectDialog
+        workspaceId={workspaceId}
+        target={renameJobTarget}
+        onClose={() => setRenameJobTarget(null)}
+        onRenamed={handleJobRenamed}
+      />
 
       {/* Hover kebab menu — reuses the right-click action items */}
       <Menu

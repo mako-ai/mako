@@ -54,8 +54,10 @@ import { getWorkspaceRepo } from "./workspace-repos.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
+  flowFilePath,
   flowToFile,
   parseFlowFile,
+  serializeFlowFile,
   slugFromFlowFilePath,
   type FlowFile,
 } from "./flow-config-files";
@@ -63,6 +65,14 @@ import {
   reconcileFlowsFromRepo,
   type DesiredFlow,
 } from "../sync-cdc/flow-reconcile";
+import {
+  detectGitRenames,
+  mergedAliases,
+  pairRenamedSlugs,
+  readBlobByOid,
+  type RemovedSlug,
+  type SlugRenamePair,
+} from "../rename/flow-dbt-job-pairing";
 
 const logger = loggers.api("flow-sync");
 
@@ -89,11 +99,14 @@ const logger = loggers.api("flow-sync");
  * the user, or from the Stripe-managed path that stores `signingSecret`
  * returned by Stripe's own API.
  *
- * On renames: a renamed FILE is a different flow by construction — the slug is
- * identity and this module matches on it, so a new slug finds no row and mints
- * its own endpoint. Changing a flow's `name:` does not move the file, so that
- * row and its endpoint are untouched. Preserving an inbound URL across a file
- * rename would need identity inside the file, and is a separate change.
+ * On renames: this module matches rows to files by slug, so a new slug finds
+ * no row and would mint its own endpoint — EXCEPT that `syncFlowsFromRepo`
+ * first pairs a vanished slug with an appeared one (`rekeyRenamedFlows`: the
+ * file's `aliases:`, git rename detection, or identical content) and re-keys
+ * the row in place. A paired file is then an update of the existing row, so
+ * `isNew` is false and the endpoint stays exactly where it was. Changing a
+ * flow's `name:` does not move the file, so that row and its endpoint are
+ * untouched either way.
  */
 export function mintedWebhookEndpoint(args: {
   isNew: boolean;
@@ -329,7 +342,19 @@ export async function loadLiveFlowById(
   }
 
   const live = await loadLiveFlows(workspaceId);
-  return live.find(item => item.id.toString() === flowId) ?? null;
+  return (
+    live.find(item => item.id.toString() === flowId) ??
+    // A tab opened on a git-only file before its push was synced holds
+    // `derivedFlowId(slug)`. When that push turned out to be a rename, the
+    // slug now belongs to a row that kept its OLD id, so the derived id
+    // matches no row — but it still names exactly that file.
+    live.find(
+      item =>
+        item.row !== null &&
+        derivedFlowId(workspaceId, item.def.slug).toString() === flowId,
+    ) ??
+    null
+  );
 }
 
 /**
@@ -354,6 +379,7 @@ export function liveFlowToPlain(
         // requires these, and one half-defined item used to fail the whole
         // persisted flow list's validation (every reload cold-started).
         name: live.def.slug,
+        aliases: live.def.parsed?.aliases,
         syncMode: "full",
         enabled: false,
         createdAt: new Date(0),
@@ -513,6 +539,12 @@ export interface FlowSyncResult {
 function applyDefinition(doc: IFlow, file: FlowFile): string | null {
   doc.name = file.name;
   doc.type = file.type;
+  // Aliases only ever grow (see `mergedAliases`); the row's own slug is
+  // never one of them.
+  const aliases = mergedAliases(doc.aliases, file.aliases, doc.slug);
+  if (aliases.length > 0 || doc.aliases?.length) {
+    doc.aliases = aliases.length > 0 ? aliases : undefined;
+  }
 
   if (file.source.type === "database") {
     doc.sourceType = "database";
@@ -621,6 +653,142 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     } as IFlow["conflictConfig"];
   }
   return null;
+}
+
+/**
+ * Move a row to a new slug IN PLACE: same `_id`, so everything keyed by the
+ * id (CDC checkpoints, executions, webhook events, the inbound webhook URL,
+ * notification rules, open tabs) is untouched, and the old slug becomes an
+ * alias so old names keep resolving. Two targeted updates, no `save()`: a
+ * legacy row that no longer passes the schema must still be re-keyable.
+ *
+ * `$pull` first: renaming BACK to a slug the row already lists as an alias
+ * must not leave the current slug among its own aliases.
+ */
+export async function rekeyFlowSlug(
+  flowId: Types.ObjectId,
+  from: string,
+  to: string,
+): Promise<void> {
+  await Flow.updateOne({ _id: flowId }, { $pull: { aliases: to } });
+  await Flow.updateOne(
+    { _id: flowId, slug: from },
+    { $set: { slug: to }, $addToSet: { aliases: from } },
+  );
+}
+
+/**
+ * Laptop rename detection (graceful rename, rule 3 of api/src/rename): pair
+ * every row whose file is gone with a file that has no row, and re-key the
+ * pairs before the per-file loop runs — so the moved file is an UPDATE of
+ * its row rather than a teardown plus a create. Returns what was re-keyed.
+ *
+ * Never throws into the sync: a failure here falls back to today's
+ * behaviour for the files it could not judge, and says so in the log.
+ */
+export async function rekeyRenamedFlows(args: {
+  workspaceId: string;
+  repoDir: string;
+  files: Array<{ path: string; contents: string }>;
+}): Promise<SlugRenamePair[]> {
+  const { workspaceId, repoDir, files } = args;
+  const fileBySlug = new Map<string, { path: string; contents: string }>();
+  for (const file of files) {
+    const slug = slugFromFlowFilePath(file.path);
+    if (slug) fileBySlug.set(slug, file);
+  }
+  const rows = await Flow.find({ workspaceId, slug: { $exists: true } });
+  const rowBySlug = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (row.slug) rowBySlug.set(row.slug, row);
+  }
+  const removedRows = rows.filter(
+    row => row.slug !== undefined && !fileBySlug.has(row.slug),
+  );
+  const addedFiles = [...fileBySlug.entries()].filter(
+    ([slug]) => !rowBySlug.has(slug),
+  );
+  if (removedRows.length === 0 || addedFiles.length === 0) return [];
+
+  const removed: RemovedSlug[] = [];
+  for (const row of removedRows) {
+    const slug = row.slug as string;
+    // The file as it was when last synced: git still has the blob. When it
+    // does not (a row stamped before blobs were recorded), the row's own
+    // projection stands in — the same bytes the write-through would commit.
+    let contents = row.sourceBlobSha
+      ? await readBlobByOid(repoDir, row.sourceBlobSha)
+      : null;
+    if (contents === null) {
+      try {
+        contents = serializeFlowFile(flowToFile(row));
+      } catch {
+        contents = null;
+      }
+    }
+    removed.push({
+      slug,
+      aliases: row.aliases ?? [],
+      contents: contents ?? undefined,
+    });
+  }
+  const added = addedFiles.map(([slug, file]) => ({
+    slug,
+    contents: file.contents,
+    aliases: parseFlowFile(file.contents)?.aliases ?? [],
+  }));
+  const gitRenames = new Map<string, string>();
+  for (const [from, to] of await detectGitRenames(
+    repoDir,
+    removedRows.map(row => ({
+      path: flowFilePath(row.slug as string),
+      oid: row.sourceBlobSha,
+    })),
+    addedFiles.map(([slug, file]) => ({
+      path: flowFilePath(slug),
+      oid: blobOid(file.contents),
+    })),
+  )) {
+    const fromSlug = slugFromFlowFilePath(from);
+    const toSlug = slugFromFlowFilePath(to);
+    if (fromSlug && toSlug) gitRenames.set(fromSlug, toSlug);
+  }
+
+  const pairing = pairRenamedSlugs({ removed, added, gitRenames });
+  for (const entry of pairing.ambiguous) {
+    // Not guessed: the removed slug is left to the reconciler (teardown, as
+    // before), loud enough to explain why a rename was not recognised.
+    logger.warn("Ambiguous flow rename; not pairing", {
+      workspaceId,
+      slug: entry.slug,
+      rule: entry.rule,
+      candidates: entry.candidates,
+    });
+  }
+  const done: SlugRenamePair[] = [];
+  for (const pair of pairing.pairs) {
+    const row = rowBySlug.get(pair.from);
+    if (!row) continue;
+    try {
+      await rekeyFlowSlug(row._id as Types.ObjectId, pair.from, pair.to);
+      done.push(pair);
+      logger.info("Flow renamed in place from a pushed file move", {
+        workspaceId,
+        flowId: String(row._id),
+        from: pair.from,
+        to: pair.to,
+        via: pair.via,
+      });
+    } catch (error) {
+      logger.warn("Could not re-key a renamed flow; leaving it as is", {
+        workspaceId,
+        from: pair.from,
+        to: pair.to,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return done;
 }
 
 /** Why a parsed file cannot become a row — refusal or schema, same as save(). */
@@ -801,6 +969,24 @@ export async function syncFlowsFromRepo(
   const result: FlowSyncResult = { ...empty, invalid: [] };
   const desired: DesiredFlow[] = [];
   const seen = new Set<string>();
+
+  // A file that moved is the same flow: re-key its row to the new slug
+  // BEFORE the loop below looks rows up by slug, so the moved file reads as
+  // an update (same id, same endpoint, same checkpoints) and the reconciler
+  // never sees the old slug as a removal. Must not abort the sync: an error
+  // here means the files it could not judge get today's behaviour.
+  try {
+    await rekeyRenamedFlows({
+      workspaceId,
+      repoDir: repoDirFor(workspaceId),
+      files,
+    });
+  } catch (error) {
+    logger.warn("Flow rename detection failed; syncing by slug only", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   for (const { path, contents } of files) {
     const slug = slugFromFlowFilePath(path);

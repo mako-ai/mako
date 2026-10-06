@@ -47,6 +47,7 @@ import { z } from "zod";
 import { loggers } from "../../logging";
 import { Flow } from "../../database/workspace-schema";
 import {
+  flowFilePath,
   flowToFile,
   parseFlowFile,
   slugFromFlowFilePath,
@@ -59,6 +60,7 @@ import {
   validateFlowFiles,
   type FlowFileProblem,
 } from "../../services/flow-validate.service";
+import { pairRenamedSlugs } from "../../rename/flow-dbt-job-pairing";
 import {
   dryRunFlowReconcile,
   type PlannedFlow,
@@ -92,6 +94,15 @@ export interface CheckFlowFilesResult {
   };
   /** Caused by this change. */
   wouldCreate: string[];
+  /**
+   * Deleted files paired with added ones as the SAME flow under a new name
+   * (the added file's `aliases:` names the deleted slug, or the definitions
+   * are identical apart from name/aliases). The push re-keys the row in
+   * place — same id, checkpoints and webhook URL — instead of tearing it
+   * down and creating a new one. Git's own rename detection also runs at
+   * push time and can pair an edited-and-moved file this dry-run cannot.
+   */
+  wouldRename: Array<{ from: string; to: string; via: string }>;
   wouldReconfigure: Array<{ slug: string; entities: string[] }>;
   wouldTeardown: string[];
   guard: ReconcilePlan["guard"];
@@ -233,6 +244,55 @@ export async function checkFlowFiles(input: {
     if (!parseFlowFile(file.contents)) unparseableSlugs.add(slug);
   }
 
+  // ---- a deleted file + an added file can be ONE flow renamed -----------
+  // Same rules the push reactor applies (minus git's similarity, which needs
+  // the blobs in the repo): the added file's `aliases:` names the deleted
+  // slug, or the two definitions are identical apart from name/aliases. A
+  // paired added file is handed the deleted row's id below, so the plan
+  // reads it as that flow continuing rather than as a create + teardown.
+  const removedForPairing: Array<{
+    slug: string;
+    aliases: string[];
+    contents?: string;
+  }> = [];
+  const rowIdByDeletedSlug = new Map<string, string>();
+  for (const slug of deletedSlugs) {
+    const row = await Flow.findOne({ workspaceId, slug }).select("_id aliases");
+    if (!row) continue;
+    rowIdByDeletedSlug.set(slug, String(row._id));
+    removedForPairing.push({
+      slug,
+      aliases: row.aliases ?? [],
+      contents: baselineByPath.get(flowFilePath(slug)),
+    });
+  }
+  const addedForPairing = overlay.added
+    .map(path => {
+      const slug = slugFromFlowFilePath(path);
+      const entry = proposedByPath.get(path);
+      if (!slug || !entry) return null;
+      return {
+        slug,
+        contents: entry.contents,
+        aliases: parseFlowFile(entry.contents)?.aliases ?? [],
+      };
+    })
+    .filter((a): a is NonNullable<typeof a> => a !== null);
+  const pairing = pairRenamedSlugs({
+    removed: removedForPairing,
+    added: addedForPairing,
+  });
+  const renamedRowIdBySlug = new Map<string, string>();
+  for (const pair of pairing.pairs) {
+    const id = rowIdByDeletedSlug.get(pair.from);
+    if (id) renamedRowIdBySlug.set(pair.to, id);
+  }
+  for (const entry of pairing.ambiguous) {
+    notes.push(
+      `\`${entry.slug}\` could be a rename of more than one added file (${entry.candidates.join(", ")}, by ${entry.rule}); the push will not guess and will tear it down. Name the old slug in exactly one file's \`aliases:\`.`,
+    );
+  }
+
   const plannedFrom = async (
     entries: Iterable<[string, { contents: string; pendingApply: boolean }]>,
   ): Promise<PlannedFlow[]> => {
@@ -242,7 +302,13 @@ export async function checkFlowFiles(input: {
       if (!slug) continue;
       const file = parseFlowFile(contents);
       if (file) {
-        planned.push({ slug, file, pendingApply });
+        const flowId = renamedRowIdBySlug.get(slug);
+        planned.push({
+          slug,
+          file,
+          pendingApply,
+          ...(flowId ? { flowId } : {}),
+        });
         continue;
       }
       // A file that does not parse KEEPS the current row, in both halves:
@@ -318,6 +384,20 @@ export async function checkFlowFiles(input: {
   const wouldTeardown = proposedPlan.wouldTeardown.filter(slug =>
     deletedSlugs.has(slug),
   );
+  const wouldRename = pairing.pairs.map(pair => ({
+    from: pair.from,
+    to: pair.to,
+    via: pair.via,
+  }));
+  if (wouldRename.length > 0) {
+    notes.push(
+      `Renamed in place, not recreated: ${wouldRename
+        .map(r => `${r.from} → ${r.to}`)
+        .join(
+          ", ",
+        )}. The row keeps its id, checkpoints, run history and webhook URL; the old slug stays resolvable as an alias.`,
+    );
+  }
   const teardownPreExisting = proposedPlan.wouldTeardown.filter(
     slug => !deletedSlugs.has(slug),
   );
@@ -354,6 +434,7 @@ export async function checkFlowFiles(input: {
     ok ? "files load" : "NOT loadable",
     `${blocking.length} problem(s)`,
     `create ${created.caused.length}`,
+    `rename ${wouldRename.length}`,
     `reconfigure ${reconfigureCaused.length}`,
     `teardown ${wouldTeardown.length}`,
   ].join("; ");
@@ -369,6 +450,7 @@ export async function checkFlowFiles(input: {
     },
     overlay,
     wouldCreate: created.caused,
+    wouldRename,
     wouldReconfigure: reconfigureCaused,
     wouldTeardown,
     guard: proposedPlan.guard,
@@ -388,6 +470,7 @@ export function createFlowFileTools(workspaceId: string) {
         "Check proposed `flows/<slug>.yml` files BEFORE committing them: whether each parses, whether the connection ids it names (source and destination) exist in this workspace, whether the flow row it describes would actually save, and what the resulting push would do to running syncs (create, reconfigure, tear down).",
         "Pass ONLY the files you added or changed. The rest of `flows/` is read from the workspace repo's main branch and merged underneath yours, so a flow you do not mention is never read as deleted.",
         "To check a DELETION, name its path in `deletedPaths`. That is the only way a teardown is attributed to you — and a teardown deletes the flow and disposes its CDC checkpoints, which re-adding the file does not recover.",
+        "To RENAME a flow's file, prefer `rename_object` (kind `flow`). If you move the file yourself, pass the new file with `aliases: [<old-slug>]` and the old path in `deletedPaths`: the push then re-keys the row in place (same id, checkpoints, webhook URL) and `wouldRename` shows the pairing.",
         "Read-only: nothing is created, changed, deleted, or committed, and this never pushes.",
       ].join("\n"),
       inputSchema: z.object({

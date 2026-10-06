@@ -238,3 +238,42 @@ describe("legacy app links", () => {
     expect(legacyAppPathname("/")).toBeNull();
   });
 });
+
+describe("legacy run-notification deep links", () => {
+  // Emails and Slack messages used to link to `/workspace/<ws>/flows/<id>`
+  // and `/workspace/<ws>/console/<id>`, which were never routes. They must
+  // keep opening the right tab; only the id is captured.
+  it("maps /workspace/:ws/flows/:id to the flow editor", () => {
+    const m = "/workspace/66f000000000000000000009/flows/flow-1".match(
+      TAB_DEEP_LINK_PATTERNS["flow-editor"],
+    );
+    expect(m?.[1]).toBe("flow-1");
+    expect(
+      "/workspace/66f000000000000000000009/flows/flow-1".match(
+        TAB_DEEP_LINK_PATTERNS.console,
+      ),
+    ).toBeNull();
+  });
+
+  it("maps /workspace/:ws/console/:id to a console", () => {
+    const m = "/workspace/66f000000000000000000009/console/abc123".match(
+      TAB_DEEP_LINK_PATTERNS.console,
+    );
+    expect(m?.[1]).toBe("abc123");
+    expect(
+      "/workspace/66f000000000000000000009/console/abc123".match(
+        TAB_DEEP_LINK_PATTERNS["flow-editor"],
+      ),
+    ).toBeNull();
+  });
+
+  it("still captures the id from the canonical forms", () => {
+    expect("/f/flow-1".match(TAB_DEEP_LINK_PATTERNS["flow-editor"])?.[1]).toBe(
+      "flow-1",
+    );
+    expect("/c/abc".match(TAB_DEEP_LINK_PATTERNS.console)?.[1]).toBe("abc");
+    expect(
+      "/workspace/x/flows".match(TAB_DEEP_LINK_PATTERNS["flow-editor"]),
+    ).toBeNull();
+  });
+});
