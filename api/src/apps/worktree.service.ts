@@ -957,7 +957,13 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
       repoDir,
       DEFAULT_BRANCH,
       { writes: prefixed },
-      { message: `Create app "${title}" (${appPath})`, author: input.author },
+      {
+        message: `Create app "${title}" (${appPath})`,
+        // The person who created it, as for a rename or move; the
+        // committer stays Mako, and nobody behind the call (a workspace
+        // API key) keeps Mako as the author.
+        author: input.author ?? (await authorForUser(input.userId)),
+      },
     );
   } catch (error) {
     // Don't leave a content-less project behind.
