@@ -35,6 +35,7 @@ import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 import { writeParquetTempFile } from "../utils/parquet-serializer";
 import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
 import { workspaceService } from "../services/workspace.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import { promises as fsPromises } from "fs";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
@@ -916,6 +917,12 @@ workspaceDatabaseRoutes.openapi(
         database.lastConnectedAt = new Date();
       }
       await database.save();
+      // Other windows keep the connection list across reloads: tell them.
+      publishRealtimeEvent(workspace._id.toString(), {
+        type: "connection.updated",
+        connectionId: database._id.toString(),
+        connectionKind: "database",
+      });
 
       return c.json({
         success: true,

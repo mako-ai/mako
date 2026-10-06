@@ -44,6 +44,7 @@ import "./dashboardStore";
 import "./dbtStore";
 import "./notebookPresenceStore";
 import "./notebookTreeStore";
+import "./schemaStore";
 
 export type { RealtimeEvent } from "./lib/realtime-channel";
 

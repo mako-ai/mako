@@ -215,3 +215,172 @@ describe("flowStore persists file-born flows", () => {
     errors.mockRestore();
   });
 });
+
+describe("flowStore persists every flow shape the list sends", () => {
+  /**
+   * `flows/doc-shaped.yml` exactly as the flows-as-code skill writes it (a
+   * Close → BigQuery CDC flow), overlaid on its row as the list sends it:
+   * the table destination names a dataset and no table, and the file has no
+   * `incremental:` block and a bare `conflict:` — `{}` on the wire.
+   */
+  const cdcFromFile = {
+    ...listedFlow("f10", "ch_close → bigquery_write"),
+    slug: "doc-shaped",
+    type: "webhook",
+    sourceType: "connector",
+    createdBy: "git",
+    dataSourceId: { _id: "src1", name: "ch_close", type: "close" },
+    destinationDatabaseId: {
+      _id: "db1",
+      name: "bigquery_write",
+      type: "bigquery",
+    },
+    tableDestination: {
+      connectionId: "db1",
+      schema: "ch_close_crm",
+      createIfNotExists: true,
+      partitioning: { enabled: false, requirePartitionFilter: false },
+      clustering: { enabled: false, fields: [] },
+    },
+    tableDestinationConnection: {
+      _id: "db1",
+      name: "bigquery_write",
+      type: "bigquery",
+    },
+    schedule: { enabled: false },
+    backfillSchedule: { enabled: true, cron: "0 3 * * *", timezone: "UTC" },
+    webhookConfig: { enabled: true, totalReceived: 0 },
+    syncMode: "incremental",
+    writeMode: "append_dedup",
+    syncEngine: "cdc",
+    deleteMode: "soft",
+    batchSize: 2000,
+    entityLayouts: [
+      {
+        entity: "leads",
+        label: "Leads",
+        partitionField: "_syncedAt",
+        partitionGranularity: "day",
+        clusterFields: ["id", "status_id"],
+        enabled: true,
+      },
+      // A raw file layout: the API fills granularity and clusters on save.
+      { entity: "activities:Call", partitionField: "_syncedAt" },
+    ],
+    incrementalConfig: {},
+    conflictConfig: {},
+    syncStateMeta: { lastErrorMessage: null },
+  };
+  const dbToDb = {
+    ...listedFlow("f11", "Orders to warehouse"),
+    sourceType: "database",
+    dataSourceId: { _id: "pg1", name: "orders_pg", type: "postgresql" },
+    destinationDatabaseId: { _id: "db1", name: "bigquery_write", type: "bq" },
+    databaseSource: {
+      connectionId: "pg1",
+      database: "shop",
+      query: "SELECT * FROM orders LIMIT {{limit}} OFFSET {{offset}}",
+    },
+    tableDestination: {
+      connectionId: "db1",
+      schema: "shop",
+      tableName: "orders",
+      createIfNotExists: true,
+    },
+    incrementalConfig: {
+      trackingColumn: "updated_at",
+      trackingType: "timestamp",
+      lastValue: "2026-10-01T00:00:00.000Z",
+    },
+    conflictConfig: { keyColumns: ["id"], strategy: "upsert" },
+  };
+  // A file naming connections this workspace does not have, with no
+  // `sync.mode` (the overlay leaves it unset) and `{}` for every block.
+  const gitBornNullConnections = {
+    _id: "f12",
+    workspaceId: WID,
+    name: "Imported flow",
+    slug: "imported-flow",
+    type: "scheduled",
+    sourceType: "connector",
+    createdBy: "git",
+    runCount: 0,
+    dataSourceId: null,
+    destinationDatabaseId: null,
+    tableDestinationConnection: null,
+    tableDestination: { schema: "imported" },
+    incrementalConfig: {},
+    conflictConfig: {},
+    createdAt: "2026-10-06T00:00:00.000Z",
+    updatedAt: "2026-10-06T00:00:00.000Z",
+  };
+
+  it("saves connector/CDC, DB-to-DB and git-born flows, and reads them back", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    http.GET.mockResolvedValueOnce(
+      ok({
+        success: true,
+        data: [cdcFromFile, dbToDb, gitBornNullConnections],
+      }),
+    );
+
+    await useFlowStore.getState().fetchFlows(WID);
+
+    expect(errors).not.toHaveBeenCalled();
+    expect(warnings).not.toHaveBeenCalled();
+    const saved = JSON.parse(storage.getItem("flow-store-v2") ?? "{}");
+    expect(
+      saved.state.flows[WID].map((flow: { _id: string }) => flow._id),
+    ).toEqual(["f10", "f11", "f12"]);
+
+    // A reload reads the same three back (a refused read resets the store).
+    const onDisk = storage.getItem("flow-store-v2") ?? "";
+    useFlowStore.setState({ flows: {} }); // persists `{}` over it
+    storage.setItem("flow-store-v2", onDisk);
+    await useFlowStore.persist.rehydrate();
+    const reloaded = useFlowStore.getState().flows[WID] ?? [];
+    expect(reloaded.map(flow => flow._id)).toEqual(["f10", "f11", "f12"]);
+    expect(reloaded[0]?.entityLayouts?.[1]).toMatchObject({
+      entity: "activities:Call",
+      partitionGranularity: "day",
+      clusterFields: [],
+    });
+    expect(reloaded[1]?.conflictConfig).toEqual({
+      keyColumns: ["id"],
+      strategy: "upsert",
+    });
+    expect(errors).not.toHaveBeenCalled();
+    expect(warnings).not.toHaveBeenCalled();
+    errors.mockRestore();
+    warnings.mockRestore();
+  });
+
+  it("saves the others when one flow still fails, and says so once", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const broken = { _id: "f13", workspaceId: WID, name: "No dates" };
+    http.GET.mockResolvedValue(
+      ok({ success: true, data: [dbToDb, broken, cdcFromFile] }),
+    );
+
+    await useFlowStore.getState().fetchFlows(WID);
+    await useFlowStore.getState().fetchFlows(WID);
+
+    const saved = JSON.parse(storage.getItem("flow-store-v2") ?? "{}");
+    expect(
+      saved.state.flows[WID].map((flow: { _id: string }) => flow._id),
+    ).toEqual(["f11", "f10"]);
+    // The in-memory list still has it: only the copy on disk leaves it out.
+    expect(useFlowStore.getState().flows[WID]).toHaveLength(3);
+    expect(errors).not.toHaveBeenCalled();
+    expect(warnings).toHaveBeenCalledTimes(1);
+    expect(String(warnings.mock.calls[0]?.[0])).toContain("flow-store-v2");
+    expect(warnings.mock.calls[0]?.[1]).toMatchObject([
+      { field: "flows", key: WID, id: "f13" },
+    ]);
+    http.GET.mockReset();
+    errors.mockRestore();
+    warnings.mockRestore();
+  });
+});

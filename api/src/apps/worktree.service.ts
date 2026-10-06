@@ -957,7 +957,13 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
       repoDir,
       DEFAULT_BRANCH,
       { writes: prefixed },
-      { message: `Create app "${title}" (${appPath})`, author: input.author },
+      {
+        message: `Create app "${title}" (${appPath})`,
+        // The person who created it, as for a rename or move; the
+        // committer stays Mako, and nobody behind the call (a workspace
+        // API key) keeps Mako as the author.
+        author: input.author ?? (await authorForUser(input.userId)),
+      },
     );
   } catch (error) {
     // Don't leave a content-less project behind.
@@ -1393,7 +1399,9 @@ export async function supersessionWarnings(
       : `/apps/${encodeURIComponent(entry.name)}`;
     warnings.push(
       entry.takenOver
-        ? `${link} used to open ${other}; it now opens this app.`
+        ? // Named: the warning can show while another app is on screen
+          // (the explorer's snackbar after a create or rename).
+          `${link} used to open ${other}; it now opens "${newTitle}".`
         : `${link} now opens "${newTitle}"; it was also an old name of ${other}, which no longer answers to it.`,
     );
   }

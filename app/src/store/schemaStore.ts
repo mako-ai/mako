@@ -3,6 +3,7 @@ import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { get, set, del } from "idb-keyval";
 import { api, unwrapBody } from "../api";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 import {
   isLocalConnectionId,
   localAgentClient,
@@ -138,6 +139,30 @@ function mergeConnections(
   return [...cloud, ...local].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** The workspace's connections, cloud and local; null when the API refuses. */
+async function fetchConnectionList(
+  workspaceId: string,
+): Promise<Connection[] | null> {
+  const [apiRes, localConnections] = await Promise.all([
+    api.GET("/api/workspaces/{workspaceId}/databases", {
+      params: { path: { workspaceId } },
+    }),
+    fetchLocalConnections(),
+  ]);
+  const res = unwrapBody(apiRes) as { success: boolean; data: Connection[] };
+  return res.success
+    ? mergeConnections(res.data as Connection[], localConnections)
+    : null;
+}
+
+/**
+ * Workspaces whose connection list was fetched in THIS page load. The list
+ * persists (IndexedDB) and `ensureConnections` answers from that copy, so a
+ * rename made anywhere else (REST, the agent, another window) kept showing
+ * the old name across reloads until the connection was edited here.
+ */
+const connectionsFetchedThisLoad = new Set<string>();
+
 // ============================================================================
 // Store Types
 // ============================================================================
@@ -184,6 +209,12 @@ interface SchemaState {
 
   // === Refresh Methods (force re-fetch) ===
   refreshConnections: (workspaceId: string) => Promise<Connection[]>;
+  /**
+   * Re-fetch the connection list in place — names, additions, removals —
+   * keeping every tree, column and autocomplete cache. Answers the list
+   * held when the fetch fails.
+   */
+  revalidateConnections: (workspaceId: string) => Promise<Connection[]>;
   refreshTreeRoot: (
     workspaceId: string,
     connectionId: string,
@@ -300,7 +331,14 @@ export const useSchemaStore = create<SchemaState>()(
 
       ensureConnections: async (workspaceId: string) => {
         const cached = get().connections[workspaceId];
-        if (cached) return cached;
+        if (cached) {
+          // A copy from an earlier page load: show it, and revalidate it
+          // once behind it.
+          if (!connectionsFetchedThisLoad.has(workspaceId)) {
+            void get().revalidateConnections(workspaceId);
+          }
+          return cached;
+        }
 
         return ensureWithDedup(`connections:${workspaceId}`, async () => {
           const key = `connections:${workspaceId}`;
@@ -326,6 +364,7 @@ export const useSchemaStore = create<SchemaState>()(
                 res.data as Connection[],
                 localConnections,
               );
+              connectionsFetchedThisLoad.add(workspaceId);
               set(s => {
                 s.connections[workspaceId] = connections;
               });
@@ -603,6 +642,7 @@ export const useSchemaStore = create<SchemaState>()(
               res.data as Connection[],
               localConnections,
             );
+            connectionsFetchedThisLoad.add(workspaceId);
             set(s => {
               s.connections[workspaceId] = connections;
             });
@@ -621,6 +661,22 @@ export const useSchemaStore = create<SchemaState>()(
             delete s.loading[key];
           });
         }
+      },
+
+      revalidateConnections: async (workspaceId: string) => {
+        connectionsFetchedThisLoad.add(workspaceId);
+        return ensureWithDedup(`connections:${workspaceId}`, async () => {
+          try {
+            const connections = await fetchConnectionList(workspaceId);
+            if (!connections) return get().connections[workspaceId] ?? [];
+            set(s => {
+              s.connections[workspaceId] = connections;
+            });
+            return connections;
+          } catch {
+            return get().connections[workspaceId] ?? [];
+          }
+        });
       },
 
       refreshTreeRoot: async (workspaceId: string, connectionId: string) => {
@@ -1105,6 +1161,18 @@ export const useSchemaStore = create<SchemaState>()(
       // cached trees so stale children don't linger.
       version: 3,
       storage: createJSONStorage(() => indexedDBStorage),
+      // The copy loads asynchronously: a list fetched in this page load
+      // before it finished is newer than the copy, and must not be
+      // overwritten by it (it would not be revalidated again).
+      merge: (persisted, current) => {
+        const copy = (persisted ?? {}) as Partial<SchemaState>;
+        const connections = { ...(copy.connections ?? current.connections) };
+        for (const workspaceId of connectionsFetchedThisLoad) {
+          const fresh = current.connections[workspaceId];
+          if (fresh) connections[workspaceId] = fresh;
+        }
+        return { ...current, ...copy, connections };
+      },
       partialize: state => ({
         // Only persist the data, not loading/error states
         connections: state.connections,
@@ -1115,3 +1183,11 @@ export const useSchemaStore = create<SchemaState>()(
     },
   ),
 );
+
+// A database connection renamed or edited elsewhere (REST, the agent's
+// rename_object, another window): the sidebar's list is a persisted copy,
+// so refetch it rather than wait for an edit here.
+onRealtimeEvent("connection.updated", "schemaStore", (event, ctx) => {
+  if (event.connectionKind !== "database" || !ctx.workspaceId) return;
+  void useSchemaStore.getState().revalidateConnections(ctx.workspaceId);
+});

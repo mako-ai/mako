@@ -28,6 +28,7 @@ import {
   type RenameLocation,
   type ResolvedRef,
 } from "../types";
+import { publishRealtimeEvent } from "../../services/realtime.service";
 
 type Found =
   | { kind: "source"; doc: ISourceConnection }
@@ -106,6 +107,12 @@ export const connectionRenameHandler: RenameHandler = {
     found.doc.name = title;
     if (found.kind === "database") found.doc.updatedAt = new Date();
     await found.doc.save();
+    // Browsers keep the connection list across reloads: tell them.
+    publishRealtimeEvent(ctx.workspaceId, {
+      type: "connection.updated",
+      connectionId: found.doc._id.toString(),
+      connectionKind: found.kind,
+    });
     return {
       kind: "connection",
       id: found.doc._id.toString(),

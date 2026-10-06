@@ -4,7 +4,15 @@
  * schemas, so an encryption key is set exactly as the connection route
  * tests do.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -12,6 +20,12 @@ import {
   SourceConnection,
 } from "../../database/workspace-schema";
 import { renameObject, resolveObjectRef } from "../registry";
+
+const realtime = vi.hoisted(() => ({ publishRealtimeEvent: vi.fn() }));
+vi.mock("../../services/realtime.service", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../services/realtime.service")>()),
+  publishRealtimeEvent: realtime.publishRealtimeEvent,
+}));
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -32,6 +46,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  realtime.publishRealtimeEvent.mockClear();
   await SourceConnection.deleteMany({});
   await DatabaseConnection.deleteMany({});
 });
@@ -112,6 +127,26 @@ describe("connection rename", () => {
     expect((await DatabaseConnection.findById(database))?.name).toBe(
       "BigQuery",
     );
+    // Browsers keep the connection list across reloads; each rename tells
+    // them to refetch it.
+    expect(realtime.publishRealtimeEvent.mock.calls).toEqual([
+      [
+        WS,
+        {
+          type: "connection.updated",
+          connectionId: source,
+          connectionKind: "source",
+        },
+      ],
+      [
+        WS,
+        {
+          type: "connection.updated",
+          connectionId: database,
+          connectionKind: "database",
+        },
+      ],
+    ]);
   });
 
   it("a viewer may rename a source connection but not a database connection (route parity)", async () => {

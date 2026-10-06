@@ -34,6 +34,7 @@ import {
   AppIndexHead,
   AppProject,
 } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -957,6 +958,30 @@ describe("createProject", () => {
     );
   });
 
+  it("authors the create commit as the person who created it, like a rename", async () => {
+    // A user of their own: the author lookup is cached per process.
+    const CREATOR = new Types.ObjectId().toString();
+    await User.create({ _id: CREATOR, email: "creator@example.com" });
+    const authorOfHead = async () =>
+      (
+        await runGit([
+          "-C",
+          repoDirFor(WS),
+          "log",
+          "-1",
+          "--format=%an <%ae>|%cn <%ce>",
+          MAIN,
+        ])
+      ).stdout.trim();
+    await createProject({ workspaceId: WS, title: "Mine", userId: CREATOR });
+    expect(await authorOfHead()).toBe(
+      "creator <creator@example.com>|Mako <bot@mako.ai>",
+    );
+    // Nobody behind the call (a workspace API key): Mako, as before.
+    await createProject({ workspaceId: WS, title: "Keyed" });
+    expect(await authorOfHead()).toBe("Mako <bot@mako.ai>|Mako <bot@mako.ai>");
+  });
+
   it("says whose old link a new app takes over", async () => {
     // A: a → Ops/report (its manifest keeps "a"). A new app titled "A"
     // lands at apps/a: /apps/a opens it from now on.
@@ -984,7 +1009,7 @@ describe("createProject", () => {
     expect(
       await supersessionWarnings(WS, USER, "admin", project.title, takenOver),
     ).toEqual([
-      '/apps/a used to open "A" (apps/Ops/report); it now opens this app.',
+      '/apps/a used to open "A" (apps/Ops/report); it now opens "A".',
     ]);
     expect(findAppInSnapshot(await loadAppsIndex(WS), "a")?.appId).toBe(
       project._id.toString(),

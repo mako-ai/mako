@@ -85,6 +85,12 @@ export type RealtimeEvent =
   // name back.
   | { type: "flow.updated"; flowId?: string; clientId?: string }
   | {
+      type: "connection.updated";
+      connectionId: string;
+      connectionKind: "database" | "source";
+      clientId?: string;
+    }
+  | {
       type: "dbt.run.updated";
       projectId: string;
       runId?: string;
