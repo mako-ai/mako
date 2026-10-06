@@ -25,6 +25,7 @@ vi.hoisted(() => {
 
 import type { ConsoleRevisionSyncEntry } from "../lib/api-types";
 import { api } from "../api";
+import { apiClient } from "../lib/api-client";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import {
   hasPendingAgentReview,
@@ -684,5 +685,49 @@ describe("consoleStore.reloadConsoleFromServer — after a version restore", () 
     expect(shown).toEqual([{ consoleId: id, content: restored }]);
     expect(useConsoleStore.getState().tabs["c-other"]).toBeDefined();
     expect(useConsoleStore.getState().activeTabId).toBe(id);
+  });
+});
+
+describe("consoleStore.autoSaveConsole — only a console id is saved through the console route", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("never PUTs an app binding open in the console editor (it has no tab, and its own save)", async () => {
+    vi.useFakeTimers();
+    const put = vi
+      .spyOn(apiClient, "putWithStatus")
+      .mockResolvedValue({ status: 200, body: { success: true } } as never);
+    try {
+      const store = useConsoleStore.getState();
+      // The binding editor's id: no tab, so "not saved" — it used to
+      // autosave on mount and commit a stray Workspace console.
+      store.autoSaveConsole(
+        "ws",
+        "binding:6ac5395a545a64d5b321f871:bindings/orders.sql",
+        "SELECT * FROM orders",
+        "orders.sql",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(put).not.toHaveBeenCalled();
+
+      // A new console's draft (an ObjectId) still autosaves.
+      const draft = "6ac5395a545a64d5b321f872";
+      store.openTab({
+        id: draft,
+        title: "Untitled",
+        content: "",
+        kind: "console",
+      });
+      store.autoSaveConsole("ws", draft, "SELECT 1", "Untitled");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(put).toHaveBeenCalledTimes(1);
+      expect((put.mock.calls[0] as unknown[])[0]).toBe(
+        `/workspaces/ws/consoles/${draft}`,
+      );
+    } finally {
+      put.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

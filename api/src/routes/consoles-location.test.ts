@@ -267,6 +267,45 @@ describe("a rename or a move answers where the console is now", () => {
     expect(root.body.data).toMatchObject({ path: "Secret Margin v2" });
   });
 
+  it("an admin's name-only Rename / Move of a console shared with them is PATCH /rename: it stays in its owner's folder", async () => {
+    const ADMIN = new Types.ObjectId().toString();
+    const drafts = await manager.createFolder(
+      "Team Drafts",
+      WS,
+      OWNER,
+      undefined,
+      false,
+      "private",
+    );
+    const c = await save(
+      "Q",
+      "SELECT 1\n",
+      OWNER,
+      "private",
+      drafts._id.toString(),
+    );
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { sharedWith: [{ userId: ADMIN, role: "editor" }] } },
+    );
+    // The admin's tree lists it under "Shared with me" — not in My
+    // Consoles or Workspace — so the dialog renames it in place.
+    const list = await req("GET", "", undefined, ADMIN, "admin");
+    expect((list.body.sharedWithMe ?? []).map(n => n.name)).toEqual(["Q"]);
+    const r = await req(
+      "PATCH",
+      `/${c._id}/rename`,
+      { name: "Q2" },
+      ADMIN,
+      "admin",
+    );
+    expect(r.status).toBe(200);
+    const row = (await SavedConsole.findById(c._id))!;
+    expect(row.name).toBe("Q2");
+    expect(row.folderId?.toString()).toBe(drafts._id.toString());
+    expect(row.path).toBe(`users/${OWNER}/consoles/Team Drafts/Q2.sql`);
+  });
+
   it("a rename onto a taken name is refused with the server's reason", async () => {
     await save("taken", "SELECT 1\n", OWNER, "workspace");
     const c = await save("mine", "SELECT 2\n", OWNER, "workspace");

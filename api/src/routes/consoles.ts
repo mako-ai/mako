@@ -64,9 +64,9 @@ import {
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
-  consoleHistoryPaths,
   liveConsoleCode,
   loadLiveConsoleById,
+  NotThisConsoleError,
   projectSavedConsole,
   readConsoleDefinitionAtMain,
   repoPathForRow,
@@ -1274,9 +1274,9 @@ consoleRoutes.openapi(
   },
 );
 
-// PUT /api/workspaces/:workspaceId/consoles/:pathOrId - Update/upsert console
-// If pathOrId is a valid ObjectId, upserts by ID (used for auto-save)
-// Otherwise, saves by path (used for explicit user save to folder)
+// PUT /api/workspaces/:workspaceId/consoles/:id - Update/upsert console by
+// its id (a draft autosave, or an explicit save with `isSaved` and its
+// place in the body). Anything that is not a console id is refused (400).
 consoleRoutes.put("/:path{.+}", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId") as string;
@@ -1959,70 +1959,24 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       });
     }
 
-    // Path-based save (explicit user save to folder)
-    const consolePath = pathOrId;
-
-    // connectionId is optional - consoles can be saved without being associated with a specific database
-    let targetConnectionId = body.connectionId;
-    if (!targetConnectionId) {
-      // Try to get the first database for the workspace, but don't require it
-      const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
-      if (databases.length > 0) {
-        targetConnectionId = databases[0]._id.toString();
-      }
-      // If no databases exist, that's fine - targetConnectionId will remain undefined
-    }
-
-    const savedConsole = await consoleManager.saveConsole(
-      consolePath,
-      body.content,
-      workspaceId,
-      user.id,
-      targetConnectionId,
-      body.databaseName,
-      body.databaseId,
+    // Not a console id. A console is addressed by its id — its row's, or
+    // the id derived from its file — never by anything else: an
+    // editor-internal id (`binding:<app>:<file>`, an app binding open in
+    // the console editor, whose mount autosave PUT here) was taken for a
+    // "path" and committed a stray Workspace console named after it. No
+    // client saves by path (the editor sends the console's id, and its
+    // place in the body).
+    return c.json(
       {
-        folderId: body.folderId,
-        description: body.description,
-        language: body.language,
-        isPrivate: body.isPrivate,
-        access: body.access,
-        memberRole: memberPut?.role,
+        success: false,
+        error: "Not a console id: consoles are saved by their id.",
       },
+      400,
     );
-
-    // Create version 1 for this new console
-    const freshDocPath = await SavedConsole.findById(savedConsole._id).lean();
-    if (freshDocPath) {
-      await SavedConsole.updateOne(
-        { _id: savedConsole._id },
-        { $set: { version: 1 } },
-      );
-    }
-
-    requestConsoleDescription({
-      workspaceId,
-      consoleId: savedConsole._id.toString(),
-      tracking: { userId: user.id, userEmail: user.email },
-    });
-
-    return c.json({
-      success: true,
-      message: "Console updated successfully",
-      data: {
-        id: savedConsole._id.toString(),
-        path: consolePath,
-        content: body.content,
-        connectionId: targetConnectionId,
-        databaseName: body.databaseName,
-        databaseId: body.databaseId,
-        language: savedConsole.language,
-      },
-    });
   } catch (error) {
     if (error instanceof RepoRequiredError) return repoRequired(c, error);
-    // The path-addressed save (saveConsole): a console the caller cannot
-    // write, a visibility change that is not theirs, a taken path.
+    // A save's placement: a console the caller cannot write, a visibility
+    // change that is not theirs, a taken path.
     if (error instanceof ConsoleScopeError) {
       return c.json({ success: false, error: error.message }, 403);
     }
@@ -3527,7 +3481,14 @@ async function loadReadableConsole(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   const memberRole = (c as AuthenticatedContext).get("memberRole");
-  if (!doc || !ConsoleManager.canRead(doc, user.id, memberRole)) {
+  // A console in the trash has no file: its path is free, and whatever
+  // holds it now (another console, maybe one private to its owner) is not
+  // its history.
+  if (
+    !doc ||
+    doc.is_deleted ||
+    !ConsoleManager.canRead(doc, user.id, memberRole)
+  ) {
     return {
       errorResponse: c.json(
         { success: false, error: "Console not found" },
@@ -3643,26 +3604,25 @@ consoleRoutes.openapi(
       const loaded = await loadReadableConsole(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { sha, path: relPath } = c.req.valid("query");
-      const target = relPath ?? loaded.doc.path;
-      if (!target) {
+      if (!loaded.doc.path) {
         return c.json(
           { success: false, error: "Console has no file yet" },
           404,
         );
       }
-      // Only this console's own file (and its chart) may be read through
-      // it — under any name it has had (its history follows renames).
-      const own = await consoleHistoryPaths(loaded.doc);
-      if (!own.has(target)) {
+      // Only this console's own file (and its chart), under the name it
+      // had IN that commit, at one of its own commits — never another
+      // console's file that once had (or later took) one of its names.
+      const versions = await consoleFileVersions(loaded.doc, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof NotThisConsoleError) {
         return c.json(
           { success: false, error: "Path is not this console" },
           403,
         );
       }
-      const versions = await consoleFileVersions(loaded.doc, sha, target);
-      return c.json({ success: true as const, versions });
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error reading console file versions", { error });
       return c.json({ success: false, error: "Failed to read the diff" }, 500);
     }
@@ -3713,6 +3673,9 @@ consoleRoutes.openapi(
       return c.json({ success: true as const, result });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof NotThisConsoleError) {
+        return c.json({ success: false, error: error.message }, 404);
+      }
       logger.error("Error restoring console", { error });
       return c.json(
         {

@@ -1370,6 +1370,45 @@ export function syncConsolesIndexFromRepo(
   return run;
 }
 
+/**
+ * Give each console file that sits in a folder with no folder record (in
+ * the file's scope) that record, and point its row at it — what the index
+ * sync does for a pushed file, for files whose rows it skips as current: a
+ * copy made before copies were filed in the copier's own folders kept the
+ * ORIGINAL's folder id (another member's private folder) while its file
+ * sits under the copier's `users/<id>/consoles/Team Drafts/`; the tree
+ * listed it at the root, the breadcrumb (from the file) said "My Consoles
+ * › Team Drafts". Serialized with the sync, so a folder is created once.
+ */
+export function ensureConsoleFolderRecords(
+  workspaceId: string,
+  files: Array<{
+    rowId?: Types.ObjectId;
+    segments: string[];
+    access: ConsoleAccessLevel;
+    ownerId?: string;
+  }>,
+): Promise<void> {
+  if (files.length === 0) return Promise.resolve();
+  return serialized(workspaceId, async () => {
+    for (const file of files) {
+      const folderId = await ensureFolderChain(file.segments, workspaceId, {
+        access: file.access,
+        ownerId: file.ownerId,
+      });
+      if (file.rowId && folderId) {
+        await SavedConsole.updateOne(
+          {
+            _id: file.rowId,
+            workspaceId: new Types.ObjectId(workspaceId),
+          },
+          { $set: { folderId } },
+        );
+      }
+    }
+  });
+}
+
 /** The newest sync queued per workspace, while it is still pending. */
 const latestSync = new Map<string, Promise<ConsoleSyncStats | null>>();
 
@@ -2195,13 +2234,17 @@ export async function projectSavedConsole(input: {
 // History: the same shapes the apps History popover consumes
 // ---------------------------------------------------------------------------
 
-/** Commits that touched a console's file (renames included via its row path). */
 /**
  * A console's commits, newest first — ACROSS its renames and moves
  * (`git log --follow`): a rename keeps the console's id and is the same
  * file under a new name, so its history did not start there. Each commit
  * says where the file was in it (`path`, and `previousPath` on the commit
  * that moved it).
+ *
+ * Only ITS OWN commits: the walk ends at the file's creation — it does
+ * not continue into the console it was copied from ("Save as copy",
+ * Duplicate) nor into an earlier console that held the same path
+ * (`parseFollowLog`). Either can be another member's private console.
  */
 export async function consoleHistory(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
@@ -2224,41 +2267,30 @@ function sidecarOf(p: string): string | undefined {
   }
 }
 
-/** Where this console's file was in commit `oid` (null: not in its history). */
+/**
+ * This console's entry for commit `oid` in its own history — where its
+ * file was in that commit — or null when the commit is not one of its own
+ * (another console's commit, or older than its creation).
+ */
 async function consolePathsAt(
   repoDir: string,
   row: Pick<ISavedConsole, "path">,
   oid: string,
-): Promise<{ path: string; previousPath?: string } | null> {
+): Promise<FollowedCommit | null> {
   if (!row.path) return null;
   const history = await logFollow(repoDir, MAIN, 200, row.path);
-  const hit = history.find(c => c.oid === oid);
-  return hit ? { path: hit.path, previousPath: hit.previousPath } : null;
+  return history.find(c => c.oid === oid) ?? null;
 }
 
 /**
- * Every path this console's file has had (and their chart sidecars): what
- * the history routes may read through it — its own file under any of its
- * names, never another console's.
+ * A commit or path the history routes may not read through this console:
+ * not one of its own commits, or not its file at that commit.
  */
-export async function consoleHistoryPaths(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
-): Promise<Set<string>> {
-  const paths = new Set<string>();
-  if (!row.path) return paths;
-  paths.add(row.path);
-  paths.add(chartSidecarPath(row.path));
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
-  if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return paths;
-  for (const c of await logFollow(repoDir, MAIN, 200, row.path)) {
-    for (const p of [c.path, c.previousPath]) {
-      if (!p) continue;
-      paths.add(p);
-      const sidecar = sidecarOf(p);
-      if (sidecar) paths.add(sidecar);
-    }
+export class NotThisConsoleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotThisConsoleError";
   }
-  return paths;
 }
 
 /** What one commit did to this console (its file and chart sidecar). */
@@ -2271,12 +2303,12 @@ export async function consoleCommitChanges(
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
-  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
   // The file under the name it had IN THAT commit (an older commit of a
-  // renamed console touched its old path, not today's).
-  const at = (await consolePathsAt(repoDir, row, oid)) ?? {
-    path: row.path ?? "",
-  };
+  // renamed console touched its old path, not today's). A commit that is
+  // not this console's changed nothing of it.
+  const at = await consolePathsAt(repoDir, row, oid);
+  if (!at) return { sha: oid, parent, files: [] };
+  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
   const mine = new Set(
     [at.path, at.previousPath]
       .filter((p): p is string => !!p)
@@ -2286,29 +2318,74 @@ export async function consoleCommitChanges(
   return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
 }
 
-/** A repo path before and after one commit (null = absent on that side). */
+/**
+ * Which repo paths `consoleFileVersions` reads for `relPath` at commit
+ * `oid`: the console's file (or chart sidecar) under the name it had IN
+ * that commit — `after` at its path, `before` at the name it had in the
+ * parent (its previous path on the commit that moved it, nothing on the
+ * commit that created it). Never "any name it ever had" at any commit: the
+ * name it had then may hold another console at another commit (a private
+ * console that took the name back, the file it was copied from).
+ */
+function fileVersionPaths(
+  at: FollowedCommit,
+  relPath: string,
+): { beforePath: string | null; afterPath: string | null } | null {
+  const before = at.created ? null : (at.previousPath ?? at.path);
+  if (relPath === at.path) return { afterPath: at.path, beforePath: before };
+  const sidecar = sidecarOf(at.path);
+  if (sidecar && relPath === sidecar) {
+    return {
+      afterPath: sidecar,
+      beforePath: before ? (sidecarOf(before) ?? null) : null,
+    };
+  }
+  if (at.previousPath) {
+    // The commit that moved it: its old name, as it was before the move.
+    if (relPath === at.previousPath) {
+      return { afterPath: null, beforePath: at.previousPath };
+    }
+    const oldSidecar = sidecarOf(at.previousPath);
+    if (oldSidecar && relPath === oldSidecar) {
+      return { afterPath: null, beforePath: oldSidecar };
+    }
+  }
+  return null;
+}
+
+/**
+ * This console's file (or chart sidecar) before and after one of ITS
+ * commits (null = absent on that side). `relPath` must be the name the
+ * file had in that commit (or the name it moved from, on the commit that
+ * moved it); omitted, it is that name. A commit that is not this
+ * console's reads nothing — except its current file at the current head.
+ * Throws `NotThisConsoleError` for any other path.
+ */
 export async function consoleFileVersions(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
   sha: string,
-  relPath: string,
+  relPath?: string,
 ): Promise<{ before: string | null; after: string | null; binary: boolean }> {
   const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
   if (repoDir == null) throw new Error(`No such commit: ${sha}`);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
-  // The commit that renamed the file: its "before" is under the old name.
   const at = await consolePathsAt(repoDir, row, oid);
-  let beforePath = relPath;
-  if (at?.previousPath) {
-    const oldSidecar = sidecarOf(at.previousPath);
-    if (relPath === at.path) beforePath = at.previousPath;
-    else if (oldSidecar && relPath === sidecarOf(at.path)) {
-      beforePath = oldSidecar;
+  const target = relPath ?? at?.path ?? row.path ?? "";
+  let paths = at ? fileVersionPaths(at, target) : null;
+  if (!at && row.path && oid === (await resolveCommit(repoDir, MAIN))) {
+    // The head did not touch this console: its file as it is now.
+    const sidecar = sidecarOf(row.path);
+    if (target === row.path || (sidecar && target === sidecar)) {
+      paths = { beforePath: target, afterPath: target };
     }
   }
-  const read = async (ref: string | null, rel: string) => {
-    if (!ref) return null;
+  if (!paths) {
+    throw new NotThisConsoleError("Path is not this console at that commit");
+  }
+  const read = async (ref: string | null, rel: string | null) => {
+    if (!ref || !rel) return null;
     try {
       return await readBlob(repoDir, ref, rel);
     } catch {
@@ -2316,8 +2393,8 @@ export async function consoleFileVersions(
     }
   };
   const [before, after] = await Promise.all([
-    read(parent, beforePath),
-    read(oid, relPath),
+    read(parent, paths.beforePath),
+    read(oid, paths.afterPath),
   ]);
   return {
     before: before?.isBinary ? null : (before?.contents ?? null),
@@ -2328,9 +2405,10 @@ export async function consoleFileVersions(
 
 /**
  * Restore a console to its content at `sha` — a NEW commit, history is
- * append-only — and project the restored file back onto the row. The file
- * is read at the row's current path, or at the path the console had in
- * that commit when it has since moved.
+ * append-only — and project the restored file back onto the row. `sha`
+ * must be one of the console's own commits; the file is read under the
+ * name it had in that commit (it may have moved since). Another console's
+ * commit restores nothing: its file is not this console's to copy in.
  */
 export async function restoreConsoleTo(
   row: ISavedConsole,
@@ -2342,32 +2420,14 @@ export async function restoreConsoleTo(
   if (repoDir == null) throw new RepoRequiredError();
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
-  let at = row.path;
-  let blob = await readBlob(repoDir, oid, at).catch(() => null);
-  if (!blob) {
-    // Renamed since: the name it had in that commit, from its history.
-    const then = await consolePathsAt(repoDir, row, oid);
-    if (then && then.path !== at) {
-      at = then.path;
-      blob = await readBlob(repoDir, oid, at).catch(() => null);
-    }
-  }
-  if (!blob) {
-    // The console lived elsewhere at that commit: find its file by blob id
-    // lineage is not tracked, so fall back to the commit's own touched path.
-    const changes = await diffNameStatus(
-      repoDir,
-      (await resolveCommit(repoDir, `${oid}^`)) ?? EMPTY_TREE,
-      oid,
+  const then = await consolePathsAt(repoDir, row, oid);
+  if (!then) {
+    throw new NotThisConsoleError(
+      "That commit is not in this console's history",
     );
-    const candidate = changes.find(
-      f => parseConsoleRepoPath(f.path) && f.status !== "deleted",
-    );
-    if (candidate) {
-      at = candidate.path;
-      blob = await readBlob(repoDir, oid, at).catch(() => null);
-    }
   }
+  const at = then.path;
+  const blob = await readBlob(repoDir, oid, at).catch(() => null);
   if (!blob || blob.isBinary) {
     throw new Error("That commit has no readable version of this console");
   }

@@ -919,6 +919,12 @@ export interface FollowedCommit extends CommitInfo {
   path: string;
   /** For the commit that renamed/moved the file: where it came from. */
   previousPath?: string;
+  /**
+   * The commit that created the file (added, or added as a copy of another
+   * file): the oldest entry of its history — nothing before it was this
+   * file.
+   */
+  created?: true;
 }
 
 /**
@@ -928,6 +934,20 @@ export interface FollowedCommit extends CommitInfo {
  * Newest first; `path` is the file's name at HEAD, carried backwards
  * through each rename so a commit without a status line (a merge) still
  * says where the file was.
+ *
+ * Only the file's OWN lineage — its rename chain — is kept. `--follow`
+ * cannot be told to skip copies (it always runs copy detection, with
+ * `--find-copies-harder`, and git has no `--no-find-copies`), and it keeps
+ * listing whatever else ever lived at a path. So the walk ends:
+ * - AT a copy (`C`): the file was created as a copy of ANOTHER file, which
+ *   is not its history (a workspace copy of a private console must not
+ *   list or read the private one);
+ * - AT an add (`A`): the file's creation — older commits at that path are
+ *   a previous occupant (a console deleted or moved away before this one
+ *   took the name);
+ * - BEFORE a delete (`D`) once the file has been seen: that is the previous
+ *   occupant leaving. A delete as the NEWEST entry is the file's own
+ *   (absent at the ref) and the walk goes on.
  */
 export function parseFollowLog(stdout: string, path: string): FollowedCommit[] {
   const commits: FollowedCommit[] = [];
@@ -945,14 +965,30 @@ export function parseFollowLog(stdout: string, path: string): FollowedCommit[] {
       subject: subject ?? "",
       path: current,
     };
-    if (status.startsWith("R") || status.startsWith("C")) {
+    if (status.startsWith("R")) {
       const from = fields[5];
       const to = fields[6];
       if (to) commit.path = to;
-      if (from && status.startsWith("R")) {
+      if (from) {
         commit.previousPath = from;
         current = from;
       }
+    } else if (status.startsWith("C")) {
+      // Created as a copy of another file: its creation, and the end of it.
+      const to = fields[6];
+      if (to) commit.path = to;
+      commit.created = true;
+      commits.push(commit);
+      break;
+    } else if (status.startsWith("A")) {
+      if (fields[5]) commit.path = fields[5];
+      commit.created = true;
+      commits.push(commit);
+      break;
+    } else if (status.startsWith("D")) {
+      // A previous occupant of the path leaving: not this file.
+      if (commits.length > 0) break;
+      if (fields[5]) commit.path = fields[5];
     } else if (status && fields[5]) {
       commit.path = fields[5];
       current = fields[5];
@@ -966,7 +1002,8 @@ export function parseFollowLog(stdout: string, path: string): FollowedCommit[] {
  * A file's history ACROSS renames and moves (`git log --follow`): a
  * console renamed in the explorer is the same file under a new name, and
  * its history did not start at the rename. Each entry says where the file
- * was in that commit.
+ * was in that commit. Its own rename chain only — never the file it was
+ * copied from, nor an earlier file at the same path (`parseFollowLog`).
  */
 export async function logFollow(
   repoDir: string,

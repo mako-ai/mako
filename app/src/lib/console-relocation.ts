@@ -10,6 +10,7 @@
  * preselected it), and a shared editor offered moves that could only fail.
  */
 import type { ConsoleEntry } from "../store/consoleTreeStore";
+import { consoleFolderTrail, consoleLeafName } from "./console-name";
 
 export type ConsoleSection = "my" | "workspace";
 
@@ -103,6 +104,11 @@ export type RelocationScope =
 /**
  * The server's visibility rule (only the console's owner or a workspace
  * admin may change who sees it), as the dialog applies it:
+ * - a console the tree does not list in My Consoles or Workspace (another
+ *   member's private console under "Shared with me" — an admin's too):
+ *   rename in place. Its folder is its owner's, which this person cannot
+ *   see; the dialog would open on THEIR My Consoles root, and a name-only
+ *   rename sent from there moved it out of its owner's folder;
  * - owner / admin: anywhere;
  * - a shared editor of a console the workspace sees, listed under
  *   Workspace: Workspace folders only (My Consoles would hide it);
@@ -116,6 +122,14 @@ export function relocationScope(input: {
   access?: "private" | "workspace";
   spot: ConsoleTreeSpot | null;
 }): RelocationScope {
+  if (!input.spot) {
+    return {
+      kind: "in-place",
+      reason: input.isOwner
+        ? "The explorer does not list it yet: you can rename it here."
+        : "This console was shared with you: you can rename it here, but it stays in its owner's folder.",
+    };
+  }
   if (input.isOwner || input.isAdmin) return { kind: "anywhere" };
   if (input.access === "workspace" && input.spot?.section === "workspace") {
     return {
@@ -130,6 +144,51 @@ export function relocationScope(input: {
     reason:
       "This console was shared with you: you can rename it here, but moving it is its owner's or a workspace admin's call.",
   };
+}
+
+/** What the editor's "Rename / Move…" sends to the server. */
+export type RenameMoveRequest =
+  /** PATCH /:id/rename — the console keeps its folder, wherever it is. */
+  | { route: "rename"; name: string }
+  /** PATCH /:id/move — to this folder (and section), maybe renamed. */
+  | {
+      route: "move";
+      folderId: string | null;
+      section: ConsoleSection;
+      name?: string;
+    };
+
+/**
+ * The route for the dialog's answer: a MOVE only when the folder or the
+ * section changed — and only from a place the tree lists (a console it
+ * does not list has no folder the dialog could have started from); a
+ * name-only change is a RENAME, which keeps the console's folder on the
+ * server (a `move` with the dialog's `folderId: null` put a console shared
+ * with an admin at its owner's root). Null: nothing changed.
+ */
+export function renameMoveRequest(input: {
+  scope: RelocationScope;
+  /** Where the tree lists the console (null: not in My Consoles/Workspace). */
+  from: ConsoleTreeSpot | null;
+  /** The folder and section picked in the dialog. */
+  to: ConsoleTreeSpot;
+  /** The new name, when it changed. */
+  renamedTo?: string;
+}): RenameMoveRequest | null {
+  const { from, to } = input;
+  const moved =
+    input.scope.kind !== "in-place" &&
+    from !== null &&
+    (to.folderId !== from.folderId || to.section !== from.section);
+  if (moved) {
+    return {
+      route: "move",
+      folderId: to.folderId,
+      section: to.section,
+      ...(input.renamedTo ? { name: input.renamedTo } : {}),
+    };
+  }
+  return input.renamedTo ? { route: "rename", name: input.renamedTo } : null;
 }
 
 /** A console name typed into a dialog: why it cannot be used, or null. */
@@ -216,4 +275,43 @@ export function renameMoveNotice(input: {
   return input.renamedTo
     ? `Moved to ${place} as '${input.renamedTo}'`
     : `Moved to ${place}`;
+}
+
+/**
+ * The snackbar after a save: where the console is, in the breadcrumb's
+ * words — a console shared with me is "Shared with me", never its owner's
+ * folder ("Console saved to 'Team Drafts/Secret Margin ed2'" named a folder
+ * the editor cannot see).
+ */
+export function consoleSavedNotice(input: {
+  access: "private" | "workspace" | undefined;
+  ownerId: string | undefined;
+  currentUserId: string | undefined;
+  /** The console's derived path (folders + leaf), as the tab knows it. */
+  filePath: string;
+  /** Its name (the tab's title); the path's leaf when absent. */
+  name?: string;
+}): string {
+  const name = input.name || consoleLeafName(input.filePath);
+  const place = consolePlacement({
+    access: input.access,
+    ownerId: input.ownerId,
+    currentUserId: input.currentUserId,
+    folders: consoleFolderTrail(input.filePath, name),
+  });
+  return `Console saved to ${[place.section, ...place.folders, name].join(" › ")}`;
+}
+
+/**
+ * The snackbar after the explorer's Duplicate: where the copy went — My
+ * Consoles, and the copier's folder of the same path when there is one
+ * (`path` is the copy's tree path, folders + name). A copy used to land,
+ * unannounced and unopened, in a collapsed folder of another section.
+ */
+export function consoleCopiedNotice(copy: {
+  path: string;
+  name: string;
+}): string {
+  const place = ["My Consoles", ...consoleFolderTrail(copy.path, copy.name)];
+  return `Copied to ${place.join(" › ")} as '${copy.name}'`;
 }

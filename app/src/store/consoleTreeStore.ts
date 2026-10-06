@@ -68,10 +68,15 @@ export interface ConsoleTreeExtra {
     itemId: string,
     newName: string,
   ) => void;
+  /**
+   * Copy a console into the caller's My Consoles. Resolves to the copy —
+   * its id, name and path in the tree (folders + name) — or null (the
+   * reason is in `actionError`).
+   */
   duplicateConsole: (
     workspaceId: string,
     consoleId: string,
-  ) => Promise<{ id: string; name: string } | null>;
+  ) => Promise<{ id: string; name: string; path: string } | null>;
   /** Undo a soft delete; refetches the tree on success. */
   restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
 }
@@ -394,6 +399,7 @@ export const useConsoleTreeStore = createResourceTreeStore<
           throw new Error(res.error || "Could not duplicate the console.");
         }
         const created = res.data;
+        let placedPath = created.name;
         set(state => {
           const original = helpers.findInAnySection(
             state,
@@ -435,8 +441,9 @@ export const useConsoleTreeStore = createResourceTreeStore<
           if (placed && folder?.path) {
             placed.path = `${folder.path}/${created.name}`;
           }
+          placedPath = placed?.path ?? created.name;
         });
-        return { id: created.id, name: created.name };
+        return { id: created.id, name: created.name, path: placedPath };
       } catch (err: unknown) {
         // The server's reason, for the explorer's snackbar — a failed copy
         // used to say nothing at all.

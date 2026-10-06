@@ -336,6 +336,68 @@ describe("Duplicate", () => {
     ]);
   });
 
+  it("an OLD copy (filed in the owner's private folder, its file under mine) is listed where its breadcrumb says", async () => {
+    // What a copy made before copies were filed in the copier's folders
+    // looks like: the file under MY "Team Drafts", the row pointing at the
+    // OWNER's private "Team Drafts", and no folder record of mine. The tree
+    // listed it at the root of My Consoles; the breadcrumb, from the file,
+    // said "My Consoles › Team Drafts".
+    const theirs = await manager.createFolder(
+      "Team Drafts",
+      WS,
+      OWNER,
+      undefined,
+      false,
+      "private",
+    );
+    const mine = await manager.createFolder(
+      "Team Drafts",
+      WS,
+      EDITOR,
+      undefined,
+      false,
+      "private",
+    );
+    const old = await save(
+      "Secret Margin copy",
+      EDITOR,
+      "private",
+      mine._id.toString(),
+    );
+    expect((await SavedConsole.findById(old._id))?.path).toBe(
+      `users/${EDITOR}/consoles/Team Drafts/Secret Margin copy.sql`,
+    );
+    await ConsoleFolder.deleteOne({ _id: mine._id });
+    await SavedConsole.updateOne(
+      { _id: old._id },
+      { $set: { folderId: theirs._id } },
+    );
+
+    const list = await req("GET", "", EDITOR);
+    expect(names(list.body.myConsoles)).toEqual(["Team Drafts"]);
+    const myDrafts = list.body.myConsoles?.[0];
+    expect(names(myDrafts?.children as ConsoleFile[])).toEqual([
+      "Secret Margin copy",
+    ]);
+    // The row now names MY folder (a record was made for the file's).
+    const row = await SavedConsole.findById(old._id);
+    const folder = await ConsoleFolder.findById(row?.folderId);
+    expect(folder).toMatchObject({ name: "Team Drafts", access: "private" });
+    expect(folder?.ownerId?.toString()).toBe(EDITOR);
+    // The owner's tree is untouched: their folder, not the copy.
+    const ownerList = await req("GET", "", OWNER);
+    const ownerDrafts = ownerList.body.myConsoles?.find(
+      n => n.name === "Team Drafts",
+    );
+    expect(ownerDrafts?.id).toBe(theirs._id.toString());
+    expect(names(ownerDrafts?.children as ConsoleFile[])).toEqual([]);
+    // And the breadcrumb's source agrees with the tree.
+    const content = await req("GET", `/content?id=${old._id}`, EDITOR);
+    expect((content.body as Record<string, unknown>).path).toBe(
+      "Team Drafts/Secret Margin copy",
+    );
+  });
+
   it("a copy of a Workspace console is private, so never filed into the workspace folder", async () => {
     const finance = await manager.createFolder(
       "finance",

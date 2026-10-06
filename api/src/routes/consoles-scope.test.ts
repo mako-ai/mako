@@ -54,6 +54,7 @@ import {
   initRepo,
   readBlob,
   repoDirFor,
+  resolveCommit,
 } from "../apps/repository.service";
 import { ConsoleManager } from "../utils/console-manager";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
@@ -661,35 +662,38 @@ describe("audit: every other route that writes a console's name, folder or acces
     expect(await readable(c._id, OTHER)).toBe(false);
   });
 
-  it("PUT by path never saves over another member's console that shares its name", async () => {
+  it("PUT addressed by anything but a console id is refused — never saves over a console, never creates one", async () => {
     const secret = await save("x", "SELECT 'owner secret'\n", OWNER, "private");
-    const r = await req(
-      "PUT",
-      "/x",
-      { content: "SELECT 'other x'\n", access: "workspace" },
-      OTHER,
-    );
-    expect(r.status).toBe(200);
-    const row = (await SavedConsole.findById(secret._id))!;
-    expect(row.code).toBe("SELECT 'owner secret'\n");
-    expect(row.access).toBe("private");
-    expect(await fileAt(`users/${OWNER}/consoles/x.sql`)).toContain(
-      "owner secret",
-    );
-    expect(await fileAt("consoles/x.sql")).toContain("other x");
-    // A workspace console the caller may only read: refused, not overwritten.
     const shown = await save("rep", "SELECT 'reviewed'\n", OWNER, "workspace");
-    const ro = await req(
-      "PUT",
+    const head = async () =>
+      resolveCommit(repoDirFor(WS), `refs/heads/${DEFAULT_BRANCH}`);
+    const before = await head();
+    const rows = await SavedConsole.countDocuments({});
+    for (const address of [
+      // A name another member's private console has.
+      "/x",
+      // A workspace console the caller may only read.
       "/rep",
-      { content: "SELECT 'pwned'\n", access: "workspace" },
-      OTHER,
+      // An app binding open in the console editor: its mount autosave
+      // used to commit "consoles/binding:<app>:bindings/orders.sql.sql".
+      `/binding:${new Types.ObjectId().toString()}:bindings/orders.sql`,
+    ]) {
+      const r = await req(
+        "PUT",
+        address,
+        { content: "SELECT 'pwned'\n", access: "workspace", title: "orders" },
+        OTHER,
+      );
+      expect(r.status).toBe(400);
+    }
+    expect(await head()).toBe(before);
+    expect(await SavedConsole.countDocuments({})).toBe(rows);
+    expect((await SavedConsole.findById(secret._id))!.code).toBe(
+      "SELECT 'owner secret'\n",
     );
-    expect(ro.status).toBe(403);
     expect((await SavedConsole.findById(shown._id))?.code).toBe(
       "SELECT 'reviewed'\n",
     );
-    expect(await fileAt("consoles/rep.sql")).toContain("reviewed");
   });
 
   it("the save conflict dialog never hands back a console the caller cannot read", async () => {

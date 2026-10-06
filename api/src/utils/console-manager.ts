@@ -17,6 +17,7 @@ import {
   commitConsoleState,
   consoleFilesDrifted,
   descriptionIsAuthored,
+  ensureConsoleFolderRecords,
   ensureFolderChain,
   findFolderChain,
   folderSegmentsFor,
@@ -93,7 +94,21 @@ function folderIdForLive(
   live: LiveConsole,
   folders: IConsoleFolder[],
 ): Types.ObjectId | undefined {
-  if (live.row?.folderId) return live.row.folderId;
+  const own = live.row?.folderId;
+  if (own) {
+    // The row's folder — unless it is a folder this file cannot be in:
+    // gone, or ANOTHER member's private folder (a private folder is its
+    // owner's alone; a copy made before copies were filed in the copier's
+    // folders kept the original's). Then the file says where it is.
+    const folder = folders.find(f => f._id.equals(own));
+    const access =
+      folder && (folder.access || (folder.isPrivate ? "private" : "workspace"));
+    const foreignPrivate =
+      live.location.scope === "private" &&
+      access === "private" &&
+      folder?.ownerId?.toString() !== live.location.ownerId;
+    if (folder && !foreignPrivate) return own;
+  }
   const segments = live.location.folderSegments;
   if (segments.length === 0) return undefined;
   // In the file's scope, as `ensureFolderChain` files it: a private file's
@@ -455,6 +470,43 @@ export class ConsoleManager {
   }
 
   /**
+   * The tree and the breadcrumb place a console by one rule: a file in a
+   * folder is listed in that folder. A file whose folder has no record in
+   * its scope (and whose row names none it can be in) would be listed at
+   * the root while its breadcrumb — read from the file — names the folder;
+   * give it the record (`ensureConsoleFolderRecords`) and list again.
+   */
+  private async withFolderRecords(
+    workspaceId: string,
+    live: LiveConsole[],
+    folders: IConsoleFolder[],
+  ): Promise<IConsoleFolder[]> {
+    const unfiled = live.filter(
+      item =>
+        item.location.folderSegments.length > 0 &&
+        folderIdForLive(item, folders) === undefined,
+    );
+    if (unfiled.length === 0) return folders;
+    await ensureConsoleFolderRecords(
+      workspaceId,
+      unfiled.map(item => {
+        const isPrivate = item.location.scope === "private";
+        return {
+          rowId: item.row?._id,
+          segments: item.location.folderSegments,
+          access: isPrivate ? ("private" as const) : ("workspace" as const),
+          ownerId: isPrivate
+            ? item.location.ownerId
+            : (item.row?.owner_id ?? item.row?.createdBy)?.toString(),
+        };
+      }),
+    );
+    return ConsoleFolder.find({
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).sort({ name: 1 });
+  }
+
+  /**
    * Saved-console tree from git at main. Mongo is overlay (ACL, lastRun).
    * No GitHub binding → empty list, even if leftover Mongo or local git
    * exists. Drafts never appear here.
@@ -467,12 +519,17 @@ export class ConsoleManager {
       const bound = await boundRepoDirIfExists(workspaceId);
       if (bound == null) return [];
 
-      const [folders, live] = await Promise.all([
+      const [loadedFolders, live] = await Promise.all([
         ConsoleFolder.find({
           workspaceId: new Types.ObjectId(workspaceId),
         }).sort({ name: 1 }),
         loadLiveConsoles(workspaceId),
       ]);
+      const folders = await this.withFolderRecords(
+        workspaceId,
+        live,
+        loadedFolders,
+      );
       const consoles = live.map(item =>
         liveConsoleToRow(item, folderIdForLive(item, folders)),
       );
@@ -646,12 +703,17 @@ export class ConsoleManager {
         return { myConsoles: [], sharedWithWorkspace: [], sharedWithMe: [] };
       }
 
-      const [folders, live] = await Promise.all([
+      const [loadedFolders, live] = await Promise.all([
         ConsoleFolder.find({
           workspaceId: new Types.ObjectId(workspaceId),
         }).sort({ name: 1 }),
         loadLiveConsoles(workspaceId),
       ]);
+      const folders = await this.withFolderRecords(
+        workspaceId,
+        live,
+        loadedFolders,
+      );
       const consoles = live.map(item =>
         liveConsoleToRow(item, folderIdForLive(item, folders)),
       );

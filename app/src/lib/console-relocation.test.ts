@@ -3,9 +3,12 @@ import type { ConsoleEntry } from "../store/consoleTreeStore";
 import {
   consoleNameProblem,
   consoleNameTakenBy,
+  consoleCopiedNotice,
   consolePlacement,
+  consoleSavedNotice,
   consoleSectionLabel,
   renameMoveNotice,
+  renameMoveRequest,
   locateInConsoleTree,
   relocationScope,
 } from "./console-relocation";
@@ -119,6 +122,96 @@ describe("relocationScope — the server's visibility rule, as the dialog applie
     });
     expect(scope.kind).toBe("in-place");
   });
+
+  it("a console the tree lists under neither My Consoles nor Workspace (Shared with me) is renamed in place — an admin's too", () => {
+    for (const who of [
+      { isOwner: false, isAdmin: true },
+      { isOwner: false, isAdmin: false },
+    ]) {
+      const scope = relocationScope({ ...who, access: "private", spot: null });
+      expect(scope.kind).toBe("in-place");
+      expect(scope.kind === "in-place" && scope.reason).toMatch(
+        /stays in its owner's folder/,
+      );
+    }
+  });
+});
+
+describe("renameMoveRequest — a name-only change never moves the console", () => {
+  const shared = relocationScope({
+    isOwner: false,
+    isAdmin: true,
+    access: "private",
+    spot: null,
+  });
+
+  it("an admin renaming a Shared-with-me console sends a rename, not a move to their own root", () => {
+    // The dialog opens on the admin's My Consoles root (folder null): the
+    // old confirm sent PATCH /move {folderId: null, name}, and the server
+    // moved the console out of its owner's "Team Drafts".
+    expect(
+      renameMoveRequest({
+        scope: shared,
+        from: null,
+        to: { section: "my", folderId: null },
+        renamedTo: "Q2",
+      }),
+    ).toEqual({ route: "rename", name: "Q2" });
+  });
+
+  it("the owner or an admin renaming in the same folder and section sends a rename (it keeps its folder)", () => {
+    const anywhere = relocationScope({
+      isOwner: true,
+      isAdmin: false,
+      spot: { section: "my", folderId: "f-drafts" },
+    });
+    expect(
+      renameMoveRequest({
+        scope: anywhere,
+        from: { section: "my", folderId: "f-drafts" },
+        to: { section: "my", folderId: "f-drafts" },
+        renamedTo: "Renamed",
+      }),
+    ).toEqual({ route: "rename", name: "Renamed" });
+  });
+
+  it("a changed folder or section is a move, with the new name when there is one", () => {
+    const anywhere = relocationScope({
+      isOwner: true,
+      isAdmin: false,
+      spot: { section: "my", folderId: "f-drafts" },
+    });
+    expect(
+      renameMoveRequest({
+        scope: anywhere,
+        from: { section: "my", folderId: "f-drafts" },
+        to: { section: "my", folderId: null },
+      }),
+    ).toEqual({ route: "move", folderId: null, section: "my" });
+    expect(
+      renameMoveRequest({
+        scope: anywhere,
+        from: { section: "my", folderId: null },
+        to: { section: "workspace", folderId: null },
+        renamedTo: "Shared",
+      }),
+    ).toEqual({
+      route: "move",
+      folderId: null,
+      section: "workspace",
+      name: "Shared",
+    });
+  });
+
+  it("nothing changed: nothing is sent", () => {
+    expect(
+      renameMoveRequest({
+        scope: shared,
+        from: null,
+        to: { section: "workspace", folderId: "f-x" },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("consoleNameProblem — the name field is a name, the folder has its picker", () => {
@@ -207,5 +300,53 @@ describe("renameMoveNotice — renamed is not moved", () => {
         name: "Alpha Two",
       }),
     ).toBe("Moved to My Consoles as 'Alpha Two'");
+  });
+});
+
+describe("consoleSavedNotice — a save says where, in the breadcrumb's words", () => {
+  it("a console shared with me is saved to 'Shared with me' — never its owner's folder", () => {
+    expect(
+      consoleSavedNotice({
+        access: "private",
+        ownerId: "owner",
+        currentUserId: "editor2",
+        filePath: "Team Drafts/Secret Margin ed2",
+        name: "Secret Margin ed2",
+      }),
+    ).toBe("Console saved to Shared with me › Secret Margin ed2");
+  });
+
+  it("my own console and a Workspace console keep their folder trail", () => {
+    expect(
+      consoleSavedNotice({
+        access: "private",
+        ownerId: "me",
+        currentUserId: "me",
+        filePath: "Team Drafts/Revenue",
+      }),
+    ).toBe("Console saved to My Consoles › Team Drafts › Revenue");
+    expect(
+      consoleSavedNotice({
+        access: "workspace",
+        ownerId: "someone",
+        currentUserId: "me",
+        filePath: "finance/Alpha Four",
+        name: "Alpha Four",
+      }),
+    ).toBe("Console saved to Workspace › finance › Alpha Four");
+  });
+});
+
+describe("consoleCopiedNotice — a Duplicate says where the copy went", () => {
+  it("My Consoles, with the copier's folder when there is one", () => {
+    expect(
+      consoleCopiedNotice({ path: "Ghost copy", name: "Ghost copy" }),
+    ).toBe("Copied to My Consoles as 'Ghost copy'");
+    expect(
+      consoleCopiedNotice({
+        path: "Team Drafts/Ghost copy",
+        name: "Ghost copy",
+      }),
+    ).toBe("Copied to My Consoles › Team Drafts as 'Ghost copy'");
   });
 });

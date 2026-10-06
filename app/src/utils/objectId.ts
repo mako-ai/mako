@@ -22,3 +22,13 @@ export function generateObjectId(): string {
 
   return timestamp + randomValue + counter;
 }
+
+/**
+ * A console id the server can address: a 24-char hex ObjectId (a row's id,
+ * or the id derived from a git-only console's file). Editor-internal ids —
+ * `binding:<appId>:<file>` for an app binding open in the console editor —
+ * are not, and must never reach the console save route.
+ */
+export function isObjectIdString(id: string | undefined | null): boolean {
+  return typeof id === "string" && /^[0-9a-f]{24}$/i.test(id);
+}
