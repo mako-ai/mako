@@ -3370,9 +3370,10 @@ function Editor({
           if (!tab) return "";
           if (saveDialogMode === "save-as-copy") {
             // The NAME only — the folder is the picker's (prefilling
-            // "New Folder/x (copy)" re-created that folder by path).
+            // "New Folder/x copy" re-created that folder by path). "x copy",
+            // as Duplicate names it.
             const base = tab.title || consoleLeafName(tab.filePath);
-            return base ? `${base} (copy)` : "";
+            return base ? `${base} copy` : "";
           }
           return tab.title || "";
         })()}

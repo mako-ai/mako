@@ -810,3 +810,32 @@ describe("consoleStore.fetchConsoleContent — an edit typed while it is in flig
     expect(hasUnsavedLocalEdits("c-open")).toBe(false);
   });
 });
+
+describe("consoleStore.setRemoteUpdate — the banner's cause survives a reload", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("the same remote change raised again without its cause keeps it; a newer one does not", () => {
+    openSavedConsole({ id: "c-banner", content: "SELECT 1" });
+    const store = useConsoleStore.getState();
+    store.setRemoteUpdate("c-banner", {
+      kind: "updated",
+      draftRevision: 5,
+      via: "git",
+    });
+    // After a reload the revision sync raises it again, cause unknown.
+    store.setRemoteUpdate("c-banner", { kind: "updated", draftRevision: 5 });
+    expect(useConsoleStore.getState().tabs["c-banner"].remoteUpdate).toEqual({
+      kind: "updated",
+      draftRevision: 5,
+      via: "git",
+    });
+    // A newer change is its own: no borrowed cause.
+    store.setRemoteUpdate("c-banner", { kind: "updated", draftRevision: 6 });
+    expect(useConsoleStore.getState().tabs["c-banner"].remoteUpdate).toEqual({
+      kind: "updated",
+      draftRevision: 6,
+    });
+  });
+});

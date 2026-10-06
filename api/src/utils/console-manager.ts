@@ -256,8 +256,10 @@ export class ConsolePathTakenError extends ConsoleConflictError {
     readonly path: string,
     /** Who asked: a private root is "My Consoles" only to its owner. */
     actorUserId?: string | null,
+    /** What was asked for, when only its letter case differs from `path`. */
+    wantedPath?: string | null,
   ) {
-    super(consolePathTakenMessage(path, actorUserId));
+    super(consolePathTakenMessage(path, actorUserId, wantedPath));
     this.name = "ConsolePathTakenError";
   }
 }
@@ -1718,7 +1720,11 @@ export class ConsoleManager {
             error.path === toPath ||
             error.path === chartSidecarPath(toPath)
           ) {
-            throw new ConsolePathTakenError(error.path, options.userId);
+            throw new ConsolePathTakenError(
+              error.takenAs ?? error.path,
+              options.userId,
+              error.path,
+            );
           }
           return "drift";
         }
@@ -1978,7 +1984,7 @@ export class ConsoleManager {
     ]);
     if (def) throw new ConsolePathTakenError(path, actorUserId);
     const taken = variant ?? row?.path;
-    if (taken) throw new ConsolePathTakenError(taken, actorUserId);
+    if (taken) throw new ConsolePathTakenError(taken, actorUserId, path);
   }
 
   /**

@@ -456,11 +456,20 @@ describe("names that differ only in letter case are one name (one file on macOS 
     ]) {
       const r = await req("PATCH", `/${c._id}/rename`, { name }, OWNER);
       expect(r.status).toBe(409);
+      // The EXISTING console is named, and a case twin is said to be one.
       expect(r.body.error).toContain(
         "A console named 'Typed Name Keep' already exists",
       );
+      if (name === "Typed Name Keep") {
+        expect(r.body.error).not.toContain("upper/lower case");
+      } else {
+        expect(r.body.error).toContain(
+          "names that differ only in upper/lower case count as the same",
+        );
+      }
       const moved = await req("PATCH", `/${c._id}/move`, { name }, OWNER);
       expect(moved.status).toBe(409);
+      expect(moved.body.error).toContain("'Typed Name Keep'");
     }
     expect(await consolePaths()).toEqual(before);
     expect((await SavedConsole.findById(c._id))?.name).toBe("other");

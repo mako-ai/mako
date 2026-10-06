@@ -65,4 +65,13 @@ describe("remoteUpdateMessage", () => {
       ),
     ).toBe("This console was deleted by a git push.");
   });
+
+  it("a console trashed in THIS window says 'Moved to trash', not 'deleted elsewhere'", () => {
+    expect(
+      remoteUpdateMessage(
+        { kind: "deleted", draftRevision: 9, here: true },
+        "u1",
+      ),
+    ).toBe("Moved to trash.");
+  });
 });

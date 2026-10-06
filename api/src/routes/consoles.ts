@@ -1255,7 +1255,11 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: consolePathTakenMessage(error.path, c.get("user")?.id),
+            error: consolePathTakenMessage(
+              error.takenAs ?? error.path,
+              c.get("user")?.id,
+              error.path,
+            ),
           },
           409,
         );
@@ -1644,7 +1648,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: consolePathTakenMessage(taken, c.get("user")?.id),
+                error: consolePathTakenMessage(
+                  taken,
+                  c.get("user")?.id,
+                  wanted,
+                ),
               },
               409,
             );
@@ -1672,7 +1680,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: consolePathTakenMessage(error.path, c.get("user")?.id),
+                error: consolePathTakenMessage(
+                  error.takenAs ?? error.path,
+                  c.get("user")?.id,
+                  error.path,
+                ),
               },
               409,
             );
@@ -1821,7 +1833,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: consolePathTakenMessage(error.path, c.get("user")?.id),
+                error: consolePathTakenMessage(
+                  error.takenAs ?? error.path,
+                  c.get("user")?.id,
+                  error.path,
+                ),
               },
               409,
             );
@@ -1996,7 +2012,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       return c.json(
         {
           success: false,
-          error: consolePathTakenMessage(error.path, c.get("user")?.id),
+          error: consolePathTakenMessage(
+            error.takenAs ?? error.path,
+            c.get("user")?.id,
+            error.path,
+          ),
         },
         409,
       );
@@ -2330,7 +2350,11 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: consolePathTakenMessage(error.path, c.get("user")?.id),
+            error: consolePathTakenMessage(
+              error.takenAs ?? error.path,
+              c.get("user")?.id,
+              error.path,
+            ),
           },
           409,
         );

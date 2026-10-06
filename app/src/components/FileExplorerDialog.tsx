@@ -21,6 +21,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import {
   consoleNameProblem,
   consoleNameTakenBy,
+  consoleNameTakenMessage,
 } from "../lib/console-relocation";
 
 type DialogMode = "save" | "move" | "new-folder";
@@ -173,17 +174,18 @@ export default function FileExplorerDialog({
   // picker), or a console of that name already in the chosen folder. A
   // clash is REFUSED — there is no "Replace": overwriting another console
   // by renaming onto it destroyed it, and the server refuses it anyway.
+  // A locked location may be a folder this person cannot see (the
+  // owner's): the tree cannot judge a clash there — the server does.
+  const clash =
+    showNameField && trimmedName && !locationLockedReason
+      ? findExistingConsole(trimmedName, selectedFolderId)
+      : null;
   const nameProblem = !showNameField
     ? null
     : mode === "move" && !trimmedName
       ? null
       : (consoleNameProblem(consoleName) ??
-        // A locked location may be a folder this person cannot see (the
-        // owner's): the tree cannot judge a clash there — the server does.
-        (!locationLockedReason &&
-        findExistingConsole(trimmedName, selectedFolderId)
-          ? `A console named “${trimmedName}” already exists here. Choose another name.`
-          : null));
+        (clash ? consoleNameTakenMessage(trimmedName, clash.name) : null));
 
   const handleConfirm = () => {
     if (mode === "save") {

@@ -53,6 +53,8 @@ vi.mock("./ConsoleTree", async () => {
         onDuplicate?: (node: object) => void;
         onFileOpen?: (node: object) => void;
         onMoveRequest?: (node: object) => void;
+        onSoftDelete?: (node: object) => void;
+        onUndo?: () => void;
       },
       _ref,
     ) {
@@ -66,6 +68,12 @@ vi.mock("./ConsoleTree", async () => {
           </button>
           <button type="button" onClick={() => props.onMoveRequest?.(alpha)}>
             Move Alpha
+          </button>
+          <button type="button" onClick={() => props.onSoftDelete?.(alpha)}>
+            Delete Alpha
+          </button>
+          <button type="button" onClick={() => props.onUndo?.()}>
+            Undo
           </button>
         </>
       );
@@ -348,5 +356,23 @@ describe("ConsoleExplorer — a tab whose first load failed, and typing during a
     const tab = useConsoleStore.getState().tabs["c-alpha"];
     expect(tab.content).toBe("SELECT 1 -- mine");
     expect(tab.savedStateHash).toBe(computeConsoleStateHash(SAVED));
+  });
+});
+
+describe("ConsoleExplorer — undoing a delete (Cmd+Z)", () => {
+  it("says it is back, under the name it came back as", async () => {
+    useConsoleTreeStore.setState({
+      myItems: { ws: [] },
+      workspaceItems: { ws: [] },
+      sharedItems: { ws: [] },
+      actionError: {},
+      deleteItem: vi.fn(async () => true),
+      restoreConsole: vi.fn(async () => ({ name: "Alpha (2)" })),
+    } as never);
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Alpha" }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Restored as 'Alpha (2)'")).toBeTruthy();
   });
 });

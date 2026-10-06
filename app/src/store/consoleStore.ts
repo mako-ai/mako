@@ -921,6 +921,29 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            // The same banner — the same remote change — raised again
+            // without its cause (after a reload the in-memory "who wrote
+            // it" is gone and the revision sync raises it anew): keep the
+            // cause it had; "updated from a git push" must not turn into
+            // "updated elsewhere". A newer change has its own (or none).
+            const prev = tab.remoteUpdate;
+            if (
+              info &&
+              prev &&
+              prev.kind === info.kind &&
+              prev.draftRevision === info.draftRevision &&
+              !info.updatedBy &&
+              !info.via &&
+              !info.here
+            ) {
+              tab.remoteUpdate = {
+                ...info,
+                ...(prev.updatedBy ? { updatedBy: prev.updatedBy } : {}),
+                ...(prev.via ? { via: prev.via } : {}),
+                ...(prev.here ? { here: prev.here } : {}),
+              };
+              return;
+            }
             tab.remoteUpdate = info;
           }
         }),
