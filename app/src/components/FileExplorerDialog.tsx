@@ -209,9 +209,10 @@ export default function FileExplorerDialog({
   };
 
   const handleFileClick = (node: ConsoleEntry) => {
-    if (mode === "save" || mode === "move") {
-      setConsoleName(node.name);
-    }
+    // Save: picking a console offers its name. Rename / Move: a click in
+    // the tree is never a new name — a misclick on another console renamed
+    // the one being moved to that console's name.
+    if (mode === "save") setConsoleName(node.name);
   };
 
   const handleNameChange = (value: string) => {
