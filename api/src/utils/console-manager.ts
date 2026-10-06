@@ -17,11 +17,14 @@ import {
   commitConsoleState,
   consoleFilesDrifted,
   descriptionIsAuthored,
+  ensureFolderChain,
+  folderSegmentsFor,
   loadLiveConsoleById,
   listConsoleDefinitionsAtMain,
   loadLiveConsoles,
   readConsoleDefinitionAtMain,
   repoPathForRow,
+  restoreConsoleBlob,
   syncConsolesIndexFromRepo,
   uniquePath,
   type LiveConsole,
@@ -62,13 +65,29 @@ function folderIdForLive(
   if (live.row?.folderId) return live.row.folderId;
   const segments = live.location.folderSegments;
   if (segments.length === 0) return undefined;
+  // In the file's scope, as `ensureFolderChain` files it: a private file's
+  // "Team" is its owner's private folder, never the workspace namesake —
+  // which would make the console LOOK workspace-visible, and the editor's
+  // next save would send that access back as a re-scope.
+  const inScope = (folder: IConsoleFolder): boolean => {
+    const access =
+      folder.access || (folder.isPrivate ? "private" : "workspace");
+    return live.location.scope === "private"
+      ? access === "private" &&
+          folder.ownerId?.toString() === live.location.ownerId
+      : access === "workspace";
+  };
   let parentId: string | undefined;
   let found: IConsoleFolder | undefined;
   for (const name of segments) {
     found = folders.find(folder => {
       const sameName = folder.name === name;
       const parent = folder.parentId?.toString();
-      return sameName && (parentId ? parent === parentId : !parent);
+      return (
+        sameName &&
+        (parentId ? parent === parentId : !parent) &&
+        inScope(folder)
+      );
     });
     if (!found) return undefined;
     parentId = found._id.toString();
@@ -176,17 +195,78 @@ export class ConsolePathTakenError extends ConsoleConflictError {
 }
 
 /**
- * Re-scoping a console (private ↔ workspace) is the owner's call, as in
- * `updateConsoleAccess`; a shared editor may rename and move it within its
- * scope but not change who can see it.
+ * Changing who can see a console — its access, or its EFFECTIVE visibility
+ * through its folder chain — is the call of its owner or a workspace admin
+ * (`mayChangeVisibility`), on every route; a shared editor may rename and
+ * move it within its visibility but not change who can see it.
  */
 export class ConsoleScopeError extends Error {
   readonly status = 403 as const;
-  constructor() {
-    super("Only the owner can move a console between private and workspace");
+  constructor(
+    message = "Only the console's owner or a workspace admin can change who sees it",
+  ) {
+    super(message);
     this.name = "ConsoleScopeError";
   }
 }
+
+/**
+ * What a save, a rename or a sharing change asks of an EXISTING console.
+ * `placeConsole` turns it into a name, a folder and (on a re-scope) an
+ * access level; `relocateConsole` applies that.
+ */
+export interface ConsolePlacementRequest {
+  /**
+   * `Folder/Sub/name` as the editor shows it: a name and a folder chain
+   * (no `/` = the root). The chain is found-or-created IN A SCOPE.
+   */
+  path?: string;
+  /** A new name in the same folder (a title). Ignored when `path` is set. */
+  name?: string;
+  /** An explicit folder (`null` = the root); wins over `path`'s chain. */
+  folderId?: string | null;
+  /**
+   * The visibility the client shows and asks for — the EFFECTIVE one (row
+   * access + folder chain), which is what the editor's tab carries.
+   */
+  access?: ConsoleAccessLevel;
+}
+
+/**
+ * THE visibility rule, one predicate for every route: who sees a console
+ * (its access, or its effective visibility through its folder chain) may
+ * be changed by its owner or by a workspace admin (owner/admin role) —
+ * the same people the Share dialog has always let change general access.
+ * A shared editor or a plain member may not. Making something LESS
+ * visible by moving or flipping a FOLDER is not gated (see
+ * `assertFolderScopeFlipAllowed`).
+ */
+export function mayChangeVisibility(
+  row: { owner_id?: string | null; createdBy?: string | null },
+  actor: { userId?: string; isAdmin?: boolean },
+): boolean {
+  if (!actor.userId) return true; // a workspace API key (no per-user ACL)
+  if (actor.isAdmin) return true;
+  return (row.owner_id || row.createdBy)?.toString() === actor.userId;
+}
+
+/** The workspace roles that count as admin for the visibility rule. */
+export function isWorkspaceAdminRole(role: string | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
+/**
+ * How `relocateForSave` reports the move it made (see relocateConsole).
+ * Each field defaults to the editor save's: a quiet move whose revision
+ * the save's own guarded write bumps.
+ */
+type RelocateOptions = {
+  verb?: "rename" | "move";
+  publish?: boolean;
+  bumpRevision?: boolean;
+  /** The caller is a workspace admin (see `mayChangeVisibility`). */
+  isAdmin?: boolean;
+};
 
 /** The row shape `repoPathForRow` derives a repo path from. */
 type RowLikeForPath = Parameters<typeof repoPathForRow>[0];
@@ -929,13 +1009,24 @@ export class ConsoleManager {
   async findOrCreateFolderPath(
     folderParts: string[],
     workspaceId: string,
-    userId: string,
+    scope: { access: ConsoleAccessLevel; ownerId: string },
   ): Promise<string | undefined> {
-    return this.ensureFolderPath(folderParts, workspaceId, userId);
+    return this.ensureFolderPath(folderParts, workspaceId, scope);
   }
 
   /**
-   * Save console content to database
+   * Save a console by path (POST / and the path-addressed PUT): create it,
+   * or save over the console the request names — by `options.id`, else the
+   * console at that path IN THE SAVE'S SCOPE (the saver's own private one,
+   * or the workspace one; never another member's console that happens to
+   * share its name).
+   *
+   * An existing console is saved only by someone who can write it, and its
+   * name, folder and access change through `relocateForSave` (scoped
+   * folders, free-path check, compare-and-swap, the visibility rule)
+   * before the content is projected onto the path it then owns. A new
+   * console's file must be absent at commit time: a laptop-pushed file is
+   * never overwritten by a create.
    */
   async saveConsole(
     consolePath: string,
@@ -952,57 +1043,17 @@ export class ConsoleManager {
       language?: "sql" | "javascript" | "mongodb";
       isPrivate?: boolean;
       access?: ConsoleAccessLevel;
+      /** The caller's workspace role, for the write check on an existing console. */
+      memberRole?: string;
     },
   ): Promise<ISavedConsole> {
     try {
       const parts = consolePath.split("/");
       const consoleName = parts[parts.length - 1];
+      const folderParts = parts.slice(0, -1);
 
-      // Handle folder path from consolePath if not provided in options
-      let folderId = options?.folderId;
-
-      if (!folderId && parts.length > 1) {
-        // Extract folder path and find/create the folder
-        const folderParts = parts.slice(0, -1);
-        folderId = await this.ensureFolderPath(
-          folderParts,
-          workspaceId,
-          userId,
-        );
-      }
-
-      // Look up existing console - try by ID first, then by name + folder
-      // The POST route handles conflict detection for new consoles
-      // The path-based PUT route needs the name + folder fallback to update existing consoles
-      let savedConsole: ISavedConsole | null = null;
-
-      if (options?.id && Types.ObjectId.isValid(options.id)) {
-        // ID-based lookup (used by POST route and conflict resolution)
-        savedConsole = await SavedConsole.findOne({
-          _id: new Types.ObjectId(options.id),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
-      }
-
-      // Fallback: look up by name + folder for path-based PUT requests
-      // Only match saved consoles (isSaved: true), not drafts
-      if (!savedConsole) {
-        const query: any = {
-          name: consoleName,
-          workspaceId: new Types.ObjectId(workspaceId),
-          isSaved: true, // Only match saved consoles, not drafts
-        };
-
-        if (folderId) {
-          query.folderId = new Types.ObjectId(folderId);
-        } else {
-          // For root level consoles, check that folderId is null/undefined
-          query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
-        }
-
-        savedConsole = await SavedConsole.findOne(query);
-      }
-
+      // What the caller asked for (undefined = keep, on an existing console)
+      // and what a NEW console gets (historically workspace by default).
       const requestedAccess =
         options?.access ??
         (options?.isPrivate === undefined
@@ -1010,13 +1061,50 @@ export class ConsoleManager {
           : options.isPrivate
             ? "private"
             : "workspace");
+      const newAccess: ConsoleAccessLevel = requestedAccess ?? "workspace";
+
+      let savedConsole: ISavedConsole | null = null;
+      if (options?.id && Types.ObjectId.isValid(options.id)) {
+        savedConsole = await SavedConsole.findOne({
+          _id: new Types.ObjectId(options.id),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+      }
+      if (!savedConsole) {
+        savedConsole = await this.findSavedConsoleInScope(
+          consoleName,
+          options?.folderId ?? folderParts,
+          workspaceId,
+          { access: newAccess, ownerId: userId },
+        );
+      }
 
       if (savedConsole) {
-        // Update existing console (draft -> saved)
-        savedConsole.name = consoleName; // Update name (may change if draft is being saved with a path)
-        savedConsole.folderId = folderId
-          ? new Types.ObjectId(folderId)
-          : undefined; // Update folder (draft -> saved with path)
+        const role = options?.memberRole;
+        const isAdmin = isWorkspaceAdminRole(role);
+        if (!ConsoleManager.canWrite(savedConsole, userId, isAdmin, role)) {
+          throw new ConsoleScopeError(
+            "This console is read-only. Create a copy to make changes.",
+          );
+        }
+        if (savedConsole.is_deleted) {
+          throw new ConsoleConflictError(
+            "This console is deleted. Restore it before saving over it.",
+          );
+        }
+        // Name, folder and access first, through the one relocation path.
+        const moved = await this.relocateForSave(
+          savedConsole,
+          {
+            path: consolePath,
+            ...(options?.folderId ? { folderId: options.folderId } : {}),
+            access: requestedAccess,
+          },
+          userId,
+          { isAdmin },
+        );
+        if (moved) savedConsole = moved.row;
+
         savedConsole.code = content;
         savedConsole.isSaved = true; // Mark as explicitly saved (no longer a draft)
         savedConsole.updatedAt = new Date();
@@ -1035,10 +1123,6 @@ export class ConsoleManager {
           savedConsole.description = options.description;
         }
         if (options?.language) savedConsole.language = options.language;
-        if (requestedAccess !== undefined) {
-          savedConsole.access = requestedAccess;
-          savedConsole.isPrivate = requestedAccess === "private";
-        }
         // Backfill owner_id if missing
         if (!savedConsole.owner_id) {
           savedConsole.owner_id = savedConsole.createdBy;
@@ -1050,21 +1134,38 @@ export class ConsoleManager {
             : "workspace";
         }
 
+        // A language change is a new extension, i.e. a new file: it must be
+        // free like any other move. A first save (a draft, a row never
+        // committed) must find its path free at commit time.
+        const toPath = await repoPathForRow(savedConsole);
+        if (savedConsole.path && toPath !== savedConsole.path) {
+          await this.assertConsolePathFree(
+            workspaceId,
+            toPath,
+            savedConsole._id,
+          );
+        }
         // Git first (apps.md §16.3): the file is the record, the row follows.
         const committed = await commitConsoleState({
           row: savedConsole,
           previousPath: savedConsole.path,
           actorUserId: userId,
           message: `save: ${consolePath}`,
+          expectAbsent: !savedConsole.path,
         });
         savedConsole.path = committed.path;
         savedConsole.sourceBlobSha = committed.sourceBlobSha;
         await savedConsole.save();
       } else {
-        // Create new console (explicitly saved)
-        const access =
-          options?.access ?? (options?.isPrivate ? "private" : "workspace");
-        const isPrivate = access === "private";
+        // Create new console (explicitly saved), its folders in its scope.
+        const folderId =
+          options?.folderId ??
+          (folderParts.length > 0
+            ? await this.ensureFolderPath(folderParts, workspaceId, {
+                access: newAccess,
+                ownerId: userId,
+              })
+            : undefined);
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
@@ -1078,10 +1179,10 @@ export class ConsoleManager {
           code: content,
           language: options?.language || this.detectLanguage(content),
           createdBy: userId,
-          isPrivate,
+          isPrivate: newAccess === "private",
           isSaved: true,
           executionCount: 0,
-          access,
+          access: newAccess,
           owner_id: userId,
         };
 
@@ -1095,6 +1196,7 @@ export class ConsoleManager {
           row: savedConsole,
           actorUserId: userId,
           message: `create: ${consolePath}`,
+          expectAbsent: true,
         });
         savedConsole.path = committed.path;
         savedConsole.sourceBlobSha = committed.sourceBlobSha;
@@ -1106,13 +1208,74 @@ export class ConsoleManager {
       if (
         error instanceof RepoRequiredError ||
         error instanceof BlobPreconditionError ||
-        error instanceof ConsoleConflictError
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleScopeError
       ) {
         throw error;
       }
       logger.error("Error saving console to database", { error });
       throw error;
     }
+  }
+
+  /**
+   * The live saved console named `name` in a folder chain, looked up IN A
+   * SCOPE: a private save finds only the saver's own private console, a
+   * workspace save only a workspace one. `folder` is a folder id or the
+   * chain's names (not created when missing: then nothing is there).
+   */
+  private async findSavedConsoleInScope(
+    name: string,
+    folder: string | string[],
+    workspaceId: string,
+    scope: { access: ConsoleAccessLevel; ownerId: string },
+  ): Promise<ISavedConsole | null> {
+    const ws = new Types.ObjectId(workspaceId);
+    let folderId: Types.ObjectId | undefined;
+    if (typeof folder === "string") {
+      if (!Types.ObjectId.isValid(folder)) return null;
+      folderId = new Types.ObjectId(folder);
+    } else {
+      for (const segment of folder) {
+        const found = (await ConsoleFolder.findOne({
+          workspaceId: ws,
+          name: segment,
+          $and: [
+            folderId
+              ? { parentId: folderId }
+              : { $or: [{ parentId: null }, { parentId: { $exists: false } }] },
+            scope.access === "private"
+              ? {
+                  ownerId: scope.ownerId,
+                  $or: [{ access: "private" }, { isPrivate: true }],
+                }
+              : { $nor: [{ access: "private" }, { isPrivate: true }] },
+          ],
+        })
+          .select("_id")
+          .lean()) as { _id: Types.ObjectId } | null;
+        if (!found) return null;
+        folderId = found._id;
+      }
+    }
+    return SavedConsole.findOne({
+      workspaceId: ws,
+      name,
+      isSaved: true,
+      is_deleted: { $ne: true },
+      $and: [
+        folderId
+          ? { folderId }
+          : { $or: [{ folderId: null }, { folderId: { $exists: false } }] },
+        scope.access === "private"
+          ? {
+              $or: [{ owner_id: scope.ownerId }, { createdBy: scope.ownerId }],
+              $nor: [{ access: "workspace" }],
+              isPrivate: { $ne: false },
+            }
+          : { $nor: [{ access: "private" }, { isPrivate: true }] },
+      ],
+    });
   }
 
   /**
@@ -1199,6 +1362,8 @@ export class ConsoleManager {
       publish?: boolean;
       /** Bump `draftRevision` (default); the editor's save bumps it itself. */
       bumpRevision?: boolean;
+      /** The caller is a workspace admin (see `mayChangeVisibility`). */
+      isAdmin?: boolean;
     } = {},
   ): Promise<{ row: ISavedConsole; commit?: string } | null> {
     if (!Types.ObjectId.isValid(consoleId)) return null;
@@ -1238,6 +1403,7 @@ export class ConsoleManager {
       verb?: "rename" | "move";
       publish?: boolean;
       bumpRevision?: boolean;
+      isAdmin?: boolean;
     },
   ): Promise<{ row: ISavedConsole; commit?: string } | null | "drift"> {
     // A soft-deleted console is not renamed: it would be projected from its
@@ -1253,9 +1419,10 @@ export class ConsoleManager {
     // Who can see it is the row's access AND its folder chain (a private
     // console in a workspace folder is workspace-visible by inheritance).
     // Changing either — the row's `access`, or the EFFECTIVE visibility by
-    // a move into / out of a workspace folder — is the owner's call; a
-    // shared editor keeps the visibility the owner chose. Measured on the
-    // row AS LOADED, before any change below is applied to it.
+    // a move into / out of a workspace folder — is the owner's or an
+    // admin's call (`mayChangeVisibility`); a shared editor keeps the
+    // visibility the owner chose. Measured on the row AS LOADED, before
+    // any change below is applied to it.
     const visibleBefore = await this.effectiveVisibility(current);
     const accessChanges =
       change.access !== undefined &&
@@ -1274,11 +1441,11 @@ export class ConsoleManager {
         : {}),
     } as unknown as ISavedConsole;
     const visibleAfter = await this.effectiveVisibility(probe);
-    if (accessChanges || visibleBefore !== visibleAfter) {
-      const ownerId = (current.owner_id || current.createdBy)?.toString();
-      if (options.userId && ownerId !== options.userId) {
-        throw new ConsoleScopeError();
-      }
+    if (
+      (accessChanges || visibleBefore !== visibleAfter) &&
+      !mayChangeVisibility(current, options)
+    ) {
+      throw new ConsoleScopeError();
     }
 
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
@@ -1397,49 +1564,126 @@ export class ConsoleManager {
   }
 
   /**
-   * The editor's "Rename / Move…" is a save that also changes the console's
-   * name, folder or access. Everything that MOVES the file goes through
-   * `relocateConsole` first — free-path check (a laptop-pushed file with no
-   * row included), compare-and-swap commit, owner-only scope rule — and the
-   * content is saved afterwards onto the path the console then owns. The
-   * Mongo-only conflict check the save route runs cannot see files, and a
-   * plain projection would overwrite them. Returns null when nothing moves.
+   * Where a save, a rename or a sharing change puts an EXISTING console —
+   * decided here for every route that takes a name, a `Folder/Sub/name`
+   * path or an access level, so no route resolves a folder or a scope on
+   * its own:
+   *
+   * - `access` is what the client shows: the EFFECTIVE visibility. Equal to
+   *   the console's current one it asks for nothing (the row keeps its own
+   *   access); different, it is a re-scope — the owner's or an admin's
+   *   call (`mayChangeVisibility`), refused here before any folder is
+   *   created for it.
+   * - A folder chain is found-or-created IN A SCOPE: the new visibility on a
+   *   re-scope, else the current one, under the console's owner. Looked up
+   *   by name alone, a private console's "Team" was the workspace folder of
+   *   that name — and a folder publishes what it holds by inheritance.
+   * - The chain the console already has keeps its folder: a plain Cmd+S
+   *   never re-homes a console into a namesake folder of another scope.
+   *
+   * Nothing is written to the row; `relocateConsole` applies the result
+   * (and re-checks the owner rule on the effective visibility).
+   */
+  async placeConsole(
+    existing: ISavedConsole,
+    request: ConsolePlacementRequest,
+    userId: string,
+    isAdmin = false,
+  ): Promise<{
+    name: string;
+    folderId: string | null;
+    /** Set on a re-scope only; undefined keeps the row's access. */
+    access?: ConsoleAccessLevel;
+    /** Whether anything differs from the row as loaded. */
+    changes: boolean;
+  }> {
+    const workspaceId = existing.workspaceId.toString();
+    const ownerId = (existing.owner_id || existing.createdBy)?.toString();
+    const visibleNow = await this.effectiveVisibility(existing);
+    const reScope =
+      request.access !== undefined && request.access !== visibleNow;
+    if (reScope && !mayChangeVisibility(existing, { userId, isAdmin })) {
+      throw new ConsoleScopeError();
+    }
+    const access = reScope ? request.access : undefined;
+
+    let name = existing.name;
+    let wanted: string[] | undefined;
+    if (request.path !== undefined) {
+      const parts = request.path.split("/");
+      name = parts[parts.length - 1];
+      wanted = parts.slice(0, -1);
+    } else if (request.name !== undefined) {
+      name = request.name;
+    }
+
+    const currentFolderId = existing.folderId?.toString() ?? null;
+    let folderId = currentFolderId;
+    if (request.folderId !== undefined) {
+      folderId = request.folderId;
+    } else {
+      const current = await folderSegmentsFor(existing.folderId, workspaceId);
+      const chain = wanted ?? current;
+      const sameChain =
+        chain.length === current.length &&
+        chain.every((segment, i) => segment === current[i]);
+      // A re-scope re-files the console in the new scope's namesake chain
+      // (the owner's private "Team", or the workspace "Team").
+      if (reScope || !sameChain) {
+        folderId =
+          chain.length === 0
+            ? null
+            : ((
+                await ensureFolderChain(chain, workspaceId, {
+                  access: access ?? visibleNow,
+                  ownerId: ownerId ?? userId,
+                })
+              )?.toString() ?? null);
+      }
+    }
+
+    const changes =
+      name !== existing.name ||
+      folderId !== currentFolderId ||
+      (access !== undefined &&
+        access !== ConsoleManager.resolveAccess(existing));
+    return { name, folderId, access, changes };
+  }
+
+  /**
+   * Apply a placement request to an existing console: `placeConsole`, then
+   * `relocateConsole` — free-path check (a laptop-pushed file with no row
+   * included), compare-and-swap commit, the visibility rule on the
+   * EFFECTIVE visibility. The editor's save calls it before projecting
+   * content (by default quietly, its own guarded write bumps the revision);
+   * a rename or a sharing change passes its own reporting options. A draft
+   * is placed in the index only. Returns null when nothing changes.
    */
   async relocateForSave(
     existing: ISavedConsole,
-    target: {
-      name: string;
-      folderId: string | undefined;
-      access: ConsoleAccessLevel | undefined;
-    },
+    request: ConsolePlacementRequest,
     userId: string,
+    {
+      verb = "move",
+      publish = false,
+      bumpRevision = false,
+      isAdmin = false,
+    }: RelocateOptions = {},
   ): Promise<{ row: ISavedConsole; commit?: string } | null> {
-    if (!existing.isSaved) return null; // a draft has no file to move
-    const probe = {
-      ...(existing.toObject() as Record<string, unknown>),
-      name: target.name,
-      folderId: target.folderId
-        ? new Types.ObjectId(target.folderId)
-        : undefined,
-      ...(target.access
-        ? { access: target.access, isPrivate: target.access === "private" }
-        : {}),
-    } as unknown as RowLikeForPath;
-    const toPath = await repoPathForRow(probe);
-    const accessChanges =
-      target.access !== undefined &&
-      target.access !== ConsoleManager.resolveAccess(existing);
-    if (toPath === existing.path && !accessChanges) return null;
-    return this.relocateConsole(
+    const placed = await this.placeConsole(existing, request, userId, isAdmin);
+    if (!placed.changes) return null;
+    const moved = await this.relocateConsole(
       existing._id.toString(),
       existing.workspaceId.toString(),
-      {
-        name: target.name,
-        folderId: target.folderId ?? null,
-        access: target.access,
-      },
-      { userId, verb: "move", publish: false, bumpRevision: false },
+      { name: placed.name, folderId: placed.folderId, access: placed.access },
+      { userId, verb, publish, bumpRevision, isAdmin },
     );
+    if (!moved) {
+      throw new ConsoleConflictError(
+        "This console was deleted meanwhile. Reload and try again.",
+      );
+    }
+    return moved;
   }
 
   /**
@@ -1447,11 +1691,14 @@ export class ConsoleManager {
    * any folder on its chain is a workspace folder (the inheritance rule
    * `canReadWithInheritance` applies), else "private".
    */
-  async effectiveVisibility(
-    console: Pick<ISavedConsole, "access" | "isPrivate" | "folderId">,
-  ): Promise<ConsoleAccessLevel> {
+  async effectiveVisibility(console: {
+    access?: ConsoleAccessLevel | null;
+    isPrivate?: boolean | null;
+    folderId?: Types.ObjectId | string | null;
+  }): Promise<ConsoleAccessLevel> {
     if (
-      ConsoleManager.resolveAccess(console as ISavedConsole) === "workspace"
+      ConsoleManager.resolveAccess(console as unknown as ISavedConsole) ===
+      "workspace"
     ) {
       return "workspace";
     }
@@ -1494,36 +1741,31 @@ export class ConsoleManager {
 
   /**
    * Rename a console. A `Folder/Sub/name` value also moves it into that
-   * folder chain (created on demand) — in the same commit.
+   * folder chain — found or created in the console's own visibility scope
+   * (`placeConsole`), in the same commit. A plain name keeps the folder.
    */
   async renameConsole(
     consoleId: string,
     newName: string,
     workspaceId: string,
     userId: string,
+    isAdmin = false,
   ): Promise<boolean> {
     try {
-      // Parse the new name for potential folder path
-      const parts = newName.split("/");
-      const consoleName = parts[parts.length - 1];
-
-      let folderId: string | null | undefined = undefined;
-
-      if (parts.length > 1) {
-        // Extract folder path and find/create the folder
-        const folderParts = parts.slice(0, -1);
-        folderId =
-          (await this.ensureFolderPath(folderParts, workspaceId, userId)) ??
-          null;
-      }
-
-      const updated = await this.relocateConsole(
-        consoleId,
-        workspaceId,
-        { name: consoleName, folderId },
-        { userId, verb: "rename" },
+      if (!Types.ObjectId.isValid(consoleId)) return false;
+      const current = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+        is_deleted: { $ne: true },
+      });
+      if (!current) return false;
+      await this.relocateForSave(
+        current,
+        newName.includes("/") ? { path: newName } : { name: newName },
+        userId,
+        { verb: "rename", publish: true, bumpRevision: true, isAdmin },
       );
-      return updated !== null;
+      return true;
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
@@ -1787,27 +2029,31 @@ export class ConsoleManager {
   }
 
   /**
-   * A folder flipped to the workspace publishes every console under it by
-   * inheritance — so only the actor's own private consoles may be there;
-   * someone else's private console (shared with the actor, filed into the
-   * actor's folder) is not theirs to publish, and the move is refused
-   * rather than leaving it private-but-visible. A flip to private
-   * re-scopes only the actor's own consoles (others keep their scope and
-   * their files), exactly as `propagateFolderAccess` has always done.
+   * A folder flipped (or moved) to the workspace publishes every console
+   * under it by inheritance — so every private console there must be one
+   * the actor may publish (`mayChangeVisibility`: their own, or any for a
+   * workspace admin); someone else's private console (shared with a
+   * non-admin actor, filed into the actor's folder) is not theirs to
+   * publish, and the move is refused rather than leaving it
+   * private-but-visible. Making a folder LESS visible is not gated: a flip
+   * to private re-scopes only the actor's own consoles (others keep their
+   * scope and their files), exactly as `propagateFolderAccess` has always
+   * done, and a move out of a workspace folder only narrows who sees what.
    */
   private async assertFolderScopeFlipAllowed(
     folderId: string,
     workspaceId: string,
     access: ConsoleAccessLevel,
     actorId: string | undefined,
+    isAdmin = false,
   ): Promise<void> {
-    if (access !== "workspace" || !actorId) return;
+    if (access !== "workspace") return;
+    const actor = { userId: actorId, isAdmin };
     const rows = await this.consolesUnderFolder(folderId, workspaceId);
     for (const row of rows) {
-      const ownerId = (row.owner_id || row.createdBy)?.toString();
       if (
         ConsoleManager.resolveAccess(row) === "private" &&
-        ownerId !== actorId
+        !mayChangeVisibility(row, actor)
       ) {
         throw new ConsoleScopeError();
       }
@@ -2149,45 +2395,23 @@ export class ConsoleManager {
   }
 
   /**
-   * Ensure folder path exists, creating folders as needed
-   * Returns the ID of the deepest folder in the path
+   * Find-or-create a folder chain by name IN THE CONSOLE'S SCOPE: a private
+   * console's `Team/x` is the owner's private "Team", a workspace console's
+   * is the workspace "Team". Looking a folder up by name alone picked the
+   * workspace namesake for a private console — and a folder publishes what
+   * it holds by inheritance, so a plain save or rename changed who could
+   * read it. Delegates to the service's scoped `ensureFolderChain`.
    */
   private async ensureFolderPath(
     folderParts: string[],
     workspaceId: string,
-    userId: string,
+    scope: { access: ConsoleAccessLevel; ownerId: string },
   ): Promise<string | undefined> {
     if (folderParts.length === 0) {
       return undefined;
     }
-
-    let currentParentId: string | undefined = undefined;
-
-    for (const folderName of folderParts) {
-      // Check if folder exists at this level
-      let folder: IConsoleFolder | null = await ConsoleFolder.findOne({
-        name: folderName,
-        workspaceId: new Types.ObjectId(workspaceId),
-        parentId: currentParentId
-          ? new Types.ObjectId(currentParentId)
-          : undefined,
-      });
-
-      if (!folder) {
-        // Create the folder if it doesn't exist
-        folder = await this.createFolder(
-          folderName,
-          workspaceId,
-          userId,
-          currentParentId,
-          false, // Default to not private
-        );
-      }
-
-      currentParentId = folder._id.toString();
-    }
-
-    return currentParentId;
+    const id = await ensureFolderChain(folderParts, workspaceId, scope);
+    return id?.toString();
   }
 
   /**
@@ -2250,12 +2474,13 @@ export class ConsoleManager {
     access?: ConsoleAccessLevel,
     userId?: string,
     name?: string,
+    isAdmin = false,
   ): Promise<boolean> {
     const updated = await this.relocateConsole(
       consoleId,
       workspaceId,
       { folderId, access, name: name?.trim() || undefined },
-      { userId, verb: "move" },
+      { userId, verb: "move", isAdmin },
     );
     return updated !== null;
   }
@@ -2270,6 +2495,7 @@ export class ConsoleManager {
     newParentId: string | null,
     access?: ConsoleAccessLevel,
     userId?: string,
+    isAdmin = false,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(folderId)) return false;
 
@@ -2306,6 +2532,25 @@ export class ConsoleManager {
     }).lean();
     if (!before) return false;
 
+    // Who sees the folder's contents before and after: a parent change
+    // alone can publish them by inheritance (a drag under a workspace
+    // folder sends no `access`), and an explicit `access: "private"` does
+    // not make a folder under a workspace parent private. Measured on the
+    // folder chain, before any row changes.
+    const ownBefore: ConsoleAccessLevel =
+      before.access ?? (before.isPrivate ? "private" : "workspace");
+    const visibleBefore = await this.effectiveVisibility({
+      access: ownBefore,
+      folderId: before.parentId ?? undefined,
+    });
+    const visibleAfter = await this.effectiveVisibility({
+      access: access ?? ownBefore,
+      folderId: newParentId ? new Types.ObjectId(newParentId) : undefined,
+    });
+    const publishes =
+      access === "workspace" ||
+      (visibleBefore === "private" && visibleAfter === "workspace");
+
     const result = await ConsoleFolder.updateOne(
       {
         _id: new Types.ObjectId(folderId),
@@ -2320,15 +2565,19 @@ export class ConsoleManager {
       workspaceId,
     );
     try {
-      // Destinations free, and the flip the actor's to make? Asked with
-      // the folder's new parent/access in place and BEFORE any console
-      // row changes.
-      if (access) {
+      // Destinations free, and the publication the actor's to make? Asked
+      // with the folder's new parent/access in place and BEFORE any
+      // console row changes — the same rule as an access flip: the folder
+      // may publish only private consoles the actor may publish (their
+      // own, or any for an admin). A move that narrows visibility is not
+      // gated.
+      if (publishes) {
         await this.assertFolderScopeFlipAllowed(
           folderId,
           workspaceId,
-          access,
+          "workspace",
           userId,
+          isAdmin,
         );
       }
       await this.assertFolderSubtreePathsFree(
@@ -2423,36 +2672,25 @@ export class ConsoleManager {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!current) return false;
+    // Only a deleted console is restored: on a live one this would be a
+    // commit of the row's working copy under the guise of a restore.
+    if (!current.is_deleted) return false;
     const set: Record<string, unknown> = { is_deleted: false };
     if (current.isSaved) {
       // The console's old name may have been taken while it was deleted (a
       // rename or a push landed there, and the sync released this row's
       // path): a restore must not overwrite that file — it comes back as
       // "name (2)", exactly as adoption resolves two rows on one path.
-      const wanted = await repoPathForRow(current);
-      const [defs, liveRows] = await Promise.all([
-        listConsoleDefinitionsAtMain(workspaceId),
-        SavedConsole.find({
-          workspaceId: new Types.ObjectId(workspaceId),
-          _id: { $ne: current._id },
-          isSaved: true,
-          is_deleted: { $ne: true },
-          path: { $exists: true, $ne: null },
-        }).select("path"),
-      ]);
-      const taken = new Set<string>([
-        ...defs.map(d => d.path),
-        ...liveRows.map(r => r.path as string),
-      ]);
-      const free = uniquePath(wanted, taken, current.path);
-      if (free !== wanted) {
-        const location = parseConsoleRepoPath(free);
-        if (location) {
-          current.name = location.name;
-          set.name = location.name;
-        }
+      const freeName = await this.freeNameFor(current, current.path);
+      if (freeName !== current.name) {
+        current.name = freeName;
+        set.name = freeName;
       }
-      const committed = await commitConsoleState({
+      // What comes back is the file as it was LAST COMMITTED (its blob is
+      // still in the object store), never the row's working copy — an
+      // unsaved draft must not reach main through a restore. A row that
+      // was never committed (no blob) is projected, as its only definition.
+      const committed = await restoreConsoleBlob({
         row: current,
         actorUserId: userId,
         message: `restore: ${current.name}`,
@@ -2471,7 +2709,39 @@ export class ConsoleManager {
   }
 
   /**
-   * Duplicate a console: creates a copy with " copy" appended to the name.
+   * The name a row can take without landing on another console's file
+   * (one at main, or a live row's): its own, or "name (2)", "name (3)"… —
+   * the way adoption resolves two rows on one path.
+   */
+  private async freeNameFor(
+    row: ISavedConsole,
+    ownPath: string | null | undefined,
+  ): Promise<string> {
+    const workspaceId = row.workspaceId.toString();
+    const wanted = await repoPathForRow(row);
+    const [defs, liveRows] = await Promise.all([
+      listConsoleDefinitionsAtMain(workspaceId),
+      SavedConsole.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        _id: { $ne: row._id },
+        isSaved: true,
+        is_deleted: { $ne: true },
+        path: { $exists: true, $ne: null },
+      }).select("path"),
+    ]);
+    const taken = new Set<string>([
+      ...defs.map(d => d.path),
+      ...liveRows.map(r => r.path as string),
+    ]);
+    const free = uniquePath(wanted, taken, ownPath);
+    if (free === wanted) return row.name;
+    return parseConsoleRepoPath(free)?.name ?? row.name;
+  }
+
+  /**
+   * Duplicate a console: creates a copy with " copy" appended to the name
+   * (" copy (2)" when that file is taken — a second copy must not land on
+   * the first one's file). The caller checks the original is readable.
    */
   async duplicateConsole(
     consoleId: string,
@@ -2503,10 +2773,12 @@ export class ConsoleManager {
       owner_id: userId,
       executionCount: 0,
     });
+    copy.name = await this.freeNameFor(copy, null);
     const committed = await commitConsoleState({
       row: copy,
       actorUserId: userId,
       message: `duplicate: ${original.name}`,
+      expectAbsent: true,
     });
     copy.path = committed.path;
     copy.sourceBlobSha = committed.sourceBlobSha;

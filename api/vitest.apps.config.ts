@@ -33,6 +33,8 @@ export default defineConfig({
       "src/apps/workspace-consoles.service.test.ts",
       // The editor's first save (PUT) is a compare-and-swap against main.
       "src/routes/consoles-first-save.test.ts",
+      // Visibility changes only by the owner, on every console route.
+      "src/routes/consoles-scope.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",

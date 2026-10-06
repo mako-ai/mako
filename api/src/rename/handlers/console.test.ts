@@ -487,7 +487,7 @@ describe("rename", () => {
     );
   });
 
-  it("enforces the console's write ACL; re-scoping is the owner's call", async () => {
+  it("enforces the console's write ACL; re-scoping is not a member's call", async () => {
     const mine = await seed("mine", "private");
     const id = mine._id.toString();
     await expect(
@@ -513,5 +513,35 @@ describe("rename", () => {
       title: "by key",
     });
     expect(viaKey.after.path).toBe("consoles/Public/by key.sql");
+  });
+
+  it("re-scoping is the owner's or a workspace admin's call; a shared editor is refused", async () => {
+    const ADMIN = new Types.ObjectId().toString();
+    const admin = { workspaceId: WS, userId: ADMIN, role: "admin" };
+    const shown = await seed("shown");
+    const id = shown._id.toString();
+    // A shared editor may write it, but not take it out of the workspace.
+    await SavedConsole.updateOne(
+      { _id: shown._id },
+      { $set: { sharedWith: [{ userId: OTHER, role: "editor" }] } },
+    );
+    await expect(
+      renameObject(other, "console", {
+        ref: id,
+        slug: `users/${OWNER}/consoles/shown.sql`,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect((await SavedConsole.findById(id))?.access).toBe("workspace");
+    // A workspace admin may — under the owner's private root, as always.
+    const result = await renameObject(admin, "console", {
+      ref: id,
+      slug: `users/${OWNER}/consoles/shown.sql`,
+    });
+    expect(result.after.path).toBe(`users/${OWNER}/consoles/shown.sql`);
+    const row = (await SavedConsole.findById(id))!;
+    expect(row.access).toBe("private");
+    expect(row.owner_id).toBe(OWNER);
+    expect(await treePaths()).toContain(`users/${OWNER}/consoles/shown.sql`);
+    expect(await treePaths()).not.toContain("consoles/shown.sql");
   });
 });

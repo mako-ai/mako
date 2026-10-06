@@ -9,7 +9,8 @@
  *   title → the new file name, same folder (rename in place);
  *   slug  → the full repo path, or `<folders>/<name>`, to MOVE it — folders
  *           are created on demand; a `users/<me>/consoles/…` path flips it
- *           private, `consoles/…` makes it workspace-visible (owner only).
+ *           private, `consoles/…` makes it workspace-visible (its owner or
+ *           a workspace admin only — the one visibility rule).
  *
  * No alias is recorded: every link, share, schedule and favourite carries
  * the id, which `relocateConsole` never changes. One commit per rename
@@ -25,6 +26,7 @@ import {
   ConsoleManager,
   ConsoleConflictError,
   ConsoleScopeError,
+  mayChangeVisibility,
 } from "../../utils/console-manager";
 import {
   ensureFolderChain,
@@ -265,14 +267,20 @@ export const consoleRenameHandler: RenameHandler = {
     const target = targetFor(row, currentSegments, request.title, request.slug);
     const current = rowScope(row);
 
-    // Re-scoping (private ↔ workspace) is the owner's call, as in
-    // updateConsoleAccess; a private path must be the caller's own.
+    // Re-scoping (private ↔ workspace) is the owner's or a workspace
+    // admin's call — the one visibility rule every console route applies
+    // (`mayChangeVisibility`); a private path is always under the owner's.
     let access: ConsoleAccessLevel | undefined;
     if (target.scope !== current.scope || target.ownerId !== current.ownerId) {
       const ownerId = (row.owner_id || row.createdBy)?.toString();
-      if (ctx.userId && ownerId !== ctx.userId) {
+      if (
+        !mayChangeVisibility(row, {
+          userId: ctx.userId,
+          isAdmin: isAdmin(ctx.role),
+        })
+      ) {
         throw new RenameError(
-          "Only the owner can move a console between private and workspace.",
+          "Only the console's owner or a workspace admin can move it between private and workspace.",
           403,
         );
       }
@@ -340,7 +348,11 @@ export const consoleRenameHandler: RenameHandler = {
           folderId,
           access,
         },
-        { userId: ctx.userId, verb: folderChanged ? "move" : "rename" },
+        {
+          userId: ctx.userId,
+          isAdmin: isAdmin(ctx.role),
+          verb: folderChanged ? "move" : "rename",
+        },
       );
     } catch (error) {
       // The guarantee is the commit itself: relocateConsole's write is a
