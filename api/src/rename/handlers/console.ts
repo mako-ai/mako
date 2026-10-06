@@ -27,7 +27,6 @@ import {
   ConsoleScopeError,
 } from "../../utils/console-manager";
 import {
-  derivedConsoleId,
   ensureFolderChain,
   folderSegmentsFor,
   listConsoleDefinitionsAtMain,
@@ -133,9 +132,20 @@ async function findRow(
     exact.length === 1 ? exact[0] : matches.length === 1 ? matches[0] : null;
   if (!chosen) return null;
   if (chosen.row) return chosen.row;
-  // Pushed but not yet indexed: let the sync mint the row at its derived id.
-  await syncConsolesIndexFromRepo(ctx.workspaceId).catch(() => null);
-  return SavedConsole.findById(derivedConsoleId(ctx.workspaceId, chosen.path));
+  // Pushed but not yet indexed: let the sync mint the row — as the caller,
+  // the way the push hook credits the pusher, so a git-born console is
+  // theirs to rename — then take the row AT THAT PATH, never "the row with
+  // the derived id", which a renamed git-born console may still hold at
+  // another path.
+  await syncConsolesIndexFromRepo(ctx.workspaceId, ctx.userId).catch(
+    () => null,
+  );
+  return SavedConsole.findOne({
+    workspaceId: ws,
+    path: chosen.path,
+    isSaved: true,
+    is_deleted: { $ne: true },
+  });
 }
 
 interface Target {

@@ -12,12 +12,17 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { ConsoleFolder, SavedConsole } from "../../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  commitBlobsOnBranch,
   initRepo,
   listTree,
   log,
   repoDirFor,
   resolveCommit,
 } from "../../apps/repository.service";
+import {
+  adoptWorkspaceConsoles,
+  syncConsolesIndexFromRepo,
+} from "../../apps/workspace-consoles.service";
 import { ConsoleManager } from "../../utils/console-manager";
 import {
   bindTestWorkspaceRepo,
@@ -126,6 +131,46 @@ describe("resolve", () => {
     const rootDup = await seed("dup");
     expect((await resolveObjectRef(owner, "console", "dup"))?.id).toBe(
       rootDup._id.toString(),
+    );
+  });
+
+  it("after a git-born console is renamed, a new file at its old name resolves and renames on its own", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "consoles/report.sql": "SELECT 'original'\n" } },
+      { message: "laptop" },
+    );
+    await syncConsolesIndexFromRepo(WS, OWNER);
+    const old = (await resolveObjectRef(owner, "console", "report"))!.id;
+    await renameObject(owner, "console", { ref: old, title: "report-old" });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "consoles/report.sql": "SELECT 'brand new'\n" } },
+      { message: "laptop again" },
+    );
+    // Not yet synced: resolve finds the new file, not the renamed row.
+    const resolved = await resolveObjectRef(owner, "console", "report");
+    expect(resolved?.current.path).toBe("consoles/report.sql");
+    expect(resolved?.id).not.toBe(old);
+    const result = await renameObject(owner, "console", {
+      ref: "report",
+      title: "report-new",
+    });
+    expect(result.id).not.toBe(old);
+    expect(result.before.path).toBe("consoles/report.sql");
+    expect(result.after.path).toBe("consoles/report-new.sql");
+    expect(await treePaths()).toEqual(
+      expect.arrayContaining([
+        "consoles/report-old.sql",
+        "consoles/report-new.sql",
+      ]),
+    );
+    expect(await treePaths()).not.toContain("consoles/report.sql");
+    expect((await SavedConsole.findById(old))?.path).toBe(
+      "consoles/report-old.sql",
     );
   });
 
