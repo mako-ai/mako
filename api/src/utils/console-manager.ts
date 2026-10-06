@@ -2970,12 +2970,16 @@ export class ConsoleManager {
       set.path = committed.path;
       set.sourceBlobSha = committed.sourceBlobSha;
     }
+    // The revision moves: an open tab (another window, a reload) pulls
+    // the restored console — its name ("name (2)"), its place — through
+    // the revision sync, and drops its "deleted" banner. Without the bump
+    // the sync saw nothing new and the tab stayed on the old name.
     const result = await SavedConsole.updateOne(
       {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: set, $unset: { deletedAt: "" } },
+      { $set: set, $unset: { deletedAt: "" }, $inc: { draftRevision: 1 } },
     );
     return result.modifiedCount > 0;
   }

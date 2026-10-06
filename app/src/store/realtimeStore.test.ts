@@ -91,3 +91,52 @@ describe("revision sync — a laptop rename of a console with unsaved edits", ()
     expect(tab.remoteUpdate).toMatchObject({ draftRevision: 5 });
   });
 });
+
+describe("revision sync — a console restored from the trash elsewhere", () => {
+  it("drops the tab's 'deleted' banner and takes the restored name and place", async () => {
+    useConsoleStore.getState().openTab({
+      id: ID,
+      title: "Weekly",
+      content: SAVED,
+      isSaved: true,
+      filePath: "Weekly",
+      access: "workspace",
+      savedStateHash: computeConsoleStateHash(SAVED),
+      draftRevision: 3,
+      version: 2,
+      kind: "console",
+    });
+    useConsoleStore.getState().setRemoteUpdate(ID, {
+      draftRevision: Number.MAX_SAFE_INTEGER,
+      kind: "deleted",
+    });
+    vi.spyOn(api, "POST").mockResolvedValue({
+      data: {
+        success: true,
+        deleted: [],
+        changed: [
+          {
+            id: ID,
+            draftRevision: 4,
+            name: "Weekly (2)",
+            path: "Weekly (2)",
+            access: "workspace",
+            content: SAVED,
+            isSaved: true,
+            version: 2,
+          },
+        ],
+      },
+      response: { ok: true, status: 200 },
+    } as never);
+    useRealtimeStore.setState({ workspaceId: "ws" });
+
+    await useRealtimeStore.getState().syncRevisions();
+
+    const tab = useConsoleStore.getState().tabs[ID];
+    expect(tab.remoteUpdate ?? null).toBeNull();
+    expect(tab.title).toBe("Weekly (2)");
+    expect(tab.filePath).toBe("Weekly (2)");
+    expect(tab.draftRevision).toBe(4);
+  });
+});

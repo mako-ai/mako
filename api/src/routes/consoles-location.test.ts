@@ -574,14 +574,38 @@ describe("a console in the trash holds no name", () => {
       "consoles/Monthly.sql",
     );
 
-    // Restoring the trashed one does not take the name back.
-    expect((await req("PATCH", `/${w._id}/restore`, {}, OWNER)).status).toBe(
-      200,
-    );
+    // Restoring the trashed one does not take the name back — and says
+    // where it is now.
+    const revisionInTrash = (await SavedConsole.findById(w._id))!.draftRevision;
+    const restored = await req("PATCH", `/${w._id}/restore`, {}, OWNER);
+    expect(restored.status).toBe(200);
+    expect(restored.body.console).toMatchObject({
+      id: w._id.toString(),
+      name: "Weekly (2)",
+      path: "Weekly (2)",
+    });
     expect((await SavedConsole.findById(w._id))?.path).toBe(
       "consoles/Weekly (2).sql",
     );
     expect(await fileAt("consoles/Weekly.sql")).toContain("'new'");
+
+    // A tab open on it elsewhere (or reloaded) is told it is back: the
+    // revision sync lists it as changed — with its new name — not deleted.
+    const sync = await req(
+      "POST",
+      "/revisions-sync",
+      { revisions: { [w._id.toString()]: revisionInTrash } },
+      OWNER,
+    );
+    expect(sync.status).toBe(200);
+    expect(sync.body.changed).toEqual([
+      expect.objectContaining({
+        id: w._id.toString(),
+        name: "Weekly (2)",
+        path: "Weekly (2)",
+      }),
+    ]);
+    expect((sync.body as { deleted?: string[] }).deleted).toEqual([]);
   });
 });
 
