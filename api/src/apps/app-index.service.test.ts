@@ -984,7 +984,7 @@ describe("createProject", () => {
     expect(
       await supersessionWarnings(WS, USER, "admin", project.title, takenOver),
     ).toEqual([
-      '/apps/a used to open "A" (apps/Ops/report); it now opens this app.',
+      '/apps/a used to open "A" (apps/Ops/report); it now opens "A".',
     ]);
     expect(findAppInSnapshot(await loadAppsIndex(WS), "a")?.appId).toBe(
       project._id.toString(),

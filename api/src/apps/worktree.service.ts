@@ -1393,7 +1393,9 @@ export async function supersessionWarnings(
       : `/apps/${encodeURIComponent(entry.name)}`;
     warnings.push(
       entry.takenOver
-        ? `${link} used to open ${other}; it now opens this app.`
+        ? // Named: the warning can show while another app is on screen
+          // (the explorer's snackbar after a create or rename).
+          `${link} used to open ${other}; it now opens "${newTitle}".`
         : `${link} now opens "${newTitle}"; it was also an old name of ${other}, which no longer answers to it.`,
     );
   }

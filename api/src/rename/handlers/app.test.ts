@@ -284,7 +284,7 @@ describe("rename", () => {
     invalidateAppsIndexCache(WS);
     const result = await renameObject(editor, "app", { ref: D_ID, slug: "a" });
     expect(result.warnings).toEqual([
-      '/apps/a used to open "A" (apps/baz); it now opens this app.',
+      '/apps/a used to open "A" (apps/baz); it now opens "D".',
     ]);
     expect(await resolveObjectRef(editor, "app", "a")).toMatchObject({
       id: D_ID,
@@ -304,7 +304,7 @@ describe("rename", () => {
     expect(
       (await renameObject(editor, "app", { ref: D_ID, slug: "bar" })).warnings,
     ).toEqual([
-      "/apps/bar used to open another app; it now opens this app.",
+      '/apps/bar used to open another app; it now opens "D".',
       '/apps/a now opens "D"; it was also an old name of another app, which no longer answers to it.',
     ]);
   });
