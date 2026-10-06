@@ -117,14 +117,27 @@ export async function renameNotebook(input: RenameNotebookInput): Promise<{
   // rather than after the edit-burst debounce, so the repo never shows a
   // renamed notebook under its old file name.
   const warnings: string[] = [];
-  const checkpoint = await checkpointNotebook(
+  let checkpoint = await checkpointNotebook(
     input.workspaceId,
     input.notebookId,
     input.actorUserId,
   );
+  if (checkpoint.skippedReason === "target_taken") {
+    // The chosen file name was taken between the choice and the commit (a
+    // push landing it); once more, choosing against the fresh tree.
+    checkpoint = await checkpointNotebook(
+      input.workspaceId,
+      input.notebookId,
+      input.actorUserId,
+    );
+  }
   if (checkpoint.skippedReason === "no_repository") {
     warnings.push(
       "No repository is connected: the notebook was renamed, but it has no .deepnote file to move.",
+    );
+  } else if (checkpoint.skippedReason === "target_taken") {
+    warnings.push(
+      "The notebook was renamed, but its file could not be moved yet (the target name was just taken); it will move on the next save.",
     );
   }
   // Re-read: the checkpoint just moved `path` on the row.

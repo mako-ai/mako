@@ -5,10 +5,41 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { NotebookIndex } from "../../database/workspace-schema";
+
+// A checkpoint whose move the compare-and-swap refused (`target_taken`):
+// `refuse.count` of them, then the real thing — so the rename's retry and
+// its warning can be exercised without racing a real push.
+const hooks = vi.hoisted(() => ({ refuse: { count: 0 } }));
+vi.mock("../../notebooks/notebook-git.service", async importOriginal => {
+  const actual =
+    await importOriginal<
+      typeof import("../../notebooks/notebook-git.service")
+    >();
+  return {
+    ...actual,
+    checkpointNotebook: async (
+      ...args: Parameters<typeof actual.checkpointNotebook>
+    ) => {
+      if (hooks.refuse.count > 0) {
+        hooks.refuse.count -= 1;
+        return { committed: false, skippedReason: "target_taken" as const };
+      }
+      return actual.checkpointNotebook(...args);
+    },
+  };
+});
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -179,6 +210,33 @@ describe("notebook rename", () => {
       parseNotebookFile((await fileAt("notebooks/beta-2.deepnote"))!)?.id,
     ).toBe(id);
     expect(await fileAt("notebooks/alpha.deepnote")).toBeNull();
+  });
+
+  it("a refused move is retried once; refused again, the rename succeeds with a warning and no commit", async () => {
+    const id = await seedNotebook("Retry", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    hooks.refuse.count = 1;
+    const once = await renameObject(u1, "notebook", {
+      ref: id,
+      title: "Retried",
+    });
+    expect(hooks.refuse.count).toBe(0);
+    expect(once.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(once.warnings).toEqual([]);
+    expect(once.after.path).toBe("notebooks/retried.deepnote");
+
+    hooks.refuse.count = 2;
+    const twice = await renameObject(u1, "notebook", {
+      ref: id,
+      title: "Retried again",
+    });
+    expect(hooks.refuse.count).toBe(0);
+    expect(twice.commit).toBeUndefined();
+    expect(twice.warnings.join(" ")).toContain("will move on the next save");
+    expect(twice.after.title).toBe("Retried again");
+    // Not moved yet; the next checkpoint will.
+    expect(twice.after.path).toBe("notebooks/retried.deepnote");
+    expect((await getNotebookStore().get(WS, id))?.name).toBe("Retried again");
   });
 
   it("refuses a slug, an empty title, and another member's private notebook", async () => {
