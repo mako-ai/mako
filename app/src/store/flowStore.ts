@@ -79,6 +79,8 @@ const flowSchema = z.object({
   slug: z.string().nullable().optional(),
   /** Previous slugs that still resolve to this flow (graceful rename). */
   aliases: z.array(z.string()).nullable().optional(),
+  /** A file at main with no row yet (push not synced): not renameable. */
+  gitOnly: z.boolean().optional(),
   dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseName: z.string().nullable().optional(),

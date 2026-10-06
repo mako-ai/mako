@@ -29,7 +29,10 @@ import { Types } from "mongoose";
 import { RepoRequiredError } from "../apps/config";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
-import { freshenBeforeMainWrite } from "../apps/cloud-repo.service";
+import {
+  freshenBeforeMainWrite,
+  mirrorPushNow,
+} from "../apps/cloud-repo.service";
 import {
   BlobPreconditionError,
   DEFAULT_BRANCH,
@@ -394,6 +397,11 @@ export async function renameFlow(
       );
     }
   }
+  // Other instances learn of the rename from the MIRROR: until the push
+  // lands, their first miss on this row fetches nothing and their next
+  // read waits out a throttle. Wait for the push (bounded) before telling
+  // anyone; a slow or failing push keeps today's behaviour (queued, logged).
+  await awaitMirrorPush(workspaceId);
   // Open stores refetch: a form that still holds the old name would
   // otherwise write it back on its next save (see flowNameForSave).
   publishRealtimeEvent(workspaceId, {
@@ -418,4 +426,32 @@ export async function renameFlow(
     commit: commit.commitOid,
     warnings,
   };
+}
+
+const MIRROR_PUSH_WAIT_MS = 15 * 1000;
+async function awaitMirrorPush(workspaceId: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      mirrorPushNow(workspaceId),
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `mirror push not confirmed within ${MIRROR_PUSH_WAIT_MS} ms`,
+              ),
+            ),
+          MIRROR_PUSH_WAIT_MS,
+        );
+      }),
+    ]);
+  } catch (error) {
+    logger.warn("Rename committed; its mirror push is still pending", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

@@ -46,6 +46,7 @@ import {
   blobOid,
 } from "../apps/repository.service";
 import {
+  ensureCommitLocally,
   ensureLocalRepo,
   freshenBeforeMainWrite,
   freshenForServe,
@@ -327,7 +328,11 @@ export async function ensureFlowsDerivedCache(
     return rows.filter(row => row.slug && !slugs.has(row.slug));
   };
   let changed = false;
-  if (orphaned(defs, rows).length > 0 && (await freshenOnMiss(workspaceId))) {
+  const orphans = orphaned(defs, rows);
+  if (
+    orphans.length > 0 &&
+    (await freshenForOrphans(workspaceId, repoDir, orphans))
+  ) {
     defs = await listFlowDefinitionsAtMain(workspaceId);
     changed = true;
   }
@@ -358,8 +363,19 @@ function joinLiveFlows(
   for (const row of rows) {
     if (row.slug) bySlug.set(row.slug, row);
   }
+  // A row whose own file is not here (this instance's cache predates its
+  // rename) and whose old name IS: that file is the row, not a git-only
+  // stranger — listed and opened as the row, under the name this tree has.
+  const defSlugs = new Set(defs.map(def => def.slug));
+  const byAliasOfOrphan = new Map<string, IFlow>();
+  for (const row of rows) {
+    if (!row.slug || defSlugs.has(row.slug)) continue;
+    for (const alias of row.aliases ?? []) {
+      if (!bySlug.has(alias)) byAliasOfOrphan.set(alias, row);
+    }
+  }
   return defs.map(def => {
-    const row = bySlug.get(def.slug) ?? null;
+    const row = bySlug.get(def.slug) ?? byAliasOfOrphan.get(def.slug) ?? null;
     return {
       def,
       row,
@@ -402,7 +418,7 @@ export async function loadLiveFlowById(
     let defs = await listFlowDefinitionsAtMain(workspaceId);
     let current: IFlow = row;
     let def = defs.find(item => item.slug === current.slug);
-    if (!def && (await freshenOnMiss(workspaceId))) {
+    if (!def && (await freshenForOrphans(workspaceId, repoDir, [current]))) {
       // This instance's cache may predate a rename made elsewhere.
       defs = await listFlowDefinitionsAtMain(workspaceId);
       def = defs.find(item => item.slug === current.slug);
@@ -422,7 +438,16 @@ export async function loadLiveFlowById(
         def = defs.find(item => item.slug === current.slug);
       }
     }
-    if (!def) return null;
+    if (!def) {
+      // This instance's cache predates the row's rename and has its file
+      // under an OLD name: that file is the row (as the list shows it).
+      // Served as is — no resync against a file the row has moved on from.
+      const aliasDef = (current.aliases ?? [])
+        .map(alias => defs.find(item => item.slug === alias))
+        .find(item => item !== undefined);
+      if (aliasDef) return { def: aliasDef, row: current, id: current._id };
+      return null;
+    }
     if (
       current.sourceBlobSha !== def.oid ||
       current.lastSeenBlobSha !== def.oid ||
@@ -472,6 +497,8 @@ export function liveFlowToPlain(
         // persisted flow list's validation (every reload cold-started).
         name: live.def.slug,
         aliases: live.def.parsed?.aliases,
+        // A file with no row yet: not runnable, not renameable until synced.
+        gitOnly: true,
         syncMode: "full",
         enabled: false,
         createdAt: new Date(0),
@@ -551,7 +578,14 @@ export async function ensureFlowDerivedCache(flow: {
     // instance's local main may predate a rename made elsewhere (the file
     // now lives under the new slug). Fetch once (throttled) and look again
     // before concluding anything.
-    if (await freshenOnMiss(workspaceId)) blob = await readAtMain();
+    const guarded = await Flow.findById(flow._id)
+      .select("lastRenameCommit")
+      .lean();
+    if (
+      await freshenForOrphans(workspaceId, repoDir, guarded ? [guarded] : [])
+    ) {
+      blob = await readAtMain();
+    }
   }
   if (blob === null) {
     // Or a rename whose commit never reached main, with no push since to
@@ -875,6 +909,70 @@ async function freshenOnMiss(workspaceId: string): Promise<boolean> {
 export function resetFreshenOnMissThrottle(workspaceId?: string): void {
   if (workspaceId) lastMissFreshenAt.delete(workspaceId);
   else lastMissFreshenAt.clear();
+  lastCommitFetchAt.clear();
+}
+
+/**
+ * A miss for a row that was RENAMED is more specific than a miss: the row
+ * names the commit it needs (`lastRenameCommit`). When that commit is not
+ * in this instance's repo, fetch for it now — coalesced per (workspace,
+ * sha) by `ensureCommitLocally`, with a short backoff of its own so a miss
+ * before the mirror has the commit does not burn the 30 s throttle for
+ * the miss that comes after the push lands. Returns true when the commit
+ * is local afterwards.
+ */
+const COMMIT_FETCH_BACKOFF_MS = 5 * 1000;
+const lastCommitFetchAt = new Map<string, number>();
+async function fetchRenameCommit(
+  workspaceId: string,
+  repoDir: string,
+  sha: string,
+): Promise<boolean> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) return false;
+  const present = () =>
+    runGitQuiet(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`]);
+  // Present but not on main (this instance made the rename, or fetched it
+  // once and main was then reset) is not this helper's case: nothing to
+  // fetch FOR; the caller's throttled freshen decides.
+  if (await present()) return false;
+  const key = `${workspaceId}#${sha}`;
+  const last = lastCommitFetchAt.get(key) ?? 0;
+  if (Date.now() - last < COMMIT_FETCH_BACKOFF_MS) return false;
+  lastCommitFetchAt.set(key, Date.now());
+  await ensureCommitLocally(workspaceId, sha);
+  return present();
+}
+
+async function runGitQuiet(args: string[]): Promise<boolean> {
+  const { runGit } = await import("../apps/git");
+  try {
+    await runGit(args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The read paths' answer to a row whose file is not at main here: the
+ * rename commit it names if it has one (not throttled), else a plain
+ * freshen (throttled). True when anything was fetched.
+ */
+async function freshenForOrphans(
+  workspaceId: string,
+  repoDir: string,
+  orphans: Array<Pick<IFlow, "lastRenameCommit">>,
+): Promise<boolean> {
+  let fetched = false;
+  for (const row of orphans) {
+    if (row.lastRenameCommit) {
+      if (await fetchRenameCommit(workspaceId, repoDir, row.lastRenameCommit)) {
+        fetched = true;
+      }
+    }
+  }
+  if (!fetched) fetched = await freshenOnMiss(workspaceId);
+  return fetched;
 }
 
 /**
@@ -1209,10 +1307,17 @@ export async function rekeyRenamedFlows(args: {
   const removedRows: IFlow[] = [];
   for (const row of rows) {
     if (row.slug === undefined || fileBySlug.has(row.slug)) continue;
-    // A row renamed by a recent commit this tree does not contain is not
-    // "gone": the tree is older than the rename. Leave it out of the
-    // pairing — its old file in this tree is not a candidate for anything.
-    if (await renameGuardActive(repoDir, head, row)) {
+    // A row renamed by a recent commit this tree does not contain, whose
+    // OLD file is still in this tree, is not "gone": the tree is older than
+    // the rename. Leave it out of the pairing — that old file is not a
+    // candidate for anything. But a guarded row whose old name is gone
+    // too has lost a race (a laptop `git mv` or another rename won the
+    // mirror): it must pair like any other, or the winner's file becomes
+    // a new flow and this row is torn down.
+    const oldNamePresent = (row.aliases ?? []).some(alias =>
+      fileBySlug.has(alias),
+    );
+    if (oldNamePresent && (await renameGuardActive(repoDir, head, row))) {
       logger.info("Tree predates a flow rename; not pairing its old slug", {
         workspaceId,
         slug: row.slug,
@@ -1821,6 +1926,30 @@ export async function syncFlowsFromRepo(
       result.updated++;
     }
     logger.info("Flow synced from repo", { workspaceId, slug, isNew });
+  }
+
+  // A row still under a rename guard whose file is in neither its new nor
+  // any old name in this tree is not a removal: its rename commit may be
+  // on its way to the mirror, or it lost a race nothing paired. Keep it,
+  // as the dbt sweep keeps guarded rows — a teardown is not recoverable.
+  const desiredIds = new Set(desired.map(d => d.flowId));
+  for (const row of await Flow.find({
+    workspaceId,
+    lastRenameCommit: { $exists: true },
+  })) {
+    if (!row.slug || desiredIds.has(String(row._id))) continue;
+    if (fileSlugs.has(row.slug)) continue;
+    if (!(await renameGuardActive(repoDir, head, row))) continue;
+    logger.info("Guarded flow has no file in this tree; keeping it", {
+      workspaceId,
+      slug: row.slug,
+      lastRenameCommit: row.lastRenameCommit,
+    });
+    desired.push({
+      slug: row.slug,
+      file: flowToFile(row),
+      flowId: String(row._id),
+    });
   }
 
   // Removal is the reconciler's, end to end. A flow is a running stream, so a

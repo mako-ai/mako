@@ -26,6 +26,8 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
+  readBlob,
+  repoDirFor,
   resolveCommit,
   type GitAuthor,
 } from "../apps/repository.service";
@@ -33,8 +35,10 @@ import { Flow, type IFlow } from "../database/workspace-schema";
 import {
   flowFilePath,
   flowToFile,
+  parseFlowFile,
   serializeFlowFile,
 } from "./flow-config-files";
+import { mergedAliases } from "../rename/flow-dbt-job-pairing";
 
 const logger = loggers.api("flow-config");
 
@@ -101,9 +105,20 @@ export async function commitFlowFile(
     return { ok: true, changed: false };
   }
   const workspaceId = flow.workspaceId.toString();
-  const contents = serializeFlowFile(flowToFile(flow));
-  const sha = blobOid(contents);
   const invalid = typeof flow.definitionInvalid?.reason === "string";
+  // The file is the record of a flow's old names: an alias the ROW lost to
+  // a newcomer (current wins) is still listed in the file, and a save that
+  // regenerates the file from the row must not erase it — once the
+  // newcomer is gone the old name must answer to this flow again. Read
+  // what main lists and keep it.
+  const fromMain = await flowAliasesAtMain(workspaceId, flow.slug);
+  const projected = flowToFile(flow);
+  const aliases = mergedAliases(projected.aliases, fromMain, flow.slug);
+  const contents = serializeFlowFile({
+    ...projected,
+    ...(aliases.length > 0 ? { aliases } : {}),
+  });
+  const sha = blobOid(contents);
   // Nothing to write only when the row is healthy AND the repo already
   // holds this exact definition. An INVALID row holds its last valid
   // definition while main holds something broken: that definition is
@@ -181,6 +196,22 @@ export async function commitFlowFile(
       error: message,
     });
     return { ok: false, changed: false, error: message };
+  }
+}
+
+/** The `aliases:` the flow's file at main lists, or none (no repo, no file). */
+async function flowAliasesAtMain(
+  workspaceId: string,
+  slug: string,
+): Promise<string[]> {
+  try {
+    const repoDir = repoDirFor(workspaceId);
+    const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+    if (!head) return [];
+    const blob = await readBlob(repoDir, head, flowFilePath(slug));
+    return blob.isBinary ? [] : (parseFlowFile(blob.contents)?.aliases ?? []);
+  } catch {
+    return [];
   }
 }
 
