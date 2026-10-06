@@ -30,6 +30,8 @@ export default defineConfig({
       "src/apps/adversarial.test.ts",
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
+      // The editor's first save (PUT) is a compare-and-swap against main.
+      "src/routes/consoles-first-save.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",

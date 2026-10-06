@@ -810,7 +810,17 @@ export class ConsoleManager {
       folder.isPrivate = access === "private";
       await folder.save();
       try {
-        await this.assertFolderSubtreePathsFree(folderId, workspaceId, access);
+        await this.assertFolderScopeFlipAllowed(
+          folderId,
+          workspaceId,
+          access,
+          userId,
+        );
+        await this.assertFolderSubtreePathsFree(
+          folderId,
+          workspaceId,
+          this.ownedRescope(access, userId),
+        );
         await this.propagateFolderAccess(folderId, workspaceId, userId, access);
         await this.reprojectFolderSubtree(
           folderId,
@@ -1240,6 +1250,37 @@ export class ConsoleManager {
     });
     if (!current) return null;
 
+    // Who can see it is the row's access AND its folder chain (a private
+    // console in a workspace folder is workspace-visible by inheritance).
+    // Changing either — the row's `access`, or the EFFECTIVE visibility by
+    // a move into / out of a workspace folder — is the owner's call; a
+    // shared editor keeps the visibility the owner chose. Measured on the
+    // row AS LOADED, before any change below is applied to it.
+    const visibleBefore = await this.effectiveVisibility(current);
+    const accessChanges =
+      change.access !== undefined &&
+      change.access !== ConsoleManager.resolveAccess(current);
+    const probe = {
+      ...(current.toObject() as unknown as Record<string, unknown>),
+      ...(change.folderId !== undefined
+        ? {
+            folderId: change.folderId
+              ? new Types.ObjectId(change.folderId)
+              : undefined,
+          }
+        : {}),
+      ...(change.access
+        ? { access: change.access, isPrivate: change.access === "private" }
+        : {}),
+    } as unknown as ISavedConsole;
+    const visibleAfter = await this.effectiveVisibility(probe);
+    if (accessChanges || visibleBefore !== visibleAfter) {
+      const ownerId = (current.owner_id || current.createdBy)?.toString();
+      if (options.userId && ownerId !== options.userId) {
+        throw new ConsoleScopeError();
+      }
+    }
+
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
     if (change.name !== undefined) {
       current.name = change.name;
@@ -1252,15 +1293,6 @@ export class ConsoleManager {
       updateFields.folderId = change.folderId
         ? new Types.ObjectId(change.folderId)
         : null;
-    }
-    if (
-      change.access &&
-      change.access !== ConsoleManager.resolveAccess(current)
-    ) {
-      const ownerId = (current.owner_id || current.createdBy)?.toString();
-      if (options.userId && ownerId !== options.userId) {
-        throw new ConsoleScopeError();
-      }
     }
     if (change.access) {
       current.access = change.access;
@@ -1408,6 +1440,37 @@ export class ConsoleManager {
       },
       { userId, verb: "move", publish: false, bumpRevision: false },
     );
+  }
+
+  /**
+   * Who can see a console: "workspace" when its own access is workspace OR
+   * any folder on its chain is a workspace folder (the inheritance rule
+   * `canReadWithInheritance` applies), else "private".
+   */
+  async effectiveVisibility(
+    console: Pick<ISavedConsole, "access" | "isPrivate" | "folderId">,
+  ): Promise<ConsoleAccessLevel> {
+    if (
+      ConsoleManager.resolveAccess(console as ISavedConsole) === "workspace"
+    ) {
+      return "workspace";
+    }
+    let currentFolderId = console.folderId?.toString();
+    for (let depth = 0; currentFolderId && depth < 32; depth++) {
+      const folder = (await ConsoleFolder.findById(currentFolderId)
+        .select("access isPrivate parentId")
+        .lean()) as {
+        access?: string;
+        isPrivate?: boolean;
+        parentId?: Types.ObjectId;
+      } | null;
+      if (!folder) break;
+      const folderAccess =
+        folder.access || (folder.isPrivate ? "private" : "workspace");
+      if (folderAccess === "workspace") return "workspace";
+      currentFolderId = folder.parentId?.toString();
+    }
+    return "private";
   }
 
   /** Throw `ConsolePathTakenError` when a file or a live saved row holds `path`. */
@@ -1685,7 +1748,7 @@ export class ConsoleManager {
   private async assertFolderSubtreePathsFree(
     folderId: string,
     workspaceId: string,
-    access?: ConsoleAccessLevel,
+    nextAccess?: (row: ISavedConsole) => ConsoleAccessLevel | undefined,
   ): Promise<void> {
     const rows = await this.consolesUnderFolder(folderId, workspaceId);
     if (rows.length === 0) return;
@@ -1705,16 +1768,62 @@ export class ConsoleManager {
       ...outside.map(r => r.path as string),
     ]);
     const folderCache = new Map();
+    // Two consoles INSIDE the subtree landing on one path (two owners' "x"
+    // meeting in the workspace tree) is a merge the commit's CAS cannot
+    // see: refused here, as a taken path.
+    const chosen = new Set<string>();
     for (const row of rows) {
+      const access = nextAccess?.(row);
       const probe = {
         ...(row.toObject() as Record<string, unknown>),
         ...(access ? { access, isPrivate: access === "private" } : {}),
       } as unknown as RowLikeForPath;
       const wanted = await repoPathForRow(probe, folderCache);
-      if (wanted !== row.path && taken.has(wanted)) {
+      if ((wanted !== row.path && taken.has(wanted)) || chosen.has(wanted)) {
         throw new ConsolePathTakenError(wanted);
       }
+      chosen.add(wanted);
     }
+  }
+
+  /**
+   * A folder flipped to the workspace publishes every console under it by
+   * inheritance — so only the actor's own private consoles may be there;
+   * someone else's private console (shared with the actor, filed into the
+   * actor's folder) is not theirs to publish, and the move is refused
+   * rather than leaving it private-but-visible. A flip to private
+   * re-scopes only the actor's own consoles (others keep their scope and
+   * their files), exactly as `propagateFolderAccess` has always done.
+   */
+  private async assertFolderScopeFlipAllowed(
+    folderId: string,
+    workspaceId: string,
+    access: ConsoleAccessLevel,
+    actorId: string | undefined,
+  ): Promise<void> {
+    if (access !== "workspace" || !actorId) return;
+    const rows = await this.consolesUnderFolder(folderId, workspaceId);
+    for (const row of rows) {
+      const ownerId = (row.owner_id || row.createdBy)?.toString();
+      if (
+        ConsoleManager.resolveAccess(row) === "private" &&
+        ownerId !== actorId
+      ) {
+        throw new ConsoleScopeError();
+      }
+    }
+  }
+
+  /** The access a folder-level flip gives one console: the actor's own only. */
+  private ownedRescope(
+    access: ConsoleAccessLevel | undefined,
+    actorId: string | undefined,
+  ): (row: ISavedConsole) => ConsoleAccessLevel | undefined {
+    return row => {
+      if (!access) return undefined;
+      const ownerId = (row.owner_id || row.createdBy)?.toString();
+      return !actorId || ownerId === actorId ? access : undefined;
+    };
   }
 
   /**
@@ -2211,16 +2320,33 @@ export class ConsoleManager {
       workspaceId,
     );
     try {
-      // Destinations free? Asked with the folder's new parent/access in
-      // place and BEFORE any console row changes.
-      await this.assertFolderSubtreePathsFree(folderId, workspaceId, access);
+      // Destinations free, and the flip the actor's to make? Asked with
+      // the folder's new parent/access in place and BEFORE any console
+      // row changes.
       if (access) {
-        // A folder's access moves its consoles between the workspace and
-        // the owner's private root (apps.md §16.2).
+        await this.assertFolderScopeFlipAllowed(
+          folderId,
+          workspaceId,
+          access,
+          userId,
+        );
+      }
+      await this.assertFolderSubtreePathsFree(
+        folderId,
+        workspaceId,
+        this.ownedRescope(access, userId),
+      );
+      if (access) {
+        // A folder's access moves ITS OWNER'S consoles between the
+        // workspace and the private root (apps.md §16.2); another member's
+        // console filed here keeps the scope its owner chose.
         await SavedConsole.updateMany(
           {
             workspaceId: new Types.ObjectId(workspaceId),
             folderId: new Types.ObjectId(folderId),
+            ...(userId
+              ? { $or: [{ owner_id: userId }, { createdBy: userId }] }
+              : {}),
           },
           { $set: { access, isPrivate: access === "private" } },
         );

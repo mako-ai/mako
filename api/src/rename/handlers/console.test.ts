@@ -358,6 +358,113 @@ describe("rename", () => {
     expect(both.warnings).toEqual(expected.warnings);
   });
 
+  it("a private path files the console into the OWNER'S private folder, not the workspace folder of that name", async () => {
+    const team = await manager.createFolder(
+      "Team",
+      WS,
+      OWNER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const c = await manager.saveConsole(
+      "report",
+      "SELECT 'secret'\n",
+      WS,
+      OWNER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql", folderId: team._id.toString() },
+    );
+    expect(c.path).toBe("consoles/Team/report.sql");
+    const res = await renameObject(owner, "console", {
+      ref: c._id.toString(),
+      slug: `users/${OWNER}/consoles/Team/report.sql`,
+    });
+    expect(res.after.path).toBe(`users/${OWNER}/consoles/Team/report.sql`);
+    const row = (await SavedConsole.findById(c._id))!;
+    expect(row.access).toBe("private");
+    expect(row.folderId?.toString()).not.toBe(team._id.toString());
+    const privateTeam = await ConsoleFolder.findById(row.folderId);
+    expect(privateTeam?.name).toBe("Team");
+    expect(privateTeam?.ownerId?.toString()).toBe(OWNER);
+    expect(
+      ConsoleManager.resolveAccess({
+        access: privateTeam?.access,
+        isPrivate: privateTeam?.isPrivate,
+      } as never),
+    ).toBe("private");
+    expect(await manager.canReadWithInheritance(row, OTHER)).toBe(false);
+    const split = await manager.listConsolesSplit(WS, OTHER, "member");
+    const flat = (
+      items: Array<{ id?: string; children?: unknown[] }>,
+    ): Array<{ id?: string }> =>
+      items.flatMap(i => [i, ...flat((i.children ?? []) as never[])]);
+    expect(
+      flat(split.sharedWithWorkspace as never[]).some(
+        i => i.id === c._id.toString(),
+      ),
+    ).toBe(false);
+    // A shared editor cannot do the reverse (into a workspace folder by path).
+    const secret = await manager.saveConsole(
+      "secret",
+      "SELECT 1\n",
+      WS,
+      OWNER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: secret._id },
+      { $set: { sharedWith: [{ userId: OTHER, role: "editor" }] } },
+    );
+    await expect(
+      renameObject(other, "console", {
+        ref: secret._id.toString(),
+        slug: `users/${OWNER}/consoles/Team/secret.sql`,
+      }),
+    ).resolves.toMatchObject({
+      after: { path: `users/${OWNER}/consoles/Team/secret.sql` },
+    });
+    expect(
+      await manager.canReadWithInheritance(
+        (await SavedConsole.findById(secret._id))!,
+        new Types.ObjectId().toString(),
+      ),
+    ).toBe(false);
+  });
+
+  it("a full path without its extension is the console's file type, never a folder called 'consoles'", async () => {
+    const c = await seed("report");
+    const id = c._id.toString();
+    const moved = await renameObject(owner, "console", {
+      ref: id,
+      slug: "consoles/Team/report",
+    });
+    expect(moved.after.path).toBe("consoles/Team/report.sql");
+    expect(
+      await ConsoleFolder.countDocuments({ workspaceId: WS, name: "consoles" }),
+    ).toBe(0);
+    const priv = await renameObject(owner, "console", {
+      ref: id,
+      slug: `users/${OWNER}/consoles/Team/report`,
+    });
+    expect(priv.after.path).toBe(`users/${OWNER}/consoles/Team/report.sql`);
+    expect(
+      await ConsoleFolder.countDocuments({ workspaceId: WS, name: "users" }),
+    ).toBe(0);
+    await expect(
+      renameObject(owner, "console", {
+        ref: id,
+        slug: "users/somebody/report",
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(await ConsoleFolder.countDocuments({ workspaceId: WS })).toBe(2);
+  });
+
   it("refuses a title with a slash, a foreign extension, a taken path; a no-op succeeds", async () => {
     const a = await seed("a");
     await seed("b");

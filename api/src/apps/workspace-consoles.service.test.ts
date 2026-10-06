@@ -630,6 +630,212 @@ describe("write-through", () => {
     );
   });
 
+  it("a folder flip to workspace never publishes someone else's private console, nor merges two onto one file", async () => {
+    const EDITOR = new Types.ObjectId().toString();
+    const team = await manager.createFolder(
+      "Team",
+      WS,
+      EDITOR,
+      undefined,
+      false,
+      "private",
+    );
+    const theirs = await manager.saveConsole(
+      "x",
+      "SELECT 'owner secret'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: theirs._id },
+      { $set: { sharedWith: [{ userId: EDITOR, role: "editor" }] } },
+    );
+    const mine = await manager.saveConsole(
+      "x",
+      "SELECT 'editor own'\n",
+      WS,
+      EDITOR,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql", folderId: team._id.toString() },
+    );
+    expect(mine.path).toBe(`users/${EDITOR}/consoles/Team/x.sql`);
+    // The editor files the owner's console into their own private folder
+    // (same effective visibility: allowed)…
+    expect(
+      await manager.moveConsole(
+        theirs._id.toString(),
+        WS,
+        team._id.toString(),
+        undefined,
+        EDITOR,
+      ),
+    ).toBe(true);
+    expect((await SavedConsole.findById(theirs._id))?.path).toBe(
+      `users/${USER}/consoles/Team/x.sql`,
+    );
+    // …then flips the folder to the workspace: refused — not theirs to publish.
+    await expect(
+      manager.moveFolder(team._id.toString(), WS, null, "workspace", EDITOR),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    const a = await SavedConsole.findById(theirs._id);
+    const b = await SavedConsole.findById(mine._id);
+    expect(a?.access).toBe("private");
+    expect(b?.access).toBe("private");
+    expect(
+      await manager.canReadWithInheritance(a!, new Types.ObjectId().toString()),
+    ).toBe(false);
+    expect(await fileAt("consoles/Team/x.sql")).toBeNull();
+    expect(await fileAt(`users/${USER}/consoles/Team/x.sql`)).toContain(
+      "owner secret",
+    );
+    // Same owner, two "y" that would meet in the workspace tree: refused.
+    // (A workspace console filed into a private folder keeps its scope and
+    // its workspace path; flipping the folder would land the private one
+    // on that very file.)
+    const own = await manager.createFolder(
+      "Mine",
+      WS,
+      USER,
+      undefined,
+      false,
+      "private",
+    );
+    const priv = await manager.saveConsole(
+      "y",
+      "SELECT 'private y'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql", folderId: own._id.toString() },
+    );
+    const pub = await manager.saveConsole(
+      "y",
+      "SELECT 'public y'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    expect(
+      await manager.moveConsole(
+        pub._id.toString(),
+        WS,
+        own._id.toString(),
+        undefined,
+        USER,
+      ),
+    ).toBe(true);
+    expect((await SavedConsole.findById(priv._id))?.path).toBe(
+      `users/${USER}/consoles/Mine/y.sql`,
+    );
+    expect((await SavedConsole.findById(pub._id))?.path).toBe(
+      "consoles/Mine/y.sql",
+    );
+    await expect(
+      manager.moveFolder(own._id.toString(), WS, null, "workspace", USER),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    expect((await SavedConsole.findById(priv._id))?.access).toBe("private");
+    expect(await fileAt("consoles/Mine/y.sql")).toContain("public y");
+    expect(await fileAt(`users/${USER}/consoles/Mine/y.sql`)).toContain(
+      "private y",
+    );
+  });
+
+  it("a shared editor cannot move the owner's private console where the workspace sees it", async () => {
+    const EDITOR = new Types.ObjectId().toString();
+    const OTHER = new Types.ObjectId().toString();
+    const pub = await manager.createFolder(
+      "Public",
+      WS,
+      OTHER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const c = await manager.saveConsole(
+      "secret",
+      "SELECT 'secret'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { sharedWith: [{ userId: EDITOR, role: "editor" }] } },
+    );
+    // "Move to…" into a workspace folder with no access sent: the folder
+    // would publish it by inheritance — the owner's call, not the editor's.
+    await expect(
+      manager.moveConsole(
+        c._id.toString(),
+        WS,
+        pub._id.toString(),
+        undefined,
+        EDITOR,
+      ),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    const row = await SavedConsole.findById(c._id);
+    expect(row?.folderId).toBeFalsy();
+    expect(await manager.canReadWithInheritance(row!, OTHER)).toBe(false);
+    // The editor may still rename it within its scope, and file it into a
+    // private folder of their own (still private).
+    expect(
+      await manager.renameConsole(c._id.toString(), "secret-2", WS, EDITOR),
+    ).toBe(true);
+    const own = await manager.createFolder(
+      "Mine",
+      WS,
+      EDITOR,
+      undefined,
+      false,
+      "private",
+    );
+    expect(
+      await manager.moveConsole(
+        c._id.toString(),
+        WS,
+        own._id.toString(),
+        undefined,
+        EDITOR,
+      ),
+    ).toBe(true);
+    expect(
+      await manager.canReadWithInheritance(
+        (await SavedConsole.findById(c._id))!,
+        OTHER,
+      ),
+    ).toBe(false);
+    // The owner may publish it.
+    expect(
+      await manager.moveConsole(
+        c._id.toString(),
+        WS,
+        pub._id.toString(),
+        undefined,
+        USER,
+      ),
+    ).toBe(true);
+    expect(
+      await manager.canReadWithInheritance(
+        (await SavedConsole.findById(c._id))!,
+        OTHER,
+      ),
+    ).toBe(true);
+  });
+
   it("'Move to…' with a new name is ONE commit (rename + move together)", async () => {
     const saved = await manager.saveConsole(
       "draft name",

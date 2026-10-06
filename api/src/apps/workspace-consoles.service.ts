@@ -203,6 +203,12 @@ export async function folderSegmentsFor(
  * Find-or-create the folder chain for a directory. Folders are organization,
  * not authorization (§10), but a folder created under `users/<id>/consoles`
  * is that user's private folder so the tree renders where the file lives.
+ *
+ * The lookup is SCOPED: `users/<id>/consoles/Team` is that user's private
+ * "Team", never the workspace folder of the same name (a private console
+ * filed into a workspace folder is workspace-visible by inheritance — the
+ * folder, not the file, would have published it), and `consoles/Team` is
+ * the workspace "Team", never someone's private one.
  */
 export async function ensureFolderChain(
   segments: string[],
@@ -210,6 +216,13 @@ export async function ensureFolderChain(
   scope: { access: ConsoleAccessLevel; ownerId?: string },
 ): Promise<Types.ObjectId | undefined> {
   const ws = new Types.ObjectId(workspaceId);
+  const scopeFilter =
+    scope.access === "private"
+      ? {
+          ownerId: scope.ownerId,
+          $or: [{ access: "private" }, { isPrivate: true }],
+        }
+      : { $nor: [{ access: "private" }, { isPrivate: true }] };
   let parentId: Types.ObjectId | undefined;
   for (const name of segments) {
     const parentFilter = parentId
@@ -218,7 +231,7 @@ export async function ensureFolderChain(
     let folder = await ConsoleFolder.findOne({
       workspaceId: ws,
       name,
-      ...parentFilter,
+      $and: [parentFilter, scopeFilter],
     })
       .select("_id")
       .lean<{ _id: Types.ObjectId } | null>();
@@ -827,6 +840,14 @@ export async function commitConsoleState(input: {
   previousPath?: string | null;
   actorUserId?: string | null;
   message: string;
+  /**
+   * The console has no file yet (a draft's first save, a never-committed
+   * row): the path must be free at commit time. A file a laptop pushed
+   * there, synced or not, is never overwritten by a first save — the
+   * compare-and-swap refuses (`BlobPreconditionError`) and the caller says
+   * so. A console that already owns a file saves over it as before.
+   */
+  expectAbsent?: boolean;
 }): Promise<ConsoleCommitResult & { path: string; sourceBlobSha: string }> {
   const workspaceId = input.row.workspaceId.toString();
   const path = await repoPathForRow(input.row);
@@ -840,6 +861,9 @@ export async function commitConsoleState(input: {
     actorUserId: input.actorUserId,
     mutation: { writes, deletes },
     message: input.message,
+    expectBlobs: input.expectAbsent
+      ? { [path]: null, [chartSidecarPath(path)]: null }
+      : undefined,
   });
   return { ...result, path, sourceBlobSha: blobOid(writes[path]) };
 }
@@ -1004,6 +1028,11 @@ export async function commitConsoleMoves(input: {
       }
       if (sourceBlobSha && file.oid !== sourceBlobSha) {
         throw new BlobPreconditionError(previousPath, sourceBlobSha, file.oid);
+      }
+      // Two consoles of the batch landing on one file would be "last wins"
+      // under a CAS that cannot see it; the caller pre-checks, this holds.
+      if (path in writes) {
+        throw new Error(`Two consoles would be written to ${path}`);
       }
       writes[path] = file.contents;
       if (file.sidecar) writes[chartSidecarPath(path)] = file.sidecar.contents;
@@ -2002,6 +2031,8 @@ export async function projectSavedConsole(input: {
     previousPath,
     actorUserId: input.actorUserId,
     message: input.message,
+    // No file of its own yet: a first save must find its path free.
+    expectAbsent: !previousPath,
   });
   const revert = async () => {
     try {

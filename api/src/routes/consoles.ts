@@ -1468,15 +1468,32 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
 
         // Git first (apps.md §16.3), then the guarded row write; a lost
         // guard reverts the commit.
-        const projected = await projectSavedConsole({
-          workspaceId,
-          current: current ?? null,
-          previousPath: liveFile?.path ?? null,
-          set: setFields,
-          onInsert: setOnInsertFields,
-          actorUserId: user.id,
-          message: body.comment?.trim() || `save: ${consolePath}`,
-        });
+        let projected: Awaited<ReturnType<typeof projectSavedConsole>>;
+        try {
+          projected = await projectSavedConsole({
+            workspaceId,
+            current: current ?? null,
+            previousPath: liveFile?.path ?? null,
+            set: setFields,
+            onInsert: setOnInsertFields,
+            actorUserId: user.id,
+            message: body.comment?.trim() || `save: ${consolePath}`,
+          });
+        } catch (error) {
+          // A first save (draft or brand-new) found a file already at its
+          // path on main — pushed meanwhile, synced or not. The commit's
+          // compare-and-swap refused it; nothing was written.
+          if (error instanceof BlobPreconditionError) {
+            return c.json(
+              {
+                success: false,
+                error: `A console already exists at ${error.path}`,
+              },
+              409,
+            );
+          }
+          throw error;
+        }
         setFields.path = projected.path;
         setFields.sourceBlobSha = projected.sourceBlobSha;
 
@@ -1563,16 +1580,32 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           setOnInsertFields.name = body.title || "Untitled";
         }
 
-        const projected = await projectSavedConsole({
-          workspaceId,
-          current: existingById ?? null,
-          set: setFields,
-          onInsert: setOnInsertFields,
-          actorUserId: user.id,
-          message:
-            body.comment?.trim() ||
-            `save: ${setFields.name ?? existingById?.name ?? "console"}`,
-        });
+        let projected: Awaited<ReturnType<typeof projectSavedConsole>>;
+        try {
+          projected = await projectSavedConsole({
+            workspaceId,
+            current: existingById ?? null,
+            set: setFields,
+            onInsert: setOnInsertFields,
+            actorUserId: user.id,
+            message:
+              body.comment?.trim() ||
+              `save: ${setFields.name ?? existingById?.name ?? "console"}`,
+          });
+        } catch (error) {
+          // A first save found a file already at its path on main (pushed
+          // meanwhile): the compare-and-swap refused it, nothing written.
+          if (error instanceof BlobPreconditionError) {
+            return c.json(
+              {
+                success: false,
+                error: `A console already exists at ${error.path}`,
+              },
+              409,
+            );
+          }
+          throw error;
+        }
         setFields.path = projected.path;
         setFields.sourceBlobSha = projected.sourceBlobSha;
 
