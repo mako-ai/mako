@@ -65,7 +65,6 @@ const h = vi.hoisted(() => {
       return "t1";
     }),
     closeAppsTabsFor: vi.fn(),
-    resolveObjectRef: vi.fn().mockResolvedValue(null),
     fetchApps: vi.fn().mockResolvedValue(undefined),
     apps: [
       {
@@ -152,9 +151,6 @@ vi.mock("../apps-runtime/shell", () => ({
     h.focusAppsFileTab(...args),
   focusAppsTab: (...args: Parameters<typeof h.focusAppsTab>) =>
     h.focusAppsTab(...args),
-}));
-vi.mock("../lib/object-links", () => ({
-  resolveObjectRef: (...args: unknown[]) => h.resolveObjectRef(...args),
 }));
 vi.mock("../store/appsStore", () => {
   const state = { fetchApps: h.fetchApps, apps: h.apps };

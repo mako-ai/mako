@@ -34,7 +34,6 @@ import {
   closeNotebookTabsFor,
   focusNotebookTab,
 } from "../notebook-runtime/shell";
-import { resolveObjectRef } from "../lib/object-links";
 import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
