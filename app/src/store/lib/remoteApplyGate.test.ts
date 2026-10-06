@@ -57,6 +57,22 @@ describe("decideRemoteApply", () => {
     );
   });
 
+  it("adopts only the metadata when the tab holds unsaved edits but the server content is still their base (a rename or move, the user's own included)", () => {
+    expect(
+      decideRemoteApply(
+        input({ unsavedLocalEdits: true, serverContentUnchanged: true }),
+      ),
+    ).toBe("metadata");
+  });
+
+  it("still banners when the server content moved, whatever else changed", () => {
+    expect(
+      decideRemoteApply(
+        input({ unsavedLocalEdits: true, serverContentUnchanged: false }),
+      ),
+    ).toBe("banner");
+  });
+
   it("applies divergent content to clean tabs", () => {
     expect(decideRemoteApply(input({}))).toBe("apply");
   });

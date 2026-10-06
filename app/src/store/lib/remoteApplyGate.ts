@@ -8,6 +8,11 @@
  *  - "fast-forward"  — local content already matches the server copy:
  *                      advance revision/metadata but DO NOT touch the Monaco
  *                      buffer (it may be ahead by in-flight keystrokes);
+ *  - "metadata"      — the tab holds unsaved local edits but the server
+ *                      copy's content is still the one they are based on
+ *                      (the revision moved for a rename, a move, a run):
+ *                      adopt name/place/revision, keep every local edit,
+ *                      show nothing — there is nothing to reconcile;
  *  - "banner"        — contents diverge while the tab holds unsaved local
  *                      edits: never merge silently, surface the affordance;
  *  - "apply"         — clean tab, divergent content: replace store + buffer.
@@ -28,9 +33,22 @@ export interface RemoteApplyDecisionInput {
    * is NOT the `isDirty` pinned-tab flag.
    */
   unsavedLocalEdits: boolean;
+  /**
+   * The server copy's content is the one this tab's local state is based
+   * on (its last save / last synced draft): the revision moved for
+   * something other than content — a rename or move, the user's own
+   * included. Without this, renaming a console with unsaved edits showed
+   * "updated by another collaborator" for the user's own rename.
+   */
+  serverContentUnchanged?: boolean;
 }
 
-export type RemoteApplyDecision = "skip" | "fast-forward" | "banner" | "apply";
+export type RemoteApplyDecision =
+  | "skip"
+  | "fast-forward"
+  | "metadata"
+  | "banner"
+  | "apply";
 
 export function decideRemoteApply(
   input: RemoteApplyDecisionInput,
@@ -38,6 +56,8 @@ export function decideRemoteApply(
   if (!input.tabExists) return "skip";
   if ((input.tabRevision ?? 0) >= input.entryRevision) return "skip";
   if (input.contentMatches) return "fast-forward";
-  if (input.unsavedLocalEdits) return "banner";
+  if (input.unsavedLocalEdits) {
+    return input.serverContentUnchanged ? "metadata" : "banner";
+  }
   return "apply";
 }

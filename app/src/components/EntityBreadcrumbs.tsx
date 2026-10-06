@@ -13,6 +13,8 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
 import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
+import { consoleSectionLabel } from "../lib/console-relocation";
+import { useAuth } from "../contexts/auth-context";
 
 interface BreadcrumbSegment {
   label: string;
@@ -22,6 +24,8 @@ interface BreadcrumbSegment {
 
 interface EntityContext {
   workspaceName: string;
+  /** The signed-in user (a console shared with them is not theirs). */
+  currentUserId?: string;
   connectionName?: string;
   dashboardTitle?: string;
   dashboardDataSourceName?: string;
@@ -62,7 +66,11 @@ function segmentsForTab(
           { label: "Unsaved console", italic: true },
         ];
       }
-      const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
+      const group = consoleSectionLabel(
+        tab.access,
+        tab.owner_id,
+        ctx.currentUserId,
+      );
       // Single source of truth: the leaf is the live display name (tab.title);
       // the folder trail is derived from the full path by stripping that leaf
       // (robust to a leaf name that itself contains slashes — legacy data).
@@ -167,6 +175,7 @@ interface EntityBreadcrumbsProps {
 function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
   const tab = useConsoleStore(s => s.tabs[tabId]);
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
 
   const setLeftPane = useUIStore(s => s.setLeftPane);
   const openLeftPane = useUIStore(s => s.openLeftPane);
@@ -228,6 +237,7 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
 
   const segments = segmentsForTab(tab, {
     workspaceName: currentWorkspace?.name || "Workspace",
+    currentUserId: user?.id,
     connectionName,
     dashboardTitle,
     dashboardDataSourceName,

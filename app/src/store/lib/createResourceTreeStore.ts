@@ -86,8 +86,13 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
   workspaceItems: Record<string, T[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
-  /** Why the last move was refused (the server's message), per workspace. */
+  /**
+   * Why the last move or rename was refused (the server's message), per
+   * workspace — the tree only snaps back, which says nothing.
+   */
   actionError: Record<string, string | null>;
+  /** The refusal was shown: forget it. */
+  clearActionError: (workspaceId: string) => void;
 
   fetchTree: (workspaceId: string) => Promise<void>;
   refresh: (workspaceId: string) => Promise<void>;
@@ -317,6 +322,12 @@ export function createResourceTreeStore<
       error: {},
       actionError: {},
 
+      clearActionError: workspaceId => {
+        set(state => {
+          state.actionError[workspaceId] = null;
+        });
+      },
+
       fetchTree: workspaceId => {
         const pending = fetchInFlight.get(workspaceId);
         if (pending) return pending;
@@ -501,8 +512,16 @@ export function createResourceTreeStore<
             ? endpoints.renameFolder(workspaceId, itemId, name)
             : endpoints.renameItem(workspaceId, itemId, name));
           return true;
-        } catch {
+        } catch (err: unknown) {
           await get().refresh(workspaceId);
+          // After the refresh: the server's reason (409 name taken, 403 not
+          // theirs) — the row snapping back alone said nothing.
+          set(state => {
+            state.actionError[workspaceId] = toErrorMessage(
+              err,
+              `Failed to rename ${resourceName}`,
+            );
+          });
           return false;
         }
       },

@@ -349,6 +349,19 @@ function ConsoleTreeInner(
     (node: ResourceTreeNode) => canManage(node as ConsoleEntry),
     [canManage],
   );
+  // Rename follows the server's write rule (the listing's `canWrite`): a
+  // console shared with this person as an editor is theirs to rename in
+  // place (PATCH /rename keeps its folder and who sees it) — moving it or
+  // deleting it stays the owner's or an admin's. Folders keep the manage
+  // rule.
+  const handleCanRenameItem = useCallback(
+    (node: ResourceTreeNode) => {
+      const entry = node as ConsoleEntry;
+      if (canManage(entry)) return true;
+      return !entry.isDirectory && entry.canWrite === true;
+    },
+    [canManage],
+  );
   const getResourceItemIcon = useCallback(
     (node: ResourceTreeNode) => getItemIcon(node as ConsoleEntry),
     [getItemIcon],
@@ -396,6 +409,7 @@ function ConsoleTreeInner(
       onExpandFolder={expandFolder}
       getFolderExpansionKey={getResourceFolderExpansionKey}
       canManageItem={handleCanManageItem}
+      canRenameItem={handleCanRenameItem}
     />
   );
 }

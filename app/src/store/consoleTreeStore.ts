@@ -1,4 +1,5 @@
 import { api, unwrapBody, ApiError } from "../api";
+import type { ConsoleContentResponse, ConsoleLocation } from "../lib/api-types";
 import {
   createResourceTreeStore,
   type ResourceTreeEntry,
@@ -25,6 +26,13 @@ export interface ConsoleEntry extends ResourceTreeEntry {
   isPrivate?: boolean;
   lastExecutedAt?: Date;
   executionCount?: number;
+  /**
+   * The server's write rule for the caller (owner, a share as editor, the
+   * workspace role): Rename is offered by it — a shared editor renames in
+   * place even though moving the console or changing who sees it is not
+   * theirs.
+   */
+  canWrite?: boolean;
 }
 
 export interface ConsoleSearchResult {
@@ -71,6 +79,101 @@ export interface ConsoleTreeExtra {
 const base = "/api/workspaces/{workspaceId}/consoles" as const;
 
 /**
+ * Point an open tab at where the server says the console is now — after
+ * EVERY rename or move the tree makes (inline rename, drag, "Move to…", the
+ * editor's Rename / Move dialog), from the route's own answer. The tab kept
+ * its old path before, showed it as a fake parent in the breadcrumb, and its
+ * next save moved the console back. Lazy import: the tab store persists to
+ * localStorage, the tree store must not load it with itself.
+ */
+async function retargetOpenTab(
+  workspaceId: string,
+  location: ConsoleLocation | undefined,
+): Promise<void> {
+  if (!location?.id) return;
+  // The tree's own row: the optimistic update renamed/moved it, but its
+  // path (what a click opens the tab with) is the server's to say.
+  useConsoleTreeStore.setState(state => {
+    const node = findIn(
+      [
+        ...(state.myItems[workspaceId] ?? []),
+        ...(state.workspaceItems[workspaceId] ?? []),
+      ],
+      location.id,
+    );
+    if (node && node.path !== location.path) node.path = location.path;
+  });
+  const { useConsoleStore } = await import("./consoleStore");
+  useConsoleStore.getState().retargetConsoleTab(location.id, location);
+}
+
+function findIn(
+  nodes: ConsoleEntry[] | undefined,
+  id: string,
+): ConsoleEntry | null {
+  for (const node of nodes ?? []) {
+    if (node.id === id) return node;
+    const hit = findIn(node.children, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** A node of the current tree, in either section. */
+function findNode(workspaceId: string, id: string): ConsoleEntry | null {
+  const state = useConsoleTreeStore.getState();
+  return (
+    findIn(state.myItems[workspaceId], id) ??
+    findIn(state.workspaceItems[workspaceId], id)
+  );
+}
+
+/** Every console id under a folder node (any depth). */
+function consoleIdsUnder(node: ConsoleEntry | null | undefined): string[] {
+  if (!node?.children) return [];
+  const ids: string[] = [];
+  for (const child of node.children) {
+    if (child.isDirectory) ids.push(...consoleIdsUnder(child));
+    else if (child.id) ids.push(child.id);
+  }
+  return ids;
+}
+
+/**
+ * A folder renamed or moved changes the path of every console in it: open
+ * tabs among them re-read where they are (GET /content — location only;
+ * their content, unsaved edits included, is left alone).
+ */
+async function retargetOpenTabsUnder(
+  workspaceId: string,
+  consoleIds: string[],
+): Promise<void> {
+  if (consoleIds.length === 0) return;
+  const { useConsoleStore } = await import("./consoleStore");
+  const open = consoleIds.filter(id => useConsoleStore.getState().tabs[id]);
+  await Promise.all(
+    open.map(async id => {
+      try {
+        const res = unwrapBody(
+          await api.GET(`${base}/content`, {
+            params: { path: { workspaceId }, query: { id } },
+          }),
+        ) as ConsoleContentResponse;
+        if (!res.success) return;
+        useConsoleStore.getState().retargetConsoleTab(id, {
+          name: res.name,
+          path: res.path,
+          access: res.access,
+          isSaved: res.isSaved,
+        });
+      } catch {
+        // Best effort: the next open or revision sync corrects it.
+      }
+    }),
+  );
+}
+
+/**
  * The console API answers `{ success: false }` with a 200; the factory's
  * refresh-on-failure path is driven by thrown errors, so surface it as one.
  */
@@ -109,25 +212,32 @@ export const useConsoleTreeStore = createResourceTreeStore<
         throw error;
       }
     },
-    moveItem: async (workspaceId, id, folderId, access, name) =>
-      ok(
+    moveItem: async (workspaceId, id, folderId, access, name) => {
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/{id}/move`, {
             params: { path: { workspaceId, id } },
             // A rename-while-moving rides along so the server commits once.
             body: { folderId, access, ...(name ? { name } : {}) },
           }),
-        ) as { success: boolean },
-      ),
-    moveFolder: async (workspaceId, id, parentId, access) =>
-      ok(
+        ) as { success: boolean; data?: ConsoleLocation },
+      );
+      await retargetOpenTab(workspaceId, res.data);
+      return res;
+    },
+    moveFolder: async (workspaceId, id, parentId, access) => {
+      const inside = consoleIdsUnder(findNode(workspaceId, id));
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/folders/{id}/move`, {
             params: { path: { workspaceId, id } },
             body: { parentId, access },
           }),
         ) as { success: boolean },
-      ),
+      );
+      void retargetOpenTabsUnder(workspaceId, inside);
+      return res;
+    },
     createFolder: async (workspaceId, name, parentId, access) =>
       ok(
         unwrapBody(
@@ -141,24 +251,31 @@ export const useConsoleTreeStore = createResourceTreeStore<
           }),
         ) as { success: boolean; data?: { id: string; name: string } },
       ).data,
-    renameItem: async (workspaceId, id, name) =>
-      ok(
+    renameItem: async (workspaceId, id, name) => {
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/{id}/rename`, {
             params: { path: { workspaceId, id } },
             body: { name },
           }),
-        ) as { success: boolean },
-      ),
-    renameFolder: async (workspaceId, id, name) =>
-      ok(
+        ) as { success: boolean; console?: ConsoleLocation },
+      );
+      await retargetOpenTab(workspaceId, res.console);
+      return res;
+    },
+    renameFolder: async (workspaceId, id, name) => {
+      const inside = consoleIdsUnder(findNode(workspaceId, id));
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/folders/{id}/rename`, {
             params: { path: { workspaceId, id } },
             body: { name },
           }),
         ) as { success: boolean },
-      ),
+      );
+      void retargetOpenTabsUnder(workspaceId, inside);
+      return res;
+    },
     deleteItem: async (workspaceId, id) =>
       ok(
         unwrapBody(

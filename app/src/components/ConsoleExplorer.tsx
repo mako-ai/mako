@@ -32,7 +32,6 @@ import {
   type ConsoleSearchResult,
 } from "../store/consoleTreeStore";
 import { accessForMove } from "../store/lib/createResourceTreeStore";
-import { useConsoleStore } from "../store/consoleStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { filterTree } from "../store/lib/tree-helpers";
 import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
@@ -42,6 +41,13 @@ import FolderInfoModal from "./FolderInfoModal";
 import ConsoleTree from "./ConsoleTree";
 import ExplorerShell from "./ExplorerShell";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+/** A tree path with its last segment replaced by the row's current name. */
+function withLeafName(path: string, name: string): string {
+  const parts = path.split("/");
+  parts[parts.length - 1] = name;
+  return parts.join("/");
+}
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -86,16 +92,18 @@ function ConsoleExplorer(
   const clearSearch = useConsoleTreeStore(state => state.clearSearch);
   const searchResults = useConsoleTreeStore(state => state.searchResults);
   const searchLoading = useConsoleTreeStore(state => state.searchLoading);
-  const updateTabFilePath = useConsoleStore(state => state.updateFilePath);
-  const updateTabTitle = useConsoleStore(state => state.updateTitle);
-  const updateTabAccess = useConsoleStore(state => state.updateAccess);
+  // Why the last rename or move was refused — inline rename, drag, "Move
+  // to…" alike (the server's message: a name already taken, a visibility
+  // change that is not theirs). The tree itself only snaps back, which says
+  // nothing.
+  const actionError = useConsoleTreeStore(state =>
+    currentWorkspace ? (state.actionError[currentWorkspace.id] ?? null) : null,
+  );
+  const clearActionError = useConsoleTreeStore(state => state.clearActionError);
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [explorerDialogOpen, setExplorerDialogOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
-  // Why the last "Move to…" was refused, shown once (the tree itself only
-  // snaps back, which says nothing).
-  const [moveError, setMoveError] = useState<string | null>(null);
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const [infoConsoleId, setInfoConsoleId] = useState<string>("");
   const [folderInfoOpen, setFolderInfoOpen] = useState(false);
@@ -204,8 +212,11 @@ function ConsoleExplorer(
       const connectionId = cached?.connectionId || node.connectionId;
       const databaseId = cached?.databaseId || node.databaseId;
       const databaseName = cached?.databaseName || node.databaseName;
+      // The row's NAME is current (a rename updates it at once); its path
+      // may lag until the server answers. The fetch below sets the tab's
+      // path and visibility from the server either way.
       onConsoleSelect(
-        node.path,
+        withLeafName(node.path, node.name),
         initialContent,
         connectionId,
         consoleId,
@@ -227,7 +238,6 @@ function ConsoleExplorer(
           });
           const {
             updateContent,
-            updateFilePath,
             updateDatabase,
             updateConnection,
             updateSavedState,
@@ -240,8 +250,11 @@ function ConsoleExplorer(
           if (data.databaseId || data.databaseName) {
             updateDatabase(consoleId, data.databaseId, data.databaseName);
           }
-
-          updateFilePath(consoleId, node.path);
+          // No path from the tree here: fetchConsoleContent set the tab's
+          // path, name and visibility from the server. The tree's path is
+          // what a client computed (stale after a folder rename, "/name"
+          // for a console in a folder this person cannot see), and a save
+          // used to send it back.
 
           const { computeConsoleStateHash } = await import(
             "../utils/stateHash"
@@ -312,31 +325,6 @@ function ConsoleExplorer(
     return inWorkspace !== undefined ? "workspace" : "my";
   };
 
-  const findFolderPathById = (
-    nodes: ConsoleEntry[],
-    folderId: string,
-  ): string | null => {
-    for (const node of nodes) {
-      if (node.id === folderId && node.isDirectory) return node.path;
-      if (node.isDirectory && node.children) {
-        const found = findFolderPathById(node.children, folderId);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
-  const getPathForMoveTarget = (
-    targetFolderId: string | null,
-    section: "my" | "workspace",
-    itemName: string,
-  ): string => {
-    if (!targetFolderId) return itemName;
-    const tree = section === "workspace" ? sharedWithWorkspace : myConsoles;
-    const folderPath = findFolderPathById(tree, targetFolderId);
-    return folderPath ? `${folderPath}/${itemName}` : itemName;
-  };
-
   const handleMoveTo = (item: ConsoleEntry) => {
     setSelectedItem(item);
     setExplorerDialogOpen(true);
@@ -360,52 +348,27 @@ function ConsoleExplorer(
     // the server refuses a scope flip from anyone but the owner, and a
     // move within the same section must not look like one.
     const access = accessForMove(getSectionForItem(selectedItem), section);
+    // A refusal (403 scope flip, 409 name taken) lands in the store's
+    // actionError, which the snackbar below shows; an open tab is
+    // retargeted by the store from the server's answer (name, folder,
+    // visibility) — never from a path computed here.
     if (selectedItem.isDirectory) {
-      const moved = await moveFolder(
+      await moveFolder(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
         access,
       );
-      if (!moved) {
-        setMoveError(
-          useConsoleTreeStore.getState().actionError[currentWorkspace.id] ??
-            "Could not move the folder.",
-        );
-      }
     } else {
       // Rename + move in ONE request: a console is a file in the repo, and
       // two requests made two commits (rename, then move) for one gesture.
-      const success = await moveConsole(
+      await moveConsole(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
         access,
         renamedTo,
       );
-      if (!success) {
-        // The tree already snapped back; say why (403 scope flip, 409 name
-        // taken) instead of refreshing in silence.
-        setMoveError(
-          useConsoleTreeStore.getState().actionError[currentWorkspace.id] ??
-            "Could not move the console.",
-        );
-      }
-      if (success) {
-        const nextName = newName || selectedItem.name;
-        const nextPath = getPathForMoveTarget(
-          targetFolderId,
-          section,
-          nextName,
-        );
-        updateTabFilePath(selectedItem.id, nextPath);
-        // Title is the canonical leaf name; the path drives the breadcrumb.
-        updateTabTitle(selectedItem.id, nextName);
-        updateTabAccess(
-          selectedItem.id,
-          section === "workspace" ? "workspace" : "private",
-        );
-      }
     }
 
     setExplorerDialogOpen(false);
@@ -669,6 +632,7 @@ function ConsoleExplorer(
         mode="move"
         onMove={handleMoveConfirm}
         itemName={selectedItem?.name || ""}
+        selfId={selectedItem?.id}
         isDirectory={selectedItem?.isDirectory || false}
         initialFolderId={
           selectedItem ? getParentFolderIdForItem(selectedItem) : null
@@ -677,10 +641,12 @@ function ConsoleExplorer(
       />
 
       <Snackbar
-        open={moveError !== null}
+        open={actionError !== null}
         autoHideDuration={6000}
-        onClose={() => setMoveError(null)}
-        message={moveError ?? ""}
+        onClose={() => {
+          if (currentWorkspace) clearActionError(currentWorkspace.id);
+        }}
+        message={actionError ?? ""}
       />
     </>
   );
