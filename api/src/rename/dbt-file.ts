@@ -75,6 +75,7 @@ import { publishRealtimeEvent } from "../services/realtime.service";
 import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
 import { findRenamedPath } from "./git-renames";
+import { isUtf8Text } from "../apps/text-bytes";
 import {
   RenameError,
   type RenameContext,
@@ -247,11 +248,6 @@ async function projectPackageName(
   } catch {
     return undefined;
   }
-}
-
-/** True when the bytes survive a UTF-8 decode/encode round trip. */
-function isUtf8Text(content: Buffer): boolean {
-  return Buffer.from(content.toString("utf8"), "utf8").equals(content);
 }
 
 /** Git's blob id for these bytes (`git hash-object`). */

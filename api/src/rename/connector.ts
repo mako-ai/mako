@@ -75,6 +75,7 @@ import {
 } from "../connectors/workspace/SandboxedConnector";
 import { loggers } from "../logging";
 import { findRenamedFolder } from "./git-renames";
+import { isUtf8Text } from "../apps/text-bytes";
 import {
   RenameError,
   type RenameContext,
@@ -238,6 +239,12 @@ export async function renameWorkspaceConnector(
     `${oldPrefix}connector.yaml`,
   ]);
   const yamlBuf = blobs.get(`${oldPrefix}connector.yaml`);
+  if (yamlBuf && !isUtf8Text(yamlBuf)) {
+    throw new RenameError(
+      `connectors/${from}/connector.yaml is not UTF-8 text, so Mako cannot edit it without changing its bytes — rename it with git (and add \`aliases: [${from}]\` by hand).`,
+      400,
+    );
+  }
   const nextYaml =
     yamlBuf && !yamlBuf.includes(0)
       ? withConnectorAlias(yamlBuf.toString("utf8"), from)
@@ -317,10 +324,14 @@ export async function renameWorkspaceConnector(
   row.retiredAliases = (row.retiredAliases ?? []).filter(a => a !== to);
   row.sha = commit.commitOid;
   await row.save();
+  // Connections bound to this row follow by id; their `type` is made to
+  // match (cosmetic). Legacy unbound ones typed by the current slug are
+  // this connector's by construction and are bound now.
   const movedConnections = await migrateSourceConnectionType(
     ctx.workspaceId,
     from,
     to,
+    { definitionId: String(row._id), includeUnstamped: true },
   );
   const remaining = await SourceConnection.countDocuments({
     workspaceId: wsId,

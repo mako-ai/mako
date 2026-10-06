@@ -63,6 +63,7 @@ import {
   listTree,
   log,
   readBlob,
+  readBlobsBatch,
   repoDirFor,
   resolveCommit,
 } from "./repository.service";
@@ -393,6 +394,33 @@ describe("hand-written front matter the editor must handle, or refuse", () => {
     ).rejects.toThrow(/edit SKILL.md by hand/);
     expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(mid.length);
     expect(await fileAt(skillFilePath("foo"))).toBe(MULTILINE_FLOW);
+  });
+});
+
+describe("a SKILL.md that is not UTF-8", () => {
+  it("is refused (400) and its bytes are untouched", async () => {
+    const raw = Buffer.concat([
+      Buffer.from("---\nname: latin\ndescription: caf"),
+      Buffer.from([0xe9]),
+      Buffer.from("\n---\n\nBody.\n"),
+    ]);
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "skills/latin/SKILL.md": raw } },
+      { message: "latin-1 skill" },
+    );
+    invalidateSkillCatalog(WS);
+    expect(await commitSkillRename(WS, "latin", "latin_v2")).toMatchObject({
+      ok: false,
+      status: 400,
+      error: expect.stringContaining("not UTF-8"),
+    });
+    const after = (
+      await readBlobsBatch(repoDirFor(WS), MAIN, ["skills/latin/SKILL.md"])
+    ).get("skills/latin/SKILL.md");
+    expect(after?.equals(raw)).toBe(true);
+    expect(await fileAt(skillFilePath("latin_v2"))).toBeNull();
   });
 });
 

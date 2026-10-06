@@ -166,11 +166,19 @@ async function connectorCapabilities(
 async function configFieldsFor(
   workspaceId: string,
   type: string,
+  binding?: { connectorDefinitionId?: unknown },
 ): Promise<ConnectorConfigField[]> {
   // The workspace is part of the question for a `ws:` connector: its spec —
-  // and so which of its fields are secrets — belongs to this workspace.
+  // and so which of its fields are secrets — belongs to this workspace,
+  // and a connection's answer comes through its binding.
   const schema = await syncConnectorRegistry
-    .getConfigSchemaForType(type, workspaceId)
+    .getConfigSchemaForType(
+      type,
+      workspaceId,
+      binding
+        ? { type, connectorDefinitionId: binding.connectorDefinitionId }
+        : undefined,
+    )
     .catch(() => null);
   return describeFields((schema as { fields?: unknown } | null)?.fields);
 }
@@ -184,7 +192,11 @@ async function describeSourceConnection(
   const identity = { id: String(row._id), name: row.name ?? "" };
   const [capabilities, configFields] = await Promise.all([
     connectorCapabilities(workspaceId, type, identity),
-    configFieldsFor(workspaceId, type),
+    configFieldsFor(
+      workspaceId,
+      type,
+      row as { connectorDefinitionId?: unknown },
+    ),
   ]);
   return {
     id: identity.id,

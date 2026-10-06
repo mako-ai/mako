@@ -17,7 +17,11 @@ import {
 import { SourceConnection } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import {
+  isWorkspaceConnectorType,
+  slugFromType,
+} from "../connectors/workspace/SandboxedConnector";
+import { findConnectorDefinitionRow } from "../connectors/workspace/resolver";
 import {
   PROBE_DEFAULT_LIMIT,
   PROBE_MAX_LIMIT,
@@ -278,6 +282,11 @@ async function publicSourceConnection(
     schema = await syncConnectorRegistry.getConfigSchemaForType(
       String(record.type ?? ""),
       workspaceId,
+      {
+        type: String(record.type ?? ""),
+        connectorDefinitionId: (record as { connectorDefinitionId?: unknown })
+          .connectorDefinitionId,
+      },
     );
   } catch (error) {
     logger.warn("Could not load connector schema while redacting config", {
@@ -421,6 +430,7 @@ sourceConnectionRoutes.openapi(
       // workspace wrote, so the answer comes from its index rather than from
       // the global registry, and a blocked connector is refused here rather
       // than at the first sync.
+      let boundDefinitionId: unknown = undefined;
       if (isWorkspaceConnectorType(body.type)) {
         if (!workspaceId) {
           return c.json(
@@ -436,6 +446,12 @@ sourceConnectionRoutes.openapi(
         // connector answers to its aliases, but a connection must not be
         // keyed on a name a future connector could claim).
         body.type = await canonicalConnectorType(body.type, workspaceId);
+        // Bind the credential to its definition BY ID: renames and aliases
+        // move names, the id never moves, and every decrypt/run resolves
+        // through it (resolver.ts findConnectorDefinitionFor).
+        boundDefinitionId = (
+          await findConnectorDefinitionRow(workspaceId, slugFromType(body.type))
+        )?.row._id;
       } else if (!connectorRegistry.hasConnector(body.type)) {
         return c.json(
           {
@@ -446,10 +462,14 @@ sourceConnectionRoutes.openapi(
         );
       }
 
-      // Load connector schema for schema-driven encryption
+      // Load connector schema for schema-driven encryption — through the
+      // binding, so the secret-field list is the bound definition's.
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         body.type,
         workspaceId,
+        boundDefinitionId
+          ? { type: body.type, connectorDefinitionId: boundDefinitionId }
+          : undefined,
       );
 
       // Create source connection
@@ -457,6 +477,7 @@ sourceConnectionRoutes.openapi(
         workspaceId,
         name: body.name,
         type: body.type,
+        connectorDefinitionId: boundDefinitionId,
         description: body.description,
         config: applySchemaEncryption(body.config || {}, schema),
         settings: {
@@ -556,6 +577,17 @@ sourceConnectionRoutes.openapi(
             : body.type;
         if (nextType !== currentValues.type) {
           sourceConnection.type = nextType;
+          // Re-pointing a connection at another connector is an explicit
+          // act: bind it to that definition (or unbind for a built-in).
+          sourceConnection.connectorDefinitionId =
+            isWorkspaceConnectorType(nextType) && workspaceId
+              ? ((
+                  await findConnectorDefinitionRow(
+                    workspaceId,
+                    slugFromType(nextType),
+                  )
+                )?.row._id as Types.ObjectId | undefined)
+              : undefined;
           hasChanges = true;
         }
       }
@@ -597,6 +629,7 @@ sourceConnectionRoutes.openapi(
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             sourceConnection.type,
             workspaceId,
+            sourceConnection,
           );
           sourceConnection.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
@@ -1250,6 +1283,7 @@ sourceConnectionRoutes.openapi(
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         (sourceConnection as { type: string }).type,
         workspaceId,
+        sourceConnection as { type: string; connectorDefinitionId?: unknown },
       );
       const declared = (schema?.fields ?? []).find(
         (f: ConnectorFieldSchema) => f.name === field,

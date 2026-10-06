@@ -85,6 +85,7 @@ import {
   listTree,
   log,
   readBlob,
+  readBlobsBatch,
   repoDirFor,
   repoExists,
   resolveCommit,
@@ -97,6 +98,7 @@ import {
   syncConnectorsFromRepo,
 } from "./reconcile.service";
 import {
+  findConnectorDefinitionFor,
   findConnectorDefinitionRow,
   loadConnectorDefinition,
 } from "./resolver";
@@ -197,6 +199,22 @@ async function connection(type: string): Promise<string> {
     createdBy: "u1",
   });
   return String(row._id);
+}
+
+/** A connection BOUND to a definition by id (what create/update stamp). */
+async function boundConnection(slug: string): Promise<string> {
+  const row = await ConnectorDefinition.findOne({ workspaceId: WS, slug });
+  if (!row) throw new Error(`no definition ${slug}`);
+  const conn = await SourceConnection.create({
+    workspaceId: new Types.ObjectId(WS),
+    name: `bound ${slug}`,
+    type: `ws:${slug}`,
+    connectorDefinitionId: row._id,
+    config: { apiKey: `enc:${slug}`, region: "eu" },
+    settings: { sync_batch_size: 100, rate_limit_delay_ms: 0 },
+    createdBy: "u1",
+  });
+  return String(conn._id);
 }
 
 async function pathsAtMain(): Promise<string[]> {
@@ -493,11 +511,21 @@ describe("reconcile detects a rename instead of deleting", () => {
     expect((await SourceConnection.findById(connId))?.type).toBe("ws:acme-v2");
     // Old-typed connections still resolve while any remain.
     expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme-v2");
-    // A check that ran under the old slug lands on the row.
+    // A check that ran under the old slug lands on the row only through
+    // the connection's BINDING (an alias alone records nothing).
     expect(
       await recordConnectionCheck({
         workspaceId: WS,
         slug: "acme",
+        sourceSha: row!.sourceSha,
+        success: true,
+      }),
+    ).toBe(false);
+    expect(
+      await recordConnectionCheck({
+        workspaceId: WS,
+        slug: "acme",
+        definitionId: String(row!._id),
         sourceSha: row!.sourceSha,
         success: true,
       }),
@@ -533,7 +561,12 @@ describe("reconcile detects a rename instead of deleting", () => {
     await renameWorkspaceConnector(ctx, { from: "acme", to: "acme-crm" });
     // A connection that still says ws:acme (created before the migration,
     // or by a client that bypassed canonicalization).
-    const stale = await connection("ws:acme");
+    const stale = await boundConnection("acme-crm");
+    await SourceConnection.updateOne(
+      { _id: stale },
+      { $set: { type: "ws:acme" } },
+    );
+    const legacy = await connection("ws:acme"); // unbound, typed by the alias
     expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme-crm");
 
     // Someone pushes a brand-new connector called `acme`.
@@ -552,8 +585,10 @@ describe("reconcile detects a rename instead of deleting", () => {
       ["acme", []],
       ["acme-crm", []], // the alias is gone: `acme` has one owner again
     ]);
-    // The stale connection followed its connector, never the newcomer.
+    // The bound connection followed its connector (type made to match);
+    // the unbound one typed by the alias is nobody's and stays as it is.
     expect((await SourceConnection.findById(stale))?.type).toBe("ws:acme-crm");
+    expect((await SourceConnection.findById(legacy))?.type).toBe("ws:acme");
     expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme");
   }, 60_000);
 
@@ -719,8 +754,11 @@ describe("reconcile detects a rename instead of deleting", () => {
     });
     await syncConnectorsFromRepo(WS);
     expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
-    // 3. the documented fix: aliases: [acme] on acme-v2 → sole claimant
-    //    adopts: C is re-typed, not left typed by an alias.
+    // 3. the documented fix: aliases: [acme] on acme-v2. The alias answers
+    //    for LINKS; C — bound to nothing (legacy) and typed by a name that
+    //    is now only an alias — is not adopted: it fails closed until a
+    //    person re-points it. A connection BOUND to acme-v2 but still typed
+    //    ws:acme gets its (cosmetic) type fixed.
     await push({
       writes: {
         "connectors/acme-v2/connector.yaml": `${YAML}aliases: [acme]\n`,
@@ -730,7 +768,27 @@ describe("reconcile detects a rename instead of deleting", () => {
     expect((await findConnectorDefinitionRow(WS, "acme"))?.row.slug).toBe(
       "acme-v2",
     );
-    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme-v2");
+    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme");
+    expect(
+      await findConnectorDefinitionFor(WS, { type: "ws:acme" }),
+    ).toBeNull();
+    const v2 = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme-v2",
+    });
+    const own = await SourceConnection.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "own",
+      type: "ws:acme",
+      connectorDefinitionId: v2!._id,
+      config: {},
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 0 },
+      createdBy: "u1",
+    });
+    await push({ writes: { "README.md": "# t\n" } });
+    await syncConnectorsFromRepo(WS);
+    expect((await SourceConnection.findById(own._id))?.type).toBe("ws:acme-v2");
+    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme");
     // 4. a copy of the folder as a template keeps the alias in its yaml:
     //    dropped (and retired) for the copy — acme-v2 keeps it.
     await push({
@@ -776,7 +834,11 @@ describe("reconcile detects a rename instead of deleting", () => {
     });
     expect(otherAfter?.aliases).toEqual([]);
     expect(otherAfter?.retiredAliases).toEqual(["acme"]);
-    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme-v2");
+    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme");
+    // The bound connection's definition is gone: it fails closed by id.
+    const ownAfter = await SourceConnection.findById(own._id);
+    expect(ownAfter?.type).toBe("ws:acme-v2");
+    expect(await findConnectorDefinitionFor(WS, ownAfter!)).toBeNull();
     // Git history must not reopen a retired name either.
     expect(await resolveConnector(ctx, "acme-v2")).toBeNull();
   }, 120_000);
@@ -870,6 +932,185 @@ describe("reconcile detects a rename instead of deleting", () => {
     // which is what `conn` typed ws:acme is (it was created for nobody else).
     expect((await findConnectorDefinitionRow(WS, "acme"))?.via).toBe("current");
   }, 120_000);
+
+  it("the class, closed: a copy or a restore of the renamed connector never adopts a deleted connector's bound connection", async () => {
+    // A: acme → acme2 (aliases: [acme]); B pushed at acme (A retires it);
+    // a connection BOUND to B; B deleted (orphaned, fail closed).
+    await pushAcme();
+    await syncConnectorsFromRepo(WS);
+    await renameWorkspaceConnector(ctx, { from: "acme", to: "acme2" });
+    await push({
+      writes: {
+        "connectors/acme/connector.yaml": YAML,
+        "connectors/acme/connector.ts": OTHER_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    const connB = await boundConnection("acme");
+    const bId = String(
+      (await ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }))!
+        ._id,
+    );
+    await push({
+      deletes: [
+        "connectors/acme/connector.yaml",
+        "connectors/acme/connector.ts",
+      ],
+    });
+    await syncConnectorsFromRepo(WS);
+    expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
+    const a2yaml = (
+      await readBlob(repoDirFor(WS), MAIN, "connectors/acme2/connector.yaml")
+    ).contents;
+    expect(a2yaml).toContain("- acme");
+
+    // Template copy: cp -r acme2 acme3 — the copied `aliases: [acme]` is
+    // dropped for the copy (acme2 retired it; retired anywhere = claimed).
+    await push({
+      writes: {
+        "connectors/acme3/connector.yaml": a2yaml,
+        "connectors/acme3/connector.ts": `${CONNECTOR_TS}// tweaked copy\n`,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    const acme3 = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme3",
+    });
+    expect(acme3?.aliases).toEqual([]);
+    expect(acme3?.retiredAliases).toEqual(["acme"]);
+    let b = (await SourceConnection.findById(connB))!;
+    expect(b.type).toBe("ws:acme");
+    expect(String(b.connectorDefinitionId)).toBe(bId);
+    expect(await findConnectorDefinitionFor(WS, b)).toBeNull();
+    await expect(
+      syncConnectorRegistry.getConfigSchemaForType("ws:acme", WS, b),
+    ).rejects.toThrow(/no longer exists/);
+
+    // Delete + restore acme2 (a git revert): the restored row re-reads
+    // `aliases: [acme]` from its yaml — but B's connection is bound to B's
+    // id, not to a name, so nothing adopts it: it still fails closed.
+    await push({
+      deletes: [
+        "connectors/acme2/connector.yaml",
+        "connectors/acme2/connector.ts",
+        "connectors/acme2/lib/util.ts",
+      ],
+    });
+    await syncConnectorsFromRepo(WS);
+    await push({
+      writes: {
+        "connectors/acme2/connector.yaml": a2yaml,
+        "connectors/acme2/connector.ts": CONNECTOR_TS,
+        "connectors/acme2/lib/util.ts": "export const x = 1;\n",
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    b = (await SourceConnection.findById(connB))!;
+    expect(b.type).toBe("ws:acme");
+    expect(String(b.connectorDefinitionId)).toBe(bId);
+    expect(await findConnectorDefinitionFor(WS, b)).toBeNull();
+    // A connection whose TYPE now names a different live definition than
+    // its stamp is refused too…
+    const acme2Row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme2",
+    });
+    const mismatched = await SourceConnection.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "mismatched",
+      type: "ws:acme3",
+      connectorDefinitionId: acme2Row!._id,
+      config: {},
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 0 },
+      createdBy: "u1",
+    });
+    expect(await findConnectorDefinitionFor(WS, mismatched)).toBeNull();
+    // …while a type naming nothing is fine for a bound one: the stamp wins.
+    const cosmetic = await SourceConnection.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "cosmetic",
+      type: "ws:no-such-slug",
+      connectorDefinitionId: acme2Row!._id,
+      config: {},
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 0 },
+      createdBy: "u1",
+    });
+    expect((await findConnectorDefinitionFor(WS, cosmetic))?.row.slug).toBe(
+      "acme2",
+    );
+    // Unbound (legacy) connections resolve by current slug only, never alias.
+    expect(
+      (await findConnectorDefinitionFor(WS, { type: "ws:acme2" }))?.via,
+    ).toBe("current");
+    expect(
+      await findConnectorDefinitionFor(WS, { type: "ws:acme" }),
+    ).toBeNull();
+  }, 120_000);
+
+  it("an explicit fold in one push (delete x, y says aliases: [x]) re-binds x's connections to y", async () => {
+    await push({
+      writes: {
+        "connectors/x/connector.yaml": YAML,
+        "connectors/x/connector.ts": OTHER_TS,
+        "connectors/y/connector.yaml": YAML,
+        "connectors/y/connector.ts": CONNECTOR_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    const bound = await boundConnection("x");
+    const legacy = await connection("ws:x");
+    await push({
+      writes: { "connectors/y/connector.yaml": `${YAML}aliases: [x]\n` },
+      deletes: ["connectors/x/connector.yaml", "connectors/x/connector.ts"],
+    });
+    await syncConnectorsFromRepo(WS);
+    const y = await ConnectorDefinition.findOne({ workspaceId: WS, slug: "y" });
+    expect(y?.aliases).toEqual(["x"]);
+    expect(y?.retiredAliases).toEqual([]);
+    for (const id of [bound, legacy]) {
+      const c = (await SourceConnection.findById(id))!;
+      expect(c.type).toBe("ws:y");
+      expect(String(c.connectorDefinitionId)).toBe(String(y!._id));
+    }
+    await push({ writes: { "README.md": "# t\n" } });
+    await syncConnectorsFromRepo(WS);
+    expect(
+      (await ConnectorDefinition.findOne({ workspaceId: WS, slug: "y" }))
+        ?.aliases,
+    ).toEqual(["x"]);
+    expect((await findConnectorDefinitionRow(WS, "x"))?.row.slug).toBe("y");
+  }, 120_000);
+
+  it("a connector.yaml that is not UTF-8 is refused (400) and its bytes untouched", async () => {
+    const raw = Buffer.concat([
+      Buffer.from("# caf"),
+      Buffer.from([0xe9]),
+      Buffer.from("\nruntime: node\nentry: connector.ts\n"),
+    ]);
+    await push({
+      writes: {
+        "connectors/acme/connector.yaml": raw,
+        "connectors/acme/connector.ts": CONNECTOR_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    await expect(
+      renameWorkspaceConnector(ctx, { from: "acme", to: "acme2" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("not UTF-8"),
+    });
+    const after = (
+      await readBlobsBatch(repoDirFor(WS), MAIN, [
+        "connectors/acme/connector.yaml",
+      ])
+    ).get("connectors/acme/connector.yaml");
+    expect(after?.equals(raw)).toBe(true);
+    expect(await pathsAtMain()).not.toContain(
+      "connectors/acme2/connector.yaml",
+    );
+  }, 60_000);
 
   it("migrateSourceConnectionType is idempotent", async () => {
     const a = await connection("ws:old");

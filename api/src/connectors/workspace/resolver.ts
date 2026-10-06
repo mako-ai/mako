@@ -85,6 +85,109 @@ export async function findConnectorDefinitionRow(
   return claimants.length === 1 ? { row: claimants[0], via: "alias" } : null;
 }
 
+/** What a source connection carries that names its connector. */
+export interface ConnectionBinding {
+  type: string;
+  /** The definition the credential was entered for (ISourceConnection). */
+  connectorDefinitionId?: unknown;
+}
+
+/**
+ * The definition a CONNECTION is bound to — the only resolution a path
+ * that decrypts, encrypts or runs a credential may use.
+ *
+ * Stamped (`connectorDefinitionId`): that row, by id, and nothing else.
+ * The row gone → null (fail closed: the credential's connector no longer
+ * exists). `type` naming a live connector that is NOT that row → null and
+ * a log line (fail closed: a name has been moved under the credential).
+ * `type` naming nothing is fine — the slug in `type` is cosmetic.
+ *
+ * Unstamped (rows predating the stamp): the row whose CURRENT slug `type`
+ * names, never one that merely lists it as an alias — an alias is a
+ * courtesy for links, not a binding for a secret.
+ */
+export async function findConnectorDefinitionFor(
+  workspaceId: string,
+  binding: ConnectionBinding,
+): Promise<{ row: IConnectorDefinition; via: "stamp" | "current" } | null> {
+  const slug = slugFromWorkspaceType(binding.type);
+  const stamp =
+    binding.connectorDefinitionId == null
+      ? null
+      : String(binding.connectorDefinitionId);
+  if (stamp) {
+    if (!/^[0-9a-f]{24}$/.test(stamp)) return null;
+    const row = await ConnectorDefinition.findOne({ workspaceId, _id: stamp });
+    if (!row) {
+      logger.warn(
+        "A source connection is bound to a connector that no longer exists",
+        {
+          workspaceId,
+          type: binding.type,
+          connectorDefinitionId: stamp,
+        },
+      );
+      return null;
+    }
+    const named = await ConnectorDefinition.findOne({ workspaceId, slug });
+    if (named && String(named._id) !== stamp) {
+      logger.warn(
+        "A source connection's type names a different connector than the one it is bound to; refusing",
+        {
+          workspaceId,
+          type: binding.type,
+          connectorDefinitionId: stamp,
+          namedId: String(named._id),
+        },
+      );
+      return null;
+    }
+    return { row, via: "stamp" };
+  }
+  const row = await ConnectorDefinition.findOne({ workspaceId, slug });
+  return row ? { row, via: "current" } : null;
+}
+
+function slugFromWorkspaceType(type: string): string {
+  return type.startsWith("ws:") ? type.slice(3) : type;
+}
+
+function loaded(row: IConnectorDefinition): LoadedConnector {
+  if (row.status === "blocked") {
+    throw new Error(
+      `The connector "${row.slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
+    );
+  }
+  return {
+    slug: row.slug,
+    aliases: row.aliases ?? [],
+    runtime: row.runtime,
+    entry: row.entry || DEFAULT_ENTRY,
+    sha: row.sha,
+    sourceSha: row.sourceSha,
+    spec: row.spec as Record<string, unknown> | undefined,
+    entities: row.entities ?? [],
+    status: row.status,
+  };
+}
+
+/** `findConnectorDefinitionFor`, throwing with the reason instead of null. */
+export async function loadConnectorDefinitionFor(
+  workspaceId: string,
+  binding: ConnectionBinding,
+): Promise<LoadedConnector> {
+  const found = await findConnectorDefinitionFor(workspaceId, binding);
+  if (!found) {
+    const slug = slugFromWorkspaceType(binding.type);
+    throw new Error(
+      binding.connectorDefinitionId == null
+        ? `No connector "${slug}" in this workspace (this connection is not bound to a connector by id; it resolves by its current slug only). Push a folder at ${CONNECTORS_DIR}/${slug}/ to main, or re-save the connection.`
+        : `This connection's connector (${String(binding.connectorDefinitionId)}, "${slug}") no longer exists, or "${slug}" now names another connector. Re-point or delete the connection.`,
+    );
+  }
+  return loaded(found.row);
+}
+
 export async function loadConnectorDefinition(
   workspaceId: string,
   slug: string,

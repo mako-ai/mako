@@ -292,6 +292,18 @@ export interface ISourceConnection extends Document {
   workspaceId: Types.ObjectId;
   name: string;
   type: string;
+  /**
+   * For a workspace connector (`type` = `ws:<slug>`): the ConnectorDefinition
+   * this credential was entered for, by id. The slug in `type` is a display
+   * name that renames and aliases move around; the id never changes. Every
+   * path that turns this connection into a config schema (which fields are
+   * secret), a decryption or a sandbox run resolves THROUGH the stamp, and
+   * fails closed when the definition is gone or `type` names another one —
+   * so a credential can never run under a different connector's code.
+   * Absent on rows that predate the stamp: those resolve by current slug
+   * only, never through an alias (see the stamping migration).
+   */
+  connectorDefinitionId?: Types.ObjectId;
   description?: string;
   config: {
     // API sources
@@ -1632,6 +1644,10 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
       type: String,
       required: true,
     },
+    connectorDefinitionId: {
+      type: Schema.Types.ObjectId,
+      ref: "ConnectorDefinition",
+    },
     description: {
       type: String,
       trim: true,
@@ -1691,6 +1707,7 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
 // Indexes
 SourceConnectionSchema.index({ workspaceId: 1 });
 SourceConnectionSchema.index({ workspaceId: 1, type: 1 });
+SourceConnectionSchema.index({ workspaceId: 1, connectorDefinitionId: 1 });
 
 /**
  * ConsoleFolder Schema
