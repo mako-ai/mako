@@ -220,7 +220,9 @@ async function settleJobRenameGuards(args: {
           lastRenameCommit: commit,
         },
       );
-      await rekeyJobSlug(row._id, row.slug, oldSlug);
+      await rekeyJobSlug(row._id, row.slug, oldSlug, undefined, {
+        recordOldAsAlias: false,
+      });
     } else {
       logger.warn(
         "dbt job rename commit never reached main; trusting the tree",
@@ -324,22 +326,52 @@ function isMarkedInvalid(row: IDbtJob): boolean {
   return typeof row.definitionInvalid?.reason === "string";
 }
 
+/**
+ * Thrown by `commitDbtJobFile` when the job's file (or its slug) changed in
+ * the repo since the row was loaded — a rename or another edit landed
+ * first. The routes answer 409 (reload and retry); never an upstream error.
+ */
+export class DbtConfigConflictError extends Error {
+  readonly status = 409;
+  constructor(message: string) {
+    super(message);
+    this.name = "DbtConfigConflictError";
+  }
+}
+
 async function markJobInvalid(
   row: IDbtJob,
   reason: string,
   path: string,
+  /**
+   * The blob found invalid, recorded as `lastSeenBlobSha` so a UI save may
+   * overwrite exactly this version (the recovery for a broken laptop push).
+   * Two broken versions with the same reason are two blobs: the marker is
+   * "unchanged" only when the blob is too.
+   */
+  blobSha?: string,
 ): Promise<void> {
   // Idempotent: a list call must not rewrite the marker on every read.
   if (
     row.definitionInvalid?.reason === reason &&
-    row.definitionInvalid?.path === path
+    row.definitionInvalid?.path === path &&
+    (blobSha === undefined || row.lastSeenBlobSha === blobSha)
   ) {
     return;
   }
   const definitionInvalid = { reason, at: new Date(), path };
   try {
-    await DbtJob.updateOne({ _id: row._id }, { $set: { definitionInvalid } });
+    await DbtJob.updateOne(
+      { _id: row._id },
+      {
+        $set: {
+          definitionInvalid,
+          ...(blobSha !== undefined ? { lastSeenBlobSha: blobSha } : {}),
+        },
+      },
+    );
     row.definitionInvalid = definitionInvalid;
+    if (blobSha !== undefined) row.lastSeenBlobSha = blobSha;
   } catch (error) {
     logger.warn("Failed to mark dbt job invalid", {
       jobId: row._id.toString(),
@@ -370,12 +402,12 @@ export async function ensureJobDerivedCache(
   row: IDbtJob,
 ): Promise<void> {
   if (!def.parsed) {
-    await markJobInvalid(row, "unparseable job file", def.path);
+    await markJobInvalid(row, "unparseable job file", def.path, def.oid);
     return;
   }
   const failure = jobApplyFailure(project, def.parsed);
   if (failure) {
-    await markJobInvalid(row, failure, def.path);
+    await markJobInvalid(row, failure, def.path, def.oid);
     return;
   }
   if (row.sourceBlobSha === def.oid && !isMarkedInvalid(row)) return;
@@ -400,6 +432,7 @@ export async function ensureJobDerivedCache(
         enabled: file.enabled,
         deferToProduction: file.deferToProduction,
         sourceBlobSha: def.oid,
+        lastSeenBlobSha: def.oid,
       },
       $unset: unset,
     },
@@ -413,6 +446,7 @@ export async function ensureJobDerivedCache(
     enabled: file.enabled,
     deferToProduction: file.deferToProduction,
     sourceBlobSha: def.oid,
+    lastSeenBlobSha: def.oid,
     definitionInvalid: undefined,
   });
   if (reschedule) await applyJobScheduleChange(row);
@@ -790,7 +824,12 @@ export async function rekeyJobSlug(
   to: string,
   /** The commit that carries the move; see `IDbtJob.lastRenameCommit`. */
   commit?: string,
+  options: {
+    /** False when `from` never existed on main (a lost rename being undone). */
+    recordOldAsAlias?: boolean;
+  } = {},
 ): Promise<void> {
+  const recordOldAsAlias = options.recordOldAsAlias ?? true;
   await DbtJob.updateOne({ _id: jobId }, { $pull: { aliases: to } });
   await DbtJob.updateOne(
     { _id: jobId, slug: from },
@@ -801,7 +840,7 @@ export async function rekeyJobSlug(
           ? { lastRenameCommit: commit, lastRenameAt: new Date() }
           : {}),
       },
-      $addToSet: { aliases: from },
+      ...(recordOldAsAlias ? { $addToSet: { aliases: from } } : {}),
     },
   );
 }
@@ -956,11 +995,24 @@ export async function commitDbtJobFile(
   if (!job.isNew) {
     const current = await DbtJob.findById(job._id).select("slug").lean();
     if (current?.slug && current.slug !== job.slug) {
-      throw new Error(
+      throw new DbtConfigConflictError(
         `the job was renamed to "${current.slug}" while this change was being made; reload and retry`,
       );
     }
   }
+  // What the path must still hold: the blob this row last SAW at main
+  // (`lastSeenBlobSha`, which a broken file sets too — so a UI save that
+  // fixes a bad laptop push, and the auto-disable after failures, go
+  // through), never a blob nobody has seen. Rows from before that field
+  // fall back to the last applied blob, unless marked invalid, where that
+  // blob is by definition not what is on main: then no precondition (the
+  // pre-CAS behaviour), which is the recovery path.
+  const expected = job.isNew
+    ? // A new job's file must not exist yet (a git-only file of the same
+      // slug is someone else's job).
+      null
+    : (job.lastSeenBlobSha ??
+      (isMarkedInvalid(job) ? undefined : job.sourceBlobSha));
   const written = true;
   try {
     await commitDbtConfig(
@@ -968,17 +1020,13 @@ export async function commitDbtJobFile(
       { writes: { [jobFilePath(job.slug)]: contents } },
       messageOverride ?? `dbt: job "${job.name}" (${job.slug})`,
       actorUserId ? await authorForUser(actorUserId) : undefined,
-      job.isNew
-        ? // A new job's file must not exist yet (a git-only file of the
-          // same slug is someone else's job).
-          { [jobFilePath(job.slug)]: null }
-        : job.sourceBlobSha
-          ? { [jobFilePath(job.slug)]: job.sourceBlobSha }
-          : undefined,
+      expected === undefined
+        ? undefined
+        : { [jobFilePath(job.slug)]: expected },
     );
   } catch (error) {
     if (error instanceof BlobPreconditionError) {
-      throw new Error(
+      throw new DbtConfigConflictError(
         `${error.path} changed in the workspace repo while this change was being made (a rename or another edit landed first); reload and retry`,
       );
     }
@@ -988,12 +1036,13 @@ export async function commitDbtJobFile(
   // the row claiming a sha for a file that was never written, and the
   // push-sync short-circuits on a matching sha. For a not-yet-persisted
   // document (`new DbtJob`), the caller saves after this returns.
-  if (written && job.sourceBlobSha !== sha) {
+  if (written && (job.sourceBlobSha !== sha || job.lastSeenBlobSha !== sha)) {
     job.sourceBlobSha = sha;
+    job.lastSeenBlobSha = sha;
     if (!job.isNew) {
       await DbtJob.updateOne(
         { _id: job._id },
-        { $set: { sourceBlobSha: sha } },
+        { $set: { sourceBlobSha: sha, lastSeenBlobSha: sha } },
       );
     }
   }
@@ -1163,6 +1212,7 @@ async function syncDbtConfigNow(
           at: new Date(),
           path,
         };
+        row.lastSeenBlobSha = sha;
         row.enabled = false;
         await row.save();
       }
@@ -1178,7 +1228,7 @@ async function syncDbtConfigNow(
         path,
         reason: failure,
       });
-      if (row) await markJobInvalid(row, failure, path);
+      if (row) await markJobInvalid(row, failure, path, sha);
       continue;
     }
     const scheduleChanged = !row || scheduleDiffers(row, parsed);
@@ -1240,6 +1290,7 @@ async function syncDbtConfigNow(
     doc.enabled = parsed.enabled;
     doc.deferToProduction = parsed.deferToProduction;
     doc.sourceBlobSha = sha;
+    doc.lastSeenBlobSha = sha;
     const clearInvalid = isMarkedInvalid(doc);
     // One file's failure is that file's problem: a save that throws (a
     // duplicate id, a schema refusal) must not skip every file after it and
@@ -1253,6 +1304,13 @@ async function syncDbtConfigNow(
         path,
         error: error instanceof Error ? error.message : String(error),
       });
+      // The row still SAW this blob: a UI save that fixes it may overwrite it.
+      if (row) {
+        await DbtJob.updateOne(
+          { _id: row._id },
+          { $set: { lastSeenBlobSha: sha } },
+        );
+      }
       continue;
     }
     if (!row) {
@@ -1327,6 +1385,7 @@ export async function adoptDbtConfig(workspaceId: string): Promise<{
     const path = jobFilePath(job.slug);
     const contents = serializeJobFile(jobToFile(job));
     job.sourceBlobSha = blobOid(contents);
+    job.lastSeenBlobSha = job.sourceBlobSha;
     await job.save();
     if (!existing.has(path)) writes[path] = contents;
   }

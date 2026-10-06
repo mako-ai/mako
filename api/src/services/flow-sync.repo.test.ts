@@ -1026,6 +1026,9 @@ describe("round 2: lost and racing renames", () => {
     expect(rows[0].name).toBe("Foo edited on laptop");
     expect(rows[0].tableDestination?.schema).toBe("raw_edited");
     expect(rows[0].lastRenameCommit).toBeUndefined();
+    // "bar" never existed on main: nothing linked to it, so it is not an
+    // alias now (and "foo" is the current slug, so not one either).
+    expect(rows[0].aliases ?? []).toEqual([]);
     expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
     const live = await loadLiveFlows(WS);
     expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
@@ -1131,5 +1134,78 @@ describe("round 2: lost and racing renames", () => {
       expect(result.deferred).toEqual(["bar"]);
       expect(barAfter.aliases ?? []).toEqual([]);
     }
+  });
+});
+
+describe("round 3: fixing a broken file from the UI", () => {
+  it("[r3-1] a broken laptop push is marked with the blob seen; a UI save then overwrites exactly that and clears the marker", async () => {
+    const { commitFlowFile } = await import("./flow-config.service");
+    await push({ "flows/x.yml": flowYaml("X") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "x" });
+    const good = row!.sourceBlobSha;
+
+    // Laptop pushes a broken version: the row keeps its last valid
+    // definition but records the blob it SAW.
+    const broken = "name: [unclosed";
+    await push({ "flows/x.yml": broken });
+    const sync = await syncFlowsFromRepo(WS, "u1");
+    expect(sync.invalid).toEqual(["x"]);
+    let marked = await Flow.findById(row!._id);
+    expect(isFlowMarkedInvalid(marked!)).toBe(true);
+    expect(marked!.sourceBlobSha).toBe(good);
+    expect(marked!.lastSeenBlobSha).toBe(blobOid(broken));
+
+    // A second broken version with the SAME reason is a different blob and
+    // must be recorded too (the marker's idempotency is per blob).
+    const broken2 = "name: [still unclosed";
+    await push({ "flows/x.yml": broken2 });
+    await syncFlowsFromRepo(WS, "u1");
+    marked = await Flow.findById(row!._id);
+    expect(marked!.lastSeenBlobSha).toBe(blobOid(broken2));
+    // GET/list's own resync agrees.
+    await ensureFlowDerivedCache(marked!);
+    expect((await Flow.findById(row!._id))!.lastSeenBlobSha).toBe(
+      blobOid(broken2),
+    );
+
+    // The user fixes it in the UI: the save must go through (this is the
+    // recovery path), not be refused as "the file changed".
+    marked!.name = "X fixed in the UI";
+    const saved = await commitFlowFile(marked!, "u1");
+    expect(saved).toMatchObject({ ok: true, changed: true });
+    expect(saved.conflict).toBeUndefined();
+    expect(
+      await readBlob(
+        repoDirFor(WS),
+        (await resolveCommit(
+          repoDirFor(WS),
+          `refs/heads/${DEFAULT_BRANCH}`,
+        )) as string,
+        "flows/x.yml",
+      ).then(b => b.contents),
+    ).toContain("name: X fixed in the UI");
+    // The route then stamps the shas, unsets the marker and saves the doc
+    // (commitFlowFileOrFail + flow.save()); the next sync sees a valid file
+    // level with the row.
+    marked!.sourceBlobSha = saved.sourceBlobSha;
+    marked!.lastSeenBlobSha = saved.sourceBlobSha;
+    await Flow.updateOne(
+      { _id: row!._id },
+      { $unset: { definitionInvalid: 1 } },
+    );
+    await marked!.save();
+    const after = await syncFlowsFromRepo(WS, "u1");
+    expect(after).toMatchObject({ invalid: [], unchanged: 1 });
+    const fixed = await Flow.findById(row!._id);
+    expect(isFlowMarkedInvalid(fixed!)).toBe(false);
+    expect(fixed!.name).toBe("X fixed in the UI");
+
+    // …while an edit nobody has seen is still refused, as a conflict.
+    await push({ "flows/x.yml": flowYaml("X edited on a laptop meanwhile") });
+    fixed!.name = "X from a stale form";
+    const refused = await commitFlowFile(fixed!, "u1");
+    expect(refused).toMatchObject({ ok: false, conflict: true });
+    expect(refused.error).toMatch(/changed in the workspace repo/);
   });
 });

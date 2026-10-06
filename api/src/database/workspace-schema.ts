@@ -975,6 +975,15 @@ export interface IFlow extends Document {
    */
   sourceBlobSha?: string;
   /**
+   * Blob sha of the file at main this row last SAW — valid or not. Differs
+   * from `sourceBlobSha` exactly while the row is marked invalid: that one
+   * keeps the last definition that applied, this one is the broken blob on
+   * main. The write-through's compare-and-swap expects THIS, so fixing a
+   * broken file from the UI is allowed to overwrite it (the intended
+   * recovery) while an edit nobody has seen is still refused.
+   */
+  lastSeenBlobSha?: string;
+  /**
    * Set when `flows/<slug>.yml` at main does not parse or cannot be applied.
    * Runtime must not run this definition and must never write the row back
    * over the file.
@@ -2341,6 +2350,7 @@ const FlowSchema = new Schema<IFlow>(
     sourceBlobSha: {
       type: String,
     },
+    lastSeenBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },
       at: { type: Date },
@@ -4690,6 +4700,8 @@ export interface IDbtJob extends Document {
   /** When it was made; see IFlow.lastRenameAt. */
   lastRenameAt?: Date;
   sourceBlobSha?: string;
+  /** The blob at main this row last saw, valid or not; see IFlow.lastSeenBlobSha. */
+  lastSeenBlobSha?: string;
   /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
   definitionInvalid?: {
     reason: string;
@@ -4740,6 +4752,7 @@ const DbtJobSchema = new Schema<IDbtJob>(
     lastRenameCommit: { type: String },
     lastRenameAt: { type: Date },
     sourceBlobSha: { type: String },
+    lastSeenBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },
       at: { type: Date },
