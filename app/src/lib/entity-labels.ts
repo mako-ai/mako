@@ -51,3 +51,19 @@ export function missingEntityError(entityLabel: string): LoadError {
     message: `${entityLabel.charAt(0).toUpperCase()}${entityLabel.slice(1)} not found`,
   };
 }
+
+/**
+ * The headline for an entity that failed to load — "Console not found",
+ * "You don't have access to this console", "Failed to load console" — one
+ * wording for the error state AND the breadcrumb (which read "Unsaved
+ * console" over a console that was not found).
+ */
+export function loadErrorTitle(error: LoadError, entityLabel: string): string {
+  if (error.status === 404) {
+    return `${entityLabel.charAt(0).toUpperCase()}${entityLabel.slice(1)} not found`;
+  }
+  if (error.status === 403) {
+    return `You don't have access to this ${entityLabel}`;
+  }
+  return `Failed to load ${entityLabel}`;
+}

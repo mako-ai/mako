@@ -16,6 +16,8 @@ import { SECTION_LABELS } from "../pages/settings/sections";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
 import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
 import { consolePlacement } from "../lib/console-relocation";
+import { loadErrorTitle } from "../lib/entity-labels";
+import type { LoadError } from "../api/result";
 import { useAuth } from "../contexts/auth-context";
 
 interface BreadcrumbSegment {
@@ -63,6 +65,16 @@ function segmentsForTab(
   const kind: NonNullable<TabKind> = tab.kind ?? "console";
   switch (kind) {
     case "console": {
+      // A console that failed to load (a dead /c/:id link) is not an
+      // unsaved one: say what the tab's body says.
+      const loadError = tab.metadata?.loadError as LoadError | undefined;
+      if (loadError) {
+        return [
+          root,
+          { label: "Consoles" },
+          { label: loadErrorTitle(loadError, "console"), italic: true },
+        ];
+      }
       if (!tab.filePath) {
         return [
           root,
