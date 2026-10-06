@@ -270,7 +270,7 @@ export function FlowsExplorer() {
       // A file at main whose push has not been synced yet has no row to
       // re-key (the list shows it from git with a placeholder id); the
       // rename service would refuse it, so say why instead of offering it.
-      const gitOnly = (flow as { createdBy?: string }).createdBy === "git";
+      const gitOnly = (flow as { gitOnly?: boolean }).gitOnly === true;
       return [
         <MenuItem
           key="open"

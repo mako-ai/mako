@@ -1365,6 +1365,99 @@ describe("cross-cutting (jobs): an old name found only in a file's aliases", () 
   }, 90_000);
 });
 
+describe("cycle 3 (jobs): a rename that loses a race, aliases the file keeps, the stale view", () => {
+  const file = (name: string, sel = "x") =>
+    `name: ${name}\nenvironment: prod\ncommands:\n  - build --select ${sel}\nschedule:\n  cron: "0 6 * * *"\n  timezone: UTC\n`;
+  const c = (writes: Record<string, string>, deletes: string[] = []) =>
+    commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes, deletes },
+      { message: "push" },
+    );
+
+  it("[c3-1] a UI rename a→b lost to a laptop `git mv` a→x is re-keyed in place — one job, same id, no duplicate", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { runGit } = await import("../apps/git");
+    const project = await seedProject();
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    const dir = repoDirFor(WS.toString());
+    const pre = (await resolveCommit(dir, MAIN)) as string;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "a", slug: "b" },
+    );
+    await runGit(["-C", dir, "update-ref", MAIN, pre]);
+    await c({ [jobFilePath("x")]: file("A") }, [jobFilePath("a")]);
+    await syncDbtConfigFromRepo(WS.toString());
+    let rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => [r._id.toString(), r.slug, r.enabled])).toEqual([
+      [R._id.toString(), "x", true],
+    ]);
+    // …and still one after the guard would have expired.
+    await DbtJob.updateOne(
+      { _id: R._id },
+      { $set: { lastRenameAt: new Date(Date.now() - 60 * 60_000) } },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [R._id.toString(), "x"],
+    ]);
+  }, 90_000);
+
+  it("[c3-3] a UI save while a newcomer holds the old name keeps that name in the file", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { resolveDbtJobRef } = await import("../rename/dbt-job-rename");
+    const project = await seedProject();
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "a", slug: "b" },
+    );
+    await c({ [jobFilePath("a")]: file("Newcomer", "other") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const row = (await DbtJob.findById(R._id))!;
+    expect(row.aliases ?? []).toEqual([]);
+    row.name = "B edited";
+    await commitDbtJobFile(project, row, "u1");
+    expect(parseJobFile((await fileAt(jobFilePath("b")))!)?.aliases).toEqual([
+      "a",
+    ]);
+    await c({}, [jobFilePath("a")]);
+    await syncDbtConfigFromRepo(WS.toString());
+    expect(
+      (await resolveDbtJobRef({ workspaceId: WS.toString() }, "a"))?.id,
+    ).toBe(R._id.toString());
+    expect((await DbtJob.findById(R._id))!.aliases).toEqual(["a"]);
+  }, 90_000);
+
+  it("[c3-2] on a stale instance the old-name file is listed as the row, not a git-only stand-in", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { runGit } = await import("../apps/git");
+    const project = await seedProject();
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    const dir = repoDirFor(WS.toString());
+    const pre = (await resolveCommit(dir, MAIN)) as string;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "a", slug: "b" },
+    );
+    await runGit(["-C", dir, "update-ref", MAIN, pre]);
+    const live = await loadLiveJobs(project);
+    expect(
+      live.map(l => [l.def.slug, l.row?._id.toString(), l.id.toString()]),
+    ).toEqual([["a", R._id.toString(), R._id.toString()]]);
+    expect(liveJobToPlain(live[0], project).gitOnly).toBeUndefined();
+  });
+});
+
 describe("adoption", () => {
   it("writes files for unstamped jobs + environments once, re-runnable", async () => {
     const project = await seedProject();

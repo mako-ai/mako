@@ -188,7 +188,20 @@ export function pairRenamedSlugs(input: {
       // pairing on it would undo a rename that just happened. A genuine
       // rename back through the service writes the alias forward anyway;
       // a laptop one falls to rules 2 and 3.
-      ["alias", added.filter(a => a.aliases.includes(r.slug)).map(a => a.slug)],
+      [
+        "alias",
+        added
+          .filter(
+            a =>
+              a.aliases.includes(r.slug) ||
+              // Both say they used to be the same name (two renames of one
+              // flow racing on two instances: a→b won the mirror, a→c wrote
+              // the row): the same stream, when the targets agree.
+              (a.aliases.some(x => (r.aliases ?? []).includes(x)) &&
+                sameTarget(r, a)),
+          )
+          .map(a => a.slug),
+      ],
       [
         "git",
         (() => {

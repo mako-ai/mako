@@ -1811,7 +1811,12 @@ describe("cycle 2: wedges after a lost rename, stale instances, a failed sync sa
       `refs/heads/${DEFAULT_BRANCH}`,
       pre,
     ]);
-    expect(await loadLiveFlowById(WS, row!._id.toString())).toBeNull();
+    // The second miss within 30 s does not fetch again (throttled; the
+    // rename commit is already local, so nothing is fetched FOR either):
+    // the stale view serves the row under its old-name file.
+    const stale = await loadLiveFlowById(WS, row!._id.toString());
+    expect(stale?.def.slug).toBe("foo");
+    expect(stale?.row?._id.toString()).toBe(row!._id.toString());
   });
 
   it("[c2-4] a push-sync save that failed once does not wedge later UI saves after the file reverts", async () => {
@@ -1976,5 +1981,229 @@ describe("cross-cutting: an old name found only in a file's aliases", () => {
     const beforeSync = await resolveFlowRef({ workspaceId: WS }, "a");
     expect(beforeSync?.via).toBe("current");
     expect(beforeSync?.id).not.toBe(R!._id.toString());
+  });
+});
+
+describe("cycle 3: renames that lose a race, the miss window, aliases the file keeps", () => {
+  const runGit = async (args: string[]) =>
+    (await import("../apps/git")).runGit(args);
+  const headOf = async () =>
+    (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+
+  it("[c3-1a] a UI rename whose mirror push lost to a laptop `git mv` is re-keyed in place, not torn down", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await seedRuntime(R!._id);
+    const pre = await headOf();
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", slug: "b" },
+    );
+    // The mirror got the laptop's move first; main here is reset to it.
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    await move("a", "x", flowYaml("A"));
+    const result = await syncFlowsFromRepo(WS, "u2");
+    expect(result.created).toBe(0);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [R!._id.toString(), "x"],
+    ]);
+    expect(await runtimeCounts(R!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+  });
+
+  it("[c3-1b] two renames of one flow on two instances: the loser's row follows the winner's file, same id", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await seedRuntime(R!._id);
+    const pre = await headOf();
+    const toB = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", slug: "b" },
+    );
+    // Instance B, on the mirror's `pre`, renamed a→c and wrote the row last;
+    // its push was rejected and parked: main = mirror = the a→b commit.
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    await Flow.updateOne(
+      { _id: R!._id },
+      {
+        $set: { slug: "a" },
+        $unset: { aliases: 1, lastRenameCommit: 1, lastRenameAt: 1 },
+      },
+    );
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: R!._id.toString(), slug: "c" },
+    );
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      toB.commit as string,
+    ]);
+    const result = await syncFlowsFromRepo(WS, "u2");
+    expect(result.created).toBe(0);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [R!._id.toString(), "b"],
+    ]);
+    expect(await runtimeCounts(R!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+  });
+
+  it("[c3-2] a miss on a renamed row fetches its commit even inside the throttle window, and the rename waits for its mirror push", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    const pre = await headOf();
+    // A mirror at `pre`, wired up BEFORE the rename so the rename pushes to it.
+    const remotes = path.join(tmpRoot, `remotes-c3-${WS}`);
+    const remote = path.join(remotes, "test-owner", "test-repo.git");
+    await fs.mkdir(path.dirname(remote), { recursive: true });
+    await runGit(["clone", "--bare", "-q", repoDirFor(WS), remote]);
+    process.env.APPS_GITHUB_REMOTE_BASE = `file://${remotes}`;
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", slug: "b" },
+    );
+    // The rename returned only once the mirror had the commit.
+    expect(
+      (
+        await runGit(["-C", remote, "rev-parse", "refs/heads/main"])
+      ).stdout.trim(),
+    ).toBe(renamed.commit);
+
+    // Instance B: cache at `pre`, the commit's objects never fetched, and
+    // its throttle already burnt by a miss BEFORE the push landed.
+    await runGit(["-C", remote, "update-ref", "refs/heads/main", pre]);
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "reflog",
+      "expire",
+      "--expire=now",
+      "--all",
+    ]);
+    await runGit(["-C", repoDirFor(WS), "gc", "--prune=now", "-q"]);
+    // t0: nothing to fetch yet — the stale view serves the row under its
+    // old-name file (never a 404, never a git-only stand-in).
+    const t0 = await loadLiveFlowById(WS, R!._id.toString());
+    expect(t0?.def.slug).toBe("a");
+    expect(t0?.row?._id.toString()).toBe(R!._id.toString());
+    // t2: the push lands on the mirror (objects were in the clone).
+    await runGit([
+      "-C",
+      remote,
+      "update-ref",
+      "refs/heads/main",
+      renamed.commit as string,
+    ]);
+    resetFreshenOnMissThrottle(); // emulates the 5 s per-sha backoff elapsing
+    // The 30 s miss throttle is NOT reset — the row's commit is fetched for
+    // by itself.
+    const { FRESHEN_ON_MISS_MS } = await import("./flow-sync.service");
+    expect(FRESHEN_ON_MISS_MS).toBeGreaterThan(5_000);
+    const live = await loadLiveFlowById(WS, R!._id.toString());
+    expect(live?.def.slug).toBe("b");
+    expect(live?.row?._id.toString()).toBe(R!._id.toString());
+  });
+
+  it("[c3-2] on a stale instance the old-name file is listed AS the row, never as a git-only stand-in", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    const pre = await headOf();
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", slug: "b" },
+    );
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    const live = await loadLiveFlows(WS);
+    expect(
+      live.map(l => [l.def.slug, l.row?._id.toString(), l.id.toString()]),
+    ).toEqual([["a", R!._id.toString(), R!._id.toString()]]);
+    const plain = liveFlowToPlain(live[0], WS);
+    expect(plain.gitOnly).toBeUndefined();
+    expect(
+      (await loadLiveFlowById(WS, R!._id.toString()))?.row?._id.toString(),
+    ).toBe(R!._id.toString());
+  });
+
+  it("[c3-3] a UI save while a newcomer holds the old name keeps that name in the file; the file is the record", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { resolveFlowRef } = await import("../rename/flow-rename");
+    const { commitFlowFile } = await import("./flow-config.service");
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", slug: "b" },
+    );
+    const OTHER = new Types.ObjectId().toString();
+    await push({
+      "flows/a.yml": flowYaml("Newcomer").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${OTHER}`,
+      ),
+    });
+    await syncFlowsFromRepo(WS, "u2");
+    expect((await Flow.findById(R!._id))!.aliases ?? []).toEqual([]);
+    // A UI save of the renamed flow (PUT → commitFlowFile on the row).
+    const row = (await Flow.findById(R!._id))!;
+    row.name = "B edited in the UI";
+    expect((await commitFlowFile(row, "u1")).ok).toBe(true);
+    const saved = (
+      await readBlob(repoDirFor(WS), await headOf(), "flows/b.yml")
+    ).contents;
+    expect(parseFlowFile(saved)?.aliases).toEqual(["a"]);
+    // The newcomer goes: the old name answers to the old flow again.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { deletes: ["flows/a.yml"] },
+      { message: "laptop delete" },
+    );
+    await syncFlowsFromRepo(WS, "u2");
+    expect((await resolveFlowRef({ workspaceId: WS }, "a"))?.id).toBe(
+      R!._id.toString(),
+    );
+    expect((await Flow.findById(R!._id))!.aliases).toEqual(["a"]);
   });
 });

@@ -620,6 +620,14 @@ export function DbtExplorer() {
           items.push(
             <MenuItem
               key="rename-job"
+              // A file at main whose push has not been synced has no row to
+              // re-key; the rename service would refuse it.
+              disabled={job.gitOnly === true}
+              title={
+                job.gitOnly
+                  ? "This job's push has not been synced yet"
+                  : undefined
+              }
               onClick={() => {
                 setRenameJobTarget({
                   kind: "dbt_job",
@@ -633,7 +641,7 @@ export function DbtExplorer() {
               <ListItemIcon>
                 <RenameIcon size={16} strokeWidth={1.5} />
               </ListItemIcon>
-              Rename…
+              {job.gitOnly ? "Rename… (push not synced yet)" : "Rename…"}
             </MenuItem>,
           );
         }

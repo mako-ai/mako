@@ -27,6 +27,7 @@ import {
 } from "../apps/workspace-repo-required";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import {
+  ensureCommitLocally,
   ensureLocalRepo,
   freshenBeforeMainWrite,
   freshenForServe,
@@ -196,6 +197,37 @@ async function freshenOnJobMiss(workspaceId: string): Promise<boolean> {
 /** Test seam: forget the on-miss throttle. */
 export function resetJobFreshenOnMissThrottle(): void {
   lastJobMissFreshenAt.clear();
+  lastJobCommitFetchAt.clear();
+}
+
+/** See `fetchRenameCommit` in flow-sync.service.ts — the job twin. */
+const JOB_COMMIT_FETCH_BACKOFF_MS = 5 * 1000;
+const lastJobCommitFetchAt = new Map<string, number>();
+async function freshenForJobOrphans(
+  workspaceId: string,
+  repoDir: string,
+  orphans: Array<Pick<IDbtJob, "lastRenameCommit">>,
+): Promise<boolean> {
+  const { runGit } = await import("../apps/git");
+  const present = (sha: string) =>
+    runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`])
+      .then(() => true)
+      .catch(() => false);
+  let fetched = false;
+  for (const row of orphans) {
+    const sha = row.lastRenameCommit;
+    if (!sha || !/^[0-9a-f]{40}$/.test(sha)) continue;
+    // Present but not on main is not this helper's case (see flow-sync).
+    if (await present(sha)) continue;
+    const key = `${workspaceId}#${sha}`;
+    const last = lastJobCommitFetchAt.get(key) ?? 0;
+    if (Date.now() - last < JOB_COMMIT_FETCH_BACKOFF_MS) continue;
+    lastJobCommitFetchAt.set(key, Date.now());
+    await ensureCommitLocally(workspaceId, sha);
+    if (await present(sha)) fetched = true;
+  }
+  if (!fetched) fetched = await freshenOnJobMiss(workspaceId);
+  return fetched;
 }
 
 interface JobRenameSettleContext {
@@ -570,13 +602,26 @@ function joinLiveJobs(
   rows: IDbtJob[],
 ): LiveJob[] {
   const bySlug = new Map(rows.map(row => [row.slug, row]));
-  return defs.map(def => ({
-    def,
-    row: bySlug.get(def.slug) ?? null,
-    id:
-      bySlug.get(def.slug)?._id ??
-      freeDerivedJobId(project.workspaceId.toString(), def.slug, rows),
-  }));
+  // An old-name file of a row whose own file is not here is that row (see
+  // joinLiveFlows in flow-sync.service.ts).
+  const defSlugs = new Set(defs.map(def => def.slug));
+  const byAliasOfOrphan = new Map<string, IDbtJob>();
+  for (const row of rows) {
+    if (!row.slug || defSlugs.has(row.slug)) continue;
+    for (const alias of row.aliases ?? []) {
+      if (!bySlug.has(alias)) byAliasOfOrphan.set(alias, row);
+    }
+  }
+  return defs.map(def => {
+    const row = bySlug.get(def.slug) ?? byAliasOfOrphan.get(def.slug) ?? null;
+    return {
+      def,
+      row,
+      id:
+        row?._id ??
+        freeDerivedJobId(project.workspaceId.toString(), def.slug, rows),
+    };
+  });
 }
 
 export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
@@ -602,11 +647,15 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
     const slugs = new Set(defs.map(def => def.slug));
     return rows.filter(row => row.slug && !slugs.has(row.slug));
   };
-  if (
-    orphaned(defs, rows).length > 0 &&
-    (await freshenOnJobMiss(workspaceId))
-  ) {
-    defs = await listJobDefinitionsAtMain(workspaceId);
+  const orphans = orphaned(defs, rows);
+  if (orphans.length > 0) {
+    const repoDir = await boundRepoDirIfExists(workspaceId);
+    if (
+      repoDir != null &&
+      (await freshenForJobOrphans(workspaceId, repoDir, orphans))
+    ) {
+      defs = await listJobDefinitionsAtMain(workspaceId);
+    }
   }
   if (orphaned(defs, rows).length > 0) {
     const repoDir = await boundRepoDirIfExists(workspaceId);
@@ -710,6 +759,7 @@ export function liveJobToPlain(
         // `commands`) and unrunnable rather than half-defined.
         name: live.def.slug,
         aliases: live.def.parsed?.aliases,
+        gitOnly: true,
         environment: "",
         commands: [],
         schedule: null,
@@ -1042,8 +1092,13 @@ export async function rekeyRenamedJobs(args: {
   for (const row of rows) {
     if (row.slug === undefined || fileBySlug.has(row.slug)) continue;
     // A tree older than the row's recent rename commit still shows its old
-    // file; that is not a candidate for anything (see flow-sync.service.ts).
-    if (await jobRenameGuardActive(repoDir, head, row)) {
+    // file; that is not a candidate for anything. A guarded row whose old
+    // name is gone too lost a race and must pair normally (see
+    // flow-sync.service.ts).
+    const oldNamePresent = (row.aliases ?? []).some(alias =>
+      fileBySlug.has(alias),
+    );
+    if (oldNamePresent && (await jobRenameGuardActive(repoDir, head, row))) {
       logger.info("Tree predates a job rename; not pairing its old slug", {
         workspaceId,
         slug: row.slug,
@@ -1147,6 +1202,19 @@ export async function rekeyRenamedJobs(args: {
   return done;
 }
 
+/** The `aliases:` the job's file at main lists, or none. */
+async function jobAliasesAtMain(
+  repoDir: string,
+  slug: string,
+): Promise<string[]> {
+  try {
+    const blob = await readBlob(repoDir, MAIN, jobFilePath(slug));
+    return blob.isBinary ? [] : (parseJobFile(blob.contents)?.aliases ?? []);
+  } catch {
+    return [];
+  }
+}
+
 /** Write-through: the job's file mirrors the row's definition fields. */
 export async function commitDbtJobFile(
   project: Pick<IDbtProject, "workspaceId">,
@@ -1156,16 +1224,29 @@ export async function commitDbtJobFile(
 ): Promise<void> {
   if (!job.slug) return; // pre-adoption row; the migration stamps slugs
   const workspaceId = project.workspaceId.toString();
-  const contents = serializeJobFile(jobToFile(job));
-  const sha = blobOid(contents);
   // Never write to a slug a concurrent rename has already moved away from
   // (the old file would come back beside the new one as a second scheduled
   // job). The row's current slug is read AFTER the freshen that precedes
   // every main write, and the commit is a compare-and-swap on the file
   // (`expectBlobs`): a rename or edit landing in between fails the request
   // with the reason rather than being written over.
-  await requireWorkspaceRepo(workspaceId);
+  const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
+  // The file is the record of a job's old names: an alias the ROW lost to a
+  // newcomer (current wins) is still listed in the file, and a save that
+  // regenerates the file from the row must not erase it — once the
+  // newcomer is gone the old name must answer to this job again.
+  const projected = jobToFile(job);
+  const aliases = mergedAliases(
+    projected.aliases,
+    await jobAliasesAtMain(repoDir, job.slug),
+    job.slug,
+  );
+  const contents = serializeJobFile({
+    ...projected,
+    ...(aliases.length > 0 ? { aliases } : {}),
+  });
+  const sha = blobOid(contents);
   if (!job.isNew) {
     const current = await DbtJob.findById(job._id).select("slug").lean();
     if (current?.slug && current.slug !== job.slug) {

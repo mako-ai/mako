@@ -148,6 +148,24 @@ assert.equal(definitionIdentity("- a list\n"), null);
   ]);
 }
 
+// ---- rule 1, shared old name: two renames of one flow raced on two
+// instances (a→b won the mirror, a→c wrote the row). Both say they used to
+// be `a` — the same stream when the targets agree, and not otherwise.
+{
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "c", aliases: ["a"], contents: FLOW("C"), target: T }],
+    added: [{ slug: "b", contents: FLOW("B"), aliases: ["a"], target: T }],
+  });
+  assert.deepEqual(result.pairs, [{ from: "c", to: "b", via: "alias" }]);
+}
+{
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "c", aliases: ["a"], contents: FLOW("C"), target: "x" }],
+    added: [{ slug: "b", contents: FLOW("B"), aliases: ["a"], target: "y" }],
+  });
+  assert.deepEqual(result.pairs, []);
+}
+
 // ---- rule 2: git says so — and both files point at the same thing --------
 {
   const result = pairRenamedSlugs({

@@ -81,6 +81,8 @@ export interface DbtJobItem {
   slug?: string;
   /** Previous slugs that still resolve to this job (graceful rename). */
   aliases?: string[];
+  /** A file at main with no row yet (push not synced): not renameable. */
+  gitOnly?: boolean;
   name: string;
   environment: string;
   commands: string[];
