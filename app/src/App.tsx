@@ -50,7 +50,11 @@ import {
   SIDE_PANEL_MIN_WIDTH_PX,
   useUIStore,
 } from "./store/uiStore";
-import { hasUnsavedLocalEdits, useConsoleStore } from "./store/consoleStore";
+import {
+  hasUnsavedLocalEdits,
+  isUnloadedConsoleTab,
+  useConsoleStore,
+} from "./store/consoleStore";
 import { useExplorerRevealStore } from "./store/explorerRevealStore";
 import { tabRevealTarget } from "./lib/explorer-reveal";
 import { consoleLeafName } from "./lib/console-name";
@@ -420,7 +424,8 @@ function MainApp() {
         if (
           !isPlaceholder &&
           existing.content !== content &&
-          !hasUnsavedLocalEdits(existing.id)
+          (isUnloadedConsoleTab(existing.id) ||
+            !hasUnsavedLocalEdits(existing.id))
         ) {
           updateContent(existing.id, content);
         }

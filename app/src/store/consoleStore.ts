@@ -551,6 +551,23 @@ export const hasUnsavedLocalEdits = (consoleId: string): boolean => {
   return false;
 };
 
+/** The content a tab shows until its console has loaded. */
+export const CONSOLE_LOADING_CONTENT = "loading...";
+
+/**
+ * A tab opened before its console loaded (the explorer's placeholder): marked
+ * saved, but with no saved baseline and no path yet, still showing the
+ * loading text. Nothing was loaded, so nothing is being edited — opening it
+ * again must fetch it (a first fetch that failed left it stuck otherwise,
+ * since `hasUnsavedLocalEdits` counts a saved tab with no baseline as
+ * edited).
+ */
+export const isUnloadedConsoleTab = (consoleId: string): boolean => {
+  const tab = useConsoleStore.getState().tabs[consoleId];
+  if (!tab || !tab.isSaved || tab.savedStateHash || tab.filePath) return false;
+  return tab.content === CONSOLE_LOADING_CONTENT || tab.content.trim() === "";
+};
+
 const cancelAutoSave = (consoleId: string): void => {
   const timer = draftSaveTimers.get(consoleId);
   if (timer) {
@@ -1535,6 +1552,9 @@ export const useConsoleStore = create<ConsoleStore>()(
       },
 
       fetchConsoleContent: async (workspaceId, consoleId, options) => {
+        // What the tab shows as the fetch starts: an edit made while it is
+        // in flight is kept (below), never replaced by the server's copy.
+        const startContent = get().tabs[consoleId]?.content;
         try {
           const res = unwrapBody(
             await api.GET("/api/workspaces/{workspaceId}/consoles/content", {
@@ -1551,8 +1571,27 @@ export const useConsoleStore = create<ConsoleStore>()(
             // path presence (those predate drafts).
             const isSaved = res.isSaved ?? !!res.path;
             const filePath = isSaved ? res.path || res.name : undefined;
+            // Typed into while the fetch was in flight: the edit stays, on
+            // the baseline it was typed on (content, connection, saved hash
+            // and revision base untouched); only where the console is and
+            // what it is (name, place, access, schedule…) are taken.
+            const current = get().tabs[consoleId];
+            const editedMeanwhile =
+              startContent !== undefined &&
+              current !== undefined &&
+              current.content !== startContent;
             set(state => {
               const tab = state.tabs[consoleId];
+              if (tab && editedMeanwhile) {
+                if (res.name) tab.title = res.name;
+                if (filePath) tab.filePath = filePath;
+                tab.access = res.access;
+                tab.owner_id = res.owner_id;
+                tab.readOnly = res.readOnly;
+                tab.schedule = res.schedule;
+                tab.scheduledRun = res.scheduledRun;
+                return;
+              }
               if (tab) {
                 tab.content = res.content || "";
                 tab.connectionId = res.connectionId;
@@ -1576,17 +1615,19 @@ export const useConsoleStore = create<ConsoleStore>()(
               }
             });
 
-            const savedStateHash =
-              res.savedStateHash ??
-              (isSaved && res.lastDraftOrigin === "agent"
-                ? undefined
-                : computeConsoleStateHash(
-                    res.content || "",
-                    res.connectionId,
-                    res.databaseId,
-                    res.databaseName,
-                  ));
-            get().updateSavedState(consoleId, isSaved, savedStateHash);
+            if (!editedMeanwhile) {
+              const savedStateHash =
+                res.savedStateHash ??
+                (isSaved && res.lastDraftOrigin === "agent"
+                  ? undefined
+                  : computeConsoleStateHash(
+                      res.content || "",
+                      res.connectionId,
+                      res.databaseId,
+                      res.databaseName,
+                    ));
+              get().updateSavedState(consoleId, isSaved, savedStateHash);
+            }
           }
 
           return res.success ? res : null;
@@ -2140,7 +2181,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         databaseId,
         databaseName,
       ) => {
-        if (!content?.trim() || content === "loading...") return;
+        if (!content?.trim() || content === CONSOLE_LOADING_CONTENT) return;
         if (!shouldAutoSave(get, consoleId)) return;
         // Conflict pending (banner shown): don't hammer the server with
         // doomed 409s. Edits stay local until the user resolves (Load
