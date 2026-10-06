@@ -280,8 +280,8 @@ export function blobOid(contents: string | Buffer): string {
 }
 
 export interface BlobMutation {
-  /** repo-relative path → full contents. */
-  writes?: Record<string, string>;
+  /** repo-relative path → full contents (a Buffer for a binary blob). */
+  writes?: Record<string, string | Buffer>;
   /** repo-relative paths to remove; absent paths are ignored. */
   deletes?: string[];
 }

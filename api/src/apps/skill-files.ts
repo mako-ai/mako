@@ -11,6 +11,7 @@
  *   entities: [mrr, france]        # optional author-declared triggers
  *   suppressed: true               # optional soft-disable, omitted when false
  *   pinned: true                   # optional: budgeted body excerpt in every prompt
+ *   aliases: [old_name]            # optional: previous folder names (a rename records them)
  *   ---
  *   <body — the playbook>
  *
@@ -60,6 +61,12 @@ export interface WorkspaceSkillFile {
   suppressed: boolean;
   /** A budgeted body excerpt rides in every prompt. */
   pinned: boolean;
+  /**
+   * Previous folder names, written by a rename so `load_skill("old")`
+   * and old links keep resolving (api/src/rename). Travels with the file,
+   * so a clone or a laptop `git mv` that keeps it behaves the same.
+   */
+  aliases?: string[];
   body: string;
 }
 
@@ -85,6 +92,9 @@ export function serializeSkillFile(skill: WorkspaceSkillFile): string {
   if (skill.entities.length > 0) frontmatter.entities = skill.entities;
   if (skill.suppressed) frontmatter.suppressed = true;
   if (skill.pinned) frontmatter.pinned = true;
+  if (skill.aliases && skill.aliases.length > 0) {
+    frontmatter.aliases = skill.aliases;
+  }
   const head = yaml.dump(frontmatter, { lineWidth: 100 }).trimEnd();
   return `---\n${head}\n---\n\n${skill.body.trim()}\n`;
 }
@@ -132,12 +142,26 @@ export function parseSkillFile(
   const body = (match[2] ?? "").trim();
   if (!body) return null;
 
+  // Aliases are names too: anything that is not a valid skill name could
+  // never have been a folder, so it is dropped rather than carried along.
+  const aliases = Array.isArray(data.aliases)
+    ? [
+        ...new Set(
+          data.aliases
+            .filter((a): a is string => typeof a === "string")
+            .map(a => a.trim())
+            .filter(a => SKILL_NAME_RE.test(a) && a !== name),
+        ),
+      ]
+    : [];
+
   return {
     name,
     loadWhen,
     entities,
     suppressed: data.suppressed === true,
     pinned: data.pinned === true,
+    ...(aliases.length > 0 ? { aliases } : {}),
     body,
   };
 }

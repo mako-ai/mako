@@ -28,6 +28,7 @@ export default defineConfig({
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
       "src/apps/workspace-skills.service.test.ts",
+      "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",

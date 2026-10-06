@@ -30,11 +30,14 @@ import {
   globTree,
   listTree,
   readBlob,
+  readBlobsBatch,
   repoDirFor,
   resolveCommit,
   type GitAuthor,
 } from "./repository.service";
+import { findRenamedFolder } from "../rename/git-renames";
 import {
+  SKILLS_DIR,
   SKILLS_README,
   SKILLS_README_PATH,
   SKILL_FILE_GLOB,
@@ -205,21 +208,82 @@ export function invalidateSkillCatalog(workspaceId: string): void {
   catalogCache.delete(workspaceId);
 }
 
+/**
+ * Lookup order for a name (api/src/rename/types.ts): the current name,
+ * then an alias — and an alias only when exactly ONE skill claims it. Two
+ * skills both claiming `old` (a rename, then a copy that kept the
+ * frontmatter) resolve to neither: an old link must not silently open the
+ * wrong playbook. A live name always beats an alias.
+ */
+export async function resolveSkillRef(
+  workspaceId: string,
+  name: string,
+): Promise<{ skill: WorkspaceSkill; via: "current" | "alias" } | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const catalog = await loadSkillCatalog(workspaceId);
+  const current = catalog.skills.find(skill => skill.name === trimmed);
+  if (current) return { skill: current, via: "current" };
+  const claimants = catalog.skills.filter(skill =>
+    (skill.aliases ?? []).includes(trimmed),
+  );
+  return claimants.length === 1 ? { skill: claimants[0], via: "alias" } : null;
+}
+
+/**
+ * Last resort for a name nothing claims: a folder renamed by a bare
+ * `git mv` (no `aliases` written) is still a rename to git. Follows
+ * `skills/<name>/SKILL.md` through main's rename history (bounded, see
+ * rename/git-renames.ts) to the skill that lives there now. Spawns git, so
+ * callers try `resolveSkillRef` first.
+ */
+export async function resolveSkillRefThroughHistory(
+  workspaceId: string,
+  name: string,
+): Promise<{ skill: WorkspaceSkill; via: "alias" } | null> {
+  const trimmed = name.trim();
+  if (!SKILL_NAME_RE.test(trimmed)) return null;
+  if (!(await getWorkspaceRepo(workspaceId))) return null;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
+  const moved = await findRenamedFolder(
+    repoDir,
+    MAIN,
+    SKILLS_DIR,
+    trimmed,
+    "SKILL.md",
+  );
+  if (!moved || moved === trimmed) return null;
+  const catalog = await loadSkillCatalog(workspaceId);
+  const skill = catalog.skills.find(s => s.name === moved);
+  return skill ? { skill, via: "alias" } : null;
+}
+
+/** A skill by its current name or (unambiguous) alias. */
 export async function findSkill(
   workspaceId: string,
   name: string,
 ): Promise<WorkspaceSkill | null> {
-  const trimmed = name.trim();
-  const catalog = await loadSkillCatalog(workspaceId);
-  return catalog.skills.find(skill => skill.name === trimmed) ?? null;
+  return (await resolveSkillRef(workspaceId, name))?.skill ?? null;
 }
 
+/**
+ * A skill by id. Ids are derived from the name (`skillId`), so a rename
+ * changes the id; an id minted from an old name (an open Skills panel, a
+ * tool result in a transcript) still resolves through the alias — with the
+ * same one-claimant rule as names.
+ */
 export async function findSkillById(
   workspaceId: string,
   id: string,
 ): Promise<WorkspaceSkill | null> {
   const catalog = await loadSkillCatalog(workspaceId);
-  return catalog.skills.find(skill => skill.id === id) ?? null;
+  const current = catalog.skills.find(skill => skill.id === id);
+  if (current) return current;
+  const claimants = catalog.skills.filter(skill =>
+    (skill.aliases ?? []).some(alias => skillId(workspaceId, alias) === id),
+  );
+  return claimants.length === 1 ? claimants[0] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +408,130 @@ export async function commitSkillFlags(
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
   return true;
+}
+
+export type SkillRenameOutcome =
+  | { ok: true; commitOid: string; aliasesAdded: string[]; moved: string[] }
+  | {
+      ok: false;
+      status: 400 | 404 | 409;
+      error: string;
+    };
+
+/**
+ * Rename a skill: move `skills/<from>/` to `skills/<to>/` (every file in
+ * the folder, references included) and record `from` in the SKILL.md
+ * front matter `aliases`, in ONE commit on main. The old name keeps
+ * resolving (`resolveSkillRef`), and the record travels with the file.
+ *
+ * Refusals, in the order they are checked: bad names; `from` not a skill
+ * (by current name — an alias is not a thing to rename again); `to`
+ * already a skill's current name (never shadow a live one); `to` an alias
+ * of ANOTHER skill (its old links would start opening this one). Renaming
+ * back to one of the skill's OWN aliases is fine: the alias list just
+ * swaps. A SKILL.md that does not parse is refused rather than rewritten —
+ * a rename must not lose a byte of a playbook someone wrote by hand.
+ */
+export async function commitSkillRename(
+  workspaceId: string,
+  from: string,
+  to: string,
+  author?: GitAuthor,
+): Promise<SkillRenameOutcome> {
+  const fromName = from.trim();
+  const toName = to.trim();
+  if (!SKILL_NAME_RE.test(fromName) || !SKILL_NAME_RE.test(toName)) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Skill names must be lowercase snake_case (a-z, 0-9, _)",
+    };
+  }
+  if (fromName === toName) {
+    return { ok: false, status: 400, error: "The new name is the old name" };
+  }
+  await requireWorkspaceRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
+  invalidateSkillCatalog(workspaceId);
+  const catalog = await loadSkillCatalog(workspaceId);
+  const current = catalog.skills.find(skill => skill.name === fromName);
+  if (!current) {
+    return { ok: false, status: 404, error: `No skill named "${fromName}"` };
+  }
+  if (catalog.skills.some(skill => skill.name === toName)) {
+    return {
+      ok: false,
+      status: 409,
+      error: `A skill named "${toName}" already exists`,
+    };
+  }
+  const claimant = catalog.skills.find(
+    skill => skill !== current && (skill.aliases ?? []).includes(toName),
+  );
+  if (claimant) {
+    return {
+      ok: false,
+      status: 409,
+      error: `"${toName}" is a previous name of the skill "${claimant.name}"; old links to it would open this skill instead`,
+    };
+  }
+  const oldPaths = await skillFolderPaths(repoDir, fromName);
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head || oldPaths.length === 0) {
+    return {
+      ok: false,
+      status: 404,
+      error: `No files under skills/${fromName}/`,
+    };
+  }
+  if (
+    (await listTree(repoDir, head)).some(e =>
+      e.path.startsWith(`skills/${toName}/`),
+    )
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      error: `skills/${toName}/ already has files`,
+    };
+  }
+  const raw = await readRepoFile(repoDir, skillFilePath(fromName));
+  const parsed = raw === null ? null : parseSkillFile(fromName, raw);
+  if (!parsed) {
+    return {
+      ok: false,
+      status: 400,
+      error: `skills/${fromName}/SKILL.md does not parse; fix its front matter before renaming so nothing is lost`,
+    };
+  }
+  const aliases = [...new Set([...(parsed.aliases ?? []), fromName])].filter(
+    alias => alias !== toName,
+  );
+  const aliasesAdded = aliases.filter(a => !(parsed.aliases ?? []).includes(a));
+
+  const blobs = await readBlobsBatch(repoDir, head, oldPaths);
+  const writes: Record<string, string | Buffer> = {};
+  const moved: string[] = [];
+  for (const oldPath of oldPaths) {
+    const newPath = `skills/${toName}/${oldPath.slice(`skills/${fromName}/`.length)}`;
+    const buf = blobs.get(oldPath);
+    if (!buf) continue;
+    writes[newPath] =
+      oldPath === skillFilePath(fromName)
+        ? serializeSkillFile({ ...parsed, name: toName, aliases })
+        : buf;
+    moved.push(newPath);
+  }
+  const result = await commitBlobsOnBranch(
+    repoDir,
+    DEFAULT_BRANCH,
+    { writes, deletes: oldPaths },
+    { message: `Rename skill "${fromName}" -> "${toName}"`, author },
+  );
+  invalidateSkillCatalog(workspaceId);
+  queueMirrorPush(workspaceId);
+  return { ok: true, commitOid: result.commitOid, aliasesAdded, moved };
 }
 
 /** Kept for the suppress route and older callers. */
