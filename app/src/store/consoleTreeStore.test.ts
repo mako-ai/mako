@@ -446,7 +446,12 @@ describe("consoleTreeStore — Shared with me and Duplicate", () => {
 
     const res = await useConsoleTreeStore.getState().duplicateConsole(WID, "s");
 
-    expect(res).toEqual({ id: "copy", name: "Secret Margin copy" });
+    // Where it landed, for the explorer to say so and reveal it.
+    expect(res).toEqual({
+      id: "copy",
+      name: "Secret Margin copy",
+      path: "Team Drafts/Secret Margin copy",
+    });
     const state = useConsoleTreeStore.getState();
     const teamDrafts = state.myItems[WID][0];
     expect(names(teamDrafts.children ?? [])).toEqual(["Secret Margin copy"]);
@@ -468,7 +473,8 @@ describe("consoleTreeStore — Shared with me and Duplicate", () => {
         data: { id: "copy", name: "Alpha copy", folderId: null },
       }),
     );
-    await useConsoleTreeStore.getState().duplicateConsole(WID, "a");
+    const res = await useConsoleTreeStore.getState().duplicateConsole(WID, "a");
+    expect(res).toEqual({ id: "copy", name: "Alpha copy", path: "Alpha copy" });
     expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
       "Alpha copy",
     ]);

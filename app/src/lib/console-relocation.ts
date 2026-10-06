@@ -301,3 +301,17 @@ export function consoleSavedNotice(input: {
   });
   return `Console saved to ${[place.section, ...place.folders, name].join(" › ")}`;
 }
+
+/**
+ * The snackbar after the explorer's Duplicate: where the copy went — My
+ * Consoles, and the copier's folder of the same path when there is one
+ * (`path` is the copy's tree path, folders + name). A copy used to land,
+ * unannounced and unopened, in a collapsed folder of another section.
+ */
+export function consoleCopiedNotice(copy: {
+  path: string;
+  name: string;
+}): string {
+  const place = ["My Consoles", ...consoleFolderTrail(copy.path, copy.name)];
+  return `Copied to ${place.join(" › ")} as '${copy.name}'`;
+}

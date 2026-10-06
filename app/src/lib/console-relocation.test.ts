@@ -3,6 +3,7 @@ import type { ConsoleEntry } from "../store/consoleTreeStore";
 import {
   consoleNameProblem,
   consoleNameTakenBy,
+  consoleCopiedNotice,
   consolePlacement,
   consoleSavedNotice,
   consoleSectionLabel,
@@ -333,5 +334,19 @@ describe("consoleSavedNotice — a save says where, in the breadcrumb's words", 
         name: "Alpha Four",
       }),
     ).toBe("Console saved to Workspace › finance › Alpha Four");
+  });
+});
+
+describe("consoleCopiedNotice — a Duplicate says where the copy went", () => {
+  it("My Consoles, with the copier's folder when there is one", () => {
+    expect(
+      consoleCopiedNotice({ path: "Ghost copy", name: "Ghost copy" }),
+    ).toBe("Copied to My Consoles as 'Ghost copy'");
+    expect(
+      consoleCopiedNotice({
+        path: "Team Drafts/Ghost copy",
+        name: "Ghost copy",
+      }),
+    ).toBe("Copied to My Consoles › Team Drafts as 'Ghost copy'");
   });
 });

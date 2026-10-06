@@ -33,7 +33,9 @@ import {
 } from "../store/consoleTreeStore";
 import { accessForMove } from "../store/lib/createResourceTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
-import { filterTree } from "../store/lib/tree-helpers";
+import { filterTree, findById } from "../store/lib/tree-helpers";
+import { useExplorerRevealStore } from "../store/explorerRevealStore";
+import { consoleCopiedNotice } from "../lib/console-relocation";
 import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
@@ -111,6 +113,9 @@ function ConsoleExplorer(
   const [folderInfoItem, setFolderInfoItem] = useState<ConsoleEntry | null>(
     null,
   );
+
+  // What the last action did, when it says nothing by itself (a Duplicate).
+  const [notice, setNotice] = useState<string | null>(null);
 
   const [undoStack, setUndoStack] = useState<
     Array<{ type: "delete"; id: string; isDirectory: boolean }>
@@ -378,8 +383,29 @@ function ConsoleExplorer(
 
   const handleDuplicate = async (item: ConsoleEntry) => {
     if (!currentWorkspace || !item.id || item.isDirectory) return;
-    const duplicateConsole = useConsoleTreeStore.getState().duplicateConsole;
-    await duplicateConsole(currentWorkspace.id, item.id);
+    const workspaceId = currentWorkspace.id;
+    const { duplicateConsole } = useConsoleTreeStore.getState();
+    const copy = await duplicateConsole(workspaceId, item.id);
+    // A refusal is in actionError: the snackbar below says why.
+    if (!copy) return;
+    // The copy is the copier's — My Consoles, maybe in a folder of theirs,
+    // not next to the original: say where it went, open it, and show it in
+    // the tree (it used to land unopened in a collapsed folder of another
+    // section, with no word).
+    setNotice(consoleCopiedNotice(copy));
+    const node = findById(
+      useConsoleTreeStore.getState().myItems[workspaceId] ?? [],
+      copy.id,
+    );
+    void handleFileOpen(
+      node ?? {
+        id: copy.id,
+        name: copy.name,
+        path: copy.path,
+        isDirectory: false,
+      },
+    );
+    useExplorerRevealStore.getState().requestReveal("consoles", copy.id);
   };
 
   const handleGetInfo = (item: ConsoleEntry) => {
@@ -654,6 +680,12 @@ function ConsoleExplorer(
           if (currentWorkspace) clearActionError(currentWorkspace.id);
         }}
         message={actionError ?? ""}
+      />
+      <Snackbar
+        open={notice !== null && actionError === null}
+        autoHideDuration={4000}
+        onClose={() => setNotice(null)}
+        message={notice ?? ""}
       />
     </>
   );
