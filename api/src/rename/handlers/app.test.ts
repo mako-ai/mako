@@ -28,6 +28,7 @@ import {
   unbindTestWorkspaceRepo,
 } from "../../apps/bind-test-workspace-repo";
 import { invalidateAppsIndexCache } from "../../apps/app-index.service";
+import { User } from "../../database/schema";
 import { parseAppManifest } from "../../apps/app-paths";
 import { runGit } from "../../apps/git";
 import { renameObject, resolveObjectRef } from "../registry";
@@ -333,6 +334,38 @@ describe("rename", () => {
       status: 409,
       message: 'An app named "y" already exists in apps/Sales/CH.',
     });
+  });
+
+  it("authors the rename commit as the person who renamed, like every other kind", async () => {
+    // A user of their own: the author lookup is cached per process.
+    const RENAMER = new Types.ObjectId().toString();
+    await User.create({ _id: RENAMER, email: "renamer@example.com" });
+    const as = { workspaceId: WS, userId: RENAMER, role: "admin" };
+    const authorOfHead = async () =>
+      (
+        await runGit([
+          "-C",
+          repoDirFor(WS),
+          "log",
+          "-1",
+          "--format=%an <%ae>|%cn <%ce>",
+          MAIN,
+        ])
+      ).stdout.trim();
+    await renameObject(as, "app", { ref: "a", title: "Acquisition" });
+    expect(await authorOfHead()).toBe(
+      "renamer <renamer@example.com>|Mako <bot@mako.ai>",
+    );
+    await renameObject(as, "app", { ref: "a", slug: "acquisition" });
+    expect(await authorOfHead()).toBe(
+      "renamer <renamer@example.com>|Mako <bot@mako.ai>",
+    );
+    // Nobody behind the call (a workspace API key): Mako, as before.
+    await renameObject({ workspaceId: WS }, "app", {
+      ref: "acquisition",
+      title: "Keyed",
+    });
+    expect(await authorOfHead()).toBe("Mako <bot@mako.ai>|Mako <bot@mako.ai>");
   });
 
   it("answers read-only (403) to someone who can see the app but not write it, as POST /move does", async () => {

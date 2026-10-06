@@ -95,7 +95,10 @@ import {
   type GrepMatch,
   type TreeEntry,
 } from "./repository.service";
-import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
+import {
+  authorForUser,
+  syncConsolesIndexFromRepo,
+} from "./workspace-consoles.service";
 import {
   aliasForOldPath,
   aliasMatchesRef,
@@ -1494,7 +1497,7 @@ export async function renameProject(
     },
     {
       message: `Rename app "${currentTitle}" to "${title}" (${from})`,
-      author: options.author,
+      author: options.author ?? (await authorForUser(options.userId)),
     },
   );
   project.title = title;
@@ -1576,7 +1579,8 @@ async function moveProjectWith(
         manifestPatch?.title !== undefined
           ? `Rename app "${project.title}" to "${manifestPatch.title}" (${from} → ${to})`
           : `Move app "${project.title}" (${from} → ${to})`,
-      author: options.author,
+      // The person who renamed or moved it, as for every other kind.
+      author: options.author ?? (await authorForUser(options.userId)),
     },
   );
   // The sync above relocated the row; keep the caller's copy honest too.
