@@ -26,6 +26,9 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  Checkbox,
+  FormControlLabel,
+  Snackbar,
 } from "@mui/material";
 import {
   Plus as AddIcon,
@@ -57,6 +60,7 @@ import {
   focusDbtRunsTab,
 } from "../dbt-runtime/shell";
 import { envBadgeColor } from "../lib/dbt-env";
+import { isRefableDbtPath } from "../lib/dbt-editor-logic";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -309,6 +313,12 @@ export function DbtExplorer() {
     name: string;
   } | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // Renaming a model renames the dbt node: offer (default on) to rewrite
+  // ref('old') across the project and job selectors in the same commit.
+  const [renameUpdateRefs, setRenameUpdateRefs] = useState(true);
+  // What the server could not fix (the old warehouse relation, consoles
+  // still naming it) — shown once, after the rename.
+  const [renameWarnings, setRenameWarnings] = useState<string[] | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{
     parsed: ParsedNode;
     name: string;
@@ -580,6 +590,7 @@ export function DbtExplorer() {
             onClick={() => {
               setRenameTarget({ parsed, name: node.name });
               setRenameValue(node.name);
+              setRenameUpdateRefs(true);
               helpers.closeMenu();
             }}
           >
@@ -664,10 +675,19 @@ export function DbtExplorer() {
     if (next && next !== renameTarget.name && parsed.kind === "file") {
       const dir = dirname(parsed.path);
       const newPath = dir ? `${dir}/${next}` : next;
-      await renameFile(workspaceId, parsed.projectId, parsed.path, newPath);
+      const outcome = await renameFile(
+        workspaceId,
+        parsed.projectId,
+        parsed.path,
+        newPath,
+        { updateRefs: renameUpdateRefs },
+      );
+      if (outcome && outcome.warnings.length > 0) {
+        setRenameWarnings(outcome.warnings);
+      }
     }
     setRenameTarget(null);
-  }, [renameTarget, renameValue, workspaceId, renameFile]);
+  }, [renameTarget, renameValue, renameUpdateRefs, workspaceId, renameFile]);
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget || !workspaceId) return;
@@ -1255,12 +1275,40 @@ export function DbtExplorer() {
             }}
             sx={{ mt: 1 }}
           />
+          {renameTarget?.parsed.kind === "file" &&
+            isRefableDbtPath(renameTarget.parsed.path) && (
+              <FormControlLabel
+                sx={{ mt: 1 }}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={renameUpdateRefs}
+                    onChange={e => setRenameUpdateRefs(e.target.checked)}
+                  />
+                }
+                label={
+                  <Typography variant="body2">
+                    Also update <code>ref()</code> calls and job selectors that
+                    name this model
+                  </Typography>
+                }
+              />
+            )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setRenameTarget(null)}>Cancel</Button>
           <Button onClick={handleRenameConfirm}>Rename</Button>
         </DialogActions>
       </Dialog>
+
+      {/* After a model rename: what the server could not fix for you. */}
+      <Snackbar
+        open={renameWarnings !== null}
+        autoHideDuration={12000}
+        onClose={() => setRenameWarnings(null)}
+        message={(renameWarnings ?? []).join(" ")}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      />
 
       {/* Hover kebab menu — reuses the right-click action items */}
       <Menu
