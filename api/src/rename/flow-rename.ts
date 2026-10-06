@@ -143,7 +143,14 @@ export async function resolveFlowRef(
       const rows = await Flow.find({ workspaceId: ctx.workspaceId })
         .select("_id slug")
         .lean();
-      const id = String(freeDerivedFlowId(ctx.workspaceId, def.slug, rows));
+      // The file's row when it has one (an old name found only in a FILE's
+      // `aliases:` — the row lost it to a newcomer since gone — still names
+      // that row, not a derived id nothing holds); the derived id only for
+      // a file not yet synced.
+      const id = String(
+        rows.find(row => row.slug === def.slug)?._id ??
+          freeDerivedFlowId(ctx.workspaceId, def.slug, rows),
+      );
       return {
         kind: "flow",
         id,

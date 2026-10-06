@@ -1313,6 +1313,58 @@ describe("cycle 2 (jobs): lost rename with no push, stale instance, target check
   }, 90_000);
 });
 
+describe("cross-cutting (jobs): an old name found only in a file's aliases", () => {
+  it("resolves to the row that holds the file, and the row re-acquires the alias once the newcomer is gone", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { resolveDbtJobRef } = await import("../rename/dbt-job-rename");
+    const project = await seedProject();
+    const file = (name: string, sel = "x") =>
+      `name: ${name}\nenvironment: prod\ncommands:\n  - build --select ${sel}\n`;
+    const c = (writes: Record<string, string>, deletes: string[] = []) =>
+      commitBlobsOnBranch(
+        repoDirFor(WS.toString()),
+        DEFAULT_BRANCH,
+        { writes, deletes },
+        { message: "push" },
+      );
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "a", slug: "b" },
+    );
+    await c({ [jobFilePath("a")]: file("Newcomer", "other") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const newcomer = (await DbtJob.findOne({
+      projectId: project._id,
+      slug: "a",
+    }))!;
+    expect(newcomer._id.toString()).not.toBe(R._id.toString());
+    expect((await DbtJob.findById(R._id))!.aliases ?? []).toEqual([]);
+    await c({}, [jobFilePath("a")]);
+    await syncDbtConfigFromRepo(WS.toString());
+    expect(
+      await DbtJob.countDocuments({ projectId: project._id, slug: "a" }),
+    ).toBe(0);
+    const resolved = await resolveDbtJobRef(
+      { workspaceId: WS.toString() },
+      "a",
+    );
+    expect(resolved).toMatchObject({
+      id: R._id.toString(),
+      via: "alias",
+      current: { slug: "b" },
+    });
+    expect((await DbtJob.findById(R._id))!.aliases).toEqual(["a"]);
+    const renamed = await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "a", title: "A again" },
+    );
+    expect(renamed.id).toBe(R._id.toString());
+  }, 90_000);
+});
+
 describe("adoption", () => {
   it("writes files for unstamped jobs + environments once, re-runnable", async () => {
     const project = await seedProject();

@@ -1578,6 +1578,49 @@ async function syncDbtConfigNow(
       slug: doc.slug,
     });
   }
+
+  // After the sweep: a name a removed newcomer held is free again for the
+  // row whose file still lists it (see `reacquireFileAliases` in
+  // flow-sync.service.ts — the file is the record).
+  try {
+    for (const [path, buf] of blobs) {
+      const slug = slugFromJobFilePath(path);
+      if (!slug) continue;
+      const wanted = parseJobFile(buf.toString("utf8"))?.aliases ?? [];
+      if (wanted.length === 0) continue;
+      const row = await DbtJob.findOne({ projectId: project._id, slug })
+        .select("_id aliases")
+        .lean();
+      if (!row) continue;
+      const missing = wanted.filter(
+        alias =>
+          alias !== slug &&
+          !fileSlugs.has(alias) &&
+          !(row.aliases ?? []).includes(alias),
+      );
+      if (missing.length === 0) continue;
+      const { kept } = await dropJobAliasesClaimedElsewhere(
+        project._id,
+        row._id,
+        missing,
+      );
+      if (kept.length === 0) continue;
+      await DbtJob.updateOne(
+        { _id: row._id },
+        { $addToSet: { aliases: { $each: kept } } },
+      );
+      logger.info("dbt job re-acquired aliases its file lists", {
+        workspaceId,
+        slug,
+        aliases: kept,
+      });
+    }
+  } catch (error) {
+    logger.warn("Could not re-acquire job file aliases", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**

@@ -1100,6 +1100,62 @@ async function dropAliasesClaimedElsewhere(
   return [...claimed];
 }
 
+/**
+ * Give rows back the aliases their files still list, once nothing current
+ * claims them. A new flow pushed under an old name takes that name (current
+ * wins) and the renamed row drops the alias — but its FILE keeps listing
+ * it, and the file is the record. When the newcomer is gone, the old name
+ * should answer to the old flow again, and `resolve` (which reads files)
+ * and the row (which the routes read) must agree. Runs after the
+ * reconcile, so a row torn down in this very sync no longer claims
+ * anything. Names still held by another row (slug or alias) or by a file
+ * at main stay out.
+ */
+async function reacquireFileAliases(
+  workspaceId: string,
+  files: Array<{ path: string; contents: string }>,
+  fileSlugs: ReadonlySet<string>,
+): Promise<void> {
+  for (const file of files) {
+    const slug = slugFromFlowFilePath(file.path);
+    if (!slug) continue;
+    const wanted = parseFlowFile(file.contents)?.aliases ?? [];
+    if (wanted.length === 0) continue;
+    const row = await Flow.findOne({ workspaceId, slug })
+      .select("_id aliases")
+      .lean();
+    if (!row) continue;
+    const missing = wanted.filter(
+      alias =>
+        alias !== slug &&
+        !fileSlugs.has(alias) &&
+        !(row.aliases ?? []).includes(alias),
+    );
+    if (missing.length === 0) continue;
+    const claimants = await Flow.find({
+      workspaceId,
+      _id: { $ne: row._id },
+      $or: [{ slug: { $in: missing } }, { aliases: { $in: missing } }],
+    })
+      .select("slug aliases")
+      .lean();
+    const claimed = new Set(
+      claimants.flatMap(c => [c.slug, ...(c.aliases ?? [])]).filter(Boolean),
+    );
+    const free = missing.filter(alias => !claimed.has(alias));
+    if (free.length === 0) continue;
+    await Flow.updateOne(
+      { _id: row._id },
+      { $addToSet: { aliases: { $each: free } } },
+    );
+    logger.info("Flow re-acquired aliases its file lists", {
+      workspaceId,
+      slug,
+      aliases: free,
+    });
+  }
+}
+
 /** Whether a row and a file point at the same source and destination. */
 function sameFlowTarget(row: IFlow, file: FlowFile): boolean {
   try {
@@ -1788,6 +1844,17 @@ export async function syncFlowsFromRepo(
       workspaceId,
       removals: reconciled.deferred.removals,
       reason: reconciled.deferred.reason,
+    });
+  }
+
+  // After the destructive half: a name a torn-down newcomer held is free
+  // again for the row whose file still lists it.
+  try {
+    await reacquireFileAliases(workspaceId, files, fileSlugs);
+  } catch (error) {
+    logger.warn("Could not re-acquire file aliases", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 

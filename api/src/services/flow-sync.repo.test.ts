@@ -1907,3 +1907,74 @@ describe("cycle 2: wedges after a lost rename, stale instances, a failed sync sa
     ).not.toBe(y!._id.toString());
   });
 });
+
+describe("cross-cutting: an old name found only in a file's aliases", () => {
+  it("resolves to the row that holds the file, and the row re-acquires the alias once the newcomer is gone", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { resolveFlowRef } = await import("../rename/flow-rename");
+    await push({
+      "flows/a.yml": flowYaml("A"),
+      "flows/keep.yml": flowYaml("Keep"),
+    });
+    await syncFlowsFromRepo(WS, "u1");
+    const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", slug: "b" },
+    );
+    expect((await Flow.findById(R!._id))!.aliases).toEqual(["a"]);
+
+    // A teammate pushes an unrelated NEW flow at the old name: current wins,
+    // the renamed row drops the alias — its FILE still lists it.
+    const OTHER = new Types.ObjectId().toString();
+    await push({
+      "flows/a.yml": flowYaml("Newcomer").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${OTHER}`,
+      ),
+    });
+    await syncFlowsFromRepo(WS, "u2");
+    const newcomer = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    expect(newcomer!._id.toString()).not.toBe(R!._id.toString());
+    expect((await Flow.findById(R!._id))!.aliases ?? []).toEqual([]);
+    expect((await resolveFlowRef({ workspaceId: WS }, "a"))?.id).toBe(
+      newcomer!._id.toString(),
+    );
+
+    // …and later deletes it. The old name answers to the old flow again:
+    // `resolve` (which reads the files) names the ROW, never an id nothing
+    // holds, and the row has the alias back in the same sync.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { deletes: ["flows/a.yml"] },
+      { message: "laptop delete" },
+    );
+    await syncFlowsFromRepo(WS, "u2");
+    expect(await Flow.countDocuments({ workspaceId: WS, slug: "a" })).toBe(0);
+    const resolved = await resolveFlowRef({ workspaceId: WS }, "a");
+    expect(resolved).toMatchObject({
+      id: R!._id.toString(),
+      via: "alias",
+      current: { slug: "b" },
+    });
+    expect(await Flow.exists({ _id: resolved!.id })).not.toBeNull();
+    expect((await Flow.findById(R!._id))!.aliases).toEqual(["a"]);
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", title: "A again" },
+    );
+    expect(renamed.id).toBe(R!._id.toString());
+    // And while the newcomer's file is at main (not yet synced), the name is
+    // the newcomer's — never silently the old row's.
+    await push({
+      "flows/a.yml": flowYaml("Newcomer 2").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${OTHER}`,
+      ),
+    });
+    const beforeSync = await resolveFlowRef({ workspaceId: WS }, "a");
+    expect(beforeSync?.via).toBe("current");
+    expect(beforeSync?.id).not.toBe(R!._id.toString());
+  });
+});
