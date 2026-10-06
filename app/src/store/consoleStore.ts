@@ -7,7 +7,7 @@ import {
   isLocalConnectionId,
   localAgentClient,
 } from "../lib/local-agent-client";
-import { generateObjectId } from "../utils/objectId";
+import { generateObjectId, isObjectIdString } from "../utils/objectId";
 import { ConsoleVersionManager } from "../utils/ConsoleVersionManager";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { logRenderDebug, renderDebugEnabled } from "../utils/renderDebug";
@@ -562,6 +562,10 @@ const cancelAutoSave = (consoleId: string): void => {
 };
 
 const shouldAutoSave = (getState: () => ConsoleState, consoleId: string) => {
+  // Only a console id is saved through the console route: an app binding
+  // open in the console editor (`binding:<app>:<file>`, no tab) has its own
+  // save, and its draft autosave committed a stray Workspace console.
+  if (!isObjectIdString(consoleId)) return false;
   const tab = getState().tabs[consoleId];
   return tab ? !tab.isSaved : true;
 };

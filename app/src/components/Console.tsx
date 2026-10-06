@@ -209,7 +209,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     variant = "console",
     headerExtras,
   } = props;
-  void variant;
 
   const editorRef = useRef<any>(null);
   const diffEditorRef = useRef<any>(null);
@@ -226,6 +225,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const tab = tabs[consoleId];
   const savedStateHash = tab?.savedStateHash;
   const isSaved = tab?.isSaved ?? false;
+  // Drafts autosave through the console route only for a console: a data
+  // source (an app binding, a dashboard query) has its own save — an app
+  // binding's id is not a console id, and its mount autosave committed a
+  // stray Workspace console named after it.
+  const autosavesDraft = variant === "console" && !isSaved;
   const isReadOnly = tab?.readOnly ?? false;
   const hasSchedule = Boolean(
     schedule?.cron?.trim() && schedule?.timezone?.trim(),
@@ -763,7 +767,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         // server revision, so they never take this path either.
         const mountTab = useConsoleStore.getState().tabs[consoleId];
         if (
-          !isSaved &&
+          autosavesDraft &&
           mountTab?.draftRevision === undefined &&
           currentWorkspace?.id &&
           consoleId &&
@@ -799,7 +803,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       onSave,
       saveUserEdit,
       consoleId,
-      isSaved,
+      autosavesDraft,
       currentWorkspace,
       title,
       connectionId,
@@ -872,7 +876,12 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
       // Auto-save console when content changes (debounced internally by autoSaveConsole)
       // Skip if console is already explicitly saved (isSaved=true)
-      if (!isSaved && currentWorkspace?.id && consoleId && content.trim()) {
+      if (
+        autosavesDraft &&
+        currentWorkspace?.id &&
+        consoleId &&
+        content.trim()
+      ) {
         autoSaveConsole(
           currentWorkspace.id,
           consoleId,
@@ -893,7 +902,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       consoleId,
       title,
       databaseName,
-      isSaved,
+      autosavesDraft,
       autoSaveConsole,
     ],
   );
@@ -1008,7 +1017,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             // Auto-save agent modifications (debounced internally)
             // Skip if console is already explicitly saved (isSaved=true)
             if (
-              !isSaved &&
+              autosavesDraft &&
               currentWorkspace?.id &&
               consoleId &&
               savedModifiedContent.trim()
@@ -1039,7 +1048,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     consoleId,
     title,
     databaseName,
-    isSaved,
+    autosavesDraft,
     autoSaveConsole,
     resolveAgentReview,
   ]);
