@@ -270,15 +270,23 @@ describe("folder drag without access (finding 2)", () => {
       false,
       "private",
     );
+    // The editor cannot file the owner's console into their folder any
+    // more (a shared editor does not move it; a private folder takes only
+    // its owner's consoles) — rows filed that way earlier still exist.
     expect(
-      await manager.moveConsole(
-        c._id.toString(),
-        WS,
-        mine._id.toString(),
-        undefined,
-        EDITOR,
-      ),
-    ).toBe(true);
+      (
+        await req(
+          "PATCH",
+          `/${c._id}/move`,
+          { folderId: mine._id.toString() },
+          EDITOR,
+        )
+      ).status,
+    ).toBe(403);
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { folderId: mine._id } },
+    );
     expect(await readable(c._id, OTHER)).toBe(false);
     const r = await req(
       "PATCH",
@@ -344,7 +352,9 @@ describe("folder move by a workspace admin (finding 2, the other side of the rul
       false,
       "private",
     );
-    // Filing it into the admin's private folder changes nobody's view.
+    // Not even an admin files another member's private console into their
+    // own private folder (its file lives in its owner's tree) — rows filed
+    // that way earlier still exist.
     expect(
       (
         await req(
@@ -355,7 +365,11 @@ describe("folder move by a workspace admin (finding 2, the other side of the rul
           "admin",
         )
       ).status,
-    ).toBe(200);
+    ).toBe(403);
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { folderId: box._id } },
+    );
     expect(await readable(c._id, OTHER)).toBe(false);
     const r = await req(
       "PATCH",

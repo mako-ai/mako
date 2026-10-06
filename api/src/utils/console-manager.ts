@@ -1544,6 +1544,55 @@ export class ConsoleManager {
     }
   }
 
+  /**
+   * Where a console may be filed, on every route that moves it:
+   * - a private console shared with someone is renamed by them where it is
+   *   — moving it (even to its owner's root) is its owner's or an admin's
+   *   call (the editor's dialog says so; the API let a shared editor move
+   *   it out of its owner's folder);
+   * - for anyone, a private folder takes only its owner's own private
+   *   consoles — a console's file lives in its owner's tree, so filing it
+   *   in another member's folder left the file in one tree and the row in
+   *   another's folder.
+   */
+  private async assertMayFile(
+    current: ISavedConsole,
+    change: { folderId?: string | null; access?: ConsoleAccessLevel },
+    visibleBefore: ConsoleAccessLevel,
+    actor: { userId?: string; isAdmin?: boolean },
+  ): Promise<void> {
+    if (change.folderId === undefined) return;
+    const from = current.folderId?.toString() ?? null;
+    const to = change.folderId ?? null;
+    if (from === to) return;
+    if (visibleBefore === "private" && !mayChangeVisibility(current, actor)) {
+      throw new ConsoleScopeError(
+        "Only the console's owner or a workspace admin can move it — you can rename it where it is.",
+      );
+    }
+    if (!to) return;
+    const folder = await ConsoleFolder.findOne({
+      _id: new Types.ObjectId(to),
+      workspaceId: current.workspaceId,
+    })
+      .select("access isPrivate ownerId")
+      .lean<Pick<IConsoleFolder, "access" | "isPrivate" | "ownerId"> | null>();
+    if (!folder) {
+      throw new ConsoleConflictError(
+        "That folder no longer exists. Reload and choose another.",
+      );
+    }
+    const folderAccess =
+      folder.access || (folder.isPrivate ? "private" : "workspace");
+    if (folderAccess !== "private") return;
+    const ownerId = (current.owner_id || current.createdBy)?.toString();
+    if (folder.ownerId?.toString() !== ownerId) {
+      throw new ConsoleScopeError(
+        "A console can only be filed in its owner's own folders or in a Workspace folder.",
+      );
+    }
+  }
+
   private async relocateConsoleOnce(
     consoleId: string,
     workspaceId: string,
@@ -1601,6 +1650,7 @@ export class ConsoleManager {
     ) {
       throw new ConsoleScopeError();
     }
+    await this.assertMayFile(current, change, visibleBefore, options);
 
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
     if (change.name !== undefined) {

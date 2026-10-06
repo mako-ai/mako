@@ -255,16 +255,76 @@ describe("a rename or a move answers where the console is now", () => {
     expect(row.path).toBe(
       `users/${OWNER}/consoles/Team Drafts/Secret Margin v2.sql`,
     );
-    // Moving it to the root (an explicit null) is still a move — and one
-    // that keeps it private, so the editor may make it.
+    // Moving it — even to its owner's root (an explicit null) — is not a
+    // shared editor's call: renamed where it is, never moved.
     const root = await req(
       "PATCH",
       `/${c._id}/move`,
       { folderId: null },
       EDITOR,
     );
-    expect(root.status).toBe(200);
-    expect(root.body.data).toMatchObject({ path: "Secret Margin v2" });
+    expect(root.status).toBe(403);
+    expect(root.body.error).toContain("you can rename it where it is");
+    const after = (await SavedConsole.findById(c._id))!;
+    expect(after.folderId?.toString()).toBe(drafts._id.toString());
+    expect(after.path).toBe(
+      `users/${OWNER}/consoles/Team Drafts/Secret Margin v2.sql`,
+    );
+  });
+
+  it("a move never files a console into another member's private folder — for anyone; the owner moves within their own tree", async () => {
+    const drafts = await manager.createFolder(
+      "Team Drafts",
+      WS,
+      OWNER,
+      undefined,
+      false,
+      "private",
+    );
+    const c = await save(
+      "Q",
+      "SELECT 1\n",
+      OWNER,
+      "private",
+      drafts._id.toString(),
+    );
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { sharedWith: [{ userId: EDITOR, role: "editor" }] } },
+    );
+    const editors = await manager.createFolder(
+      "Mine",
+      WS,
+      EDITOR,
+      undefined,
+      false,
+      "private",
+    );
+    const before = await consolePaths();
+    for (const [who, role] of [
+      [EDITOR, "member"],
+      [OWNER, "member"],
+      [new Types.ObjectId().toString(), "admin"],
+    ] as const) {
+      const r = await req(
+        "PATCH",
+        `/${c._id}/move`,
+        { folderId: editors._id.toString() },
+        who,
+        role,
+      );
+      expect(r.status).toBe(403);
+    }
+    expect(await consolePaths()).toEqual(before);
+    expect((await SavedConsole.findById(c._id))?.folderId?.toString()).toBe(
+      drafts._id.toString(),
+    );
+    // The owner moves it within their own tree.
+    const ok = await req("PATCH", `/${c._id}/move`, { folderId: null }, OWNER);
+    expect(ok.status).toBe(200);
+    expect((await SavedConsole.findById(c._id))?.path).toBe(
+      `users/${OWNER}/consoles/Q.sql`,
+    );
   });
 
   it("an admin's name-only Rename / Move of a console shared with them is PATCH /rename: it stays in its owner's folder", async () => {
