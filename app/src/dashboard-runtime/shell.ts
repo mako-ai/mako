@@ -53,3 +53,30 @@ export function focusDashboardDataSourceTab(
     }),
   ) as string;
 }
+
+/**
+ * Keep a dashboard's tab label on its title. The label was set once, when
+ * the tab opened: a rename (the tree, another window, the agent) or a
+ * title edited in the definition left it — persisted — on the old name.
+ */
+export function syncDashboardTabTitle(
+  dashboardId: string,
+  title: string | undefined,
+): void {
+  if (!title) return;
+  useConsoleStore.setState(state => {
+    for (const tab of Object.values(state.tabs) as Array<{
+      kind?: string;
+      title?: string;
+      metadata?: Record<string, unknown>;
+    }>) {
+      if (
+        tab.kind === "dashboard" &&
+        tab.metadata?.dashboardId === dashboardId &&
+        tab.title !== title
+      ) {
+        tab.title = title;
+      }
+    }
+  });
+}
