@@ -28,6 +28,7 @@ vi.mock("../rename/git-renames", async importOriginal => {
 });
 import * as gitRenames from "../rename/git-renames";
 import {
+  editSkillFrontMatter,
   parseSkillFile,
   serializeSkillFile,
   skillFilePath,
@@ -53,7 +54,12 @@ import {
   resolveSkillRefThroughHistory,
   skillId,
 } from "./workspace-skills.service";
-import { loadSkill, renameSkill, saveSkill } from "../services/skills.service";
+import {
+  loadSkill,
+  renameSkill,
+  saveSkill,
+  toggleSkillSuppressed,
+} from "../services/skills.service";
 import { skillRenameHandler } from "../rename/handlers/skill";
 import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 
@@ -128,6 +134,83 @@ describe("aliases in the file format", () => {
       "body",
     ].join("\n");
     expect(parseSkillFile("new_name", messy)?.aliases).toEqual(["ok_one"]);
+  });
+});
+
+describe("front matter is edited in place, never re-serialized", () => {
+  const HAND_WRITTEN = [
+    "---",
+    "# owned by growth team",
+    "name: old_name",
+    "description: Use for X",
+    "license: Proprietary",
+    "allowed-tools: [Bash, Read]",
+    "metadata:",
+    "  owner: growth",
+    "aliases: [older]",
+    "---",
+    "",
+    "Body here.",
+    "",
+  ].join("\n");
+
+  it("editSkillFrontMatter changes only name/aliases; flow and block lists; removal", () => {
+    expect(
+      editSkillFrontMatter(HAND_WRITTEN, {
+        name: "new_name",
+        aliases: ["older", "old_name"],
+      }),
+    ).toBe(
+      HAND_WRITTEN.replace("name: old_name", "name: new_name").replace(
+        "aliases: [older]",
+        "aliases: [older, old_name]",
+      ),
+    );
+    const block =
+      "---\nname: a\ndescription: d\naliases:\n  - x\n  - y\npinned: true\n---\n\nbody\n";
+    expect(editSkillFrontMatter(block, { aliases: ["x"] })).toBe(
+      "---\nname: a\ndescription: d\npinned: true\naliases: [x]\n---\n\nbody\n",
+    );
+    expect(editSkillFrontMatter(block, { aliases: [] })).toBe(
+      "---\nname: a\ndescription: d\npinned: true\n---\n\nbody\n",
+    );
+    expect(
+      editSkillFrontMatter("---\ndescription: d\n---\nbody\n", {
+        name: "n",
+        aliases: ["o"],
+      }),
+    ).toBe("---\nname: n\ndescription: d\naliases: [o]\n---\nbody\n");
+    expect(
+      editSkillFrontMatter("no front matter\n", { aliases: ["o"] }),
+    ).toBeNull();
+  });
+
+  it("rename and alias retirement keep comments, license, allowed-tools and metadata byte for byte", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "skills/old_name/SKILL.md": HAND_WRITTEN } },
+      { message: "hand-written skill" },
+    );
+    invalidateSkillCatalog(WS);
+    const renamed = await commitSkillRename(WS, "old_name", "new_name");
+    expect(renamed.ok).toBe(true);
+    expect(await fileAt(skillFilePath("new_name"))).toBe(
+      HAND_WRITTEN.replace("name: old_name", "name: new_name").replace(
+        "aliases: [older]",
+        "aliases: [older, old_name]",
+      ),
+    );
+    // A new skill takes `old_name`: the renamed skill's file loses only that alias.
+    const saved = await saveSkill(
+      WS,
+      { name: "old_name", loadWhen: "fresh", body: "Fresh." },
+      "u1",
+    );
+    expect(saved).toMatchObject({ success: true, skill: { created: true } });
+    expect(await fileAt(skillFilePath("new_name"))).toBe(
+      HAND_WRITTEN.replace("name: old_name", "name: new_name"),
+    );
   });
 });
 
@@ -371,6 +454,33 @@ describe("renameSkill / loadSkill / saveSkill through aliases", () => {
       "revenue",
       "revenue_v1",
     ]);
+  });
+
+  it("an agent's SUPPRESSED proposal under a retired name does not retire the alias; activating it does", async () => {
+    await commitSkillSave(WS, skill("pricing"));
+    await renameSkill(WS, "pricing", "pricing_v1", "u1");
+    const proposal = await saveSkill(
+      WS,
+      { name: "pricing", loadWhen: "proposal", body: "Proposed." },
+      "agent",
+      { origin: "agent" },
+    );
+    expect(proposal).toMatchObject({
+      success: true,
+      skill: { name: "pricing", created: true, pendingApproval: true },
+    });
+    // The real skill still answers to its old name in the file…
+    expect((await findSkill(WS, "pricing_v1"))?.aliases).toEqual(["pricing"]);
+    // …and a person activating the proposal retires it, in ONE commit.
+    const before = await log(repoDirFor(WS), MAIN, 50);
+    expect(
+      await toggleSkillSuppressed(WS, skillId(WS, "pricing"), false, "u1"),
+    ).toBe(true);
+    const after = await log(repoDirFor(WS), MAIN, 50);
+    expect(after.length).toBe(before.length + 1);
+    expect(after[0].subject).toContain('retires the alias from "pricing_v1"');
+    expect((await findSkill(WS, "pricing_v1"))?.aliases).toBeUndefined();
+    expect((await findSkill(WS, "pricing"))?.suppressed).toBe(false);
   });
 
   it("a workspace skill renamed away from a system skill's name stops shadowing it", async () => {

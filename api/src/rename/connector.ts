@@ -243,8 +243,10 @@ export async function renameWorkspaceConnector(
   // verified connector stays verified — a rename is not new code.
   row.slug = to;
   row.aliases = [...new Set([...(row.aliases ?? []), from])].filter(
-    a => a !== to,
+    a => a !== to && !(row.retiredAliases ?? []).includes(a),
   );
+  // Taking `to` as the live slug ends any earlier retirement of it.
+  row.retiredAliases = (row.retiredAliases ?? []).filter(a => a !== to);
   row.sha = commit.commitOid;
   await row.save();
   const movedConnections = await migrateSourceConnectionType(

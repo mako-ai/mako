@@ -39,6 +39,7 @@ import { findRenamedFolder } from "../rename/git-renames";
 import {
   SKILLS_DIR,
   SKILLS_README,
+  editSkillFrontMatter,
   SKILLS_README_PATH,
   SKILL_FILE_GLOB,
   SKILL_NAME_RE,
@@ -278,6 +279,15 @@ export async function resolveSkillRefThroughHistory(
 const MAX_CACHED_HISTORY_LOOKUPS = 512;
 const historyCache = new Map<string, string | null>();
 
+/** Skills whose `aliases` list `name` (a name another skill now holds). */
+export async function aliasClaimantsOf(
+  workspaceId: string,
+  name: string,
+): Promise<WorkspaceSkill[]> {
+  const catalog = await loadSkillCatalog(workspaceId);
+  return catalog.skills.filter(skill => (skill.aliases ?? []).includes(name));
+}
+
 /** A skill by its current name or (unambiguous) alias. */
 export async function findSkill(
   workspaceId: string,
@@ -363,10 +373,17 @@ export async function commitSkillSave(
         `"${skill.name}" is a previous name of the skill "${options.retireAliasFrom}", whose SKILL.md does not parse; fix it before reusing the name`,
       );
     }
-    writes[path] = serializeSkillFile({
-      ...parsed,
+    // A line edit of the front matter: the retired skill's file is one
+    // the user did not touch, and nothing but its alias list may change.
+    const edited = editSkillFrontMatter(raw as string, {
       aliases: (parsed.aliases ?? []).filter(a => a !== skill.name),
     });
+    if (edited === null) {
+      throw new Error(
+        `skills/${options.retireAliasFrom}/SKILL.md has no front matter block to edit`,
+      );
+    }
+    writes[path] = edited;
     message += ` (retires the alias from "${options.retireAliasFrom}")`;
   }
   await commitBlobsOnBranch(
@@ -423,6 +440,14 @@ export async function commitSkillFlags(
   name: string,
   flags: { suppressed?: boolean; pinned?: boolean },
   author?: GitAuthor,
+  options: {
+    /**
+     * Activating a proposal that was saved under a name another skill
+     * still lists as an alias: the activated skill takes the name, so
+     * that alias is retired in the same commit (see commitSkillSave).
+     */
+    retireAliasFrom?: string;
+  } = {},
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(name)) return false;
   await requireWorkspaceRepo(workspaceId);
@@ -445,11 +470,37 @@ export async function commitSkillFlags(
     verbs.push(next.suppressed ? "Suppress" : "Unsuppress");
   }
   if (next.pinned !== parsed.pinned) verbs.push(next.pinned ? "Pin" : "Unpin");
+  const writes: Record<string, string> = { [path]: serializeSkillFile(next) };
+  let message = `${verbs.join(" + ")} skill "${name}"`;
+  if (options.retireAliasFrom && !next.suppressed) {
+    const otherPath = skillFilePath(options.retireAliasFrom);
+    const otherRaw = await readRepoFile(repoDir, otherPath);
+    const other =
+      otherRaw === null
+        ? null
+        : parseSkillFile(options.retireAliasFrom, otherRaw);
+    const edited =
+      other && otherRaw !== null
+        ? editSkillFrontMatter(otherRaw, {
+            aliases: (other.aliases ?? []).filter(a => a !== name),
+          })
+        : null;
+    if (edited === null) {
+      throw new Error(
+        `"${name}" is a previous name of the skill "${options.retireAliasFrom}", whose SKILL.md cannot be edited; fix it before activating`,
+      );
+    }
+    writes[otherPath] = edited;
+    message += ` (retires the alias from "${options.retireAliasFrom}")`;
+  }
   await commitBlobsOnBranch(
     repoDir,
     DEFAULT_BRANCH,
-    { writes: { [path]: serializeSkillFile(next) } },
-    { message: `${verbs.join(" + ")} skill "${name}"`, author },
+    { writes },
+    {
+      message,
+      author,
+    },
   );
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
@@ -555,6 +606,19 @@ export async function commitSkillRename(
     alias => alias !== toName,
   );
   const aliasesAdded = aliases.filter(a => !(parsed.aliases ?? []).includes(a));
+  // Only `name` and `aliases` change; comments, license, allowed-tools,
+  // metadata and the body are the author's and are kept byte for byte.
+  const renamedFile = editSkillFrontMatter(raw as string, {
+    name: toName,
+    aliases,
+  });
+  if (renamedFile === null) {
+    return {
+      ok: false,
+      status: 400,
+      error: `skills/${fromName}/SKILL.md has no front matter block to edit`,
+    };
+  }
 
   const blobs = await readBlobsBatch(repoDir, head, oldPaths);
   const writes: Record<string, string | Buffer> = {};
@@ -563,10 +627,7 @@ export async function commitSkillRename(
     const newPath = `skills/${toName}/${oldPath.slice(`skills/${fromName}/`.length)}`;
     const buf = blobs.get(oldPath);
     if (!buf) continue;
-    writes[newPath] =
-      oldPath === skillFilePath(fromName)
-        ? serializeSkillFile({ ...parsed, name: toName, aliases })
-        : buf;
+    writes[newPath] = oldPath === skillFilePath(fromName) ? renamedFile : buf;
     moved.push(newPath);
   }
   const result = await commitBlobsOnBranch(

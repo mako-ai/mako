@@ -326,10 +326,16 @@ export async function renameDbtFile(
           next = rewriteProjectFile(
             path,
             text,
+            from,
             oldModel,
             newModel,
             packageName,
           );
+          if (path === "dbt_project.yml" && mentionsName(next.text, oldModel)) {
+            warnings.push(
+              `dbt_project.yml still mentions '${oldModel}' — only the model's own config key (by path) is rewritten.`,
+            );
+          }
           if (path === "selectors.yml" && mentionsName(next.text, oldModel)) {
             warnings.push(
               `selectors.yml still mentions '${oldModel}' — YAML selectors are not rewritten.`,
@@ -375,6 +381,13 @@ export async function renameDbtFile(
   if (branch !== DEFAULT_BRANCH) {
     warnings.push(
       `Committed on your branch '${branch}'; jobs and deploys build '${DEFAULT_BRANCH}' until it is merged.`,
+    );
+  }
+  if (rewritten.length > 0 && !input.clientId) {
+    // The UI refuses a rewriting rename while unsaved edits mention the
+    // model; an agent/MCP rename cannot see anyone's editor, so say it.
+    warnings.push(
+      `Open editors with unsaved changes to files mentioning '${oldModel}' will need a reload: ${rewritten.length} file${rewritten.length === 1 ? " was" : "s were"} rewritten in the commit.`,
     );
   }
 
@@ -436,6 +449,7 @@ export async function renameDbtFile(
 function rewriteProjectFile(
   path: string,
   text: string,
+  fromPath: string,
   oldModel: string,
   newModel: string,
   packageName: string | undefined,
@@ -443,7 +457,7 @@ function rewriteProjectFile(
   const refs = rewriteRefs(text, oldModel, newModel, packageName);
   if (!/\.ya?ml$/i.test(path)) return refs;
   if (path === "dbt_project.yml") {
-    const cfg = rewriteProjectModelConfig(refs.text, oldModel, newModel);
+    const cfg = rewriteProjectModelConfig(refs.text, fromPath, newModel);
     return { text: cfg.text, count: refs.count + cfg.count };
   }
   const props = rewriteNodeProperties(refs.text, oldModel, newModel);

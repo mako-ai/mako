@@ -137,8 +137,10 @@ async function reconcile(
     if (!row || rowBySlug.has(to)) continue;
     row.slug = to;
     row.aliases = [...new Set([...(row.aliases ?? []), from])].filter(
-      a => a !== to,
+      a => a !== to && !(row.retiredAliases ?? []).includes(a),
     );
+    // The live slug is this connector's again, whatever its past.
+    row.retiredAliases = (row.retiredAliases ?? []).filter(a => a !== to);
     await row.save();
     rowBySlug.delete(from);
     rowBySlug.set(to, row);
@@ -331,8 +333,9 @@ function mergedAliases(
   fromFile: string[],
   slug: string,
 ): string[] {
+  const retired = new Set(row?.retiredAliases ?? []);
   return [...new Set([...fromFile, ...(row?.aliases ?? [])])].filter(
-    a => a !== slug,
+    a => a !== slug && !retired.has(a),
   );
 }
 
@@ -549,6 +552,14 @@ async function releaseAliasClaim(
       claimant.slug,
     );
     claimant.aliases = (claimant.aliases ?? []).filter(a => a !== slug);
+    // Durable: the file still lists the alias and a sync cannot edit the
+    // file, so the row remembers the retirement and `mergedAliases`
+    // subtracts it on every later pass. Deleting the newcomer must not
+    // hand `ws:<slug>` back to this connector — its connections were
+    // created for the newcomer's code.
+    claimant.retiredAliases = [
+      ...new Set([...(claimant.retiredAliases ?? []), slug]),
+    ];
     await claimant.save();
     logger.warn(
       "A new workspace connector took a slug another connector was still known by",
