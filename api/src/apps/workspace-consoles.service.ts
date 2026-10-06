@@ -99,6 +99,7 @@ import {
   type ParsedConsoleFile,
 } from "./console-files";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   blobOid,
   blobOidAt,
@@ -842,7 +843,14 @@ export async function commitConsoleRemoval(input: {
  * a laptop push that lands the target name between read and commit is
  * not overwritten, and a save racing the rename is not undone. The read
  * happens AFTER main is freshened from the mirror for the same reason.
- * Throws `BlobPreconditionError` (repository.service) when refused.
+ *
+ * `sourceBlobSha` is what the row's fields were derived from. When the
+ * file at `fromPath` is a different blob, a push edited it and its sync
+ * has not run: moving that blob and stamping the row with its oid would
+ * make the sync believe the row is current for ever (a laptop-added
+ * schedule would never register), so the move is refused for the caller
+ * to sync and retry. Throws `BlobPreconditionError` (repository.service)
+ * when refused.
  */
 export async function commitConsoleRelocation(input: {
   workspaceId: string;
@@ -850,6 +858,8 @@ export async function commitConsoleRelocation(input: {
   toPath: string;
   actorUserId?: string | null;
   message: string;
+  /** The blob the row's fields came from; a different one at main = drift. */
+  sourceBlobSha?: string | null;
 }): Promise<
   (ConsoleCommitResult & { path: string; sourceBlobSha: string }) | null
 > {
@@ -858,6 +868,13 @@ export async function commitConsoleRelocation(input: {
   if (!head) return null;
   const file = await fileAtMainFor(repoDir, head, input.fromPath);
   if (!file) return null;
+  if (input.sourceBlobSha && file.oid !== input.sourceBlobSha) {
+    throw new BlobPreconditionError(
+      input.fromPath,
+      input.sourceBlobSha,
+      file.oid,
+    );
+  }
   const fromSidecar = chartSidecarPath(input.fromPath);
   const toSidecar = chartSidecarPath(input.toPath);
   const writes: Record<string, string> = { [input.toPath]: file.contents };
@@ -881,18 +898,50 @@ export async function commitConsoleRelocation(input: {
 }
 
 /**
+ * Has a push reached main that the index has not taken in, for any of
+ * these rows? True when a row's file is missing at (freshened) main or is
+ * a different blob than the row was derived from. A folder operation asks
+ * this BEFORE it touches Mongo: syncing afterwards would re-home the rows
+ * under the tree's (old) folder names and strand the renamed folder.
+ */
+export async function consoleFilesDrifted(
+  workspaceId: string,
+  rows: ReadonlyArray<{ path?: string | null; sourceBlobSha?: string | null }>,
+): Promise<boolean> {
+  const tracked = rows.filter(r => r.path);
+  if (tracked.length === 0) return false;
+  const repoDir = await freshMain(workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return false;
+  for (const row of tracked) {
+    const oid = await blobOidAt(repoDir, head, row.path as string);
+    if (!oid || (row.sourceBlobSha && oid !== row.sourceBlobSha)) return true;
+  }
+  return false;
+}
+
+/**
  * Move a set of rows whose paths changed together (folder rename or move,
  * folder access change) in one commit. Each entry is the row's desired
  * state plus the path it currently occupies. Like `commitConsoleRelocation`
  * this moves each file AS IT IS AT MAIN — a folder rename must not publish
- * every console's unsaved draft — and projects a row only when it has no
- * file at main. The whole batch is a compare-and-swap: every source must
+ * every console's unsaved draft — and projects a row only when it was
+ * never committed (no `previousPath`). A row whose file is missing at main
+ * or is a different blob than its `sourceBlobSha` (a push not yet synced)
+ * refuses the whole batch with `BlobPreconditionError`: the caller syncs
+ * and retries. The batch is also a compare-and-swap: every source must
  * still be the blob read, every destination that is not also a source
- * must be absent (`BlobPreconditionError` otherwise).
+ * must be absent.
  */
 export async function commitConsoleMoves(input: {
   workspaceId: string;
-  rows: Array<{ id: string; row: RowLike; previousPath?: string | null }>;
+  rows: Array<{
+    id: string;
+    row: RowLike;
+    previousPath?: string | null;
+    /** The blob the row's fields came from (see commitConsoleRelocation). */
+    sourceBlobSha?: string | null;
+  }>;
   actorUserId?: string | null;
   message: string;
 }): Promise<
@@ -908,13 +957,22 @@ export async function commitConsoleMoves(input: {
   const deletes: string[] = [];
   const expectBlobs: Record<string, string | null> = {};
   const paths = new Map<string, { path: string; sourceBlobSha: string }>();
-  for (const { id, row, previousPath } of input.rows) {
+  for (const { id, row, previousPath, sourceBlobSha } of input.rows) {
     const path = await repoPathForRow(row, folderCache);
-    const file =
-      head && previousPath
+    if (previousPath) {
+      const file = head
         ? await fileAtMainFor(repoDir, head, previousPath)
         : null;
-    if (file && previousPath) {
+      if (!file) {
+        throw new BlobPreconditionError(
+          previousPath,
+          sourceBlobSha ?? "?",
+          null,
+        );
+      }
+      if (sourceBlobSha && file.oid !== sourceBlobSha) {
+        throw new BlobPreconditionError(previousPath, sourceBlobSha, file.oid);
+      }
       writes[path] = file.contents;
       if (file.sidecar) writes[chartSidecarPath(path)] = file.sidecar.contents;
       else deletes.push(chartSidecarPath(path));
@@ -1209,8 +1267,20 @@ async function syncNow(
     isSaved: true,
     path: { $exists: true, $ne: null },
   }).select("+descriptionEmbedding")) as IndexRow[];
-  const rowByPath = new Map<string, IndexRow>();
-  for (const r of rows) if (r.path) rowByPath.set(r.path, r);
+  // A path is answered by its LIVE row. A soft-deleted row keeps `path` so
+  // the file coming back at that very path restores it — but it never
+  // outranks a live claimant (a row already at the path, or a vanished live
+  // row the file's blob or git's rename detection pairs with): a dead
+  // private console must not come back, collaborators and all, wearing a
+  // file someone just moved onto its old name. When a live row takes a
+  // path a dead row still holds, the dead row's path is unset for good.
+  const liveByPath = new Map<string, IndexRow>();
+  const deadByPath = new Map<string, IndexRow>();
+  for (const r of rows) {
+    if (!r.path) continue;
+    if (r.is_deleted) deadByPath.set(r.path, r);
+    else liveByPath.set(r.path, r);
+  }
   const seenRows = new Set<string>();
   const touched: IndexRow[] = [];
   const actor = userId && userId.length > 0 ? userId : "git";
@@ -1242,7 +1312,7 @@ async function syncNow(
   // a wrong re-key is not.
   const orphanByNewPath = new Map<string, IndexRow | null>();
   const unclaimed = consoleEntries.some(
-    e => !rowByPath.has(e.path) && !orphanByBlob.has(e.oid),
+    e => !liveByPath.has(e.path) && !orphanByBlob.has(e.oid),
   );
   if (liveOrphans.length > 0 && unclaimed) {
     const renamed = await detectRenamedPaths(
@@ -1266,7 +1336,7 @@ async function syncNow(
       const location = parseConsoleRepoPath(entry.path);
       if (!location) continue;
       const sidecar = byPath.get(chartSidecarPath(entry.path));
-      let row = rowByPath.get(entry.path);
+      let row = liveByPath.get(entry.path);
 
       if (!row) {
         // An identical blob is matched inside one ownership boundary too:
@@ -1284,6 +1354,20 @@ async function syncNow(
         if (moved && !seenRows.has(moved._id.toString())) {
           row = moved;
           stats.renamed++;
+        }
+      }
+
+      const dead = deadByPath.get(entry.path);
+      if (dead) {
+        if (!row) {
+          // Nothing live claims the path: the file is back where the
+          // deleted console lived — restore it.
+          row = dead;
+        } else if (!dead._id.equals(row._id)) {
+          await SavedConsole.updateOne(
+            { _id: dead._id },
+            { $unset: { path: "" } },
+          );
         }
       }
 
@@ -1786,7 +1870,7 @@ export async function adoptWorkspaceConsoles(
 }
 
 /** Two rows that sanitize to the same path get " (2)", " (3)", … */
-function uniquePath(
+export function uniquePath(
   wanted: string,
   taken: Set<string>,
   ownPath: string | undefined | null,
