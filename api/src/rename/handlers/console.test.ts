@@ -210,6 +210,39 @@ describe("rename", () => {
     expect(await treePaths()).not.toContain("consoles/Sales/EMEA/moving.sql");
   });
 
+  it("a slug naming the console's current place — short or full form — is a no-op success", async () => {
+    const report = await seed("report");
+    const id = report._id.toString();
+    await renameObject(owner, "console", { ref: id, slug: "Team/report" });
+    const expected = {
+      kind: "console",
+      id,
+      aliasesAdded: [],
+      warnings: ["Nothing to change: it already has that name."],
+    };
+    const short = await renameObject(owner, "console", {
+      ref: id,
+      slug: "Team/report",
+    });
+    expect(short).toMatchObject(expected);
+    expect(short.after).toEqual(short.before);
+    expect(short.after.path).toBe("consoles/Team/report.sql");
+    expect(short.commit).toBeUndefined();
+    const full = await renameObject(owner, "console", {
+      ref: id,
+      slug: "consoles/Team/report.sql",
+    });
+    expect(full).toMatchObject(expected);
+    expect(full.after).toEqual(short.after);
+    // Title alongside the short form, both current: still nothing to do.
+    const both = await renameObject(owner, "console", {
+      ref: id,
+      slug: "Team/report",
+      title: "report",
+    });
+    expect(both.warnings).toEqual(expected.warnings);
+  });
+
   it("refuses a title with a slash, a foreign extension, a taken path; a no-op succeeds", async () => {
     const a = await seed("a");
     await seed("b");
