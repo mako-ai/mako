@@ -23,6 +23,7 @@ import {
   type LiveConsole,
 } from "../apps/workspace-consoles.service";
 import { chartSidecarPath } from "../apps/console-files";
+import { BlobPreconditionError } from "../apps/repository.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { publishRealtimeEvent } from "../services/realtime.service";
@@ -146,14 +147,40 @@ function metadataFromRow(savedConsole: ISavedConsole, consolePath: string) {
 }
 
 /**
- * A rename/move's target file is already another console's. Surfaced as a
- * 409 by every caller; never resolved by overwriting.
+ * A rename/move could not be applied as decided: the file changed or moved
+ * on main between the read and the commit (a concurrent save or rename).
+ * Surfaced as a 409 by every caller; the caller may re-read and retry.
  */
-export class ConsolePathTakenError extends Error {
+export class ConsoleConflictError extends Error {
   readonly status = 409 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsoleConflictError";
+  }
+}
+
+/**
+ * A rename/move's target file is already another console's — found by the
+ * pre-check, or by the commit's compare-and-swap when it appeared in
+ * between. Never resolved by overwriting.
+ */
+export class ConsolePathTakenError extends ConsoleConflictError {
   constructor(readonly path: string) {
     super(`A console already exists at ${path}`);
     this.name = "ConsolePathTakenError";
+  }
+}
+
+/**
+ * Re-scoping a console (private ↔ workspace) is the owner's call, as in
+ * `updateConsoleAccess`; a shared editor may rename and move it within its
+ * scope but not change who can see it.
+ */
+export class ConsoleScopeError extends Error {
+  readonly status = 403 as const;
+  constructor() {
+    super("Only the owner can move a console between private and workspace");
+    this.name = "ConsoleScopeError";
   }
 }
 
@@ -334,7 +361,12 @@ export class ConsoleManager {
 
       return this.buildTree(folders, visibleConsoles);
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error listing consoles from git", { error });
       throw error;
     }
@@ -557,7 +589,12 @@ export class ConsoleManager {
         ),
       };
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error listing consoles split", { error });
       return { myConsoles: [], sharedWithWorkspace: [] };
     }
@@ -590,7 +627,12 @@ export class ConsoleManager {
       if (match) return match.parsed.code;
       throw new Error(`Console not found: ${consolePath}`);
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error getting console from git", { error });
       throw error;
     }
@@ -665,7 +707,12 @@ export class ConsoleManager {
         _raw: live.row ?? row,
       };
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error getting console with metadata", { error });
       return null;
     }
@@ -710,7 +757,12 @@ export class ConsoleManager {
       await savedConsole.save();
       return savedConsole;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error updating console access", { error });
       return null;
     }
@@ -750,7 +802,12 @@ export class ConsoleManager {
 
       return true;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error updating folder access", { error });
       return false;
     }
@@ -1007,7 +1064,12 @@ export class ConsoleManager {
 
       return savedConsole;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error saving console to database", { error });
       throw error;
     }
@@ -1117,6 +1179,15 @@ export class ConsoleManager {
         ? new Types.ObjectId(change.folderId)
         : null;
     }
+    if (
+      change.access &&
+      change.access !== ConsoleManager.resolveAccess(current)
+    ) {
+      const ownerId = (current.owner_id || current.createdBy)?.toString();
+      if (options.userId && ownerId !== options.userId) {
+        throw new ConsoleScopeError();
+      }
+    }
     if (change.access) {
       current.access = change.access;
       current.isPrivate = change.access === "private";
@@ -1130,16 +1201,30 @@ export class ConsoleManager {
       if (toPath !== current.path) {
         await this.assertConsolePathFree(workspaceId, toPath, current._id);
       }
-      const relocated =
-        current.path && toPath !== current.path
-          ? await commitConsoleRelocation({
-              workspaceId,
-              fromPath: current.path,
-              toPath,
-              actorUserId: options.userId,
-              message,
-            })
-          : null;
+      let relocated: Awaited<ReturnType<typeof commitConsoleRelocation>> = null;
+      if (current.path && toPath !== current.path) {
+        try {
+          relocated = await commitConsoleRelocation({
+            workspaceId,
+            fromPath: current.path,
+            toPath,
+            actorUserId: options.userId,
+            message,
+          });
+        } catch (error) {
+          // The commit's compare-and-swap is the guarantee the pre-check
+          // above cannot give: the target appeared (another rename won the
+          // race, or a laptop push landed it) → taken; the source changed
+          // (a save raced the rename) → conflict, nothing applied.
+          if (error instanceof BlobPreconditionError) {
+            if (error.expected === null) {
+              throw new ConsolePathTakenError(error.path);
+            }
+            throw new ConsoleConflictError(error.message);
+          }
+          throw error;
+        }
+      }
       if (relocated) {
         updateFields.path = relocated.path;
         updateFields.sourceBlobSha = relocated.sourceBlobSha;
@@ -1237,7 +1322,8 @@ export class ConsoleManager {
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
-        error instanceof ConsolePathTakenError
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleScopeError
       ) {
         throw error;
       }
@@ -1272,7 +1358,12 @@ export class ConsoleManager {
 
       return result.deletedCount > 0;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error deleting console", { error });
       return false;
     }
@@ -1310,7 +1401,12 @@ export class ConsoleManager {
       }
       return true;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error renaming folder", { error });
       return false;
     }
@@ -1362,6 +1458,9 @@ export class ConsoleManager {
   ): Promise<void> {
     const rows = await this.consolesUnderFolder(folderId, workspaceId);
     if (rows.length === 0) return;
+    // Each file moves AS IT IS AT MAIN (drafts stay drafts) under one CAS
+    // commit; a BlobPreconditionError (a concurrent save or push under the
+    // folder) surfaces as a 409 and the folder rows are left untouched.
     const moved = await commitConsoleMoves({
       workspaceId,
       actorUserId: userId,
@@ -1435,7 +1534,12 @@ export class ConsoleManager {
 
       return result.deletedCount > 0;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error deleting folder", { error });
       return false;
     }
@@ -1487,7 +1591,12 @@ export class ConsoleManager {
 
       return false;
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error checking console existence", { error });
       return false;
     }
@@ -1561,7 +1670,12 @@ export class ConsoleManager {
         },
       );
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error updating execution stats", { error });
     }
   }
@@ -1615,7 +1729,12 @@ export class ConsoleManager {
         $inc: { externalUseCount: 1 },
       });
     } catch (error) {
-      if (error instanceof RepoRequiredError) throw error;
+      if (
+        error instanceof RepoRequiredError ||
+        error instanceof BlobPreconditionError
+      ) {
+        throw error;
+      }
       logger.error("Error recording external console use", {
         error,
         consoleId,

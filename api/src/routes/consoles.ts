@@ -3,8 +3,10 @@ import { workspaceResourceLoader } from "./lib/load-resource";
 import type { Context } from "hono";
 import {
   ConsoleManager,
-  ConsolePathTakenError,
+  ConsoleConflictError,
+  ConsoleScopeError,
 } from "../utils/console-manager";
+import { BlobPreconditionError } from "../apps/repository.service";
 import { canWriteResource } from "../utils/resource-acl";
 import { wouldCreateFolderCycle } from "../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
@@ -1808,8 +1810,11 @@ consoleRoutes.openapi(
       }
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      if (error instanceof ConsolePathTakenError) {
+      if (error instanceof ConsoleConflictError) {
         return c.json({ success: false, error: error.message }, 409);
+      }
+      if (error instanceof ConsoleScopeError) {
+        return c.json({ success: false, error: error.message }, 403);
       }
       logger.error("Error renaming console", {
         consoleId: c.req.param("id"),
@@ -3444,8 +3449,13 @@ const consoleFolderBackend: FolderBackend = {
         return { ok: false, status: 404, error: "Console not found" };
       }
     } catch (error) {
-      if (error instanceof ConsolePathTakenError) {
+      if (error instanceof ConsoleConflictError) {
         return { ok: false, status: 409, error: error.message };
+      }
+      // A scope flip (private ↔ workspace) is the owner's call — the same
+      // rule rename_object applies; a shared editor may only move within.
+      if (error instanceof ConsoleScopeError) {
+        return { ok: false, status: 403, error: error.message };
       }
       throw error;
     }
@@ -3458,6 +3468,14 @@ registerFolderRoutes(consoleRoutes, {
   schemaPrefix: "Console",
   backend: consoleFolderBackend,
   createdStatus: 201,
-  onError: (c, error) =>
-    error instanceof RepoRequiredError ? repoRequired(c, error) : undefined,
+  onError: (c, error) => {
+    if (error instanceof RepoRequiredError) return repoRequired(c, error);
+    // A folder rename/move/access change moves every file under it in one
+    // compare-and-swap commit; a concurrent save or push under the folder
+    // refuses it as a whole (nothing applied) — the client retries.
+    if (error instanceof BlobPreconditionError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
+    return undefined;
+  },
 });
