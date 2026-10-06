@@ -102,6 +102,7 @@ import {
   loadAppsIndex,
   readIndexedAppsAt,
   resolveAppRef,
+  resolveAppRefVia,
   syncAppsIndexFromRepo,
   type AppIndexRow,
   type AppSchedule,
@@ -1091,6 +1092,14 @@ async function moveWritesUnder(
     const original = manifest;
     if (!app.hasManifestId) {
       manifest = stampManifestId(manifest, app.appId);
+      if (manifest === null) throw unparseable(app);
+    }
+    // A copy that is given its own id here (its manifest still declared
+    // the source's) gives up the source's aliases with it, as stampAppId
+    // does — or the two would claim the same old names and neither would
+    // answer to them.
+    if (app.duplicateOf) {
+      manifest = stripManifestAliases(manifest);
       if (manifest === null) throw unparseable(app);
     }
     const plan = plans.get(app.path);
@@ -3158,6 +3167,11 @@ export function projectFromIndexRow(
  * folder has left main (a published app whose folder was deleted keeps its
  * row until someone deletes the app). This is THE resolver; every route and
  * tool goes through it so id, path and slug all mean the same app.
+ *
+ * Order: what is CURRENT first — the index (id, path, name as it is today),
+ * then a row whose folder is no longer on main — and only then an alias
+ * (a previous name of a live app). A deleted-folder app that still has
+ * state keeps its name against any live app that merely used to have it.
  */
 export async function resolveProjectRef(
   workspaceId: string,
@@ -3166,8 +3180,8 @@ export async function resolveProjectRef(
 ): Promise<IAppProject | null> {
   const ws = new Types.ObjectId(workspaceId);
   const clean = ref.trim().replace(/^\/+/, "");
-  const folder = await resolveAppRef(workspaceId, clean, options);
-  if (folder) {
+  const found = await resolveAppRefVia(workspaceId, clean, options);
+  const fromFolder = async (folder: AppIndexRow): Promise<IAppProject> => {
     const row = await AppProject.findOne({
       _id: new Types.ObjectId(folder.appId),
       workspaceId: ws,
@@ -3182,24 +3196,42 @@ export async function resolveProjectRef(
       return row;
     }
     return projectFromIndexRow(workspaceId, folder);
-  }
+  };
+  if (found?.via === "current") return fromFolder(found.app);
+
+  // Rows without a folder on main. Only those: a live app's row is reached
+  // through the index above, and "whichever row Mongo returns first" for a
+  // name the index refused (several nested apps share it) would edit,
+  // publish or serve bindings for the wrong app.
+  const snapshot = await loadAppsIndex(workspaceId, { freshen: false });
+  const onMain = new Set(snapshot.apps.map(a => a.appId));
+  const folderless = (row: IAppProject | null): IAppProject | null =>
+    row && !onMain.has(row._id.toString()) ? row : null;
   if (Types.ObjectId.isValid(clean) && /^[0-9a-f]{24}$/i.test(clean)) {
-    return AppProject.findOne({
-      _id: new Types.ObjectId(clean),
-      workspaceId: ws,
-    });
+    const byId = folderless(
+      await AppProject.findOne({
+        _id: new Types.ObjectId(clean),
+        workspaceId: ws,
+      }),
+    );
+    if (byId) return byId;
+  } else {
+    const byPath = folderless(
+      await AppProject.findOne({ path: clean, workspaceId: ws }),
+    );
+    if (byPath) return byPath;
+    const stripped = clean.replace(/^apps\//, "");
+    // A bare name some live app holds is the index's to resolve (it did,
+    // or refused it as ambiguous — final either way).
+    if (
+      (clean === stripped || clean.startsWith("apps/")) &&
+      !snapshot.apps.some(a => a.slug === stripped)
+    ) {
+      const bySlug = folderless(
+        await AppProject.findOne({ slug: stripped, workspaceId: ws }),
+      );
+      if (bySlug) return bySlug;
+    }
   }
-  const stripped = clean.replace(/^apps\//, "");
-  const byPath = await AppProject.findOne({ path: clean, workspaceId: ws });
-  if (byPath) return byPath;
-  // A bare slug the index knows but refused to pick (several nested apps
-  // share the name, none at the top level) must stay unresolved: slugs are
-  // no longer unique per workspace, and "whichever row Mongo returns first"
-  // would edit, publish or serve bindings for the wrong app. The row lookup
-  // is only for an app that has state but no folder on main any more.
-  if (clean === stripped || clean.startsWith("apps/")) {
-    const snapshot = await loadAppsIndex(workspaceId, { freshen: false });
-    if (snapshot.apps.some(a => a.slug === stripped)) return null;
-  }
-  return AppProject.findOne({ slug: stripped, workspaceId: ws });
+  return found ? fromFolder(found.app) : null;
 }

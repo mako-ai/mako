@@ -170,4 +170,53 @@ describe("resolveAppRef aliases (the server's findAppInSnapshot, mirrored)", () 
     expect(resolveAppRef([...list, other], "old")).toBeNull();
     expect(resolveAppRef([...list, other], "apps/Sales/old")).toBe(renamed);
   });
+
+  it("lets a renamed top-level app keep its link over a nested app that took the bare name", () => {
+    const moved = {
+      id: "6aaaed797eb3d8d53c497fd4",
+      slug: "report-v2",
+      path: "apps/report-v2",
+      aliases: ["report"],
+    };
+    const nested = {
+      id: "6aaaed797eb3d8d53c497fd5",
+      slug: "report",
+      path: "apps/Sales/report",
+    };
+    expect(resolveAppRefVia([moved, nested], "report")).toEqual({
+      app: moved,
+      via: "alias",
+    });
+    expect(resolveAppRef([moved, nested], "Sales/report")).toBe(nested);
+    expect(resolveAppRef([nested], "report")).toBe(nested);
+    // A nested app's path alias never answers the bare name.
+    expect(
+      resolveAppRef(
+        [
+          {
+            id: "6aaaed797eb3d8d53c497fd6",
+            path: "apps/x",
+            aliases: ["apps/Sales/report"],
+          },
+        ],
+        "report",
+      ),
+    ).toBeNull();
+  });
+
+  it("treats a bare name several nested apps share as final, with no fall-through to an alias", () => {
+    const apps = [
+      { id: "6aaaed797eb3d8d53c497fd7", path: "apps/Sales/kpi" },
+      { id: "6aaaed797eb3d8d53c497fd8", path: "apps/Ops/kpi" },
+      {
+        id: "6aaaed797eb3d8d53c497fd9",
+        path: "apps/Finance/kpi-v2",
+        aliases: ["apps/Finance/kpi"],
+      },
+    ];
+    expect(resolveAppRef(apps, "kpi")).toBeNull();
+    expect(resolveAppRef(apps, "Finance/kpi")?.path).toBe(
+      "apps/Finance/kpi-v2",
+    );
+  });
 });
