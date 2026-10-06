@@ -40,6 +40,9 @@ export default defineConfig({
       // Duplicate never commits an orphan; a copy is filed where the tree
       // shows it; a console shared with me is under "Shared with me".
       "src/routes/consoles-duplicate.test.ts",
+      // A console's history reads its own file only: never the console it
+      // was copied from, nor another console that held one of its names.
+      "src/routes/consoles-history.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",

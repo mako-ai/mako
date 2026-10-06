@@ -326,6 +326,107 @@ describe("history + diff", () => {
     ]);
   });
 
+  it("follows renames only — never into the file it was copied from, nor an earlier file at the same path", async () => {
+    const secret = "SELECT name, salary\nFROM payroll\nWHERE exec\n";
+    await initRepo(repoDir, { "users/a/consoles/P.sql": secret });
+    // A copy (same text) under another name: git --follow sees a `C`.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "consoles/W.sql": secret } },
+      { message: "copy" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "users/a/consoles/P.sql": `${secret}-- later\n` } },
+      { message: "private edit" },
+    );
+    expect(
+      (await logFollow(repoDir, DEFAULT_BRANCH, 10, "consoles/W.sql")).map(
+        c => [c.subject, c.path, c.previousPath, c.created],
+      ),
+    ).toEqual([["copy", "consoles/W.sql", undefined, true]]);
+
+    // A path that held another file before this one was created there.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { deletes: ["users/a/consoles/P.sql"] },
+      { message: "delete P" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "users/a/consoles/P.sql": "SELECT 'new'\n" } },
+      { message: "new P" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: { "consoles/P.sql": "SELECT 'new'\n" },
+        deletes: ["users/a/consoles/P.sql"],
+      },
+      { message: "move P" },
+    );
+    expect(
+      (await logFollow(repoDir, DEFAULT_BRANCH, 10, "consoles/P.sql")).map(
+        c => [c.subject, c.path, c.previousPath],
+      ),
+    ).toEqual([
+      ["move P", "consoles/P.sql", "users/a/consoles/P.sql"],
+      ["new P", "users/a/consoles/P.sql", undefined],
+    ]);
+  });
+
+  it("parseFollowLog ends the walk at a copy, at an add, and before an earlier file's delete", () => {
+    const head = (oid: string, subject: string) =>
+      `\x01${oid}\0me\x001\0${subject}\0`;
+    const copied =
+      head("c2", "copy") +
+      "\nC100\0private.sql\0copy.sql\0" +
+      head("c1", "private create") +
+      "\nA\0private.sql\0";
+    expect(
+      parseFollowLog(copied, "copy.sql").map(c => [c.oid, c.path, c.created]),
+    ).toEqual([["c2", "copy.sql", true]]);
+
+    const reoccupied =
+      head("c4", "edit") +
+      "\nM\0p.sql\0" +
+      head("c3", "create") +
+      "\nA\0p.sql\0" +
+      head("c2", "earlier delete") +
+      "\nD\0p.sql\0" +
+      head("c1", "earlier create") +
+      "\nA\0p.sql\0";
+    expect(parseFollowLog(reoccupied, "p.sql").map(c => c.oid)).toEqual([
+      "c4",
+      "c3",
+    ]);
+    // The walk cut short by -n (no add seen) keeps everything it saw.
+    expect(
+      parseFollowLog(head("c4", "edit") + "\nM\0p.sql\0", "p.sql").map(
+        c => c.created,
+      ),
+    ).toEqual([undefined]);
+
+    // Its own deletion (absent at the ref) is its newest commit.
+    const deleted =
+      head("c3", "delete") +
+      "\nD\0p.sql\0" +
+      head("c2", "edit") +
+      "\nM\0p.sql\0" +
+      head("c1", "create") +
+      "\nA\0p.sql\0";
+    expect(parseFollowLog(deleted, "p.sql").map(c => c.oid)).toEqual([
+      "c3",
+      "c2",
+      "c1",
+    ]);
+  });
+
   it("parseFollowLog carries the name backwards through a commit without a status line", () => {
     const stdout =
       "\x01c3\0me\x001\0rename\0\nR100\0old.sql\0new.sql\0" +

@@ -64,9 +64,9 @@ import {
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
-  consoleHistoryPaths,
   liveConsoleCode,
   loadLiveConsoleById,
+  NotThisConsoleError,
   projectSavedConsole,
   readConsoleDefinitionAtMain,
   repoPathForRow,
@@ -3527,7 +3527,14 @@ async function loadReadableConsole(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   const memberRole = (c as AuthenticatedContext).get("memberRole");
-  if (!doc || !ConsoleManager.canRead(doc, user.id, memberRole)) {
+  // A console in the trash has no file: its path is free, and whatever
+  // holds it now (another console, maybe one private to its owner) is not
+  // its history.
+  if (
+    !doc ||
+    doc.is_deleted ||
+    !ConsoleManager.canRead(doc, user.id, memberRole)
+  ) {
     return {
       errorResponse: c.json(
         { success: false, error: "Console not found" },
@@ -3643,26 +3650,25 @@ consoleRoutes.openapi(
       const loaded = await loadReadableConsole(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { sha, path: relPath } = c.req.valid("query");
-      const target = relPath ?? loaded.doc.path;
-      if (!target) {
+      if (!loaded.doc.path) {
         return c.json(
           { success: false, error: "Console has no file yet" },
           404,
         );
       }
-      // Only this console's own file (and its chart) may be read through
-      // it — under any name it has had (its history follows renames).
-      const own = await consoleHistoryPaths(loaded.doc);
-      if (!own.has(target)) {
+      // Only this console's own file (and its chart), under the name it
+      // had IN that commit, at one of its own commits — never another
+      // console's file that once had (or later took) one of its names.
+      const versions = await consoleFileVersions(loaded.doc, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof NotThisConsoleError) {
         return c.json(
           { success: false, error: "Path is not this console" },
           403,
         );
       }
-      const versions = await consoleFileVersions(loaded.doc, sha, target);
-      return c.json({ success: true as const, versions });
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error reading console file versions", { error });
       return c.json({ success: false, error: "Failed to read the diff" }, 500);
     }
@@ -3713,6 +3719,9 @@ consoleRoutes.openapi(
       return c.json({ success: true as const, result });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof NotThisConsoleError) {
+        return c.json({ success: false, error: error.message }, 404);
+      }
       logger.error("Error restoring console", { error });
       return c.json(
         {
