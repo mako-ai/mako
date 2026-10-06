@@ -33,7 +33,11 @@ import {
 } from "../store/consoleTreeStore";
 import { accessForMove } from "../store/lib/createResourceTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
-import { hasUnsavedLocalEdits, useConsoleStore } from "../store/consoleStore";
+import {
+  hasUnsavedLocalEdits,
+  isUnloadedConsoleTab,
+  useConsoleStore,
+} from "../store/consoleStore";
 import { filterTree, findById } from "../store/lib/tree-helpers";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
 import { consoleCopiedNotice, treeMoveNotice } from "../lib/console-relocation";
@@ -160,11 +164,27 @@ function ConsoleExplorer(
    */
   const focusIfEditing = (consoleId: string): boolean => {
     const consoles = useConsoleStore.getState();
-    if (!consoles.tabs[consoleId] || !hasUnsavedLocalEdits(consoleId)) {
+    if (
+      !consoles.tabs[consoleId] ||
+      // Still the loading placeholder (its first fetch failed or is in
+      // flight): nothing to lose — fetch it again.
+      isUnloadedConsoleTab(consoleId) ||
+      !hasUnsavedLocalEdits(consoleId)
+    ) {
       return false;
     }
     consoles.setActiveTab(consoleId);
     return true;
+  };
+
+  /**
+   * After a fetch: the store kept an edit typed while it was in flight
+   * (the tab no longer shows what the fetch began from); the server's
+   * copy must not be written over it here either.
+   */
+  const keptEditDuringFetch = (consoleId: string, serverContent: string) => {
+    const tab = useConsoleStore.getState().tabs[consoleId];
+    return !!tab && tab.content !== serverContent;
   };
 
   const handleSearchResultClick = (result: ConsoleSearchResult) => {
@@ -191,7 +211,7 @@ function ConsoleExplorer(
           updateSavedState,
         } = consoleStore.useConsoleStore.getState();
         const data = await fetchConsoleContent(currentWorkspace.id, result.id);
-        if (data) {
+        if (data && !keptEditDuringFetch(result.id, data.content || "")) {
           useConsoleContentStore.getState().set(result.id, {
             content: data.content,
             connectionId: data.connectionId,
@@ -253,7 +273,7 @@ function ConsoleExplorer(
         const consoleStore = await import("../store/consoleStore");
         const { fetchConsoleContent } = consoleStore.useConsoleStore.getState();
         const data = await fetchConsoleContent(currentWorkspace.id, consoleId);
-        if (data) {
+        if (data && !keptEditDuringFetch(consoleId, data.content || "")) {
           useConsoleContentStore.getState().set(consoleId, {
             content: data.content,
             connectionId: data.connectionId || node.connectionId,

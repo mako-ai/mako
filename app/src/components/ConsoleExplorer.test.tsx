@@ -291,3 +291,62 @@ describe("ConsoleExplorer — Move to…", () => {
     expect(screen.queryByText(/Moved to/)).toBeNull();
   });
 });
+
+describe("ConsoleExplorer — a tab whose first load failed, and typing during a load", () => {
+  const SAVED = "SELECT 1";
+
+  it("a placeholder tab (first fetch failed) is fetched again on the next click", async () => {
+    useConsoleStore.setState({ tabs: {}, tabOrder: [], activeTabId: null });
+    // What the explorer opens with nothing cached; its fetch then failed.
+    useConsoleStore.getState().openTab({
+      id: "c-alpha",
+      title: "Alpha",
+      content: "loading...",
+      isSaved: true,
+      kind: "console",
+    });
+    useConsoleContentStore.getState().clear();
+    const fetchConsoleContent = vi.fn(async () => null);
+    useConsoleStore.setState({ fetchConsoleContent } as never);
+    const onConsoleSelect = vi.fn();
+    render(<ConsoleExplorer onConsoleSelect={onConsoleSelect} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Alpha" }));
+    await vi.waitFor(() => expect(fetchConsoleContent).toHaveBeenCalled());
+    expect(onConsoleSelect).toHaveBeenCalled();
+  });
+
+  it("an edit typed while an open clean tab is being refreshed is not overwritten", async () => {
+    useConsoleStore.setState({ tabs: {}, tabOrder: [], activeTabId: null });
+    useConsoleStore.getState().openTab({
+      id: "c-alpha",
+      title: "Alpha",
+      content: SAVED,
+      isSaved: true,
+      filePath: "finance/Alpha",
+      savedStateHash: computeConsoleStateHash(SAVED),
+      kind: "console",
+    });
+    useConsoleContentStore.getState().set("c-alpha", { content: SAVED });
+    // The fetch is in flight while the user types (the store keeps the
+    // edit and answers the server's copy).
+    const fetchConsoleContent = vi.fn(async () => {
+      useConsoleStore.getState().updateContent("c-alpha", "SELECT 1 -- mine");
+      return {
+        success: true,
+        content: "SELECT 1 -- server",
+        savedStateHash: computeConsoleStateHash("SELECT 1 -- server"),
+      };
+    });
+    useConsoleStore.setState({ fetchConsoleContent } as never);
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Alpha" }));
+    await vi.waitFor(() => expect(fetchConsoleContent).toHaveBeenCalled());
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const tab = useConsoleStore.getState().tabs["c-alpha"];
+    expect(tab.content).toBe("SELECT 1 -- mine");
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(SAVED));
+  });
+});

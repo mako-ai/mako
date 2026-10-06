@@ -30,6 +30,7 @@ import { computeConsoleStateHash } from "../utils/stateHash";
 import {
   hasPendingAgentReview,
   hasUnsavedLocalEdits,
+  isUnloadedConsoleTab,
   remoteEntryMatchesBaseline,
   useConsoleStore,
 } from "./consoleStore";
@@ -729,5 +730,83 @@ describe("consoleStore.autoSaveConsole — only a console id is saved through th
       put.mockRestore();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("consoleStore.fetchConsoleContent — an edit typed while it is in flight", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  const SAVED = "SELECT 1";
+  const server = (content: string) => ({
+    data: {
+      success: true,
+      id: "c-open",
+      name: "Alpha Two",
+      path: "finance/Alpha Two",
+      content,
+      isSaved: true,
+      access: "workspace",
+      draftRevision: 9,
+      version: 4,
+    },
+    response: new Response(null, { status: 200 }),
+  });
+
+  it("is kept on its baseline; only the name and place are taken", async () => {
+    openSavedConsole({
+      id: "c-open",
+      content: SAVED,
+      savedStateHash: computeConsoleStateHash(SAVED),
+      draftRevision: 3,
+      version: 2,
+    });
+    let answer: (v: unknown) => void = () => undefined;
+    const get = vi
+      .spyOn(api, "GET")
+      .mockReturnValue(new Promise(resolve => (answer = resolve)) as never);
+    try {
+      const fetching = useConsoleStore
+        .getState()
+        .fetchConsoleContent("ws", "c-open");
+      // The user types while the server answers.
+      useConsoleStore.getState().updateContent("c-open", "SELECT 1 -- mine");
+      answer(server("SELECT 1 -- someone else's save"));
+      await fetching;
+    } finally {
+      get.mockRestore();
+    }
+    const tab = useConsoleStore.getState().tabs["c-open"];
+    expect(tab.content).toBe("SELECT 1 -- mine");
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(SAVED));
+    expect(tab.draftRevision).toBe(3);
+    expect(tab.version).toBe(2);
+    expect(hasUnsavedLocalEdits("c-open")).toBe(true);
+    expect(tab.title).toBe("Alpha Two");
+    expect(tab.filePath).toBe("finance/Alpha Two");
+  });
+
+  it("without an edit, the server's copy is loaded as before (a placeholder tab included)", async () => {
+    useConsoleStore.getState().openTab({
+      id: "c-open",
+      title: "Alpha",
+      content: "loading...",
+      isSaved: true,
+      kind: "console",
+    });
+    expect(isUnloadedConsoleTab("c-open")).toBe(true);
+    const get = vi.spyOn(api, "GET").mockResolvedValue(server(SAVED) as never);
+    try {
+      await useConsoleStore.getState().fetchConsoleContent("ws", "c-open");
+    } finally {
+      get.mockRestore();
+    }
+    const tab = useConsoleStore.getState().tabs["c-open"];
+    expect(tab.content).toBe(SAVED);
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(SAVED));
+    expect(tab.draftRevision).toBe(9);
+    expect(isUnloadedConsoleTab("c-open")).toBe(false);
+    expect(hasUnsavedLocalEdits("c-open")).toBe(false);
   });
 });
