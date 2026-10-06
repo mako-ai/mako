@@ -29,7 +29,11 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
-import { ensureLocalRepo, queueMirrorPush } from "../apps/cloud-repo.service";
+import {
+  ensureLocalRepo,
+  freshenBeforeMainWrite,
+  queueMirrorPush,
+} from "../apps/cloud-repo.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
@@ -78,13 +82,18 @@ async function repoDirIfExists(workspaceId: string): Promise<string | null> {
 
 /**
  * The first free `.deepnote` path for the notebook's name. Taken means:
- * another index row's path, OR a file at main that is not this notebook's
+ * another index row's path, a file at main that is not this notebook's
  * (a laptop-made notebook the index does not know yet — its file must not
- * be overwritten by a rename onto its name).
+ * be overwritten by a rename onto its name), or a path `reserved` by the
+ * caller's own batch (adoption writes many notebooks in one commit).
+ * Callers that are about to MOVE a file must freshen main first: this
+ * reads the local tree, and a file this instance has not fetched is
+ * invisible to it.
  */
 async function uniqueNotebookPath(
   repoDir: string,
   index: INotebookIndex,
+  reserved: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const base = slugifyNotebookName(index.name);
   let slug = base;
@@ -93,11 +102,13 @@ async function uniqueNotebookPath(
       access: index.access,
       ownerId: index.ownerId,
     });
-    const clash = await NotebookIndex.findOne({
-      workspaceId: index.workspaceId,
-      path: wanted,
-      notebookId: { $ne: index.notebookId },
-    }).select("_id");
+    const clash =
+      reserved.has(wanted) ||
+      (await NotebookIndex.findOne({
+        workspaceId: index.workspaceId,
+        path: wanted,
+        notebookId: { $ne: index.notebookId },
+      }).select("_id"));
     if (!clash && !(await foreignFileAt(repoDir, wanted, index.notebookId))) {
       return wanted;
     }
@@ -165,7 +176,12 @@ export async function checkpointNotebook(
 ): Promise<{
   committed: boolean;
   commitOid?: string;
-  skippedReason?: "no_repository";
+  /**
+   * `no_repository`: nothing to commit into. `target_taken`: the move's
+   * target path appeared between the name choice and the commit (the
+   * compare-and-swap refused it); the next checkpoint picks another name.
+   */
+  skippedReason?: "no_repository" | "target_taken";
 }> {
   const repoDir = await repoDirIfExists(workspaceId);
   if (repoDir == null) {
@@ -188,7 +204,17 @@ export async function checkpointNotebook(
   // in the file so the file stands alone.
   const contents = serializeNotebookFile({ ...doc, name: index.name });
   const sha = blobOid(contents);
-  const wantedPath = await checkpointPathFor(repoDir, index);
+  let wantedPath = await checkpointPathFor(repoDir, index);
+  if (wantedPath !== index.path) {
+    // A MOVE chooses its name against main, so main must be the mirror's,
+    // not whatever this instance last fetched: a laptop-pushed notebook
+    // already sitting at the target name must count as taken. (The
+    // compare-and-swap below compares against the LOCAL head; a stale one
+    // would let the commit overwrite that file.) Plain checkpoints keep
+    // their path and stay fetch-free — the debounce makes them frequent.
+    await freshenBeforeMainWrite(workspaceId);
+    wantedPath = await checkpointPathFor(repoDir, index);
+  }
   if (index.checkpointBlobSha === sha && index.path === wantedPath) {
     return { committed: false };
   }
@@ -220,7 +246,7 @@ export async function checkpointNotebook(
         notebookId,
         path: wantedPath,
       });
-      return { committed: false };
+      return { committed: false, skippedReason: "target_taken" };
     }
     throw error;
   }
@@ -480,6 +506,8 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
 }> {
   const repoDir = await repoDirIfExists(workspaceId);
   if (repoDir == null) return { notebooks: 0, written: 0 };
+  // Names are chosen against main: see it as the mirror has it.
+  await freshenBeforeMainWrite(workspaceId);
   const store = getNotebookStore();
   const indexes = await NotebookIndex.find({
     workspaceId: new Types.ObjectId(workspaceId),
@@ -487,6 +515,9 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
   const writes: Record<string, string> = {};
   const stamps: Array<{ index: INotebookIndex; path: string; sha: string }> =
     [];
+  // Paths chosen earlier in this batch: two unadopted notebooks with one
+  // name must not be written to one file, the second replacing the first.
+  const reserved = new Set<string>();
   for (const index of indexes) {
     const doc = await store.get(workspaceId, index.notebookId);
     if (!doc) continue;
@@ -496,7 +527,8 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
     });
     const sha = blobOid(contents);
     if (index.checkpointBlobSha === sha && index.path) continue;
-    const path = await uniqueNotebookPath(repoDir, index);
+    const path = await uniqueNotebookPath(repoDir, index, reserved);
+    reserved.add(path);
     writes[path] = contents;
     stamps.push({ index, path, sha });
   }
