@@ -102,7 +102,11 @@ import FileExplorerDialog from "./FileExplorerDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
-import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
+import {
+  isUnloadedConsoleTab,
+  useConsoleStore,
+  selectConsoleTabs,
+} from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
@@ -1607,6 +1611,21 @@ function Editor({
     return success;
   };
 
+  /**
+   * A tab whose console has not loaded (its fetch failed or is in flight):
+   * say so and load it again — its "loading..." text is not a console to
+   * save, and the console is not new.
+   */
+  const reloadUnloadedConsole = (tabId: string) => {
+    setSnackbarMessage("This console has not loaded yet — loading it again.");
+    setSnackbarOpen(true);
+    if (currentWorkspace) {
+      void useConsoleStore
+        .getState()
+        .fetchConsoleContent(currentWorkspace.id, tabId);
+    }
+  };
+
   const handleConsoleSave = async (
     tabId: string,
     contentToSave: string,
@@ -1619,6 +1638,12 @@ function Editor({
     }
 
     if (!currentPath) {
+      // A console that exists but has not loaded yet is not a new one:
+      // never a first save (of its "loading..." placeholder) — load it.
+      if (isUnloadedConsoleTab(tabId)) {
+        reloadUnloadedConsole(tabId);
+        return false;
+      }
       setSaveDialogMode("new");
       setSaveDialogTabId(tabId);
       setSaveDialogTargetId(tabId);
@@ -2101,6 +2126,10 @@ function Editor({
       return;
     }
     if (!currentPath) {
+      if (isUnloadedConsoleTab(tabId)) {
+        reloadUnloadedConsole(tabId);
+        return;
+      }
       // Nothing to rename yet — fall back to first-time save flow.
       setSaveDialogMode("new");
       setSaveDialogTabId(tabId);

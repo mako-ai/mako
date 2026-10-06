@@ -487,3 +487,45 @@ describe("the tree listing's folder repair never costs the listing", () => {
     expect(names(list.body.sharedWithWorkspace)).toEqual(["Anchor", "z"]);
   });
 });
+
+describe("a git-only console in a folder no record can hold", () => {
+  it("opens (GET /content) like any other — it used to 404 on a crash — and a save is refused in words", async () => {
+    await save("Anchor", OWNER, "workspace");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "consoles/ /y.sql": "SELECT 2\n" } },
+      { message: "laptop", author: { name: "L", email: "l@example.com" } },
+    );
+    // The index sync cannot file it (no folder record can be named " ").
+    await syncConsolesIndexFromRepo(WS, OWNER);
+    const id = derivedConsoleId(WS, "consoles/ /y.sql").toString();
+
+    const r = await req("GET", `/content?id=${id}`, OWNER);
+    expect(r.status).toBe(200);
+    const body = r.body as Record<string, unknown>;
+    expect(body).toMatchObject({ success: true, isSaved: true, name: "y" });
+    expect(body.content).toContain("SELECT 2");
+    expect(body.path).toBe(" /y");
+    expect(typeof body.savedStateHash).toBe("string");
+
+    // Saving it (an admin may write an unindexed console) is refused in
+    // words — a folder record cannot be named " " — never a 500, and the
+    // file is left as it is.
+    who.id = OWNER;
+    who.role = "admin";
+    const put = await app.request(`/api/workspaces/${WS}/consoles/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "SELECT 3\n", isSaved: true }),
+    });
+    expect(put.status).toBe(409);
+    expect(((await put.json()) as Body).error).toContain(
+      "cannot be blank or start or end with a space",
+    );
+    expect(await consolePaths()).toEqual([
+      "consoles/ /y.sql",
+      "consoles/Anchor.sql",
+    ]);
+  });
+});

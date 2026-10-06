@@ -1,7 +1,10 @@
 import React from "react";
 import { Box } from "@mui/material";
 import { ChevronRight as BreadcrumbChevronIcon } from "lucide-react";
-import { useConsoleStore } from "../store/consoleStore";
+import {
+  CONSOLE_LOADING_CONTENT,
+  useConsoleStore,
+} from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useAppsStore } from "../store/appsStore";
 import { useDashboardStore } from "../store/dashboardStore";
@@ -76,10 +79,15 @@ function segmentsForTab(
         ];
       }
       if (!tab.filePath) {
+        // A console opened before it loaded is not an unsaved one.
+        const loading =
+          tab.isSaved &&
+          !tab.savedStateHash &&
+          tab.content === CONSOLE_LOADING_CONTENT;
         return [
           root,
           { label: "Consoles" },
-          { label: "Unsaved console", italic: true },
+          { label: loading ? "Loading…" : "Unsaved console", italic: true },
         ];
       }
       // Single source of truth: the leaf is the live display name (tab.title);
