@@ -17,7 +17,16 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -43,6 +52,7 @@ import {
   aliasesForMoves,
   aliasesFromHistory,
   assignAppIds,
+  catchUpHistory,
   discoverApps,
   findAppInSnapshot,
   findAppInSnapshotVia,
@@ -52,6 +62,7 @@ import {
   manifestRenamesInHistory,
   mergeAliases,
   resolveAppRef,
+  syncAppsIndexFromRepo,
   type AppIndexRow,
   type ManifestHistoryEvent,
 } from "./app-index.service";
@@ -100,6 +111,10 @@ const B_ID = new Types.ObjectId().toHexString();
 const manifest = (title: string, id?: string) =>
   JSON.stringify({ ...(id ? { id } : {}), schemaVersion: 1, title }, null, 2) +
   "\n";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 beforeEach(async () => {
   await AppIndexEntry.deleteMany({});
@@ -1614,6 +1629,113 @@ describe("the index learns aliases on its own", () => {
       (await AppIndexHead.findOne({ workspaceId: WS }).lean())
         ?.historyScannedSha,
     ).toBe(sha);
+    expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(sha);
+  });
+
+  it("a catch-up that writes late, after another instance re-indexed at a newer main, cannot take an alias away", async () => {
+    // Instance A: rows at S, scan owed. Instance B: a laptop move pushed
+    // as S2, synced (its scan succeeds), its index aliases recorded. A then
+    // writes what it computed at S — which must change nothing.
+    const aManifest = await fileAt("apps/a/mako.json");
+    await externalCommit(
+      { "apps/a-old/mako.json": aManifest! },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "mv a a-old",
+    );
+    const S = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    await loadAppsIndex(WS);
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $unset: { historyScannedSha: 1 } },
+    );
+    await AppIndexEntry.updateMany(
+      { workspaceId: WS },
+      { $set: { indexAliases: [] } },
+    );
+    invalidateAppsIndexCache();
+
+    let S2 = "";
+    await catchUpHistory(WS, repoDirFor(WS), S, {
+      beforeWrite: async () => {
+        await externalCommit(
+          { "apps/Ops/a-old/mako.json": aManifest! },
+          ["apps/a-old/mako.json"],
+          "git mv a-old Ops/a-old",
+        );
+        S2 = (await resolveCommit(repoDirFor(WS), MAIN))!;
+        await syncAppsIndexFromRepo(WS);
+      },
+    });
+    const row = await AppIndexEntry.findOne({
+      workspaceId: WS,
+      path: "apps/Ops/a-old",
+    }).lean();
+    expect(row?.indexedSha).toBe(S2);
+    // B's laptop-move alias survived A's late write, and A's older history
+    // alias is there because B's scan found it too.
+    expect(row?.indexAliases).toContain("apps/a-old");
+    expect(row?.indexAliases).toContain("a");
+    const head = await AppIndexHead.findOne({ workspaceId: WS }).lean();
+    expect(head?.sha).toBe(S2);
+    expect(head?.historyScannedSha).toBe(S2);
+  });
+
+  it("serves aliases another instance caught up with, once the pending-scan memo ages out", async () => {
+    const aManifest = await fileAt("apps/a/mako.json");
+    await externalCommit(
+      { "apps/a-old/mako.json": aManifest! },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "mv a a-old",
+    );
+    const sha = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    await loadAppsIndex(WS);
+    const caughtUp = (await AppIndexEntry.findOne({
+      workspaceId: WS,
+      path: "apps/a-old",
+    }).lean())!.indexAliases;
+    expect(caughtUp).toEqual(["a"]);
+    // Scan owed; this instance tried a catch-up a moment ago (throttled),
+    // so what it serves comes from the rows as they are.
+    const pending = async () => {
+      await AppIndexHead.updateOne(
+        { workspaceId: WS },
+        { $unset: { historyScannedSha: 1 } },
+      );
+      await AppIndexEntry.updateMany(
+        { workspaceId: WS },
+        { $set: { indexAliases: [] } },
+      );
+    };
+    await pending();
+    invalidateAppsIndexCache();
+    await loadAppsIndex(WS);
+    await historyCatchUpFor(WS);
+    await pending();
+    invalidateAppsIndexCache(WS);
+    const stale = await loadAppsIndex(WS);
+    expect(stale.apps.find(a => a.path === "apps/a-old")?.aliases).toEqual([]);
+    // Another instance finishes the catch-up: rows and mark in Mongo,
+    // nothing told this process.
+    await AppIndexEntry.updateOne(
+      { workspaceId: WS, path: "apps/a-old" },
+      { $set: { indexAliases: caughtUp } },
+    );
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $set: { historyScannedSha: sha } },
+    );
+    // Within the TTL the memo answers…
+    expect(
+      (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/a-old")
+        ?.aliases,
+    ).toEqual([]);
+    // …past it, the rows do, and main never moved.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 61_000);
+    expect(
+      (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/a-old")
+        ?.aliases,
+    ).toEqual(["a"]);
     expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(sha);
   });
 
