@@ -15,7 +15,10 @@
  *     package IS this project (another package's `old` is another model);
  *   - node selectors in job commands after `--select`/`-s`/`--models`/`-m`/
  *     `--exclude`, including graph operators (`+old`, `old+`, `2+old+3`,
- *     `@old`) and comma/space-separated lists.
+ *     `@old`) and comma/space-separated lists;
+ *   - the node's own entry in a properties YAML (`models:` / `seeds:` /
+ *     `snapshots:` → `- name: old`), so its descriptions and tests stay
+ *     attached; a `columns:` entry named `old` is a column and is kept.
  *
  * What is deliberately left alone: `ref('old_suffix')` and `old2` (a
  * different model), `tag:old` / `fqn:old` / `path:old` (method selectors
@@ -163,4 +166,48 @@ export function rewriteSelectors(
     return r.text;
   });
   return { text: out.join(""), count };
+}
+
+/** Top-level properties-YAML keys whose list entries are `ref()`-able nodes. */
+const NODE_LIST_KEYS = new Set(["models", "seeds", "snapshots"]);
+
+/**
+ * Rewrite `- name: old` → `- name: new` for the node's own entry in a dbt
+ * properties file (`models/schema.yml`). Line-based on purpose: a YAML
+ * round trip would drop the author's comments and reflow their file, and
+ * the entry we want is always a list item directly under a top-level
+ * `models:` / `seeds:` / `snapshots:` key. The item indent is learned from
+ * the first list item under that key, so a deeper `- name: old` (a column,
+ * a test argument) is never touched.
+ */
+export function rewriteNodeProperties(
+  text: string,
+  oldName: string,
+  newName: string,
+): RewriteResult {
+  if (oldName === newName) return { text, count: 0 };
+  const lines = text.split("\n");
+  let inNodeList = false;
+  let itemIndent: number | null = null;
+  let count = 0;
+  const nameRe = new RegExp(
+    `^(\\s*-\\s*name:\\s*)(['"]?)${escapeRegExp(oldName)}\\2(\\s*(?:#.*)?)$`,
+  );
+  const out = lines.map(line => {
+    const topLevel = /^([A-Za-z_][\w-]*):\s*(#.*)?$/.exec(line);
+    if (topLevel) {
+      inNodeList = NODE_LIST_KEYS.has(topLevel[1]);
+      itemIndent = null;
+      return line;
+    }
+    if (!inNodeList || line.trim() === "") return line;
+    const item = /^(\s*)-\s/.exec(line);
+    if (item && itemIndent === null) itemIndent = item[1].length;
+    if (!item || item[1].length !== itemIndent) return line;
+    const m = nameRe.exec(line);
+    if (!m) return line;
+    count++;
+    return `${m[1]}${m[2]}${newName}${m[2]}${m[3]}`;
+  });
+  return { text: out.join("\n"), count };
 }

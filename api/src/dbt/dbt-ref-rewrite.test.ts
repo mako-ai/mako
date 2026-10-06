@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   refNameForDbtPath,
+  rewriteNodeProperties,
   rewriteRefs,
   rewriteSelectors,
 } from "./dbt-ref-rewrite";
@@ -138,5 +139,69 @@ describe("rewriteSelectors", () => {
     expect(rewriteSelectors(input, "orders", "fct_orders").text).toBe(
       "dbt   run  --select   fct_orders   --full-refresh",
     );
+  });
+});
+
+describe("rewriteNodeProperties", () => {
+  const SCHEMA = [
+    "version: 2",
+    "",
+    "models:",
+    "  - name: orders  # the fact table",
+    "    description: Orders.",
+    "    columns:",
+    "      - name: orders",
+    "        tests: [not_null]",
+    "      - name: id",
+    "  - name: orders_archive",
+    "  - name: 'customers'",
+    "",
+    "seeds:",
+    "  - name: orders",
+    "",
+    "sources:",
+    "  - name: orders",
+    "    tables:",
+    "      - name: orders",
+    "",
+  ].join("\n");
+
+  it("renames the node's own entry under models/seeds/snapshots and nothing deeper", () => {
+    const r = rewriteNodeProperties(SCHEMA, "orders", "fct_orders");
+    expect(r.count).toBe(2);
+    expect(r.text).toBe(
+      [
+        "version: 2",
+        "",
+        "models:",
+        "  - name: fct_orders  # the fact table",
+        "    description: Orders.",
+        "    columns:",
+        "      - name: orders",
+        "        tests: [not_null]",
+        "      - name: id",
+        "  - name: orders_archive",
+        "  - name: 'customers'",
+        "",
+        "seeds:",
+        "  - name: fct_orders",
+        "",
+        "sources:",
+        "  - name: orders",
+        "    tables:",
+        "      - name: orders",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps quotes, and leaves unrelated files byte-identical", () => {
+    const quoted = 'models:\n  - name: "customers"\n';
+    expect(
+      rewriteNodeProperties(quoted, "customers", "dim_customers").text,
+    ).toBe('models:\n  - name: "dim_customers"\n');
+    const r = rewriteNodeProperties(SCHEMA, "nothing_here", "x");
+    expect(r.count).toBe(0);
+    expect(r.text).toBe(SCHEMA);
   });
 });

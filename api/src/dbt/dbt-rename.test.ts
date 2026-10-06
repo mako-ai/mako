@@ -177,8 +177,8 @@ describe("renameDbtFile", () => {
     const job = await fileAt("jobs/daily.yml");
     expect(job).toContain("dbt run --select fct_orders+ tag:daily");
     expect(job).toContain("dbt test -s customers,fct_orders");
-    // schema.yml names the model but holds no ref(): left to the author.
-    expect(await fileAt("models/schema.yml")).toContain("name: orders\n");
+    // The model's own schema.yml entry follows, so its tests stay attached.
+    expect(await fileAt("models/schema.yml")).toContain("name: fct_orders\n");
 
     expect(result.kind).toBe("dbt_file");
     expect(result.id).toBe(`${project._id}/models/fct_orders.sql`);

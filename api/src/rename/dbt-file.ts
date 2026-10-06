@@ -55,6 +55,7 @@ import {
 } from "../dbt/dbt-working-tree.service";
 import {
   refNameForDbtPath,
+  rewriteNodeProperties,
   rewriteRefs,
   rewriteSelectors,
 } from "../dbt/dbt-ref-rewrite";
@@ -303,7 +304,7 @@ export async function renameDbtFile(
         const isJob = `${DBT_ROOT}/${path}`.startsWith(`${DBT_JOBS_DIR}/`);
         const next = isJob
           ? rewriteJobSelectors(text, oldModel, newModel)
-          : rewriteRefs(text, oldModel, newModel, packageName);
+          : rewriteProjectFile(path, text, oldModel, newModel, packageName);
         if (next.count > 0) {
           writes[path] = next.text;
           rewritten.push(path);
@@ -389,6 +390,23 @@ export async function renameDbtFile(
     commit: result.commitOid,
     warnings,
   };
+}
+
+/**
+ * A project file: `ref()` calls everywhere, plus — in a properties YAML —
+ * the node's own `- name:` entry so its tests and descriptions follow.
+ */
+function rewriteProjectFile(
+  path: string,
+  text: string,
+  oldModel: string,
+  newModel: string,
+  packageName: string | undefined,
+): { text: string; count: number } {
+  const refs = rewriteRefs(text, oldModel, newModel, packageName);
+  if (!/\.ya?ml$/i.test(path)) return refs;
+  const props = rewriteNodeProperties(refs.text, oldModel, newModel);
+  return { text: props.text, count: refs.count + props.count };
 }
 
 /**
