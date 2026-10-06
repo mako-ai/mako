@@ -49,6 +49,11 @@ import {
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
 import { consoleDescriptionFunction } from "./functions/console-description";
+import {
+  processRunFunction,
+  processSignalRedeliveryFunction,
+  processSchedulerFunction,
+} from "./functions/process-run";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -72,6 +77,8 @@ const baseFunctions = [
   dbtRunCancelFunction,
   dbtRunSweeperFunction,
   consoleDescriptionFunction,
+  processRunFunction,
+  processSignalRedeliveryFunction,
 ];
 
 const allWebhookFunctions = [
@@ -110,6 +117,7 @@ export function getFunctions() {
         appsDeployReconcileFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
+        processSchedulerFunction,
       ];
 
   return _functions;
@@ -168,4 +176,7 @@ export {
   dbtRunCancelFunction,
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
+  processRunFunction,
+  processSignalRedeliveryFunction,
+  processSchedulerFunction,
 };

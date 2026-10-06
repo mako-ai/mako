@@ -45,6 +45,7 @@ import { appsGitRoutes } from "./apps-git";
 import { appsBoxRoutes } from "./apps-box";
 import { appsPreviewRoutes } from "./apps-preview";
 import { favouriteRoutes } from "./favourites";
+import { processRoutes } from "./processes";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -117,6 +118,8 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // part of any entity's surface: it stores a view and can never change an
   // entity's identity, folder, sharing or deployment.
   app.route("/api/workspaces/:workspaceId/favourites", favouriteRoutes);
+  // Durable agentic business processes: runs, timelines, approvals inbox.
+  app.route("/api/workspaces/:workspaceId/processes", processRoutes);
   app.route("/api/apps-preview", appsPreviewRoutes);
   // Intentionally public: the workspace repo over git's own HTTP protocol,
   // authorized by a scoped `mgt_` token. This is what makes a sandbox a

@@ -82,6 +82,8 @@ export default defineConfig({
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
+      // Processes: the durable runtime on real Mongo + the LocalEngine.
+      "src/processes/**/*.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
