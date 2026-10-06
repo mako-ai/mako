@@ -306,6 +306,31 @@ export function addManifestAliases(
 }
 
 /**
+ * Remove a manifest's `aliases` altogether: a COPY of an app that gets an
+ * id of its own must not keep claiming the original's old names (a name two
+ * apps claim resolves to neither). `null` when the manifest cannot be
+ * parsed; the contents unchanged when there is nothing to remove.
+ */
+export function stripManifestAliases(
+  contents: string | null | undefined,
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!("aliases" in raw)) return contents ?? null;
+  const { aliases: _gone, ...rest } = raw;
+  void _gone;
+  return `${JSON.stringify(rest, null, 2)}\n`;
+}
+
+/**
  * Write `title` into a manifest, keeping everything else where it is. Same
  * contract as {@link stampManifestId}: unchanged contents when the title
  * already reads so, `null` when the manifest cannot be parsed — a rename

@@ -491,10 +491,29 @@ export async function renamedAppFolders(
   return out;
 }
 
+/** One thing git history says about an app manifest, newest first. */
+export type ManifestHistoryEvent =
+  | {
+      kind: "rename";
+      from: string;
+      to: string;
+      /** The manifest's declared id on either side, when it had one. */
+      id?: string;
+    }
+  | { kind: "create"; path: string; id?: string };
+
+/** The history scan could not run (git failed or timed out); retry later. */
+export class HistoryScanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HistoryScanError";
+  }
+}
+
 /**
  * Where each current app folder USED to be, from git history: every rename
- * of its `mako.json` on main, newest first, as `{ from, to }` app paths.
- * Two signals, because neither alone is enough:
+ * of a `mako.json` on main and every manifest's creation, newest first.
+ * Two rename signals, because neither alone is enough:
  *
  *  - git's own rename detection (`-M`), which pairs a manifest moved with
  *    little or no change (a plain `git mv`, the UI's move commit);
@@ -502,18 +521,22 @@ export async function renamedAppFolders(
  *    same `id` — a move plus an edit of a tiny file, which `-M` scores as
  *    unrelated (a 40-byte manifest shares no 64-byte chunk with its edit).
  *
- * A `-M` pair whose two blobs declare DIFFERENT ids is dropped: git paired
- * one app's deleted manifest with another app's new one. The scan is one
- * bounded `git log` over the app trees plus a batch blob read per commit
- * that touched a manifest, so a full index build stays fast on a big repo.
- * `range` is a commit (`main`) or a range (`old..new`) for the incremental
- * case.
+ * Each event carries the manifest's declared id where it had one, so the
+ * walk (aliasesFromHistory) can tell one app's past from another's that
+ * once used the same folder; a `-M` pair whose two blobs declare DIFFERENT
+ * ids is dropped outright (git paired one app's deleted manifest with
+ * another app's new one). The scan is one bounded `git log` over the app
+ * trees plus a batch blob read per commit that touched a manifest, so a
+ * full index build stays fast on a big repo. `range` is a commit (`main`)
+ * or a range (`old..new`) for the incremental case. Throws
+ * {@link HistoryScanError} when git fails — the caller must not record
+ * the scan as done, or the aliases would never come.
  */
 export async function manifestRenamesInHistory(
   repoDir: string,
   range: string,
   options: { maxCommits?: number } = {},
-): Promise<Array<{ from: string; to: string }>> {
+): Promise<ManifestHistoryEvent[]> {
   const suffix = `/${APP_MANIFEST}`;
   const asAppDir = (p: string): string | null => {
     if (!p.endsWith(suffix)) return null;
@@ -540,8 +563,10 @@ export async function manifestRenamesInHistory(
       ],
       { timeoutMs: 60_000 },
     ));
-  } catch {
-    return [];
+  } catch (error) {
+    throw new HistoryScanError(
+      `git log over ${range} failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   // `-z` output: `<sha>\0\n` then `<status>\0<path>\0[<path>\0]` per entry.
   interface Touch {
@@ -573,10 +598,14 @@ export async function manifestRenamesInHistory(
     }
   }
 
-  const out: Array<{ from: string; to: string }> = [];
+  const out: ManifestHistoryEvent[] = [];
   for (const commit of commits) {
-    if (commit.renamed.length === 0) {
-      if (commit.deleted.length === 0 || commit.added.length === 0) continue;
+    if (
+      commit.renamed.length === 0 &&
+      commit.added.length === 0 &&
+      commit.deleted.length === 0
+    ) {
+      continue;
     }
     const oldPaths = [
       ...commit.renamed.map(r => r.from),
@@ -585,16 +614,15 @@ export async function manifestRenamesInHistory(
     const newPaths = [...commit.renamed.map(r => r.to), ...commit.added].map(
       d => `${d}${suffix}`,
     );
-    let before: Map<string, Buffer>;
-    let after: Map<string, Buffer>;
+    let before = new Map<string, Buffer>();
+    let after = new Map<string, Buffer>();
     try {
-      [before, after] = await Promise.all([
-        readBlobsBatch(repoDir, `${commit.sha}^`, oldPaths),
-        readBlobsBatch(repoDir, commit.sha, newPaths),
-      ]);
+      after = await readBlobsBatch(repoDir, commit.sha, newPaths);
+      if (oldPaths.length > 0) {
+        before = await readBlobsBatch(repoDir, `${commit.sha}^`, oldPaths);
+      }
     } catch {
-      // A root commit (no parent) renames nothing.
-      continue;
+      // A root commit (no parent) renames nothing; what it added, it created.
     }
     const idAt = (blobs: Map<string, Buffer>, dir: string) => {
       const blob = blobs.get(`${dir}${suffix}`);
@@ -606,8 +634,9 @@ export async function manifestRenamesInHistory(
       const oldId = idAt(before, pair.from);
       const newId = idAt(after, pair.to);
       if (oldId && newId && oldId !== newId) continue;
-      out.push(pair);
+      out.push({ kind: "rename", ...pair, id: newId ?? oldId });
     }
+    const moved = new Set<string>();
     if (commit.deleted.length > 0 && commit.added.length > 0) {
       const addedById = new Map<string, string[]>();
       for (const dir of commit.added) {
@@ -620,10 +649,17 @@ export async function manifestRenamesInHistory(
         const targets = id ? addedById.get(id) : undefined;
         // One deleted manifest, one added, same id: a move. Several added
         // with the same id are copies of each other, not a move.
-        if (targets?.length === 1 && targets[0] !== dir) {
-          out.push({ from: dir, to: targets[0] });
+        if (id && targets?.length === 1 && targets[0] !== dir) {
+          out.push({ kind: "rename", from: dir, to: targets[0], id });
+          moved.add(targets[0]);
         }
       }
+    }
+    // Whatever was added and not matched as a move is where an app BEGAN:
+    // the walk back through its names stops there.
+    for (const dir of commit.added) {
+      if (moved.has(dir)) continue;
+      out.push({ kind: "create", path: dir, id: idAt(after, dir) });
     }
   }
   return out;
@@ -631,23 +667,33 @@ export async function manifestRenamesInHistory(
 
 /**
  * The aliases history gives each current app: walk its path back through
- * `renames` (newest first) and record every earlier folder name — the
+ * the events (newest first) and record every earlier folder name — the
  * slug, plus the path where the slug alone would not say where it was.
- * Pure. Walking in commit order keeps two apps that passed through the
- * same folder name apart: a rename INTO a path that is newer than the
- * app's own arrival there is skipped before the walk reaches it.
+ * Pure. Attribution is by id where ids are known: a rename whose manifest
+ * declared another app's id is not this app's, however the paths line up,
+ * and the walk stops where the manifest was CREATED — so an app created
+ * later at a name this one once had never inherits this one's older names
+ * (and vice versa). Walking in commit order also keeps two apps that passed
+ * through the same folder name apart: a rename INTO a path that is newer
+ * than the app's own arrival there is skipped before the walk reaches it.
  */
 export function aliasesFromHistory(
-  apps: ReadonlyArray<Pick<AppIndexRow, "path">>,
-  renames: ReadonlyArray<{ from: string; to: string }>,
+  apps: ReadonlyArray<Pick<AppIndexRow, "path" | "appId" | "hasManifestId">>,
+  events: ReadonlyArray<ManifestHistoryEvent>,
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
   for (const app of apps) {
     const found: string[] = [];
     let current = app.path;
-    for (const rename of renames) {
-      if (rename.to !== current) continue;
-      current = rename.from;
+    const foreign = (id: string | undefined) =>
+      !!id && app.hasManifestId && id !== app.appId;
+    for (const event of events) {
+      if (event.kind === "create") {
+        if (event.path === current && !foreign(event.id)) break;
+        continue;
+      }
+      if (event.to !== current || foreign(event.id)) continue;
+      current = event.from;
       const slug = current.split("/").pop() ?? current;
       found.push(slug);
       if (current !== `${APPS_DIR}/${slug}`) found.push(current);
@@ -660,7 +706,10 @@ export function aliasesFromHistory(
 
 /**
  * One alias list from several sources, each name once, nothing that names
- * the app's own current slug or path, newest sources first, capped.
+ * the app's own current slug or path, capped. Every source lists its
+ * names NEWEST FIRST and the sources come newest first too, so the cap
+ * keeps the names people most recently used (a manifest's `aliases` are
+ * appended over time — pass them reversed).
  */
 export function mergeAliases(
   sources: ReadonlyArray<readonly string[]>,
@@ -721,7 +770,10 @@ function rowToIndex(
     description: row.description ?? undefined,
     hasManifestId: row.hasManifestId,
     duplicateOf: row.duplicateOf ?? undefined,
-    aliases: mergeAliases([row.aliases ?? [], row.indexAliases ?? []]),
+    aliases: mergeAliases([
+      [...(row.aliases ?? [])].reverse(),
+      row.indexAliases ?? [],
+    ]),
     schedules: (row.schedules ?? []).map(s => ({
       binding: s.binding,
       cron: s.cron,
@@ -900,13 +952,19 @@ async function syncNow(
   // Previous names the manifests do NOT say, which the index keeps on its
   // own so a renamed app's old links work however it was renamed:
   //  - a folder that moved since the last sync without its manifest saying
-  //    so (a laptop `git mv`, pushed as-is): the old slug and path, by the
-  //    same rule a UI move writes into the manifest (aliasesForMoves);
+  //    so (a laptop `git mv`, pushed as-is) — the old slug and path by the
+  //    same planner a UI move uses (aliasesForMoves), and the old PATH of
+  //    an app a folder move carried along, which no manifest ever records
+  //    (writing it would rebuild every app in the folder for nothing);
   //  - renames of the manifest in git history — all of it on a (re)build,
   //    which is how an app renamed BEFORE aliases existed gets its old
-  //    links back, and only the new commits on an incremental sync;
+  //    links back, and only the commits since the last SUCCESSFUL scan
+  //    otherwise (`historyScannedSha`; a failed scan is retried next time);
   //  - what the row already knew, carried over.
-  // Each row's `aliases` is then the union with its manifest's.
+  // Each row's `aliases` is then the union with its manifest's. A COPY of an
+  // app (`duplicateOf`) gets none: its manifest's aliases are the source's,
+  // and a name two apps claim resolves to neither — the copy must not take
+  // the original's old links down with it.
   const existingById = new Map(existing.map(row => [row.appId, row]));
   const projectById = new Map(projectRows.map(p => [p._id.toString(), p]));
   const previousPathOf = (appId: string): string | undefined =>
@@ -924,31 +982,48 @@ async function syncNow(
     }),
     laptopMoves,
   );
-  const fullScan =
-    !head ||
-    head.schemaVersion !== INDEX_SCHEMA_VERSION ||
-    !!options.force ||
-    !(await commitExists(repoDir, head.sha));
-  const history = aliasesFromHistory(
-    rows,
-    await manifestRenamesInHistory(
-      repoDir,
-      fullScan ? sha : `${head.sha}..${sha}`,
-    ),
-  );
+  const scannedSha =
+    head?.schemaVersion === INDEX_SCHEMA_VERSION && !options.force
+      ? head.historyScannedSha
+      : undefined;
+  const fullScan = !scannedSha || !(await commitExists(repoDir, scannedSha));
+  let historyScanned = true;
+  let history = new Map<string, string[]>();
+  try {
+    history = aliasesFromHistory(
+      rows,
+      await manifestRenamesInHistory(
+        repoDir,
+        fullScan ? sha : `${scannedSha}..${sha}`,
+      ),
+    );
+  } catch (error) {
+    historyScanned = false;
+    logger.warn("Apps index: history scan for aliases failed; will retry", {
+      workspaceId,
+      sha,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   const indexAliasesByPath = new Map<string, string[]>();
   for (const row of rows) {
+    if (row.duplicateOf) {
+      row.aliases = [];
+      indexAliasesByPath.set(row.path, []);
+      continue;
+    }
     const from = previousPathOf(row.appId);
+    const plan = from ? movePlans.get(from) : undefined;
     const learned = mergeAliases(
       [
-        (from && movePlans.get(from)?.add) || [],
+        plan ? [...plan.add, ...plan.indexOnly] : [],
         history.get(row.path) ?? [],
         existingById.get(row.appId)?.indexAliases ?? [],
       ],
       [row.slug, row.path, ...row.aliases],
     );
     indexAliasesByPath.set(row.path, learned);
-    row.aliases = mergeAliases([row.aliases, learned]);
+    row.aliases = mergeAliases([[...row.aliases].reverse(), learned]);
   }
 
   // Rows whose id or path no longer exists go first, so the unique indexes
@@ -979,7 +1054,9 @@ async function syncNow(
               description: row.description ?? null,
               hasManifestId: row.hasManifestId,
               duplicateOf: row.duplicateOf ?? null,
-              aliases: read.manifests.get(row.path)?.aliases ?? [],
+              aliases: row.duplicateOf
+                ? []
+                : (read.manifests.get(row.path)?.aliases ?? []),
               indexAliases: indexAliasesByPath.get(row.path) ?? [],
               schedules: row.schedules,
               indexedSha: sha,
@@ -1072,7 +1149,15 @@ async function syncNow(
   await AppIndexHead.updateOne(
     { workspaceId: ws },
     {
-      $set: { sha, schemaVersion: INDEX_SCHEMA_VERSION, folders: read.folders },
+      $set: {
+        sha,
+        schemaVersion: INDEX_SCHEMA_VERSION,
+        folders: read.folders,
+        // Only a scan that ran records where the next one starts from; a
+        // failed one leaves the previous mark, so the next sync covers the
+        // gap (or everything, when there never was a successful scan).
+        ...(historyScanned ? { historyScannedSha: sha } : {}),
+      },
     },
     { upsert: true },
   );
@@ -1204,23 +1289,35 @@ function findByAlias(
 }
 
 /**
- * The aliases a move must record, per moved app (keyed by its OLD path):
- * the old folder name when it changes, plus the old path when the name
- * alone would not lead back to the app afterwards — because the app was
- * nested or personal (`apps/Sales/x`, where the slug never was the link),
- * or because another app owns or claims that name now. Never the app's new
- * slug or path. Pure: the caller writes the result into each manifest in
- * the same commit as the move.
+ * The aliases a move must record, per moved app (keyed by its OLD path),
+ * split by where they go:
+ *
+ *  - `add` goes into the app's `mako.json`, in the move's commit: the old
+ *    folder name when it CHANGES (a top-level app's `/apps/<slug>` link is
+ *    made of it), plus the old path when the app was nested or personal
+ *    (there the slug never was the link, and an agent's ref is the path).
+ *    Writing the manifest changes the app's tree, so deploy-on-push
+ *    rebuilds it once — the price of a rename, paid only on a rename.
+ *  - `indexOnly` is what the index keeps on its own: the old path of an
+ *    app whose folder name did NOT change (filed into or out of a folder,
+ *    or carried along by a folder move). Its link was the id (nested) or
+ *    its slug still finds it (top level); recording the path in every
+ *    manifest would rebuild every app under a moved folder for nothing.
+ *
+ * Never the app's new slug or path (`drop`). Pure.
  */
 export function aliasesForMoves(
   apps: readonly AppIndexRow[],
   moves: ReadonlyArray<{ from: string; to: string }>,
-): Map<string, { newPath: string; add: string[]; drop: string[] }> {
+): Map<
+  string,
+  { newPath: string; add: string[]; indexOnly: string[]; drop: string[] }
+> {
   const isWithin = (candidate: string, root: string) =>
     candidate === root || candidate.startsWith(`${root}/`);
-  const planned = new Map<
+  const result = new Map<
     string,
-    { newPath: string; newSlug: string; oldSlug: string; add: string[] }
+    { newPath: string; add: string[]; indexOnly: string[]; drop: string[] }
   >();
   for (const app of apps) {
     const move = moves.find(m => isWithin(app.path, m.from));
@@ -1228,44 +1325,13 @@ export function aliasesForMoves(
     const newPath = `${move.to}${app.path.slice(move.from.length)}`;
     if (newPath === app.path) continue;
     const newSlug = newPath.split("/").pop() ?? newPath;
-    planned.set(app.path, {
-      newPath,
-      newSlug,
-      oldSlug: app.slug,
-      add: app.slug !== newSlug ? [app.slug] : [],
-    });
-  }
-  // The world after the commit, with the old names recorded: does the old
-  // name alone still find each app?
-  const after: AppIndexRow[] = apps.map(app => {
-    const plan = planned.get(app.path);
-    if (!plan) return app;
-    return {
-      ...app,
-      path: plan.newPath,
-      slug: plan.newSlug,
-      aliases: [...(app.aliases ?? []), ...plan.add],
-    };
-  });
-  const result = new Map<
-    string,
-    { newPath: string; add: string[]; drop: string[] }
-  >();
-  for (const app of apps) {
-    const plan = planned.get(app.path);
-    if (!plan) continue;
-    const found = findAppInSnapshot(
-      { sha: "", apps: after, folders: [] },
-      plan.oldSlug,
-    );
-    const add =
-      found?.appId === app.appId && app.path === `${APPS_DIR}/${plan.oldSlug}`
-        ? plan.add
-        : [...plan.add, app.path];
+    const nested = app.path !== `${APPS_DIR}/${app.slug}`;
+    const slugChanges = app.slug !== newSlug;
     result.set(app.path, {
-      newPath: plan.newPath,
-      add,
-      drop: [plan.newSlug, plan.newPath],
+      newPath,
+      add: slugChanges ? [app.slug, ...(nested ? [app.path] : [])] : [],
+      indexOnly: slugChanges ? [] : [app.path],
+      drop: [newSlug, newPath],
     });
   }
   return result;

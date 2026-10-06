@@ -11,6 +11,7 @@ import {
   parseAppRepoPath,
   setManifestTitle,
   stampManifestId,
+  stripManifestAliases,
 } from "./app-paths";
 
 // Paths -------------------------------------------------------------------
@@ -228,5 +229,18 @@ assert.deepEqual(
 const same = '{"title":"Y"}';
 assert.equal(setManifestTitle(same, "Y"), same);
 assert.equal(setManifestTitle("{oops", "Y"), null);
+
+// stripManifestAliases: a stamped copy gives the source's old names up.
+assert.deepEqual(
+  JSON.parse(
+    stripManifestAliases(
+      '{"id":"5ae23997208465e4541cd59d","title":"X","aliases":["old"]}',
+    )!,
+  ),
+  { id: "5ae23997208465e4541cd59d", title: "X" },
+);
+const noAliases = '{"title":"X"}';
+assert.equal(stripManifestAliases(noAliases), noAliases);
+assert.equal(stripManifestAliases("{oops"), null);
 
 console.log("app-paths.test.ts: ok");

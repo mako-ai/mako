@@ -5691,6 +5691,12 @@ export interface IAppIndexHead extends Document {
   schemaVersion?: number;
   /** Every folder in the app trees, as repo-relative paths (`apps/sales`). */
   folders: string[];
+  /**
+   * The main commit up to which git history was scanned for renamed
+   * manifests (index-side aliases). Absent until a scan succeeds; the next
+   * sync scans from here, or everything when it is missing.
+   */
+  historyScannedSha?: string;
   updatedAt: Date;
 }
 
@@ -5705,6 +5711,7 @@ const AppIndexHeadSchema = new Schema<IAppIndexHead>(
     sha: { type: String, required: true },
     schemaVersion: { type: Number },
     folders: { type: [String], default: [] },
+    historyScannedSha: { type: String },
   },
   { collection: "app_index_heads", timestamps: true },
 );
