@@ -15,6 +15,7 @@ import { toLoadError, type LoadError } from "../api/result";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { retargetDbtFileTabs } from "../lib/dbt-file-tabs";
+import { refNameForDbtPath } from "../lib/dbt-editor-logic";
 
 export interface DbtEnvironment {
   name: string;
@@ -827,6 +828,34 @@ export const useDbtStore = create<DbtStore>()(
     },
 
     renameFile: async (workspaceId, projectId, from, to, options) => {
+      // The server rewrites refs on the COMMITTED tree. A buffer with
+      // unsaved edits that names the model would be reloaded (its edits
+      // lost) or, kept, would restore ref('old') on its next save. Neither
+      // is honest, so the rename is refused until those edits are saved or
+      // discarded — the simplest rule that loses nothing.
+      if (options?.updateRefs !== false) {
+        const name = refNameForDbtPath(from);
+        const mention = name
+          ? new RegExp(
+              `(?<![\\w])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`,
+            )
+          : null;
+        const dirty = mention
+          ? Object.entries(get().filesByProject[projectId] ?? {})
+              .filter(
+                ([path, entry]) =>
+                  path !== from && entry.dirty && mention.test(entry.content),
+              )
+              .map(([path]) => path)
+          : [];
+        if (dirty.length > 0) {
+          set(state => {
+            state.error[`file:${projectId}:${from}`] =
+              `Save or discard your unsaved changes in ${dirty.join(", ")} first — they mention '${name}', and the rename would rewrite those files.`;
+          });
+          return null;
+        }
+      }
       try {
         const response = await apiClient.post<{
           success: boolean;

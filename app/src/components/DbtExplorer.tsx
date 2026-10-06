@@ -684,6 +684,14 @@ export function DbtExplorer() {
       );
       if (outcome && outcome.warnings.length > 0) {
         setRenameWarnings(outcome.warnings);
+      } else if (!outcome) {
+        // Refused (unsaved edits in files the rename would rewrite) or
+        // failed: say why, in the same place the warnings go.
+        const reason =
+          useDbtStore.getState().error[
+            `file:${parsed.projectId}:${parsed.path}`
+          ];
+        if (reason) setRenameWarnings([reason]);
       }
     }
     setRenameTarget(null);

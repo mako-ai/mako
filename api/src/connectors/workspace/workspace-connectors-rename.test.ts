@@ -69,6 +69,7 @@ import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import {
   migrateSourceConnectionType,
   recordConnectionCheck,
+  sourceShaOf,
   syncConnectorsFromRepo,
 } from "./reconcile.service";
 import {
@@ -209,6 +210,61 @@ describe("connector.yaml aliases", () => {
     );
     expect(withConnectorAlias("- not: a mapping\n", "x")).toBeNull();
     expect(withConnectorAlias("runtime: [unclosed\n", "x")).toBeNull();
+  });
+
+  it("extends an existing list IN PLACE: comments and layout survive", () => {
+    const block = [
+      "# vendor: Acme",
+      "runtime: node",
+      "aliases:",
+      "  - acme   # first name",
+      "  - acme-v1",
+      "entry: connector.ts  # keep",
+      "",
+    ].join("\n");
+    expect(withConnectorAlias(block, "acme-v2")).toBe(
+      [
+        "# vendor: Acme",
+        "runtime: node",
+        "aliases:",
+        "  - acme   # first name",
+        "  - acme-v1",
+        "  - acme-v2",
+        "entry: connector.ts  # keep",
+        "",
+      ].join("\n"),
+    );
+    expect(
+      withConnectorAlias("runtime: node\naliases: [a, b]  # c\n", "d"),
+    ).toBe("runtime: node\naliases: [a, b, d]  # c\n");
+    expect(withConnectorAlias("runtime: node\naliases: []\n", "d")).toBe(
+      "runtime: node\naliases: [d]\n",
+    );
+    // A list this cannot extend in place is refused, never re-dumped.
+    expect(
+      withConnectorAlias("runtime: node\naliases: &x\n  - a\n", "d"),
+    ).toBeNull();
+    expect(
+      withConnectorAlias("runtime: node\naliases: notalist\n", "d"),
+    ).toBeNull();
+  });
+
+  it("the content hash ignores `aliases`: a rename is not new code", () => {
+    const enc = (t: string) => new TextEncoder().encode(t);
+    const a = new Map([
+      ["connector.yaml", enc(YAML)],
+      ["connector.ts", enc("x")],
+    ]);
+    const b = new Map([
+      ["connector.yaml", enc(`${YAML}aliases:\n  - acme\n`)],
+      ["connector.ts", enc("x")],
+    ]);
+    const c = new Map([
+      ["connector.yaml", enc("runtime: node\nentry: other.ts\n")],
+      ["connector.ts", enc("x")],
+    ]);
+    expect(sourceShaOf(a)).toBe(sourceShaOf(b));
+    expect(sourceShaOf(a)).not.toBe(sourceShaOf(c));
   });
 });
 
@@ -400,6 +456,36 @@ describe("reconcile detects a rename instead of deleting", () => {
     expect(result.created).toBe(1);
   }, 60_000);
 
+  it("a NEW folder at a retired slug wins — and the old-typed connections are moved first", async () => {
+    await pushAcme();
+    await syncConnectorsFromRepo(WS);
+    await renameWorkspaceConnector(ctx, { from: "acme", to: "acme-crm" });
+    // A connection that still says ws:acme (created before the migration,
+    // or by a client that bypassed canonicalization).
+    const stale = await connection("ws:acme");
+    expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme-crm");
+
+    // Someone pushes a brand-new connector called `acme`.
+    await push({
+      writes: {
+        "connectors/acme/connector.yaml": YAML,
+        "connectors/acme/connector.ts": OTHER_TS,
+      },
+    });
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result.created).toBe(1);
+    const rows = await ConnectorDefinition.find({ workspaceId: WS }).sort({
+      slug: 1,
+    });
+    expect(rows.map(r => [r.slug, r.aliases])).toEqual([
+      ["acme", []],
+      ["acme-crm", []], // the alias is gone: `acme` has one owner again
+    ]);
+    // The stale connection followed its connector, never the newcomer.
+    expect((await SourceConnection.findById(stale))?.type).toBe("ws:acme-crm");
+    expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme");
+  }, 60_000);
+
   it("migrateSourceConnectionType is idempotent", async () => {
     const a = await connection("ws:old");
     await connection("ws:other");
@@ -497,6 +583,48 @@ describe("renameWorkspaceConnector (UI / REST / MCP)", () => {
     expect(
       (await ConnectorDefinition.findOne({ workspaceId: WS }))?.aliases,
     ).toEqual(["acme"]);
+  }, 60_000);
+
+  it("renames by id and by an old slug; a verified connector stays verified", async () => {
+    await pushAcme();
+    await syncConnectorsFromRepo(WS);
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    });
+    await ConnectorDefinition.updateOne(
+      { _id: row!._id },
+      { $set: { status: "verified" } },
+    );
+
+    const byId = await renameWorkspaceConnector(ctx, {
+      from: String(row!._id),
+      to: "acme-crm",
+    });
+    expect(byId.before.slug).toBe("acme");
+    expect(byId.after.slug).toBe("acme-crm");
+    expect(byId.warnings.join("\n")).not.toMatch(/indexed/);
+
+    // By the OLD slug: the move is from the current one.
+    const byAlias = await renameWorkspaceConnector(ctx, {
+      from: "ws:acme",
+      to: "acme-v3",
+    });
+    expect(byAlias).toMatchObject({
+      id: String(row!._id),
+      before: { slug: "acme-crm" },
+      after: { slug: "acme-v3" },
+      aliasesAdded: ["acme-crm"],
+    });
+    const after = await ConnectorDefinition.findById(row!._id);
+    expect(after!.aliases).toEqual(["acme", "acme-crm"]);
+    expect(after!.status).toBe("verified");
+    // The push-time pass sees unchanged content (aliases are not hashed).
+    const pass = await syncConnectorsFromRepo(WS);
+    expect(pass.unchanged).toBe(1);
+    expect((await ConnectorDefinition.findById(row!._id))!.status).toBe(
+      "verified",
+    );
   }, 60_000);
 
   it("refuses bad slugs, unknown sources, live targets, another connector's alias, and title changes", async () => {

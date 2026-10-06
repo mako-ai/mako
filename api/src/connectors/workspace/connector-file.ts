@@ -150,10 +150,13 @@ export function parseConnectorFile(contents: string): ParseResult {
 
 /**
  * `connector.yaml` with `alias` added to its `aliases`, as text. The file
- * is the author's: when it has no `aliases` key the list is appended and
- * every other byte (comments included) is kept; when it already has one,
- * the document is re-emitted with the list extended. Null when the file
- * does not parse — a rename must not overwrite what it cannot read.
+ * is the author's, so this is a line edit, never a re-dump: a missing
+ * `aliases` key is appended; a block list (`aliases:` + `  - x` lines)
+ * gets one more item at the same indent; a flow list (`aliases: [x]`)
+ * gets `, alias` before the `]`. Every other byte — comments included —
+ * is kept. Null when the file does not parse, or when its `aliases` is
+ * written in a way this cannot extend in place (an anchor, a multi-line
+ * flow list): a rename must not overwrite what it cannot read.
  */
 export function withConnectorAlias(
   contents: string,
@@ -173,15 +176,58 @@ export function withConnectorAlias(
     ? doc.aliases.filter((a): a is string => typeof a === "string")
     : null;
   if (existing && existing.includes(alias)) return contents;
+  const nl = contents.includes("\r\n") ? "\r\n" : "\n";
   if (existing === null) {
+    if (doc.aliases !== undefined) return null; // present but not a list
     const base =
-      contents.endsWith("\n") || contents === "" ? contents : `${contents}\n`;
-    return `${base}aliases:\n  - ${alias}\n`;
+      contents.endsWith("\n") || contents === ""
+        ? contents
+        : `${contents}${nl}`;
+    return `${base}aliases:${nl}  - ${alias}${nl}`;
   }
-  return yaml.dump(
-    { ...doc, aliases: [...existing, alias] },
-    { lineWidth: 100 },
-  );
+  const lines = contents.split(nl);
+  const keyAt = lines.findIndex(l => /^aliases:\s*(\[.*\])?\s*(#.*)?$/.test(l));
+  if (keyAt < 0) return null;
+  const flow = /^(aliases:\s*\[)(.*)(\]\s*(?:#.*)?)$/.exec(lines[keyAt]);
+  if (flow) {
+    const inner = flow[2].trim();
+    lines[keyAt] =
+      `${flow[1]}${inner ? `${inner}, ${alias}` : alias}${flow[3]}`;
+    return lines.join(nl);
+  }
+  // Block list: items follow the key, each `<indent>- value`.
+  let last = keyAt;
+  let indent: string | null = null;
+  for (let i = keyAt + 1; i < lines.length; i++) {
+    const item = /^(\s+)-\s/.exec(lines[i]);
+    if (!item || (indent !== null && item[1] !== indent)) break;
+    indent = item[1];
+    last = i;
+  }
+  if (indent === null) return null; // `aliases:` with items we could not see
+  lines.splice(last + 1, 0, `${indent}- ${alias}`);
+  return lines.join(nl);
+}
+
+/**
+ * The YAML's identity for the content hash: the file with `aliases`
+ * removed. A rename writes an alias and nothing else; hashing it would
+ * make every rename look like new code (spec re-run, `verified` lost).
+ * Returns the raw text when the file does not parse, so a broken yaml
+ * still changes the hash and gets blocked with its reason.
+ */
+export function connectorFileIdentity(contents: string): string {
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(contents);
+  } catch {
+    return contents;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return contents;
+  }
+  const { aliases: _aliases, ...rest } = parsed as Record<string, unknown>;
+  return yaml.dump(rest, { sortKeys: true, lineWidth: -1 });
 }
 
 /**

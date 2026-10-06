@@ -149,12 +149,17 @@ export async function saveSkill(
 > {
   const validation = validateInput(input);
   if (validation) return { success: false, error: validation };
-  // A save under a PREVIOUS name updates the renamed skill under its current
-  // name — the old name keeps resolving everywhere, and a second folder
-  // under the alias would be exactly the duplicate a rename is meant to
-  // avoid. (`findSkill` applies the one-claimant rule for aliases.)
-  const existing = await findSkill(workspaceId, input.name.trim());
-  const name = existing?.name ?? input.name.trim();
+  // Only a CURRENT name is "the same skill". Saving under a retired name
+  // creates a new skill with that name — the live name always beats the
+  // alias — and, in the same commit, retires the alias from the skill
+  // that used to be called that, so `load_skill("name")` has exactly one
+  // answer from now on. (Updating a renamed skill means naming it by its
+  // current name; `renameSkill` is the way to move it.)
+  const name = input.name.trim();
+  const resolved = await resolveSkillRef(workspaceId, name);
+  const existing = resolved?.via === "current" ? resolved.skill : null;
+  const retireAliasFrom =
+    resolved?.via === "alias" ? resolved.skill.name : undefined;
   const pendingApproval = options.origin === "agent" && !existing;
   if (!existing) {
     const catalog = await loadSkillCatalog(workspaceId);
@@ -179,7 +184,7 @@ export async function saveSkill(
         aliases: existing?.aliases,
         body: input.body.trim(),
       },
-      { author: await skillCommitAuthor(createdBy) },
+      { author: await skillCommitAuthor(createdBy), retireAliasFrom },
     );
   } catch (error) {
     logger.error("Skill save: git commit failed", { workspaceId, error });
@@ -333,11 +338,15 @@ export async function loadSkill(
       pinned: skill.pinned,
     },
   });
-  // Current name, then an alias (a renamed skill answers to its old name).
-  const skill = await findSkill(workspaceId, name);
-  if (skill) return asWorkspaceSkill(skill);
+  // Order: workspace CURRENT name → system skill → workspace alias → git
+  // history. A workspace skill may shadow a system skill by taking its
+  // name; once renamed away from it, the system skill is visible again —
+  // an alias is a courtesy for old references, never a claim on a live name.
+  const resolved = await resolveSkillRef(workspaceId, name);
+  if (resolved?.via === "current") return asWorkspaceSkill(resolved.skill);
   const systemSkill = getSystemSkill(name.trim());
   if (!systemSkill) {
+    if (resolved) return asWorkspaceSkill(resolved.skill);
     // Nothing claims the name: a folder moved by a bare `git mv` carries no
     // alias, but git remembers the move.
     const moved = await resolveSkillRefThroughHistory(workspaceId, name);

@@ -25,7 +25,10 @@ import {
   probeConnection,
   runConnectionCheck,
 } from "../connectors/probe.service";
-import { connectorTypeExists } from "../connectors/workspace/catalog";
+import {
+  canonicalConnectorType,
+  connectorTypeExists,
+} from "../connectors/workspace/catalog";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -429,6 +432,10 @@ sourceConnectionRoutes.openapi(
         if (!exists.ok) {
           return c.json({ success: false, error: exists.reason }, 400);
         }
+        // Store the connector's CURRENT slug, never an old one (a renamed
+        // connector answers to its aliases, but a connection must not be
+        // keyed on a name a future connector could claim).
+        body.type = await canonicalConnectorType(body.type, workspaceId);
       } else if (!connectorRegistry.hasConnector(body.type)) {
         return c.json(
           {
@@ -542,9 +549,15 @@ sourceConnectionRoutes.openapi(
         sourceConnection.description = body.description;
         hasChanges = true;
       }
-      if (body.type !== undefined && body.type !== currentValues.type) {
-        sourceConnection.type = body.type;
-        hasChanges = true;
+      if (body.type !== undefined) {
+        const nextType =
+          isWorkspaceConnectorType(body.type) && workspaceId
+            ? await canonicalConnectorType(body.type, workspaceId)
+            : body.type;
+        if (nextType !== currentValues.type) {
+          sourceConnection.type = nextType;
+          hasChanges = true;
+        }
       }
       if (
         body.isActive !== undefined &&

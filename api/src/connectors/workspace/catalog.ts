@@ -120,4 +120,27 @@ export async function connectorTypeExists(
   return { ok: true };
 }
 
+/**
+ * The type a connection should be STORED with: `ws:<current slug>`, even
+ * when the caller named an alias. A connection typed `ws:<old>` would keep
+ * working through the alias — until someone pushes a NEW connector at
+ * `connectors/<old>/`, at which point the live name wins and that
+ * connection's credentials would start going to the new connector's
+ * sandbox. Canonicalizing at write time closes that door; the alias stays
+ * only for connections that pre-date the rename, which the reconcile
+ * migrates (and re-points if a live `<old>` ever appears).
+ * Built-in types and unknown slugs come back unchanged.
+ */
+export async function canonicalConnectorType(
+  type: string,
+  workspaceId: string,
+): Promise<string> {
+  if (!isWorkspaceConnectorType(type)) return type;
+  const found = await findConnectorDefinitionRow(
+    workspaceId,
+    slugFromType(type),
+  );
+  return found ? `${WORKSPACE_TYPE_PREFIX}${found.row.slug}` : type;
+}
+
 export { listConnectorDefinitions };

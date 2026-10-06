@@ -6,6 +6,8 @@ import {
   logsToProblems,
   modelNameForPath,
   modelNamesFromPaths,
+  isRefableDbtPath,
+  refNameForDbtPath,
 } from "./dbt-editor-logic";
 import type { DbtRunLogLine } from "../store/dbtStore";
 
@@ -98,5 +100,18 @@ describe("modelNameForPath", () => {
   it("returns null for non-model files", () => {
     expect(modelNameForPath("macros/util.sql")).toBeNull();
     expect(modelNameForPath("models/schema.yml")).toBeNull();
+  });
+});
+
+describe("isRefableDbtPath / refNameForDbtPath", () => {
+  it("models (sql, py) and seeds are ref()-able by file name; snapshots are not", () => {
+    expect(isRefableDbtPath("models/marts/orders.sql")).toBe(true);
+    expect(isRefableDbtPath("models/ml/churn.py")).toBe(true);
+    expect(isRefableDbtPath("seeds/countries.csv")).toBe(true);
+    // A snapshot is named by its {% snapshot %} block, not its file.
+    expect(isRefableDbtPath("snapshots/orders.sql")).toBe(false);
+    expect(isRefableDbtPath("models/schema.yml")).toBe(false);
+    expect(refNameForDbtPath("models/marts/orders.sql")).toBe("orders");
+    expect(refNameForDbtPath("snapshots/orders.sql")).toBeNull();
   });
 });

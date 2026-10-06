@@ -22,6 +22,7 @@ import { blobOid, repoDirFor } from "../../apps/repository.service";
 import { renamedFoldersBetween } from "../../rename/git-renames";
 import { loggers } from "../../logging";
 import {
+  connectorFileIdentity,
   isValidSlug,
   parseConnectorFile,
   validateSpec,
@@ -272,6 +273,7 @@ async function reconcile(
         await row.save();
         result.updated++;
       } else {
+        await releaseAliasClaim(workspaceId, slug);
         await ConnectorDefinition.create({
           workspaceId,
           slug,
@@ -468,9 +470,17 @@ export async function migrateSourceConnectionType(
 export function sourceShaOf(files: Map<string, Uint8Array>): string {
   const parts: string[] = [];
   for (const name of [...files.keys()].sort()) {
-    parts.push(
-      `${name}:${blobOid(Buffer.from(files.get(name) as Uint8Array))}`,
-    );
+    const bytes = files.get(name) as Uint8Array;
+    // connector.yaml is hashed without its `aliases` (a rename's only
+    // edit), so renaming does not read as a code change.
+    const contents =
+      name === "connector.yaml"
+        ? Buffer.from(
+            connectorFileIdentity(new TextDecoder().decode(bytes)),
+            "utf8",
+          )
+        : Buffer.from(bytes);
+    parts.push(`${name}:${blobOid(contents)}`);
   }
   return blobOid(parts.join("\n"));
 }
@@ -515,6 +525,43 @@ async function runSpec(
   return { ok: true, spec: message!.spec! };
 }
 
+/**
+ * A NEW definition is about to take `slug`, which another definition
+ * still answers to as an alias. The live name wins (api/src/rename rule
+ * 2), but it must not win silently: every connection still typed
+ * `ws:<slug>` was created for the OLD connector, and letting it resolve
+ * to the new one would send its credentials to different code. So first
+ * move those connections to the old connector's current slug, then drop
+ * the alias, then let the new definition be created.
+ */
+async function releaseAliasClaim(
+  workspaceId: string,
+  slug: string,
+): Promise<void> {
+  const claimants = await ConnectorDefinition.find({
+    workspaceId,
+    aliases: slug,
+  });
+  for (const claimant of claimants) {
+    const moved = await migrateSourceConnectionType(
+      workspaceId,
+      slug,
+      claimant.slug,
+    );
+    claimant.aliases = (claimant.aliases ?? []).filter(a => a !== slug);
+    await claimant.save();
+    logger.warn(
+      "A new workspace connector took a slug another connector was still known by",
+      {
+        workspaceId,
+        slug,
+        previousOwner: claimant.slug,
+        connectionsMoved: moved,
+      },
+    );
+  }
+}
+
 async function block(
   workspaceId: string,
   slug: string,
@@ -528,6 +575,7 @@ async function block(
     await row.save();
     return;
   }
+  await releaseAliasClaim(workspaceId, slug);
   await ConnectorDefinition.create({
     workspaceId,
     slug,
