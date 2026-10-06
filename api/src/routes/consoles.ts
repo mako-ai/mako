@@ -60,6 +60,7 @@ import {
 import { RepoRequiredError } from "../apps/config";
 import {
   commitConsoleState,
+  consoleCaseVariantAtMain,
   consoleCommitChanges,
   savedConsoleStateFromRepo,
   consoleFileVersions,
@@ -1628,14 +1629,22 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             ...setFields,
             workspaceId: new Types.ObjectId(workspaceId),
           } as Parameters<typeof repoPathForRow>[0]);
-          if (
+          // Nor on one whose name differs only in letter case (one file
+          // on macOS / Windows).
+          const taken =
             wanted !== liveFile?.path &&
-            (await readConsoleDefinitionAtMain(workspaceId, wanted))
-          ) {
+            ((await readConsoleDefinitionAtMain(workspaceId, wanted))
+              ? wanted
+              : await consoleCaseVariantAtMain(
+                  workspaceId,
+                  wanted,
+                  liveFile?.path,
+                ));
+          if (taken) {
             return c.json(
               {
                 success: false,
-                error: consolePathTakenMessage(wanted, c.get("user")?.id),
+                error: consolePathTakenMessage(taken, c.get("user")?.id),
               },
               409,
             );

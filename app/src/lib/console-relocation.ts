@@ -311,7 +311,35 @@ export function consoleSavedNotice(input: {
 export function consoleCopiedNotice(copy: {
   path: string;
   name: string;
+  /** Where it went; a Duplicate's copy is always the copier's. */
+  section?: "My Consoles" | "Workspace";
 }): string {
-  const place = ["My Consoles", ...consoleFolderTrail(copy.path, copy.name)];
+  const place = [
+    copy.section ?? "My Consoles",
+    ...consoleFolderTrail(copy.path, copy.name),
+  ];
   return `Copied to ${place.join(" › ")} as '${copy.name}'`;
+}
+
+/**
+ * The snackbar after the explorer's "Move to…" (it said nothing): where the
+ * item is now — "Moved to Workspace › finance" — or "Renamed to 'X'" when
+ * only the name changed. Null: nothing changed.
+ */
+export function treeMoveNotice(input: {
+  moved: boolean;
+  renamedTo?: string;
+  name: string;
+  section: "my" | "workspace";
+  /** The target folder's trail (`A/B`); empty at the section's root. */
+  folderPath?: string;
+}): string | null {
+  if (!input.moved && !input.renamedTo) return null;
+  return renameMoveNotice({
+    renamedTo: input.renamedTo,
+    moved: input.moved,
+    section: input.section === "workspace" ? "Workspace" : "My Consoles",
+    folders: (input.folderPath ?? "").split("/").filter(Boolean),
+    name: input.renamedTo ?? input.name,
+  });
 }

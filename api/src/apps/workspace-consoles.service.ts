@@ -103,6 +103,7 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   blobOidAt,
+  caseVariantOf,
   commitBlobsOnBranch,
   diffNameStatus,
   lastDeletionCommit,
@@ -804,6 +805,9 @@ export async function commitConsoleBatch(input: {
     message: input.message,
     author,
     expectBlobs: input.expectBlobs,
+    // A console's name is unique in its folder ignoring letter case: two
+    // files that differ only in case break every macOS / Windows checkout.
+    foldCase: true,
   });
   if (!result.unchanged) queueMirrorPush(input.workspaceId);
   return { commitOid: result.commitOid, unchanged: result.unchanged };
@@ -1431,6 +1435,21 @@ export function ensureConsoleFolderRecords(
  */
 export function storableFolderName(name: string): boolean {
   return name.length > 0 && name.trim() === name;
+}
+
+/**
+ * The console file at main beside `path` that differs from it only in
+ * letter case — other than `ownPath`, the console's own file (a case-only
+ * rename) — or null.
+ */
+export async function consoleCaseVariantAtMain(
+  workspaceId: string,
+  path: string,
+  ownPath?: string | null,
+): Promise<string | null> {
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return null;
+  return caseVariantOf(repoDir, MAIN, path, new Set(ownPath ? [ownPath] : []));
 }
 
 /** The newest sync queued per workspace, while it is still pending. */
@@ -2135,7 +2154,15 @@ export function uniquePath(
   taken: Set<string>,
   ownPath: string | undefined | null,
 ): string {
-  if (wanted === ownPath || !taken.has(wanted)) return wanted;
+  // Ignoring letter case: "Report" and "report" in one folder are one file
+  // on macOS / Windows. The console's own file is not in the way (a
+  // case-only rename of it is the same file).
+  const takenFolded = new Set(
+    [...taken].filter(p => p !== ownPath).map(p => p.toLowerCase()),
+  );
+  const free = (p: string) =>
+    p === ownPath || !takenFolded.has(p.toLowerCase());
+  if (free(wanted)) return wanted;
   const location = parseConsoleRepoPath(wanted);
   if (!location) return wanted;
   for (let i = 2; ; i++) {
@@ -2143,7 +2170,7 @@ export function uniquePath(
       ...location,
       name: `${location.name} (${i})`,
     });
-    if (candidate === ownPath || !taken.has(candidate)) return candidate;
+    if (free(candidate)) return candidate;
   }
 }
 

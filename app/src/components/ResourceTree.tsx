@@ -63,6 +63,7 @@ const ROW_HEIGHT = 24;
 // vertically across sibling rows.
 const ICON_COL_WIDTH = 20;
 import {
+  canMoveFromSection,
   findNodeInSections,
   getFolderDropTargetId,
   isSidebarRowActive,
@@ -98,6 +99,11 @@ export interface ResourceTreeSection {
    * "Shared with me" — other members' items, nobody's place to file into).
    */
   noNewFolder?: boolean;
+  /**
+   * Its items are not this person's to place: no "Move to…", no drag out
+   * (consoles' "Shared with me" — another member's, in their folder).
+   */
+  noMoveOut?: boolean;
   /**
    * When true, skip rendering the section header row entirely. Useful for
    * explorers that have only one implicit section (e.g. Databases, Flows,
@@ -800,6 +806,7 @@ function ResourceTreeInner(
 
       const activeLocation = findNodeLocation(activeId);
       if (!activeLocation) return;
+      if (!canMoveFromSection(sections, activeId)) return;
 
       const target = resolveTreeDropTarget(sections, overId);
       if (!target) return;
@@ -1719,18 +1726,21 @@ function ResourceTreeInner(
                     New Subfolder
                   </MenuItem>
                 ),
-              enableMove && canManage && onMoveRequest && (
-                <MenuItem
-                  key="move"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onMoveRequest(item);
-                  }}
-                >
-                  <ArrowRightLeft size={14} style={{ marginRight: 8 }} />
-                  Move to...
-                </MenuItem>
-              ),
+              enableMove &&
+                canManage &&
+                onMoveRequest &&
+                canMoveFromSection(sections, item.id) && (
+                  <MenuItem
+                    key="move"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onMoveRequest(item);
+                    }}
+                  >
+                    <ArrowRightLeft size={14} style={{ marginRight: 8 }} />
+                    Move to...
+                  </MenuItem>
+                ),
               enableInfo && !item.isDirectory && onInfoRequest && (
                 <MenuItem
                   key="info-file"

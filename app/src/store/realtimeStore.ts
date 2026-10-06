@@ -665,6 +665,18 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 // (recent keystrokes, queued/blocked autosave, or an unsaved
                 // explicit-save delta). Never merge silently — surface the
                 // affordance; revision-checked writes backstop the rest.
+                // WHERE the console is follows the server all the same: a
+                // laptop rename (git mv + push) left this tab, its
+                // breadcrumb and its next save's snackbar on the old name
+                // while the tree showed the new one. Name, place and
+                // visibility only — never the content, the dirty state or
+                // the revision base (the banner still decides those).
+                store.retargetConsoleTab(entry.id, {
+                  name: entry.name,
+                  path: entry.path,
+                  access: entry.access,
+                  isSaved: entry.isSaved,
+                });
                 store.setRemoteUpdate(entry.id, {
                   draftRevision: entry.draftRevision,
                   ...lastWriter(entry.id),

@@ -37,37 +37,67 @@ vi.mock("../contexts/workspace-context", () => ({
 // The modals are not under test.
 vi.mock("./FolderInfoModal", () => ({ default: () => null }));
 vi.mock("./ConsoleInfoModal", () => ({ default: () => null }));
-// The tree is not under test: one "Duplicate" for the console "Alpha".
+// The tree is not under test: "Duplicate" and "Open" for the console
+// "Alpha".
 vi.mock("./ConsoleTree", async () => {
   const { forwardRef } = await import("react");
+  const alpha = {
+    id: "c-alpha",
+    name: "Alpha",
+    path: "finance/Alpha",
+    isDirectory: false,
+  };
   return {
     default: forwardRef(function FakeTree(
-      props: { onDuplicate?: (node: object) => void },
+      props: {
+        onDuplicate?: (node: object) => void;
+        onFileOpen?: (node: object) => void;
+        onMoveRequest?: (node: object) => void;
+      },
       _ref,
     ) {
       return (
-        <button
-          type="button"
-          onClick={() =>
-            props.onDuplicate?.({
-              id: "c-alpha",
-              name: "Alpha",
-              path: "finance/Alpha",
-              isDirectory: false,
-            })
-          }
-        >
-          Duplicate Alpha
-        </button>
+        <>
+          <button type="button" onClick={() => props.onDuplicate?.(alpha)}>
+            Duplicate Alpha
+          </button>
+          <button type="button" onClick={() => props.onFileOpen?.(alpha)}>
+            Open Alpha
+          </button>
+          <button type="button" onClick={() => props.onMoveRequest?.(alpha)}>
+            Move Alpha
+          </button>
+        </>
       );
     }),
   };
 });
+// The picker is not under test: "Move Here" picks Workspace › finance.
+vi.mock("./FileExplorerDialog", () => ({
+  default: (props: {
+    open: boolean;
+    onMove?: (
+      folderId: string | null,
+      name?: string,
+      section?: "my" | "workspace",
+    ) => void;
+  }) =>
+    props.open ? (
+      <button
+        type="button"
+        onClick={() => props.onMove?.("f-fin", undefined, "workspace")}
+      >
+        Move Here
+      </button>
+    ) : null,
+}));
 
 import ConsoleExplorer from "./ConsoleExplorer";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
+import { useConsoleContentStore } from "../store/consoleContentStore";
+import { computeConsoleStateHash } from "../utils/stateHash";
 
 afterEach(() => cleanup());
 
@@ -137,5 +167,127 @@ describe("ConsoleExplorer — Duplicate", () => {
     await Promise.resolve();
     expect(onConsoleSelect).not.toHaveBeenCalled();
     expect(screen.queryByText(/Copied to/)).toBeNull();
+  });
+});
+
+describe("ConsoleExplorer — opening a console that is already open", () => {
+  const SAVED = "SELECT 1";
+  const EDIT = "SELECT 1 -- typed, not saved";
+
+  function openAlpha(content: string) {
+    useConsoleStore.setState({ tabs: {}, tabOrder: [], activeTabId: null });
+    useConsoleStore.getState().openTab({
+      id: "c-alpha",
+      title: "Alpha",
+      content,
+      isSaved: true,
+      filePath: "finance/Alpha",
+      savedStateHash: computeConsoleStateHash(SAVED),
+      draftRevision: 2,
+      version: 2,
+      kind: "console",
+    });
+    useConsoleStore.getState().openTab(
+      {
+        id: "c-other",
+        title: "Other",
+        content: "SELECT 2",
+        isSaved: true,
+        filePath: "Other",
+        kind: "console",
+      },
+      { replacePristine: false },
+    );
+    useConsoleStore.getState().setActiveTab("c-other");
+    // The explorer's cache holds the server copy.
+    useConsoleContentStore.getState().set("c-alpha", { content: SAVED });
+  }
+
+  it("with unsaved edits: only focused — never refetched over the edit, never marked saved", async () => {
+    openAlpha(EDIT);
+    const fetchConsoleContent = vi.fn(async () => ({
+      content: SAVED,
+      savedStateHash: computeConsoleStateHash(SAVED),
+    }));
+    useConsoleStore.setState({ fetchConsoleContent } as never);
+    const onConsoleSelect = vi.fn();
+    render(<ConsoleExplorer onConsoleSelect={onConsoleSelect} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Alpha" }));
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const state = useConsoleStore.getState();
+    expect(state.tabs["c-alpha"].content).toBe(EDIT);
+    expect(fetchConsoleContent).not.toHaveBeenCalled();
+    expect(onConsoleSelect).not.toHaveBeenCalled();
+    expect(state.activeTabId).toBe("c-alpha");
+    // Still dirty: Save still has something to save.
+    expect(state.tabs["c-alpha"].savedStateHash).toBe(
+      computeConsoleStateHash(SAVED),
+    );
+  });
+
+  it("clean: opened and refreshed from the server as before", async () => {
+    openAlpha(SAVED);
+    const fetchConsoleContent = vi.fn(async () => null);
+    useConsoleStore.setState({ fetchConsoleContent } as never);
+    const onConsoleSelect = vi.fn();
+    render(<ConsoleExplorer onConsoleSelect={onConsoleSelect} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Alpha" }));
+    await vi.waitFor(() => expect(fetchConsoleContent).toHaveBeenCalled());
+    expect(onConsoleSelect).toHaveBeenCalled();
+  });
+});
+
+describe("ConsoleExplorer — Move to…", () => {
+  function seed(moveItem: () => Promise<boolean>) {
+    useConsoleTreeStore.setState({
+      myItems: {
+        ws: [
+          { id: "c-alpha", name: "Alpha", path: "Alpha", isDirectory: false },
+        ],
+      },
+      workspaceItems: {
+        ws: [
+          {
+            id: "f-fin",
+            name: "finance",
+            path: "finance",
+            isDirectory: true,
+            children: [],
+          },
+        ],
+      },
+      sharedItems: { ws: [] },
+      actionError: {},
+      moveItem,
+    } as never);
+  }
+
+  it("says where the console went", async () => {
+    const moveItem = vi.fn(async () => true);
+    seed(moveItem);
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Move Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move Here" }));
+    expect(
+      await screen.findByText("Moved to Workspace › finance"),
+    ).toBeTruthy();
+    expect(moveItem).toHaveBeenCalledWith(
+      "ws",
+      "c-alpha",
+      "f-fin",
+      "workspace",
+      undefined,
+    );
+  });
+
+  it("a refused move says only why (the store's actionError)", async () => {
+    seed(vi.fn(async () => false));
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Move Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move Here" }));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(screen.queryByText(/Moved to/)).toBeNull();
   });
 });
