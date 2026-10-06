@@ -89,6 +89,7 @@ import {
 import { APP_DIR_SEP, APP_FILE_SEP } from "../lib/explorer-reveal";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import {
+  appRenameRefusal,
   basenameOf,
   buildAppTree,
   folderNodeId,
@@ -843,58 +844,50 @@ export default function AppsExplorer() {
   );
 
   /**
-   * May this person rename the app row? The server's rule (resource-acl
-   * canWriteResource + the tree rule of authorizeAppMove), without side
-   * effects: this decides what the context menu SHOWS, and a refusal must
-   * not surface an error for a right-click. `mayWriteTo` (which does) is
-   * for the moment of acting.
+   * Why this person may NOT rename the app row, or null when they may: the
+   * server's rules (appRenameRefusal — the app's write ACL as GET /apps
+   * reports it, and the tree rule of authorizeAppMove), without side
+   * effects. `mayRenameApp` decides what the context menu SHOWS; a rename
+   * asked for anyway (F2, double-click) says why it cannot happen.
    */
-  const mayRenameApp = useCallback(
-    (appId: string): boolean => {
+  const renameRefusal = useCallback(
+    (appId: string): string | null => {
       const app = appById.get(appId);
-      const folder = folderOfApp(appId);
-      if (!app || !folder || isSharedWithMe(appId)) return false;
-      const role = currentWorkspace?.role;
-      const inPersonalTree =
-        !!personalRoot &&
-        (folder === personalRoot || folder.startsWith(`${personalRoot}/`));
-      if (!inPersonalTree && !canOrganize) return false;
-      // Owner of a private app; an editor of a workspace app: admins and
-      // owners always, members when the app's workspace role says so (a
-      // folder-only app has none, and reads as viewer — exactly what the
-      // server answers).
-      if (app.access === "private") return app.owner_id === userId;
-      if (role === "owner" || role === "admin") return true;
-      if (role === "viewer") return false;
-      return app.workspaceRole === "editor";
+      if (!app) return "This app is no longer in the list.";
+      return appRenameRefusal(
+        { ...app, path: appRootOf(app) },
+        { userId, role: currentWorkspace?.role },
+      );
     },
-    [
-      appById,
-      folderOfApp,
-      isSharedWithMe,
-      currentWorkspace?.role,
-      personalRoot,
-      canOrganize,
-      userId,
-    ],
+    [appById, userId, currentWorkspace?.role],
+  );
+  const mayRenameApp = useCallback(
+    (appId: string): boolean => renameRefusal(appId) === null,
+    [renameRefusal],
   );
 
   /**
    * Renaming an app row (F2, double-click, the menu) opens the dialog: an
    * app has a NAME (the title in mako.json) and a LINK (its folder, the
    * slug), and an inline box can only honestly change one of them. The
-   * tree asks before it opens its inline editor; `true` means "handled".
+   * tree asks before it opens its inline editor; `true` means "handled" —
+   * by the dialog, or by saying why this person cannot rename the app
+   * (never silently: a swallowed F2 reads as a broken key).
    */
   const handleRenameRequest = useCallback(
     (node: { id: string }): boolean => {
       const parsed = parseNodeId(node.id);
       if (parsed.kind !== "app" || parsed.pinned) return false;
-      if (!mayRenameApp(parsed.appId)) return true;
+      const refusal = renameRefusal(parsed.appId);
+      if (refusal) {
+        setError(refusal);
+        return true;
+      }
       setRenameError(null);
       setRenameDialog({ appId: parsed.appId });
       return true;
     },
-    [mayRenameApp],
+    [renameRefusal, setError],
   );
 
   /**

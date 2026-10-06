@@ -9,6 +9,7 @@ import {
   authorizeAppMove,
   authorizeFolderTarget,
   canOrganizeWorkspaceTree,
+  canWriteApp,
 } from "./app-authorization";
 import type { AppFolderTarget } from "./worktree.service";
 
@@ -80,5 +81,62 @@ assert.match(
 );
 assert.equal(authorizeAppMove(fromU2, workspace(), "u2", "member"), null);
 assert.equal(authorizeAppMove(null, workspace(), "u1", "admin"), null);
+
+// Who may write (and so rename) an app — what GET /apps sends per app as
+// `canWrite`. Its OWNER first, whatever the access and the workspace role:
+// createProject makes a new app private and owned by its creator, and a
+// member who then shares it with the workspace is still its owner.
+assert.equal(
+  canWriteApp(
+    { access: "workspace", owner_id: "u1", workspaceRole: "viewer" },
+    "u1",
+    "member",
+  ),
+  true,
+);
+assert.equal(
+  canWriteApp({ access: "private", owner_id: "u1" }, "u1", "viewer"),
+  true,
+);
+// A share as editor, which the list does not carry — only the server knows.
+const sharedAsEditor = {
+  access: "private" as const,
+  owner_id: "u2",
+  sharedWith: [{ userId: "u1", role: "editor" as const }],
+};
+assert.equal(canWriteApp(sharedAsEditor, "u1", "member"), true);
+assert.equal(
+  canWriteApp(
+    {
+      ...sharedAsEditor,
+      sharedWith: [{ userId: "u1", role: "viewer" as const }],
+    },
+    "u1",
+    "member",
+  ),
+  false,
+);
+// Someone else's private app: not even an admin.
+assert.equal(
+  canWriteApp({ access: "private", owner_id: "u2" }, "u1", "admin"),
+  false,
+);
+// A workspace app: admins always, members by its workspace role (a
+// folder-only app has none, and reads as viewer), viewers never.
+assert.equal(canWriteApp({ access: "workspace" }, "u1", "admin"), true);
+assert.equal(canWriteApp({ access: "workspace" }, "u1", "member"), false);
+assert.equal(
+  canWriteApp({ access: "workspace", workspaceRole: "editor" }, "u1", "member"),
+  true,
+);
+assert.equal(
+  canWriteApp({ access: "workspace", workspaceRole: "editor" }, "u1", "viewer"),
+  false,
+);
+// A workspace API key: no per-user ACL.
+assert.equal(
+  canWriteApp({ access: "private", owner_id: "u2" }, undefined, undefined),
+  true,
+);
 
 console.log("app-authorization: ok");

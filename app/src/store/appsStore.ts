@@ -143,6 +143,11 @@ export interface AppMeta {
   owner_id?: string;
   /** What workspace members may do with a workspace-access app. */
   workspaceRole?: "viewer" | "editor";
+  /**
+   * Whether the viewer may write the app (rename, edit) — the server's
+   * ACL answer, which knows the shares this list does not carry.
+   */
+  canWrite?: boolean;
   /** Safe public-link metadata; password material never leaves the API. */
   publicShare?: PublicShareInfo;
 }

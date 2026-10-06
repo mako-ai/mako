@@ -199,3 +199,63 @@ export function aliasMatchesRef(alias: string, clean: string): boolean {
     alias === clean || alias === `apps/${clean}` || `apps/${alias}` === clean
   );
 }
+
+// ---------------------------------------------------------------------------
+// Who may rename an app from the explorer — the server's rules
+// ---------------------------------------------------------------------------
+
+export interface RenamableApp {
+  path?: string;
+  slug?: string;
+  id: string;
+  access?: "private" | "workspace";
+  owner_id?: string;
+  workspaceRole?: "viewer" | "editor";
+  /** The server's answer (GET /apps): may this viewer write the app. */
+  canWrite?: boolean;
+}
+
+const EDITING_ROLES = new Set(["owner", "admin", "member"]);
+
+/**
+ * Why this person may NOT rename the app, or `null` when they may — the
+ * two rules the rename route applies (api/src/rename/handlers/app.ts), so
+ * the explorer neither offers what the server refuses nor hides what it
+ * allows:
+ *
+ *  - the app's write ACL (resource-acl canWriteResource): its owner first,
+ *    whatever its access; anyone it is shared with as an editor; on a
+ *    workspace-access app, admins and members its workspace role makes
+ *    editors. GET /apps sends the answer as `canWrite` — the list carries
+ *    no `sharedWith`, so only the server knows a share. A list without it
+ *    (an older API) falls back to owner, then workspace role;
+ *  - the tree rule (authorizeAppMove), since a rename may move the folder:
+ *    the workspace tree is organised by editing members, a personal tree
+ *    by its owner alone.
+ */
+export function appRenameRefusal(
+  app: RenamableApp,
+  viewer: { userId?: string; role?: string },
+): string | null {
+  const { userId, role } = viewer;
+  const writable =
+    app.canWrite ??
+    ((!!userId && app.owner_id === userId) ||
+      (app.access !== "private" &&
+        (role === "owner" ||
+          role === "admin" ||
+          (role === "member" && app.workspaceRole === "editor"))));
+  if (!writable) {
+    return "You have read-only access to this app. Ask an editor or the owner to rename it (or to share edit access with you).";
+  }
+  const path = appPathOf(app);
+  if (path.startsWith("users/")) {
+    const mine = !!userId && path.startsWith(`users/${userId}/apps/`);
+    return mine
+      ? null
+      : "This app is in its owner's personal folder: only they can rename it.";
+  }
+  return role && EDITING_ROLES.has(role)
+    ? null
+    : "Only workspace editors can reorganise the Workspace tree.";
+}

@@ -14,6 +14,10 @@
  */
 import type { AppFolderTarget } from "./worktree.service";
 import type { AppRepoLocation } from "./app-paths";
+import {
+  canWriteResource,
+  type ShareableResourceLike,
+} from "../utils/resource-acl";
 
 /** Who may reorganise the WORKSPACE tree: any editing member. */
 export function canOrganizeWorkspaceTree(role: string | undefined): boolean {
@@ -64,4 +68,20 @@ export function authorizeAppMove(
     return "Only the owner can move an app out of their personal folder";
   }
   return null;
+}
+
+/**
+ * May the caller WRITE this app — rename it, edit it, run it in dev? The
+ * ACL every write route applies (resource-acl canWriteResource: the owner,
+ * anyone it is shared with as an editor, and the workspace role on a
+ * workspace-access app), to the app's state row or, for an app that is
+ * only a folder, to its synthesized shape (projectFromIndexRow). No user
+ * is a workspace API key, which no per-user ACL gates (loadProject).
+ */
+export function canWriteApp(
+  app: ShareableResourceLike,
+  userId: string | undefined,
+  role: string | undefined,
+): boolean {
+  return !userId || canWriteResource(app, userId, role);
 }
