@@ -11,7 +11,7 @@
  * hydration actually opens the notebook tab for a /n/:id deep link.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 
 const h = vi.hoisted(() => {
   const consoleState = {
@@ -28,9 +28,50 @@ const h = vi.hoisted(() => {
     captureOAuthReturn: vi.fn(),
     fetchOneSourceConnection: vi.fn(),
     closeSourceConnectionTabsFor: vi.fn(),
-    focusAppsTab: vi.fn(),
+    // Opening a tab makes it the active one, whose URL the outgoing sync
+    // then writes to the address bar — as the real shell does; without it
+    // the sync would reset a resolved link to "/" (no active tab).
+    focusAppsTab: vi.fn(
+      (appId: string, title: string, slug?: string, search?: string) => {
+        consoleState.tabs = {
+          t1: {
+            id: "t1",
+            kind: "app",
+            title,
+            content: "",
+            metadata: { appId, appSlug: slug, appSearch: search || undefined },
+          },
+        };
+        consoleState.activeTabId = "t1";
+        return "t1";
+      },
+    ),
+    focusAppsFileTab: vi.fn((appId: string, path: string, slug?: string) => {
+      consoleState.tabs = {
+        t1: {
+          id: "t1",
+          kind: "app-file",
+          title: path,
+          content: "",
+          metadata: { appId, appSlug: slug, path },
+        },
+      };
+      consoleState.activeTabId = "t1";
+      return "t1";
+    }),
+    closeAppsTabsFor: vi.fn(),
+    resolveObjectRef: vi.fn().mockResolvedValue(null),
     fetchApps: vi.fn().mockResolvedValue(undefined),
-    apps: [{ id: "app1", slug: "seller-media", title: "Seller Media" }],
+    apps: [
+      {
+        id: "app1",
+        slug: "seller-media",
+        path: "apps/seller-media",
+        title: "Seller Media",
+        // Renamed from this: the server's index says so.
+        aliases: ["seller-media-buying-3"],
+      },
+    ],
     consoleState,
     useConsoleStore: Object.assign(
       (selector: (s: typeof consoleState) => unknown) => selector(consoleState),
@@ -91,9 +132,14 @@ vi.mock("../dbt-runtime/shell", () => ({
 }));
 
 vi.mock("../apps-runtime/shell", () => ({
-  closeAppsTabsFor: vi.fn(),
-  focusAppsFileTab: vi.fn(),
-  focusAppsTab: (...args: unknown[]) => h.focusAppsTab(...args),
+  closeAppsTabsFor: (...args: unknown[]) => h.closeAppsTabsFor(...args),
+  focusAppsFileTab: (...args: Parameters<typeof h.focusAppsFileTab>) =>
+    h.focusAppsFileTab(...args),
+  focusAppsTab: (...args: Parameters<typeof h.focusAppsTab>) =>
+    h.focusAppsTab(...args),
+}));
+vi.mock("../lib/object-links", () => ({
+  resolveObjectRef: (...args: unknown[]) => h.resolveObjectRef(...args),
 }));
 vi.mock("../store/appsStore", () => {
   const state = { fetchApps: h.fetchApps, apps: h.apps };
@@ -144,6 +190,116 @@ describe("UrlSync hydration", () => {
       ),
     );
     expect(h.setLeftPane).toHaveBeenCalledWith("apps");
+  });
+
+  /**
+   * A renamed app keeps resolving: the server records the old slug as an
+   * alias, the list carries it, and an old link opens the app, rewrites the
+   * address bar to the current one and says so — instead of "doesn't
+   * resolve anymore" and a bounce to "/".
+   */
+  it("opens a renamed app from its old /apps/<slug> link and updates the address bar", async () => {
+    window.history.replaceState({}, "", "/apps/seller-media-buying-3?tab=a");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "app1",
+        "Seller Media",
+        "seller-media",
+        "?tab=a",
+      ),
+    );
+    expect(window.location.pathname + window.location.search).toBe(
+      "/apps/seller-media?tab=a",
+    );
+    expect(await screen.findByText(/renamed/)).toBeTruthy();
+    // The list answered; the server was not asked.
+    expect(h.resolveObjectRef).not.toHaveBeenCalled();
+    expect(h.closeAppsTabsFor).not.toHaveBeenCalled();
+  });
+
+  it("does the same for an old file link", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/apps/seller-media-buying-3/file/src/main.tsx",
+    );
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsFileTab).toHaveBeenCalledWith(
+        "app1",
+        "src/main.tsx",
+        "seller-media",
+      ),
+    );
+    expect(window.location.pathname).toBe(
+      "/apps/seller-media/file/src/main.tsx",
+    );
+  });
+
+  it("asks the server when the list misses — a rename pushed a moment ago", async () => {
+    h.resolveObjectRef.mockResolvedValueOnce({
+      kind: "app",
+      id: "6aaaed797eb3d8d53c497fd9",
+      via: "alias",
+      current: {
+        title: "Fresh",
+        slug: "fresh",
+        path: "apps/fresh",
+        url: "/apps/fresh",
+      },
+    });
+    window.history.replaceState({}, "", "/apps/fresh-old-name");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "6aaaed797eb3d8d53c497fd9",
+        "Fresh",
+        "fresh",
+        "",
+      ),
+    );
+    expect(h.resolveObjectRef).toHaveBeenCalledWith(
+      "ws1",
+      "app",
+      "fresh-old-name",
+    );
+    // The list was refetched once more, for the row the tab renders from.
+    expect(h.fetchApps).toHaveBeenCalledTimes(2);
+    expect(window.location.pathname).toBe("/apps/fresh");
+  });
+
+  it("still reports a dead link when nothing resolves, closing no tab for a bare slug", async () => {
+    window.history.replaceState({}, "", "/apps/ghost");
+
+    render(<UrlSync />);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
+    expect(h.focusAppsTab).not.toHaveBeenCalled();
+    // Tabs carry the id; a slug names none, so nothing is closed by mistake.
+    expect(h.closeAppsTabsFor).not.toHaveBeenCalled();
+    expect(await screen.findByText(/doesn't resolve/)).toBeTruthy();
+  });
+
+  it("treats the legacy /a/<ref> address as /apps/<ref>", async () => {
+    window.history.replaceState({}, "", "/a/seller-media");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "app1",
+        "Seller Media",
+        "seller-media",
+        "",
+      ),
+    );
   });
 
   it("opens the notebook tab when deep-linking /n/:id", async () => {

@@ -218,6 +218,13 @@ export interface ResourceTreeProps {
   ) => void;
   onRenameItem?: (id: string, name: string, isDirectory: boolean) => void;
   /**
+   * Take over a rename before the inline box opens (F2, double-click, the
+   * context menu): return `true` to handle it elsewhere — a row whose rename
+   * needs more than one field (an app: its name AND its link) opens a
+   * dialog instead. `false`/absent keeps the inline flow.
+   */
+  onRenameRequest?: (node: ResourceTreeNode) => boolean;
+  /**
    * What the inline rename box starts from, when it is not the row's
    * displayed name — an app row shows its TITLE but renames its folder
    * (slug). Defaults to `node.name`; the commit compares against the seed,
@@ -284,6 +291,7 @@ function ResourceTreeInner(
     onMoveItem,
     onMoveFolder,
     onRenameItem,
+    onRenameRequest,
     getRenameSeed,
     onDeleteItem,
     onDuplicateItem,
@@ -667,11 +675,15 @@ function ResourceTreeInner(
   const startInlineRename = useCallback(
     (item: ResourceTreeNode) => {
       if (!enableRename) return;
+      if (onRenameRequest?.(item)) {
+        setContextMenu(null);
+        return;
+      }
       setRenamingItemId(item.id);
       setRenameValue(getRenameSeed?.(item) ?? item.name);
       setContextMenu(null);
     },
-    [enableRename, getRenameSeed],
+    [enableRename, getRenameSeed, onRenameRequest],
   );
 
   const cancelInlineRename = useCallback(() => {

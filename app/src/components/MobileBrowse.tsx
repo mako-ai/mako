@@ -39,6 +39,7 @@ import { tabKindEntityLabel } from "../lib/entity-labels";
 import { focusDashboardTab } from "../dashboard-runtime/shell";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import { focusAppsTab } from "../apps-runtime/shell";
+import { appUrlSlug, useAppsStore } from "../store/appsStore";
 
 const EXPLORER_LABELS: Partial<Record<NavigationView, string>> =
   Object.fromEntries(topNavigationItems.map(i => [i.view, i.label]));
@@ -209,9 +210,18 @@ export default function MobileBrowse({
         case "notebook":
           focusNotebookTab(entry.id, entry.title);
           break;
-        case "app":
-          focusAppsTab(entry.id, entry.title, entry.slug);
+        case "app": {
+          // The id is the identity; the title and slug stored with the
+          // entry are only as fresh as its last activation. A renamed app
+          // reopens under its current name and link when the list has it.
+          const app = useAppsStore.getState().apps.find(a => a.id === entry.id);
+          focusAppsTab(
+            entry.id,
+            app?.title ?? entry.title,
+            app ? appUrlSlug(app) : entry.slug,
+          );
           break;
+        }
       }
     },
     [workspaceId, setMobileConsolePane, removeRecent],

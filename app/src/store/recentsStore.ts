@@ -38,6 +38,15 @@ interface RecentsActions {
   record: (workspaceId: string, entry: Omit<RecentEntry, "at">) => void;
   /** Drop an entry (the entity no longer exists). */
   remove: (workspaceId: string, kind: RecentKind, id: string) => void;
+  /**
+   * Bring app entries up to date with the apps list: a renamed app keeps
+   * its id, and its entry must reopen under the current title and slug,
+   * not the ones it had when it was last looked at.
+   */
+  healApps: (
+    workspaceId: string,
+    apps: ReadonlyMap<string, { title: string; slug?: string }>,
+  ) => void;
   reset: () => void;
 }
 
@@ -67,6 +76,19 @@ export const useRecentsStore = create<RecentsStore>()(
           state.byWorkspace[workspaceId] = list.filter(
             e => !(e.kind === kind && e.id === id),
           );
+        }),
+
+      healApps: (workspaceId, apps) =>
+        set(state => {
+          const list = state.byWorkspace[workspaceId];
+          if (!list) return;
+          for (const entry of list) {
+            if (entry.kind !== "app") continue;
+            const current = apps.get(entry.id);
+            if (!current) continue;
+            if (entry.title !== current.title) entry.title = current.title;
+            if (entry.slug !== current.slug) entry.slug = current.slug;
+          }
         }),
 
       reset: () => set({ byWorkspace: {} }),

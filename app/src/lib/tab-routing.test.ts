@@ -3,6 +3,7 @@ import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
   encodePathSegments,
+  legacyAppPathname,
   tabUrlPath,
 } from "./tab-routing";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
@@ -215,5 +216,25 @@ describe("decodeUrlSegment", () => {
     const { decodeUrlSegment } = await import("./tab-routing");
     expect(decodeUrlSegment("100%")).toBe("100%");
     expect(decodeUrlSegment("%E0%A4%A")).toBe("%E0%A4%A");
+  });
+});
+
+describe("legacy app links", () => {
+  it("maps /a/<ref> and /a2/<ref> (and their file links) to /apps/<ref>", () => {
+    expect(legacyAppPathname("/a/6aaaed797eb3d8d53c497fd1")).toBe(
+      "/apps/6aaaed797eb3d8d53c497fd1",
+    );
+    expect(legacyAppPathname("/a2/seller-media/")).toBe("/apps/seller-media");
+    expect(legacyAppPathname("/a/seller-media/file/src/main.tsx")).toBe(
+      "/apps/seller-media/file/src/main.tsx",
+    );
+  });
+
+  it("leaves every other path alone", () => {
+    expect(legacyAppPathname("/apps/seller-media")).toBeNull();
+    expect(legacyAppPathname("/a/")).toBeNull();
+    expect(legacyAppPathname("/a/x/y")).toBeNull();
+    expect(legacyAppPathname("/c/abc")).toBeNull();
+    expect(legacyAppPathname("/")).toBeNull();
   });
 });

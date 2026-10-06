@@ -168,11 +168,17 @@ export function closeAppsTabsFor(appId: string): boolean {
  * `app-diff` tabs carry the same handle and never re-read it — so a file
  * opened before a move kept producing `/apps/<old-slug>/file/…`, a link that
  * no longer resolves. `slugs` maps app id → URL slug (undefined = use the id).
+ * `titles` (app id → title) renames the app tabs themselves: a rename keeps
+ * the id, and a persisted tab must not keep showing the old name.
  */
-export function healAppsTabs(slugs: Map<string, string | undefined>): void {
+export function healAppsTabs(
+  slugs: Map<string, string | undefined>,
+  titles?: Map<string, string>,
+): void {
   useConsoleStore.setState(state => {
     for (const tab of Object.values(state.tabs) as Array<{
       kind?: string;
+      title?: string;
       metadata?: Record<string, unknown>;
     }>) {
       if (
@@ -183,11 +189,15 @@ export function healAppsTabs(slugs: Map<string, string | undefined>): void {
         continue;
       }
       const appId = tab.metadata?.appId;
-      if (typeof appId !== "string" || !slugs.has(appId) || !tab.metadata) {
-        continue;
+      if (typeof appId !== "string" || !tab.metadata) continue;
+      if (slugs.has(appId)) {
+        const slug = slugs.get(appId);
+        if (tab.metadata.appSlug !== slug) tab.metadata.appSlug = slug;
       }
-      const slug = slugs.get(appId);
-      if (tab.metadata.appSlug !== slug) tab.metadata.appSlug = slug;
+      const title = titles?.get(appId);
+      if (tab.kind === "app" && title && tab.title !== title) {
+        tab.title = title;
+      }
     }
   });
 }

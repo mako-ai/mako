@@ -77,6 +77,17 @@ export const TAB_DEEP_LINK_PATTERNS = {
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
+ * Apps v1 lived at `/a/<ref>` and, for a while, `/a2/<ref>`; links with
+ * those prefixes still exist in chats, docs and the ChatGPT connector's
+ * older answers. They mean `/apps/<ref>` (and `/apps/<ref>/file/<path>`).
+ * Returns the modern pathname, or `null` for anything else.
+ */
+export function legacyAppPathname(pathname: string): string | null {
+  const m = pathname.match(/^\/a2?\/([^/?#]+)((?:\/file\/.+)?)\/?$/);
+  return m ? `/apps/${m[1]}${m[2]}` : null;
+}
+
+/**
  * The URL (pathname + optional query string) owned by a tab, or `null` when
  * the tab cannot be addressed yet (e.g. a connector that was never saved).
  */
