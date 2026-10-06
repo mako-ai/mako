@@ -101,9 +101,29 @@ export async function resolveConnector(
   ctx: RenameContext,
   ref: string,
 ): Promise<ResolvedRef | null> {
+  const wsId = new Types.ObjectId(ctx.workspaceId);
+  // The definition's id names it too (every other kind resolves its id).
+  const trimmed = ref.trim();
+  if (/^[0-9a-f]{24}$/i.test(trimmed)) {
+    const byId = await ConnectorDefinition.findOne({
+      workspaceId: wsId,
+      _id: new Types.ObjectId(trimmed),
+    });
+    if (byId) {
+      return {
+        kind: "connector",
+        id: String(byId._id),
+        via: "current",
+        current: {
+          title: displayName(byId),
+          slug: byId.slug,
+          path: `${CONNECTORS_DIR}/${byId.slug}/`,
+        },
+      };
+    }
+  }
   const slug = connectorSlugFromRef(ref);
   if (!isValidSlug(slug)) return null;
-  const wsId = new Types.ObjectId(ctx.workspaceId);
   let found = await findConnectorDefinitionRow(ctx.workspaceId, slug);
   if (!found) {
     // Nothing answers to the name. If that is because the name is claimed
@@ -360,7 +380,7 @@ export async function renameWorkspaceConnector(
   }
   if (remaining > 0) {
     warnings.push(
-      `${remaining} connection${remaining === 1 ? "" : "s"} still typed ws:${from}; they keep working through the alias.`,
+      `${remaining} connection${remaining === 1 ? "" : "s"} typed ws:${from} ${remaining === 1 ? "was" : "were"} not moved: ${remaining === 1 ? "it is" : "they are"} bound to another (or a deleted) connector and still fail${remaining === 1 ? "s" : ""} closed until re-pointed.`,
     );
   }
   return {
