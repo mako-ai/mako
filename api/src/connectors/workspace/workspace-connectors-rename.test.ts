@@ -104,6 +104,7 @@ import {
 } from "./resolver";
 import { connectorTypeExists, listWorkspaceConnectors } from "./catalog";
 import {
+  connectorFileIdentity,
   parseConnectorFile,
   stripConnectorAliases,
   withConnectorAlias,
@@ -243,8 +244,9 @@ describe("connector.yaml aliases", () => {
 
   it("withConnectorAlias appends without touching the author's bytes; extends an existing list; refuses junk", () => {
     expect(withConnectorAlias(YAML, "old")).toBe(`${YAML}aliases:\n  - old\n`);
+    // No final line break in, none out: the block is introduced by one.
     expect(withConnectorAlias("runtime: node", "old")).toBe(
-      "runtime: node\naliases:\n  - old\n",
+      "runtime: node\naliases:\n  - old",
     );
     const extended = withConnectorAlias("runtime: node\naliases: [a]\n", "b");
     expect(parseConnectorFile(extended!)).toMatchObject({
@@ -312,6 +314,46 @@ describe("connector.yaml aliases", () => {
     expect(stripConnectorAliases(`${YAML}aliases:\n  - a\n  - b\n`)).toBe(YAML);
     expect(stripConnectorAliases(`${YAML}aliases: [a, b]\n`)).toBe(YAML);
     expect(stripConnectorAliases(withConnectorAlias(YAML, "a")!)).toBe(YAML);
+  });
+
+  it("strip exactly inverts add: no final line break, CRLF, and a second alias", () => {
+    const enc = (t: string) => new TextEncoder().encode(t);
+    for (const y of [
+      "runtime: node",
+      "runtime: node\n",
+      "runtime: node\n\n",
+      "runtime: node\r\nentry: connector.ts",
+      "runtime: node\r\nentry: connector.ts\r\n",
+      "# c\r\nruntime: node\n", // mixed endings: a CRLF file ending in a bare LF
+    ]) {
+      const once = withConnectorAlias(y, "acme");
+      expect(once, JSON.stringify(y)).not.toBeNull();
+      expect(parseConnectorFile(once!)).toMatchObject({
+        ok: true,
+        value: { aliases: ["acme"] },
+      });
+      expect(connectorFileIdentity(once!), JSON.stringify(y)).toBe(y);
+      const twice = withConnectorAlias(once!, "acme-v2");
+      expect(parseConnectorFile(twice!)).toMatchObject({
+        ok: true,
+        value: { aliases: ["acme", "acme-v2"] },
+      });
+      expect(connectorFileIdentity(twice!), JSON.stringify(y)).toBe(y);
+      // ...so the content hash — what `verified` is pinned to — holds.
+      const sha = (yaml: string) =>
+        sourceShaOf(
+          new Map([
+            ["connector.yaml", enc(yaml)],
+            ["connector.ts", enc("x")],
+          ]),
+        );
+      expect(sha(once!)).toBe(sha(y));
+      expect(sha(twice!)).toBe(sha(y));
+    }
+    // A CRLF file gets CRLF lines, not a lone LF.
+    expect(withConnectorAlias("runtime: node\r\n", "acme")).toBe(
+      "runtime: node\r\naliases:\r\n  - acme\r\n",
+    );
   });
 
   it("zero-indent block lists are items too; a shape the edit cannot keep parseable is refused", () => {

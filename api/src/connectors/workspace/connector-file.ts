@@ -179,13 +179,18 @@ export function withConnectorAlias(
   const nl = contents.includes("\r\n") ? "\r\n" : "\n";
   if (existing === null) {
     if (doc.aliases !== undefined) return null; // present but not a list
-    const base =
-      contents.endsWith("\n") || contents === ""
-        ? contents
-        : `${contents}${nl}`;
+    // The appended block keeps the file's own ending — after a final line
+    // break it ends with one; on a file without one it is introduced by one
+    // and ends without — so `stripConnectorAliases` (which drops the block's
+    // lines and nothing else) gives back these exact bytes, and the identity
+    // hash does not move. Appending `\n` to a file that had none was a byte
+    // the strip could not remove: every rename looked like new code.
+    const block = `aliases:${nl}  - ${alias}`;
     return checkedAliasEdit(
       contents,
-      `${base}aliases:${nl}  - ${alias}${nl}`,
+      contents === "" || contents.endsWith(nl)
+        ? `${contents}${block}${nl}`
+        : `${contents}${nl}${block}`,
       alias,
     );
   }
