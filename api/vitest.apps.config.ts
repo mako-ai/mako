@@ -35,6 +35,8 @@ export default defineConfig({
       "src/routes/consoles-first-save.test.ts",
       // Visibility changes only by the owner, on every console route.
       "src/routes/consoles-scope.test.ts",
+      // A rename/move answers where the console is; a save never moves it back.
+      "src/routes/consoles-location.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",

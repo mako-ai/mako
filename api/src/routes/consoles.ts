@@ -6,6 +6,7 @@ import {
   ConsoleConflictError,
   ConsoleScopeError,
   isWorkspaceAdminRole,
+  type ConsoleLocation,
 } from "../utils/console-manager";
 import { BlobPreconditionError } from "../apps/repository.service";
 import { canWriteResource } from "../utils/resource-acl";
@@ -51,7 +52,10 @@ import {
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { buildConsoleWriteGuard } from "../services/console-save-guards";
+import {
+  buildConsoleWriteGuard,
+  consoleWriteGuardRefuses,
+} from "../services/console-save-guards";
 import { RepoRequiredError } from "../apps/config";
 import {
   commitConsoleState,
@@ -242,6 +246,22 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
 
 consoleRoutes.use("/:id/schedule", requireWorkspaceAdmin);
 consoleRoutes.use("/:id/schedule/*", requireWorkspaceAdmin);
+
+/**
+ * Where a console is now (`ConsoleManager.consoleLocation`), for the
+ * answer of a route that moved or renamed it; undefined when it is gone.
+ */
+async function locationOfConsole(
+  workspaceId: string,
+  consoleId: string,
+): Promise<ConsoleLocation | undefined> {
+  if (!Types.ObjectId.isValid(consoleId)) return undefined;
+  const row = await SavedConsole.findOne({
+    _id: new Types.ObjectId(consoleId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  return row ? consoleManager.consoleLocation(row) : undefined;
+}
 
 // ── Sharing (collaborators + general access) ──
 const loadConsoleById = workspaceResourceLoader(SavedConsole);
@@ -582,10 +602,17 @@ consoleRoutes.openapi(
         const savedStateHash = isSaved
           ? await getLatestConsoleSavedStateHash(doc)
           : undefined;
+        // Where it is (a rename or move also bumps the revision): the tab
+        // retargets its breadcrumb and visibility from this, not from a
+        // path it kept from before.
+        const location = await consoleManager.consoleLocation(doc);
         changed.push({
           id,
           draftRevision: serverRevision,
           name: doc.name,
+          path: location.path,
+          folderId: location.folderId,
+          access: location.access,
           content: doc.code,
           connectionId: doc.connectionId?.toString(),
           databaseId: doc.databaseId,
@@ -1442,9 +1469,24 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         );
       }
 
+      // An explicit save of a console that exists only in git (no row
+      // yet) and names no path keeps the file where it is: the editor's
+      // Cmd+S never sends a place (a tab's path can be stale — a rename in
+      // another window, a folder renamed since — and a save is not a move),
+      // and without one the row-less save below would project a second
+      // file instead of replacing this one.
+      const livePlace =
+        liveFile && !existingById
+          ? [...liveFile.location.folderSegments, liveFile.location.name].join(
+              "/",
+            )
+          : undefined;
+      const explicitPath =
+        typeof body.path === "string" && body.path ? body.path : livePlace;
+
       // If this is an explicit save with a path, check for path conflicts
-      if (isExplicitSave && body.path) {
-        const consolePath = body.path;
+      if (isExplicitSave && explicitPath) {
+        const consolePath = explicitPath;
         const existingConsole = await consoleManager.getConsoleByPath(
           consolePath,
           workspaceId,
@@ -1516,6 +1558,18 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         // above cannot see a laptop-pushed file; the relocation's CAS can.
         let current: ISavedConsole | null = existingById;
         if (current) {
+          // A stale base is refused BEFORE the relocation: the guarded
+          // write below would refuse it anyway, but only after the file had
+          // moved — a stale window's save re-placing a console renamed
+          // elsewhere, then answering "conflict" with the move kept.
+          if (
+            consoleWriteGuardRefuses(current, {
+              expectedVersion,
+              expectedDraftRevision,
+            })
+          ) {
+            return versionConflictResponse();
+          }
           try {
             const moved = await consoleManager.relocateForSave(
               current,
@@ -1690,6 +1744,15 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         let current: ISavedConsole | null = existingById;
         if (current) {
           if (body.title !== undefined || body.access !== undefined) {
+            // Same as the path branch: a stale base never relocates.
+            if (
+              consoleWriteGuardRefuses(current, {
+                expectedVersion,
+                expectedDraftRevision,
+              })
+            ) {
+              return versionConflictResponse();
+            }
             try {
               const moved = await consoleManager.relocateForSave(
                 current,
@@ -2076,10 +2139,13 @@ consoleRoutes.openapi(
 
       if (success) {
         // The manager bumped the draft revision and poked subscribers
-        // (relocateConsole) — every rename path shares that.
+        // (relocateConsole) — every rename path shares that. The answer
+        // says where the console is now, so the caller retargets its open
+        // tab from the server's word (name, folder chain, visibility).
         return c.json({
           success: true,
           message: "Console renamed successfully",
+          console: await locationOfConsole(workspaceId, consoleId),
         });
       } else {
         return c.json({ success: false, error: "Console not found" }, 404);
@@ -3773,19 +3839,19 @@ const consoleFolderBackend: FolderBackend = {
       }
     }
     // A move that also renames ("Move to…" with a new name) is one commit.
+    // No `folderId` at all keeps the folder: a rename in place (a shared
+    // editor's, whose console may sit in a folder they cannot see).
+    let success: boolean;
     try {
-      const success = await consoleManager.moveConsole(
+      success = await consoleManager.moveConsole(
         itemId,
         ctx.workspaceId,
-        folderId ?? null,
+        folderId,
         access,
         ctx.userId,
         name,
         isWorkspaceAdminRole(ctx.role),
       );
-      if (!success) {
-        return { ok: false, status: 404, error: "Console not found" };
-      }
     } catch (error) {
       if (error instanceof ConsoleConflictError) {
         return { ok: false, status: 409, error: error.message };
@@ -3797,7 +3863,12 @@ const consoleFolderBackend: FolderBackend = {
       }
       throw error;
     }
-    return { ok: true };
+    if (!success) {
+      return { ok: false, status: 404, error: "Console not found" };
+    }
+    // Where it is now: the caller retargets an open tab from this.
+    const location = await locationOfConsole(ctx.workspaceId, itemId);
+    return location ? { ok: true, data: { ...location } } : { ok: true };
   },
 };
 

@@ -56,6 +56,31 @@ export interface ConsoleFile {
   access?: ConsoleAccessLevel;
   owner_id?: string;
   createdAt?: Date;
+  /**
+   * Consoles only: whether the listing's caller may write it — the same
+   * `ConsoleManager.canWrite` every write route applies (owner, a share as
+   * editor, the workspace role). The explorer offers Rename by it: a
+   * shared editor renames in place even though moving it is not theirs.
+   */
+  canWrite?: boolean;
+}
+
+/**
+ * Where a console is, as the editor shows it — what an open tab retargets
+ * to after a rename or a move (from the route's answer, or the realtime
+ * revision sync), so it never keeps, or later saves back, a stale place.
+ */
+export interface ConsoleLocation {
+  id: string;
+  /** The console's own name (the leaf). */
+  name: string;
+  /** Its folder chain and name: `Folder/Sub/name` (`name` at the root). */
+  path: string;
+  folderId: string | null;
+  /** Who sees it: its own access OR a workspace folder on its chain. */
+  access: ConsoleAccessLevel;
+  draftRevision: number;
+  isSaved: boolean;
 }
 
 function folderIdForLive(
@@ -502,6 +527,7 @@ export class ConsoleManager {
   private buildTree(
     folders: IConsoleFolder[],
     consoles: ISavedConsole[],
+    canWrite?: (console: ISavedConsole) => boolean,
   ): ConsoleFile[] {
     const folderMap = new Map<string, ConsoleFile>();
     const rootItems: ConsoleFile[] = [];
@@ -556,6 +582,7 @@ export class ConsoleManager {
         executionCount: console.executionCount,
         access: ConsoleManager.resolveAccess(console),
         owner_id: console.owner_id || console.createdBy,
+        ...(canWrite ? { canWrite: canWrite(console) } : {}),
       };
 
       if (console.folderId) {
@@ -586,7 +613,7 @@ export class ConsoleManager {
   async listConsolesSplit(
     workspaceId: string,
     userId: string,
-    _userRole: string = "member",
+    userRole: string = "member",
   ): Promise<{
     myConsoles: ConsoleFile[];
     sharedWithWorkspace: ConsoleFile[];
@@ -669,11 +696,15 @@ export class ConsoleManager {
         else if (section === "workspace") sharedWithWorkspaceFolders.push(f);
       }
 
+      const isAdmin = userRole === "owner" || userRole === "admin";
+      const canWrite = (c: ISavedConsole) =>
+        ConsoleManager.canWrite(c, userId, isAdmin, userRole);
       return {
-        myConsoles: this.buildTree(myFolders, myConsolesRaw),
+        myConsoles: this.buildTree(myFolders, myConsolesRaw, canWrite),
         sharedWithWorkspace: this.buildTree(
           sharedWithWorkspaceFolders,
           sharedWithWorkspaceRaw,
+          canWrite,
         ),
       };
     } catch (error) {
@@ -1687,6 +1718,28 @@ export class ConsoleManager {
   }
 
   /**
+   * Where a console is (see `ConsoleLocation`): the answer a rename or a
+   * move gives back, and what the revision sync carries, so the editor
+   * retargets an open tab from the server's word — never from a path it
+   * computed itself out of a tree that may be stale.
+   */
+  async consoleLocation(row: ISavedConsole): Promise<ConsoleLocation> {
+    const segments = await folderSegmentsFor(
+      row.folderId,
+      row.workspaceId.toString(),
+    );
+    return {
+      id: row._id.toString(),
+      name: row.name,
+      path: [...segments, row.name].join("/"),
+      folderId: row.folderId ? row.folderId.toString() : null,
+      access: await this.effectiveVisibility(row),
+      draftRevision: row.draftRevision ?? 1,
+      isSaved: row.isSaved ?? true,
+    };
+  }
+
+  /**
    * Who can see a console: "workspace" when its own access is workspace OR
    * any folder on its chain is a workspace folder (the inheritance rule
    * `canReadWithInheritance` applies), else "private".
@@ -2470,7 +2523,8 @@ export class ConsoleManager {
   async moveConsole(
     consoleId: string,
     workspaceId: string,
-    folderId: string | null,
+    /** `null` = the root; `undefined` keeps the folder (a rename in place). */
+    folderId: string | null | undefined,
     access?: ConsoleAccessLevel,
     userId?: string,
     name?: string,
