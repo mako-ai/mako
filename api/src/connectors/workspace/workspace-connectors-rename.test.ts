@@ -642,7 +642,10 @@ describe("reconcile detects a rename instead of deleting", () => {
     expect(pass.renamed).toEqual([{ from: "foo", to: "acme" }]);
     expect((await SourceConnection.findById(fooConn))?.type).toBe("ws:acme");
     // Z released the name BEFORE foo took it: no two owners of `acme`.
+    // (Z's only ever alias was `acme`; the rename's re-index is awaited,
+    // so no pass from an earlier state can hand it anything else.)
     const z = await ConnectorDefinition.findOne({ workspaceId: WS, slug: "z" });
+    expect(z?.aliases).not.toContain("acme");
     expect(z?.aliases).toEqual([]);
     expect(z?.retiredAliases).toEqual(["acme"]);
     expect((await loadConnectorDefinition(WS, "acme")).slug).toBe("acme");
@@ -695,6 +698,177 @@ describe("reconcile detects a rename instead of deleting", () => {
     expect(keeper?.retiredAliases).toEqual(["old"]);
     expect(await findConnectorDefinitionRow(WS, "old")).toBeNull();
     expect((await SourceConnection.findById(orphan))?.type).toBe("ws:old");
+  }, 120_000);
+
+  it("alias lifecycle: file edits remove file aliases, a copy drops aliases another row holds, delete retires aliases too, a sole claimant adopts", async () => {
+    // 1. acme with a connection.
+    await pushAcme();
+    await syncConnectorsFromRepo(WS);
+    const conn = await connection("ws:acme");
+    // 2. laptop: move + full rewrite (not detectable). C is orphaned: fail closed.
+    await push({
+      writes: {
+        "connectors/acme-v2/connector.yaml": YAML,
+        "connectors/acme-v2/connector.ts": OTHER_TS,
+      },
+      deletes: [
+        "connectors/acme/connector.yaml",
+        "connectors/acme/connector.ts",
+        "connectors/acme/lib/util.ts",
+      ],
+    });
+    await syncConnectorsFromRepo(WS);
+    expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
+    // 3. the documented fix: aliases: [acme] on acme-v2 → sole claimant
+    //    adopts: C is re-typed, not left typed by an alias.
+    await push({
+      writes: {
+        "connectors/acme-v2/connector.yaml": `${YAML}aliases: [acme]\n`,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    expect((await findConnectorDefinitionRow(WS, "acme"))?.row.slug).toBe(
+      "acme-v2",
+    );
+    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme-v2");
+    // 4. a copy of the folder as a template keeps the alias in its yaml:
+    //    dropped (and retired) for the copy — acme-v2 keeps it.
+    await push({
+      writes: {
+        "connectors/other/connector.yaml": `${YAML}aliases: [acme]\n`,
+        "connectors/other/connector.ts": CONNECTOR_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    const other = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "other",
+    });
+    expect(other?.aliases).toEqual([]);
+    expect(other?.retiredAliases).toEqual(["acme"]);
+    expect((await findConnectorDefinitionRow(WS, "acme"))?.row.slug).toBe(
+      "acme-v2",
+    );
+    // 5. the author removes the alias from other's yaml: a file edit
+    //    removes what the file added (nothing to remove here, stays []).
+    await push({ writes: { "connectors/other/connector.yaml": YAML } });
+    await syncConnectorsFromRepo(WS);
+    expect(
+      (await ConnectorDefinition.findOne({ workspaceId: WS, slug: "other" }))
+        ?.aliases,
+    ).toEqual([]);
+    // 6. acme-v2 is deleted: its slug AND its aliases are retired on every
+    //    remaining row; ws:acme resolves to nothing, never to `other`.
+    await push({
+      deletes: [
+        "connectors/acme-v2/connector.yaml",
+        "connectors/acme-v2/connector.ts",
+      ],
+    });
+    await syncConnectorsFromRepo(WS);
+    expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
+    expect(await findConnectorDefinitionRow(WS, "acme-v2")).toBeNull();
+    // `other` never claimed either name (its copied `acme` was retired at
+    // creation), so there is nothing to retire on it — and nothing to adopt.
+    const otherAfter = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "other",
+    });
+    expect(otherAfter?.aliases).toEqual([]);
+    expect(otherAfter?.retiredAliases).toEqual(["acme"]);
+    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme-v2");
+    // Git history must not reopen a retired name either.
+    expect(await resolveConnector(ctx, "acme-v2")).toBeNull();
+  }, 120_000);
+
+  it("removing an alias from connector.yaml removes it from the index; a git-detected one stays", async () => {
+    await pushAcme("acme", `${YAML}aliases: [old]\n`);
+    await syncConnectorsFromRepo(WS);
+    expect(
+      (await ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }))
+        ?.aliases,
+    ).toEqual(["old"]);
+    await push({ writes: { "connectors/acme/connector.yaml": YAML } });
+    await syncConnectorsFromRepo(WS);
+    expect(
+      (await ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }))
+        ?.aliases,
+    ).toEqual([]);
+    expect(await findConnectorDefinitionRow(WS, "old")).toBeNull();
+    // A bare git mv (no alias in the file) is remembered as DETECTED and
+    // survives file edits that do not mention it.
+    await push({
+      writes: {
+        "connectors/acme-v2/connector.yaml": YAML,
+        "connectors/acme-v2/connector.ts": CONNECTOR_TS,
+        "connectors/acme-v2/lib/util.ts": "export const x = 1;\n",
+      },
+      deletes: [
+        "connectors/acme/connector.yaml",
+        "connectors/acme/connector.ts",
+        "connectors/acme/lib/util.ts",
+      ],
+    });
+    expect((await syncConnectorsFromRepo(WS)).renamed).toEqual([
+      { from: "acme", to: "acme-v2" },
+    ]);
+    await push({
+      writes: { "connectors/acme-v2/connector.yaml": `${YAML}# touched\n` },
+    });
+    await syncConnectorsFromRepo(WS);
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme-v2",
+    });
+    expect(row?.detectedAliases).toEqual(["acme"]);
+    expect(row?.aliases).toEqual(["acme"]);
+  }, 120_000);
+
+  it("two claimants of an alias: no adoption; a new folder at the alias migrates nothing and retires both claims", async () => {
+    await push({
+      writes: {
+        "connectors/x/connector.yaml": `${YAML}aliases: [acme]\n`,
+        "connectors/x/connector.ts": CONNECTOR_TS,
+        "connectors/y/connector.yaml": `${YAML}aliases: [acme]\n`,
+        "connectors/y/connector.ts": OTHER_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    // Same pass, two files claiming `acme`: the first (slug order) keeps it,
+    // the copy is dropped — one owner, never two.
+    const x = await ConnectorDefinition.findOne({ workspaceId: WS, slug: "x" });
+    const y = await ConnectorDefinition.findOne({ workspaceId: WS, slug: "y" });
+    expect([x?.aliases, y?.aliases]).toEqual([["acme"], []]);
+    // Force the ambiguous state by hand (two rows holding it) and add a
+    // connection typed by the alias: nothing may adopt it.
+    await ConnectorDefinition.updateOne(
+      { _id: y!._id },
+      { $set: { aliases: ["acme"], retiredAliases: [] } },
+    );
+    const conn = await connection("ws:acme");
+    await push({ writes: { "README.md": "# touched\n" } });
+    await syncConnectorsFromRepo(WS);
+    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme");
+    expect(await findConnectorDefinitionRow(WS, "acme")).toBeNull();
+    // A new folder at `acme`: with several claimants the connection is left
+    // unresolvable (never handed to whichever Mongo returns first).
+    await push({
+      writes: {
+        "connectors/acme/connector.yaml": YAML,
+        "connectors/acme/connector.ts": CONNECTOR_TS,
+      },
+    });
+    await syncConnectorsFromRepo(WS);
+    expect((await SourceConnection.findById(conn))?.type).toBe("ws:acme");
+    const rows = await ConnectorDefinition.find({
+      workspaceId: WS,
+      slug: { $in: ["x", "y"] },
+    });
+    expect(rows.map(r => r.aliases)).toEqual([[], []]);
+    expect(rows.map(r => r.retiredAliases)).toEqual([["acme"], ["acme"]]);
+    // The live `acme` now answers to it — ws:acme runs the NEW connector,
+    // which is what `conn` typed ws:acme is (it was created for nobody else).
+    expect((await findConnectorDefinitionRow(WS, "acme"))?.via).toBe("current");
   }, 120_000);
 
   it("migrateSourceConnectionType is idempotent", async () => {

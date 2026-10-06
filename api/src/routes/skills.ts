@@ -20,9 +20,9 @@ import {
   deleteSkillById,
   getSkillForAdmin,
   listSkillsForAdmin,
-  saveSkill,
   setSkillPinned,
   toggleSkillSuppressed,
+  updateSkillById,
 } from "../services/skills.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { RepoRequiredError } from "../apps/config";
@@ -222,10 +222,12 @@ skillsRoutes.openapi(
 
       const nextPinned =
         typeof body.pinned === "boolean" ? body.pinned : undefined;
-      const result = await saveSkill(
+      // By id: the skill whose file this is — a pending proposal stays
+      // pending, and nothing is created or retired by an edit.
+      const result = await updateSkillById(
         workspaceId,
+        id,
         {
-          name: existing.name,
           loadWhen: nextLoadWhen,
           body: nextBody,
           entities: nextEntities,
@@ -234,7 +236,7 @@ skillsRoutes.openapi(
         actorId,
       );
       if (!result.success) {
-        return c.json({ success: false, error: result.error }, 400);
+        return c.json({ success: false, error: result.error }, result.status);
       }
       return c.json({ success: true, skill: result.skill });
     } catch (error) {

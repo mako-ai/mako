@@ -57,10 +57,13 @@ import { seedDbtGitTree } from "./test-support/git-tree";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
+  listTree,
   log as repoLog,
   readBlob,
   repoDirFor,
+  resolveCommit,
 } from "../apps/repository.service";
+import { runGit } from "../apps/git";
 import {
   parseDbtFileRef,
   renameDbtFile,
@@ -473,6 +476,167 @@ describe("renameDbtFile", () => {
     ).rejects.toBeInstanceOf(RenameError);
     // Nothing moved.
     expect(await fileAt("models/orders.sql")).not.toBeNull();
+  });
+});
+
+describe("modes, path conflicts and node-name clashes", () => {
+  it("an executable keeps 100755, a symlinked model moves by oid as a symlink, a rewritten executable keeps its mode", async () => {
+    const project = await seedProject();
+    const repoDir = repoDirFor(WS);
+    const hash = async (text: string) =>
+      (
+        await runGit(["-C", repoDir, "hash-object", "-w", "--stdin"], {
+          stdin: text,
+        })
+      ).stdout.trim();
+    const exe = await hash("#!/bin/sh\necho hi\n");
+    const py = await hash("def model(dbt, s):\n    return dbt.ref('orders')\n");
+    const link = await hash("orders.sql");
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        entries: [
+          { path: "dbt/scripts/run.sh", oid: exe, mode: "100755" },
+          { path: "dbt/models/py_model.py", oid: py, mode: "100755" },
+          { path: "dbt/models/orders_link.sql", oid: link, mode: "120000" },
+        ],
+      },
+      { message: "seed modes" },
+    );
+    const modesAt = async () =>
+      Object.fromEntries(
+        (await listTree(repoDir, (await resolveCommit(repoDir, MAIN))!))
+          .filter(e => e.path.startsWith("dbt/"))
+          .map(e => [e.path.slice(4), [e.mode, e.oid]]),
+      );
+    const before = await modesAt();
+
+    await renameDbtFile(member, {
+      from: "scripts/run.sh",
+      to: "scripts/go.sh",
+    });
+    const link2 = await renameDbtFile(member, {
+      from: "models/orders_link.sql",
+      to: "models/orders_link2.sql",
+    });
+    expect(link2.warnings.join("\n")).toMatch(
+      /is a symlink; it was moved as-is/,
+    );
+    await renameDbtFile(member, {
+      from: "models/orders.sql",
+      to: "models/fct_orders.sql",
+    });
+    const after = await modesAt();
+    expect(after["scripts/go.sh"]).toEqual(before["scripts/run.sh"]); // mode + oid
+    expect(after["models/orders_link2.sql"]).toEqual(
+      before["models/orders_link.sql"],
+    ); // still a symlink
+    expect(after["models/py_model.py"][0]).toBe("100755"); // rewritten, mode kept
+    expect(await fileAt("models/py_model.py")).toContain(
+      "dbt.ref('fct_orders')",
+    );
+    expect(project).toBeTruthy();
+  });
+
+  it("a move UNDER an existing file is refused (409) and that file survives", async () => {
+    await seedProject();
+    await expect(
+      renameDbtFile(member, {
+        from: "models/customers.sql",
+        to: "models/orders_archive.sql/customers.sql",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("is an existing file"),
+    });
+    expect(await fileAt("models/orders_archive.sql")).toContain(
+      "ref('orders')",
+    );
+    expect(await fileAt("models/customers.sql")).not.toBeNull();
+    // The guard lives in commitBlobsOnBranch, so a plain write hits it too.
+    await expect(
+      commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "dbt/models/orders_archive.sql/x.sql": "select 1\n" } },
+        { message: "file-as-dir" },
+      ),
+    ).rejects.toMatchObject({ name: "PathConflictError" });
+    await expect(
+      commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "dbt/models": "select 1\n" } },
+        { message: "dir-as-file" },
+      ),
+    ).rejects.toMatchObject({ name: "PathConflictError", kind: "directory" });
+    // …unless the mutation itself removes what is in the way.
+    const ok = await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "dbt/models/orders_archive.sql/x.sql": "select 1\n" },
+        deletes: ["dbt/models/orders_archive.sql"],
+      },
+      { message: "replace file with folder" },
+    );
+    expect(ok.unchanged).toBe(false);
+  });
+
+  it("renaming onto a node name that already exists is refused (409): model, seed and snapshot", async () => {
+    await seedProject({ "seeds/countries.csv": "code\nCH\n" });
+    await expect(
+      renameDbtFile(member, {
+        from: "models/orders.sql",
+        to: "models/staging/customers.sql",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining(
+        "'customers' already exists (models/customers.sql)",
+      ),
+    });
+    await expect(
+      renameDbtFile(member, {
+        from: "models/orders.sql",
+        to: "models/countries.sql",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("seeds/countries.csv"),
+    });
+    await expect(
+      renameDbtFile(member, {
+        from: "models/orders.sql",
+        to: "models/orders_snapshot.sql",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("snapshot in snapshots/orders.sql"),
+    });
+    expect(await fileAt("models/mart.sql")).toBe(MART);
+    // Same name, other folder: the file moves, refs untouched.
+    const moved = await renameDbtFile(member, {
+      from: "models/orders.sql",
+      to: "models/marts/orders.sql",
+    });
+    expect(moved.after.slug).toBe("models/marts/orders.sql");
+    expect(await fileAt("models/mart.sql")).toBe(MART);
+  });
+
+  it("the handler accepts an OLD path the file moved away from", async () => {
+    const project = await seedProject();
+    await renameDbtFile(member, {
+      from: "models/customers.sql",
+      to: "models/dim_customers.sql",
+    });
+    const r = await dbtFileRenameHandler.rename(member, {
+      ref: `/x/${project._id}/file/models/customers.sql`,
+      title: "customers_v2.sql",
+    });
+    expect(r.before.slug).toBe("models/dim_customers.sql");
+    expect(r.after.slug).toBe("models/customers_v2.sql");
   });
 });
 

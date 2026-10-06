@@ -49,6 +49,10 @@ import {
   repoExists,
   resolveCommit,
   BlobPreconditionError,
+  PathConflictError,
+  listTree,
+  type IndexEntry,
+  type IndexMode,
 } from "../apps/repository.service";
 import {
   DBT_ROOT,
@@ -300,7 +304,18 @@ export async function renameDbtFile(
     await readBlobsBatch(repoDir, readRef, [`${DBT_ROOT}/${from}`])
   ).get(`${DBT_ROOT}/${from}`);
   if (!sourceRaw) throw new RenameError(`File not found: ${from}`, 404);
-  if (!isUtf8Text(sourceRaw)) {
+  // Modes travel with the move: an executable stays executable, and a
+  // symlink (`120000`, whose blob is the link TARGET) is moved by oid —
+  // its "content" is never rewritten, that would corrupt the link.
+  const modeByPath = new Map(
+    (await listTree(repoDir, readRef)).map(e => [
+      e.path.slice(DBT_ROOT.length + 1),
+      e,
+    ]),
+  );
+  const sourceEntry = modeByPath.get(from);
+  const sourceIsSymlink = sourceEntry?.mode === "120000";
+  if (!sourceIsSymlink && !isUtf8Text(sourceRaw)) {
     throw new RenameError(
       `${from} is not UTF-8 text, so Mako cannot move it without changing its bytes — rename it with git.`,
       400,
@@ -308,6 +323,8 @@ export async function renameDbtFile(
   }
 
   const writes: Record<string, string> = {};
+  const modes: Record<string, IndexMode> = {};
+  const entries: IndexEntry[] = [];
   const deletes = [from];
   // What this rename read, by blob oid: the commit refuses if any of it
   // changed before the commit lands (a save racing the rename).
@@ -330,6 +347,25 @@ export async function renameDbtFile(
   const oldModel = refNameForDbtPath(from);
   const newModel = refNameForDbtPath(to);
   const updateRefs = input.updateRefs !== false;
+  // A node name is unique in a dbt project: renaming onto a name another
+  // model, seed or snapshot already has would merge their refs (and the
+  // "old relation" warning would invite dropping a live table).
+  if (newModel && newModel !== oldModel) {
+    const taken = await nodeNameTakenBy(
+      project,
+      actor,
+      repoDir,
+      readRef,
+      newModel,
+      from,
+    );
+    if (taken) {
+      throw new RenameError(
+        `A node named '${newModel}' already exists (${taken}); dbt node names must be unique.`,
+        409,
+      );
+    }
+  }
   let movedContent = sourceText;
 
   if (oldModel && !newModel) {
@@ -351,6 +387,14 @@ export async function renameDbtFile(
       for (const path of files) {
         const buf = blobs.get(`${DBT_ROOT}/${path}`);
         if (!buf || buf.includes(0)) continue; // binary: not dbt text
+        const entry = modeByPath.get(path);
+        if (entry?.mode === "120000") {
+          // A symlink's blob is its target path, not SQL: never rewritten.
+          if (mentionsName(buf.toString("utf8"), oldModel)) {
+            stillMentioning.push(path);
+          }
+          continue;
+        }
         if (!isUtf8Text(buf)) {
           // Rewriting it as text would change every invalid byte.
           if (mentionsName(buf.toString("latin1"), oldModel)) {
@@ -392,18 +436,27 @@ export async function renameDbtFile(
         }
         if (next.count > 0) {
           writes[path] = next.text;
+          if (entry && entry.mode !== "100644") {
+            modes[path] = entry.mode as IndexMode;
+          }
           expectBlobs[path] = gitBlobOid(buf);
           rewritten.push(path);
           if (isJob) jobsTouched = true;
         }
       }
       // The moved file may ref itself (a comment, a docs block) — rewrite it too.
-      movedContent = rewriteRefs(
-        sourceText,
-        oldModel,
-        newModel,
-        packageName,
-      ).text;
+      if (sourceIsSymlink) {
+        warnings.push(
+          `${from} is a symlink; it was moved as-is (its target was not rewritten).`,
+        );
+      } else {
+        movedContent = rewriteRefs(
+          sourceText,
+          oldModel,
+          newModel,
+          packageName,
+        ).text;
+      }
       if (mentionsName(movedContent, oldModel)) stillMentioning.push(to);
     } else {
       warnings.push(
@@ -422,7 +475,14 @@ export async function renameDbtFile(
     );
     warnings.push(...(await referencingSqlWarnings(ctx, project, oldModel)));
   }
-  writes[to] = movedContent;
+  if (sourceIsSymlink && sourceEntry) {
+    entries.push({ path: to, oid: sourceEntry.oid, mode: "120000" });
+  } else {
+    writes[to] = movedContent;
+    if (sourceEntry && sourceEntry.mode !== "100644") {
+      modes[to] = sourceEntry.mode as IndexMode;
+    }
+  }
 
   const message =
     rewritten.length > 0
@@ -433,7 +493,7 @@ export async function renameDbtFile(
     result = await commitDbtChanges(
       project,
       actor,
-      { writes, deletes },
+      { writes, deletes, entries, modes },
       message,
       expectBlobs,
     );
@@ -443,6 +503,9 @@ export async function renameDbtFile(
         `${error.path.replace(/^dbt\//, "")} changed while renaming — reload and try again.`,
         409,
       );
+    }
+    if (error instanceof PathConflictError) {
+      throw new RenameError(error.message.replace(/dbt\//g, ""), 409);
     }
     throw error;
   }
@@ -531,6 +594,45 @@ function rewriteProjectFile(
   }
   const props = rewriteNodeProperties(refs.text, oldModel, newModel);
   return { text: props.text, count: refs.count + props.count };
+}
+
+/**
+ * Another node already called `name`: a model or seed file whose name is
+ * `name` (other than the file being moved), or a `{% snapshot name %}`
+ * block. Returns what holds it, or null.
+ */
+async function nodeNameTakenBy(
+  project: IDbtProject,
+  actor: string,
+  repoDir: string,
+  readRef: string,
+  name: string,
+  except: string,
+): Promise<string | null> {
+  const files = (await listWorkingFiles(project, actor)).map(f => f.path);
+  const byFile = files.find(p => p !== except && refNameForDbtPath(p) === name);
+  if (byFile) return byFile;
+  // Snapshots are named by their block: read the (few) snapshot files and
+  // look for `{% snapshot <name> %}`.
+  const snapshots = files.filter(
+    p => p.startsWith("snapshots/") && /\.sql$/i.test(p),
+  );
+  if (snapshots.length === 0) return null;
+  const blobs = await readBlobsBatch(
+    repoDir,
+    readRef,
+    snapshots.map(p => `${DBT_ROOT}/${p}`),
+  );
+  const block = new RegExp(
+    `\\{%-?\\s*snapshot\\s+${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s`,
+  );
+  for (const p of snapshots) {
+    const buf = blobs.get(`${DBT_ROOT}/${p}`);
+    if (buf && !buf.includes(0) && block.test(buf.toString("utf8"))) {
+      return `snapshot in ${p}`;
+    }
+  }
+  return null;
 }
 
 /**
