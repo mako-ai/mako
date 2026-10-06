@@ -913,6 +913,85 @@ export async function log(
     });
 }
 
+/** One commit of a file's history, with where the file was in it. */
+export interface FollowedCommit extends CommitInfo {
+  /** The file's path in this commit (after it, for a rename). */
+  path: string;
+  /** For the commit that renamed/moved the file: where it came from. */
+  previousPath?: string;
+}
+
+/**
+ * Parse `git log --follow --format=%x01%H%x00%an%x00%at%x00%s
+ * --name-status -z`: each commit is `\x01<sha>\0<author>\0<at>\0<subject>\0`
+ * then `\n<status>\0<path>\0` (`R<score>\0<from>\0<to>\0` for a rename).
+ * Newest first; `path` is the file's name at HEAD, carried backwards
+ * through each rename so a commit without a status line (a merge) still
+ * says where the file was.
+ */
+export function parseFollowLog(stdout: string, path: string): FollowedCommit[] {
+  const commits: FollowedCommit[] = [];
+  let current = path;
+  for (const chunk of stdout.split("\x01")) {
+    if (!chunk) continue;
+    const fields = chunk.split("\0");
+    const [oid, author, at, subject] = fields;
+    if (!oid) continue;
+    const status = (fields[4] ?? "").trim();
+    const commit: FollowedCommit = {
+      oid,
+      author: author ?? "",
+      timestamp: Number(at) * 1000,
+      subject: subject ?? "",
+      path: current,
+    };
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const from = fields[5];
+      const to = fields[6];
+      if (to) commit.path = to;
+      if (from && status.startsWith("R")) {
+        commit.previousPath = from;
+        current = from;
+      }
+    } else if (status && fields[5]) {
+      commit.path = fields[5];
+      current = fields[5];
+    }
+    commits.push(commit);
+  }
+  return commits;
+}
+
+/**
+ * A file's history ACROSS renames and moves (`git log --follow`): a
+ * console renamed in the explorer is the same file under a new name, and
+ * its history did not start at the rename. Each entry says where the file
+ * was in that commit.
+ */
+export async function logFollow(
+  repoDir: string,
+  refOrOid: string,
+  limit: number,
+  path: string,
+): Promise<FollowedCommit[]> {
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "log",
+    "--follow",
+    "-M",
+    "--format=%x01%H%x00%an%x00%at%x00%s",
+    "--name-status",
+    "-z",
+    "-n",
+    String(Math.max(1, Math.min(limit, 200))),
+    refOrOid,
+    "--",
+    path,
+  ]);
+  return parseFollowLog(stdout, path);
+}
+
 export interface ChangedFile {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";

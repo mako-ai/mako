@@ -59,6 +59,7 @@ import {
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
+  consoleHistoryPaths,
   liveConsoleCode,
   loadLiveConsoleById,
   projectSavedConsole,
@@ -3573,13 +3574,9 @@ consoleRoutes.openapi(
           404,
         );
       }
-      // Only this console's own file (and its chart) may be read through it.
-      const own = new Set([
-        loaded.doc.path,
-        loaded.doc.path
-          ? `${loaded.doc.path.replace(/\.[^./]+(\.js)?$/, "")}.chart.json`
-          : undefined,
-      ]);
+      // Only this console's own file (and its chart) may be read through
+      // it — under any name it has had (its history follows renames).
+      const own = await consoleHistoryPaths(loaded.doc);
       if (!own.has(target)) {
         return c.json(
           { success: false, error: "Path is not this console" },

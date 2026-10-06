@@ -2304,6 +2304,96 @@ describe("history — the apps surface for a console", () => {
     expect(await fileAt("consoles/h.sql")).toContain("SELECT 1");
   });
 
+  it("follows the file across a rename and a move: every commit, the name it had, its diff", async () => {
+    const saved = await manager.saveConsole(
+      "first",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const v1 = (await SavedConsole.findById(saved._id))!;
+    v1.code = "SELECT 2";
+    const second = await commitConsoleState({
+      row: v1,
+      previousPath: v1.path,
+      actorUserId: USER,
+      message: "second",
+    });
+    await SavedConsole.updateOne(
+      { _id: saved._id },
+      { $set: { code: "SELECT 2", sourceBlobSha: second.sourceBlobSha } },
+    );
+    expect(
+      await manager.renameConsole(saved._id.toString(), "renamed", WS, USER),
+    ).toBe(true);
+    const folder = await manager.createFolder(
+      "Finance",
+      WS,
+      USER,
+      undefined,
+      false,
+      "workspace",
+    );
+    expect(
+      await manager.moveConsole(
+        saved._id.toString(),
+        WS,
+        folder._id.toString(),
+        undefined,
+        USER,
+      ),
+    ).toBe(true);
+
+    const row = (await SavedConsole.findById(saved._id))!;
+    expect(row.path).toBe("consoles/Finance/renamed.sql");
+    const history = await consoleHistory(row);
+    // Before: only the move commit (the file's history "started" at its
+    // current path). Now every commit, newest first, each with its name.
+    expect(history.map(c => c.subject)).toEqual([
+      "move: renamed",
+      "rename: renamed",
+      "second",
+      "create: first",
+    ]);
+    expect(history.map(c => c.path)).toEqual([
+      "consoles/Finance/renamed.sql",
+      "consoles/renamed.sql",
+      "consoles/first.sql",
+      "consoles/first.sql",
+    ]);
+    expect(history[0].previousPath).toBe("consoles/renamed.sql");
+    expect(history[1].previousPath).toBe("consoles/first.sql");
+
+    // An old commit shows the file under the name it had then.
+    const old = await consoleCommitChanges(row, history[2].oid);
+    expect(old.files).toEqual([
+      { path: "consoles/first.sql", status: "modified" },
+    ]);
+    const oldVersions = await consoleFileVersions(
+      row,
+      history[2].oid,
+      "consoles/first.sql",
+    );
+    expect(oldVersions.before).toContain("SELECT 1");
+    expect(oldVersions.after).toContain("SELECT 2");
+    // The rename commit diffs against the old name: unchanged content.
+    const renameVersions = await consoleFileVersions(
+      row,
+      history[1].oid,
+      "consoles/renamed.sql",
+    );
+    expect(renameVersions.before).toContain("SELECT 2");
+    expect(renameVersions.after).toContain("SELECT 2");
+    // Restoring a version from before the rename reads it at its old name.
+    const restored = await restoreConsoleTo(row, history[3].oid, USER);
+    expect(restored.unchanged).toBe(false);
+    expect(await fileAt("consoles/Finance/renamed.sql")).toContain("SELECT 1");
+  });
+
   it("does not list leftover local git history when no GitHub repo is bound", async () => {
     const saved = await manager.saveConsole(
       "orphan-hist",

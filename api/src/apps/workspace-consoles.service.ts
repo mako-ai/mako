@@ -107,13 +107,14 @@ import {
   diffNameStatus,
   listTree,
   log as repoLog,
+  logFollow,
   readBlob,
   readBlobByOid,
   readBlobsBatch,
   resolveCommit,
   type BlobMutation,
   type ChangedFile,
-  type CommitInfo,
+  type FollowedCommit,
   type GitAuthor,
   type TreeEntry,
 } from "./repository.service";
@@ -2144,15 +2145,69 @@ export async function projectSavedConsole(input: {
 // ---------------------------------------------------------------------------
 
 /** Commits that touched a console's file (renames included via its row path). */
+/**
+ * A console's commits, newest first — ACROSS its renames and moves
+ * (`git log --follow`): a rename keeps the console's id and is the same
+ * file under a new name, so its history did not start there. Each commit
+ * says where the file was in it (`path`, and `previousPath` on the commit
+ * that moved it).
+ */
 export async function consoleHistory(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
   limit = 50,
-): Promise<CommitInfo[]> {
+): Promise<FollowedCommit[]> {
   if (!row.path) return [];
   const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
   if (repoDir == null) return [];
   if (!(await resolveCommit(repoDir, MAIN))) return [];
-  return repoLog(repoDir, MAIN, limit, row.path);
+  return logFollow(repoDir, MAIN, limit, row.path);
+}
+
+/** The chart sidecar of a path that may not be a console path (a file the
+ * console was renamed from outside the consoles tree has none). */
+function sidecarOf(p: string): string | undefined {
+  try {
+    return chartSidecarPath(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Where this console's file was in commit `oid` (null: not in its history). */
+async function consolePathsAt(
+  repoDir: string,
+  row: Pick<ISavedConsole, "path">,
+  oid: string,
+): Promise<{ path: string; previousPath?: string } | null> {
+  if (!row.path) return null;
+  const history = await logFollow(repoDir, MAIN, 200, row.path);
+  const hit = history.find(c => c.oid === oid);
+  return hit ? { path: hit.path, previousPath: hit.previousPath } : null;
+}
+
+/**
+ * Every path this console's file has had (and their chart sidecars): what
+ * the history routes may read through it — its own file under any of its
+ * names, never another console's.
+ */
+export async function consoleHistoryPaths(
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
+): Promise<Set<string>> {
+  const paths = new Set<string>();
+  if (!row.path) return paths;
+  paths.add(row.path);
+  paths.add(chartSidecarPath(row.path));
+  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
+  if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return paths;
+  for (const c of await logFollow(repoDir, MAIN, 200, row.path)) {
+    for (const p of [c.path, c.previousPath]) {
+      if (!p) continue;
+      paths.add(p);
+      const sidecar = sidecarOf(p);
+      if (sidecar) paths.add(sidecar);
+    }
+  }
+  return paths;
 }
 
 /** What one commit did to this console (its file and chart sidecar). */
@@ -2166,13 +2221,23 @@ export async function consoleCommitChanges(
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
   const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
-  const mine = new Set(row.path ? [row.path, chartSidecarPath(row.path)] : []);
+  // The file under the name it had IN THAT commit (an older commit of a
+  // renamed console touched its old path, not today's).
+  const at = (await consolePathsAt(repoDir, row, oid)) ?? {
+    path: row.path ?? "",
+  };
+  const mine = new Set(
+    [at.path, at.previousPath]
+      .filter((p): p is string => !!p)
+      .flatMap(p => [p, sidecarOf(p)])
+      .filter((p): p is string => !!p),
+  );
   return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
 }
 
 /** A repo path before and after one commit (null = absent on that side). */
 export async function consoleFileVersions(
-  row: Pick<ISavedConsole, "workspaceId">,
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
   sha: string,
   relPath: string,
 ): Promise<{ before: string | null; after: string | null; binary: boolean }> {
@@ -2181,15 +2246,28 @@ export async function consoleFileVersions(
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
-  const read = async (ref: string | null) => {
+  // The commit that renamed the file: its "before" is under the old name.
+  const at = await consolePathsAt(repoDir, row, oid);
+  let beforePath = relPath;
+  if (at?.previousPath) {
+    const oldSidecar = sidecarOf(at.previousPath);
+    if (relPath === at.path) beforePath = at.previousPath;
+    else if (oldSidecar && relPath === sidecarOf(at.path)) {
+      beforePath = oldSidecar;
+    }
+  }
+  const read = async (ref: string | null, rel: string) => {
     if (!ref) return null;
     try {
-      return await readBlob(repoDir, ref, relPath);
+      return await readBlob(repoDir, ref, rel);
     } catch {
       return null;
     }
   };
-  const [before, after] = await Promise.all([read(parent), read(oid)]);
+  const [before, after] = await Promise.all([
+    read(parent, beforePath),
+    read(oid, relPath),
+  ]);
   return {
     before: before?.isBinary ? null : (before?.contents ?? null),
     after: after?.isBinary ? null : (after?.contents ?? null),
@@ -2215,6 +2293,14 @@ export async function restoreConsoleTo(
   if (!oid) throw new Error(`No such commit: ${sha}`);
   let at = row.path;
   let blob = await readBlob(repoDir, oid, at).catch(() => null);
+  if (!blob) {
+    // Renamed since: the name it had in that commit, from its history.
+    const then = await consolePathsAt(repoDir, row, oid);
+    if (then && then.path !== at) {
+      at = then.path;
+      blob = await readBlob(repoDir, oid, at).catch(() => null);
+    }
+  }
   if (!blob) {
     // The console lived elsewhere at that commit: find its file by blob id
     // lineage is not tracked, so fall back to the commit's own touched path.
