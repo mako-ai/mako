@@ -1699,6 +1699,9 @@ export default function AppsExplorer() {
             return !!app && appUrlRef(app) !== app.id;
           })()
         }
+        published={
+          !!renameDialog && !!appById.get(renameDialog.appId)?.publishedSha
+        }
         busy={renameBusy}
         error={renameError}
         onClose={() => !renameBusy && setRenameDialog(null)}

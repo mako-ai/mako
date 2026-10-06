@@ -48,6 +48,21 @@ describe("AppRenameDialog", () => {
     expect(onConfirm).toHaveBeenCalledWith({ title: "Weekly report" });
   });
 
+  it("says a rename republishes the app only when it is published", () => {
+    renderDialog();
+    expect(screen.queryByText(/republishes/)).toBeNull();
+    cleanup();
+    renderDialog({ published: true });
+    expect(screen.getByText(/republishes the app once/)).toBeTruthy();
+    cleanup();
+    renderDialog({ published: true, linkLockedReason: "Only ana can." });
+    expect(
+      screen.getByText(
+        "Only the name can change here. A change rewrites mako.json, which republishes the app once.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("lets the link change when nothing locks it", () => {
     const { onConfirm, link } = renderDialog();
     expect(link.disabled).toBe(false);
