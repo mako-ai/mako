@@ -126,8 +126,8 @@ export function AppRenameDialog({
         />
         <Typography variant="caption" color="text.secondary">
           {slugChanged
-            ? "The previous name is kept as an alias of this app, so its old link keeps opening it — unless another app also used that name before; you'll be told."
-            : "Changing the link renames the app's folder; the previous name is kept as an alias."}
+            ? "The previous name is kept as an alias of this app, so its old link keeps opening it. If another app used that name before, that app stops answering to it — you'll be told."
+            : "Changing the link renames the app's folder; the previous name is kept as an alias. Either change rewrites mako.json, which republishes the app once."}
         </Typography>
         {error && (
           <Typography
