@@ -138,7 +138,7 @@ describe("first save onto a pushed, unsynced file", () => {
       access: "workspace",
     });
     expect(r.status).toBe(409);
-    expect(r.body.error).toContain("consoles/report.sql");
+    expect(r.body.error).toContain("A console named 'report' already exists");
     expect(await fileAt("consoles/report.sql")).toBe(LAPTOP);
   });
 
@@ -161,7 +161,7 @@ describe("first save onto a pushed, unsynced file", () => {
       access: "workspace",
     });
     expect(r.status).toBe(409);
-    expect(r.body.error).toContain("consoles/report.sql");
+    expect(r.body.error).toContain("A console named 'report' already exists");
     expect(await fileAt("consoles/report.sql")).toBe(LAPTOP);
     expect((await SavedConsole.findById(draft._id))?.isSaved).toBe(false);
     // A free name saves as before.
