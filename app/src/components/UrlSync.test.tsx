@@ -249,6 +249,39 @@ describe("UrlSync hydration", () => {
     expect(h.closeAppsTabsFor).not.toHaveBeenCalled();
   });
 
+  it("says an app filed into a folder under the same name MOVED, not renamed", async () => {
+    // apps/revenue-board → apps/finance/revenue-board: the top-level link
+    // is an alias now, and the app is addressed by its id.
+    h.resolveObjectRef.mockResolvedValueOnce({
+      kind: "app",
+      id: "6aaaed797eb3d8d53c497fd1",
+      via: "alias",
+      current: {
+        title: "Revenue Board",
+        slug: "revenue-board",
+        path: "apps/finance/revenue-board",
+        url: "/apps/6aaaed797eb3d8d53c497fd1",
+      },
+    });
+    window.history.replaceState({}, "", "/apps/revenue-board");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "6aaaed797eb3d8d53c497fd1",
+        "Revenue Board",
+        undefined,
+        "",
+      ),
+    );
+    expect(window.location.pathname).toBe("/apps/6aaaed797eb3d8d53c497fd1");
+    expect(
+      await screen.findByText("That app moved — the link has been updated."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/renamed/)).toBeNull();
+  });
+
   it("trusts the server over the list for an old name: ambiguous there means a dead link here", async () => {
     // The list resolves the alias, the server does not (another app this
     // person cannot see claims the same old name).

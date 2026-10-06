@@ -3,7 +3,11 @@ import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { appUrlSlug, useAppsStore } from "../store/appsStore";
-import { resolveAppRefVia } from "../lib/apps-explorer-tree";
+import {
+  appPathOf,
+  basenameOf,
+  resolveAppRefVia,
+} from "../lib/apps-explorer-tree";
 import { resolveObjectRef } from "../lib/object-links";
 import {
   closeAppsTabsFor,
@@ -58,6 +62,8 @@ async function resolveAppLink(
   id: string;
   title: string;
   slug: string | undefined;
+  /** The app's folder name today (its slug, wherever it is filed). */
+  folder: string;
   via: "current" | "alias";
 } | null> {
   const local = resolveAppRefVia(useAppsStore.getState().apps, ref);
@@ -66,6 +72,7 @@ async function resolveAppLink(
       id: local.app.id,
       title: local.app.title,
       slug: appUrlSlug(local.app),
+      folder: basenameOf(appPathOf(local.app)),
       via: "current",
     };
   }
@@ -82,6 +89,7 @@ async function resolveAppLink(
         id: local.app.id,
         title: local.app.title,
         slug: appUrlSlug(local.app),
+        folder: basenameOf(appPathOf(local.app)),
         via: local.via,
       };
     }
@@ -104,14 +112,27 @@ async function resolveAppLink(
       : current.slug && current.path === `apps/${current.slug}`
         ? current.slug
         : undefined,
+    folder: basenameOf(
+      listed ? appPathOf(listed) : (current.path ?? current.slug ?? remote.id),
+    ),
     via: remote.via,
   };
 }
 
 const DEAD_APP_LINK =
   "That app link doesn't resolve anymore — the app may have been deleted or renamed.";
-const MOVED_APP_LINK =
-  "That app was renamed — the link has been updated to its new address.";
+
+/**
+ * What an old app link says once it has been rewritten: an app filed into
+ * another folder under the SAME name moved; one whose name changed was
+ * renamed. (A top-level app filed into a folder is addressed by its id
+ * from then on, so its old `/apps/<name>` link is an alias too.)
+ */
+function oldAppLinkNotice(ref: string, folder: string): string {
+  return basenameOf(ref.replace(/\/+$/, "")) === folder
+    ? "That app moved — the link has been updated."
+    : "That app was renamed — the link has been updated to its new address.";
+}
 
 /**
  * UrlSync component
@@ -355,7 +376,7 @@ export function UrlSync() {
               "",
               `/apps/${encodeURIComponent(app.slug ?? app.id)}/file/${appFileMatch[2]}`,
             );
-            setDeadLinkNotice(MOVED_APP_LINK);
+            setDeadLinkNotice(oldAppLinkNotice(appRef, app.folder));
           }
         })
         // Server unreachable: leave the link as it is; no dead-link notice.
@@ -403,7 +424,7 @@ export function UrlSync() {
               "",
               `/apps/${encodeURIComponent(app.slug ?? app.id)}${appSearch}`,
             );
-            setDeadLinkNotice(MOVED_APP_LINK);
+            setDeadLinkNotice(oldAppLinkNotice(appRef, app.folder));
           }
         })
         // Server unreachable: leave the link as it is; no dead-link notice.
