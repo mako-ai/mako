@@ -50,7 +50,7 @@ import {
   SIDE_PANEL_MIN_WIDTH_PX,
   useUIStore,
 } from "./store/uiStore";
-import { useConsoleStore } from "./store/consoleStore";
+import { hasUnsavedLocalEdits, useConsoleStore } from "./store/consoleStore";
 import { useExplorerRevealStore } from "./store/explorerRevealStore";
 import { tabRevealTarget } from "./lib/explorer-reveal";
 import { consoleLeafName } from "./lib/console-name";
@@ -415,7 +415,13 @@ function MainApp() {
         // Never replace an already-open console with placeholder content while
         // the background fetch is in flight. The eventual fetch update is guarded
         // by no-op store writes, so repeated explorer clicks stay cheap.
-        if (!isPlaceholder && existing.content !== content) {
+        // Nor over edits not saved yet: the caller's content is the
+        // server's (or a cached) copy, and the edit would be lost.
+        if (
+          !isPlaceholder &&
+          existing.content !== content &&
+          !hasUnsavedLocalEdits(existing.id)
+        ) {
           updateContent(existing.id, content);
         }
         return;

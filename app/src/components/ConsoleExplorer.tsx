@@ -33,6 +33,7 @@ import {
 } from "../store/consoleTreeStore";
 import { accessForMove } from "../store/lib/createResourceTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
+import { hasUnsavedLocalEdits, useConsoleStore } from "../store/consoleStore";
 import { filterTree, findById } from "../store/lib/tree-helpers";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
 import { consoleCopiedNotice } from "../lib/console-relocation";
@@ -151,7 +152,23 @@ function ConsoleExplorer(
     [clearSearch, currentWorkspace, searchConsoles],
   );
 
+  /**
+   * A console already open with edits not saved yet is only focused: the
+   * open path refetches it and marks the tab saved — that replaced the
+   * edit with the server's copy (Save then said "No changes to save", a
+   * reload lost it). A clean open tab is refreshed as before.
+   */
+  const focusIfEditing = (consoleId: string): boolean => {
+    const consoles = useConsoleStore.getState();
+    if (!consoles.tabs[consoleId] || !hasUnsavedLocalEdits(consoleId)) {
+      return false;
+    }
+    consoles.setActiveTab(consoleId);
+    return true;
+  };
+
   const handleSearchResultClick = (result: ConsoleSearchResult) => {
+    if (focusIfEditing(result.id)) return;
     onConsoleSelect(
       result.title,
       "loading...",
@@ -213,6 +230,7 @@ function ConsoleExplorer(
       if (!node.id) return;
 
       const consoleId = node.id;
+      if (focusIfEditing(consoleId)) return;
       const cached = useConsoleContentStore.getState().get(consoleId);
       const initialContent = cached?.content ?? "loading...";
       const connectionId = cached?.connectionId || node.connectionId;
