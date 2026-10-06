@@ -86,6 +86,8 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
   workspaceItems: Record<string, T[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
+  /** Why the last move was refused (the server's message), per workspace. */
+  actionError: Record<string, string | null>;
 
   fetchTree: (workspaceId: string) => Promise<void>;
   refresh: (workspaceId: string) => Promise<void>;
@@ -131,6 +133,21 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
     isDirectory: boolean,
   ) => Promise<boolean>;
   resortItem: (workspaceId: string, itemId: string) => void;
+}
+
+/**
+ * The `access` a "Move to…" should send: only when the user actually
+ * changed section. Sending the target section's access every time asked
+ * the server to re-scope a console whose scope the user never touched —
+ * and a shared editor moving someone else's private console within "My
+ * consoles" was refused for a flip they did not request.
+ */
+export function accessForMove(
+  from: "my" | "workspace",
+  to: "my" | "workspace",
+): TreeAccessLevel | undefined {
+  if (from === to) return undefined;
+  return to === "workspace" ? "workspace" : "private";
 }
 
 /** The section arrays an extension mutates inside `set`. */
@@ -298,6 +315,7 @@ export function createResourceTreeStore<
       workspaceItems: {},
       loading: {},
       error: {},
+      actionError: {},
 
       fetchTree: workspaceId => {
         const pending = fetchInFlight.get(workspaceId);
@@ -371,8 +389,17 @@ export function createResourceTreeStore<
             name,
           );
           return true;
-        } catch {
+        } catch (err: unknown) {
           await get().refresh(workspaceId);
+          // After the refresh (which clears the tree's own error): the
+          // server's reason (403 scope flip, 409 name taken) for the UI
+          // to show — a silently restored tree says nothing.
+          set(state => {
+            state.actionError[workspaceId] = toErrorMessage(
+              err,
+              `Failed to move ${resourceName}`,
+            );
+          });
           return false;
         }
       },
@@ -397,8 +424,14 @@ export function createResourceTreeStore<
         try {
           await endpoints.moveFolder(workspaceId, folderId, parentId, access);
           return true;
-        } catch {
+        } catch (err: unknown) {
           await get().refresh(workspaceId);
+          set(state => {
+            state.actionError[workspaceId] = toErrorMessage(
+              err,
+              `Failed to move ${resourceName} folder`,
+            );
+          });
           return false;
         }
       },

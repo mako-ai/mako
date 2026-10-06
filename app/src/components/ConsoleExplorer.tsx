@@ -16,6 +16,7 @@ import {
   Skeleton,
   Menu,
   MenuItem,
+  Snackbar,
   Tooltip,
 } from "@mui/material";
 import {
@@ -30,6 +31,7 @@ import {
   type ConsoleEntry,
   type ConsoleSearchResult,
 } from "../store/consoleTreeStore";
+import { accessForMove } from "../store/lib/createResourceTreeStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { filterTree } from "../store/lib/tree-helpers";
@@ -91,6 +93,9 @@ function ConsoleExplorer(
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [explorerDialogOpen, setExplorerDialogOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
+  // Why the last "Move to…" was refused, shown once (the tree itself only
+  // snaps back, which says nothing).
+  const [moveError, setMoveError] = useState<string | null>(null);
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const [infoConsoleId, setInfoConsoleId] = useState<string>("");
   const [folderInfoOpen, setFolderInfoOpen] = useState(false);
@@ -351,13 +356,23 @@ function ConsoleExplorer(
       await renameItem(currentWorkspace.id, selectedItem.id, renamedTo, true);
     }
 
+    // Re-scope (private ↔ workspace) only when the user changed section;
+    // the server refuses a scope flip from anyone but the owner, and a
+    // move within the same section must not look like one.
+    const access = accessForMove(getSectionForItem(selectedItem), section);
     if (selectedItem.isDirectory) {
-      await moveFolder(
+      const moved = await moveFolder(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
-        section === "workspace" ? "workspace" : "private",
+        access,
       );
+      if (!moved) {
+        setMoveError(
+          useConsoleTreeStore.getState().actionError[currentWorkspace.id] ??
+            "Could not move the folder.",
+        );
+      }
     } else {
       // Rename + move in ONE request: a console is a file in the repo, and
       // two requests made two commits (rename, then move) for one gesture.
@@ -365,9 +380,17 @@ function ConsoleExplorer(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
-        section === "workspace" ? "workspace" : "private",
+        access,
         renamedTo,
       );
+      if (!success) {
+        // The tree already snapped back; say why (403 scope flip, 409 name
+        // taken) instead of refreshing in silence.
+        setMoveError(
+          useConsoleTreeStore.getState().actionError[currentWorkspace.id] ??
+            "Could not move the console.",
+        );
+      }
       if (success) {
         const nextName = newName || selectedItem.name;
         const nextPath = getPathForMoveTarget(
@@ -651,6 +674,13 @@ function ConsoleExplorer(
           selectedItem ? getParentFolderIdForItem(selectedItem) : null
         }
         initialSection={selectedItem ? getSectionForItem(selectedItem) : "my"}
+      />
+
+      <Snackbar
+        open={moveError !== null}
+        autoHideDuration={6000}
+        onClose={() => setMoveError(null)}
+        message={moveError ?? ""}
       />
     </>
   );
