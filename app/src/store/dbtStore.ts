@@ -77,6 +77,8 @@ export interface DbtJobItem {
   projectId: string;
   /** Filename identity in dbt/jobs/<slug>.yml. */
   slug?: string;
+  /** Previous slugs that still resolve to this job (graceful rename). */
+  aliases?: string[];
   name: string;
   environment: string;
   commands: string[];

@@ -47,6 +47,7 @@ import Editor, { Monaco, OnMount } from "@monaco-editor/react";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
+import { flowNameForSave } from "../lib/flow-auto-name";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { trackEvent } from "../lib/analytics";
 import { ConnectionSelector } from "./ConnectionSelector";
@@ -871,10 +872,44 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
           ? `${selectedDest?.name}/${data.tableDestination.database}`
           : selectedDest?.name || "Destination";
         const generatedName = `${sourceName} → ${destName}:${data.tableDestination.tableName}`;
+        // Only while nobody has set a name of their own: a renamed flow must
+        // not get "Source → Destination" back on its next save.
+        const existingFlow = currentFlowId
+          ? flows.find(flow => flow._id === currentFlowId)
+          : undefined;
+        const previousAutoName = (() => {
+          if (!existingFlow) return undefined;
+          const f = existingFlow as typeof existingFlow & {
+            databaseSource?: { connectionId?: string; database?: string };
+            tableDestination?: {
+              connectionId?: string;
+              database?: string;
+              tableName?: string;
+            };
+          };
+          const prevSource = databases.find(
+            db => db.id === f.databaseSource?.connectionId,
+          );
+          const prevDest = databases.find(
+            db => db.id === f.tableDestination?.connectionId,
+          );
+          const prevSourceName = f.databaseSource?.database
+            ? `${prevSource?.name}/${f.databaseSource.database}`
+            : prevSource?.name || "Source";
+          const prevDestName = f.tableDestination?.database
+            ? `${prevDest?.name}/${f.tableDestination.database}`
+            : prevDest?.name || "Destination";
+          return `${prevSourceName} → ${prevDestName}:${f.tableDestination?.tableName ?? ""}`;
+        })();
+        const nameForSave = flowNameForSave({
+          existingName: existingFlow?.name,
+          previousAutoName,
+          nextAutoName: generatedName,
+        });
 
         // Build payload - structure matches API directly!
         const payload: any = {
-          name: generatedName,
+          ...(nameForSave !== undefined ? { name: nameForSave } : {}),
           type: "scheduled",
           sourceType: "database",
           databaseSource: {
