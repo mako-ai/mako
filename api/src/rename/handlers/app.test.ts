@@ -268,6 +268,73 @@ describe("rename", () => {
     ).toEqual([]);
   });
 
+  it("warns when the NEW link was another app's old link — it opens this app from now on", async () => {
+    // A: a → bar → baz (old names "a" and "bar"). D, a new top-level app,
+    // renamed onto "a".
+    await renameObject(editor, "app", { ref: "a", slug: "bar" });
+    await renameObject(editor, "app", { ref: "bar", slug: "baz" });
+    const D_ID = new Types.ObjectId().toHexString();
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "apps/d/mako.json": manifest("D", D_ID) } },
+      { message: "new app d", author: { name: "L", email: "l@x" } },
+    );
+    invalidateAppsIndexCache(WS);
+    const result = await renameObject(editor, "app", { ref: D_ID, slug: "a" });
+    expect(result.warnings).toEqual([
+      '/apps/a used to open "A" (apps/baz); it now opens this app.',
+    ]);
+    expect(await resolveObjectRef(editor, "app", "a")).toMatchObject({
+      id: D_ID,
+      via: "current",
+    });
+    // The app that loses a link is named only to someone who may see it:
+    // A becomes someone else's private app. D moves on to "bar" — A's
+    // other old name — keeping "a", which A also listed.
+    const A = (await resolveProjectRef(WS, "baz"))!;
+    await ensureProjectRow(A, USER);
+    await AppProject.updateOne(
+      { _id: A._id },
+      {
+        $set: { access: "private", owner_id: new Types.ObjectId().toString() },
+      },
+    );
+    expect(
+      (await renameObject(editor, "app", { ref: D_ID, slug: "bar" })).warnings,
+    ).toEqual([
+      "/apps/bar used to open another app; it now opens this app.",
+      '/apps/a now opens "D"; it was also an old name of another app, which no longer answers to it.',
+    ]);
+  });
+
+  it("refuses a link another app already uses, in the words of the link", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          "apps/x/mako.json": manifest("X"),
+          "apps/Sales/CH/y/mako.json": manifest("Y"),
+        },
+      },
+      { message: "x and y", author: { name: "L", email: "l@x" } },
+    );
+    invalidateAppsIndexCache(WS);
+    await expect(
+      renameObject(editor, "app", { ref: "x", slug: "a" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "An app already uses the link /apps/a.",
+    });
+    await expect(
+      renameObject(editor, "app", { ref: B_ID, slug: "y" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: 'An app named "y" already exists in apps/Sales/CH.',
+    });
+  });
+
   it("answers read-only (403) to someone who can see the app but not write it, as POST /move does", async () => {
     // A member on a folder-only workspace app reads as viewer (no row,
     // no workspaceRole): the app is in their list, so never "not found".

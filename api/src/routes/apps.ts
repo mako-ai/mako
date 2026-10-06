@@ -56,7 +56,7 @@ import {
   checkoutBranch,
   checkoutInBox,
   commitWorktree,
-  createProject,
+  createProjectWith,
   defaultBranchSha,
   deleteProject,
   discardWorktree,
@@ -92,6 +92,7 @@ import {
   moveProject,
   projectFromIndexRow,
   stampAppId,
+  supersessionWarnings,
   type AppFolderTarget,
 } from "../apps/worktree.service";
 import { loadAppsIndex, resolveAppRef } from "../apps/app-index.service";
@@ -817,7 +818,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Create an Apps project",
     description:
-      "Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold.",
+      "Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold. `warnings` says when the new app's name was another app's old link, which opens the new app from now on.",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam,
@@ -844,14 +845,11 @@ appsRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description, folder } = c.req.valid("json");
       const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
       let target: AppFolderTarget | undefined;
       if (folder) {
         target = folderTargetFromPath(folder);
-        const denied = authorizeFolderTarget(
-          target,
-          userId,
-          await memberRoleFor(workspaceId, userId),
-        );
+        const denied = authorizeFolderTarget(target, userId, role);
         if (denied) return c.json({ success: false, error: denied }, 403);
       }
       // Apps live in the workspace's own GitHub repo (apps.md §17). Creating
@@ -869,7 +867,7 @@ appsRoutes.openapi(
           412,
         );
       }
-      const project = await createProject({
+      const { project, takenOver } = await createProjectWith({
         workspaceId,
         title,
         description,
@@ -880,6 +878,15 @@ appsRoutes.openapi(
         {
           success: true as const,
           app: toProjectJson(project, { title, description }),
+          // The new app's name was another app's old link, which opens
+          // this one from now on.
+          warnings: await supersessionWarnings(
+            workspaceId,
+            userId,
+            role,
+            project.title,
+            takenOver,
+          ),
         },
         200,
       );
@@ -1048,7 +1055,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "File the app in another folder (and/or rename its folder)",
     description:
-      "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it. Filed elsewhere under the same name, an app that already has an id is not rebuilt (the index remembers the old path); any mako.json write — a stamp, a new alias, a title change — rebuilds it once. Renamed (`name`), the old folder name is recorded as an `aliases` entry in mako.json in the same commit, so the old /apps/<slug> link and old refs keep opening it. `warnings` lists any other app that used that name before and stops answering to it. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
+      "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it. Filed elsewhere under the same name, an app that already has an id is not rebuilt (the index remembers the old path); any mako.json write — a stamp, a new alias, a title change — rebuilds it once. Renamed (`name`), the old folder name is recorded as an `aliases` entry in mako.json in the same commit, so the old /apps/<slug> link and old refs keep opening it. `warnings` lists any other app that loses a link: one whose old name the app now sits at or keeps as an alias. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,

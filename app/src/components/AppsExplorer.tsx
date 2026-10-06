@@ -355,9 +355,15 @@ export default function AppsExplorer() {
   } | null>(null);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
-  // What the server could not promise about the rename (an old name that
-  // was another app's too): shown after the dialog closes, never swallowed.
-  const [renameWarnings, setRenameWarnings] = useState<string[] | null>(null);
+  // When a create, rename or move changed which app a link opens (the new
+  // name was another app's old link, or an old name it keeps was another
+  // app's too): the server says so, and it is shown — never swallowed.
+  const [linkWarnings, setLinkWarnings] = useState<string[] | null>(null);
+  const showLinkWarnings = useCallback(
+    (warnings: readonly string[] | undefined) =>
+      setLinkWarnings(warnings && warnings.length > 0 ? [...warnings] : null),
+    [],
+  );
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -591,7 +597,9 @@ export default function AppsExplorer() {
           folderOfApp(dragged.appId) !== root &&
           !isSharedWithMe(dragged.appId)
         ) {
-          void moveApp(workspaceId, dragged.appId, root);
+          void moveApp(workspaceId, dragged.appId, root).then(moved =>
+            showLinkWarnings(moved?.warnings),
+          );
         }
       } else if (dragged.kind === "folder") {
         const to = `${root}/${basenameOf(dragged.folderPath)}`;
@@ -612,6 +620,7 @@ export default function AppsExplorer() {
       moveApp,
       moveAppFolder,
       isSharedWithMe,
+      showLinkWarnings,
     ],
   );
 
@@ -666,7 +675,9 @@ export default function AppsExplorer() {
         if (!mayWriteTo(destPath)) return;
         const from = folderOfApp(dragged.appId);
         if (from && !mayWriteTo(from)) return;
-        void moveApp(workspaceId, dragged.appId, destPath);
+        void moveApp(workspaceId, dragged.appId, destPath).then(moved =>
+          showLinkWarnings(moved?.warnings),
+        );
         return;
       }
       if (dragged.kind === "folder") {
@@ -693,6 +704,7 @@ export default function AppsExplorer() {
       moveAppFolder,
       moveFavourite,
       toggleFavourite,
+      showLinkWarnings,
     ],
   );
 
@@ -745,21 +757,30 @@ export default function AppsExplorer() {
   const handleCreate = useCallback(async () => {
     if (!workspaceId || !newTitle.trim()) return;
     setCreating(true);
-    const app = await createApp(
+    const created = await createApp(
       workspaceId,
       newTitle.trim(),
       undefined,
       createFolder === WORKSPACE_ROOT ? undefined : createFolder,
     );
     setCreating(false);
-    if (app) {
+    if (created) {
+      const { app } = created;
       setCreateOpen(false);
       setNewTitle("");
       const ref = appUrlRef(app);
       focusAppsTab(app.id, app.title, ref !== app.id ? ref : undefined);
+      showLinkWarnings(created.warnings);
       void fetchApps(workspaceId);
     }
-  }, [workspaceId, newTitle, createFolder, createApp, fetchApps]);
+  }, [
+    workspaceId,
+    newTitle,
+    createFolder,
+    createApp,
+    fetchApps,
+    showLinkWarnings,
+  ]);
 
   const handleDelete = useCallback(
     async (appId: string) => {
@@ -956,7 +977,7 @@ export default function AppsExplorer() {
           );
         }
         setRenameDialog(null);
-        setRenameWarnings(result.warnings.length > 0 ? result.warnings : null);
+        showLinkWarnings(result.warnings);
         await fetchApps(workspaceId);
       } catch (e) {
         setRenameError(e instanceof Error ? e.message : String(e));
@@ -964,7 +985,7 @@ export default function AppsExplorer() {
         setRenameBusy(false);
       }
     },
-    [workspaceId, renameDialog, fetchApps],
+    [workspaceId, renameDialog, fetchApps, showLinkWarnings],
   );
 
   const submitFolderDialog = useCallback(
@@ -1684,12 +1705,12 @@ export default function AppsExplorer() {
         onConfirm={submitRenameDialog}
       />
 
-      {/* After a rename: what the server could not promise (see AppRenameDialog). */}
+      {/* After a create, rename or move: a link that changed hands. */}
       <Snackbar
-        open={renameWarnings !== null}
+        open={linkWarnings !== null}
         autoHideDuration={12000}
-        onClose={() => setRenameWarnings(null)}
-        message={(renameWarnings ?? []).join(" ")}
+        onClose={() => setLinkWarnings(null)}
+        message={(linkWarnings ?? []).join(" ")}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       />
 

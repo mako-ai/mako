@@ -97,6 +97,7 @@ import {
 } from "./repository.service";
 import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
 import {
+  aliasForOldPath,
   aliasMatchesRef,
   aliasesForMoves,
   invalidateAppsIndexCache,
@@ -859,7 +860,14 @@ export async function commitFilesOnBranch(
   );
 }
 
-export async function createProject(input: {
+/** Create an app: its state row and its scaffold, one commit on main. */
+export async function createProject(
+  input: CreateProjectInput,
+): Promise<IAppProject> {
+  return (await createProjectWith(input)).project;
+}
+
+type CreateProjectInput = {
   workspaceId: string;
   title: string;
   description?: string;
@@ -877,7 +885,17 @@ export async function createProject(input: {
    * `private` target puts it under the creator's `users/<id>/apps/`.
    */
   folder?: AppFolderTarget;
-}): Promise<IAppProject> {
+};
+
+/**
+ * {@link createProject}, also saying whose old link the new app takes over
+ * ({@link linkTakeovers}): a new app at another app's old name opens on
+ * that link from now on — every caller warns (supersessionWarnings).
+ */
+export async function createProjectWith(input: CreateProjectInput): Promise<{
+  project: IAppProject;
+  takenOver: SupersededAlias[];
+}> {
   const title = input.title.trim() || "Untitled app";
   // Git first (#956): do not init a local-only repo that then lets consoles,
   // dbt, and prompt writes skip the 412. A GitHub binding (or a test that
@@ -900,12 +918,12 @@ export async function createProject(input: {
   // Never scaffold inside another app: the outer folder would swallow it
   // (the index files one app per outermost manifest) and the row would be
   // orphaned while the parent redeploys with a stranger's files.
-  const parentApp = (await loadAppsIndex(input.workspaceId)).apps.find(a =>
-    isWithin(appPath, a.path),
-  );
+  const before = await loadAppsIndex(input.workspaceId);
+  const parentApp = before.apps.find(a => isWithin(appPath, a.path));
   if (parentApp) {
     throw new AppFolderError(`${parentApp.path} is an app, not a folder`, 409);
   }
+  const takenOver = linkTakeovers(before.apps, appPath);
   const project = await AppProject.create({
     workspaceId: new Types.ObjectId(input.workspaceId),
     title,
@@ -990,7 +1008,7 @@ export async function createProject(input: {
   // and every other: the index is keyed by main's sha, which just moved.
   await syncAppsIndexFromRepo(input.workspaceId).catch(() => undefined);
   pokeApp(project.workspaceId, project._id, "lifecycle", input.userId);
-  return project;
+  return { project, takenOver };
 }
 
 export async function deleteProject(project: IAppProject): Promise<void> {
@@ -1082,6 +1100,71 @@ export interface SupersededAlias {
   appId: string;
   path: string;
   title: string;
+  /**
+   * The app now SITS at the name (created there, or moved or renamed onto
+   * it) rather than keeping it as an old name: see {@link linkTakeovers}.
+   */
+  takenOver?: boolean;
+}
+
+/**
+ * The apps that lose an old link when an app ARRIVES at `path` — created
+ * there, or moved or renamed onto it: every OTHER app whose aliases name
+ * that path. A current name beats any alias, so the link opens the
+ * newcomer from now on. A nested or personal path takes no bare name (a
+ * bare `/apps/<name>` is a top-level link), exactly as findAppInSnapshot
+ * resolves. A claim the index already parked (another app held it more
+ * recently) is not in `aliases`, so it is not reported twice. Pure.
+ */
+export function linkTakeovers(
+  apps: readonly AppIndexRow[],
+  path: string,
+  appId?: string,
+): SupersededAlias[] {
+  const name = aliasForOldPath(path);
+  return apps
+    .filter(
+      other =>
+        other.appId !== appId &&
+        !other.duplicateOf &&
+        other.path !== path &&
+        other.aliases.some(alias => aliasMatchesRef(alias, path)),
+    )
+    .map(other => ({
+      name,
+      appId: other.appId,
+      path: other.path,
+      title: other.title,
+      takenOver: true,
+    }));
+}
+
+/**
+ * The refusal for a move onto a path something already occupies, in the
+ * words a person used: a top-level app's folder name IS its link.
+ */
+function occupiedPathError(
+  to: string,
+  snapshot: { folders: readonly string[] },
+): AppFolderError {
+  const slug = to.split("/").pop() ?? to;
+  const parent = to.slice(0, to.length - slug.length - 1);
+  if (snapshot.folders.includes(to)) {
+    return new AppFolderError(
+      `A folder named "${slug}" already exists in ${parent}.`,
+      409,
+    );
+  }
+  if (to === `apps/${slug}`) {
+    return new AppFolderError(
+      `An app already uses the link /apps/${slug}.`,
+      409,
+    );
+  }
+  return new AppFolderError(
+    `An app named "${slug}" already exists in ${parent}.`,
+    409,
+  );
 }
 
 async function moveWritesUnder(
@@ -1110,6 +1193,9 @@ async function moveWritesUnder(
     const move = moves.find(m => isWithin(app.path, m.from));
     if (!move) continue;
     const newPath = `${move.to}${app.path.slice(move.from.length)}`;
+    // The name it arrives at may be another app's OLD name: that link
+    // opens this app from now on.
+    superseded.push(...linkTakeovers(snapshot.apps, newPath, app.appId));
     let manifest = await readAt(`${app.path}/${APP_MANIFEST}`);
     const original = manifest;
     if (!app.hasManifestId) {
@@ -1268,9 +1354,11 @@ export async function moveProject(
 }
 
 /**
- * What the caller must know when a name a rename keeps as an alias was
- * also another app's old name: the link now opens the renamed app, and the
- * other app no longer answers to it. The other app is named only when the
+ * What the caller must know when a link changes hands: a name a rename
+ * keeps as an alias was also another app's old name (the link now opens
+ * the renamed app, and the other app no longer answers to it), or the app
+ * arrived at another app's old name ({@link linkTakeovers}: created there,
+ * or moved or renamed onto it). The other app is named only when the
  * caller may see it (a workspace API key with nobody behind it sees all).
  */
 export async function supersessionWarnings(
@@ -1301,7 +1389,9 @@ export async function supersessionWarnings(
       ? entry.name
       : `/apps/${encodeURIComponent(entry.name)}`;
     warnings.push(
-      `${link} now opens "${newTitle}"; it was also an old name of ${other}, which no longer answers to it.`,
+      entry.takenOver
+        ? `${link} used to open ${other}; it now opens this app.`
+        : `${link} now opens "${newTitle}"; it was also an old name of ${other}, which no longer answers to it.`,
     );
   }
   return warnings;
@@ -1452,9 +1542,7 @@ async function moveProjectWith(
     throw new AppFolderError(`App folder ${from} is not on main`, 404);
   }
   const taken = await occupiedPaths(workspaceId);
-  if (taken.has(to)) {
-    throw new AppFolderError(`${to} already exists`, 409);
-  }
+  if (taken.has(to)) throw occupiedPathError(to, snapshot);
   // Never file an app inside another app: the outer one would swallow it.
   const parent = snapshot.apps.find(a => isWithin(to, a.path));
   if (parent) {
