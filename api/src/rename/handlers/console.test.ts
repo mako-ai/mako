@@ -155,7 +155,12 @@ describe("resolve", () => {
     const resolved = await resolveObjectRef(owner, "console", "report");
     expect(resolved?.current.path).toBe("consoles/report.sql");
     expect(resolved?.id).not.toBe(old);
-    const result = await renameObject(owner, "console", {
+    // The new file has no known pusher (owner "git"): a plain member may
+    // not write a workspace console without an editor role; an admin may.
+    await expect(
+      renameObject(owner, "console", { ref: "report", title: "report-new" }),
+    ).rejects.toMatchObject({ status: 403 });
+    const result = await renameObject({ ...owner, role: "admin" }, "console", {
       ref: "report",
       title: "report-new",
     });
@@ -172,6 +177,71 @@ describe("resolve", () => {
     expect((await SavedConsole.findById(old))?.path).toBe(
       "consoles/report-old.sql",
     );
+  });
+
+  it("a lookup never makes the reader the owner of unindexed consoles; the write rule decides renames", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          "consoles/alpha.sql": "SELECT 'a'\n",
+          "consoles/beta.sql": "SELECT 'b'\n",
+        },
+      },
+      { message: "laptop push by a teammate" },
+    );
+    const hit = await resolveObjectRef(other, "console", "alpha");
+    expect(hit?.current.path).toBe("consoles/alpha.sql");
+    for (const path of ["consoles/alpha.sql", "consoles/beta.sql"]) {
+      const row = await SavedConsole.findOne({ workspaceId: WS, path });
+      expect(row?.owner_id).not.toBe(OTHER);
+      expect(row?.createdBy).not.toBe(OTHER);
+    }
+    const beta = (await SavedConsole.findOne({
+      workspaceId: WS,
+      path: "consoles/beta.sql",
+    }))!;
+    // OTHER (a member) can neither take it private nor rename it…
+    await expect(
+      renameObject(other, "console", {
+        ref: beta._id.toString(),
+        slug: `users/${OTHER}/consoles/beta.sql`,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      renameObject(other, "console", {
+        ref: beta._id.toString(),
+        title: "beta-2",
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect((await SavedConsole.findById(beta._id))?.path).toBe(
+      "consoles/beta.sql",
+    );
+    // …an admin can rename it, and so can a member once the row grants
+    // workspace members an editor role — the ordinary write rules.
+    const asAdmin = await renameObject({ ...other, role: "admin" }, "console", {
+      ref: beta._id.toString(),
+      title: "beta-admin",
+    });
+    expect(asAdmin.after.path).toBe("consoles/beta-admin.sql");
+    await SavedConsole.updateOne(
+      { _id: beta._id },
+      { $set: { workspaceRole: "editor" } },
+    );
+    const asEditor = await renameObject(other, "console", {
+      ref: beta._id.toString(),
+      title: "beta-editor",
+    });
+    expect(asEditor.after.path).toBe("consoles/beta-editor.sql");
+    // Still nobody's private console.
+    await expect(
+      renameObject(other, "console", {
+        ref: beta._id.toString(),
+        slug: `users/${OTHER}/consoles/beta-editor.sql`,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it("a ref that names a folder must match that folder; only a bare name falls back to the leaf", async () => {

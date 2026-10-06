@@ -800,7 +800,7 @@ export class ConsoleManager {
       const ownerId = folder.ownerId?.toString();
       if (!ownerId || ownerId !== userId) return false;
 
-      await this.syncSubtreeIfDrifted(folderId, workspaceId, userId);
+      await this.syncSubtreeIfDrifted(folderId, workspaceId);
       const before = { access: folder.access, isPrivate: folder.isPrivate };
       const snapshot = await this.folderSubtreeAccessSnapshot(
         folderId,
@@ -1209,7 +1209,9 @@ export class ConsoleManager {
           "The console changed in the repository (a push is being synced). Reload and try again.",
         );
       }
-      await syncConsolesIndexFromRepo(workspaceId, options.userId);
+      // No actor: an on-demand sync must not credit the caller with the
+      // ownership of every unindexed console it happens to index.
+      await syncConsolesIndexFromRepo(workspaceId);
     }
   }
 
@@ -1525,7 +1527,7 @@ export class ConsoleManager {
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!folder) return false;
-      await this.syncSubtreeIfDrifted(folderId, workspaceId, userId);
+      await this.syncSubtreeIfDrifted(folderId, workspaceId);
       const previousName = folder.name;
       folder.name = newName;
       await folder.save();
@@ -1725,12 +1727,12 @@ export class ConsoleManager {
   private async syncSubtreeIfDrifted(
     folderId: string,
     workspaceId: string,
-    userId: string | undefined,
   ): Promise<void> {
     const rows = await this.consolesUnderFolder(folderId, workspaceId);
     if (rows.length === 0) return;
     if (await consoleFilesDrifted(workspaceId, rows)) {
-      await syncConsolesIndexFromRepo(workspaceId, userId);
+      // No actor (see relocateConsole): the caller owns nothing by syncing.
+      await syncConsolesIndexFromRepo(workspaceId);
     }
   }
 
@@ -2175,7 +2177,7 @@ export class ConsoleManager {
         currentId = parent?.parentId?.toString() || null;
       }
     }
-    await this.syncSubtreeIfDrifted(folderId, workspaceId, userId);
+    await this.syncSubtreeIfDrifted(folderId, workspaceId);
 
     const updateFields: Record<string, any> = {};
     if (newParentId) {
