@@ -313,6 +313,10 @@ export async function renameDbtFile(
     [from]: gitBlobOid(sourceRaw),
     [to]: null,
   };
+  // The moved content is THESE bytes, the ones the commit's precondition
+  // pins — never the earlier `readWorkingFile` text: a save landing between
+  // the two reads would pass the check and be dropped from the move.
+  const sourceText = sourceRaw.toString("utf8");
   const warnings: string[] = [];
   const rewritten: string[] = [];
   let jobsTouched = false;
@@ -320,7 +324,7 @@ export async function renameDbtFile(
   const oldModel = refNameForDbtPath(from);
   const newModel = refNameForDbtPath(to);
   const updateRefs = input.updateRefs !== false;
-  let movedContent = source.content;
+  let movedContent = sourceText;
 
   if (oldModel && !newModel) {
     warnings.push(
@@ -397,7 +401,7 @@ export async function renameDbtFile(
       }
       // The moved file may ref itself (a comment, a docs block) — rewrite it too.
       movedContent = rewriteRefs(
-        source.content,
+        sourceText,
         oldModel,
         newModel,
         packageName,

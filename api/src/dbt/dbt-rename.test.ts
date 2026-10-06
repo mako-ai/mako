@@ -26,12 +26,23 @@ vi.mock("../services/realtime.service", () => realtime);
 // A one-shot hook run inside the rename, after it has read the files it
 // rewrites and before it commits (grepTree is its warnings scan) — where a
 // save from another window can land.
-const race = vi.hoisted(() => ({ hook: null as null | (() => Promise<void>) }));
+const race = vi.hoisted(() => ({
+  hook: null as null | (() => Promise<void>),
+  beforeBlobRead: null as null | (() => Promise<void>),
+}));
 vi.mock("../apps/repository.service", async importOriginal => {
   const actual =
     await importOriginal<typeof import("../apps/repository.service")>();
   return {
     ...actual,
+    readBlobsBatch: async (
+      ...args: Parameters<typeof actual.readBlobsBatch>
+    ) => {
+      const hook = race.beforeBlobRead;
+      race.beforeBlobRead = null;
+      if (hook) await hook();
+      return actual.readBlobsBatch(...args);
+    },
     grepTree: async (...args: Parameters<typeof actual.grepTree>) => {
       const hook = race.hook;
       race.hook = null;
@@ -383,6 +394,27 @@ describe("renameDbtFile", () => {
     expect(await fileAt("models/mart.sql")).toBe(saved);
     expect(await fileAt("models/orders.sql")).not.toBeNull();
     expect(await fileAt("models/orders_v2.sql")).toBeNull();
+  });
+
+  it("moves the content its precondition pins: a save landing before the byte read is kept", async () => {
+    await seedProject();
+    const saved = "select 2 as id, 1 as customer_id -- saved mid-rename\n";
+    race.beforeBlobRead = async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "dbt/models/orders.sql": saved } },
+        { message: "an autosave" },
+      );
+    };
+    await renameDbtFile(member, {
+      from: "models/orders.sql",
+      to: "models/orders_v2.sql",
+      updateRefs: false,
+    });
+    expect(race.beforeBlobRead).toBeNull(); // the race really ran
+    expect(await fileAt("models/orders_v2.sql")).toBe(saved);
+    expect(await fileAt("models/orders.sql")).toBeNull();
   });
 
   it("renames UTF-8 text with non-ASCII characters (the read blob matches)", async () => {
