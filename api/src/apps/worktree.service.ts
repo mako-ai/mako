@@ -97,6 +97,7 @@ import {
 } from "./repository.service";
 import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
 import {
+  aliasesForMoves,
   invalidateAppsIndexCache,
   loadAppsIndex,
   readIndexedAppsAt,
@@ -109,12 +110,14 @@ import {
   APP_MANIFEST,
   APPS_DIR,
   FOLDER_KEEP_FILE,
+  addManifestAliases,
   appRepoPath,
   parseAppRepoPath,
   appTreeRoot,
   isSafeSegment,
   parseAppFolderPath,
   parseAppManifest,
+  setManifestTitle,
   stampManifestId,
   type AppScope,
 } from "./app-paths";
@@ -1043,14 +1046,26 @@ function isWithin(candidate: string, root: string): boolean {
 /**
  * Manifest writes that pin every app under `dir` to the id the index already
  * knows it by — so a move never changes an identity, even for an app that
- * predates manifest ids. Paths are the NEW ones (post-move).
+ * predates manifest ids — and record each moved app's previous name as an
+ * alias in the SAME commit, so the old link keeps opening it (the planner
+ * is {@link aliasesForMoves}; the lookup is findAppInSnapshot). Paths are
+ * the NEW ones (post-move).
+ *
+ * A manifest that cannot be parsed stops the move: the alias has to be
+ * written INTO it, and writing a fresh manifest over whatever the user had
+ * there would lose their work. They fix the file, then move.
+ *
+ * `manifestPatch` is a rename's title change, applied to that app's
+ * manifest in the same write — one commit per rename, whatever it changes.
  */
 async function moveWritesUnder(
   workspaceId: string,
   repoDir: string,
   moves: Array<{ from: string; to: string }>,
+  manifestPatch?: { path: string; title?: string },
 ): Promise<Record<string, string>> {
   const snapshot = await loadAppsIndex(workspaceId, { freshen: false });
+  const plans = aliasesForMoves(snapshot.apps, moves);
   const writes: Record<string, string> = {};
   const readAt = async (rel: string): Promise<string | null> => {
     try {
@@ -1059,16 +1074,32 @@ async function moveWritesUnder(
       return null;
     }
   };
+  const unparseable = (app: AppIndexRow) =>
+    new AppFolderError(
+      `${app.path}/${APP_MANIFEST} cannot be parsed; fix it before moving or renaming the app`,
+      409,
+    );
   for (const app of snapshot.apps) {
     const move = moves.find(m => isWithin(app.path, m.from));
     if (!move) continue;
     const newPath = `${move.to}${app.path.slice(move.from.length)}`;
+    let manifest = await readAt(`${app.path}/${APP_MANIFEST}`);
+    const original = manifest;
     if (!app.hasManifestId) {
-      const stamped = stampManifestId(
-        await readAt(`${app.path}/${APP_MANIFEST}`),
-        app.appId,
-      );
-      if (stamped !== null) writes[`${newPath}/${APP_MANIFEST}`] = stamped;
+      manifest = stampManifestId(manifest, app.appId);
+      if (manifest === null) throw unparseable(app);
+    }
+    const plan = plans.get(app.path);
+    if (plan) {
+      manifest = addManifestAliases(manifest, plan.add, plan.drop);
+      if (manifest === null) throw unparseable(app);
+    }
+    if (manifestPatch?.path === app.path && manifestPatch.title !== undefined) {
+      manifest = setManifestTitle(manifest, manifestPatch.title);
+      if (manifest === null) throw unparseable(app);
+    }
+    if (manifest !== null && manifest !== original) {
+      writes[`${newPath}/${APP_MANIFEST}`] = manifest;
     }
     // A pre-npm `file:../../packages/app-sdk` dependency is relative to the
     // app's depth: it breaks the moment the folder moves. Point it at the
@@ -1112,7 +1143,7 @@ async function commitOnMainDurably(
    */
   mutation: MainMutation | (() => Promise<MainMutation>),
   options: { message: string; author?: GitAuthor },
-): Promise<void> {
+): Promise<{ commitOid: string }> {
   const mirror = await resolveMirrorTarget(workspaceId);
   // Commit onto the mirror's main, not a stale local copy of it — a laptop
   // push this instance has not seen would make the result unmirrorable.
@@ -1147,20 +1178,135 @@ async function commitOnMainDurably(
   }
   invalidateAppsIndexCache(workspaceId);
   await syncAppsIndexFromRepo(workspaceId).catch(() => undefined);
+  return { commitOid: commit.commitOid };
 }
 
 /**
  * File an app somewhere else: `git mv` of its folder, as one commit on main.
  * The app keeps its id (stamped into the manifest in the same commit if it
- * had none), so deployments, sharing, env vars and favourites all follow it.
- * Nothing is rebuilt: the folder's tree oid is unchanged, and deploy-on-push
- * keys on that.
+ * had none), so deployments, sharing, env vars and favourites all follow it,
+ * and its old folder name becomes an alias in the manifest (same commit),
+ * so the old `/apps/<slug>` link and every old ref keep resolving. Nothing
+ * is rebuilt: the folder's tree oid is unchanged apart from the manifest,
+ * and deploy-on-push keys on that.
  */
 export async function moveProject(
   project: IAppProject,
   target: AppFolderTarget & { slug?: string },
   options: { userId?: string; author?: GitAuthor } = {},
 ): Promise<{ from: string; to: string }> {
+  const { from, to } = await moveProjectWith(project, target, options);
+  return { from, to };
+}
+
+/**
+ * Rename an app — its display name (`title` in mako.json), its folder name
+ * (the slug its link is made of), or both — as ONE commit on main. The
+ * service behind every rename path (the explorer's dialog, the REST
+ * `objects/app/rename` route, the agent's `rename_object`): a slug change is
+ * a move within the app's own folder, so it records the old slug as an
+ * alias exactly as app_move_app does; a title change rewrites the manifest
+ * (the AppProject row and the index follow on the sync).
+ */
+export async function renameProject(
+  project: IAppProject,
+  change: { title?: string; slug?: string },
+  options: { userId?: string; author?: GitAuthor } = {},
+): Promise<{
+  from: string;
+  to: string;
+  title: string;
+  commit?: string;
+  aliasesAdded: string[];
+}> {
+  const workspaceId = project.workspaceId.toString();
+  const from = appRootFor(project);
+  const location = parseAppRepoPath(from);
+  if (!location) throw new AppFolderError(`Not an app path: ${from}`, 404);
+  const title = change.title?.trim();
+  if (change.title !== undefined && !title) {
+    throw new AppFolderError("An app needs a name");
+  }
+  const currentTitle = project.title ?? location.slug;
+  const titleChanges = title !== undefined && title !== currentTitle;
+  const slug = change.slug?.trim() ?? location.slug;
+  if (slug !== location.slug) {
+    const { to, commit, aliasesAdded } = await moveProjectWith(
+      project,
+      { ...location, slug },
+      options,
+      titleChanges ? { title } : undefined,
+    );
+    if (titleChanges) {
+      project.title = title;
+      await AppProject.updateOne(
+        { _id: project._id, workspaceId: project.workspaceId },
+        { $set: { title } },
+      );
+    }
+    return {
+      from,
+      to,
+      title: titleChanges ? title : currentTitle,
+      commit,
+      aliasesAdded,
+    };
+  }
+  if (!titleChanges) {
+    return { from, to: from, title: currentTitle, aliasesAdded: [] };
+  }
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  const manifestPath = `${from}/${APP_MANIFEST}`;
+  const { commitOid } = await commitOnMainDurably(
+    workspaceId,
+    repoDir,
+    async () => {
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      if (!fresh.apps.some(a => a.path === from)) {
+        throw new AppFolderError(`App folder ${from} is not on main`, 404);
+      }
+      let contents: string | null;
+      try {
+        contents = (await readBlob(repoDir, DEFAULT_BRANCH, manifestPath))
+          .contents;
+      } catch {
+        contents = null;
+      }
+      const next = setManifestTitle(contents, title);
+      if (next === null) {
+        throw new AppFolderError(
+          `${manifestPath} cannot be parsed; fix it before renaming the app`,
+          409,
+        );
+      }
+      return { writes: { [manifestPath]: next } };
+    },
+    {
+      message: `Rename app "${currentTitle}" to "${title}" (${from})`,
+      author: options.author,
+    },
+  );
+  project.title = title;
+  await AppProject.updateOne(
+    { _id: project._id, workspaceId: project.workspaceId },
+    { $set: { title } },
+  );
+  pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
+  return { from, to: from, title, commit: commitOid, aliasesAdded: [] };
+}
+
+/** {@link moveProject}, with the commit and aliases a rename reports. */
+async function moveProjectWith(
+  project: IAppProject,
+  target: AppFolderTarget & { slug?: string },
+  options: { userId?: string; author?: GitAuthor } = {},
+  manifestPatch?: { title?: string },
+): Promise<{
+  from: string;
+  to: string;
+  commit?: string;
+  aliasesAdded: string[];
+}> {
   const workspaceId = project.workspaceId.toString();
   const repoDir = await requireWorkspaceRepo(workspaceId);
   const from = appRootFor(project);
@@ -1171,7 +1317,7 @@ export async function moveProject(
     );
   }
   const to = appRepoPath({ ...target, slug });
-  if (to === from) return { from, to };
+  if (to === from) return { from, to, aliasesAdded: [] };
   const snapshot = await loadAppsIndex(workspaceId);
   if (!snapshot.apps.some(a => a.path === from)) {
     throw new AppFolderError(`App folder ${from} is not on main`, 404);
@@ -1186,7 +1332,9 @@ export async function moveProject(
     throw new AppFolderError(`${parent.path} is an app, not a folder`, 409);
   }
   const moves = [{ from, to }];
-  await commitOnMainDurably(
+  const aliasesAdded =
+    aliasesForMoves(snapshot.apps, moves).get(from)?.add ?? [];
+  const { commitOid } = await commitOnMainDurably(
     workspaceId,
     repoDir,
     async () => {
@@ -1198,11 +1346,19 @@ export async function moveProject(
       }
       return {
         moves,
-        writes: await moveWritesUnder(workspaceId, repoDir, moves),
+        writes: await moveWritesUnder(
+          workspaceId,
+          repoDir,
+          moves,
+          manifestPatch ? { path: from, ...manifestPatch } : undefined,
+        ),
       };
     },
     {
-      message: `Move app "${project.title}" (${from} → ${to})`,
+      message:
+        manifestPatch?.title !== undefined
+          ? `Rename app "${project.title}" to "${manifestPatch.title}" (${from} → ${to})`
+          : `Move app "${project.title}" (${from} → ${to})`,
       author: options.author,
     },
   );
@@ -1226,7 +1382,7 @@ export async function moveProject(
     { $set: { path: to, slug, ...visibility } },
   );
   pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
-  return { from, to };
+  return { from, to, commit: commitOid, aliasesAdded };
 }
 
 /**

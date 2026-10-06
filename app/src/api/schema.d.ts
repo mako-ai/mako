@@ -3869,7 +3869,7 @@ export interface paths {
         put?: never;
         /**
          * File the app in another folder (and/or rename its folder)
-         * @description One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it, and nothing is rebuilt. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.
+         * @description One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it, and nothing is rebuilt. Its old folder name (and path) are recorded as `aliases` in mako.json in the same commit, so the old /apps/<slug> link and old refs keep opening it. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_move"];
         delete?: never;

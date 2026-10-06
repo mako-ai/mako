@@ -1060,7 +1060,7 @@ export function createAppsTools({
 
     app_move_app: tool({
       description:
-        "File an app in another folder of the workspace repo, or rename its folder — one commit on main moving the directory (`git mv`). The app keeps its id, so its deployment, sharing, env vars and everyone's favourites follow it and nothing is rebuilt. Workspace folders need an editing role; `users/<userId>/apps/…` is that person's own tree.",
+        "File an app in another folder of the workspace repo, or rename its folder — one commit on main moving the directory (`git mv`). The app keeps its id, so its deployment, sharing, env vars and everyone's favourites follow it and nothing is rebuilt. The old folder name (and path) are recorded as `aliases` in mako.json in the same commit, so the old /apps/<slug> link and old refs keep working. Workspace folders need an editing role; `users/<userId>/apps/…` is that person's own tree. To change the display name (title), use rename_object.",
       inputSchema: z.object({
         appId: z.string(),
         folder: z

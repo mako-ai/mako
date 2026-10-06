@@ -163,8 +163,48 @@ export interface AppManifest {
   id?: string;
   title: string;
   description?: string;
+  /**
+   * Previous slugs (`report`) or repo paths (`apps/Sales/report`) of this
+   * app: old links resolve to it when nothing current claims them. Moves
+   * append to it automatically. Normalized and deduplicated.
+   */
+  aliases: string[];
+  /** `aliases` entries that were not usable (ignored, never fatal). */
+  rejectedAliases: unknown[];
   /** Raw parse, for callers that need the rest (entry, bindings, …). */
   raw: Record<string, unknown>;
+}
+
+/**
+ * Normalize a manifest's `aliases`: trimmed strings, no slash at either end,
+ * no empty, `.` or `..` segment, each once. Anything else is returned in
+ * `rejected` so the caller can warn — a bad alias must never hide the app.
+ */
+export function parseAppAliases(value: unknown): {
+  aliases: string[];
+  rejected: unknown[];
+} {
+  if (value === undefined || value === null) {
+    return { aliases: [], rejected: [] };
+  }
+  if (!Array.isArray(value)) return { aliases: [], rejected: [value] };
+  const aliases: string[] = [];
+  const rejected: unknown[] = [];
+  for (const entry of value) {
+    const clean =
+      typeof entry === "string"
+        ? entry.trim().replace(/^\/+/, "").replace(/\/+$/, "")
+        : "";
+    const ok =
+      clean.length > 0 &&
+      clean.length <= 500 &&
+      // eslint-disable-next-line no-control-regex
+      !/[\u0000-\u001f\u007f]/.test(clean) &&
+      clean.split("/").every(seg => seg !== "" && seg !== "." && seg !== "..");
+    if (!ok) rejected.push(entry);
+    else if (!aliases.includes(clean)) aliases.push(clean);
+  }
+  return { aliases, rejected };
 }
 
 /**
@@ -195,7 +235,8 @@ export function parseAppManifest(
     typeof raw.id === "string" && isAppId(raw.id)
       ? raw.id.toLowerCase()
       : undefined;
-  return { id, title, description, raw };
+  const { aliases, rejected } = parseAppAliases(raw.aliases);
+  return { id, title, description, aliases, rejectedAliases: rejected, raw };
 }
 
 /**
@@ -221,4 +262,75 @@ export function stampManifestId(
   const { id: _old, ...rest } = raw;
   void _old;
   return `${JSON.stringify({ id, ...rest }, null, 2)}\n`;
+}
+
+/**
+ * Add `add` to a manifest's `aliases` (after the ones it has, each once) and
+ * drop any equal to `drop` (the app's own current slug and path — an alias
+ * naming the app's present location is noise). Unusable entries already in
+ * the list are dropped too: the index ignores them anyway. Returns the
+ * contents unchanged when nothing changes, and `null` when the manifest
+ * cannot be parsed — writing a new one over it would lose the user's work.
+ */
+export function addManifestAliases(
+  contents: string | null | undefined,
+  add: readonly string[],
+  drop: readonly string[] = [],
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const current = parseAppAliases(raw.aliases);
+  const next = parseAppAliases([...current.aliases, ...add]).aliases.filter(
+    a => !drop.includes(a),
+  );
+  const unchanged =
+    current.rejected.length === 0 &&
+    next.length === current.aliases.length &&
+    next.every((a, i) => a === current.aliases[i]);
+  if (unchanged) return contents ?? null;
+  if (next.length === 0) {
+    const { aliases: _gone, ...rest } = raw;
+    void _gone;
+    return `${JSON.stringify(rest, null, 2)}\n`;
+  }
+  // An existing key keeps its place; a new one goes last.
+  return `${JSON.stringify({ ...raw, aliases: next }, null, 2)}\n`;
+}
+
+/**
+ * Write `title` into a manifest, keeping everything else where it is. Same
+ * contract as {@link stampManifestId}: unchanged contents when the title
+ * already reads so, `null` when the manifest cannot be parsed — a rename
+ * must never overwrite a file it could not read.
+ */
+export function setManifestTitle(
+  contents: string | null | undefined,
+  title: string,
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (raw.title === title) return contents ?? null;
+  // A manifest that never had a title gets it right after the id, where the
+  // scaffold puts it; one that had it keeps its place.
+  if ("title" in raw) {
+    return `${JSON.stringify({ ...raw, title }, null, 2)}\n`;
+  }
+  const { id, ...rest } = raw;
+  return `${JSON.stringify(id === undefined ? { title, ...rest } : { id, title, ...rest }, null, 2)}\n`;
 }
