@@ -632,6 +632,75 @@ describe("names that differ only in case", () => {
     expect((await resolveProjectRef(WS, B_ID))?.path).toBe("apps/Sales/CH/b");
   });
 
+  it("refuse a new app in a folder typed in another case, at once — no counting up", async () => {
+    // apps/Sales exists; "apps/sales" is the same folder on a laptop, and
+    // no name in it would ever be free.
+    const started = Date.now();
+    await expect(
+      createProject({
+        workspaceId: WS,
+        title: "Report",
+        userId: USER,
+        folder: { scope: "workspace", folderSegments: ["sales"] },
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: `A folder named "Sales" already exists in apps. "sales" ${caseNote}`,
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(await AppProject.countDocuments({ title: "Report" })).toBe(0);
+    // In the folder as it is spelled, a second "Report" still gets -2.
+    const first = await createProject({
+      workspaceId: WS,
+      title: "Report",
+      userId: USER,
+      folder: { scope: "workspace", folderSegments: ["Sales"] },
+    });
+    const second = await createProject({
+      workspaceId: WS,
+      title: "Report",
+      userId: USER,
+      folder: { scope: "workspace", folderSegments: ["Sales"] },
+    });
+    expect([first.path, second.path]).toEqual([
+      "apps/Sales/report",
+      "apps/Sales/report-2",
+    ]);
+  });
+
+  it("let an app or folder move into a case variant of a folder only it occupied — git drops the emptied one", async () => {
+    // apps/team holds x and nothing else (no .gitkeep).
+    await externalCommit({ "apps/team/x/mako.json": manifest("X") });
+    const x = (await resolveProjectRef(WS, "team/x"))!;
+    const moved = await moveProject(x, {
+      scope: "workspace",
+      folderSegments: ["Team"],
+    });
+    expect(moved.to).toBe("apps/Team/x");
+    expect((await loadAppsIndex(WS)).folders).not.toContain("apps/team");
+    // A folder alone in its parent, likewise.
+    await externalCommit({ "apps/one/inner/y/mako.json": manifest("Y") });
+    await moveAppFolder(
+      WS,
+      { scope: "workspace", folderSegments: ["one", "inner"] },
+      { scope: "workspace", folderSegments: ["One", "inner"] },
+    );
+    expect((await resolveProjectRef(WS, "One/inner/y"))?.path).toBe(
+      "apps/One/inner/y",
+    );
+    // A folder that stays (its .gitkeep, or other content) still counts.
+    await externalCommit({
+      "apps/keep/.gitkeep": "",
+      "apps/keep/z/mako.json": manifest("Z"),
+    });
+    const z = (await resolveProjectRef(WS, "keep/z"))!;
+    await expect(
+      moveProject(z, { scope: "workspace", folderSegments: ["Keep"] }),
+    ).rejects.toThrow(
+      `A folder named "keep" already exists in apps. "Keep" ${caseNote}`,
+    );
+  });
+
   it("let an app change the case of its own name, and give a new app a name free in every case", async () => {
     const b = (await resolveProjectRef(WS, B_ID))!;
     const renamed = await renameProject(b, { slug: "B" });

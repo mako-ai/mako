@@ -795,17 +795,38 @@ async function uniqueSlug(
 ): Promise<string> {
   const base = slugify(title);
   const taken = await occupiedPaths(workspaceId);
-  // Free in git AND in a case-insensitive checkout (caseTwinOf).
+  // The FOLDER typed in another case than one that exists (apps/Sales
+  // next to apps/sales) is a refusal: no slug inside it is ever free, so
+  // counting up would never end.
+  const folder = folderPathOf(target);
+  const folderTwin = caseTwinOf(taken, folder);
+  if (folderTwin) {
+    throw caseTwinError(
+      folderTwin,
+      folder,
+      await loadAppsIndex(workspaceId),
+      taken,
+    );
+  }
+  // Free in git AND in a case-insensitive checkout: with the folder chain
+  // clear, a twin can only be of the slug itself.
   const free = (slug: string) => {
     const at = appRepoPath({ ...target, slug });
     return !taken.has(at) && !caseTwinOf(taken, at);
   };
   if (free(base)) return base;
-  for (let i = 2; ; i++) {
+  for (let i = 2; i <= MAX_SLUG_SUFFIX; i++) {
     const candidate = `${base}-${i}`;
     if (free(candidate)) return candidate;
   }
+  throw new AppFolderError(
+    `No free folder name for "${title}" in ${folder} (tried ${base} to ${base}-${MAX_SLUG_SUFFIX}); give the app another name.`,
+    409,
+  );
 }
+
+/** How far uniqueSlug counts (`report-2` … `report-1000`) before it gives up. */
+const MAX_SLUG_SUFFIX = 1000;
 
 /**
  * Commit a mutation (writes, prefix deletions and/or directory moves)
@@ -814,6 +835,19 @@ async function uniqueSlug(
  * actor worktrees are not involved. Moves run first, then deletions, then
  * writes, so a write can land inside a just-moved folder.
  */
+/** Remove `dir` and its parents while they are empty, never `root`. */
+async function removeEmptyDirsUp(dir: string, root: string): Promise<void> {
+  let current = dir;
+  while (current.startsWith(`${root}${path.sep}`)) {
+    try {
+      await fs.rmdir(current);
+    } catch {
+      return; // not empty (or gone): the rest above it stays
+    }
+    current = path.dirname(current);
+  }
+}
+
 export async function commitFilesOnBranch(
   repoDir: string,
   branch: string,
@@ -833,11 +867,18 @@ export async function commitFilesOnBranch(
       await runGit(["clone", "--branch", branch, repoDir, tmp], {
         timeoutMs: 120_000,
       });
-      for (const move of mutation.moves ?? []) {
+      for (const [i, move] of (mutation.moves ?? []).entries()) {
         const from = path.join(tmp, assertSafeRelPath(move.from));
         const to = path.join(tmp, assertSafeRelPath(move.to));
+        // Through a parking name, with the folders it empties removed
+        // first: on a case-insensitive disk (macOS) `apps/Team/x` IS
+        // `apps/team/x` while `team` still exists, and a direct rename
+        // would keep the old case in the snapshot.
+        const parked = path.join(tmp, `.mako-move-${i}`);
+        await fs.rename(from, parked);
+        await removeEmptyDirsUp(path.dirname(from), tmp);
         await fs.mkdir(path.dirname(to), { recursive: true });
-        await fs.rename(from, to);
+        await fs.rename(parked, to);
       }
       for (const prefix of mutation.deletePrefixes ?? []) {
         await fs.rm(path.join(tmp, assertSafeRelPath(prefix)), {
@@ -1184,6 +1225,42 @@ function occupiedPathError(
     `An app named "${slug}" already exists in ${parent}.`,
     409,
   );
+}
+
+/**
+ * `taken` as it will be once `leaving` (an app or folder being moved) has
+ * gone: without it and everything in it, and without each folder above it
+ * that held nothing else and no `.gitkeep` — git drops a directory that
+ * empties, so a case variant of it is free after the move (an app alone
+ * in apps/team may move to apps/Team).
+ */
+async function occupiedAfterLeaving(
+  repoDir: string,
+  taken: ReadonlySet<string>,
+  leaving: string,
+): Promise<Set<string>> {
+  const rest = new Set([...taken].filter(path => !isWithin(path, leaving)));
+  const parts = leaving.split("/");
+  for (let i = parts.length - 1; i >= 1; i--) {
+    const folder = parts.slice(0, i).join("/");
+    // The tree roots (`apps`, `users/<id>/apps`) never go.
+    if (!parseAppFolderPath(folder)?.folderSegments.length) break;
+    const holdsOther = [...rest].some(
+      path => path !== folder && isWithin(path, folder),
+    );
+    if (holdsOther) break;
+    const marked = await readBlob(
+      repoDir,
+      DEFAULT_BRANCH,
+      `${folder}/${FOLDER_KEEP_FILE}`,
+    ).then(
+      () => true,
+      () => false,
+    );
+    if (marked) break;
+    rest.delete(folder);
+  }
+  return rest;
 }
 
 /**
@@ -1585,7 +1662,7 @@ async function moveProjectWith(
   }
   const taken = await occupiedPaths(workspaceId);
   if (taken.has(to)) throw occupiedPathError(to, snapshot);
-  const twin = caseTwinOf(taken, to, from);
+  const twin = caseTwinOf(await occupiedAfterLeaving(repoDir, taken, from), to);
   if (twin) throw caseTwinError(twin, to, snapshot, taken);
   // Never file an app inside another app: the outer one would swallow it.
   const parent = snapshot.apps.find(a => isWithin(to, a.path));
@@ -1712,7 +1789,10 @@ export async function moveAppFolder(
   if (taken.has(toPath)) {
     throw new AppFolderError(`${toPath} already exists`, 409);
   }
-  const twin = caseTwinOf(taken, toPath, fromPath);
+  const twin = caseTwinOf(
+    await occupiedAfterLeaving(repoDir, taken, fromPath),
+    toPath,
+  );
   if (twin) throw caseTwinError(twin, toPath, snapshot, taken);
   const parentApp = snapshot.apps.find(a => isWithin(toPath, a.path));
   if (parentApp) {
