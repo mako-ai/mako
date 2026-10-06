@@ -15,14 +15,18 @@ import {
   commitConsoleRelocation,
   commitConsoleRemoval,
   commitConsoleState,
+  consoleFilesDrifted,
   descriptionIsAuthored,
   loadLiveConsoleById,
+  listConsoleDefinitionsAtMain,
   loadLiveConsoles,
   readConsoleDefinitionAtMain,
   repoPathForRow,
+  syncConsolesIndexFromRepo,
+  uniquePath,
   type LiveConsole,
 } from "../apps/workspace-consoles.service";
-import { chartSidecarPath } from "../apps/console-files";
+import { chartSidecarPath, parseConsoleRepoPath } from "../apps/console-files";
 import { BlobPreconditionError } from "../apps/repository.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
@@ -788,6 +792,7 @@ export class ConsoleManager {
       const ownerId = folder.ownerId?.toString();
       if (!ownerId || ownerId !== userId) return false;
 
+      await this.syncSubtreeIfDrifted(folderId, workspaceId, userId);
       folder.access = access;
       folder.isPrivate = access === "private";
       await folder.save();
@@ -1160,6 +1165,37 @@ export class ConsoleManager {
     } = {},
   ): Promise<{ row: ISavedConsole; commit?: string } | null> {
     if (!Types.ObjectId.isValid(consoleId)) return null;
+    // Two attempts: the first may find that a push reached main before its
+    // sync ran (the row's file moved, vanished or changed there). The repo
+    // is the truth, so the index is synced and the rename decided again
+    // from the fresh row — never from a row the tree has moved on from.
+    for (let attempt = 0; ; attempt++) {
+      const outcome = await this.relocateConsoleOnce(
+        consoleId,
+        workspaceId,
+        change,
+        options,
+      );
+      if (outcome !== "drift") return outcome;
+      if (attempt > 0) {
+        throw new ConsoleConflictError(
+          "The console changed in the repository (a push is being synced). Reload and try again.",
+        );
+      }
+      await syncConsolesIndexFromRepo(workspaceId, options.userId);
+    }
+  }
+
+  private async relocateConsoleOnce(
+    consoleId: string,
+    workspaceId: string,
+    change: {
+      name?: string;
+      folderId?: string | null;
+      access?: ConsoleAccessLevel;
+    },
+    options: { userId?: string; verb?: "rename" | "move"; publish?: boolean },
+  ): Promise<{ row: ISavedConsole; commit?: string } | null | "drift"> {
     const current = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -1201,8 +1237,19 @@ export class ConsoleManager {
       if (toPath !== current.path) {
         await this.assertConsolePathFree(workspaceId, toPath, current._id);
       }
-      let relocated: Awaited<ReturnType<typeof commitConsoleRelocation>> = null;
-      if (current.path && toPath !== current.path) {
+      if (!current.path) {
+        // Never committed (a saved console from before adoption): the row
+        // is the only definition — project it, as a save would.
+        const committed = await commitConsoleState({
+          row: current,
+          actorUserId: options.userId,
+          message,
+        });
+        updateFields.path = committed.path;
+        updateFields.sourceBlobSha = committed.sourceBlobSha;
+        if (!committed.unchanged) commit = committed.commitOid;
+      } else if (toPath !== current.path) {
+        let relocated: Awaited<ReturnType<typeof commitConsoleRelocation>>;
         try {
           relocated = await commitConsoleRelocation({
             workspaceId,
@@ -1210,37 +1257,44 @@ export class ConsoleManager {
             toPath,
             actorUserId: options.userId,
             message,
+            sourceBlobSha: current.sourceBlobSha ?? null,
           });
         } catch (error) {
+          if (!(error instanceof BlobPreconditionError)) throw error;
           // The commit's compare-and-swap is the guarantee the pre-check
           // above cannot give: the target appeared (another rename won the
-          // race, or a laptop push landed it) → taken; the source changed
-          // (a save raced the rename) → conflict, nothing applied.
-          if (error instanceof BlobPreconditionError) {
-            if (error.expected === null) {
-              throw new ConsolePathTakenError(error.path);
-            }
-            throw new ConsoleConflictError(error.message);
+          // race, or a laptop push landed it) → taken. The source is not
+          // the blob the row knows (a push edited or moved it, not yet
+          // synced; or a save raced the rename) → let the caller sync and
+          // decide again from the fresh row.
+          if (
+            error.path === toPath ||
+            error.path === chartSidecarPath(toPath)
+          ) {
+            throw new ConsolePathTakenError(error.path);
           }
-          throw error;
+          return "drift";
         }
-      }
-      if (relocated) {
+        // No file at the row's path: a push moved or removed it and the
+        // sync has not run. Never project the row's draft in its place.
+        if (!relocated) return "drift";
         updateFields.path = relocated.path;
         updateFields.sourceBlobSha = relocated.sourceBlobSha;
         if (!relocated.unchanged) commit = relocated.commitOid;
-      } else if (toPath !== current.path || !current.path) {
-        // No file at main to move (never projected, or removed from git):
-        // the row is the only definition — project it, as a save would.
-        const committed = await commitConsoleState({
-          row: current,
-          previousPath: current.path,
-          actorUserId: options.userId,
-          message,
-        });
-        updateFields.path = committed.path;
-        updateFields.sourceBlobSha = committed.sourceBlobSha;
-        if (!committed.unchanged) commit = committed.commitOid;
+      }
+      // A soft-deleted row that still points at the new path would be
+      // restored onto this console's file by the next sync; it has lost
+      // its place for good (a restore picks a free name).
+      if (updateFields.path) {
+        await SavedConsole.updateMany(
+          {
+            workspaceId: new Types.ObjectId(workspaceId),
+            path: updateFields.path,
+            _id: { $ne: current._id },
+            is_deleted: true,
+          },
+          { $unset: { path: "" } },
+        );
       }
     }
 
@@ -1384,6 +1438,7 @@ export class ConsoleManager {
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!folder) return false;
+      await this.syncSubtreeIfDrifted(folderId, workspaceId, userId);
       const previousName = folder.name;
       folder.name = newName;
       await folder.save();
@@ -1449,6 +1504,25 @@ export class ConsoleManager {
     return out;
   }
 
+  /**
+   * Before a folder is renamed, moved or re-scoped in Mongo: if a push
+   * reached main that the index has not taken in for any console under it
+   * (file moved, removed or edited there), sync first. Syncing AFTER the
+   * folder changed would re-home those rows under the tree's old folder
+   * name — a freshly created folder — and strand the renamed one.
+   */
+  private async syncSubtreeIfDrifted(
+    folderId: string,
+    workspaceId: string,
+    userId: string | undefined,
+  ): Promise<void> {
+    const rows = await this.consolesUnderFolder(folderId, workspaceId);
+    if (rows.length === 0) return;
+    if (await consoleFilesDrifted(workspaceId, rows)) {
+      await syncConsolesIndexFromRepo(workspaceId, userId);
+    }
+  }
+
   /** Re-commit every console under a folder at its (possibly new) path. */
   private async reprojectFolderSubtree(
     folderId: string,
@@ -1456,11 +1530,13 @@ export class ConsoleManager {
     userId: string | undefined,
     message: string,
   ): Promise<void> {
+    // Each file moves AS IT IS AT MAIN (drafts stay drafts) under one CAS
+    // commit. Drift (a push under the folder not yet synced) was taken in
+    // by `syncSubtreeIfDrifted` before the folder changed in Mongo; a
+    // refusal here is a concurrent save or push and surfaces as a 409 with
+    // the folder rows left untouched.
     const rows = await this.consolesUnderFolder(folderId, workspaceId);
     if (rows.length === 0) return;
-    // Each file moves AS IT IS AT MAIN (drafts stay drafts) under one CAS
-    // commit; a BlobPreconditionError (a concurrent save or push under the
-    // folder) surfaces as a 409 and the folder rows are left untouched.
     const moved = await commitConsoleMoves({
       workspaceId,
       actorUserId: userId,
@@ -1469,6 +1545,7 @@ export class ConsoleManager {
         id: row._id.toString(),
         row,
         previousPath: row.path,
+        sourceBlobSha: row.sourceBlobSha ?? null,
       })),
     });
     for (const row of rows) {
@@ -1883,6 +1960,7 @@ export class ConsoleManager {
         currentId = parent?.parentId?.toString() || null;
       }
     }
+    await this.syncSubtreeIfDrifted(folderId, workspaceId, userId);
 
     const updateFields: Record<string, any> = {};
     if (newParentId) {
@@ -1994,6 +2072,33 @@ export class ConsoleManager {
     if (!current) return false;
     const set: Record<string, unknown> = { is_deleted: false };
     if (current.isSaved) {
+      // The console's old name may have been taken while it was deleted (a
+      // rename or a push landed there, and the sync released this row's
+      // path): a restore must not overwrite that file — it comes back as
+      // "name (2)", exactly as adoption resolves two rows on one path.
+      const wanted = await repoPathForRow(current);
+      const [defs, liveRows] = await Promise.all([
+        listConsoleDefinitionsAtMain(workspaceId),
+        SavedConsole.find({
+          workspaceId: new Types.ObjectId(workspaceId),
+          _id: { $ne: current._id },
+          isSaved: true,
+          is_deleted: { $ne: true },
+          path: { $exists: true, $ne: null },
+        }).select("path"),
+      ]);
+      const taken = new Set<string>([
+        ...defs.map(d => d.path),
+        ...liveRows.map(r => r.path as string),
+      ]);
+      const free = uniquePath(wanted, taken, current.path);
+      if (free !== wanted) {
+        const location = parseConsoleRepoPath(free);
+        if (location) {
+          current.name = location.name;
+          set.name = location.name;
+        }
+      }
       const committed = await commitConsoleState({
         row: current,
         actorUserId: userId,

@@ -267,10 +267,17 @@ export const consoleRenameHandler: RenameHandler = {
       language: target.language,
     });
     if (wantedPath === before.path) {
-      throw new RenameError(
-        "That is already the console's name and place.",
-        409,
-      );
+      // The documented short form (`Team/report`) of the console's current
+      // place: the same "nothing to do" the registry answers for the full
+      // path and for an unchanged title — never a refusal.
+      return {
+        kind: "console",
+        id: row._id.toString(),
+        before,
+        after: before,
+        aliasesAdded: [],
+        warnings: ["Nothing to change: it already has that name."],
+      };
     }
     const [defs, taken] = await Promise.all([
       listConsoleDefinitionsAtMain(ctx.workspaceId),

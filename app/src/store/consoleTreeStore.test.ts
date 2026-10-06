@@ -13,6 +13,7 @@ vi.mock("../api", async importOriginal => {
 });
 
 import { useConsoleTreeStore, type ConsoleEntry } from "./consoleTreeStore";
+import { accessForMove } from "./lib/createResourceTreeStore";
 
 const WID = "ws-1";
 
@@ -207,5 +208,51 @@ describe("consoleTreeStore extras", () => {
       path: "reports/monthly",
       isDirectory: false,
     });
+  });
+});
+
+describe("Move to…", () => {
+  it("sends access only when the user changed section", () => {
+    expect(accessForMove("my", "my")).toBeUndefined();
+    expect(accessForMove("workspace", "workspace")).toBeUndefined();
+    expect(accessForMove("my", "workspace")).toBe("workspace");
+    expect(accessForMove("workspace", "my")).toBe("private");
+  });
+
+  it("a refused move snaps the tree back AND keeps the server's reason for the UI", async () => {
+    seed([folder("f", "mine", [file("a", "alpha")])], [folder("g", "team")]);
+    http.PATCH.mockResolvedValueOnce({
+      data: undefined,
+      error: {
+        success: false,
+        error:
+          "Only the owner can move a console between private and workspace",
+      },
+      response: { ok: false, status: 403 },
+    });
+    http.GET.mockResolvedValueOnce(
+      ok({
+        myConsoles: [folder("f", "mine", [file("a", "alpha")])],
+        sharedWithWorkspace: [folder("g", "team")],
+      }),
+    );
+
+    const moved = await useConsoleTreeStore
+      .getState()
+      .moveItem(WID, "a", "g", "workspace");
+
+    expect(moved).toBe(false);
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBe(
+      "Only the owner can move a console between private and workspace",
+    );
+    // Snapped back: alpha is in "mine" again, not under "team".
+    const mine = useConsoleTreeStore.getState().myItems[WID][0];
+    expect(names(mine.children ?? [])).toEqual(["alpha"]);
+    expect(http.PATCH).toHaveBeenCalledWith(
+      expect.stringContaining("/{id}/move"),
+      expect.objectContaining({
+        body: { folderId: "g", access: "workspace" },
+      }),
+    );
   });
 });
