@@ -211,6 +211,18 @@ function SourceConnectionForm({
 
   const selectedType = watch("type");
 
+  // Set by the server when this connection's connector does not resolve
+  // (api resolver.ts): its folder was removed — a restore is a NEW
+  // connector — or its type now names another one. For a connector that is
+  // gone, saving re-sends `type`, which is how the server re-binds it to the
+  // connector that slug names now; a credential is never moved silently.
+  const connectorBinding = connector?.connectorBinding as
+    | { ok: false; problem: string; message: string }
+    | undefined;
+  const rebindOnSave =
+    connectorBinding?.problem === "definition-gone" ||
+    connectorBinding?.problem === "not-found";
+
   useEffect(() => {
     if (connector) {
       const mutableDefaults = JSON.parse(JSON.stringify(defaultValues));
@@ -387,7 +399,7 @@ function SourceConnectionForm({
 
     const payload: Record<string, unknown> = {};
 
-    if (isNewConnector || dirtyFields.type) {
+    if (isNewConnector || dirtyFields.type || rebindOnSave) {
       payload.type = values.type;
     }
 
@@ -1085,6 +1097,12 @@ function SourceConnectionForm({
       {errorMessage && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {errorMessage}
+        </Alert>
+      )}
+
+      {connectorBinding && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {connectorBinding.message}
         </Alert>
       )}
 

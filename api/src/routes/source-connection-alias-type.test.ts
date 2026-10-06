@@ -38,14 +38,33 @@ vi.mock("../services/workspace.service", () => ({
     isAdmin: vi.fn(async () => false),
   },
 }));
-vi.mock("../sync/connector-registry", () => ({
-  syncConnectorRegistry: {
-    getConfigSchemaForType: vi.fn(async () => ({
-      fields: [{ name: "apiKey", type: "password", encrypted: true }],
-    })),
-    getConnectorFor: vi.fn(async () => null),
-  },
-}));
+// The schema is stubbed; the binding is not. A `ws:` lookup made through a
+// connection's binding resolves it for real, so a broken binding refuses
+// exactly as the real registry would (resolver.ts ConnectorBindingError).
+vi.mock("../sync/connector-registry", async () => {
+  const { loadConnectorDefinitionFor } = await vi.importActual<
+    typeof import("../connectors/workspace/resolver")
+  >("../connectors/workspace/resolver");
+  return {
+    syncConnectorRegistry: {
+      getConfigSchemaForType: vi.fn(
+        async (
+          type: string,
+          workspaceId?: string,
+          binding?: { type: string; connectorDefinitionId?: unknown },
+        ) => {
+          if (binding && workspaceId && type.startsWith("ws:")) {
+            await loadConnectorDefinitionFor(workspaceId, binding);
+          }
+          return {
+            fields: [{ name: "apiKey", type: "password", encrypted: true }],
+          };
+        },
+      ),
+      getConnectorFor: vi.fn(async () => null),
+    },
+  };
+});
 vi.mock("../connectors/registry", () => ({
   connectorRegistry: { hasConnector: vi.fn(() => true) },
 }));
@@ -53,6 +72,7 @@ vi.mock("../connectors/registry", () => ({
 import { sourceConnectionRoutes } from "./source-connections";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { Connector, ConnectorDefinition } from "../database/workspace-schema";
+import { findConnectorDefinitionFor } from "../connectors/workspace/resolver";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -210,5 +230,165 @@ describe("ws:<alias> is stored as ws:<current slug>", () => {
       config: {},
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("a connection whose connector was removed is re-bound only by a person", () => {
+  const def = (slug: string) =>
+    ConnectorDefinition.create({
+      workspaceId: WS,
+      slug,
+      sha: "a",
+      sourceSha: "s",
+      status: "indexed",
+      entities: [],
+      aliases: [],
+    });
+  const create = async (type: string) => {
+    const res = await req("POST", "", {
+      name: "Acme",
+      type,
+      config: { apiKey: "k" },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    return ((await res.json()) as { data: { _id: string } }).data._id;
+  };
+  const resolved = async (id: string) => {
+    const row = (await Connector.findById(id).lean())!;
+    const found = await findConnectorDefinitionFor(WS, {
+      type: row.type,
+      connectorDefinitionId: row.connectorDefinitionId,
+    });
+    return found ? String(found.row._id) : null;
+  };
+
+  it("delete + restore: a config edit is a 409 that says how to re-bind; PUT naming the same type re-binds to the restored row", async () => {
+    const r1 = await def("zeta");
+    const id = await create("ws:zeta");
+    const stored = (await Connector.findById(id).lean())!.config;
+
+    // A push deletes connectors/zeta/, a revert restores it: a NEW row.
+    await ConnectorDefinition.deleteOne({ _id: r1._id });
+    const r2 = await def("zeta");
+    expect(await resolved(id)).toBeNull(); // fail closed
+
+    // The edit form is told, and why.
+    const got = await req("GET", `/${id}`);
+    const shown = (
+      (await got.json()) as {
+        data: { connectorBinding?: { problem: string; message: string } };
+      }
+    ).data.connectorBinding;
+    expect(shown?.problem).toBe("definition-gone");
+
+    // A config edit before the re-bind: 409, not 500, and nothing written.
+    const edit = await req("PUT", `/${id}`, {
+      name: "renamed too",
+      config: { apiKey: "k2" },
+    });
+    expect(edit.status, await edit.clone().text()).toBe(409);
+    const refusal = (await edit.json()) as {
+      error: string;
+      code: string;
+      problem: string;
+    };
+    expect(refusal.code).toBe("connector_binding");
+    expect(refusal.problem).toBe("definition-gone");
+    expect(refusal.error).toMatch(/no longer exists/);
+    expect(refusal.error).toMatch(/re-bind/);
+    expect(refusal.error).toContain('{"type": "ws:zeta"}');
+    const untouched = (await Connector.findById(id).lean())!;
+    expect(untouched.name).toBe("Acme");
+    expect(untouched.config).toEqual(stored);
+    expect(String(untouched.connectorDefinitionId)).toBe(String(r1._id));
+
+    // The deliberate act: name the type, even the same one.
+    const rebind = await req("PUT", `/${id}`, { type: "ws:zeta" });
+    expect(rebind.status, await rebind.clone().text()).toBe(200);
+    const after = (await rebind.json()) as {
+      data: { connectorBinding?: unknown };
+    };
+    expect(after.data.connectorBinding).toBeUndefined();
+    expect(String((await Connector.findById(id))?.connectorDefinitionId)).toBe(
+      String(r2._id),
+    );
+    expect(await resolved(id)).toBe(String(r2._id));
+
+    // ...and the config edit now goes through, against the new binding.
+    expect(
+      (await req("PUT", `/${id}`, { config: { apiKey: "k2" } })).status,
+    ).toBe(200);
+  });
+
+  it("re-bind and config edit in ONE save: the type is applied first", async () => {
+    const r1 = await def("zeta");
+    const id = await create("ws:zeta");
+    await ConnectorDefinition.deleteOne({ _id: r1._id });
+    const r2 = await def("zeta");
+    const res = await req("PUT", `/${id}`, {
+      type: "ws:zeta",
+      config: { apiKey: "k2" },
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await resolved(id)).toBe(String(r2._id));
+  });
+
+  it("nothing to re-bind to: the stamp stays and the connection still fails closed", async () => {
+    const r1 = await def("zeta");
+    const id = await create("ws:zeta");
+    await ConnectorDefinition.deleteOne({ _id: r1._id });
+    const res = await req("PUT", `/${id}`, { type: "ws:zeta" });
+    expect(res.status).toBe(200);
+    expect(String((await Connector.findById(id))?.connectorDefinitionId)).toBe(
+      String(r1._id),
+    );
+    expect(await resolved(id)).toBeNull();
+  });
+
+  it("a stamp on a LIVE definition is never moved by naming the same type, even when that type now names another connector", async () => {
+    const mine = await def("zeta");
+    const id = await create("ws:zeta");
+    // `zeta` is renamed away to `zeta-old` (the id stays), and a NEW
+    // connector takes the name `zeta`. The connection still says ws:zeta.
+    await ConnectorDefinition.updateOne(
+      { _id: mine._id },
+      { $set: { slug: "zeta-old" } },
+    );
+    const squatter = await def("zeta");
+    expect(await resolved(id)).toBeNull(); // fail closed
+
+    const same = await req("PUT", `/${id}`, { type: "ws:zeta" });
+    expect(same.status).toBe(200);
+    expect(String((await Connector.findById(id))?.connectorDefinitionId)).toBe(
+      String(mine._id),
+    );
+    expect(await resolved(id)).toBeNull();
+
+    const edit = await req("PUT", `/${id}`, { config: { apiKey: "k2" } });
+    expect(edit.status).toBe(409);
+    const refusal = (await edit.json()) as { problem: string; error: string };
+    expect(refusal.problem).toBe("name-moved");
+    expect(refusal.error).toContain('{"type": "ws:zeta-old"}');
+
+    // A type CHANGE is the way to move it: here, back onto its own row.
+    expect((await req("PUT", `/${id}`, { type: "ws:zeta-old" })).status).toBe(
+      200,
+    );
+    expect(await resolved(id)).toBe(String(mine._id));
+    expect(String(squatter._id)).not.toBe(String(mine._id));
+  });
+
+  it("an unstamped connection is bound by naming its type", async () => {
+    const r = await def("zeta");
+    const id = await create("ws:zeta");
+    await Connector.updateOne(
+      { _id: id },
+      { $unset: { connectorDefinitionId: "" } },
+    );
+    expect(await resolved(id)).toBe(String(r._id)); // by current slug
+    expect((await req("PUT", `/${id}`, { type: "ws:zeta" })).status).toBe(200);
+    expect(String((await Connector.findById(id))?.connectorDefinitionId)).toBe(
+      String(r._id),
+    );
   });
 });
