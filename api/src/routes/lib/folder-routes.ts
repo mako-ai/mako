@@ -43,7 +43,7 @@ export type FolderOpContext = ResourceOpContext;
 /** What a backend op reports; the registrar turns it into the envelope. */
 export type FolderOpResult =
   | { ok: true; data?: Record<string, unknown> }
-  | { ok: false; status: 400 | 403 | 404; error: string };
+  | { ok: false; status: 400 | 403 | 404 | 409; error: string };
 
 export interface FolderBackend {
   createFolder(

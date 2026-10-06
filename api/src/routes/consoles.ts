@@ -1,7 +1,10 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { workspaceResourceLoader } from "./lib/load-resource";
 import type { Context } from "hono";
-import { ConsoleManager } from "../utils/console-manager";
+import {
+  ConsoleManager,
+  ConsolePathTakenError,
+} from "../utils/console-manager";
 import { canWriteResource } from "../utils/resource-acl";
 import { wouldCreateFolderCycle } from "../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
@@ -1805,6 +1808,9 @@ consoleRoutes.openapi(
       }
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof ConsolePathTakenError) {
+        return c.json({ success: false, error: error.message }, 409);
+      }
       logger.error("Error renaming console", {
         consoleId: c.req.param("id"),
         error,
@@ -3425,15 +3431,24 @@ const consoleFolderBackend: FolderBackend = {
       }
     }
     // A move that also renames ("Move to…" with a new name) is one commit.
-    const success = await consoleManager.moveConsole(
-      itemId,
-      ctx.workspaceId,
-      folderId ?? null,
-      access,
-      ctx.userId,
-      name,
-    );
-    if (!success) return { ok: false, status: 404, error: "Console not found" };
+    try {
+      const success = await consoleManager.moveConsole(
+        itemId,
+        ctx.workspaceId,
+        folderId ?? null,
+        access,
+        ctx.userId,
+        name,
+      );
+      if (!success) {
+        return { ok: false, status: 404, error: "Console not found" };
+      }
+    } catch (error) {
+      if (error instanceof ConsolePathTakenError) {
+        return { ok: false, status: 409, error: error.message };
+      }
+      throw error;
+    }
     return { ok: true };
   },
 };

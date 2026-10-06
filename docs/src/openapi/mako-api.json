@@ -11515,7 +11515,7 @@
                   "title": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 1000
                   },
                   "slug": {
                     "type": "string",

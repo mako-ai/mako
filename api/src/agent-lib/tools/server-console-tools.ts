@@ -34,7 +34,10 @@ import {
   DatabaseConnection,
   type ISavedConsole,
 } from "../../database/workspace-schema";
-import { ConsoleManager } from "../../utils/console-manager";
+import {
+  ConsoleManager,
+  ConsolePathTakenError,
+} from "../../utils/console-manager";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { workspaceService } from "../../services/workspace.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
@@ -335,13 +338,50 @@ export function createServerConsoleTools({
                 };
               }
 
+              // A title is a RENAME, not a field: the console's name is its
+              // file name in the repo, so it goes through the same service
+              // as the explorer's rename (one commit moving the file as it
+              // is at main, id kept, old file removed; the draft written
+              // below stays a draft). It runs BEFORE the content write:
+              // a taken name fails the call with nothing applied, so a
+              // retry cannot double-apply an append or insert.
+              const leaf = title ? leafConsoleName(title) || title : "";
+              let revisionAfterRename: number | undefined;
+              if (leaf && leaf !== doc.name) {
+                let renamed: Awaited<
+                  ReturnType<typeof consoleManager.relocateConsole>
+                >;
+                try {
+                  renamed = await consoleManager.relocateConsole(
+                    consoleId,
+                    workspaceId,
+                    { name: leaf },
+                    { userId, verb: "rename", publish: false },
+                  );
+                } catch (error) {
+                  if (error instanceof ConsolePathTakenError) {
+                    return { success: false, error: error.message };
+                  }
+                  throw error;
+                }
+                if (!renamed) {
+                  return {
+                    success: false,
+                    error: `Console with ID ${consoleId} not found.`,
+                  };
+                }
+                doc.name = renamed.row.name;
+                revisionAfterRename = renamed.row.draftRevision ?? 1;
+              }
+
               const currentContent = doc.code || "";
               const newContent = applyModification(
                 currentContent,
                 modification,
               );
               const diff = buildModificationDiff(currentContent, modification);
-              const currentRevision = doc.draftRevision ?? 1;
+              const currentRevision =
+                revisionAfterRename ?? doc.draftRevision ?? 1;
 
               const setFields: Record<string, unknown> = {
                 code: newContent,
@@ -360,19 +400,18 @@ export function createServerConsoleTools({
                 draftRevision: currentRevision + 1,
               };
 
-              let updated: ISavedConsole | null =
-                await SavedConsole.findOneAndUpdate(
-                  {
-                    _id: doc._id,
-                    workspaceId: new Types.ObjectId(workspaceId),
-                    draftRevision:
-                      currentRevision === 1
-                        ? { $in: [1, null] }
-                        : currentRevision,
-                  },
-                  { $set: setFields },
-                  { new: true },
-                );
+              const updated = await SavedConsole.findOneAndUpdate(
+                {
+                  _id: doc._id,
+                  workspaceId: new Types.ObjectId(workspaceId),
+                  draftRevision:
+                    currentRevision === 1
+                      ? { $in: [1, null] }
+                      : currentRevision,
+                },
+                { $set: setFields },
+                { new: true },
+              );
 
               if (!updated) {
                 logger.debug("modify_console revision race, retrying", {
@@ -382,23 +421,7 @@ export function createServerConsoleTools({
                 continue;
               }
 
-              // A title is a RENAME, not a field: the console's name is its
-              // file name in the repo, so it goes through the same service
-              // as the explorer's rename (one commit, id kept, old file
-              // removed). Setting `name` in Mongo alone left the file —
-              // and therefore the list, which reads git — unrenamed, and
-              // the next sync of that file reset the row to the file name.
-              const leaf = title ? leafConsoleName(title) || title : "";
-              if (leaf && leaf !== updated.name) {
-                const renamed = await consoleManager.relocateConsole(
-                  consoleId,
-                  workspaceId,
-                  { name: leaf },
-                  { userId, verb: "rename" },
-                );
-                if (renamed) updated = renamed.row;
-              }
-
+              // One poke for the whole step (the rename above stayed quiet).
               publishUpdated(updated);
               return {
                 success: true,

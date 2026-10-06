@@ -605,12 +605,18 @@ export async function loadLiveConsoleById(
   if (row?.path) {
     const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
     if (def) return { live: { ...def, row, id: row._id } };
+    // A soft-deleted row is the settled answer of an earlier sync: its file
+    // is gone and no heal would bring it back. Every reader of a deleted
+    // console (GET, execute, the scheduler, the agent) lands here, so this
+    // must stay a plain miss.
+    if (row.is_deleted) return null;
     // The row's path is not in the tree: a push moved (or removed) the file
     // and its sync has not landed yet — or lost the race with this read.
-    // Reconcile once (serialized with the push's own sync, a no-op when it
-    // already ran) and answer from the healed row, so a console renamed
-    // from a laptop never 404s for the window between push and sync.
-    return healedLiveConsole(workspaceId, consoleId, row.path);
+    // Reconcile once (joining the push's own sync when one is queued, a
+    // no-op when it already ran) and answer from the healed row, so a
+    // console renamed from a laptop never 404s for the window between push
+    // and sync.
+    return healedLiveConsole(workspaceId, consoleId, row.path, repoDir);
   }
 
   const live = await loadLiveConsoles(workspaceId);
@@ -618,13 +624,25 @@ export async function loadLiveConsoleById(
   return match ? { live: match } : null;
 }
 
+/**
+ * `${workspaceId}:${consoleId}` → the main sha a heal already found
+ * nothing at. A row that stays stale (the deletion pass soft-deletes it on
+ * the next sync, but a sync that found nothing to do leaves it) must not
+ * cost a sync per read; the next push moves main and clears the entry.
+ */
+const healMisses = new Map<string, string>();
+
 async function healedLiveConsole(
   workspaceId: string,
   consoleId: string,
   stalePath: string,
+  repoDir: string,
 ): Promise<{ draft: ISavedConsole } | { live: LiveConsole } | null> {
+  const missKey = `${workspaceId}:${consoleId}`;
+  const head = await resolveCommit(repoDir, MAIN);
+  if (head && healMisses.get(missKey) === head) return null;
   try {
-    await syncConsolesIndexFromRepo(workspaceId);
+    await joinConsoleIndexSync(workspaceId);
   } catch (error) {
     logger.warn("Console index heal on a stale path failed", {
       workspaceId,
@@ -638,7 +656,10 @@ async function healedLiveConsole(
     workspaceId: new Types.ObjectId(workspaceId),
   });
   // Still at the stale path, or gone: the file really was deleted.
-  if (!row?.path || row.path === stalePath || row.is_deleted) return null;
+  if (!row?.path || row.path === stalePath || row.is_deleted) {
+    if (head) healMisses.set(missKey, head);
+    return null;
+  }
   const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
   return def ? { live: { ...def, row, id: row._id } } : null;
 }
@@ -739,6 +760,46 @@ export async function commitConsoleRemoval(input: {
     mutation: { deletes: [input.path, chartSidecarPath(input.path)] },
     message: input.message,
   });
+}
+
+/**
+ * Move a console's file (and chart sidecar) AS IT IS AT MAIN to a new path,
+ * in one commit. A rename or move must never publish the row's working
+ * copy: `SavedConsole.code` can hold an unreviewed draft (an agent's
+ * `modify_console`, an editor autosave), and projecting the row — what
+ * `commitConsoleState` does, rightly, for a SAVE — would land that draft
+ * on main authored as the user under a "rename:" subject. Returns null when
+ * there is no file at `fromPath`; the caller then falls back to projecting
+ * the row, which is the only definition left.
+ */
+export async function commitConsoleRelocation(input: {
+  workspaceId: string;
+  fromPath: string;
+  toPath: string;
+  actorUserId?: string | null;
+  message: string;
+}): Promise<
+  (ConsoleCommitResult & { path: string; sourceBlobSha: string }) | null
+> {
+  const repoDir = await requireWorkspaceRepo(input.workspaceId);
+  // Read what the mirror's main holds, not a cached tip.
+  await freshenBeforeMainWrite(input.workspaceId);
+  const contents = await readAt(repoDir, input.fromPath);
+  if (contents === null) return null;
+  const fromSidecar = chartSidecarPath(input.fromPath);
+  const toSidecar = chartSidecarPath(input.toPath);
+  const sidecar = await readAt(repoDir, fromSidecar);
+  const writes: Record<string, string> = { [input.toPath]: contents };
+  if (sidecar !== null) writes[toSidecar] = sidecar;
+  const deletes = [input.fromPath, fromSidecar];
+  if (sidecar === null) deletes.push(toSidecar);
+  const result = await commitConsoleBatch({
+    workspaceId: input.workspaceId,
+    actorUserId: input.actorUserId,
+    mutation: { writes, deletes: deletes.filter(d => !(d in writes)) },
+    message: input.message,
+  });
+  return { ...result, path: input.toPath, sourceBlobSha: blobOid(contents) };
 }
 
 /**
@@ -975,7 +1036,42 @@ export function syncConsolesIndexFromRepo(
   workspaceId: string,
   userId?: string,
 ): Promise<ConsoleSyncStats | null> {
-  return serialized(workspaceId, () => syncNow(workspaceId, userId));
+  const run = serialized(workspaceId, () => syncNow(workspaceId, userId));
+  latestSync.set(workspaceId, run);
+  void run
+    .finally(() => {
+      if (latestSync.get(workspaceId) === run) latestSync.delete(workspaceId);
+    })
+    .catch(() => undefined);
+  return run;
+}
+
+/** The newest sync queued per workspace, while it is still pending. */
+const latestSync = new Map<string, Promise<ConsoleSyncStats | null>>();
+
+/**
+ * For readers that merely need the index to be current (the stale-path
+ * heal): join the sync already queued or running rather than adding one
+ * more to the chain. The serializer orders writes; it does not coalesce
+ * them, and N readers of one stale console must not mean N syncs.
+ */
+function joinConsoleIndexSync(
+  workspaceId: string,
+): Promise<ConsoleSyncStats | null> {
+  return latestSync.get(workspaceId) ?? syncConsolesIndexFromRepo(workspaceId);
+}
+
+/**
+ * May a vanished row be re-keyed onto `to`? Only inside one ownership
+ * boundary: the workspace tree, or ONE user's private tree. A pair across
+ * the boundary would hand a row — with its `sharedWith` collaborators —
+ * to a file in someone else's private folder, or publish a private one.
+ */
+function sameConsoleOwner(from: string, to: string): boolean {
+  const a = parseConsoleRepoPath(from);
+  const b = parseConsoleRepoPath(to);
+  if (!a || !b) return false;
+  return a.scope === b.scope && (a.ownerId ?? null) === (b.ownerId ?? null);
 }
 
 async function syncNow(
@@ -1025,20 +1121,28 @@ async function syncNow(
     list.push(o);
     orphanByBlob.set(o.sourceBlobSha, list);
   }
-  // null marks a new path two vanished rows were both mapped to: keep
-  // neither guess — the blob pass or a deletion is honest, a wrong re-key
-  // is not.
+  // Rename detection is bounded on purpose: only LIVE orphans (a
+  // soft-deleted row is a settled deletion, and the set of those grows for
+  // the life of the workspace — it must never be walked per push), and only
+  // when some new file has no row and no identical-blob claimant (else there
+  // is nothing a rename could explain). null marks a new path two vanished
+  // rows were both mapped to: keep neither guess — the blob pass or a
+  // deletion is honest, a wrong re-key is not.
   const orphanByNewPath = new Map<string, IndexRow | null>();
-  if (orphans.length > 0) {
+  const liveOrphans = orphans.filter(o => !o.is_deleted);
+  const unclaimed = consoleEntries.some(
+    e => !rowByPath.has(e.path) && !orphanByBlob.has(e.oid),
+  );
+  if (liveOrphans.length > 0 && unclaimed) {
     const renamed = await detectRenamedPaths(
       repoDir,
       head,
-      orphans.map(o => o.path as string),
+      liveOrphans.map(o => o.path as string),
       [CONSOLES_DIR, USERS_DIR],
     );
-    for (const o of orphans) {
+    for (const o of liveOrphans) {
       const to = renamed.get(o.path as string);
-      if (!to) continue;
+      if (!to || !sameConsoleOwner(o.path as string, to)) continue;
       orphanByNewPath.set(to, orphanByNewPath.has(to) ? null : o);
     }
   }
@@ -1054,9 +1158,16 @@ async function syncNow(
       let row = rowByPath.get(entry.path);
 
       if (!row) {
+        // An identical blob is matched inside one ownership boundary too:
+        // a workspace console's row (and its collaborators) must not follow
+        // its content into a member's private tree, nor the reverse.
         const candidates = orphanByBlob.get(entry.oid);
         const moved =
-          candidates?.find(c => !seenRows.has(c._id.toString())) ??
+          candidates?.find(
+            c =>
+              !seenRows.has(c._id.toString()) &&
+              sameConsoleOwner(c.path as string, entry.path),
+          ) ??
           orphanByNewPath.get(entry.path) ??
           undefined;
         if (moved && !seenRows.has(moved._id.toString())) {
