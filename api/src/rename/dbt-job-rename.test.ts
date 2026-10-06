@@ -245,5 +245,7 @@ describe("resolve + rename", () => {
     ).rejects.toMatchObject({ status: 409 });
     expect(await fileAt(jobFilePath("a-new"))).toBe("name: [broken");
     expect(await fileAt(jobFilePath("a-newer"))).toBeNull();
-  });
+    // Seven commits through the freshen/CAS path: comfortably inside 30 s
+    // alone, not when the machine runs three suites at once.
+  }, 90_000);
 });

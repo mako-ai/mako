@@ -129,6 +129,22 @@ export async function validateFlowFile(input: {
     );
   }
 
+  // ---- this slug may be another flow's OLD name ---------------------------
+  // Current always wins: once this file is pushed, links that used `<slug>`
+  // to reach the renamed flow open THIS flow instead, and the renamed flow
+  // loses that alias. Legitimate (names can be reused), but worth saying.
+  const aliasHolders = await Flow.find({ workspaceId, aliases: slug })
+    .select("_id slug name")
+    .lean();
+  for (const holder of aliasHolders) {
+    if (holder.slug === slug) continue;
+    problems.push({
+      path,
+      slug,
+      reason: `note: \`${slug}\` is an old name of flow "${holder.name ?? holder.slug}" (now \`${holder.slug}\`); links that still use \`${slug}\` will open this flow once it is pushed`,
+    });
+  }
+
   // ---- aliases: old names this file still answers to ----------------------
   for (const alias of file.aliases ?? []) {
     if (alias === slug) {
@@ -147,6 +163,24 @@ export async function validateFlowFile(input: {
         path,
         slug,
         reason: `note: alias \`${alias}\` is another flow's current slug, so it resolves to that flow, not this one`,
+      });
+      continue;
+    }
+    // An alias another flow already lists (a copied file, typically) would
+    // be claimed twice and resolve to neither; the sync drops it from the
+    // newcomer, so say so here rather than let the author expect it to work.
+    const claimant = await Flow.findOne({
+      workspaceId,
+      aliases: alias,
+      slug: { $ne: slug },
+    })
+      .select("_id slug name")
+      .lean();
+    if (claimant) {
+      problems.push({
+        path,
+        slug,
+        reason: `note: alias \`${alias}\` already belongs to flow "${claimant.name ?? claimant.slug}" (\`${claimant.slug}\`); the sync keeps it there and drops it from this file's flow`,
       });
     }
   }

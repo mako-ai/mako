@@ -687,6 +687,110 @@ describe("a moved job file is the same job (graceful rename)", () => {
   });
 });
 
+describe("review findings (graceful rename)", () => {
+  it("[1] a deleted job and an added job that builds something else are never paired", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Build CH");
+    await commitDbtJobFile(project, job);
+    await DbtJob.updateOne(
+      { _id: job._id },
+      { $set: { "scheduledRun.runCount": 9 } },
+    );
+    const other = serializeJobFile({
+      name: "Build FR",
+      environment: "dev", // different environment, different selection
+      commands: ["build --select realadvisor_fr"],
+      schedule: { cron: "0 6 * * *", timezone: "Europe/Zurich" },
+      enabled: true,
+      deferToProduction: false,
+    });
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: { [jobFilePath("build-fr")]: other },
+        deletes: [jobFilePath(job.slug!)],
+      },
+      { message: "swap" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const fr = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "build-fr",
+    });
+    expect(fr).not.toBeNull();
+    expect(fr!._id.toString()).not.toBe(job._id.toString());
+    expect(fr!.scheduledRun?.runCount ?? 0).toBe(0);
+    expect(await DbtJob.findById(job._id)).toBeNull();
+  });
+
+  it("[2] a new file at a renamed git-born job's OLD slug: new id, no throw, later files still created, alias released", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { resolveDbtJobRef } = await import("../rename/dbt-job-rename");
+    const project = await seedProject();
+    const file = (name: string) =>
+      serializeJobFile({
+        name,
+        environment: "prod",
+        commands: ["build --select x"],
+        schedule: null,
+        enabled: true,
+        deferToProduction: false,
+      });
+    const c = (writes: Record<string, string>) =>
+      commitBlobsOnBranch(
+        repoDirFor(WS.toString()),
+        DEFAULT_BRANCH,
+        { writes },
+        { message: "push" },
+      );
+    await c({ [jobFilePath("nightly")]: file("Nightly") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const nightly = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly",
+    });
+    expect(nightly!._id.toString()).toBe(
+      derivedJobId(WS.toString(), "nightly").toString(),
+    );
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "nightly", slug: "nightly-old" },
+    );
+
+    await c({
+      [jobFilePath("nightly")]: file("Nightly v2"),
+      [jobFilePath("zzz")]: file("Zzz"),
+    });
+    // A live file at main beats the alias, before its row exists.
+    const gitOnly = await resolveDbtJobRef(
+      { workspaceId: WS.toString() },
+      "nightly",
+    );
+    expect(gitOnly?.via).toBe("current");
+    expect(gitOnly?.id).not.toBe(nightly!._id.toString());
+
+    await expect(syncDbtConfigFromRepo(WS.toString())).resolves.toBeUndefined();
+    const rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => r.slug).sort()).toEqual([
+      "nightly",
+      "nightly-old",
+      "zzz",
+    ]);
+    const v2 = rows.find(r => r.slug === "nightly")!;
+    const old = rows.find(r => r.slug === "nightly-old")!;
+    expect(v2._id.toString()).not.toBe(nightly!._id.toString());
+    expect(v2._id.toString()).toBe(gitOnly?.id);
+    expect(old._id.toString()).toBe(nightly!._id.toString());
+    expect(old.aliases ?? []).toEqual([]);
+    const live = await loadLiveJobs(project);
+    expect(new Set(live.map(l => l.id.toString())).size).toBe(3);
+    expect(
+      (await resolveDbtJobRef({ workspaceId: WS.toString() }, "nightly"))?.id,
+    ).toBe(v2._id.toString());
+  });
+});
+
 describe("adoption", () => {
   it("writes files for unstamped jobs + environments once, re-runnable", async () => {
     const project = await seedProject();

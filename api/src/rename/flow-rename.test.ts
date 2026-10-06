@@ -24,6 +24,25 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
+// A hook on the freshen that precedes every main commit: a test can land a
+// competing change in the window between the rename service reading the
+// file and committing its move — the race the compare-and-swap exists for.
+const freshenHook = vi.hoisted(() => ({
+  fn: null as null | (() => Promise<void>),
+}));
+vi.mock("../apps/cloud-repo.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/cloud-repo.service")>();
+  return {
+    ...actual,
+    freshenBeforeMainWrite: async (workspaceId: string) => {
+      await actual.freshenBeforeMainWrite(workspaceId);
+      const fn = freshenHook.fn;
+      freshenHook.fn = null;
+      if (fn) await fn();
+    },
+  };
+});
 vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => undefined) },
 }));
@@ -41,6 +60,7 @@ import {
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import { syncFlowsFromRepo } from "../services/flow-sync.service";
 import { parseFlowFile } from "../services/flow-config-files";
+import { commitFlowFile } from "../services/flow-config.service";
 import { flowRenameHandler } from "./handlers/flow";
 import { pickFlowByRef } from "./flow-rename";
 import { RenameError } from "./types";
@@ -306,5 +326,89 @@ describe("rename", () => {
     await expect(
       flowRenameHandler.rename(ctx(), { ref: "ghost", title: "x" }),
     ).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("review findings: concurrency", () => {
+  it("[3a] the rename commit is refused when the old file changed under it; nothing is written", async () => {
+    await push({ "flows/race.yml": flowYaml("Race") });
+    await syncFlowsFromRepo(WS, "u1");
+    // The service reads flows/race.yml, then freshens before committing:
+    // land a save on the old path in that window.
+    let armed = 0;
+    freshenHook.fn = async () => {
+      // The first freshen is the service's read-side one; arm the second
+      // (inside commitFlowConfig) to mutate.
+      armed += 1;
+      freshenHook.fn = async () => {
+        await push({ "flows/race.yml": flowYaml("Race (edited meanwhile)") });
+      };
+    };
+    await expect(
+      flowRenameHandler.rename(ctx(), { ref: "race", slug: "raced" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/changed while renaming/),
+    });
+    expect(armed).toBe(1);
+    expect(await fileAt("flows/raced.yml")).toBeNull();
+    expect(await fileAt("flows/race.yml")).toContain("edited meanwhile");
+    expect(
+      await Flow.findOne({ workspaceId: WS, slug: "race" }),
+    ).not.toBeNull();
+    freshenHook.fn = null;
+  });
+
+  it("[3a] two renames of the same flow cannot both apply", async () => {
+    await push({ "flows/dup.yml": flowYaml("Dup") });
+    await syncFlowsFromRepo(WS, "u1");
+    freshenHook.fn = async () => {
+      freshenHook.fn = async () => {
+        // The other rename lands first.
+        await flowRenameHandler.rename(ctx(), { ref: "dup", slug: "dup-b" });
+      };
+    };
+    await expect(
+      flowRenameHandler.rename(ctx(), { ref: "dup", slug: "dup-a" }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await fileAt("flows/dup-a.yml")).toBeNull();
+    expect(await fileAt("flows/dup.yml")).toBeNull();
+    expect(await fileAt("flows/dup-b.yml")).toContain("name: Dup");
+    expect((await Flow.find({ workspaceId: WS })).map(r => r.slug)).toEqual([
+      "dup-b",
+    ]);
+    freshenHook.fn = null;
+  });
+
+  it("[3b] a write-through holding a stale slug fails instead of resurrecting the old file", async () => {
+    await push({ "flows/edit.yml": flowYaml("Edit") });
+    await syncFlowsFromRepo(WS, "u1");
+    const inFlight = await Flow.findOne({ workspaceId: WS, slug: "edit" });
+    await flowRenameHandler.rename(ctx(), { ref: "edit", slug: "edited" });
+    inFlight!.name = "Edit (from a stale form)";
+    const result = await commitFlowFile(inFlight!, "u1");
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/renamed to "edited"/);
+    expect(await fileAt("flows/edit.yml")).toBeNull();
+    expect(await fileAt("flows/edited.yml")).toContain("name: Edit\n");
+  });
+
+  it("[2] resolution: a live file at main beats an alias; renaming by that old name is refused", async () => {
+    await push({ "flows/old.yml": flowYaml("Old") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "old" });
+    await flowRenameHandler.rename(ctx(), { ref: "old", slug: "new" });
+    expect((await flowRenameHandler.resolve(ctx(), "old"))?.via).toBe("alias");
+    await push({ "flows/old.yml": flowYaml("Old reborn") });
+    const resolved = await flowRenameHandler.resolve(ctx(), "old");
+    expect(resolved?.via).toBe("current");
+    expect(resolved?.id).not.toBe(row!._id.toString());
+    expect(resolved?.current.title).toBe("Old reborn");
+    await expect(
+      flowRenameHandler.rename(ctx(), { ref: "old", title: "x" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/flow of its own/),
+    });
   });
 });

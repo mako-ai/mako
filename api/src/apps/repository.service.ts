@@ -301,11 +301,65 @@ export interface BlobMutation {
  * predecessor still happened (its author, date and message are the record),
  * and dropping it would silently renumber history (§13.18 doctrine).
  */
+/**
+ * Thrown by `commitBlobsOnBranch` when an `expectBlobs` precondition fails:
+ * the branch moved and the file the caller read is no longer what is at
+ * head. The caller re-reads and retries (or reports a conflict); it must
+ * not re-apply a mutation decided from stale content.
+ */
+export class BlobPreconditionError extends Error {
+  constructor(
+    readonly path: string,
+    readonly expected: string | null,
+    readonly actual: string | null,
+  ) {
+    super(
+      `${path} changed on ${DEFAULT_BRANCH} since it was read (expected ${expected ?? "absent"}, found ${actual ?? "absent"})`,
+    );
+    this.name = "BlobPreconditionError";
+  }
+}
+
+/** Blob oid of `path` at `commit`, or null when the path is absent. */
+export async function blobOidAt(
+  repoDir: string,
+  commit: string,
+  relPath: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "rev-parse",
+      "--verify",
+      "-q",
+      `${commit}:${assertSafeRelPath(relPath)}`,
+    ]);
+    const oid = stdout.trim();
+    return /^[0-9a-f]{40}$/.test(oid) ? oid : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function commitBlobsOnBranch(
   repoDir: string,
   branch: string,
   mutation: BlobMutation,
-  options: { message: string; author?: GitAuthor; allowEmpty?: boolean },
+  options: {
+    message: string;
+    author?: GitAuthor;
+    allowEmpty?: boolean;
+    /**
+     * Compare-and-swap on content: path → the blob oid the caller read
+     * there (`null` = the path must be absent). Checked against the head
+     * each attempt, BEFORE the tree is built, so a mutation decided from a
+     * file that has since changed or moved is refused
+     * (`BlobPreconditionError`) rather than re-applied on the new head —
+     * which is what the CAS on the ref alone cannot see.
+     */
+    expectBlobs?: Record<string, string | null>;
+  },
 ): Promise<{ commitOid: string; previousHead: string; unchanged: boolean }> {
   const writes = Object.entries(mutation.writes ?? {}).map(
     ([rel, contents]) => [assertSafeRelPath(rel), contents] as const,
@@ -330,6 +384,12 @@ export async function commitBlobsOnBranch(
   for (let attempt = 0; attempt < 3; attempt++) {
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
     if (!head) throw new Error(`Branch ${branch} is missing`);
+    for (const [rel, expected] of Object.entries(options.expectBlobs ?? {})) {
+      const actual = await blobOidAt(repoDir, head, rel);
+      if (actual !== expected) {
+        throw new BlobPreconditionError(rel, expected, actual);
+      }
+    }
     const headTree = await treeOfCommit(repoDir, head);
     const indexFile = path.join(
       os.tmpdir(),

@@ -47,12 +47,15 @@ export async function commitFlowConfig(
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
   author?: GitAuthor,
+  /** Compare-and-swap on content; see `commitBlobsOnBranch`. */
+  expectBlobs?: Record<string, string | null>,
 ): Promise<{ commitOid: string; unchanged: boolean }> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
+    expectBlobs,
   });
   if (!result.unchanged) queueMirrorPush(workspaceId);
   return { commitOid: result.commitOid, unchanged: result.unchanged };
@@ -88,6 +91,19 @@ export async function commitFlowFile(
 ): Promise<FlowFileWriteResult> {
   if (!flow.slug || !flow.name?.trim()) {
     return { ok: true, changed: false };
+  }
+  // The row in hand may predate a rename that landed while the request was
+  // in flight: writing `flows/<old slug>.yml` would resurrect the moved
+  // file beside the new one. Write only to the row's CURRENT slug; a stale
+  // one fails the request (the caller reloads and retries) rather than
+  // guessing which of two files the definition belongs to.
+  const current = await Flow.findById(flow._id).select("slug").lean();
+  if (current && current.slug && current.slug !== flow.slug) {
+    return {
+      ok: false,
+      changed: false,
+      error: `the flow was renamed to "${current.slug}" while this change was being made; reload and retry`,
+    };
   }
   const contents = serializeFlowFile(flowToFile(flow));
   const sha = blobOid(contents);

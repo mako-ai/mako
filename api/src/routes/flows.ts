@@ -1380,8 +1380,10 @@ flowRoutes.openapi(
             : flow.schedule?.timezone,
         };
       }
-      // Rename changes the DISPLAY name only: `slug` is the filename identity
-      // and never moves (RFC #904 / apps.md §23).
+      // This route edits the DISPLAY name only. The slug (the file name)
+      // moves through the rename service alone — api/src/rename/flow-rename.ts
+      // via `POST /objects/flow/rename` — which keeps the old slug as an
+      // alias so old links keep resolving.
       if (typeof body.name === "string" && body.name.trim()) {
         flow.name = body.name.trim().slice(0, 200);
       }

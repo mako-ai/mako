@@ -702,13 +702,206 @@ describe("a moved file is the same flow (graceful rename)", () => {
         slug: { $in: ["pd-a", "pd-b"] },
       }),
     ).toBe(2);
+    const holders: string[] = [];
     for (const slug of ["pd-a", "pd-b"]) {
       const created = await Flow.findOne({ workspaceId: WS, slug });
       expect(created!._id.toString()).not.toBe(row!._id.toString());
-      // The file's aliases still land on the new rows: a later lookup by
-      // `pipedrive` finds two claimants and resolves to neither.
-      expect(created!.aliases).toEqual(["pipedrive"]);
+      if (created!.aliases?.includes("pipedrive")) holders.push(slug);
     }
+    // An alias is never claimed twice — and here `pipedrive` is still the
+    // doomed row's CURRENT slug when the two newcomers are created, so
+    // neither may take it (current always wins). Nothing guesses: the old
+    // name resolves to no flow at all rather than to the wrong one.
+    expect(holders).toHaveLength(0);
+    const { resolveFlowRef } = await import("../rename/flow-rename");
+    const doomed = await Flow.findById(row!._id);
+    if (doomed === null) {
+      expect(await resolveFlowRef({ workspaceId: WS }, "pipedrive")).toBeNull();
+    }
+  });
+
+  it("[review 1] a deleted flow and an added DIFFERENT flow are never paired, however alike their YAML", async () => {
+    const CH = new Types.ObjectId().toString();
+    const FR = new Types.ObjectId().toString();
+    const yaml = (name: string, conn: string, schema: string) =>
+      flowYaml(name)
+        .replace(`connector_id: ${CONNECTOR}`, `connector_id: ${conn}`)
+        .replace("schema: raw_close", `schema: ${schema}`);
+    await push({ "flows/close-ch.yml": yaml("Close CH", CH, "raw_close_ch") });
+    await syncFlowsFromRepo(WS, "u1");
+    const ch = await Flow.findOne({ workspaceId: WS, slug: "close-ch" });
+    await seedRuntime(ch!._id);
+
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    await move("close-ch", "close-fr", yaml("Close FR", FR, "raw_close_fr"));
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.created).toBe(1);
+    const fr = await Flow.findOne({ workspaceId: WS, slug: "close-fr" });
+    expect(fr).not.toBeNull();
+    expect(fr!._id.toString()).not.toBe(ch!._id.toString());
+    expect(fr!.aliases ?? []).toEqual([]);
+    expect(String(fr!.dataSourceId)).toBe(FR);
+    // FR starts from nothing (it will backfill). CH was NOT re-keyed: it is
+    // torn down as before — or, in this rig without a mirror to verify
+    // against, deferred by the fail-closed guard — never handed to FR.
+    expect(await runtimeCounts(fr!._id)).toEqual([0, 0, 0]);
+    const chAfter = await Flow.findById(ch!._id);
+    if (chAfter === null) {
+      expect(inngestSent.map(e => e.name)).toContain("flow.cancel");
+    } else {
+      expect(chAfter.slug).toBe("close-ch");
+      expect(result.deferred).toEqual(["close-ch"]);
+      expect(await runtimeCounts(ch!._id)).toEqual([1, 1, 1]);
+    }
+  });
+
+  it("[review 2] a new file at a renamed git-born flow's OLD slug is a new flow with its own id; current wins over the alias", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { resolveFlowRef } = await import("../rename/flow-rename");
+    await push({ "flows/foo.yml": flowYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const foo = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    expect(foo!._id.toString()).toBe(derivedFlowId(WS, "foo").toString());
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+
+    // Before the new file syncs: a live file at main beats an alias.
+    await push({ "flows/foo.yml": flowYaml("Foo again") });
+    const gitOnly = await resolveFlowRef({ workspaceId: WS }, "foo");
+    expect(gitOnly?.via).toBe("current");
+    expect(gitOnly?.id).not.toBe(foo!._id.toString());
+    const listedBefore = await loadLiveFlows(WS);
+    expect(new Set(listedBefore.map(l => l.id.toString())).size).toBe(2);
+    expect(listedBefore.find(l => l.def.slug === "foo")?.id.toString()).toBe(
+      gitOnly?.id,
+    );
+
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.created).toBe(1);
+    expect(result.invalid).toEqual([]);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows).toHaveLength(2);
+    const bar = rows.find(r => r.slug === "bar");
+    const fooAgain = rows.find(r => r.slug === "foo");
+    expect(bar!._id.toString()).toBe(foo!._id.toString());
+    expect(fooAgain!._id.toString()).not.toBe(foo!._id.toString());
+    // The id GET handed out before the push is the one the row got.
+    expect(fooAgain!._id.toString()).toBe(gitOnly?.id);
+    // Current always wins: bar no longer answers to "foo".
+    expect(bar!.aliases ?? []).toEqual([]);
+    expect(fooAgain!.name).toBe("Foo again");
+    const listed = await loadLiveFlows(WS);
+    expect(new Set(listed.map(l => l.id.toString())).size).toBe(2);
+    expect(
+      (await loadLiveFlowById(WS, fooAgain!._id.toString()))?.def.slug,
+    ).toBe("foo");
+    const resolved = await resolveFlowRef({ workspaceId: WS }, "foo");
+    expect(resolved?.id).toBe(fooAgain!._id.toString());
+    expect(resolved?.via).toBe("current");
+    expect((await resolveFlowRef({ workspaceId: WS }, "bar"))?.id).toBe(
+      foo!._id.toString(),
+    );
+  });
+
+  it("[review 3c] a tree read before a rename commit neither recreates the old slug nor renames back", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { runGit } = await import("../apps/git");
+    await push({ "flows/x.yml": flowYaml("X") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "x" });
+    await seedRuntime(row!._id);
+    const before = await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "x", slug: "y" },
+    );
+    expect((await Flow.findById(row!._id))?.lastRenameCommit).toBe(
+      renamed.commit,
+    );
+
+    // The race: files as they were before the rename commit, rows after
+    // the row was re-keyed. Reproduced by winding main back.
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      before as string,
+    ]);
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const stale = await syncFlowsFromRepo(WS, "u1");
+    expect(stale.created).toBe(0);
+    expect(stale.deferred).toEqual([]);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].slug).toBe("y");
+    expect(rows[0]._id.toString()).toBe(row!._id.toString());
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+
+    // Once the tree contains the rename, everything is level.
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      renamed.commit as string,
+    ]);
+    const level = await syncFlowsFromRepo(WS, "u1");
+    expect(level).toMatchObject({ created: 0, unchanged: 1 });
+    expect((await Flow.find({ workspaceId: WS })).map(r => r.slug)).toEqual([
+      "y",
+    ]);
+  });
+
+  it("[review 4] a copied file does not copy the alias: one claimant keeps it, old links keep working", async () => {
+    const { validateFlowFile } = await import("./flow-validate.service");
+    const { resolveFlowRef } = await import("../rename/flow-rename");
+    await push({ "flows/orig.yml": flowYaml("Orig", "aliases: [legacy]") });
+    await syncFlowsFromRepo(WS, "u1");
+    const orig = await Flow.findOne({ workspaceId: WS, slug: "orig" });
+    expect(orig!.aliases).toEqual(["legacy"]);
+
+    // Validation warns before the push…
+    const copyYaml = flowYaml("Copy", "aliases: [legacy]");
+    const validation = await validateFlowFile({
+      workspaceId: WS,
+      path: "flows/copy.yml",
+      contents: copyYaml,
+    });
+    // (`ok` is false here only because this rig seeds no connection rows for
+    // the referential layer; the alias note is what this case is about.)
+    expect(
+      validation.problems.some(p =>
+        p.reason.startsWith("note: alias `legacy` already belongs"),
+      ),
+    ).toBe(true);
+
+    // …and the sync keeps the alias where it was.
+    await push({ "flows/copy.yml": copyYaml });
+    await syncFlowsFromRepo(WS, "u1");
+    const copy = await Flow.findOne({ workspaceId: WS, slug: "copy" });
+    expect(copy!.aliases ?? []).toEqual([]);
+    expect((await Flow.findById(orig!._id))?.aliases).toEqual(["legacy"]);
+    const resolved = await resolveFlowRef({ workspaceId: WS }, "legacy");
+    expect(resolved).toMatchObject({ id: orig!._id.toString(), via: "alias" });
+
+    // A NEW file at a name some flow holds as an alias is flagged too.
+    const taking = await validateFlowFile({
+      workspaceId: WS,
+      path: "flows/legacy.yml",
+      contents: flowYaml("Legacy reborn"),
+    });
+    expect(
+      taking.problems.some(p =>
+        p.reason.startsWith("note: `legacy` is an old name of flow"),
+      ),
+    ).toBe(true);
   });
 
   it("renaming back to an old name keeps the current slug out of the aliases", async () => {

@@ -48,6 +48,7 @@ import { loggers } from "../../logging";
 import { Flow } from "../../database/workspace-schema";
 import {
   flowFilePath,
+  flowRenameTarget,
   flowToFile,
   parseFlowFile,
   slugFromFlowFilePath,
@@ -254,16 +255,22 @@ export async function checkFlowFiles(input: {
     slug: string;
     aliases: string[];
     contents?: string;
+    target: string | null;
   }> = [];
   const rowIdByDeletedSlug = new Map<string, string>();
   for (const slug of deletedSlugs) {
     const row = await Flow.findOne({ workspaceId, slug }).select("_id aliases");
     if (!row) continue;
     rowIdByDeletedSlug.set(slug, String(row._id));
+    const contents = baselineByPath.get(flowFilePath(slug));
+    const parsed = contents === undefined ? null : parseFlowFile(contents);
     removedForPairing.push({
       slug,
       aliases: row.aliases ?? [],
-      contents: baselineByPath.get(flowFilePath(slug)),
+      contents,
+      // Same guard as the push: only files pointing at the same source and
+      // destination can be one flow renamed (by git or by content).
+      target: parsed ? flowRenameTarget(parsed) : null,
     });
   }
   const addedForPairing = overlay.added
@@ -271,10 +278,12 @@ export async function checkFlowFiles(input: {
       const slug = slugFromFlowFilePath(path);
       const entry = proposedByPath.get(path);
       if (!slug || !entry) return null;
+      const parsed = parseFlowFile(entry.contents);
       return {
         slug,
         contents: entry.contents,
-        aliases: parseFlowFile(entry.contents)?.aliases ?? [],
+        aliases: parsed?.aliases ?? [],
+        target: parsed ? flowRenameTarget(parsed) : null,
       };
     })
     .filter((a): a is NonNullable<typeof a> => a !== null);

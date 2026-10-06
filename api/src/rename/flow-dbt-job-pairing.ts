@@ -43,8 +43,19 @@ import { runGit } from "../apps/git";
 /** A slug whose file is gone from the tree but whose row still exists. */
 export interface RemovedSlug {
   slug: string;
-  /** The row's own aliases, for the "renamed back" direction of rule 1. */
+  /** The row's own aliases (informational; see the module note on rule 1). */
   aliases?: string[];
+  /**
+   * What the object points AT, as a comparable key — for a flow its source
+   * connection and destination (connection, database, schema, table), for a
+   * job its environment and commands (`flowRenameTarget` / `jobRenameTarget`).
+   * Rules 2 and 3 pair only two files with the SAME target: a file that
+   * resembles another but reads from a different connection or writes to a
+   * different table is a different stream, and handing it the other's
+   * checkpoints would skip its backfill and strand the other's teardown.
+   * `null`/absent means unknown, which pairs with nothing under those rules.
+   */
+  target?: string | null;
   /**
    * The file's contents as last synced (read back from git by the row's
    * `sourceBlobSha`, or the row's own projection when the blob is gone).
@@ -59,6 +70,8 @@ export interface AddedSlug {
   contents: string;
   /** `aliases:` as parsed from the file (empty when none). */
   aliases: string[];
+  /** See {@link RemovedSlug.target}. */
+  target?: string | null;
 }
 
 export type PairingRule = "alias" | "git" | "identical";
@@ -73,6 +86,13 @@ export interface SlugPairing {
   pairs: SlugRenamePair[];
   /** Removed slugs left alone because more than one added slug fit. */
   ambiguous: Array<{ slug: string; rule: PairingRule; candidates: string[] }>;
+  /**
+   * Alias pairs whose two sides point at different targets. An explicit
+   * `aliases:` is the author's statement and is honoured, but it is worth a
+   * line in the log: the renamed stream now reads from / writes to
+   * something else than its checkpoints were taken against.
+   */
+  targetMismatch: Array<{ from: string; to: string }>;
 }
 
 /**
@@ -141,7 +161,7 @@ export function pairRenamedSlugs(input: {
 }): SlugPairing {
   const { removed, added } = input;
   const gitRenames = input.gitRenames ?? new Map<string, string>();
-  const result: SlugPairing = { pairs: [], ambiguous: [] };
+  const result: SlugPairing = { pairs: [], ambiguous: [], targetMismatch: [] };
   if (removed.length === 0 || added.length === 0) return result;
 
   const addedBySlug = new Map(added.map(a => [a.slug, a] as const));
@@ -149,24 +169,28 @@ export function pairRenamedSlugs(input: {
   for (const a of added) {
     identityOfAdded.set(a.slug, definitionIdentity(a.contents));
   }
+  // Rules 2 and 3 only ever pair two files that point at the same thing.
+  const sameTarget = (r: RemovedSlug, a: AddedSlug): boolean =>
+    typeof r.target === "string" &&
+    typeof a.target === "string" &&
+    r.target === a.target;
 
   const candidatePairs: SlugRenamePair[] = [];
   for (const r of removed) {
     const rules: Array<[PairingRule, string[]]> = [
-      [
-        "alias",
-        added
-          .filter(
-            a =>
-              a.aliases.includes(r.slug) || (r.aliases ?? []).includes(a.slug),
-          )
-          .map(a => a.slug),
-      ],
+      // Only the FORWARD direction: the new file names the old slug. The
+      // reverse ("the removed row lists the added slug as an alias") is
+      // exactly what a tree read before a rename commit looks like, and
+      // pairing on it would undo a rename that just happened. A genuine
+      // rename back through the service writes the alias forward anyway;
+      // a laptop one falls to rules 2 and 3.
+      ["alias", added.filter(a => a.aliases.includes(r.slug)).map(a => a.slug)],
       [
         "git",
         (() => {
           const to = gitRenames.get(r.slug);
-          return to !== undefined && addedBySlug.has(to) ? [to] : [];
+          const a = to !== undefined ? addedBySlug.get(to) : undefined;
+          return a && sameTarget(r, a) ? [a.slug] : [];
         })(),
       ],
       [
@@ -176,7 +200,9 @@ export function pairRenamedSlugs(input: {
           const identity = definitionIdentity(r.contents);
           if (identity === null) return [];
           return added
-            .filter(a => identityOfAdded.get(a.slug) === identity)
+            .filter(
+              a => identityOfAdded.get(a.slug) === identity && sameTarget(r, a),
+            )
             .map(a => a.slug);
         })(),
       ],
@@ -204,9 +230,15 @@ export function pairRenamedSlugs(input: {
   for (const pair of candidatePairs) {
     claims.set(pair.to, [...(claims.get(pair.to) ?? []), pair]);
   }
+  const removedBySlug = new Map(removed.map(r => [r.slug, r] as const));
   for (const [to, pairs] of claims) {
     if (pairs.length === 1) {
       result.pairs.push(pairs[0]);
+      const r = removedBySlug.get(pairs[0].from);
+      const a = addedBySlug.get(to);
+      if (pairs[0].via === "alias" && r && a && !sameTarget(r, a)) {
+        result.targetMismatch.push({ from: pairs[0].from, to });
+      }
       continue;
     }
     for (const pair of pairs) {
@@ -313,7 +345,11 @@ export async function detectGitRenames(
       "-C",
       repoDir,
       "diff",
-      "-M",
+      // 90%, not git's default 50%: at 50% two flows that share the format's
+      // boilerplate (same keys, same layout stanza, different connection and
+      // schema) were reported as a rename. The target check above is the
+      // real guard; the threshold keeps git's answer honest on its own.
+      "-M90%",
       "--name-status",
       "--diff-filter=R",
       "-z",
@@ -329,4 +365,27 @@ export async function detectGitRenames(
     return new Map();
   }
   return renames;
+}
+
+/**
+ * Whether `commit` is contained in the history of `tip` (or is `tip`). An
+ * unknown commit answers false — the caller treats "not contained" as "this
+ * tree predates it". Used to recognise a tree read BEFORE a rename commit
+ * landed: the row already says the new slug, the tree still shows the old
+ * file, and nothing must be undone or created from that view.
+ */
+export async function isAncestorCommit(
+  repoDir: string,
+  commit: string,
+  tip: string,
+): Promise<boolean> {
+  if (!/^[0-9a-f]{40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(tip)) {
+    return false;
+  }
+  try {
+    await runGit(["-C", repoDir, "merge-base", "--is-ancestor", commit, tip]);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -55,6 +55,7 @@ import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
   flowFilePath,
+  flowRenameTarget,
   flowToFile,
   parseFlowFile,
   serializeFlowFile,
@@ -67,6 +68,7 @@ import {
 } from "../sync-cdc/flow-reconcile";
 import {
   detectGitRenames,
+  isAncestorCommit,
   mergedAliases,
   pairRenamedSlugs,
   readBlobByOid,
@@ -189,11 +191,39 @@ async function markFlowInvalid(
 export function derivedFlowId(
   workspaceId: string,
   slug: string,
+  /**
+   * 1 is the id every git-only file has always had. A higher generation is
+   * used only when that id is already held by a row of ANOTHER slug — a
+   * git-born flow that was renamed keeps its id, so a new file later pushed
+   * at its old name must not collide with it (see `freeDerivedFlowId`).
+   */
+  generation = 1,
 ): Types.ObjectId {
   const digest = createHash("sha1")
-    .update(`flows:${workspaceId}:${slug}`)
+    .update(
+      `flows:${workspaceId}:${slug}${generation > 1 ? `#${generation}` : ""}`,
+    )
     .digest("hex");
   return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/**
+ * The stable id for a file with no row: the first derivation not held by a
+ * row of a different slug. Deterministic over the same rows, so GET/list
+ * (which hands it out) and push-sync (which creates the row under it)
+ * agree, and a tab opened before the push keeps resolving after it.
+ */
+export function freeDerivedFlowId(
+  workspaceId: string,
+  slug: string,
+  rows: Array<{ _id: Types.ObjectId; slug?: string }>,
+): Types.ObjectId {
+  for (let generation = 1; generation <= 32; generation++) {
+    const id = derivedFlowId(workspaceId, slug, generation);
+    const holder = rows.find(row => row._id.equals(id));
+    if (!holder || holder.slug === slug) return id;
+  }
+  return new Types.ObjectId();
 }
 
 export interface FlowDefinitionAtMain {
@@ -296,7 +326,7 @@ function joinLiveFlows(
     return {
       def,
       row,
-      id: row?._id ?? derivedFlowId(workspaceId, def.slug),
+      id: row?._id ?? freeDerivedFlowId(workspaceId, def.slug, rows),
     };
   });
 }
@@ -478,6 +508,7 @@ export async function ensureFlowDerivedCache(flow: {
     await markFlowInvalid(row, refusal, path);
     return "invalid";
   }
+  await dropAliasesClaimedElsewhere(workspaceId, row);
   row.sourceBlobSha = sha;
   try {
     await row.save();
@@ -669,12 +700,66 @@ export async function rekeyFlowSlug(
   flowId: Types.ObjectId,
   from: string,
   to: string,
+  /** The commit that carries the move; see `IFlow.lastRenameCommit`. */
+  commit?: string,
 ): Promise<void> {
   await Flow.updateOne({ _id: flowId }, { $pull: { aliases: to } });
   await Flow.updateOne(
     { _id: flowId, slug: from },
-    { $set: { slug: to }, $addToSet: { aliases: from } },
+    {
+      $set: { slug: to, ...(commit ? { lastRenameCommit: commit } : {}) },
+      $addToSet: { aliases: from },
+    },
   );
+}
+
+/**
+ * Whether the tree at `head` predates the row's last rename — i.e. a push
+ * reaction that read the files before a rename commit landed and the rows
+ * after the row was re-keyed. Such a view still shows the OLD file and not
+ * the new one; it must neither recreate the old slug as a new flow nor
+ * "rename back". Rows that recorded no commit (renamed before this field
+ * existed) fall back to the weaker signal the caller supplies.
+ */
+async function treePredatesRename(
+  repoDir: string,
+  head: string,
+  row: Pick<IFlow, "lastRenameCommit">,
+  fallback: boolean,
+): Promise<boolean> {
+  if (!row.lastRenameCommit) return fallback;
+  return !(await isAncestorCommit(repoDir, row.lastRenameCommit, head));
+}
+
+/**
+ * An alias two rows claim resolves to neither, so a file whose `aliases:`
+ * names something another row already answers to — by slug or by alias; a
+ * copied file is the usual way — loses that entry rather than poisoning
+ * the other row's old links. Returns what was dropped, for the log.
+ */
+async function dropAliasesClaimedElsewhere(
+  workspaceId: string,
+  doc: Pick<IFlow, "_id" | "aliases">,
+): Promise<string[]> {
+  const aliases = doc.aliases ?? [];
+  if (aliases.length === 0) return [];
+  const claimants = await Flow.find({
+    workspaceId,
+    _id: { $ne: doc._id },
+    $or: [{ slug: { $in: aliases } }, { aliases: { $in: aliases } }],
+  })
+    .select("slug aliases")
+    .lean();
+  const claimed = new Set<string>();
+  for (const claimant of claimants) {
+    for (const name of [claimant.slug, ...(claimant.aliases ?? [])]) {
+      if (name && aliases.includes(name)) claimed.add(name);
+    }
+  }
+  if (claimed.size === 0) return [];
+  const kept = aliases.filter(alias => !claimed.has(alias));
+  doc.aliases = kept.length > 0 ? kept : undefined;
+  return [...claimed];
 }
 
 /**
@@ -689,9 +774,11 @@ export async function rekeyFlowSlug(
 export async function rekeyRenamedFlows(args: {
   workspaceId: string;
   repoDir: string;
+  /** The commit `files` were read at. */
+  head: string;
   files: Array<{ path: string; contents: string }>;
 }): Promise<SlugRenamePair[]> {
-  const { workspaceId, repoDir, files } = args;
+  const { workspaceId, repoDir, head, files } = args;
   const fileBySlug = new Map<string, { path: string; contents: string }>();
   for (const file of files) {
     const slug = slugFromFlowFilePath(file.path);
@@ -702,12 +789,26 @@ export async function rekeyRenamedFlows(args: {
   for (const row of rows) {
     if (row.slug) rowBySlug.set(row.slug, row);
   }
-  const removedRows = rows.filter(
-    row => row.slug !== undefined && !fileBySlug.has(row.slug),
-  );
   const addedFiles = [...fileBySlug.entries()].filter(
     ([slug]) => !rowBySlug.has(slug),
   );
+  const removedRows: IFlow[] = [];
+  for (const row of rows) {
+    if (row.slug === undefined || fileBySlug.has(row.slug)) continue;
+    // A row renamed by a commit this tree does not contain is not "gone":
+    // the tree is older than the rename. Leave it out of the pairing — its
+    // old file in this tree is not a candidate for anything.
+    if (await treePredatesRename(repoDir, head, row, false)) {
+      logger.info("Tree predates a flow rename; not pairing its old slug", {
+        workspaceId,
+        slug: row.slug,
+        lastRenameCommit: row.lastRenameCommit,
+        head,
+      });
+      continue;
+    }
+    removedRows.push(row);
+  }
   if (removedRows.length === 0 || addedFiles.length === 0) return [];
 
   const removed: RemovedSlug[] = [];
@@ -726,17 +827,23 @@ export async function rekeyRenamedFlows(args: {
         contents = null;
       }
     }
+    const parsedOld = contents === null ? null : parseFlowFile(contents);
     removed.push({
       slug,
       aliases: row.aliases ?? [],
       contents: contents ?? undefined,
+      target: parsedOld ? flowRenameTarget(parsedOld) : null,
     });
   }
-  const added = addedFiles.map(([slug, file]) => ({
-    slug,
-    contents: file.contents,
-    aliases: parseFlowFile(file.contents)?.aliases ?? [],
-  }));
+  const added = addedFiles.map(([slug, file]) => {
+    const parsed = parseFlowFile(file.contents);
+    return {
+      slug,
+      contents: file.contents,
+      aliases: parsed?.aliases ?? [],
+      target: parsed ? flowRenameTarget(parsed) : null,
+    };
+  });
   const gitRenames = new Map<string, string>();
   for (const [from, to] of await detectGitRenames(
     repoDir,
@@ -765,12 +872,20 @@ export async function rekeyRenamedFlows(args: {
       candidates: entry.candidates,
     });
   }
+  for (const entry of pairing.targetMismatch) {
+    // Honoured (the file says so), but the stream now points elsewhere
+    // than its checkpoints were taken against.
+    logger.warn(
+      "Flow renamed by alias onto a different source/destination; its checkpoints carry over",
+      { workspaceId, from: entry.from, to: entry.to },
+    );
+  }
   const done: SlugRenamePair[] = [];
   for (const pair of pairing.pairs) {
     const row = rowBySlug.get(pair.from);
     if (!row) continue;
     try {
-      await rekeyFlowSlug(row._id as Types.ObjectId, pair.from, pair.to);
+      await rekeyFlowSlug(row._id as Types.ObjectId, pair.from, pair.to, head);
       done.push(pair);
       logger.info("Flow renamed in place from a pushed file move", {
         workspaceId,
@@ -975,12 +1090,18 @@ export async function syncFlowsFromRepo(
   // an update (same id, same endpoint, same checkpoints) and the reconciler
   // never sees the old slug as a removal. Must not abort the sync: an error
   // here means the files it could not judge get today's behaviour.
+  const repoDir = repoDirFor(workspaceId);
+  const fileSlugs = new Set<string>();
+  for (const file of files) {
+    const slug = slugFromFlowFilePath(file.path);
+    if (slug) fileSlugs.add(slug);
+  }
+  // Ids for files with no row are derived from the slug; a row of another
+  // slug may already hold one (a renamed git-born flow), so the free
+  // derivation is decided against the rows as they stand.
+  const idRows = await Flow.find({ workspaceId }).select("_id slug").lean();
   try {
-    await rekeyRenamedFlows({
-      workspaceId,
-      repoDir: repoDirFor(workspaceId),
-      files,
-    });
+    await rekeyRenamedFlows({ workspaceId, repoDir, head, files });
   } catch (error) {
     logger.warn("Flow rename detection failed; syncing by slug only", {
       workspaceId,
@@ -1055,10 +1176,46 @@ export async function syncFlowsFromRepo(
 
     const isNew = !row;
     const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
+    // A file at a slug some row holds as an ALIAS is either a new flow
+    // taking an old name (legitimate: current wins, the old row loses the
+    // alias below) or a tree read before that row's rename commit landed
+    // (its old file is still here, its new one is not). The second must
+    // create nothing and tear nothing down: the row is kept as it is and
+    // the next push, which contains the rename, reconciles.
+    if (!row) {
+      const claimant = await Flow.findOne({ workspaceId, aliases: slug })
+        .select("_id slug aliases lastRenameCommit")
+        .lean();
+      if (
+        claimant?.slug &&
+        (await treePredatesRename(
+          repoDir,
+          head,
+          claimant,
+          !fileSlugs.has(claimant.slug),
+        ))
+      ) {
+        logger.info("Tree predates a flow rename; keeping the renamed row", {
+          workspaceId,
+          path,
+          renamedTo: claimant.slug,
+        });
+        const kept = await Flow.findById(claimant._id);
+        if (kept) {
+          desired.push({
+            slug: kept.slug as string,
+            file: flowToFile(kept),
+            flowId: String(kept._id),
+          });
+        }
+        result.unchanged++;
+        continue;
+      }
+    }
     const doc =
       row ??
       new Flow({
-        _id: derivedFlowId(workspaceId, slug),
+        _id: freeDerivedFlowId(workspaceId, slug, idRows),
         workspaceId,
         slug,
         createdBy: actorUserId ?? "sync",
@@ -1102,6 +1259,17 @@ export async function syncFlowsFromRepo(
         endpoint: mintedEndpoint,
       } as IFlow["webhookConfig"];
     }
+    const droppedAliases = await dropAliasesClaimedElsewhere(
+      workspaceId,
+      doc as IFlow,
+    );
+    if (droppedAliases.length > 0) {
+      logger.warn("Flow file lists aliases another flow already claims", {
+        workspaceId,
+        path,
+        dropped: droppedAliases,
+      });
+    }
     (doc as IFlow).sourceBlobSha = sha;
     // One file's failure is that file's problem. `save()` can still throw for
     // a file that parsed and applied — a value outside a schema enum, an id
@@ -1123,6 +1291,19 @@ export async function syncFlowsFromRepo(
     }
     if (wasInvalid) await clearFlowInvalid((doc as IFlow)._id);
     if (isNew) {
+      // Current always wins: a new flow at a name some renamed flow still
+      // answered to takes that name; the old row drops the alias.
+      const released = await Flow.updateMany(
+        { workspaceId, aliases: slug, _id: { $ne: doc._id } },
+        { $pull: { aliases: slug } },
+      );
+      if (released.modifiedCount > 0) {
+        logger.info("A new flow took a name another flow held as an alias", {
+          workspaceId,
+          slug,
+          releasedFrom: released.modifiedCount,
+        });
+      }
       result.created++;
       // A row created in this pass has no id until now, so its desired entry
       // is added here rather than above.
