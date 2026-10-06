@@ -97,7 +97,10 @@ async function commitFlowFileOrFail(
 ): Promise<Response | null> {
   const result = await commitFlowFile(flow, actorUserId);
   if (result.ok) {
-    if (result.sourceBlobSha) flow.sourceBlobSha = result.sourceBlobSha;
+    if (result.sourceBlobSha) {
+      flow.sourceBlobSha = result.sourceBlobSha;
+      flow.lastSeenBlobSha = result.sourceBlobSha;
+    }
     // Assigning undefined to a nested path and saving persists `{}`, which
     // the overlay used to read as "invalid". Unset the marker instead; a
     // not-yet-saved flow has no row to unset, which is fine.
@@ -106,6 +109,20 @@ async function commitFlowFileOrFail(
       { $unset: { definitionInvalid: 1 } },
     );
     return null;
+  }
+  if (result.conflict) {
+    // The repo is fine; this edit is stale (a rename or another edit landed
+    // first). Not an upstream failure, and nothing to do with GitHub.
+    return c.json(
+      {
+        success: false,
+        code: "definition_conflict",
+        error:
+          "The flow changed in the workspace repo since it was loaded (a rename or another edit landed first), so nothing was saved. Reload the flow and retry.",
+        detail: result.error,
+      },
+      409,
+    );
   }
   logger.error("Flow definition did not reach the workspace repo", {
     workspaceId: flow.workspaceId.toString(),

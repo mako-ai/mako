@@ -159,20 +159,32 @@ async function markFlowInvalid(
   doc: IFlow,
   reason: string,
   path: string,
+  /**
+   * The blob at main that was found invalid, when there is one (a missing
+   * file has none). Recorded as `lastSeenBlobSha` so the write-through may
+   * overwrite exactly this version from the UI — the recovery path for a
+   * broken laptop push — and nothing newer. Two broken versions with the
+   * same reason are two different blobs: the marker is "unchanged" only
+   * when the blob is too.
+   */
+  blobSha?: string,
 ): Promise<void> {
   if (
     doc.definitionInvalid?.reason === reason &&
-    doc.definitionInvalid?.path === path
+    doc.definitionInvalid?.path === path &&
+    (blobSha === undefined || doc.lastSeenBlobSha === blobSha)
   ) {
     return;
   }
   const definitionInvalid = { reason, at: new Date(), path };
   const set: Record<string, unknown> = { definitionInvalid };
+  if (blobSha !== undefined) set.lastSeenBlobSha = blobSha;
   if (doc.schedule) set["schedule.enabled"] = false;
   if (doc.backfillSchedule) set["backfillSchedule.enabled"] = false;
   try {
     await Flow.updateOne({ _id: doc._id }, { $set: set });
     doc.definitionInvalid = definitionInvalid;
+    if (blobSha !== undefined) doc.lastSeenBlobSha = blobSha;
     if (doc.schedule) doc.schedule.enabled = false;
     if (doc.backfillSchedule) doc.backfillSchedule.enabled = false;
   } catch (error) {
@@ -479,7 +491,14 @@ export async function ensureFlowDerivedCache(flow: {
     const blob = await readBlob(repoDir, head, path);
     if (blob.isBinary) {
       const row = await Flow.findById(flow._id);
-      if (row) await markFlowInvalid(row, "binary flow file", path);
+      if (row) {
+        await markFlowInvalid(
+          row,
+          "binary flow file",
+          path,
+          blobOid(Buffer.from(blob.contents, "base64")),
+        );
+      }
       return "invalid";
     }
     contents = blob.contents;
@@ -495,7 +514,7 @@ export async function ensureFlowDerivedCache(flow: {
   const row = await Flow.findById(flow._id);
   if (!row) return "missing";
   if (!parsed) {
-    await markFlowInvalid(row, "unparseable flow file", path);
+    await markFlowInvalid(row, "unparseable flow file", path, sha);
     return "invalid";
   }
   let refusal: string | null;
@@ -505,11 +524,12 @@ export async function ensureFlowDerivedCache(flow: {
     refusal = error instanceof Error ? error.message : String(error);
   }
   if (refusal) {
-    await markFlowInvalid(row, refusal, path);
+    await markFlowInvalid(row, refusal, path, sha);
     return "invalid";
   }
   await dropAliasesClaimedElsewhere(workspaceId, row);
   row.sourceBlobSha = sha;
+  row.lastSeenBlobSha = sha;
   try {
     await row.save();
   } catch (error) {
@@ -518,7 +538,7 @@ export async function ensureFlowDerivedCache(flow: {
     // 500 GET/list. Reload the persisted row, then stamp invalid.
     const reason = error instanceof Error ? error.message : String(error);
     const fresh = await Flow.findById(flow._id);
-    if (fresh) await markFlowInvalid(fresh, reason, path);
+    if (fresh) await markFlowInvalid(fresh, reason, path, sha);
     return "invalid";
   }
   if (wasMarked) await clearFlowInvalid(row._id);
@@ -702,7 +722,16 @@ export async function rekeyFlowSlug(
   to: string,
   /** The commit that carries the move; see `IFlow.lastRenameCommit`. */
   commit?: string,
+  options: {
+    /**
+     * Default true: `from` becomes an alias so old links keep resolving.
+     * False when `from` is a name that never existed on main (a rename
+     * whose commit was lost, now being undone): nothing ever linked to it.
+     */
+    recordOldAsAlias?: boolean;
+  } = {},
 ): Promise<void> {
+  const recordOldAsAlias = options.recordOldAsAlias ?? true;
   await Flow.updateOne({ _id: flowId }, { $pull: { aliases: to } });
   await Flow.updateOne(
     { _id: flowId, slug: from },
@@ -713,7 +742,7 @@ export async function rekeyFlowSlug(
           ? { lastRenameCommit: commit, lastRenameAt: new Date() }
           : {}),
       },
-      $addToSet: { aliases: from },
+      ...(recordOldAsAlias ? { $addToSet: { aliases: from } } : {}),
     },
   );
 }
@@ -806,7 +835,15 @@ async function settleRenameGuards(args: {
           lastRenameCommit: commit,
         },
       );
-      await rekeyFlowSlug(row._id as Types.ObjectId, row.slug, oldSlug);
+      await rekeyFlowSlug(
+        row._id as Types.ObjectId,
+        row.slug,
+        oldSlug,
+        undefined,
+        {
+          recordOldAsAlias: false,
+        },
+      );
     } else {
       logger.warn("Flow rename commit never reached main; trusting the tree", {
         workspaceId,
@@ -1245,7 +1282,7 @@ export async function syncFlowsFromRepo(
         path,
       });
       if (row) {
-        await markFlowInvalid(row, "unparseable flow file", path);
+        await markFlowInvalid(row, "unparseable flow file", path, sha);
       }
       result.invalid.push(slug);
       continue;
@@ -1265,7 +1302,7 @@ export async function syncFlowsFromRepo(
         path,
         reason: applyFailure,
       });
-      if (row) await markFlowInvalid(row, applyFailure, path);
+      if (row) await markFlowInvalid(row, applyFailure, path, sha);
       result.invalid.push(slug);
       continue;
     }
@@ -1330,7 +1367,7 @@ export async function syncFlowsFromRepo(
         reason: refusal,
       });
       if (row) {
-        await markFlowInvalid(row, refusal, path);
+        await markFlowInvalid(row, refusal, path, sha);
       }
       result.invalid.push(slug);
       continue;
@@ -1363,6 +1400,7 @@ export async function syncFlowsFromRepo(
       });
     }
     (doc as IFlow).sourceBlobSha = sha;
+    (doc as IFlow).lastSeenBlobSha = sha;
     // One file's failure is that file's problem. `save()` can still throw for
     // a file that parsed and applied — a value outside a schema enum, an id
     // that is not an ObjectId — and letting that escape would skip every file
@@ -1378,6 +1416,14 @@ export async function syncFlowsFromRepo(
         path,
         error: error instanceof Error ? error.message : String(error),
       });
+      // The row still SAW this blob: a UI save that fixes it may overwrite
+      // it. (GET/list marks the row invalid with the same sha.)
+      if (row) {
+        await Flow.updateOne(
+          { _id: row._id },
+          { $set: { lastSeenBlobSha: sha } },
+        );
+      }
       result.invalid.push(slug);
       continue;
     }

@@ -59,6 +59,7 @@ import {
 import { buildStarterScaffold } from "../dbt/scaffold";
 import {
   commitDbtEnvironmentsFile,
+  DbtConfigConflictError,
   commitDbtJobFile,
   deleteDbtJobFile,
   ensureEnvironmentsDerivedCache,
@@ -195,6 +196,14 @@ function serverError(
   }
   if (error instanceof DbtProtectedEnvironmentError) {
     return c.json({ success: false, error: error.message }, 400);
+  }
+  if (error instanceof DbtConfigConflictError) {
+    // The repo is fine; this edit is stale (a rename or another edit landed
+    // first). Reload and retry — not an upstream failure.
+    return c.json(
+      { success: false, code: "definition_conflict", error: error.message },
+      409,
+    );
   }
   logger.error(fallback, { error });
   return c.json(

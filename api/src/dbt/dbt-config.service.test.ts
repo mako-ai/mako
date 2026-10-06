@@ -39,6 +39,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { DbtJob, DbtProject } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  blobOid,
   commitBlobsOnBranch,
   initRepo,
   readBlob,
@@ -914,6 +915,93 @@ describe("round 2: lost and racing renames (jobs)", () => {
     expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
       ["nightly", row!._id.toString()],
     ]);
+  }, 90_000);
+});
+
+describe("round 3: fixing a broken job file from the UI; auto-disable", () => {
+  it("[r3-1] a broken push is marked with the blob seen; the UI save and the auto-disable write-through go through; an unseen edit is a 409 conflict", async () => {
+    const { DbtConfigConflictError } = await import("./dbt-config.service");
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly");
+    await commitDbtJobFile(project, job);
+    await syncDbtConfigFromRepo(WS.toString());
+    const good = (await DbtJob.findById(job._id))!.sourceBlobSha;
+
+    const broken = "name: Nightly\nenvironment: prod\ncommands: []\n"; // no commands → unparseable
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: broken } },
+      { message: "laptop breaks it" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    let marked = await DbtJob.findById(job._id);
+    expect(marked!.definitionInvalid?.reason).toBe("unparseable job file");
+    expect(marked!.sourceBlobSha).toBe(good);
+    expect(marked!.lastSeenBlobSha).toBe(blobOid(broken));
+    // GET/list's resync marks the same blob (and a different broken blob
+    // with the same reason would be recorded too).
+    const broken2 = "name: Nightly\nenvironment: nope\ncommands:\n  - build\n"; // unknown environment
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath(job.slug!)]: broken2 } },
+      { message: "laptop breaks it differently" },
+    );
+    await loadLiveJobs(project);
+    marked = await DbtJob.findById(job._id);
+    expect(marked!.definitionInvalid?.reason).toMatch(/unknown environment/);
+    expect(marked!.lastSeenBlobSha).toBe(blobOid(broken2));
+
+    // The user fixes it in the UI (PATCH → commitDbtJobFile): allowed.
+    marked!.name = "Nightly fixed";
+    await expect(
+      commitDbtJobFile(project, marked!, "u1"),
+    ).resolves.toBeUndefined();
+    const fixedFile = await fileAt(jobFilePath(job.slug!));
+    expect(fixedFile).toContain("name: Nightly fixed");
+    expect(marked!.lastSeenBlobSha).toBe(blobOid(fixedFile!));
+    // The PATCH route then saves the doc and the marker clears on the next
+    // resync of the (now valid) file.
+    await marked!.save();
+    await DbtJob.updateOne(
+      { _id: job._id },
+      { $unset: { definitionInvalid: 1 } },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const fixed = await DbtJob.findById(job._id);
+    expect(fixed!.definitionInvalid?.reason).toBeUndefined();
+    expect(fixed!.name).toBe("Nightly fixed");
+
+    // The scheduler's auto-disable path (inngest/functions/dbt-run.ts) on a
+    // job whose file was once invalid: the write-through must succeed.
+    fixed!.enabled = false;
+    await expect(
+      commitDbtJobFile(project, fixed!, undefined, "dbt: auto-disable job"),
+    ).resolves.toBeUndefined();
+    expect(await fileAt(jobFilePath(job.slug!))).toContain("enabled: false");
+
+    // An edit nobody has seen yet is refused with the typed conflict.
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath(job.slug!)]: fixedFile!.replace(
+            "Nightly fixed",
+            "Nightly from laptop",
+          ),
+        },
+      },
+      { message: "laptop edit" },
+    );
+    fixed!.name = "Nightly from a stale form";
+    await expect(
+      commitDbtJobFile(project, fixed!, "u1"),
+    ).rejects.toBeInstanceOf(DbtConfigConflictError);
+    expect(await fileAt(jobFilePath(job.slug!))).toContain(
+      "Nightly from laptop",
+    );
   }, 90_000);
 });
 

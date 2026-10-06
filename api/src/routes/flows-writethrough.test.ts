@@ -57,6 +57,15 @@ assert.ok(
   helper.includes("definition_not_committed"),
   "the failure needs a stable code the client can branch on",
 );
+// A stale edit (the file or the slug changed in the repo first) is the
+// caller's to reload, not an upstream failure: a 409 with its own code,
+// decided BEFORE the 502 so it can never be blamed on GitHub.
+assert.ok(
+  helper.includes("result.conflict") &&
+    helper.includes("definition_conflict") &&
+    helper.indexOf("409") < helper.indexOf("502"),
+  "a write-through conflict must be a 409 definition_conflict, mapped before the 502",
+);
 
 // Commit the file first, then persist the derived row. Mongo-first is the
 // split-brain this guard exists to prevent.

@@ -79,6 +79,13 @@ export interface FlowFileWriteResult {
   /** Blob sha of the committed (or unchanged) definition. */
   sourceBlobSha?: string;
   error?: string;
+  /**
+   * The write was refused because the file (or the row's slug) changed in
+   * the repo since this row was loaded — a rename or another edit landed
+   * first. A 409 for the caller to reload and retry, never an upstream
+   * failure: the repo is fine, the edit is stale.
+   */
+  conflict?: true;
 }
 
 /**
@@ -118,18 +125,29 @@ export async function commitFlowFile(
       return {
         ok: false,
         changed: false,
+        conflict: true,
         error: `the flow was renamed to "${current.slug}" while this change was being made; reload and retry`,
       };
     }
+    // What the path must still hold: the blob this row last SAW at main —
+    // `lastSeenBlobSha`, which a broken file sets too, so a UI save that
+    // fixes a bad laptop push is allowed through (that is the recovery
+    // path), while an edit nobody has seen yet is refused. Rows from before
+    // that field fall back to the last applied blob — unless they are
+    // marked invalid, where the applied blob is by definition not what is
+    // on main and the pre-CAS behaviour (overwrite) is the safe default.
+    const expected =
+      flow.lastSeenBlobSha ??
+      (typeof flow.definitionInvalid?.reason === "string"
+        ? undefined
+        : flow.sourceBlobSha);
     await commitFlowConfig(
       workspaceId,
       { writes: { [flowFilePath(flow.slug)]: contents } },
       messageOverride ?? `flow: "${flow.name ?? flow.slug}" (${flow.slug})`,
       actorUserId ? await authorForUser(actorUserId) : undefined,
       // A row never synced from a blob has nothing to compare against.
-      flow.sourceBlobSha
-        ? { [flowFilePath(flow.slug)]: flow.sourceBlobSha }
-        : undefined,
+      expected ? { [flowFilePath(flow.slug)]: expected } : undefined,
     );
     return { ok: true, changed: true, sourceBlobSha: sha };
   } catch (error) {
@@ -138,6 +156,7 @@ export async function commitFlowFile(
       return {
         ok: false,
         changed: false,
+        conflict: true,
         error: `${error.path} changed in the workspace repo while this change was being made (a rename or another edit landed first); reload and retry`,
       };
     }
@@ -274,7 +293,10 @@ export async function exportWorkspaceFlows(
       );
       commitMade = true;
       for (const { id, sha } of shaBySlug.values()) {
-        await Flow.updateOne({ _id: id }, { $set: { sourceBlobSha: sha } });
+        await Flow.updateOne(
+          { _id: id },
+          { $set: { sourceBlobSha: sha, lastSeenBlobSha: sha } },
+        );
       }
       await mirrorPushNow(workspaceId);
     } catch (error) {
