@@ -195,14 +195,15 @@ export class ConsolePathTakenError extends ConsoleConflictError {
 }
 
 /**
- * Re-scoping a console (private ↔ workspace) is the owner's call, as in
- * `updateConsoleAccess`; a shared editor may rename and move it within its
- * scope but not change who can see it.
+ * Changing who can see a console — its access, or its EFFECTIVE visibility
+ * through its folder chain — is the call of its owner or a workspace admin
+ * (`mayChangeVisibility`), on every route; a shared editor may rename and
+ * move it within its visibility but not change who can see it.
  */
 export class ConsoleScopeError extends Error {
   readonly status = 403 as const;
   constructor(
-    message = "Only the owner can move a console between private and workspace",
+    message = "Only the console's owner or a workspace admin can change who sees it",
   ) {
     super(message);
     this.name = "ConsoleScopeError";
@@ -231,11 +232,40 @@ export interface ConsolePlacementRequest {
   access?: ConsoleAccessLevel;
 }
 
-/** How `relocateForSave` reports the move it made (see relocateConsole). */
+/**
+ * THE visibility rule, one predicate for every route: who sees a console
+ * (its access, or its effective visibility through its folder chain) may
+ * be changed by its owner or by a workspace admin (owner/admin role) —
+ * the same people the Share dialog has always let change general access.
+ * A shared editor or a plain member may not. Making something LESS
+ * visible by moving or flipping a FOLDER is not gated (see
+ * `assertFolderScopeFlipAllowed`).
+ */
+export function mayChangeVisibility(
+  row: { owner_id?: string | null; createdBy?: string | null },
+  actor: { userId?: string; isAdmin?: boolean },
+): boolean {
+  if (!actor.userId) return true; // a workspace API key (no per-user ACL)
+  if (actor.isAdmin) return true;
+  return (row.owner_id || row.createdBy)?.toString() === actor.userId;
+}
+
+/** The workspace roles that count as admin for the visibility rule. */
+export function isWorkspaceAdminRole(role: string | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
+/**
+ * How `relocateForSave` reports the move it made (see relocateConsole).
+ * Each field defaults to the editor save's: a quiet move whose revision
+ * the save's own guarded write bumps.
+ */
 type RelocateOptions = {
   verb?: "rename" | "move";
   publish?: boolean;
   bumpRevision?: boolean;
+  /** The caller is a workspace admin (see `mayChangeVisibility`). */
+  isAdmin?: boolean;
 };
 
 /** The row shape `repoPathForRow` derives a repo path from. */
@@ -993,7 +1023,7 @@ export class ConsoleManager {
    *
    * An existing console is saved only by someone who can write it, and its
    * name, folder and access change through `relocateForSave` (scoped
-   * folders, free-path check, compare-and-swap, owner-only visibility)
+   * folders, free-path check, compare-and-swap, the visibility rule)
    * before the content is projected onto the path it then owns. A new
    * console's file must be absent at commit time: a laptop-pushed file is
    * never overwritten by a create.
@@ -1051,14 +1081,8 @@ export class ConsoleManager {
 
       if (savedConsole) {
         const role = options?.memberRole;
-        if (
-          !ConsoleManager.canWrite(
-            savedConsole,
-            userId,
-            role === "owner" || role === "admin",
-            role,
-          )
-        ) {
+        const isAdmin = isWorkspaceAdminRole(role);
+        if (!ConsoleManager.canWrite(savedConsole, userId, isAdmin, role)) {
           throw new ConsoleScopeError(
             "This console is read-only. Create a copy to make changes.",
           );
@@ -1077,6 +1101,7 @@ export class ConsoleManager {
             access: requestedAccess,
           },
           userId,
+          { isAdmin },
         );
         if (moved) savedConsole = moved.row;
 
@@ -1337,6 +1362,8 @@ export class ConsoleManager {
       publish?: boolean;
       /** Bump `draftRevision` (default); the editor's save bumps it itself. */
       bumpRevision?: boolean;
+      /** The caller is a workspace admin (see `mayChangeVisibility`). */
+      isAdmin?: boolean;
     } = {},
   ): Promise<{ row: ISavedConsole; commit?: string } | null> {
     if (!Types.ObjectId.isValid(consoleId)) return null;
@@ -1376,6 +1403,7 @@ export class ConsoleManager {
       verb?: "rename" | "move";
       publish?: boolean;
       bumpRevision?: boolean;
+      isAdmin?: boolean;
     },
   ): Promise<{ row: ISavedConsole; commit?: string } | null | "drift"> {
     // A soft-deleted console is not renamed: it would be projected from its
@@ -1391,9 +1419,10 @@ export class ConsoleManager {
     // Who can see it is the row's access AND its folder chain (a private
     // console in a workspace folder is workspace-visible by inheritance).
     // Changing either — the row's `access`, or the EFFECTIVE visibility by
-    // a move into / out of a workspace folder — is the owner's call; a
-    // shared editor keeps the visibility the owner chose. Measured on the
-    // row AS LOADED, before any change below is applied to it.
+    // a move into / out of a workspace folder — is the owner's or an
+    // admin's call (`mayChangeVisibility`); a shared editor keeps the
+    // visibility the owner chose. Measured on the row AS LOADED, before
+    // any change below is applied to it.
     const visibleBefore = await this.effectiveVisibility(current);
     const accessChanges =
       change.access !== undefined &&
@@ -1412,11 +1441,11 @@ export class ConsoleManager {
         : {}),
     } as unknown as ISavedConsole;
     const visibleAfter = await this.effectiveVisibility(probe);
-    if (accessChanges || visibleBefore !== visibleAfter) {
-      const ownerId = (current.owner_id || current.createdBy)?.toString();
-      if (options.userId && ownerId !== options.userId) {
-        throw new ConsoleScopeError();
-      }
+    if (
+      (accessChanges || visibleBefore !== visibleAfter) &&
+      !mayChangeVisibility(current, options)
+    ) {
+      throw new ConsoleScopeError();
     }
 
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
@@ -1542,8 +1571,9 @@ export class ConsoleManager {
    *
    * - `access` is what the client shows: the EFFECTIVE visibility. Equal to
    *   the console's current one it asks for nothing (the row keeps its own
-   *   access); different, it is a re-scope — the owner's call, refused here
-   *   before any folder is created for it.
+   *   access); different, it is a re-scope — the owner's or an admin's
+   *   call (`mayChangeVisibility`), refused here before any folder is
+   *   created for it.
    * - A folder chain is found-or-created IN A SCOPE: the new visibility on a
    *   re-scope, else the current one, under the console's owner. Looked up
    *   by name alone, a private console's "Team" was the workspace folder of
@@ -1558,6 +1588,7 @@ export class ConsoleManager {
     existing: ISavedConsole,
     request: ConsolePlacementRequest,
     userId: string,
+    isAdmin = false,
   ): Promise<{
     name: string;
     folderId: string | null;
@@ -1571,7 +1602,9 @@ export class ConsoleManager {
     const visibleNow = await this.effectiveVisibility(existing);
     const reScope =
       request.access !== undefined && request.access !== visibleNow;
-    if (reScope && ownerId !== userId) throw new ConsoleScopeError();
+    if (reScope && !mayChangeVisibility(existing, { userId, isAdmin })) {
+      throw new ConsoleScopeError();
+    }
     const access = reScope ? request.access : undefined;
 
     let name = existing.name;
@@ -1620,29 +1653,30 @@ export class ConsoleManager {
   /**
    * Apply a placement request to an existing console: `placeConsole`, then
    * `relocateConsole` — free-path check (a laptop-pushed file with no row
-   * included), compare-and-swap commit, owner-only rule on the EFFECTIVE
-   * visibility. The editor's save calls it before projecting content (by
-   * default quietly, its own guarded write bumps the revision); a rename or
-   * a sharing change passes its own reporting options. A draft is placed in
-   * the index only. Returns null when nothing changes.
+   * included), compare-and-swap commit, the visibility rule on the
+   * EFFECTIVE visibility. The editor's save calls it before projecting
+   * content (by default quietly, its own guarded write bumps the revision);
+   * a rename or a sharing change passes its own reporting options. A draft
+   * is placed in the index only. Returns null when nothing changes.
    */
   async relocateForSave(
     existing: ISavedConsole,
     request: ConsolePlacementRequest,
     userId: string,
-    options: RelocateOptions = {
-      verb: "move",
-      publish: false,
-      bumpRevision: false,
-    },
+    {
+      verb = "move",
+      publish = false,
+      bumpRevision = false,
+      isAdmin = false,
+    }: RelocateOptions = {},
   ): Promise<{ row: ISavedConsole; commit?: string } | null> {
-    const placed = await this.placeConsole(existing, request, userId);
+    const placed = await this.placeConsole(existing, request, userId, isAdmin);
     if (!placed.changes) return null;
     const moved = await this.relocateConsole(
       existing._id.toString(),
       existing.workspaceId.toString(),
       { name: placed.name, folderId: placed.folderId, access: placed.access },
-      { userId, ...options },
+      { userId, verb, publish, bumpRevision, isAdmin },
     );
     if (!moved) {
       throw new ConsoleConflictError(
@@ -1715,6 +1749,7 @@ export class ConsoleManager {
     newName: string,
     workspaceId: string,
     userId: string,
+    isAdmin = false,
   ): Promise<boolean> {
     try {
       if (!Types.ObjectId.isValid(consoleId)) return false;
@@ -1728,7 +1763,7 @@ export class ConsoleManager {
         current,
         newName.includes("/") ? { path: newName } : { name: newName },
         userId,
-        { verb: "rename" },
+        { verb: "rename", publish: true, bumpRevision: true, isAdmin },
       );
       return true;
     } catch (error) {
@@ -1994,27 +2029,31 @@ export class ConsoleManager {
   }
 
   /**
-   * A folder flipped to the workspace publishes every console under it by
-   * inheritance — so only the actor's own private consoles may be there;
-   * someone else's private console (shared with the actor, filed into the
-   * actor's folder) is not theirs to publish, and the move is refused
-   * rather than leaving it private-but-visible. A flip to private
-   * re-scopes only the actor's own consoles (others keep their scope and
-   * their files), exactly as `propagateFolderAccess` has always done.
+   * A folder flipped (or moved) to the workspace publishes every console
+   * under it by inheritance — so every private console there must be one
+   * the actor may publish (`mayChangeVisibility`: their own, or any for a
+   * workspace admin); someone else's private console (shared with a
+   * non-admin actor, filed into the actor's folder) is not theirs to
+   * publish, and the move is refused rather than leaving it
+   * private-but-visible. Making a folder LESS visible is not gated: a flip
+   * to private re-scopes only the actor's own consoles (others keep their
+   * scope and their files), exactly as `propagateFolderAccess` has always
+   * done, and a move out of a workspace folder only narrows who sees what.
    */
   private async assertFolderScopeFlipAllowed(
     folderId: string,
     workspaceId: string,
     access: ConsoleAccessLevel,
     actorId: string | undefined,
+    isAdmin = false,
   ): Promise<void> {
-    if (access !== "workspace" || !actorId) return;
+    if (access !== "workspace") return;
+    const actor = { userId: actorId, isAdmin };
     const rows = await this.consolesUnderFolder(folderId, workspaceId);
     for (const row of rows) {
-      const ownerId = (row.owner_id || row.createdBy)?.toString();
       if (
         ConsoleManager.resolveAccess(row) === "private" &&
-        ownerId !== actorId
+        !mayChangeVisibility(row, actor)
       ) {
         throw new ConsoleScopeError();
       }
@@ -2435,12 +2474,13 @@ export class ConsoleManager {
     access?: ConsoleAccessLevel,
     userId?: string,
     name?: string,
+    isAdmin = false,
   ): Promise<boolean> {
     const updated = await this.relocateConsole(
       consoleId,
       workspaceId,
       { folderId, access, name: name?.trim() || undefined },
-      { userId, verb: "move" },
+      { userId, verb: "move", isAdmin },
     );
     return updated !== null;
   }
@@ -2455,6 +2495,7 @@ export class ConsoleManager {
     newParentId: string | null,
     access?: ConsoleAccessLevel,
     userId?: string,
+    isAdmin = false,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(folderId)) return false;
 
@@ -2526,14 +2567,17 @@ export class ConsoleManager {
     try {
       // Destinations free, and the publication the actor's to make? Asked
       // with the folder's new parent/access in place and BEFORE any
-      // console row changes — the same rule as an access flip: only the
-      // actor's own private consoles may be published by the folder.
+      // console row changes — the same rule as an access flip: the folder
+      // may publish only private consoles the actor may publish (their
+      // own, or any for an admin). A move that narrows visibility is not
+      // gated.
       if (publishes) {
         await this.assertFolderScopeFlipAllowed(
           folderId,
           workspaceId,
           "workspace",
           userId,
+          isAdmin,
         );
       }
       await this.assertFolderSubtreePathsFree(

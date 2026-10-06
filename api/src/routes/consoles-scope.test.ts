@@ -1,7 +1,8 @@
 /**
- * Who can see a console changes only by its owner, on EVERY route: the
- * editor's save (with and without a path), the explorer's rename, a folder
- * drag, a restore. Real routes against a real bare repo and
+ * Who can see a console changes only by its owner or a workspace admin, on
+ * EVERY route (never a shared editor): the editor's save (with and without
+ * a path), the explorer's rename and move, a folder drag, the sharing
+ * dialog, a restore. Real routes against a real bare repo and
  * mongodb-memory-server; auth and membership are stubbed so the acting
  * user can be switched per request.
  */
@@ -65,6 +66,8 @@ const WS = new Types.ObjectId().toString();
 const OWNER = new Types.ObjectId().toString();
 const EDITOR = new Types.ObjectId().toString();
 const OTHER = new Types.ObjectId().toString();
+// A workspace admin (role "admin"): the visibility rule's other "yes".
+const ADMIN = new Types.ObjectId().toString();
 const manager = new ConsoleManager();
 
 beforeAll(async () => {
@@ -133,10 +136,14 @@ const save = (
     folderId,
   });
 
-const shareWith = (id: Types.ObjectId, userId: string) =>
+const shareWith = (id: Types.ObjectId, ...userIds: string[]) =>
   SavedConsole.updateOne(
     { _id: id },
-    { $set: { sharedWith: [{ userId, role: "editor" }] } },
+    {
+      $set: {
+        sharedWith: userIds.map(userId => ({ userId, role: "editor" })),
+      },
+    },
   );
 
 const readable = async (id: Types.ObjectId, userId: string) =>
@@ -316,6 +323,89 @@ describe("folder drag without access (finding 2)", () => {
   });
 });
 
+describe("folder move by a workspace admin (finding 2, the other side of the rule)", () => {
+  it("an admin may drag a folder holding another member's private console under a workspace folder", async () => {
+    const pub = await manager.createFolder(
+      "Public",
+      WS,
+      OTHER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const c = await save("secret", "SELECT 'secret'\n", OWNER, "private");
+    await shareWith(c._id, ADMIN);
+    const box = await manager.createFolder(
+      "AdminBox",
+      WS,
+      ADMIN,
+      undefined,
+      false,
+      "private",
+    );
+    // Filing it into the admin's private folder changes nobody's view.
+    expect(
+      (
+        await req(
+          "PATCH",
+          `/${c._id}/move`,
+          { folderId: box._id.toString() },
+          ADMIN,
+          "admin",
+        )
+      ).status,
+    ).toBe(200);
+    expect(await readable(c._id, OTHER)).toBe(false);
+    const r = await req(
+      "PATCH",
+      `/folders/${box._id}/move`,
+      { parentId: pub._id.toString() },
+      ADMIN,
+      "admin",
+    );
+    expect(r.status).toBe(200);
+    expect((await ConsoleFolder.findById(box._id))?.parentId?.toString()).toBe(
+      pub._id.toString(),
+    );
+    expect(await readable(c._id, OTHER)).toBe(true);
+  });
+});
+
+describe("console moves: the owner or an admin changes who sees it, never a shared editor", () => {
+  it("PATCH /:id/move into a workspace folder and back out", async () => {
+    const pub = await manager.createFolder(
+      "Public",
+      WS,
+      OTHER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const c = await save("secret", "SELECT 'secret'\n", OWNER, "private");
+    await shareWith(c._id, EDITOR, ADMIN);
+    const into = { folderId: pub._id.toString() };
+    expect((await req("PATCH", `/${c._id}/move`, into, EDITOR)).status).toBe(
+      403,
+    );
+    expect(await readable(c._id, OTHER)).toBe(false);
+    expect(
+      (await req("PATCH", `/${c._id}/move`, into, ADMIN, "admin")).status,
+    ).toBe(200);
+    expect(await readable(c._id, OTHER)).toBe(true);
+    // A single console's visibility is gated both ways (unlike a folder's
+    // narrowing): the shared editor cannot take it back out either.
+    const out = { folderId: null };
+    expect((await req("PATCH", `/${c._id}/move`, out, EDITOR)).status).toBe(
+      403,
+    );
+    expect(await readable(c._id, OTHER)).toBe(true);
+    expect(
+      (await req("PATCH", `/${c._id}/move`, out, ADMIN, "admin")).status,
+    ).toBe(200);
+    expect(await readable(c._id, OTHER)).toBe(false);
+  });
+});
+
 describe("explicit save without a path (finding 3)", () => {
   it("a shared editor cannot re-scope the owner's private console through a save, nor land it on another file", async () => {
     const theirs = await save(
@@ -354,6 +444,27 @@ describe("explicit save without a path (finding 3)", () => {
         is_deleted: { $ne: true },
       }),
     ).toBe(1);
+  });
+
+  it("a workspace admin may re-scope through a save; a shared editor still may not", async () => {
+    const c = await save("y", "SELECT 'owner y'\n", OWNER, "private");
+    await shareWith(c._id, EDITOR, ADMIN);
+    const body = {
+      content: "SELECT 'owner y'\n",
+      isSaved: true,
+      access: "workspace",
+    };
+    expect((await req("PUT", `/${c._id}`, body, EDITOR)).status).toBe(403);
+    expect((await SavedConsole.findById(c._id))?.access).toBe("private");
+    const r = await req("PUT", `/${c._id}`, body, ADMIN, "admin");
+    expect(r.status).toBe(200);
+    const row = (await SavedConsole.findById(c._id))!;
+    expect(row.access).toBe("workspace");
+    expect(row.owner_id).toBe(OWNER);
+    expect(row.path).toBe("consoles/y.sql");
+    expect(await fileAt("consoles/y.sql")).toContain("owner y");
+    expect(await fileAt(`users/${OWNER}/consoles/y.sql`)).toBeNull();
+    expect(await readable(c._id, OTHER)).toBe(true);
   });
 
   it("an owner's save with a title that is another console's name is refused; the owner's own re-scope works", async () => {
@@ -621,31 +732,47 @@ describe("audit: every other route that writes a console's name, folder or acces
     );
   });
 
-  it("the sharing dialog's access is the owner's call, and moves the file", async () => {
+  it("the sharing dialog's access is the owner's or an admin's call, and moves the file", async () => {
     const shown = await save("w", "SELECT 'w'\n", OWNER, "workspace");
-    // An admin manages sharing, but who sees the console is its owner's.
-    const admin = await req(
+    await shareWith(shown._id, EDITOR);
+    // A shared editor who is not an admin cannot change who sees it.
+    const editor = await req(
       "PATCH",
       `/${shown._id}/sharing`,
       { access: "private" },
-      OTHER,
-      "admin",
+      EDITOR,
     );
-    expect(admin.status).toBe(403);
+    expect(editor.status).toBe(403);
     expect((await SavedConsole.findById(shown._id))?.access).toBe("workspace");
     expect(await fileAt("consoles/w.sql")).toContain("'w'");
-    // …the workspace role is still theirs to set.
+    // A workspace admin sets the workspace role…
     expect(
       (
         await req(
           "PATCH",
           `/${shown._id}/sharing`,
           { workspaceRole: "editor" },
-          OTHER,
+          ADMIN,
           "admin",
         )
       ).status,
     ).toBe(200);
+    // …and may change who sees it: the row and the file move together.
+    const admin = await req(
+      "PATCH",
+      `/${shown._id}/sharing`,
+      { access: "private" },
+      ADMIN,
+      "admin",
+    );
+    expect(admin.status).toBe(200);
+    const flipped = (await SavedConsole.findById(shown._id))!;
+    expect(flipped.access).toBe("private");
+    expect(flipped.owner_id).toBe(OWNER);
+    expect(flipped.path).toBe(`users/${OWNER}/consoles/w.sql`);
+    expect(await fileAt(`users/${OWNER}/consoles/w.sql`)).toContain("'w'");
+    expect(await fileAt("consoles/w.sql")).toBeNull();
+    expect(await readable(shown._id, OTHER)).toBe(false);
     // The owner publishes their own: the row and the file move together.
     const mine = await save("s", "SELECT 's'\n", OWNER, "private");
     const pub = await req(

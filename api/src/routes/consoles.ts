@@ -5,6 +5,7 @@ import {
   ConsoleManager,
   ConsoleConflictError,
   ConsoleScopeError,
+  isWorkspaceAdminRole,
 } from "../utils/console-manager";
 import { BlobPreconditionError } from "../apps/repository.service";
 import { canWriteResource } from "../utils/resource-acl";
@@ -252,16 +253,22 @@ registerSharingSettingsRoutes(consoleRoutes, {
   resourceName: "Console",
   load: loadConsoleById,
   // A console's general access is where its file lives and who reads it:
-  // the share dialog's access goes through the one relocation (owner-only
-  // EFFECTIVE visibility, file moved under compare-and-swap) — never a
-  // field written on the row behind the file's back.
+  // the share dialog's access goes through the one relocation (the
+  // visibility rule — owner or workspace admin — on the EFFECTIVE
+  // visibility, file moved under compare-and-swap) — never a field written
+  // on the row behind the file's back.
   setAccess: async (c, doc, access, userId) => {
     try {
       await consoleManager.relocateForSave(
         doc as unknown as ISavedConsole,
         { access },
         userId,
-        { verb: "move" },
+        {
+          verb: "move",
+          publish: true,
+          bumpRevision: true,
+          isAdmin: isWorkspaceAdminRole(c.get("memberRole")),
+        },
       );
       return null;
     } catch (error) {
@@ -1401,8 +1408,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // A console's name, folder and access are where its file is and who
       // can read it: every change of them goes through the relocation
       // (`relocateForSave` — scoped folders, free-path check, compare-and-
-      // swap, owner-only EFFECTIVE visibility), and the save then writes
-      // what the relocation left — never fields of its own.
+      // swap, the owner-or-admin rule on the EFFECTIVE visibility), and the
+      // save then writes what the relocation left — never fields of its own.
       const placementRefused = (error: unknown) => {
         if (error instanceof ConsoleConflictError) {
           return c.json({ success: false, error: error.message }, 409);
@@ -1503,9 +1510,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         // An existing console: the path and the access the editor sends
         // (the tab's EFFECTIVE visibility) are placed FIRST — a plain Cmd+S
         // keeps its folder, a new chain is found in the console's own
-        // scope, a re-scope is the owner's — then the content is saved
-        // onto the path the console owns. The Mongo conflict check above
-        // cannot see a laptop-pushed file; the relocation's CAS can.
+        // scope, a re-scope is the owner's or an admin's — then the content
+        // is saved onto the path the console owns. The Mongo conflict check
+        // above cannot see a laptop-pushed file; the relocation's CAS can.
         let current: ISavedConsole | null = existingById;
         if (current) {
           try {
@@ -1513,6 +1520,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
               current,
               { path: consolePath, access: body.access },
               user.id,
+              { isAdmin: isAdminPut },
             );
             if (moved) current = moved.row;
           } catch (error) {
@@ -1524,7 +1532,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         } else {
           // A brand-new console, or a git-only one saved under its derived
           // id: its folders are found in its scope (the file's, unless the
-          // request re-scopes it — the file owner's call).
+          // request re-scopes it — the file owner's or an admin's call).
           const liveScope: ConsoleAccessLevel | undefined = liveFile
             ? liveFile.location.scope === "private"
               ? "private"
@@ -1534,7 +1542,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             liveFile &&
             body.access !== undefined &&
             body.access !== liveScope &&
-            liveFile.location.ownerId !== user.id
+            liveFile.location.ownerId !== user.id &&
+            !isAdminPut
           ) {
             return c.json(
               { success: false, error: new ConsoleScopeError().message },
@@ -1675,7 +1684,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       if (isExplicitSave) {
         // A new name (title) or access on an existing console is a rename /
         // a re-scope, not a field: the same relocation as "Rename / Move…"
-        // (free-path check, compare-and-swap, owner-only visibility), and
+        // (free-path check, compare-and-swap, owner-or-admin visibility), and
         // the save writes the name/folder/access it left.
         let current: ISavedConsole | null = existingById;
         if (current) {
@@ -1690,6 +1699,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
                   access: body.access,
                 },
                 user.id,
+                { isAdmin: isAdminPut },
               );
               if (moved) current = moved.row;
             } catch (error) {
@@ -1796,12 +1806,14 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         delete setFields.access;
         delete setFields.isPrivate;
       } else if (existingById && body.access !== undefined) {
-        // A draft has no file, but who may see it is still its owner's.
+        // A draft has no file, but who may see it is still the visibility
+        // rule's (its owner or an admin).
         try {
           const moved = await consoleManager.relocateForSave(
             existingById,
             { access: body.access },
             user.id,
+            { isAdmin: isAdminPut },
           );
           const placed = placedFields(moved?.row ?? existingById);
           setFields.access = placed.access;
@@ -2058,6 +2070,7 @@ consoleRoutes.openapi(
         name,
         workspaceId,
         user.id,
+        isAdminRename,
       );
 
       if (success) {
@@ -3734,6 +3747,7 @@ const consoleFolderBackend: FolderBackend = {
       parentId ?? null,
       access,
       ctx.userId,
+      isWorkspaceAdminRole(ctx.role),
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
     return { ok: true };
@@ -3745,10 +3759,14 @@ const consoleFolderBackend: FolderBackend = {
         _id: new Types.ObjectId(itemId),
         workspaceId: new Types.ObjectId(ctx.workspaceId),
       });
-      const isAdmin = ctx.role === "owner" || ctx.role === "admin";
       if (
         existing &&
-        !ConsoleManager.canWrite(existing, ctx.userId, isAdmin, ctx.role)
+        !ConsoleManager.canWrite(
+          existing,
+          ctx.userId,
+          isWorkspaceAdminRole(ctx.role),
+          ctx.role,
+        )
       ) {
         return {
           ok: false,
@@ -3766,6 +3784,7 @@ const consoleFolderBackend: FolderBackend = {
         access,
         ctx.userId,
         name,
+        isWorkspaceAdminRole(ctx.role),
       );
       if (!success) {
         return { ok: false, status: 404, error: "Console not found" };
@@ -3774,7 +3793,7 @@ const consoleFolderBackend: FolderBackend = {
       if (error instanceof ConsoleConflictError) {
         return { ok: false, status: 409, error: error.message };
       }
-      // A scope flip (private ↔ workspace) is the owner's call — the same
+      // A visibility change is the owner's or an admin's call — the same
       // rule rename_object applies; a shared editor may only move within.
       if (error instanceof ConsoleScopeError) {
         return { ok: false, status: 403, error: error.message };
@@ -3799,7 +3818,7 @@ registerFolderRoutes(consoleRoutes, {
     }
     // A folder move/flip that would publish another member's private
     // console (by inheritance), or a console move that changes who sees
-    // it: the owner's call, refused before anything changed.
+    // it: the owner's or an admin's call, refused before anything changed.
     if (error instanceof ConsoleScopeError) {
       return c.json({ success: false, error: error.message }, 403);
     }

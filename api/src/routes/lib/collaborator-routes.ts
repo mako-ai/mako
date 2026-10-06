@@ -83,8 +83,9 @@ export interface CollaboratorRouteOptions {
   /**
    * Apply a general-access change instead of writing `access` on the
    * document (sharing settings only). Consoles need it: their access is
-   * where their file lives, and changing who can see one is its owner's
-   * call. Resolves to null when applied, or to the refusal to answer with.
+   * where their file lives, and changing who can see one follows their one
+   * visibility rule (owner or workspace admin). Resolves to null when
+   * applied, or to the refusal to answer with.
    */
   setAccess?: (
     c: AuthenticatedContext,
