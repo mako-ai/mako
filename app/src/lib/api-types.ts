@@ -108,11 +108,33 @@ export interface ConsoleSaveResponse {
   };
 }
 
+/**
+ * Where a console is, as the server answers a rename (`PATCH /:id/rename`
+ * → `console`) or a move (`PATCH /:id/move` → `data`): an open tab
+ * retargets from this, never from a path the client computed.
+ */
+export interface ConsoleLocation {
+  id: string;
+  name: string;
+  /** `Folder/Sub/name` (`name` at the root). */
+  path: string;
+  folderId: string | null;
+  /** Its EFFECTIVE visibility (its own access or a workspace folder's). */
+  access: "private" | "workspace";
+  draftRevision: number;
+  isSaved: boolean;
+}
+
 /** One changed console returned by POST /consoles/revisions-sync. */
 export interface ConsoleRevisionSyncEntry {
   id: string;
   draftRevision: number;
   name?: string;
+  /** Where it is now: `Folder/Sub/name` (a rename or move bumps the revision). */
+  path?: string;
+  folderId?: string | null;
+  /** Its EFFECTIVE visibility (its own access or a workspace folder's). */
+  access?: "private" | "workspace";
   content: string;
   connectionId?: string;
   databaseId?: string;

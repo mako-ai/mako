@@ -55,8 +55,29 @@ export const useDashboardTreeStore = createResourceTreeStore<DashboardEntry>({
     // agent's `rename_object` uses. A bare `PUT { title }` was a full save —
     // it created a version and PUBLISHED the working definition, so renaming
     // a dashboard in the tree silently shipped its unpublished edits.
-    renameItem: (workspaceId, id, name) =>
-      renameObject(workspaceId, "dashboard", { ref: id, title: name }),
+    //
+    // The open tab follows at once (the rename's realtime poke does too,
+    // when it arrives): its label, and — edited or not — its title and
+    // version, so its next save neither conflicts nor writes the old title.
+    renameItem: async (workspaceId, id, name) => {
+      const result = await renameObject(workspaceId, "dashboard", {
+        ref: id,
+        title: name,
+      });
+      const title = result.after.title ?? name;
+      const [{ useDashboardStore }, { syncDashboardTabTitle }] =
+        await Promise.all([
+          import("./dashboardStore"),
+          import("../dashboard-runtime/shell"),
+        ]);
+      syncDashboardTabTitle(id, title);
+      useDashboardStore.setState(state => {
+        const entry = state.dashboards[workspaceId]?.find(d => d._id === id);
+        if (entry) entry.title = title;
+      });
+      await useDashboardStore.getState().syncRemoteDashboard(workspaceId, id);
+      return result;
+    },
     renameFolder: async (workspaceId, id, name) =>
       unwrapBody(
         await api.PATCH(`${base}/folders/{id}/rename`, {

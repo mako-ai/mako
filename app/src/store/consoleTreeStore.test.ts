@@ -12,6 +12,21 @@ vi.mock("../api", async importOriginal => {
   return { ...actual, api: http };
 });
 
+// The tab store the tree retargets after a rename/move (imported lazily
+// by the tree store): which tabs are open, and what they were told.
+const tabs = vi.hoisted(() => ({
+  open: {} as Record<string, unknown>,
+  retargetConsoleTab: vi.fn(),
+}));
+vi.mock("./consoleStore", () => ({
+  useConsoleStore: {
+    getState: () => ({
+      tabs: tabs.open,
+      retargetConsoleTab: tabs.retargetConsoleTab,
+    }),
+  },
+}));
+
 import { useConsoleTreeStore, type ConsoleEntry } from "./consoleTreeStore";
 import { accessForMove } from "./lib/createResourceTreeStore";
 
@@ -50,6 +65,7 @@ function seed(my: ConsoleEntry[], workspace: ConsoleEntry[] = []) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  tabs.open = {};
   seed([], []);
 });
 
@@ -181,6 +197,136 @@ describe("consoleTreeStore renameItem", () => {
     expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
       "alpha",
     ]);
+  });
+});
+
+describe("consoleTreeStore — an open tab follows every rename and move", () => {
+  const location = (over: Record<string, unknown> = {}) => ({
+    id: "a",
+    name: "Revenue by Day",
+    path: "finance/Revenue by Day",
+    folderId: "f",
+    access: "workspace",
+    draftRevision: 5,
+    isSaved: true,
+    ...over,
+  });
+
+  it("an inline rename retargets the tab (and the row's path) from the server's answer", async () => {
+    seed([], [folder("f", "finance", [file("a", "Revenue Daily")])]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({ success: true, console: location() }),
+    );
+
+    await expect(
+      useConsoleTreeStore
+        .getState()
+        .renameItem(WID, "a", "Revenue by Day", false),
+    ).resolves.toBe(true);
+
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("a", location());
+    const row =
+      useConsoleTreeStore.getState().workspaceItems[WID][0].children?.[0];
+    expect(row?.name).toBe("Revenue by Day");
+    expect(row?.path).toBe("finance/Revenue by Day");
+  });
+
+  it("a move (drag, Move to…, the editor's dialog) retargets the tab from the server's answer", async () => {
+    seed([], [file("a", "Revenue Daily"), folder("f", "finance")]);
+    http.PATCH.mockResolvedValueOnce(ok({ success: true, data: location() }));
+
+    await expect(
+      useConsoleTreeStore
+        .getState()
+        .moveItem(WID, "a", "f", undefined, "Revenue by Day"),
+    ).resolves.toBe(true);
+
+    expect(http.PATCH).toHaveBeenCalledWith(
+      "/api/workspaces/{workspaceId}/consoles/{id}/move",
+      {
+        params: { path: { workspaceId: WID, id: "a" } },
+        body: { folderId: "f", access: undefined, name: "Revenue by Day" },
+      },
+    );
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("a", location());
+  });
+
+  it("a refused rename says why (the row used to just snap back)", async () => {
+    seed([file("a", "mine"), file("b", "taken")]);
+    http.PATCH.mockResolvedValueOnce({
+      data: undefined,
+      error: {
+        success: false,
+        error: "A console already exists at consoles/taken.sql",
+      },
+      response: { ok: false, status: 409, statusText: "Conflict" },
+    });
+    http.GET.mockResolvedValueOnce(
+      ok({
+        success: true,
+        myConsoles: [file("a", "mine"), file("b", "taken")],
+      }),
+    );
+
+    await expect(
+      useConsoleTreeStore.getState().renameItem(WID, "a", "taken", false),
+    ).resolves.toBe(false);
+
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBe(
+      "A console already exists at consoles/taken.sql",
+    );
+    expect(tabs.retargetConsoleTab).not.toHaveBeenCalled();
+    useConsoleTreeStore.getState().clearActionError(WID);
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBeNull();
+  });
+
+  it("a folder rename re-reads where its open consoles are (location only)", async () => {
+    seed(
+      [],
+      [
+        folder("f", "New Folder", [
+          file("a", "Revenue"),
+          folder("g", "Deep", [file("b", "Deeper")]),
+        ]),
+        file("c", "Outside"),
+      ],
+    );
+    tabs.open = { a: {}, b: {} };
+    http.PATCH.mockResolvedValueOnce(ok({ success: true }));
+    http.GET.mockImplementation(async (_url: string, init: unknown) => {
+      const id = (init as { params: { query: { id: string } } }).params.query
+        .id;
+      return ok({
+        success: true,
+        id,
+        name: id === "a" ? "Revenue" : "Deeper",
+        path: id === "a" ? "finance/Revenue" : "finance/Deep/Deeper",
+        access: "workspace",
+        isSaved: true,
+        content: "SHOULD NOT BE APPLIED",
+      });
+    });
+
+    await useConsoleTreeStore.getState().renameItem(WID, "f", "finance", true);
+    await vi.waitFor(() =>
+      expect(tabs.retargetConsoleTab).toHaveBeenCalledTimes(2),
+    );
+
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("a", {
+      name: "Revenue",
+      path: "finance/Revenue",
+      access: "workspace",
+      isSaved: true,
+    });
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("b", {
+      name: "Deeper",
+      path: "finance/Deep/Deeper",
+      access: "workspace",
+      isSaved: true,
+    });
+    // "c" is outside the folder; nothing else was fetched.
+    expect(http.GET).toHaveBeenCalledTimes(2);
+    http.GET.mockReset();
   });
 });
 

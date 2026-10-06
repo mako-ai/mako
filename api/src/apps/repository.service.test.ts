@@ -22,6 +22,8 @@ import {
   initRepo,
   listTree,
   log,
+  logFollow,
+  parseFollowLog,
   readBlob,
   resolveCommit,
   snapshotDirToTree,
@@ -286,5 +288,55 @@ describe("history + diff", () => {
     expect(byPath["c.txt"]).toBe("added");
 
     expect(await treeOfCommit(repoDir, c2)).toBe(t2);
+  });
+
+  it("follows a file across renames, saying where it was in each commit", async () => {
+    await initRepo(repoDir, { "consoles/a.sql": "SELECT 1\n" });
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "consoles/a.sql": "SELECT 2\n" } },
+      { message: "edit" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: { "consoles/Team/b c.sql": "SELECT 2\n" },
+        deletes: ["consoles/a.sql"],
+      },
+      { message: "move" },
+    );
+    // Plain log: the file's history "starts" at the move.
+    expect(
+      (await log(repoDir, DEFAULT_BRANCH, 10, "consoles/Team/b c.sql")).map(
+        c => c.subject,
+      ),
+    ).toEqual(["move"]);
+    const followed = await logFollow(
+      repoDir,
+      DEFAULT_BRANCH,
+      10,
+      "consoles/Team/b c.sql",
+    );
+    expect(followed.map(c => [c.subject, c.path, c.previousPath])).toEqual([
+      ["move", "consoles/Team/b c.sql", "consoles/a.sql"],
+      ["edit", "consoles/a.sql", undefined],
+      ["Initial scaffold", "consoles/a.sql", undefined],
+    ]);
+  });
+
+  it("parseFollowLog carries the name backwards through a commit without a status line", () => {
+    const stdout =
+      "\x01c3\0me\x001\0rename\0\nR100\0old.sql\0new.sql\0" +
+      "\x01c2\0me\x001\0merge\0" +
+      "\x01c1\0me\x001\0create\0\nA\0old.sql\0";
+    expect(parseFollowLog(stdout, "new.sql").map(c => [c.oid, c.path])).toEqual(
+      [
+        ["c3", "new.sql"],
+        ["c2", "old.sql"],
+        ["c1", "old.sql"],
+      ],
+    );
   });
 });

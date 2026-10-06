@@ -22,6 +22,7 @@ import {
   hasUnsavedLocalEdits,
   hasBlockedDraftSave,
   hasPendingAgentReview,
+  remoteEntryMatchesBaseline,
 } from "./consoleStore";
 import { useNotebookStore } from "./notebookStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
@@ -606,15 +607,24 @@ export const useRealtimeStore = create<RealtimeStore>()(
               continue;
             }
 
+            const unsavedLocalEdits = hasUnsavedLocalEdits(entry.id);
             const decision = decideRemoteApply({
               tabExists: Boolean(tab),
               tabRevision: tab?.draftRevision,
               entryRevision: entry.draftRevision,
               contentMatches: tab?.content === entry.content,
-              unsavedLocalEdits: hasUnsavedLocalEdits(entry.id),
+              unsavedLocalEdits,
+              serverContentUnchanged:
+                unsavedLocalEdits && remoteEntryMatchesBaseline(entry),
             });
             switch (decision) {
               case "skip":
+                break;
+              case "metadata":
+                // The revision moved for a rename / move / run, not for
+                // content: retarget the tab (name, breadcrumb, visibility,
+                // revision base) and leave the unsaved edits alone.
+                store.fastForwardRemoteMetadata(entry);
                 break;
               case "fast-forward":
                 // Server content already matches this tab (echoed write from

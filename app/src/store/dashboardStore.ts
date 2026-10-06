@@ -18,6 +18,18 @@ import {
   type TableRelationship,
 } from "../dashboard-runtime/types";
 import { onRealtimeEvent } from "./lib/realtime-channel";
+import { syncDashboardTabTitle } from "../dashboard-runtime/shell";
+import { foldRemoteRename } from "../lib/dashboard-remote-merge";
+
+/** The server copy as the store keeps it (and hashes it). */
+function normalizeDashboard(dashboard: Dashboard): Dashboard {
+  if (Array.isArray(dashboard.widgets)) {
+    dashboard.widgets = dashboard.widgets.map(
+      w => normalizeWidgetLayouts(w as Record<string, unknown>) as typeof w,
+    );
+  }
+  return dashboard;
+}
 
 export type {
   Dashboard,
@@ -199,6 +211,18 @@ interface DashboardStoreState {
     workspaceId: string,
     dashboardId: string,
     options?: { signal?: AbortSignal },
+  ) => Promise<void>;
+  /**
+   * The server copy of an OPEN dashboard moved (a rename from the tree,
+   * another window, the agent): a clean tab reloads; a tab being edited or
+   * holding unsaved changes takes a server-side RENAME in (title, version
+   * and baseline from the server, the draft kept) — so its next save is
+   * neither a false conflict nor a write of the old title. Anything more
+   * than a title is left to the save's conflict dialog.
+   */
+  syncRemoteDashboard: (
+    workspaceId: string,
+    dashboardId: string,
   ) => Promise<void>;
   closeDashboard: (dashboardId: string) => void;
   saveDashboard: (
@@ -504,15 +528,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           ) as { data?: Dashboard };
 
           if (response.data) {
-            const dashboard = response.data;
-            if (Array.isArray(dashboard.widgets)) {
-              dashboard.widgets = dashboard.widgets.map(
-                w =>
-                  normalizeWidgetLayouts(
-                    w as Record<string, unknown>,
-                  ) as typeof w,
-              );
-            }
+            const dashboard = normalizeDashboard(response.data);
             set(state => {
               state.openDashboards[dashboardId] = dashboard;
               delete state.openDashboardErrors[dashboardId];
@@ -521,6 +537,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
               state.savedStateHashes[dashboardId] =
                 computeDashboardStateHash(dashboard);
             });
+            syncDashboardTabTitle(dashboardId, dashboard.title);
           }
         } catch (e) {
           // An aborted request is not a load failure — the caller navigated
@@ -533,6 +550,56 @@ export const useDashboardStore = create<DashboardStoreState>()(
             );
           });
         }
+      },
+
+      syncRemoteDashboard: async (workspaceId: string, dashboardId: string) => {
+        const open = get().openDashboards[dashboardId];
+        if (!open) return;
+        const savedHash = get().savedStateHashes[dashboardId];
+        const dirty =
+          savedHash !== undefined &&
+          computeDashboardStateHash(open) !== savedHash;
+        if (!get().editingDashboards[dashboardId] && !dirty) {
+          await get().reloadDashboard(workspaceId, dashboardId);
+          return;
+        }
+        let server: Dashboard | undefined;
+        try {
+          const response = unwrap(
+            await api.GET("/api/workspaces/{workspaceId}/dashboards/{id}", {
+              params: { path: { workspaceId, id: dashboardId } },
+            }),
+          ) as { data?: Dashboard };
+          server = response.data
+            ? normalizeDashboard(response.data)
+            : undefined;
+        } catch {
+          return; // the save's own conflict check still guards it
+        }
+        if (!server) return;
+        const local = get().openDashboards[dashboardId];
+        if (!local) return;
+        const fold = foldRemoteRename(
+          local,
+          server,
+          get().savedStateHashes[dashboardId],
+        );
+        if (!fold) return;
+        const oldTitle = local.title;
+        set(state => {
+          const d = state.openDashboards[dashboardId];
+          if (!d) return;
+          d.title = fold.title;
+          d.version = fold.version;
+          state.savedStateHashes[dashboardId] = fold.savedHash;
+          // Undo snapshots still carry the old title: an undo must not
+          // rename it back behind the user's back.
+          const history = state.historyMap[dashboardId];
+          for (const snapshot of history?.stack ?? []) {
+            if (snapshot.title === oldTitle) snapshot.title = fold.title;
+          }
+        });
+        syncDashboardTabTitle(dashboardId, fold.title);
       },
 
       closeDashboard: (dashboardId: string) => {
@@ -633,6 +700,8 @@ export const useDashboardStore = create<DashboardStoreState>()(
                 );
               }
             });
+            // A title edited in the definition renames the tab too.
+            syncDashboardTabTitle(dashboardId, saved.title);
           }
           return { ok: true };
         } catch (err: any) {
@@ -1285,11 +1354,11 @@ export const selectSavedHash =
 
 // ── Realtime reaction (registered here so the dashboard domain owns it) ──
 
-// Server-persisted dashboard saves/restores (draft/published model): pull
-// the authoritative dashboard for an OPEN dashboard when its version
-// advances — but NEVER clobber a user mid-edit. Skips the reload if this
-// tab is editing or holds unsaved local changes (their work wins until they
-// save/discard); echo-suppressed by clientId; stale events ignored.
+// Server-persisted dashboard saves/restores/renames (draft/published
+// model): pull the authoritative dashboard for an OPEN dashboard when its
+// version advances — but NEVER clobber a user mid-edit: a tab being edited
+// or holding unsaved changes keeps them and takes only a rename in
+// (syncRemoteDashboard); echo-suppressed by clientId; stale events ignored.
 onRealtimeEvent(
   "dashboard.updated",
   "dashboardStore",
@@ -1299,15 +1368,10 @@ onRealtimeEvent(
     const open = ds.openDashboards[event.dashboardId];
     if (!open) return; // not open here — explorer/canvas refreshes lazily
     if ((open.version ?? 0) >= event.version) return; // stale / own echo
-    if (ds.editingDashboards[event.dashboardId]) return; // don't stomp editor
-    const savedHash = ds.savedStateHashes[event.dashboardId];
-    if (
-      savedHash !== undefined &&
-      computeDashboardStateHash(open) !== savedHash
-    ) {
-      return; // unsaved local changes — preserve them
-    }
-    void ds.reloadDashboard(ctx.workspaceId, event.dashboardId);
+    // A clean tab reloads; an edited one keeps every local change and only
+    // takes a rename in (syncRemoteDashboard) — never stomped, never left
+    // on the old title and version.
+    void ds.syncRemoteDashboard(ctx.workspaceId, event.dashboardId);
   },
   { suppressOwnEcho: true },
 );

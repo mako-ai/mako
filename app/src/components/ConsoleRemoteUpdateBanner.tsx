@@ -6,9 +6,12 @@
  */
 import { Alert, Button, Stack } from "@mui/material";
 import type { ConsoleTab } from "../store/lib/types";
+import { remoteUpdateMessage } from "../lib/console-remote-update";
 
 interface ConsoleRemoteUpdateBannerProps {
   remoteUpdate: NonNullable<ConsoleTab["remoteUpdate"]>;
+  /** The signed-in user: their own change elsewhere is not "a collaborator's". */
+  currentUserId?: string | null;
   onLoadLatest: () => void;
   /** Deliberately overwrite the server copy with this tab's content. */
   onKeepMine?: () => void;
@@ -18,13 +21,13 @@ interface ConsoleRemoteUpdateBannerProps {
 
 export default function ConsoleRemoteUpdateBanner({
   remoteUpdate,
+  currentUserId,
   onLoadLatest,
   onKeepMine,
   onDismiss,
   onCloseTab,
 }: ConsoleRemoteUpdateBannerProps) {
   const isDeleted = remoteUpdate.kind === "deleted";
-  const who = remoteUpdate.updatedBy ? "another collaborator" : "elsewhere";
 
   return (
     <Alert
@@ -54,9 +57,7 @@ export default function ConsoleRemoteUpdateBanner({
         </Stack>
       }
     >
-      {isDeleted
-        ? "This console was deleted by another user."
-        : `This console was updated ${who} — your unsaved changes are based on an older copy.`}
+      {remoteUpdateMessage(remoteUpdate, currentUserId)}
     </Alert>
   );
 }

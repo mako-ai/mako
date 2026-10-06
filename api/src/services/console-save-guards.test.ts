@@ -3,7 +3,10 @@
  * Run with: pnpm --filter api exec tsx src/services/console-save-guards.test.ts
  */
 import assert from "node:assert/strict";
-import { buildConsoleWriteGuard } from "./console-save-guards";
+import {
+  buildConsoleWriteGuard,
+  consoleWriteGuardRefuses,
+} from "./console-save-guards";
 
 const base = { _id: "X", workspaceId: "W" };
 
@@ -25,7 +28,11 @@ const base = { _id: "X", workspaceId: "W" };
     expectedDraftRevision: 7,
   });
   assert.deepEqual(g.filter, base, "missing doc ⇒ identity filter");
-  assert.equal(g.guardActive, false, "missing doc ⇒ guard inactive (upsert ok)");
+  assert.equal(
+    g.guardActive,
+    false,
+    "missing doc ⇒ guard inactive (upsert ok)",
+  );
 }
 
 // --- single guards -----------------------------------------------------------
@@ -94,6 +101,56 @@ const base = { _id: "X", workspaceId: "W" };
   });
   assert.deepEqual(g.filter, base, "non-positive / non-integer ⇒ ignored");
   assert.equal(g.guardActive, false);
+}
+
+// --- the same guards against a document already read -------------------------
+// (the explicit save's relocation runs before the guarded update: a stale
+// base must be refused before the file moves)
+
+{
+  const doc = { version: 3, draftRevision: 8 };
+  assert.equal(
+    consoleWriteGuardRefuses(doc, {
+      expectedVersion: 3,
+      expectedDraftRevision: 8,
+    }),
+    false,
+    "current bases ⇒ not refused",
+  );
+  assert.equal(
+    consoleWriteGuardRefuses(doc, {
+      expectedVersion: 3,
+      expectedDraftRevision: 7,
+    }),
+    true,
+    "a rename elsewhere bumped draftRevision ⇒ refused before relocating",
+  );
+  assert.equal(
+    consoleWriteGuardRefuses(doc, { expectedVersion: 2 }),
+    true,
+    "a concurrent explicit save ⇒ refused",
+  );
+  assert.equal(
+    consoleWriteGuardRefuses(doc, {}),
+    false,
+    "no expectations ⇒ nothing to refuse",
+  );
+  assert.equal(
+    consoleWriteGuardRefuses(
+      {},
+      { expectedVersion: 1, expectedDraftRevision: 1 },
+    ),
+    false,
+    "legacy doc without counters counts as 1",
+  );
+  assert.equal(
+    consoleWriteGuardRefuses(doc, {
+      expectedVersion: 0,
+      expectedDraftRevision: 2.5,
+    }),
+    false,
+    "invalid expectations are ignored",
+  );
 }
 
 // eslint-disable-next-line no-console -- self-running test, not API code
