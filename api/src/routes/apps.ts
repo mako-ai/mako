@@ -90,6 +90,7 @@ import {
   listAppFolderPaths,
   moveAppFolder,
   moveProject,
+  projectFromIndexRow,
   stampAppId,
   type AppFolderTarget,
 } from "../apps/worktree.service";
@@ -98,6 +99,7 @@ import { parseAppRepoPath } from "../apps/app-paths";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
+  canWriteApp,
 } from "../apps/app-authorization";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
@@ -777,6 +779,14 @@ appsRoutes.openapi(
             // Previous slugs/paths: the client resolves an old link to the
             // app and rewrites it (UrlSync), mirroring the server's rule.
             aliases: folder.aliases,
+            // Whether the caller may write it (rename, edit): the list does
+            // not carry `sharedWith`, so only the server can tell an app
+            // shared with the caller as an editor from any other.
+            canWrite: canWriteApp(
+              state ?? projectFromIndexRow(workspaceId, folder),
+              userId,
+              role,
+            ),
           };
         });
       // Folders of the two trees the caller can see: the workspace tree, and

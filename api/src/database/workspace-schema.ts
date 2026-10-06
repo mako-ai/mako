@@ -5722,13 +5722,16 @@ export interface IAppIndexEntry extends Document {
   /**
    * Previous slugs or repo paths the INDEX knows that the manifest does not
    * carry: a laptop `git mv` seen by the sync, and renames of the manifest
-   * found in git history. Kept across syncs; readers see the union.
+   * found in git history. Kept across syncs — a superseded one included —
+   * and readers see the union with `aliases`, minus `supersededAliases`.
    */
   indexAliases: string[];
   /**
-   * Names the manifest still lists as aliases that another app has held
-   * more recently (it owns the link now); readers do not see them. Set by
-   * the sync from a move it saw or from history; carried across syncs.
+   * Names this app claims (in `aliases` or `indexAliases`) that another app
+   * holds and has held more recently (it owns the link now); readers do not
+   * see them. Set by the sync from a move it saw, from history, or from
+   * another app's arrival at the name; carried across syncs and re-checked
+   * on each, so a name returns once nobody else holds it.
    */
   supersededAliases: string[];
   /** Scheduled bindings, so the scheduler never opens the repo. */
