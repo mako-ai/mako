@@ -51,6 +51,7 @@ vi.mock("../connectors/registry", () => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
+import { syncConnectorRegistry } from "../sync/connector-registry";
 import { Connector, ConnectorDefinition } from "../database/workspace-schema";
 
 let mongo: MongoMemoryServer;
@@ -137,6 +138,69 @@ describe("ws:<alias> is stored as ws:<current slug>", () => {
     expect(
       ((await builtin.json()) as { data: { type: string } }).data.type,
     ).toBe("stripe");
+  });
+
+  it("POST binds the connection to the definition by id and asks for the schema through that binding", async () => {
+    const def = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme-crm",
+    });
+    const res = await req("POST", "", {
+      name: "Acme",
+      type: "ws:acme",
+      config: { apiKey: "k" },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { data } = (await res.json()) as { data: { _id: string } };
+    expect(
+      String((await Connector.findById(data._id))?.connectorDefinitionId),
+    ).toBe(String(def!._id));
+    const lastCall = vi
+      .mocked(syncConnectorRegistry.getConfigSchemaForType)
+      .mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe("ws:acme-crm");
+    expect(
+      String(
+        (lastCall?.[2] as { connectorDefinitionId?: unknown })
+          ?.connectorDefinitionId,
+      ),
+    ).toBe(String(def!._id));
+  });
+
+  it("PUT re-binds when the type is re-pointed; a config edit resolves the schema through the row's binding", async () => {
+    const other = await ConnectorDefinition.create({
+      workspaceId: WS,
+      slug: "zed",
+      sha: "b",
+      sourceSha: "t",
+      status: "indexed",
+      entities: [],
+      aliases: [],
+    });
+    const created = await req("POST", "", {
+      name: "Acme",
+      type: "ws:acme-crm",
+      config: { apiKey: "k" },
+    });
+    const { data } = (await created.json()) as { data: { _id: string } };
+    expect((await req("PUT", `/${data._id}`, { type: "ws:zed" })).status).toBe(
+      200,
+    );
+    expect(
+      String((await Connector.findById(data._id))?.connectorDefinitionId),
+    ).toBe(String(other._id));
+    expect(
+      (await req("PUT", `/${data._id}`, { config: { apiKey: "k2" } })).status,
+    ).toBe(200);
+    const lastCall = vi
+      .mocked(syncConnectorRegistry.getConfigSchemaForType)
+      .mock.calls.at(-1);
+    expect(
+      String(
+        (lastCall?.[2] as { connectorDefinitionId?: unknown })
+          ?.connectorDefinitionId,
+      ),
+    ).toBe(String(other._id));
   });
 
   it("an unknown ws: slug is still refused", async () => {

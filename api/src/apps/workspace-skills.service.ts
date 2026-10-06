@@ -32,6 +32,7 @@ import {
   globTree,
   listTree,
   readBlob,
+  readBlobsBatch,
   repoDirFor,
   resolveCommit,
   treeOidAt,
@@ -40,6 +41,7 @@ import {
   type IndexMode,
 } from "./repository.service";
 import { findRenamedFolder } from "../rename/git-renames";
+import { isUtf8Text } from "./text-bytes";
 import {
   SKILLS_DIR,
   SKILLS_README,
@@ -648,8 +650,19 @@ export async function commitSkillRename(
   // below pins — never at the live ref, which may already have moved.
   let raw: string | null = null;
   try {
-    const blob = await readBlob(repoDir, head, skillFilePath(fromName));
-    raw = blob.isBinary ? null : blob.contents;
+    const bytes = (
+      await readBlobsBatch(repoDir, head, [skillFilePath(fromName)])
+    ).get(skillFilePath(fromName));
+    if (bytes && !bytes.includes(0)) {
+      if (!isUtf8Text(bytes)) {
+        return {
+          ok: false,
+          status: 400,
+          error: `skills/${fromName}/SKILL.md is not UTF-8 text, so Mako cannot edit it without changing its bytes — rename it with git and add \`aliases: [${fromName}]\` by hand`,
+        };
+      }
+      raw = bytes.toString("utf8");
+    }
   } catch {
     raw = null;
   }
