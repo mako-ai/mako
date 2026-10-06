@@ -70,6 +70,8 @@ export type RealtimeEvent =
       projectId: string;
       path: string;
       deleted?: boolean;
+      /** With `deleted`: the file was renamed to this path, not removed. */
+      renamedTo?: string;
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";

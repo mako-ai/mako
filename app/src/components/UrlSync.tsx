@@ -383,8 +383,43 @@ export function UrlSync() {
       const projectId = dbtFileMatch[1];
       const filePath = decodePathSegments(dbtFileMatch[2]);
       setLeftPane("dbt");
-      // Helper dedupes against an existing tab and sets the active project.
-      focusDbtFileTab(projectId, filePath);
+      // A dbt file is addressed by PATH, so a link outlives a rename. List
+      // the project first: when the path is gone, ask the server where it
+      // went (git's rename detection — a UI rename or a laptop `git mv`)
+      // and open the file under its new name, with the address bar
+      // rewritten so the next copy of the link is the live one. A path
+      // that resolves to nothing opens as before: the editor reports a
+      // missing file itself, and a session branch can hold files the
+      // listing does not know yet.
+      void useDbtStore
+        .getState()
+        .fetchFiles(currentWorkspace.id, projectId)
+        .then(async () => {
+          const paths = useDbtStore.getState().filePathsByProject[projectId];
+          if (!paths || paths.includes(filePath)) {
+            // Helper dedupes against an existing tab and sets the active project.
+            focusDbtFileTab(projectId, filePath);
+            return;
+          }
+          const resolved = await resolveObjectRef(
+            currentWorkspace.id,
+            "dbt_file",
+            `${projectId}/${filePath}`,
+          );
+          const moved =
+            resolved?.via === "alias" ? resolved.current.slug : null;
+          if (!moved) {
+            focusDbtFileTab(projectId, filePath);
+            return;
+          }
+          focusDbtFileTab(projectId, moved);
+          window.history.replaceState(
+            null,
+            "",
+            resolved?.current.url ?? `/x/${projectId}/file/${moved}`,
+          );
+          setDeadLinkNotice(`File moved: ${filePath} → ${moved}`);
+        });
     } else if (dbtJobMatch) {
       // /x/:projectId/job/:jobId
       const projectId = dbtJobMatch[1];

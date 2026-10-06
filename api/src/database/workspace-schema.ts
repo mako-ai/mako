@@ -4342,6 +4342,12 @@ export interface IConnectorDefinition extends Document {
   blockedReason?: string;
   entities: string[];
   hasIcon: boolean;
+  /**
+   * Previous slugs (connector.yaml `aliases`, plus a rename git detected on
+   * a push that carried none). `ws:<alias>` resolves to this row while no
+   * live row claims the slug — api/src/rename.
+   */
+  aliases: string[];
   lastCheckedAt?: Date;
   /**
    * Why the last real connection test failed. Distinct from `blockedReason`
@@ -4375,6 +4381,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     blockedReason: { type: String, maxlength: 4000 },
     entities: { type: [String], default: [] },
     hasIcon: { type: Boolean, default: false },
+    aliases: { type: [String], default: [] },
     lastCheckedAt: { type: Date },
     lastCheckError: { type: String, maxlength: 4000 },
   },
@@ -4382,6 +4389,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
 );
 
 ConnectorDefinitionSchema.index({ workspaceId: 1, slug: 1 }, { unique: true });
+ConnectorDefinitionSchema.index({ workspaceId: 1, aliases: 1 });
 
 export const ConnectorDefinition = mongoose.model<IConnectorDefinition>(
   "ConnectorDefinition",

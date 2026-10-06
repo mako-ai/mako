@@ -15,16 +15,25 @@
  */
 import {
   ConnectorDefinition,
+  SourceConnection,
   type IConnectorDefinition,
 } from "../../database/workspace-schema";
-import { blobOid } from "../../apps/repository.service";
+import { blobOid, repoDirFor } from "../../apps/repository.service";
+import { renamedFoldersBetween } from "../../rename/git-renames";
 import { loggers } from "../../logging";
 import {
   isValidSlug,
   parseConnectorFile,
   validateSpec,
 } from "./connector-file";
-import { listConnectorFoldersAtMain, ensureConnectorRuntime } from "./resolver";
+import {
+  CONNECTORS_DIR,
+  DEFAULT_ENTRY,
+  findConnectorDefinitionRow,
+  listConnectorFoldersAtMain,
+  ensureConnectorRuntime,
+} from "./resolver";
+import { WORKSPACE_TYPE_PREFIX } from "./SandboxedConnector";
 import {
   failureMessage,
   firstOfType,
@@ -41,6 +50,8 @@ export interface ConnectorSyncResult {
   unchanged: number;
   blocked: number;
   removed: number;
+  /** Folders a push moved: the row was re-keyed in place, not recreated. */
+  renamed: Array<{ from: string; to: string }>;
   /** Slugs skipped without touching their row, with the reason. */
   skipped: Array<{ slug: string; reason: string }>;
 }
@@ -51,6 +62,7 @@ const EMPTY: ConnectorSyncResult = {
   unchanged: 0,
   blocked: 0,
   removed: 0,
+  renamed: [],
   skipped: [],
 };
 
@@ -100,8 +112,38 @@ async function reconcile(
   const rows = await ConnectorDefinition.find({ workspaceId });
   const rowBySlug = new Map(rows.map(row => [row.slug, row]));
 
-  const result: ConnectorSyncResult = { ...EMPTY, skipped: [] };
+  const result: ConnectorSyncResult = { ...EMPTY, renamed: [], skipped: [] };
   const seen = new Set<string>();
+
+  // RENAMES FIRST (api/src/rename rule 3). A folder that disappeared while
+  // another appeared is a rename when the new connector.yaml names the old
+  // slug in `aliases`, when git's own rename detection pairs the two
+  // folders between the commit the row last read and this one, or when the
+  // folder's content is byte-identical. The row is re-keyed in place — same
+  // _id, same status, old slug recorded as an alias — and every
+  // `SourceConnection.type = "ws:<old>"` is moved to the new slug. Before
+  // this, the old row was deleted and the new slug created fresh, which
+  // stranded every connection of that type (its config schema, and so its
+  // secret-field list, could no longer be resolved).
+  for (const [to, from] of await detectRenames(
+    workspaceId,
+    commit,
+    slugs,
+    filesBySlug,
+    rows,
+  )) {
+    const row = rowBySlug.get(from);
+    if (!row || rowBySlug.has(to)) continue;
+    row.slug = to;
+    row.aliases = [...new Set([...(row.aliases ?? []), from])].filter(
+      a => a !== to,
+    );
+    await row.save();
+    rowBySlug.delete(from);
+    rowBySlug.set(to, row);
+    await migrateSourceConnectionType(workspaceId, from, to);
+    result.renamed.push({ from, to });
+  }
 
   for (const slug of slugs) {
     const files = filesBySlug.get(slug) ?? new Map<string, Uint8Array>();
@@ -175,15 +217,23 @@ async function reconcile(
     }
 
     const sourceSha = sourceShaOf(files);
+    // The file's `aliases` are the record that travels; the row mirrors
+    // them (plus any rename git detected on a push that carried none).
+    const aliases = mergedAliases(row, parsed.value.aliases, slug);
     if (row && row.sourceSha === sourceSha && row.status !== "blocked") {
       // Unchanged content: keep the row, and with it a `verified` status that
       // a real connection test earned. Re-running spec here would demote it.
       // `entry` is still backfilled: a row indexed before it was stored
       // defaults to connector.ts, and a connector whose yaml names another
       // file would otherwise keep running the wrong one forever.
-      if (row.sha !== commit || row.entry !== parsed.value.entry) {
+      if (
+        row.sha !== commit ||
+        row.entry !== parsed.value.entry ||
+        !sameList(row.aliases ?? [], aliases)
+      ) {
         row.sha = commit;
         row.entry = parsed.value.entry;
+        row.aliases = aliases;
         await row.save();
       }
       result.unchanged++;
@@ -217,6 +267,7 @@ async function reconcile(
           lastCheckError: undefined,
           entities,
           hasIcon: files.has("icon.svg"),
+          aliases,
         });
         await row.save();
         result.updated++;
@@ -232,6 +283,7 @@ async function reconcile(
           status: "indexed",
           entities,
           hasIcon: files.has("icon.svg"),
+          aliases,
         });
         result.created++;
       }
@@ -266,6 +318,144 @@ async function reconcile(
   }
 
   return result;
+}
+
+/** How alike the entry file must be for git to call a folder move a rename. */
+export const CONNECTOR_RENAME_SIMILARITY = 75;
+
+/** The row's alias list after a pass: the file's, plus what git detected. */
+function mergedAliases(
+  row: IConnectorDefinition | undefined,
+  fromFile: string[],
+  slug: string,
+): string[] {
+  return [...new Set([...fromFile, ...(row?.aliases ?? [])])].filter(
+    a => a !== slug,
+  );
+}
+
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/**
+ * Pair folders that appeared with rows whose folder disappeared.
+ * Returns new slug → old slug. Three signals, strongest first:
+ *   1. the new folder's connector.yaml lists the old slug in `aliases`;
+ *   2. git's rename detection between the old row's commit and this one
+ *      pairs `connectors/<old>/connector.yaml` with the new folder's;
+ *   3. identical content (same sourceSha) — a pure `git mv`.
+ * A new slug claimed by two old rows is left alone (ambiguous: index both
+ * as git shows them rather than guess).
+ */
+async function detectRenames(
+  workspaceId: string,
+  commit: string,
+  slugs: string[],
+  filesBySlug: Map<string, Map<string, Uint8Array>>,
+  rows: IConnectorDefinition[],
+): Promise<Map<string, string>> {
+  const live = new Set(slugs);
+  const gone = rows.filter(row => !live.has(row.slug));
+  const appeared = slugs.filter(
+    slug => !rows.some(row => row.slug === slug) && filesBySlug.has(slug),
+  );
+  const out = new Map<string, string>();
+  if (gone.length === 0 || appeared.length === 0) return out;
+
+  const decoder = new TextDecoder();
+  const goneBySlug = new Map(gone.map(row => [row.slug, row]));
+  const goneBySourceSha = new Map<string, IConnectorDefinition[]>();
+  for (const row of gone) {
+    const list = goneBySourceSha.get(row.sourceSha) ?? [];
+    list.push(row);
+    goneBySourceSha.set(row.sourceSha, list);
+  }
+  const claimed = new Set<string>();
+  const claim = (to: string, from: string) => {
+    if (out.has(to) || claimed.has(from)) return;
+    out.set(to, from);
+    claimed.add(from);
+  };
+
+  // 1. explicit aliases in the new folder's yaml
+  for (const slug of appeared) {
+    const yamlBytes = filesBySlug.get(slug)?.get("connector.yaml");
+    if (!yamlBytes) continue;
+    const parsed = parseConnectorFile(decoder.decode(yamlBytes));
+    if (!parsed.ok) continue;
+    const old = parsed.value.aliases.filter(a => goneBySlug.has(a));
+    if (old.length === 1) claim(slug, old[0]);
+  }
+
+  // 2. git rename detection, per old row's last-read commit. Paired on the
+  //    ENTRY file (the code), not connector.yaml: the yaml is three lines
+  //    and identical across most connectors, so git would pair any delete
+  //    with any add. The code must be at least CONNECTOR_RENAME_SIMILARITY
+  //    alike; a rewrite that big is a new connector unless the yaml says
+  //    otherwise (signal 1).
+  const repoDir = repoDirFor(workspaceId);
+  const byKey = new Map<string, IConnectorDefinition[]>();
+  for (const row of gone) {
+    if (claimed.has(row.slug) || !row.sha) continue;
+    const key = `${row.sha}\0${row.entry || DEFAULT_ENTRY}`;
+    const list = byKey.get(key) ?? [];
+    list.push(row);
+    byKey.set(key, list);
+  }
+  for (const [key] of byKey) {
+    const [sha, entry] = key.split("\0");
+    const pairs = await renamedFoldersBetween(
+      repoDir,
+      sha,
+      commit,
+      CONNECTORS_DIR,
+      entry,
+      { similarity: CONNECTOR_RENAME_SIMILARITY },
+    );
+    for (const [to, from] of pairs) {
+      if (appeared.includes(to) && goneBySlug.has(from)) claim(to, from);
+    }
+  }
+
+  // 3. identical content
+  for (const slug of appeared) {
+    if (out.has(slug)) continue;
+    const files = filesBySlug.get(slug);
+    if (!files) continue;
+    const candidates = (goneBySourceSha.get(sourceShaOf(files)) ?? []).filter(
+      row => !claimed.has(row.slug),
+    );
+    if (candidates.length === 1) claim(slug, candidates[0].slug);
+  }
+  return out;
+}
+
+/**
+ * Move every connection of `ws:<from>` to `ws:<to>`. Only `type` changes:
+ * the credential stays encrypted exactly as it is, and both names resolve
+ * to the same config schema (so the same secret fields) before and after.
+ * Idempotent — a connection already on the new type is simply not matched.
+ */
+export async function migrateSourceConnectionType(
+  workspaceId: string,
+  from: string,
+  to: string,
+): Promise<number> {
+  if (from === to) return 0;
+  const result = await SourceConnection.updateMany(
+    { workspaceId, type: `${WORKSPACE_TYPE_PREFIX}${from}` },
+    { $set: { type: `${WORKSPACE_TYPE_PREFIX}${to}` } },
+  );
+  if (result.modifiedCount > 0) {
+    logger.info("Moved source connections to a renamed workspace connector", {
+      workspaceId,
+      from,
+      to,
+      count: result.modifiedCount,
+    });
+  }
+  return result.modifiedCount;
 }
 
 /**
@@ -364,7 +554,12 @@ export async function recordConnectionCheck(input: {
   success: boolean;
   message?: string;
 }): Promise<boolean> {
-  const { workspaceId, slug, sourceSha, success, message } = input;
+  const { workspaceId, sourceSha, success, message } = input;
+  // The check may have run under a previous slug (a connection typed
+  // `ws:<old>` after a rename); record it on the row that answers to it.
+  const found = await findConnectorDefinitionRow(workspaceId, input.slug);
+  if (!found) return false;
+  const slug = found.row.slug;
   const result = await ConnectorDefinition.updateOne(
     // A blocked connector is blocked by its code, which a credential cannot
     // fix; it must not be talked back up to `verified` by a check that could

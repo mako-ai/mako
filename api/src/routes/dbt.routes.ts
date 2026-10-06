@@ -41,9 +41,10 @@ import {
   getCheckoutBranch,
   listWorkingFiles,
   readWorkingFile,
-  renameWorkingFile,
   writeWorkingFile,
 } from "../dbt/dbt-working-tree.service";
+import { renameDbtFile } from "../rename/dbt-file";
+import { RenameError } from "../rename/types";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
@@ -817,41 +818,36 @@ dbtRoutes.post(
         from?: unknown;
         to?: unknown;
         clientId?: unknown;
+        updateRefs?: unknown;
       };
       const from = typeof body.from === "string" ? body.from : "";
       const to = typeof body.to === "string" ? body.to : "";
       if (!isSafeDbtPath(from) || !isSafeDbtPath(to)) {
         return badRequest(c, "Invalid from/to path");
       }
-      const userId = getUserId(c);
-      const renameError = await renameWorkingFile(project, userId, from, to);
-      if (renameError === "File not found") {
-        return c.json({ success: false, error: renameError }, 404);
-      }
-      if (renameError) return badRequest(c, renameError);
-      // The rename is one commit (delete + add) — poke both paths so open
-      // windows move the file.
-      const clientId =
-        typeof body.clientId === "string" ? body.clientId : undefined;
-      publishDbtEvent(c, {
-        type: "dbt.file.updated",
-        projectId: project._id.toString(),
-        path: from,
-        deleted: true,
-        updatedBy: userId,
-        clientId,
-        origin: "save",
-      });
-      publishDbtEvent(c, {
-        type: "dbt.file.updated",
-        projectId: project._id.toString(),
-        path: to,
-        updatedBy: userId,
-        clientId,
-        origin: "save",
-      });
-      return c.json({ success: true });
+      // The one rename service (api/src/rename/dbt-file.ts): one commit
+      // carrying the move and, for a model, the ref()/selector rewrites;
+      // it pokes open windows itself (the old tab retargets to `to`).
+      const result = await renameDbtFile(
+        {
+          workspaceId: project.workspaceId.toString(),
+          userId: c.get("user")?.id,
+          role: c.get("memberRole"),
+        },
+        {
+          projectId: project._id.toString(),
+          from,
+          to,
+          updateRefs: body.updateRefs !== false,
+          clientId:
+            typeof body.clientId === "string" ? body.clientId : undefined,
+        },
+      );
+      return c.json({ success: true, result });
     } catch (error) {
+      if (error instanceof RenameError) {
+        return c.json({ success: false, error: error.message }, error.status);
+      }
       return serverError(c, error, "Failed to rename dbt file");
     }
   },

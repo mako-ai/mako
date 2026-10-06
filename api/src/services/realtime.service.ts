@@ -95,6 +95,11 @@ export type RealtimeEvent =
       projectId: string;
       path: string;
       deleted?: boolean;
+      /**
+       * Set with `deleted` when the file was renamed, not removed: open
+       * tabs for `path` retarget to this path instead of going stale.
+       */
+      renamedTo?: string;
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";

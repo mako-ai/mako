@@ -28,6 +28,7 @@ export default defineConfig({
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
       "src/apps/workspace-skills.service.test.ts",
+      "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
@@ -83,6 +84,7 @@ export default defineConfig({
       // Workspace connectors: real git, real Mongo, and a real child process
       // per protocol command via the local sandbox provider.
       "src/connectors/workspace/workspace-connectors.test.ts",
+      "src/connectors/workspace/workspace-connectors-rename.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",

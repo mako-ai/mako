@@ -11,11 +11,15 @@
 import {
   commitSkillDelete,
   commitSkillFlags,
+  commitSkillRename,
   commitSkillSave,
   findSkill,
   findSkillById,
   loadSkillCatalog,
+  resolveSkillRef,
+  resolveSkillRefThroughHistory,
   skillId,
+  type SkillRenameOutcome,
   type WorkspaceSkill,
 } from "../apps/workspace-skills.service";
 import { type GitAuthor } from "../apps/repository.service";
@@ -145,8 +149,12 @@ export async function saveSkill(
 > {
   const validation = validateInput(input);
   if (validation) return { success: false, error: validation };
-  const name = input.name.trim();
-  const existing = await findSkill(workspaceId, name);
+  // A save under a PREVIOUS name updates the renamed skill under its current
+  // name — the old name keeps resolving everywhere, and a second folder
+  // under the alias would be exactly the duplicate a rename is meant to
+  // avoid. (`findSkill` applies the one-claimant rule for aliases.)
+  const existing = await findSkill(workspaceId, input.name.trim());
+  const name = existing?.name ?? input.name.trim();
   const pendingApproval = options.origin === "agent" && !existing;
   if (!existing) {
     const catalog = await loadSkillCatalog(workspaceId);
@@ -166,6 +174,9 @@ export async function saveSkill(
         entities: normalizeEntities(input.entities ?? existing?.entities),
         suppressed: pendingApproval || !!existing?.suppressed,
         pinned: input.pinned ?? existing?.pinned ?? false,
+        // Previous names are the file's record of its renames: a save must
+        // not forget them, or the old links die on the next edit.
+        aliases: existing?.aliases,
         body: input.body.trim(),
       },
       { author: await skillCommitAuthor(createdBy) },
@@ -194,6 +205,75 @@ export async function skillExists(
 ): Promise<boolean> {
   return (await findSkill(workspaceId, name)) !== null;
 }
+
+/**
+ * Rename a skill (api/src/rename): `git mv skills/<from> skills/<to>` plus
+ * `aliases: [from]` in the front matter, one commit on main. The one
+ * rename path for the Skills panel, REST and `rename_object`. `from` may
+ * be the skill's id, current name or an alias; the move is always from
+ * the CURRENT name.
+ */
+export async function renameSkill(
+  workspaceId: string,
+  ref: string,
+  to: string,
+  actorId?: string,
+): Promise<
+  | {
+      success: true;
+      skill: { id: string; name: string; aliases: string[] };
+      before: { id: string; name: string };
+      aliasesAdded: string[];
+      commit: string;
+    }
+  | { success: false; status: 400 | 404 | 409; error: string }
+> {
+  const trimmed = ref.trim();
+  const existing =
+    (await findSkillById(workspaceId, trimmed)) ??
+    (await findSkill(workspaceId, trimmed));
+  if (!existing) {
+    return { success: false, status: 404, error: `skill "${ref}" not found` };
+  }
+  if (to.trim().length > MAX_NAME_LENGTH) {
+    return {
+      success: false,
+      status: 400,
+      error: `name exceeds ${MAX_NAME_LENGTH} characters`,
+    };
+  }
+  let outcome: SkillRenameOutcome;
+  try {
+    outcome = await commitSkillRename(
+      workspaceId,
+      existing.name,
+      to.trim(),
+      await skillCommitAuthor(actorId),
+    );
+  } catch (error) {
+    logger.error("Skill rename: git commit failed", { workspaceId, error });
+    return {
+      success: false,
+      status: 400,
+      error: `Could not commit the rename to the workspace repository: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!outcome.ok) return { success: false, ...outcome };
+  const renamed = await findSkill(workspaceId, to.trim());
+  return {
+    success: true,
+    skill: {
+      id: skillId(workspaceId, to.trim()),
+      name: to.trim(),
+      aliases: renamed?.aliases ?? [],
+    },
+    before: { id: existing.id, name: existing.name },
+    aliasesAdded: outcome.aliasesAdded,
+    commit: outcome.commitOid,
+  };
+}
+
+export { resolveSkillRef };
 
 export async function deleteSkill(
   workspaceId: string,
@@ -242,22 +322,26 @@ export async function loadSkill(
   if (!name || name.trim().length === 0) {
     return { success: false, error: "name is required" };
   }
+  const asWorkspaceSkill = (skill: WorkspaceSkill) => ({
+    success: true as const,
+    skill: {
+      id: skill.id,
+      name: skill.name,
+      loadWhen: skill.loadWhen,
+      body: skill.body,
+      suppressed: skill.suppressed,
+      pinned: skill.pinned,
+    },
+  });
+  // Current name, then an alias (a renamed skill answers to its old name).
   const skill = await findSkill(workspaceId, name);
-  if (skill) {
-    return {
-      success: true,
-      skill: {
-        id: skill.id,
-        name: skill.name,
-        loadWhen: skill.loadWhen,
-        body: skill.body,
-        suppressed: skill.suppressed,
-        pinned: skill.pinned,
-      },
-    };
-  }
+  if (skill) return asWorkspaceSkill(skill);
   const systemSkill = getSystemSkill(name.trim());
   if (!systemSkill) {
+    // Nothing claims the name: a folder moved by a bare `git mv` carries no
+    // alias, but git remembers the move.
+    const moved = await resolveSkillRefThroughHistory(workspaceId, name);
+    if (moved) return asWorkspaceSkill(moved.skill);
     return { success: false, error: `skill "${name}" not found` };
   }
   return {
@@ -481,6 +565,8 @@ export interface AdminSkillSummary {
   entities: string[];
   suppressed: boolean;
   pinned: boolean;
+  /** Previous names (a rename records them); they still resolve. */
+  aliases: string[];
   definitionInvalid: { reason: string; path: string } | null;
 }
 
@@ -499,6 +585,7 @@ function summaryOf(skill: WorkspaceSkill): AdminSkillSummary {
     entities: skill.entities,
     suppressed: skill.suppressed,
     pinned: skill.pinned,
+    aliases: skill.aliases ?? [],
     definitionInvalid: null,
   };
 }
@@ -519,6 +606,7 @@ export async function listSkillsForAdmin(
       entities: [],
       suppressed: false,
       pinned: false,
+      aliases: [],
       definitionInvalid: { reason: file.reason, path: file.path },
     })),
   ];
