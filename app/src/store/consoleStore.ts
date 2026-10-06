@@ -222,6 +222,16 @@ interface ConsoleActions {
     consoleId: string,
   ) => Promise<void>;
   /**
+   * Replace an open tab with the server's copy IN PLACE — the store AND the
+   * mounted editor — and leave it clean: after a version restore (the repo
+   * changed under the tab), or a "Load latest". Local unsaved edits are
+   * discarded. False when the server copy could not be read.
+   */
+  reloadConsoleFromServer: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<boolean>;
+  /**
    * Resolve the remote-update affordance the other way: deliberately
    * overwrite the server copy with this tab's content (revision-targeted at
    * the conflict the banner reported). Re-banners on a fresh conflict.
@@ -1174,16 +1184,21 @@ export const useConsoleStore = create<ConsoleStore>()(
       },
 
       applyRemoteConsoleUpdate: async (workspaceId, consoleId) => {
+        await get().reloadConsoleFromServer(workspaceId, consoleId);
+      },
+
+      reloadConsoleFromServer: async (workspaceId, consoleId) => {
         // Discarding local edits: a queued autosave would otherwise fire
         // later with the pre-discard content captured in its closure.
         cancelAutoSave(consoleId);
         const res = await get().fetchConsoleContent(workspaceId, consoleId);
-        if (!res?.success) return;
+        if (!res?.success) return false;
         set(state => {
           const t = state.tabs[consoleId];
           if (!t) return;
           t.remoteUpdate = null;
         });
+        blockedDraftSaves.delete(consoleId);
         lastSavedContentHash.set(
           consoleId,
           computeConsoleStateHash(
@@ -1193,11 +1208,15 @@ export const useConsoleStore = create<ConsoleStore>()(
             res.databaseName,
           ),
         );
+        // The mounted Monaco buffer follows (Editor → setRemoteContent): the
+        // store alone left a restored console showing its OLD text with
+        // Save disabled.
         window.dispatchEvent(
           new CustomEvent("console-remote-content", {
             detail: { consoleId, content: res.content || "" },
           }),
         );
+        return true;
       },
 
       resolveRemoteUpdateKeepMine: async (workspaceId, consoleId, content) => {

@@ -3356,7 +3356,14 @@ function Editor({
           workspaceId={currentWorkspace.id}
           consoleId={consoleHistory.tabId}
           onRestored={() =>
-            reloadConsole(currentWorkspace.id, consoleHistory.tabId)
+            // In place, editor included, clean afterwards — reloadConsole
+            // reopened the tab, which left Monaco on the old text.
+            void useConsoleStore
+              .getState()
+              .reloadConsoleFromServer(
+                currentWorkspace.id,
+                consoleHistory.tabId,
+              )
           }
         />
       )}

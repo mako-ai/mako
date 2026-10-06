@@ -24,6 +24,7 @@ vi.hoisted(() => {
 });
 
 import type { ConsoleRevisionSyncEntry } from "../lib/api-types";
+import { api } from "../api";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import {
   hasPendingAgentReview,
@@ -611,5 +612,77 @@ describe("consoleStore.saveConsole — a save is not a move", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("consoleStore.reloadConsoleFromServer — after a version restore", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("puts the restored text in the tab AND the editor, clean, and closes no other tab", async () => {
+    const id = "c-restored";
+    const before = "SELECT 1 AS a1_test, 2 AS b, 3 AS c";
+    const restored = "SELECT 1 AS a1_test";
+    openSavedConsole({
+      id,
+      content: before,
+      savedStateHash: computeConsoleStateHash(before),
+      draftRevision: 6,
+    });
+    // A pristine (preview) tab: reopening the console used to replace it.
+    useConsoleStore.getState().openTab(
+      {
+        id: "c-other",
+        title: "Ghost.sql",
+        content: "select 2",
+        isSaved: true,
+        filePath: "New Folder/Ghost.sql",
+        kind: "console",
+      },
+      { replacePristine: false },
+    );
+    useConsoleStore.getState().setActiveTab(id);
+
+    const get = vi.spyOn(api, "GET").mockResolvedValue({
+      data: {
+        success: true,
+        id,
+        name: "Alpha Two",
+        path: "finance/Alpha Two",
+        content: restored,
+        isSaved: true,
+        access: "workspace",
+        draftRevision: 8,
+      },
+      response: new Response(null, { status: 200 }),
+    } as never);
+    const shown: Array<{ consoleId: string; content: string }> = [];
+    const onRemote = (e: Event) =>
+      shown.push(
+        (e as CustomEvent<{ consoleId: string; content: string }>).detail,
+      );
+    window.addEventListener("console-remote-content", onRemote);
+    try {
+      const ok = await useConsoleStore
+        .getState()
+        .reloadConsoleFromServer("ws", id);
+      expect(ok).toBe(true);
+    } finally {
+      window.removeEventListener("console-remote-content", onRemote);
+      get.mockRestore();
+    }
+
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.content).toBe(restored);
+    // Clean: the saved baseline is the restored text (Save disabled is
+    // right only because the editor shows that text too).
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(restored));
+    expect(tab.draftRevision).toBe(8);
+    expect(tab.filePath).toBe("finance/Alpha Two");
+    // The mounted editor is told to show it.
+    expect(shown).toEqual([{ consoleId: id, content: restored }]);
+    expect(useConsoleStore.getState().tabs["c-other"]).toBeDefined();
+    expect(useConsoleStore.getState().activeTabId).toBe(id);
   });
 });
