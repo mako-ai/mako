@@ -769,16 +769,26 @@ export function aliasesFromHistory(
  * records the old PATH, as aliasesForMoves does for a move it sees: the
  * bare slug would only be dropped as the app's current name, and the path
  * is what lets `/apps/report` still find it.
+ *
+ * `arrived` is every name the app ARRIVED at within `events` (created at,
+ * or renamed into, along its own chain), newest first. An incremental scan
+ * covers only the commits since the last one, so an OLDER app's walk may
+ * never reach the rename that took it away from a name a newcomer has
+ * since arrived at (the newcomer created there and renamed away again,
+ * between two index reads); the sync makes each app's arrivals (at names
+ * it has since left) candidates for every OTHER app that claims them
+ * ({@link settleSuperseded}).
  */
 export function walkHistory(
   apps: ReadonlyArray<Pick<AppIndexRow, "path" | "appId" | "hasManifestId">>,
   events: ReadonlyArray<ManifestHistoryEvent>,
-): Map<string, { aliases: string[]; superseded: string[] }> {
-  const out = new Map<string, { aliases: string[]; superseded: string[] }>();
+): Map<string, WalkedHistory> {
+  const out = new Map<string, WalkedHistory>();
   const basename = (path: string) => path.split("/").pop() ?? path;
   for (const app of apps) {
     const aliases: string[] = [];
     const superseded: string[] = [];
+    const arrived: string[] = [];
     let current = app.path;
     // A manifest declaring an id that is not this app's is another app's
     // (a stamp writes the row's own id, so a later-stamped app agrees with
@@ -797,7 +807,10 @@ export function walkHistory(
     };
     for (const event of events) {
       if (event.kind === "create") {
-        if (event.path === current) break;
+        if (event.path === current) {
+          arrived.push(aliasForOldPath(current));
+          break;
+        }
         note(event.path, "arrived");
         continue;
       }
@@ -810,6 +823,7 @@ export function walkHistory(
         continue;
       }
       if (foreign(event.id)) continue;
+      arrived.push(aliasForOldPath(current));
       const from = event.from;
       const name =
         basename(from) === basename(current) ? from : aliasForOldPath(from);
@@ -818,7 +832,98 @@ export function walkHistory(
       else aliases.push(name);
       if (aliases.length >= MAX_ALIASES_PER_APP) break;
     }
-    out.set(app.path, { aliases, superseded });
+    out.set(app.path, { aliases, superseded, arrived });
+  }
+  return out;
+}
+
+/** What {@link walkHistory} found for one app. */
+export interface WalkedHistory {
+  /** Earlier names that are still the app's own. */
+  aliases: string[];
+  /** Earlier names another app arrived at after this one left. */
+  superseded: string[];
+  /** Names this app arrived at within the scanned events. */
+  arrived: string[];
+}
+
+/** One row's side of {@link settleSuperseded}. */
+export interface AliasClaims {
+  appId: string;
+  path: string;
+  slug: string;
+  /**
+   * Every name the row claims: its manifest's aliases and the index's
+   * own, the ones parked as superseded included.
+   */
+  claims: readonly string[];
+  /**
+   * Names it is already known to have lost (stored, or by its history
+   * walk). It does not HOLD them when another row's claim is decided.
+   */
+  lost: readonly string[];
+  /** Names that may have been taken from it, besides other rows' arrivals. */
+  candidates: readonly string[];
+  /** Names it arrived at in the scanned history (walkHistory's `arrived`). */
+  arrived: readonly string[];
+  /** A copy: claims nothing, and so loses nothing. */
+  duplicate?: boolean;
+}
+
+/** `x` and `apps/x` are one name (aliasMatchesRef), so one key. */
+const nameKey = (name: string): string =>
+  name.startsWith(`${APPS_DIR}/`) ? name.slice(APPS_DIR.length + 1) : name;
+
+/**
+ * Which of each row's claimed names are SUPERSEDED (appId → names, as the
+ * row spells them): a name is contested when it is among the row's
+ * `candidates`, or ANOTHER row arrived at it in the scanned history and
+ * has since moved on, and it is lost when some other row still HOLDS it —
+ * as its path, or among its claims it has not itself lost. A name nobody
+ * else holds stays the row's: the newcomer that took it was deleted, or
+ * gave it up.
+ *
+ * Arrivals are what makes an incremental sync agree with a rebuild when a
+ * newcomer arrived at an old name and left again between two index reads:
+ * the older app's walk over those commits never reaches its own departure,
+ * and the newcomer was never seen AT the name, so nothing else would
+ * contest the older claim. Only OTHER rows' arrivals count — an app's own
+ * tenure at a name is no reason to lose it.
+ */
+export function settleSuperseded(
+  rows: readonly AliasClaims[],
+): Map<string, string[]> {
+  const holders = rows.map(row => ({
+    appId: row.appId,
+    path: row.path,
+    aliases: row.duplicate ? [] : withoutSuperseded(row.claims, row.lost),
+  }));
+  const arrivals = new Map<string, Set<string>>();
+  for (const row of rows) {
+    for (const name of row.arrived) {
+      // Where it still is, its current name beats any alias already; when
+      // it moves on, the sync that sees the move contests the name then.
+      if (aliasMatchesRef(name, row.path)) continue;
+      const key = nameKey(name);
+      arrivals.set(key, (arrivals.get(key) ?? new Set()).add(row.appId));
+    }
+  }
+  const arrivedByOther = (name: string, appId: string) =>
+    [...(arrivals.get(nameKey(name)) ?? [])].some(id => id !== appId);
+  const out = new Map<string, string[]>();
+  for (const row of rows) {
+    if (row.duplicate) {
+      out.set(row.appId, []);
+      continue;
+    }
+    const contested = parseAppAliases(row.claims).aliases.filter(
+      name =>
+        name !== row.slug &&
+        name !== row.path &&
+        (row.candidates.some(c => aliasMatchesRef(name, c)) ||
+          arrivedByOther(name, row.appId)),
+    );
+    out.set(row.appId, heldByOthers(contested, row.appId, holders));
   }
   return out;
 }
@@ -1183,14 +1288,15 @@ async function syncNow(
   //    otherwise (`historyScannedSha`; a failed scan is retried next time);
   //  - what the row already knew, carried over.
   // Each row's `aliases` is then the union with its manifest's, minus what
-  // is SUPERSEDED: a name another app held more recently (it moved away
-  // from it in this very sync, or history says it arrived there after this
-  // app left — walkHistory). The newer holder's rename keeps that link;
-  // the older claim is dropped from the index here and from the manifest
-  // by a UI rename (moveWritesUnder); a manifest a laptop left claiming it
-  // is overridden through `supersededAliases`, carried across syncs. A COPY
-  // of an app (`duplicateOf`) gets none of this: its manifest's aliases are
-  // the source's, and a name two apps claim resolves to neither — the copy
+  // is SUPERSEDED: a name another app holds and held more recently (it
+  // moved away from it in this very sync, history says it arrived there
+  // after this app left — walkHistory — or it arrived there within the
+  // commits this sync scanned). The newer holder keeps that link; the
+  // older claim is parked in `supersededAliases`, carried across syncs and
+  // re-checked on each, so it returns when the newer holder is gone. The
+  // manifest is never rewritten for it (moveWritesUnder). A COPY of an app
+  // (`duplicateOf`) gets none of this: its manifest's aliases are the
+  // source's, and a name two apps claim resolves to neither — the copy
   // must not take the original's old links down with it.
   const existingById = new Map(existing.map(row => [row.appId, row]));
   const projectById = new Map(projectRows.map(p => [p._id.toString(), p]));
@@ -1215,7 +1321,7 @@ async function syncNow(
       : undefined;
   const fullScan = !scannedSha || !(await commitExists(repoDir, scannedSha));
   let historyScanned = true;
-  let history = new Map<string, { aliases: string[]; superseded: string[] }>();
+  let history = new Map<string, WalkedHistory>();
   try {
     history = walkHistory(
       rows,
@@ -1234,83 +1340,88 @@ async function syncNow(
     });
   }
   // Names the apps moving in THIS sync held until now: every other app's
-  // claim to them is superseded.
+  // claim to them is contested — except by an app that ARRIVED at the name
+  // in the scanned commits: the mover held it when the last sync ran, so
+  // that app came after it and its claim is the newer one.
   const takenNow = new Map<string, string[]>();
   for (const row of rows) {
     const from = previousPathOf(row.appId);
     const plan = from ? movePlans.get(from) : undefined;
     if (plan) takenNow.set(row.appId, [...plan.add, ...plan.indexOnly]);
   }
-  const takenByOthers = (appId: string): string[] =>
-    [...takenNow].flatMap(([id, names]) => (id === appId ? [] : names));
+  const takenByOthers = (appId: string, arrived: readonly string[]) =>
+    [...takenNow]
+      .flatMap(([id, names]) => (id === appId ? [] : names))
+      .filter(name => !arrived.some(own => aliasMatchesRef(own, name)));
+  // Pass one: what each row learned, and what may have been taken from it.
+  // settleSuperseded needs every row's names to tell whether a contested
+  // one is still HELD by someone — a name nobody holds any more (the
+  // newcomer was deleted) goes back to the app that lists it.
   const indexAliasesByPath = new Map<string, string[]>();
-  const supersededByPath = new Map<string, string[]>();
-  // Pass one: what each row learned, and which of its names are candidates
-  // for supersession. Pass two needs every row's names to tell whether a
-  // candidate is still HELD by someone — a name nobody holds any more (the
-  // newcomer was deleted) goes back to the app whose manifest lists it.
-  const candidates = new Map<string, string[]>();
-  const holders: Array<Pick<AppIndexRow, "appId" | "path" | "aliases">> = [];
+  const claims: AliasClaims[] = [];
   for (const row of rows) {
+    const walked = history.get(row.path);
+    const arrived = walked?.arrived ?? [];
     if (row.duplicateOf) {
       row.aliases = [];
       indexAliasesByPath.set(row.path, []);
-      supersededByPath.set(row.path, []);
-      holders.push({ appId: row.appId, path: row.path, aliases: [] });
+      claims.push({
+        appId: row.appId,
+        path: row.path,
+        slug: row.slug,
+        claims: [],
+        lost: [],
+        candidates: [],
+        arrived,
+        duplicate: true,
+      });
       continue;
     }
     const plan = takenNow.has(row.appId)
       ? movePlans.get(previousPathOf(row.appId)!)
       : undefined;
-    const walked = history.get(row.path);
-    candidates.set(
-      row.path,
-      mergeAliases(
-        [
-          takenByOthers(row.appId),
-          walked?.superseded ?? [],
-          existingById.get(row.appId)?.supersededAliases ?? [],
-        ],
-        [row.slug, row.path],
-      ),
-    );
+    const stored = existingById.get(row.appId)?.supersededAliases ?? [];
+    // A name history says the app lost is still one it HAD: kept (parked)
+    // with the rest, so it comes back when its newer holder goes.
     const learned = mergeAliases(
       [
         plan ? [...plan.add, ...plan.indexOnly] : [],
         walked?.aliases ?? [],
+        walked?.superseded ?? [],
         existingById.get(row.appId)?.indexAliases ?? [],
       ],
       [row.slug, row.path, ...row.aliases],
     );
     indexAliasesByPath.set(row.path, learned);
-    holders.push({
+    claims.push({
       appId: row.appId,
       path: row.path,
-      aliases: [...row.aliases, ...learned],
+      slug: row.slug,
+      claims: [...row.aliases, ...learned],
+      lost: [...(walked?.superseded ?? []), ...stored],
+      candidates: [
+        ...takenByOthers(row.appId, arrived),
+        ...(walked?.superseded ?? []),
+        ...stored,
+      ],
+      arrived,
     });
   }
+  // Pass two. A superseded name stays in `indexAliases` (readers filter it
+  // out through `supersededAliases`), whichever list it came from: dropping
+  // an index-only one would lose it for good when its holder goes, while a
+  // rebuild — which walks the whole history — gives it back.
+  const supersededById = settleSuperseded(claims);
+  const supersededByPath = new Map<string, string[]>();
   for (const row of rows) {
+    const superseded = supersededById.get(row.appId) ?? [];
+    supersededByPath.set(row.path, superseded);
     if (row.duplicateOf) continue;
-    const superseded = heldByOthers(
-      candidates.get(row.path) ?? [],
-      row.appId,
-      holders,
-    );
-    const learned = withoutSuperseded(
-      indexAliasesByPath.get(row.path) ?? [],
-      superseded,
-    );
-    indexAliasesByPath.set(row.path, learned);
-    // Only a superseded name the manifest still spells needs remembering:
-    // the index side is simply not kept, and a rebuild re-derives it.
-    supersededByPath.set(
-      row.path,
-      superseded.filter(name =>
-        row.aliases.some(alias => aliasMatchesRef(alias, name)),
-      ),
-    );
     row.aliases = withoutSuperseded(
-      mergeAliases([[...row.aliases].reverse(), learned]),
+      mergeAliases([
+        [...row.aliases].reverse(),
+        indexAliasesByPath.get(row.path) ?? [],
+      ]),
       superseded,
     );
   }
@@ -1555,31 +1666,35 @@ export async function catchUpHistory(
   let written = 0;
   const same = (a: readonly string[], b: readonly string[]) =>
     a.length === b.length && a.every((x, i) => x === b[i]);
+  // The sync's rule (settleSuperseded) over the rows as they are: what the
+  // walk found joins what each row knew, a superseded name stays parked in
+  // `indexAliases`, and other rows' arrivals contest a row's claims.
+  const learnedById = new Map<string, string[]>();
+  const claims: AliasClaims[] = rows.map(row => {
+    const walked = history.get(row.path);
+    const manifestAliases = row.aliases ?? [];
+    const stored = row.supersededAliases ?? [];
+    const learned = mergeAliases(
+      [walked?.aliases ?? [], walked?.superseded ?? [], row.indexAliases ?? []],
+      [row.slug, row.path, ...manifestAliases],
+    );
+    learnedById.set(row.appId, learned);
+    return {
+      appId: row.appId,
+      path: row.path,
+      slug: row.slug,
+      claims: row.duplicateOf ? [] : [...manifestAliases, ...learned],
+      lost: [...(walked?.superseded ?? []), ...stored],
+      candidates: [...(walked?.superseded ?? []), ...stored],
+      arrived: walked?.arrived ?? [],
+      duplicate: !!row.duplicateOf,
+    };
+  });
+  const supersededById = settleSuperseded(claims);
   for (const row of rows) {
     if (row.duplicateOf) continue;
-    const walked = history.get(row.path);
-    const candidates = heldByOthers(
-      mergeAliases(
-        [walked?.superseded ?? [], row.supersededAliases ?? []],
-        [row.slug, row.path],
-      ),
-      row.appId,
-      rows.map(r => ({
-        appId: r.appId,
-        path: r.path,
-        aliases: [...(r.aliases ?? []), ...(r.indexAliases ?? [])],
-      })),
-    );
-    const superseded = candidates.filter(name =>
-      (row.aliases ?? []).some(alias => aliasMatchesRef(alias, name)),
-    );
-    const learned = withoutSuperseded(
-      mergeAliases(
-        [walked?.aliases ?? [], row.indexAliases ?? []],
-        [row.slug, row.path, ...(row.aliases ?? [])],
-      ),
-      candidates,
-    );
+    const learned = learnedById.get(row.appId) ?? [];
+    const superseded = supersededById.get(row.appId) ?? [];
     const had = row.indexAliases ?? [];
     if (same(learned, had) && same(superseded, row.supersededAliases ?? [])) {
       continue;

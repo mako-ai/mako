@@ -1161,6 +1161,7 @@ describe("aliasesFromHistory (pure)", () => {
     expect(walkHistory(apps, events).get("apps/Ops/x")).toEqual({
       aliases: [],
       superseded: ["seller-media-buying-3"],
+      arrived: ["apps/Ops/x"],
     });
   });
 
@@ -1183,6 +1184,7 @@ describe("aliasesFromHistory (pure)", () => {
     expect(walkHistory(apps, events).get("apps/y")).toEqual({
       aliases: ["p"],
       superseded: ["x"],
+      arrived: ["y", "x", "p"],
     });
     expect(out.get("apps/x")).toBeUndefined();
     // Even without the creation record, an id that is not B's is not B's past.
@@ -1229,10 +1231,15 @@ describe("walkHistory (pure)", () => {
       row("apps/foo-v2", { appId: C, hasManifestId: true }),
     ];
     const out = walkHistory(apps, events);
-    expect(out.get("apps/bar")).toEqual({ aliases: [], superseded: ["foo"] });
+    expect(out.get("apps/bar")).toEqual({
+      aliases: [],
+      superseded: ["foo"],
+      arrived: ["bar", "foo"],
+    });
     expect(out.get("apps/foo-v2")).toEqual({
       aliases: ["foo"],
       superseded: [],
+      arrived: ["foo-v2", "foo"],
     });
     // Before C was renamed away, "foo" was C's current name; after, the
     // link follows C — one claimant, never two.
@@ -1268,10 +1275,15 @@ describe("walkHistory (pure)", () => {
       row("apps/foo-v2", { hasManifestId: false }),
     ];
     const out = walkHistory(apps, events);
-    expect(out.get("apps/bar")).toEqual({ aliases: [], superseded: ["foo"] });
+    expect(out.get("apps/bar")).toEqual({
+      aliases: [],
+      superseded: ["foo"],
+      arrived: ["bar", "foo"],
+    });
     expect(out.get("apps/foo-v2")).toEqual({
       aliases: ["foo"],
       superseded: [],
+      arrived: ["foo-v2", "foo"],
     });
     // An id-less app's own chain is still followed in full.
     expect(
@@ -1283,7 +1295,11 @@ describe("walkHistory (pure)", () => {
           create("apps/x"),
         ],
       ).get("apps/z"),
-    ).toEqual({ aliases: ["y", "x"], superseded: [] });
+    ).toEqual({
+      aliases: ["y", "x"],
+      superseded: [],
+      arrived: ["z", "y", "x"],
+    });
   });
 
   it("gives a name back when the newcomer is deleted: the newest event at the old name decides", () => {
@@ -1296,7 +1312,7 @@ describe("walkHistory (pure)", () => {
       walkHistory(apps, [del("apps/foo"), create("apps/foo"), ...base]).get(
         "apps/bar",
       ),
-    ).toEqual({ aliases: ["foo"], superseded: [] });
+    ).toEqual({ aliases: ["foo"], superseded: [], arrived: ["bar", "foo"] });
     // …unless someone else arrived after that deletion.
     expect(
       walkHistory(apps, [
@@ -1305,7 +1321,7 @@ describe("walkHistory (pure)", () => {
         create("apps/foo"),
         ...base,
       ]).get("apps/bar"),
-    ).toEqual({ aliases: [], superseded: ["foo"] });
+    ).toEqual({ aliases: [], superseded: ["foo"], arrived: ["bar", "foo"] });
     // B renamed away keeps the name (its alias): still held, superseded.
     expect(
       walkHistory(apps, [
@@ -1313,7 +1329,7 @@ describe("walkHistory (pure)", () => {
         create("apps/foo"),
         ...base,
       ]).get("apps/bar"),
-    ).toEqual({ aliases: [], superseded: ["foo"] });
+    ).toEqual({ aliases: [], superseded: ["foo"], arrived: ["bar", "foo"] });
   });
 
   it("records a folder moved under the same name by its old path, so the bare name still finds it", () => {
@@ -2152,6 +2168,128 @@ describe("a name reused and then given up", () => {
     expect(await who("foo")).toBe("apps/bar via=alias");
     expect(await rebuilt("foo")).toBe("apps/bar via=alias");
   });
+
+  // Laptop pushes reach Mako on its next fetch, so several commits often
+  // land between two index reads: the sync sees only where they ended.
+  const laptopMove = async (from: string, to: string, contents: string) =>
+    externalCommit(
+      { [`apps/${to}/mako.json`]: contents },
+      [`apps/${from}/mako.json`],
+      `git mv ${from} ${to}`,
+    );
+  const supersededOf = async (path: string) =>
+    (await AppIndexEntry.findOne({ workspaceId: WS, path }).lean())
+      ?.supersededAliases;
+
+  for (const renamedBy of ["the UI", "a laptop"] as const) {
+    for (const withId of [false, true]) {
+      it(`a newcomer created at the old name AND moved away between two index reads keeps it — A renamed by ${renamedBy}, newcomer ${withId ? "with" : "without"} an id`, async () => {
+        if (renamedBy === "the UI") {
+          await setup();
+        } else {
+          // A is known at apps/foo; its `git mv` to bar lands in the same
+          // window as the newcomer's two commits.
+          const aManifest = (await fileAt("apps/a/mako.json"))!;
+          await externalCommit(
+            { "apps/foo/mako.json": aManifest },
+            [
+              "apps/a/mako.json",
+              "apps/a/src/main.tsx",
+              "apps/a/fixtures/mako.json",
+            ],
+            "a is foo",
+          );
+          expect(await who("foo")).toBe("apps/foo via=current");
+          await laptopMove("foo", "bar", aManifest);
+        }
+        const newcomer = manifest(
+          "Newcomer",
+          withId ? new Types.ObjectId().toHexString() : undefined,
+        );
+        await externalCommit({ "apps/foo/mako.json": newcomer });
+        await laptopMove("foo", "foo-v2", newcomer);
+        expect(await who("foo")).toBe("apps/foo-v2 via=alias");
+        expect(await supersededOf("apps/bar")).toEqual(["foo"]);
+        expect(await rebuilt("foo")).toBe("apps/foo-v2 via=alias");
+        // The newcomer goes: the name is A's again, both ways.
+        await externalCommit({}, ["apps/foo-v2/mako.json"], "delete newcomer");
+        expect(await who("foo")).toBe("apps/bar via=alias");
+        expect(await supersededOf("apps/bar")).toEqual([]);
+        expect(await rebuilt("foo")).toBe("apps/bar via=alias");
+      });
+    }
+  }
+
+  it("the background catch-up of a failed scan agrees too, for a newcomer created and moved away in the gap", async () => {
+    await setup();
+    expect(await who("foo")).toBe("apps/bar via=alias");
+    const scannedTo = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    const newcomer = manifest("Newcomer");
+    await externalCommit({ "apps/foo/mako.json": newcomer });
+    await laptopMove("foo", "foo-v2", newcomer);
+    await loadAppsIndex(WS);
+    // What a sync whose history scan FAILED leaves behind: no history
+    // aliases, nothing superseded, the scan mark where the last good one
+    // ended. The next load serves that and schedules the catch-up.
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $set: { historyScannedSha: scannedTo } },
+    );
+    await AppIndexEntry.updateMany(
+      { workspaceId: WS },
+      { $set: { indexAliases: [], supersededAliases: [] } },
+    );
+    invalidateAppsIndexCache();
+    expect(await who("foo")).toBe("apps/bar via=alias");
+    await historyCatchUpFor(WS);
+    expect(await who("foo")).toBe("apps/foo-v2 via=alias");
+    expect(await supersededOf("apps/bar")).toEqual(["foo"]);
+    expect(await rebuilt("foo")).toBe("apps/foo-v2 via=alias");
+  });
+
+  for (const read of ["never", "between", "not between"] as const) {
+    for (const withId of [false, true]) {
+      it(`an old name only the INDEX knew comes back when the newcomer at it goes — index read ${read}, newcomer ${withId ? "with" : "without"} an id`, async () => {
+        // A: `git mv apps/foo apps/bar` (no manifest alias: the index alone
+        // knows "foo"); a newcomer created at apps/foo; later deleted.
+        const aManifest = (await fileAt("apps/a/mako.json"))!;
+        await externalCommit(
+          { "apps/foo/mako.json": aManifest },
+          [
+            "apps/a/mako.json",
+            "apps/a/src/main.tsx",
+            "apps/a/fixtures/mako.json",
+          ],
+          "a is foo",
+        );
+        if (read !== "never") {
+          expect(await who("foo")).toBe("apps/foo via=current");
+        }
+        await laptopMove("foo", "bar", aManifest);
+        if (read === "between") {
+          expect(await who("foo")).toBe("apps/bar via=alias");
+        }
+        await externalCommit({
+          "apps/foo/mako.json": manifest(
+            "Newcomer",
+            withId ? new Types.ObjectId().toHexString() : undefined,
+          ),
+        });
+        expect(await who("foo")).toBe("apps/foo via=current");
+        // While the newcomer holds it, A keeps the name (parked, or simply
+        // shadowed by the newcomer's current name) — never drops it.
+        const held = await AppIndexEntry.findOne({
+          workspaceId: WS,
+          path: "apps/bar",
+        }).lean();
+        expect(held?.indexAliases).toContain("foo");
+        await externalCommit({}, ["apps/foo/mako.json"], "delete newcomer");
+        expect(await who("foo")).toBe("apps/bar via=alias");
+        expect(await supersededOf("apps/bar")).toEqual([]);
+        expect(await rebuilt("foo")).toBe("apps/bar via=alias");
+      });
+    }
+  }
 });
 
 describe("a name reused by an id-less app", () => {
