@@ -31,6 +31,28 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
+// A stand-in mirror: when `mirror.main` is set, only that commit verifies
+// as the mirror's main (what `assertTreeAtMirrorMain` would learn from
+// `ls-remote`); unset, the real function runs (no mirror → every tree
+// verifies, the local repo being the store).
+const mirror = vi.hoisted(() => ({ main: null as string | null }));
+vi.mock("../apps/cloud-repo.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/cloud-repo.service")>();
+  return {
+    ...actual,
+    assertTreeAtMirrorMain: async (workspaceId: string, sha: string) => {
+      if (mirror.main === null) {
+        return actual.assertTreeAtMirrorMain(workspaceId, sha);
+      }
+      if (sha !== mirror.main) {
+        throw new actual.TreeNotVerifiedError(
+          `Refusing: read at ${sha.slice(0, 8)} but the mirror's main is ${mirror.main.slice(0, 8)}`,
+        );
+      }
+    },
+  };
+});
 const inngestSent = vi.hoisted(() => [] as Array<{ name: string }>);
 // A hook right before the stream reconcile: lets a test land a rename in the
 // window between the sync reading its tree/rows and acting on them.
@@ -156,6 +178,11 @@ afterAll(async () => {
 beforeEach(async () => {
   WS = new Types.ObjectId().toString();
   inngestSent.length = 0;
+  mirror.main = null;
+  // Cases that want the connected tier set this themselves; it must not
+  // leak between cases (with it set and no reachable mirror, nothing
+  // verifies, and teardowns are silently deferred).
+  delete process.env.APPS_CONNECTED_REPO_PUSH;
   await Promise.all([
     Flow.deleteMany({}),
     CdcEntityState.deleteMany({}),
@@ -1004,7 +1031,8 @@ describe("round 2: lost and racing renames", () => {
     });
 
     // Within the window: the row is kept as renamed, nothing created.
-    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    // (No mirror here, so the tree verifies as current — the case where
+    // the expired guard is resolved by the tree rather than kept.)
     const early = await syncFlowsFromRepo(WS, "u1");
     expect(early.created).toBe(0);
     expect((await Flow.find({ workspaceId: WS })).map(r => r.slug)).toEqual([
@@ -1395,3 +1423,268 @@ describe("round 4: non-UTF-8 files, invalid rows saving their last valid definit
     expect((await commitFlowFile(reloaded!, "u1")).ok).toBe(true);
   });
 });
+
+describe("final: a rename whose commit is not on the mirror yet, seen from another instance", () => {
+  /** The realadvisor files' shape: parse→serialize does NOT round-trip it. */
+  function authoredYaml(name: string): string {
+    return [
+      `name: ${name}`,
+      "type: webhook",
+      "source:",
+      "  type: connector",
+      `  connection_id: ${CONNECTOR}`,
+      "destination:",
+      `  connection_id: ${DEST}`,
+      "  table:",
+      `    connection_id: ${DEST}`,
+      "    schema: raw_a",
+      "    create_if_not_exists: true",
+      "backfill_schedule:",
+      "  # nightly users re-pull",
+      "  cron: 0 3 * * *",
+      "  timezone: UTC",
+      "webhook:",
+      "  enabled: true",
+      "sync:",
+      "  mode: incremental",
+      "  write_mode: append_dedup",
+      "  engine: cdc",
+      "  batch_size: 2000",
+      "entities:",
+      "  layouts:",
+      "    - entity: leads",
+      "      label: Leads",
+      "      partitionField: _syncedAt",
+      "      partitionGranularity: day",
+      "      enabled: true",
+      "      _id: 69c781737eb58b93e5ac3386",
+      "",
+    ].join("\n");
+  }
+
+  /** Instance B: main at `commit`, and the objects it never fetched gone. */
+  async function becomeStaleInstance(commit: string): Promise<void> {
+    const { runGit } = await import("../apps/git");
+    const dir = repoDirFor(WS);
+    await runGit([
+      "-C",
+      dir,
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      commit,
+    ]);
+    await runGit(["-C", dir, "reflog", "expire", "--expire=now", "--all"]);
+    await runGit(["-C", dir, "gc", "--prune=now", "-q"]);
+  }
+
+  it("[final-1a] the renaming instance does not retire the guard while its commit is only on its own main", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/foo.yml": authoredYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    const pre = (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+    // The mirror still has `pre`: a push notification handled on this
+    // instance (local main ahead, as fetchFromCloud keeps it).
+    mirror.main = pre;
+    await syncFlowsFromRepo(WS, "u1");
+    expect((await Flow.findById(row!._id))?.lastRenameCommit).toBe(
+      renamed.commit,
+    );
+    // Once the mirror has the commit, the guard retires.
+    mirror.main = renamed.commit as string;
+    await syncFlowsFromRepo(WS, "u1");
+    expect((await Flow.findById(row!._id))?.lastRenameCommit).toBeUndefined();
+    expect((await Flow.find({ workspaceId: WS })).map(r => r.slug)).toEqual([
+      "bar",
+    ]);
+  });
+
+  it("[final-1b] a stale instance keeps the renamed row while the guard holds, and never tears it down even without one", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { runGit } = await import("../apps/git");
+    await push({ "flows/foo.yml": authoredYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const orig = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    await seedRuntime(orig!._id);
+    const dir = repoDirFor(WS);
+    const pre = (await resolveCommit(
+      dir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+    const renamedTree = (
+      await runGit(["-C", dir, "rev-parse", `${renamed.commit}^{tree}`])
+    ).stdout.trim();
+    void renamedTree;
+
+    // Instance B: its main is the mirror's (`pre`), the commit's objects
+    // never fetched. The guard is still on (1a): the row is kept.
+    await becomeStaleInstance(pre);
+    mirror.main = pre;
+    const guardedSync = await syncFlowsFromRepo(WS, "u2");
+    expect(guardedSync.created).toBe(0);
+    expect(
+      (await Flow.find({ workspaceId: WS })).map(r => [
+        r._id.toString(),
+        r.slug,
+      ]),
+    ).toEqual([[orig!._id.toString(), "bar"]]);
+    expect(await runtimeCounts(orig!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+
+    // The reviewer's case: the guard is GONE (retired early, expired, or
+    // never recorded). Git pairing is impossible here (the blob was never
+    // fetched) and the authored file does not round-trip, so no rule pairs
+    // them — and the file at the old name is still the same stream (same
+    // source + destination). On the mirror's main that is a rename back:
+    // the row follows its file. Same id, same checkpoints, no create.
+    await Flow.updateOne(
+      { _id: orig!._id },
+      { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
+    );
+    const unguardedSync = await syncFlowsFromRepo(WS, "u2");
+    expect(unguardedSync.created).toBe(0);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [orig!._id.toString(), "foo"],
+    ]);
+    expect(rows[0].aliases).toEqual(["bar"]);
+    expect(await runtimeCounts(orig!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+
+    // When the rename commit finally lands on the mirror (bar.yml with
+    // `aliases: [foo]`), the row follows it forward — still the same id.
+    await Flow.updateOne(
+      { _id: orig!._id },
+      { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
+    );
+    const landed = editAliases(authoredYaml("Foo"), ["foo"]);
+    await move("foo", "bar", landed);
+    mirror.main = (await resolveCommit(
+      dir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    await syncFlowsFromRepo(WS, "u2");
+    const after = await Flow.find({ workspaceId: WS });
+    expect(after.map(r => [r._id.toString(), r.slug])).toEqual([
+      [orig!._id.toString(), "bar"],
+    ]);
+    expect(await runtimeCounts(orig!._id)).toEqual([1, 1, 1]);
+  });
+
+  it("[final-1c] on a tree that cannot be verified, the same-stream file at the old name keeps the row as it is (no flip, no create, no teardown)", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/foo.yml": authoredYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const orig = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    await seedRuntime(orig!._id);
+    const pre = (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+    await becomeStaleInstance(pre);
+    await Flow.updateOne(
+      { _id: orig!._id },
+      { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
+    );
+    // Nothing verifies this tree (the mirror reports some other main).
+    mirror.main = renamed.commit as string;
+    const result = await syncFlowsFromRepo(WS, "u2");
+    expect(result.created).toBe(0);
+    expect(
+      (await Flow.find({ workspaceId: WS })).map(r => [
+        r._id.toString(),
+        r.slug,
+      ]),
+    ).toEqual([[orig!._id.toString(), "bar"]]);
+    expect(await runtimeCounts(orig!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+    // …and an UNRELATED file reusing the old name (different target) is a
+    // new flow regardless (round-2 #5 holds).
+    const OTHER = new Types.ObjectId().toString();
+    await push({
+      "flows/foo.yml": authoredYaml("Other foo").replace(
+        `connection_id: ${CONNECTOR}`,
+        `connection_id: ${OTHER}`,
+      ),
+    });
+    const other = await syncFlowsFromRepo(WS, "u2");
+    expect(other.created).toBe(1);
+    expect(
+      (await Flow.findOne({ workspaceId: WS, slug: "foo" }))?._id.toString(),
+    ).not.toBe(orig!._id.toString());
+  });
+
+  it("[final-2] a run on an instance whose cache predates the rename refuses the run but keeps the schedules on", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { runGit } = await import("../apps/git");
+    await push({
+      "flows/foo.yml": flowYaml("Foo").replace(
+        "webhook:\n",
+        "schedule:\n  cron: 0 * * * *\n  timezone: UTC\nwebhook:\n",
+      ),
+    });
+    await syncFlowsFromRepo(WS, "u1");
+    const before = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    expect(before!.schedule?.enabled).toBe(true);
+    expect(before!.backfillSchedule?.enabled).toBe(true);
+    const dir = repoDirFor(WS);
+    const pre = (await resolveCommit(
+      dir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+    // Instance B's cache: main still at `pre` (what the consumer / the
+    // inngest flow function read through).
+    await runGit([
+      "-C",
+      dir,
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    const loaded = await Flow.findById(before!._id).lean();
+    const freshness = await ensureFlowDerivedCache(loaded!);
+    expect(freshness).toBe("missing"); // this run is refused…
+    const after = await Flow.findById(before!._id);
+    expect(after!.schedule?.enabled).toBe(true); // …but nothing is switched off
+    expect(after!.backfillSchedule?.enabled).toBe(true);
+    expect(isFlowMarkedInvalid(after!)).toBe(false);
+    // The cache catches up: the next run is fine without anyone opening it.
+    await runGit([
+      "-C",
+      dir,
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      renamed.commit as string,
+    ]);
+    expect(
+      await ensureFlowDerivedCache((await Flow.findById(before!._id))!),
+    ).toBe("ok");
+  });
+});
+
+/** `aliases:` inserted after `name:` the way the rename service writes it. */
+function editAliases(contents: string, aliases: string[]): string {
+  return contents.replace(
+    /^(name: .*\n)/,
+    `$1aliases:\n${aliases.map(a => `  - ${a}\n`).join("")}`,
+  );
+}

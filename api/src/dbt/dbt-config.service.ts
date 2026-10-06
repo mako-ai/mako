@@ -61,6 +61,7 @@ import {
 import { parseDbtCommands } from "./commands";
 import { applyJobScheduleChange } from "./dbt-run.service";
 import {
+  currentTreeCheck,
   detectGitRenames,
   isAncestorCommit,
   mergedAliases,
@@ -183,12 +184,26 @@ async function settleJobRenameGuards(args: {
   repoDir: string;
   head: string;
   fileSlugs: ReadonlySet<string>;
+  /** See `currentTreeCheck`: only the mirror's main may retire a guard. */
+  treeIsCurrent: () => Promise<boolean>;
 }): Promise<void> {
-  const { workspaceId, projectId, repoDir, head, fileSlugs } = args;
+  const { workspaceId, projectId, repoDir, head, fileSlugs, treeIsCurrent } =
+    args;
   const guarded = await DbtJob.find({
     projectId,
     lastRenameCommit: { $exists: true },
   });
+  if (guarded.length === 0) return;
+  // Only a tree every instance agrees on may retire a guard (see
+  // flow-sync.service.ts): the renaming instance's local main has the
+  // commit before the mirror does, and the dbt sync does not even freshen.
+  if (!(await treeIsCurrent())) {
+    logger.info(
+      "Tree not verified as the mirror's main; keeping job rename guards",
+      { workspaceId, head, guarded: guarded.map(row => row.slug) },
+    );
+    return;
+  }
   for (const row of guarded) {
     const clear = () =>
       DbtJob.updateOne(
@@ -799,14 +814,33 @@ export async function reserveJobSlug(
   name: string,
 ): Promise<string> {
   const base = slugifyJobName(name);
+  // Rows alone are not the identity space (same rule as `reserveFlowSlug`):
+  // a file at main with no row yet — pushed from a laptop and not synced,
+  // or broken — is a job too, and a create landing on its slug would be
+  // refused by the create-time compare-and-swap with a misleading "the
+  // file changed", every time.
+  const project = await DbtProject.findById(projectId)
+    .select("workspaceId")
+    .lean();
+  const takenAtMain = new Set(
+    project
+      ? (await listJobDefinitionsAtMain(project.workspaceId.toString())).map(
+          def => def.slug,
+        )
+      : [],
+  );
   let slug = base;
   for (let i = 2; i < 100; i++) {
     // An old name of a renamed job is taken too: a new job under it would
     // win every lookup (current beats alias) and strand the old links.
-    const taken = await DbtJob.exists({
-      projectId,
-      $or: [{ slug }, { aliases: slug }],
-    });
+    const taken =
+      takenAtMain.has(slug) ||
+      Boolean(
+        await DbtJob.exists({
+          projectId,
+          $or: [{ slug }, { aliases: slug }],
+        }),
+      );
     if (!taken) return slug;
     slug = `${base}-${i}`;
   }
@@ -861,8 +895,10 @@ export async function rekeyRenamedJobs(args: {
   /** The commit `files` were read at. */
   head: string;
   files: Array<{ path: string; contents: string; oid: string }>;
+  /** See `rekeyRenamedFlows`: a rename BACK is honoured only on the mirror's main. */
+  treeIsCurrent?: () => Promise<boolean>;
 }): Promise<SlugRenamePair[]> {
-  const { workspaceId, projectId, repoDir, head, files } = args;
+  const { workspaceId, projectId, repoDir, head, files, treeIsCurrent } = args;
   const fileBySlug = new Map<
     string,
     { path: string; contents: string; oid: string }
@@ -955,6 +991,17 @@ export async function rekeyRenamedJobs(args: {
   for (const pair of pairing.pairs) {
     const row = rowBySlug.get(pair.from);
     if (!row) continue;
+    if (
+      (row.aliases ?? []).includes(pair.to) &&
+      treeIsCurrent &&
+      !(await treeIsCurrent())
+    ) {
+      logger.info(
+        "dbt job would be renamed back to an old name on an unverified tree; keeping it",
+        { workspaceId, from: pair.from, to: pair.to, via: pair.via },
+      );
+      continue;
+    }
     try {
       await rekeyJobSlug(row._id, pair.from, pair.to, head);
       done.push(pair);
@@ -1158,6 +1205,13 @@ async function syncDbtConfigNow(
     const slug = slugFromJobFilePath(path);
     if (slug) fileSlugs.add(slug);
   }
+  const treeIsCurrent = currentTreeCheck(workspaceId, head, reason => {
+    logger.info("dbt job sync tree is not the mirror's current main", {
+      workspaceId,
+      head,
+      reason,
+    });
+  });
   try {
     await settleJobRenameGuards({
       workspaceId,
@@ -1165,6 +1219,7 @@ async function syncDbtConfigNow(
       repoDir,
       head,
       fileSlugs,
+      treeIsCurrent,
     });
   } catch (error) {
     logger.warn("dbt job rename guards could not be settled", {
@@ -1181,6 +1236,7 @@ async function syncDbtConfigNow(
       projectId: project._id,
       repoDir,
       head,
+      treeIsCurrent,
       files: [...blobs].map(([path, buf]) => ({
         path,
         contents: buf.toString("utf8"),
@@ -1201,7 +1257,7 @@ async function syncDbtConfigNow(
     const contents = buf.toString("utf8");
     // Git's id from the raw bytes, never a hash of the decoded text.
     const sha = blobOid(buf);
-    const row = await DbtJob.findOne({ projectId: project._id, slug });
+    let row = await DbtJob.findOne({ projectId: project._id, slug });
     // Level already — unless the row is still flagged from an earlier bad
     // version and the file was reverted to this exact content, in which
     // case the marker must clear.
@@ -1237,7 +1293,6 @@ async function syncDbtConfigNow(
       if (row) await markJobInvalid(row, failure, path, sha);
       continue;
     }
-    const scheduleChanged = !row || scheduleDiffers(row, parsed);
     // A file at a slug some row holds as an ALIAS: a new job taking an old
     // name (current wins; the old row loses the alias below), unless this
     // tree predates that row's rename commit — then the old file is just
@@ -1247,22 +1302,38 @@ async function syncDbtConfigNow(
       const claimant = await DbtJob.findOne({
         projectId: project._id,
         aliases: slug,
-      })
-        .select("_id slug lastRenameCommit lastRenameAt")
-        .lean();
-      if (
-        claimant?.slug &&
-        (await jobRenameGuardActive(repoDir, head, claimant))
-      ) {
-        logger.info("Tree predates a job rename; keeping the renamed row", {
-          workspaceId,
-          path,
-          renamedTo: claimant.slug,
-        });
-        seenSlugs.add(claimant.slug);
-        continue;
+      });
+      if (claimant?.slug) {
+        const guarded = await jobRenameGuardActive(repoDir, head, claimant);
+        // Same job under its old name (same environment and commands, and
+        // its current file absent from this tree): a stale tree, or the
+        // file moved back — told apart by whether the tree is the mirror's
+        // main; unknown → keep the row (see flow-sync.service.ts).
+        const sameJob =
+          !fileSlugs.has(claimant.slug) &&
+          jobRenameTarget(jobToFile(claimant)) === jobRenameTarget(parsed);
+        const keep = guarded || (sameJob && !(await treeIsCurrent()));
+        if (keep) {
+          logger.info("Tree predates a job rename; keeping the renamed row", {
+            workspaceId,
+            path,
+            renamedTo: claimant.slug,
+            guarded,
+          });
+          seenSlugs.add(claimant.slug);
+          continue;
+        }
+        if (sameJob) {
+          logger.warn(
+            "dbt job file is back under an old name; re-keying the row to it",
+            { workspaceId, path, from: claimant.slug, to: slug },
+          );
+          await rekeyJobSlug(claimant._id, claimant.slug, slug, head);
+          row = await DbtJob.findById(claimant._id);
+        }
       }
     }
+    const scheduleChanged = !row || scheduleDiffers(row, parsed);
     const doc =
       row ??
       new DbtJob({

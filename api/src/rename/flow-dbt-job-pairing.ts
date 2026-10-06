@@ -39,6 +39,10 @@ import path from "node:path";
 import yaml from "js-yaml";
 
 import { runGit } from "../apps/git";
+import {
+  TreeNotVerifiedError,
+  assertTreeAtMirrorMain,
+} from "../apps/cloud-repo.service";
 
 /** A slug whose file is gone from the tree but whose row still exists. */
 export interface RemovedSlug {
@@ -388,4 +392,41 @@ export async function isAncestorCommit(
   } catch {
     return false;
   }
+}
+
+/**
+ * "Is the tree I am judging the mirror's current main?" — answered at most
+ * once per sync, and only when something actually needs it (it is an
+ * `ls-remote`). The renaming instance's local main is AHEAD of the mirror
+ * until its push lands (`fetchFromCloud` keeps a local-ahead main), so a
+ * commit being in `head`'s history proves nothing about what other
+ * instances see; the mirror's main is the only tree every instance agrees
+ * on. A workspace with no mirror answers yes (the local repo is the store).
+ * Anything that cannot be verified answers no — and "no" never tears
+ * anything down, it only keeps rows as they are.
+ */
+export function currentTreeCheck(
+  workspaceId: string,
+  head: string,
+  onUnverified?: (reason: string) => void,
+): () => Promise<boolean> {
+  let memo: Promise<boolean> | undefined;
+  return () => {
+    memo ??= (async () => {
+      try {
+        await assertTreeAtMirrorMain(workspaceId, head);
+        return true;
+      } catch (error) {
+        onUnverified?.(
+          error instanceof TreeNotVerifiedError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
+        return false;
+      }
+    })();
+    return memo;
+  };
 }

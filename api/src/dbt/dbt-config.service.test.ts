@@ -15,6 +15,26 @@ import {
   vi,
 } from "vitest";
 
+// A stand-in mirror (see flow-sync.repo.test.ts): when set, only that
+// commit verifies as the mirror's main; unset, the real check runs.
+const mirror = vi.hoisted(() => ({ main: null as string | null }));
+vi.mock("../apps/cloud-repo.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/cloud-repo.service")>();
+  return {
+    ...actual,
+    assertTreeAtMirrorMain: async (workspaceId: string, sha: string) => {
+      if (mirror.main === null) {
+        return actual.assertTreeAtMirrorMain(workspaceId, sha);
+      }
+      if (sha !== mirror.main) {
+        throw new actual.TreeNotVerifiedError(
+          `Refusing: read at ${sha.slice(0, 8)} but the mirror's main is ${mirror.main.slice(0, 8)}`,
+        );
+      }
+    },
+  };
+});
 // A hook inside the sync's per-job schedule registration: lets a test land
 // a rename while a push sync is between reading its tree and sweeping.
 const scheduleHook = vi.hoisted(() => ({
@@ -94,6 +114,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  mirror.main = null;
   await Promise.all([DbtProject.deleteMany({}), DbtJob.deleteMany({})]);
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await initRepo(repoDirFor(WS.toString()), { "README.md": "x\n" });
@@ -1072,6 +1093,104 @@ describe("round 4: a non-UTF-8 job file is stored under git's own oid", () => {
       "Café nightly (edited)",
     );
   }, 90_000);
+});
+
+describe("final: a job rename whose commit is not on the mirror yet; creating onto a git-only slug", () => {
+  const file = (name: string) =>
+    `name: ${name}\nenvironment: prod\ncommands:\n  - build --select x\nschedule:\n  cron: "0 6 * * *"\n  timezone: UTC\n`;
+  const c = (writes: Record<string, string>) =>
+    commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes },
+      { message: "push" },
+    );
+
+  it("[final-1] the guard is not retired on the renaming instance's own main; a stale instance never deletes the renamed job", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { runGit } = await import("../apps/git");
+    const project = await seedProject();
+    await c({ [jobFilePath("nightly")]: file("Nightly") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const orig = (await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly",
+    }))!;
+    const dir = repoDirFor(WS.toString());
+    const pre = (await resolveCommit(dir, MAIN)) as string;
+    const renamed = await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "nightly", slug: "nightly-2" },
+    );
+    // Instance A, mirror still at `pre`: guard kept.
+    mirror.main = pre;
+    await syncDbtConfigFromRepo(WS.toString());
+    expect((await DbtJob.findById(orig._id))?.lastRenameCommit).toBe(
+      renamed.commit,
+    );
+
+    // Instance B on the mirror's main, objects never fetched: kept.
+    await runGit(["-C", dir, "update-ref", MAIN, pre]);
+    await runGit(["-C", dir, "reflog", "expire", "--expire=now", "--all"]);
+    await runGit(["-C", dir, "gc", "--prune=now", "-q"]);
+    await syncDbtConfigFromRepo(WS.toString());
+    expect(
+      (await DbtJob.find({ projectId: project._id })).map(r => [
+        r._id.toString(),
+        r.slug,
+      ]),
+    ).toEqual([[orig._id.toString(), "nightly-2"]]);
+
+    // Guard gone (the reviewer's case): on the mirror's main the file under
+    // the old name is the same job → rename back, same id; no delete, no
+    // second row.
+    await DbtJob.updateOne(
+      { _id: orig._id },
+      { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [orig._id.toString(), "nightly"],
+    ]);
+    // On a tree that does NOT verify: kept as is instead.
+    await DbtJob.updateOne(
+      { _id: orig._id },
+      { $set: { slug: "nightly-2", aliases: ["nightly"] } },
+    );
+    mirror.main = renamed.commit as string;
+    await syncDbtConfigFromRepo(WS.toString());
+    expect(
+      (await DbtJob.find({ projectId: project._id })).map(r => [
+        r._id.toString(),
+        r.slug,
+      ]),
+    ).toEqual([[orig._id.toString(), "nightly-2"]]);
+  }, 90_000);
+
+  it("[final-3] a UI create whose slug is a git-only (broken) file at main reserves the next free slug", async () => {
+    const project = await seedProject();
+    await c({
+      [jobFilePath("nightly")]:
+        "name: Nightly\nenvironment: prod\ncommands: oops-not-a-list\n",
+    });
+    await syncDbtConfigFromRepo(WS.toString());
+    const slug = await reserveJobSlug(project._id, "Nightly");
+    expect(slug).toBe("nightly-2");
+    const job = new DbtJob({
+      workspaceId: project.workspaceId,
+      projectId: project._id,
+      slug,
+      name: "Nightly",
+      environment: "prod",
+      commands: ["build"],
+      enabled: true,
+      createdBy: "u1",
+    });
+    await expect(commitDbtJobFile(project, job, "u1")).resolves.toBeUndefined();
+    expect(await fileAt(jobFilePath("nightly-2"))).toContain("name: Nightly");
+    expect(await fileAt(jobFilePath("nightly"))).toContain("oops-not-a-list");
+  });
 });
 
 describe("adoption", () => {

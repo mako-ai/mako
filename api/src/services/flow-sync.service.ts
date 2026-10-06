@@ -48,6 +48,7 @@ import {
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
+  freshenForServe,
 } from "../apps/cloud-repo.service";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { getWorkspaceRepo } from "./workspace-repos.service";
@@ -67,6 +68,7 @@ import {
   type DesiredFlow,
 } from "../sync-cdc/flow-reconcile";
 import {
+  currentTreeCheck,
   detectGitRenames,
   isAncestorCommit,
   mergedAliases,
@@ -483,26 +485,51 @@ export async function ensureFlowDerivedCache(flow: {
   if (repoDir == null) {
     return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
   }
-  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!head) return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
   const path = `flows/${flow.slug}.yml`;
-  let contents: string;
-  let sha: string;
-  try {
-    const blob = await readBlob(repoDir, head, path);
-    if (blob.isBinary) {
-      const row = await Flow.findById(flow._id);
-      if (row) await markFlowInvalid(row, "binary flow file", path, blob.oid);
-      return "invalid";
+  const readAtMain = async () => {
+    const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+    if (!head) return null;
+    try {
+      return await readBlob(repoDir, head, path);
+    } catch {
+      return null;
     }
-    contents = blob.contents;
-    // Git's id from the raw bytes, never a hash of the decoded text.
-    sha = blob.oid;
-  } catch {
-    const row = await Flow.findById(flow._id);
-    if (row) await markFlowInvalid(row, "flow file missing at main", path);
+  };
+  let blob = await readAtMain();
+  if (blob === null) {
+    // "Missing" on THIS instance's cache is not "deleted": a run or a CDC
+    // consumer lands here on whichever instance picks it up, and that
+    // instance's local main may predate a rename made elsewhere (the file
+    // now lives under the new slug). Fetch once and look again before
+    // concluding anything.
+    try {
+      await freshenForServe(workspaceId, 0);
+    } catch (error) {
+      logger.warn("Could not freshen before judging a missing flow file", {
+        workspaceId,
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    blob = await readAtMain();
+  }
+  if (blob === null) {
+    // Still not here: refuse THIS run (the callers skip on "missing") and
+    // change nothing on the row. Marking it invalid used to switch its
+    // schedules off, which nothing switched back on when the cache caught
+    // up — a scheduled-only flow nobody opened stayed off. A flow whose file
+    // is really gone from main is torn down by the push sync; a stale cache
+    // is not a reason to disable anything.
     return "missing";
   }
+  if (blob.isBinary) {
+    const row = await Flow.findById(flow._id);
+    if (row) await markFlowInvalid(row, "binary flow file", path, blob.oid);
+    return "invalid";
+  }
+  const contents = blob.contents;
+  // Git's id from the raw bytes, never a hash of the decoded text.
+  const sha = blob.oid;
   const wasMarked = isFlowMarkedInvalid(flow);
   if (flow.sourceBlobSha === sha && !wasMarked) return "ok";
   const parsed = parseFlowFile(contents);
@@ -788,12 +815,31 @@ async function settleRenameGuards(args: {
   repoDir: string;
   head: string;
   fileSlugs: ReadonlySet<string>;
+  /** See `currentTreeCheck`: only the mirror's main may retire a guard. */
+  treeIsCurrent: () => Promise<boolean>;
 }): Promise<void> {
-  const { workspaceId, repoDir, head, fileSlugs } = args;
+  const { workspaceId, repoDir, head, fileSlugs, treeIsCurrent } = args;
   const guarded = await Flow.find({
     workspaceId,
     lastRenameCommit: { $exists: true },
   });
+  if (guarded.length === 0) return;
+  // The renaming instance's own main contains its rename commit before the
+  // mirror does: judged there, every guard would be retired on the spot and
+  // the other instances — still on the mirror's main — would see no guard,
+  // no commit, and a flow to create and tear down. Only a tree every
+  // instance agrees on may retire a guard; anything else keeps them all.
+  if (!(await treeIsCurrent())) {
+    logger.info(
+      "Tree not verified as the mirror's main; keeping rename guards",
+      {
+        workspaceId,
+        head,
+        guarded: guarded.map(row => row.slug),
+      },
+    );
+    return;
+  }
   for (const row of guarded) {
     const clear = () =>
       Flow.updateOne(
@@ -882,6 +928,16 @@ async function dropAliasesClaimedElsewhere(
   return [...claimed];
 }
 
+/** Whether a row and a file point at the same source and destination. */
+function sameFlowTarget(row: IFlow, file: FlowFile): boolean {
+  try {
+    const rowTarget = flowRenameTarget(flowToFile(row));
+    return rowTarget !== null && rowTarget === flowRenameTarget(file);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Laptop rename detection (graceful rename, rule 3 of api/src/rename): pair
  * every row whose file is gone with a file that has no row, and re-key the
@@ -897,8 +953,15 @@ export async function rekeyRenamedFlows(args: {
   /** The commit `files` were read at. */
   head: string;
   files: Array<{ path: string; contents: string; oid: string }>;
+  /**
+   * See `currentTreeCheck`. A pair that would move a row BACK to one of its
+   * own old names is honoured only on the mirror's main: on any other tree
+   * it is far likelier a view that predates the rename than a real move
+   * back, and the row is left as it is. Absent → every tree counts.
+   */
+  treeIsCurrent?: () => Promise<boolean>;
 }): Promise<SlugRenamePair[]> {
-  const { workspaceId, repoDir, head, files } = args;
+  const { workspaceId, repoDir, head, files, treeIsCurrent } = args;
   const fileBySlug = new Map<
     string,
     { path: string; contents: string; oid: string }
@@ -1007,6 +1070,17 @@ export async function rekeyRenamedFlows(args: {
   for (const pair of pairing.pairs) {
     const row = rowBySlug.get(pair.from);
     if (!row) continue;
+    if (
+      (row.aliases ?? []).includes(pair.to) &&
+      treeIsCurrent &&
+      !(await treeIsCurrent())
+    ) {
+      logger.info(
+        "Flow would be renamed back to an old name on an unverified tree; keeping it",
+        { workspaceId, from: pair.from, to: pair.to, via: pair.via },
+      );
+      continue;
+    }
     try {
       await rekeyFlowSlug(row._id as Types.ObjectId, pair.from, pair.to, head);
       done.push(pair);
@@ -1229,8 +1303,21 @@ export async function syncFlowsFromRepo(
   // Ids for files with no row are derived from the slug; a row of another
   // slug may already hold one (a renamed git-born flow), so the free
   // derivation is decided against the rows as they stand.
+  const treeIsCurrent = currentTreeCheck(workspaceId, head, reason => {
+    logger.info("Flow sync tree is not the mirror's current main", {
+      workspaceId,
+      head,
+      reason,
+    });
+  });
   try {
-    await settleRenameGuards({ workspaceId, repoDir, head, fileSlugs });
+    await settleRenameGuards({
+      workspaceId,
+      repoDir,
+      head,
+      fileSlugs,
+      treeIsCurrent,
+    });
   } catch (error) {
     logger.warn("Flow rename guards could not be settled", {
       workspaceId,
@@ -1239,7 +1326,13 @@ export async function syncFlowsFromRepo(
   }
   const idRows = await Flow.find({ workspaceId }).select("_id slug").lean();
   try {
-    await rekeyRenamedFlows({ workspaceId, repoDir, head, files });
+    await rekeyRenamedFlows({
+      workspaceId,
+      repoDir,
+      head,
+      files,
+      treeIsCurrent,
+    });
   } catch (error) {
     logger.warn("Flow rename detection failed; syncing by slug only", {
       workspaceId,
@@ -1256,7 +1349,7 @@ export async function syncFlowsFromRepo(
     // stores must be what the repo answers to.
     const sha = oid;
     const parsedForDesired = parseFlowFile(contents);
-    const row = await Flow.findOne({ workspaceId, slug });
+    let row = await Flow.findOne({ workspaceId, slug });
     // The desired set is EVERY file present, not only the changed ones: the
     // reconciler derives removals from it, so omitting an unchanged file would
     // read as "this flow was deleted" and tear down a live stream.
@@ -1314,8 +1407,6 @@ export async function syncFlowsFromRepo(
       continue;
     }
 
-    const isNew = !row;
-    const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
     // A file at a slug some row holds as an ALIAS is either a new flow
     // taking an old name (legitimate: current wins, the old row loses the
     // alias below) or a tree read before that row's recent rename commit
@@ -1324,30 +1415,55 @@ export async function syncFlowsFromRepo(
     // and the next push, which contains the rename, reconciles. Only a
     // recorded, recent, not-yet-landed rename says so (`renameGuardActive`).
     if (!row) {
-      const claimant = await Flow.findOne({ workspaceId, aliases: slug })
-        .select("_id slug aliases lastRenameCommit lastRenameAt")
-        .lean();
-      if (
-        claimant?.slug &&
-        (await renameGuardActive(repoDir, head, claimant))
-      ) {
-        logger.info("Tree predates a flow rename; keeping the renamed row", {
-          workspaceId,
-          path,
-          renamedTo: claimant.slug,
-        });
-        const kept = await Flow.findById(claimant._id);
-        if (kept) {
-          desired.push({
-            slug: kept.slug as string,
-            file: flowToFile(kept),
-            flowId: String(kept._id),
+      const claimant = await Flow.findOne({ workspaceId, aliases: slug });
+      if (claimant?.slug) {
+        const guarded = await renameGuardActive(repoDir, head, claimant);
+        // The same stream under its old name: the file points at the same
+        // source and destination as the row that used to be called this,
+        // and the row's current file is not in this tree. Either this tree
+        // predates the rename (a guard says so, or the guard was retired
+        // early / expired / never recorded) or the file was really moved
+        // back. The two are told apart by whether the tree is the mirror's
+        // main — and when that cannot be known, the row is kept as it is:
+        // a name flip is recoverable, a teardown (checkpoints, executions,
+        // webhook URL) is not. An unrelated file that merely reuses the
+        // name (a different target) is created normally.
+        const sameStream =
+          !fileSlugs.has(claimant.slug) && sameFlowTarget(claimant, parsed);
+        const keep = guarded || (sameStream && !(await treeIsCurrent()));
+        if (keep) {
+          logger.info("Tree predates a flow rename; keeping the renamed row", {
+            workspaceId,
+            path,
+            renamedTo: claimant.slug,
+            guarded,
           });
+          desired.push({
+            slug: claimant.slug,
+            file: flowToFile(claimant),
+            flowId: String(claimant._id),
+          });
+          result.unchanged++;
+          continue;
         }
-        result.unchanged++;
-        continue;
+        if (sameStream) {
+          // The mirror's main says the file lives under the old name again:
+          // a rename back (a lost rename commit, or a laptop `git mv`). The
+          // row follows its file — same id, same checkpoints.
+          logger.warn(
+            "Flow file is back under an old name; re-keying the row to it",
+            { workspaceId, path, from: claimant.slug, to: slug },
+          );
+          await rekeyFlowSlug(claimant._id, claimant.slug, slug, head);
+          row = await Flow.findById(claimant._id);
+          if (row) {
+            desired.push({ slug, file: parsed, flowId: String(row._id) });
+          }
+        }
       }
     }
+    const isNew = !row;
+    const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
     const doc =
       row ??
       new Flow({
