@@ -6,6 +6,7 @@ import {
   consolePlacement,
   consoleSectionLabel,
   renameMoveNotice,
+  renameMoveRequest,
   locateInConsoleTree,
   relocationScope,
 } from "./console-relocation";
@@ -118,6 +119,96 @@ describe("relocationScope — the server's visibility rule, as the dialog applie
       spot: { section: "workspace", folderId: null },
     });
     expect(scope.kind).toBe("in-place");
+  });
+
+  it("a console the tree lists under neither My Consoles nor Workspace (Shared with me) is renamed in place — an admin's too", () => {
+    for (const who of [
+      { isOwner: false, isAdmin: true },
+      { isOwner: false, isAdmin: false },
+    ]) {
+      const scope = relocationScope({ ...who, access: "private", spot: null });
+      expect(scope.kind).toBe("in-place");
+      expect(scope.kind === "in-place" && scope.reason).toMatch(
+        /stays in its owner's folder/,
+      );
+    }
+  });
+});
+
+describe("renameMoveRequest — a name-only change never moves the console", () => {
+  const shared = relocationScope({
+    isOwner: false,
+    isAdmin: true,
+    access: "private",
+    spot: null,
+  });
+
+  it("an admin renaming a Shared-with-me console sends a rename, not a move to their own root", () => {
+    // The dialog opens on the admin's My Consoles root (folder null): the
+    // old confirm sent PATCH /move {folderId: null, name}, and the server
+    // moved the console out of its owner's "Team Drafts".
+    expect(
+      renameMoveRequest({
+        scope: shared,
+        from: null,
+        to: { section: "my", folderId: null },
+        renamedTo: "Q2",
+      }),
+    ).toEqual({ route: "rename", name: "Q2" });
+  });
+
+  it("the owner or an admin renaming in the same folder and section sends a rename (it keeps its folder)", () => {
+    const anywhere = relocationScope({
+      isOwner: true,
+      isAdmin: false,
+      spot: { section: "my", folderId: "f-drafts" },
+    });
+    expect(
+      renameMoveRequest({
+        scope: anywhere,
+        from: { section: "my", folderId: "f-drafts" },
+        to: { section: "my", folderId: "f-drafts" },
+        renamedTo: "Renamed",
+      }),
+    ).toEqual({ route: "rename", name: "Renamed" });
+  });
+
+  it("a changed folder or section is a move, with the new name when there is one", () => {
+    const anywhere = relocationScope({
+      isOwner: true,
+      isAdmin: false,
+      spot: { section: "my", folderId: "f-drafts" },
+    });
+    expect(
+      renameMoveRequest({
+        scope: anywhere,
+        from: { section: "my", folderId: "f-drafts" },
+        to: { section: "my", folderId: null },
+      }),
+    ).toEqual({ route: "move", folderId: null, section: "my" });
+    expect(
+      renameMoveRequest({
+        scope: anywhere,
+        from: { section: "my", folderId: null },
+        to: { section: "workspace", folderId: null },
+        renamedTo: "Shared",
+      }),
+    ).toEqual({
+      route: "move",
+      folderId: null,
+      section: "workspace",
+      name: "Shared",
+    });
+  });
+
+  it("nothing changed: nothing is sent", () => {
+    expect(
+      renameMoveRequest({
+        scope: shared,
+        from: null,
+        to: { section: "workspace", folderId: "f-x" },
+      }),
+    ).toBeNull();
   });
 });
 

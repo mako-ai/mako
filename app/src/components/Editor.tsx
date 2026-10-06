@@ -125,6 +125,7 @@ import {
   locateInConsoleTree,
   relocationScope,
   renameMoveNotice,
+  renameMoveRequest,
   type ConsoleTreeSpot,
 } from "../lib/console-relocation";
 import { generateObjectId } from "../utils/objectId";
@@ -2130,13 +2131,23 @@ function Editor({
     });
     const section: "my" | "workspace" =
       spot?.section ?? (tab.access === "workspace" ? "workspace" : "my");
+    const name = tab.title || consoleLeafName(tab.filePath);
+    // Where it is, in the breadcrumb's words — "Shared with me", never the
+    // owner's folder names.
+    const place = consolePlacement({
+      access: tab.access,
+      ownerId,
+      currentUserId: user?.id,
+      folders: consoleFolderTrail(tab.filePath ?? name, name),
+    });
     return {
       tab,
       spot,
       scope,
       section,
       folderId: spot?.folderId ?? null,
-      name: tab.title || consoleLeafName(tab.filePath),
+      name,
+      location: [place.section, ...place.folders].join(" › "),
     };
   })();
 
@@ -2151,34 +2162,36 @@ function Editor({
     const consoleId = ctx.tab.id;
     const renamedTo = newName && newName !== ctx.name ? newName : undefined;
     const tree = useConsoleTreeStore.getState();
-    let ok: boolean;
-    // Did the folder or section change? (A rename in place did not, and
-    // says "Renamed", wherever the console sits.)
-    let moved = false;
-    if (ctx.scope.kind === "in-place") {
-      // Its folder is not theirs to change (often one they cannot see):
-      // PATCH /rename keeps it.
-      if (!renamedTo) return;
-      ok = await tree.renameItem(
-        currentWorkspace.id,
-        consoleId,
-        renamedTo,
-        false,
-      );
-    } else {
-      // Re-scope only when the section actually changed (the owner's or an
-      // admin's call); the folder picked is honoured; one commit.
-      const access = accessForMove(ctx.section, section);
-      moved = targetFolderId !== ctx.folderId || access !== undefined;
-      if (!renamedTo && !moved) return;
-      ok = await tree.moveItem(
-        currentWorkspace.id,
-        consoleId,
-        targetFolderId,
-        access,
-        renamedTo,
-      );
-    }
+    // A name-only change is PATCH /rename, which keeps the console's
+    // folder — wherever it is, one this person may not see included; a
+    // move only when the folder or section changed (and the tree knows
+    // where it started). Re-scope only when the section changed (the
+    // owner's or an admin's call); one commit.
+    const request = renameMoveRequest({
+      scope: ctx.scope,
+      from: ctx.spot,
+      to: { section, folderId: targetFolderId },
+      renamedTo,
+    });
+    if (!request) return;
+    // Did the folder or section change? (A rename did not, and says
+    // "Renamed", wherever the console sits.)
+    const moved = request.route === "move";
+    const ok =
+      request.route === "rename"
+        ? await tree.renameItem(
+            currentWorkspace.id,
+            consoleId,
+            request.name,
+            false,
+          )
+        : await tree.moveItem(
+            currentWorkspace.id,
+            consoleId,
+            request.folderId,
+            accessForMove(ctx.section, request.section),
+            request.name,
+          );
     if (!ok) {
       // The server's reason (a name already taken there, a visibility
       // change that is not theirs) — the tree has already snapped back.
@@ -3340,7 +3353,7 @@ function Editor({
             ? renameMoveContext.scope.reason
             : null
         }
-        locationLabel={renameMoveContext?.tab.filePath}
+        locationLabel={renameMoveContext?.location}
         lockedSection={
           renameMoveContext?.scope.kind === "section"
             ? renameMoveContext.scope.section
