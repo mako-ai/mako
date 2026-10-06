@@ -150,7 +150,7 @@ objectRoutes.openapi(
           "application/json": {
             schema: z.object({
               ref: z.string().min(1).max(1000),
-              title: z.string().min(1).max(200).optional(),
+              title: z.string().min(1).max(1000).optional(),
               slug: z.string().min(1).max(500).optional(),
               options: z.record(z.string(), z.unknown()).optional(),
             }),
