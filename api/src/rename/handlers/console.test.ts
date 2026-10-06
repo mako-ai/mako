@@ -210,7 +210,7 @@ describe("rename", () => {
     expect(await treePaths()).not.toContain("consoles/Sales/EMEA/moving.sql");
   });
 
-  it("refuses a title with a slash, a foreign extension, a taken path, and a no-op", async () => {
+  it("refuses a title with a slash, a foreign extension, a taken path; a no-op succeeds", async () => {
     const a = await seed("a");
     await seed("b");
     const id = a._id.toString();
@@ -223,9 +223,10 @@ describe("rename", () => {
     await expect(
       renameObject(owner, "console", { ref: id, title: "b" }),
     ).rejects.toMatchObject({ status: 409 });
-    await expect(
-      renameObject(owner, "console", { ref: id, title: "a" }),
-    ).rejects.toMatchObject({ status: 409 });
+    // The same answer for every kind (registry.ts): nothing to do, no commit.
+    const noop = await renameObject(owner, "console", { ref: id, title: "a" });
+    expect(noop.warnings[0]).toMatch(/Nothing to change/);
+    expect(noop.commit).toBeUndefined();
     expect(await treePaths()).toEqual(
       expect.arrayContaining(["consoles/a.sql", "consoles/b.sql"]),
     );
