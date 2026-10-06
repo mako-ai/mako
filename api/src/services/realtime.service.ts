@@ -116,6 +116,15 @@ export type RealtimeEvent =
   // open flow stores refetch so a later form save does not write a stale
   // name back.
   | { type: "flow.updated"; flowId?: string; clientId?: string }
+  // A connection was renamed or edited (REST, the agent's rename_object,
+  // another window): open schema stores refetch the connection list, which
+  // the browser persists across reloads and otherwise keeps showing.
+  | {
+      type: "connection.updated";
+      connectionId: string;
+      connectionKind: "database" | "source";
+      clientId?: string;
+    }
   // A run was created/cancelled/retried — clients refetch run lists.
   | {
       type: "dbt.run.updated";
