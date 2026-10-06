@@ -457,6 +457,16 @@ export interface ISavedConsole extends Document {
   path?: string;
   sourceBlobSha?: string;
   /**
+   * The console's EARLIER lives in the repo, oldest first: each time it went
+   * to the trash, the file it had (`path`) and the commit that deleted it
+   * (`until`). A console restored from the trash comes back as a new file
+   * (an add), where its git history stops; its history routes walk each
+   * earlier life from `until` too. Only this row's own deletions are
+   * recorded, so another console that later takes the path never gains
+   * them.
+   */
+  historySegments?: Array<{ path: string; until: string }>;
+  /**
    * The blob the current description/embedding was derived from. Generation
    * runs only while this differs from `sourceBlobSha` (§16.4).
    */
@@ -1836,6 +1846,18 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     path: { type: String },
     sourceBlobSha: { type: String },
+    historySegments: {
+      type: [
+        new Schema(
+          {
+            path: { type: String, required: true },
+            until: { type: String, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
     descriptionSourceSha: { type: String },
     descriptionSource: { type: String, enum: ["authored", "generated"] },
     code: {

@@ -105,6 +105,7 @@ import {
   blobOidAt,
   commitBlobsOnBranch,
   diffNameStatus,
+  lastDeletionCommit,
   listTree,
   log as repoLog,
   logFollow,
@@ -1710,9 +1711,17 @@ async function syncNow(
   for (const row of rows) {
     if (seenRows.has(row._id.toString())) continue;
     if (!row.path || byPath.has(row.path) || row.is_deleted) continue;
+    // Its file's history up to the push that deleted it — kept for when it
+    // is restored (as a new file, where git's history of it starts).
+    const segment = await deletionSegment(repoDir, row.path, {
+      ownBlob: row.sourceBlobSha,
+    }).catch(() => null);
     const deleted = await SavedConsole.updateOne(
       { _id: row._id, is_deleted: { $ne: true } },
-      { $set: { is_deleted: true, deletedAt: new Date() } },
+      {
+        $set: { is_deleted: true, deletedAt: new Date() },
+        ...(segment ? { $addToSet: { historySegments: segment } } : {}),
+      },
     );
     // Duplicate push deliveries or concurrent instances may reconcile the
     // same commit. Only the process that changed the row may broadcast it.
@@ -2247,14 +2256,82 @@ export async function projectSavedConsole(input: {
  * (`parseFollowLog`). Either can be another member's private console.
  */
 export async function consoleHistory(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: Pick<ISavedConsole, "workspaceId" | "path" | "historySegments">,
   limit = 50,
 ): Promise<FollowedCommit[]> {
-  if (!row.path) return [];
+  if (!row.path && !row.historySegments?.length) return [];
   const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
   if (repoDir == null) return [];
   if (!(await resolveCommit(repoDir, MAIN))) return [];
-  return logFollow(repoDir, MAIN, limit, row.path);
+  return consoleLineage(repoDir, row, limit);
+}
+
+/**
+ * Every commit of this console, newest first: its file's lineage at main,
+ * then each EARLIER life — before a trip to the trash, which ended its
+ * file (a restore adds a new one, where git's history of it starts) —
+ * walked back from the commit that deleted it. The segments are this
+ * row's own (`historySegments`), recorded when it was trashed.
+ */
+async function consoleLineage(
+  repoDir: string,
+  row: Pick<ISavedConsole, "path" | "historySegments">,
+  limit: number,
+): Promise<FollowedCommit[]> {
+  const out: FollowedCommit[] = [];
+  const seen = new Set<string>();
+  const add = (commits: FollowedCommit[]) => {
+    for (const c of commits) {
+      if (seen.has(c.oid)) continue;
+      seen.add(c.oid);
+      out.push(c);
+    }
+  };
+  if (row.path) add(await logFollow(repoDir, MAIN, limit, row.path));
+  // Newest life first.
+  for (const segment of [...(row.historySegments ?? [])].reverse()) {
+    if (out.length >= limit) break;
+    // A deleting commit that is no longer in the repo (history rewritten)
+    // takes that life with it.
+    const until = await resolveCommit(repoDir, segment.until);
+    if (!until) continue;
+    add(await logFollow(repoDir, until, limit, segment.path));
+  }
+  return out.slice(0, limit);
+}
+
+/**
+ * The earlier life to record when a console's file at `path` leaves main
+ * for the trash: the commit that deleted it — `removalCommit` when the
+ * caller just made it, else the newest commit on main that deleted `path`,
+ * accepted only when the blob it deleted is `ownBlob` (the console's own
+ * file, never a later tenant's). Null: nothing of this console to keep.
+ */
+async function deletionSegment(
+  repoDir: string,
+  path: string,
+  opts: { removalCommit?: string; ownBlob?: string | null },
+): Promise<{ path: string; until: string } | null> {
+  const until =
+    opts.removalCommit ?? (await lastDeletionCommit(repoDir, MAIN, path));
+  if (!until) return null;
+  // The commit must have deleted a file at `path` (a removal that found
+  // only the chart sidecar deleted none of the console's history).
+  const deleted = await blobOidAt(repoDir, `${until}^`, path);
+  if (!deleted) return null;
+  if (!opts.removalCommit && deleted !== opts.ownBlob) return null;
+  return { path, until };
+}
+
+/** `deletionSegment` for a workspace (null when no repo is bound). */
+export async function consoleDeletionSegment(
+  workspaceId: string,
+  path: string,
+  opts: { removalCommit?: string; ownBlob?: string | null },
+): Promise<{ path: string; until: string } | null> {
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
+  return deletionSegment(repoDir, path, opts);
 }
 
 /** The chart sidecar of a path that may not be a console path (a file the
@@ -2274,11 +2351,11 @@ function sidecarOf(p: string): string | undefined {
  */
 async function consolePathsAt(
   repoDir: string,
-  row: Pick<ISavedConsole, "path">,
+  row: Pick<ISavedConsole, "path" | "historySegments">,
   oid: string,
 ): Promise<FollowedCommit | null> {
-  if (!row.path) return null;
-  const history = await logFollow(repoDir, MAIN, 200, row.path);
+  if (!row.path && !row.historySegments?.length) return null;
+  const history = await consoleLineage(repoDir, row, 200);
   return history.find(c => c.oid === oid) ?? null;
 }
 
@@ -2295,7 +2372,7 @@ export class NotThisConsoleError extends Error {
 
 /** What one commit did to this console (its file and chart sidecar). */
 export async function consoleCommitChanges(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: Pick<ISavedConsole, "workspaceId" | "path" | "historySegments">,
   sha: string,
 ): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
   const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
@@ -2362,7 +2439,7 @@ function fileVersionPaths(
  * Throws `NotThisConsoleError` for any other path.
  */
 export async function consoleFileVersions(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: Pick<ISavedConsole, "workspaceId" | "path" | "historySegments">,
   sha: string,
   relPath?: string,
 ): Promise<{ before: string | null; after: string | null; binary: boolean }> {

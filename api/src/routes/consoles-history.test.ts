@@ -62,11 +62,13 @@ vi.mock("../inngest", () => ({
 import { ConsoleFolder, SavedConsole } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  commitBlobsOnBranch,
   initRepo,
   readBlob,
   repoDirFor,
   resolveCommit,
 } from "../apps/repository.service";
+import { syncConsolesIndexFromRepo } from "../apps/workspace-consoles.service";
 import { ConsoleManager } from "../utils/console-manager";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import { consoleRoutes } from "./consoles";
@@ -393,6 +395,136 @@ describe("a name the console no longer has", () => {
     await save("Trash", "SELECT 'PRIVATE-NEXT'\n", ALICE, "private");
     expect((await req("GET", `/${t._id}/history`, BOB)).status).toBe(404);
     expect((await versions(t._id, await head())).status).toBe(404);
+  });
+});
+
+describe("a console back from the trash keeps its history", () => {
+  const V1 = "SELECT 'v1-original'\nFROM t\n";
+  const V2 = "SELECT 'v2-edited'\nFROM t\n";
+
+  /** Save v1, then v2; answer the console and its history before trash. */
+  async function weekly(
+    owner = ALICE,
+    access: "private" | "workspace" = "workspace",
+  ) {
+    const c = await save("Weekly", V1, owner, access);
+    const put = await req("PUT", `/${c._id}`, owner, {
+      content: V2,
+      isSaved: true,
+    });
+    expect(put.status).toBe(200);
+    const before = (await req("GET", `/${c._id}/history`, owner)).body.commits!;
+    expect(before).toHaveLength(2);
+    return { c, before, oldPath: await pathOf(c._id) };
+  }
+
+  it("trash, then restore: v1 and v2 are still listed, diffable and restorable", async () => {
+    const { c, before, oldPath } = await weekly();
+    expect((await req("DELETE", `/${c._id}`, ALICE)).status).toBe(200);
+    expect((await req("PATCH", `/${c._id}/restore`, ALICE)).status).toBe(200);
+    expect(await pathOf(c._id)).toBe(oldPath);
+
+    const hist = await req("GET", `/${c._id}/history`, BOB);
+    expect(hist.status).toBe(200);
+    const commits = hist.body.commits!;
+    expect(commits.map(x => x.subject)).toEqual([
+      "restore: Weekly",
+      `delete: ${oldPath}`,
+      ...before.map(x => x.subject),
+    ]);
+    const v1 = before[before.length - 1].oid;
+    const v2 = before[0].oid;
+    const atV1 = await versions(c._id, v1);
+    expect(atV1.status).toBe(200);
+    expect(atV1.body.versions).toMatchObject({ before: null });
+    expect(atV1.body.versions!.after).toContain("v1-original");
+    const atV2 = await versions(c._id, v2, oldPath);
+    expect(atV2.status).toBe(200);
+    expect(atV2.body.versions!.before).toContain("v1-original");
+    expect(atV2.body.versions!.after).toContain("v2-edited");
+    // The trash commit itself: the file before it, nothing after.
+    const trashed = await versions(c._id, commits[1].oid);
+    expect(trashed.body.versions).toMatchObject({ after: null });
+    expect(trashed.body.versions!.before).toContain("v2-edited");
+
+    const restored = await req("POST", `/${c._id}/restore`, ALICE, {
+      sha: v1,
+    });
+    expect(restored.status).toBe(200);
+    expect(await fileAt(oldPath)).toContain("v1-original");
+  });
+
+  it("restored as 'name (2)' — another console took the path meanwhile: each keeps its own history, nothing crosses", async () => {
+    const { c, before, oldPath } = await weekly(ALICE, "private");
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { sharedWith: [{ userId: BOB, role: "viewer" }] } },
+    );
+    expect((await req("DELETE", `/${c._id}`, ALICE)).status).toBe(200);
+    // A new private console of Alice's (not shared) takes the free path.
+    const t = await save(
+      "Weekly",
+      "SELECT ssn FROM people -- PRIVATE-T\n",
+      ALICE,
+      "private",
+    );
+    expect(await pathOf(t._id)).toBe(oldPath);
+    // (It used to 500: the restore counted the path as still its own.)
+    expect((await req("PATCH", `/${c._id}/restore`, ALICE)).status).toBe(200);
+    const newPath = await pathOf(c._id);
+    expect(newPath).not.toBe(oldPath);
+
+    const tHistory = (await req("GET", `/${t._id}/history`, ALICE)).body
+      .commits!;
+    expect(tHistory).toHaveLength(1);
+    // The new tenant never gains the trashed console's lives.
+    expect(tHistory.some(x => before.some(b => b.oid === x.oid))).toBe(false);
+
+    // Bob, on the restored console: its own lives, never T's commits.
+    const hist = await req("GET", `/${c._id}/history`, BOB);
+    expect(hist.status).toBe(200);
+    const commits = hist.body.commits!;
+    expect(commits.map(x => x.path)).toEqual([
+      newPath,
+      oldPath,
+      ...before.map(x => x.path),
+    ]);
+    expect(commits.some(x => tHistory.some(y => y.oid === x.oid))).toBe(false);
+    for (const at of [await head(), tHistory[0].oid]) {
+      const r = await versions(c._id, at, oldPath);
+      expect(r.status).toBe(403);
+      expect(JSON.stringify(r.body)).not.toContain("PRIVATE-T");
+    }
+    const v1 = before[before.length - 1].oid;
+    expect((await versions(c._id, v1)).body.versions!.after).toContain(
+      "v1-original",
+    );
+    const restored = await req("POST", `/${c._id}/restore`, ALICE, {
+      sha: v1,
+    });
+    expect(restored.status).toBe(200);
+    expect(await fileAt(newPath)).toContain("v1-original");
+    expect(await fileAt(oldPath)).toContain("PRIVATE-T");
+  });
+
+  it("deleted by a push, then restored: the history before the push is kept", async () => {
+    const { c, before, oldPath } = await weekly();
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { deletes: [oldPath] },
+      { message: "laptop: rm", author: { name: "L", email: "l@example.com" } },
+    );
+    await syncConsolesIndexFromRepo(WS);
+    expect((await SavedConsole.findById(c._id))?.is_deleted).toBe(true);
+    expect((await req("PATCH", `/${c._id}/restore`, ALICE)).status).toBe(200);
+
+    const commits = (await req("GET", `/${c._id}/history`, BOB)).body.commits!;
+    expect(commits.map(x => x.subject)).toEqual([
+      "restore: Weekly",
+      "laptop: rm",
+      ...before.map(x => x.subject),
+    ]);
   });
 });
 

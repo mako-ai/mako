@@ -15,6 +15,7 @@ import {
   commitConsoleRelocation,
   commitConsoleRemoval,
   commitConsoleState,
+  consoleDeletionSegment,
   consoleFilesDrifted,
   descriptionIsAuthored,
   ensureConsoleFolderRecords,
@@ -2784,23 +2785,38 @@ export class ConsoleManager {
     const current = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
       workspaceId: new Types.ObjectId(workspaceId),
-    }).select("path name");
+    }).select("path name sourceBlobSha");
     if (!current) return false;
     // The row keeps its `path` so a restore puts the file back where it was.
+    // A restore ADDS that file again, and git's history of it starts there:
+    // the file's history up to this deletion is kept as an earlier life of
+    // this row (`historySegments`), never found again by path — another
+    // console may take the path meanwhile.
+    let segment: { path: string; until: string } | null = null;
     if (current.path) {
-      await commitConsoleRemoval({
+      const removed = await commitConsoleRemoval({
         workspaceId,
         path: current.path,
         actorUserId: userId,
         message: `delete: ${current.path}`,
       });
+      segment = await consoleDeletionSegment(
+        workspaceId,
+        current.path,
+        removed.unchanged
+          ? { ownBlob: current.sourceBlobSha }
+          : { removalCommit: removed.commitOid },
+      ).catch(() => null);
     }
     const result = await SavedConsole.updateOne(
       {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: { is_deleted: true, deletedAt: new Date() } },
+      {
+        $set: { is_deleted: true, deletedAt: new Date() },
+        ...(segment ? { $addToSet: { historySegments: segment } } : {}),
+      },
     );
     return result.modifiedCount > 0;
   }
@@ -2825,10 +2841,12 @@ export class ConsoleManager {
     const set: Record<string, unknown> = { is_deleted: false };
     if (current.isSaved) {
       // The console's old name may have been taken while it was deleted (a
-      // rename or a push landed there, and the sync released this row's
-      // path): a restore must not overwrite that file — it comes back as
-      // "name (2)", exactly as adoption resolves two rows on one path.
-      const freeName = await this.freeNameFor(current, current.path);
+      // rename, a push, or a new console saved there): a restore must not
+      // overwrite that file — it comes back as "name (2)", exactly as
+      // adoption resolves two rows on one path. A deleted console's path is
+      // not its own any more (its file is gone, and the row keeps the path
+      // only to come back there when it is free): no `ownPath`.
+      const freeName = await this.freeNameFor(current, null);
       if (freeName !== current.name) {
         current.name = freeName;
         set.name = freeName;
