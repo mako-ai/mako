@@ -80,6 +80,18 @@ export interface CollaboratorRouteOptions {
    * Return `null` when not found / invalid id.
    */
   load: (c: AuthenticatedContext) => Promise<ShareableDocument | null>;
+  /**
+   * Apply a general-access change instead of writing `access` on the
+   * document (sharing settings only). Consoles need it: their access is
+   * where their file lives, and changing who can see one is its owner's
+   * call. Resolves to null when applied, or to the refusal to answer with.
+   */
+  setAccess?: (
+    c: AuthenticatedContext,
+    doc: ShareableDocument,
+    access: "private" | "workspace",
+    userId: string,
+  ) => Promise<{ status: 403 | 404 | 409 | 412; error: string } | null>;
 }
 
 function parseRole(value: unknown): ResourceShareRole {
@@ -118,7 +130,7 @@ export function registerSharingSettingsRoutes(
         if (!userId) {
           return c.json({ success: false, error: "Unauthorized" }, 401);
         }
-        const doc = await load(c as AuthenticatedContext);
+        let doc = await load(c as AuthenticatedContext);
         if (!doc) {
           return c.json(
             { success: false, error: `${resourceName} not found` },
@@ -141,10 +153,27 @@ export function registerSharingSettingsRoutes(
         const workspaceRole = body?.workspaceRole;
 
         if (access === "private" || access === "workspace") {
-          (doc as any).access = access;
-          // Consoles keep a deprecated isPrivate mirror; harmless elsewhere
-          // (mongoose strict mode drops unknown paths).
-          (doc as any).isPrivate = access === "private";
+          if (options.setAccess) {
+            const refused = await options.setAccess(
+              c as AuthenticatedContext,
+              doc,
+              access,
+              userId,
+            );
+            if (refused) {
+              return c.json(
+                { success: false, error: refused.error },
+                refused.status,
+              );
+            }
+            // The resource as the access change left it.
+            doc = (await load(c as AuthenticatedContext)) ?? doc;
+          } else {
+            (doc as any).access = access;
+            // Consoles keep a deprecated isPrivate mirror; harmless elsewhere
+            // (mongoose strict mode drops unknown paths).
+            (doc as any).isPrivate = access === "private";
+          }
         }
         if (workspaceRole === "viewer" || workspaceRole === "editor") {
           (doc as any).workspaceRole = workspaceRole;

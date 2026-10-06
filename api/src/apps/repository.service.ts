@@ -330,6 +330,23 @@ export class BlobPreconditionError extends Error {
   }
 }
 
+/**
+ * The text of a blob by its oid, or null when it is not in the object
+ * store or is binary. A deleted file's blob outlives the deletion.
+ */
+export async function readBlobByOid(
+  repoDir: string,
+  oid: string,
+): Promise<string | null> {
+  if (!/^[0-9a-f]{40}$/.test(oid)) return null;
+  try {
+    const { stdout } = await runGit(["-C", repoDir, "cat-file", "-p", oid]);
+    return stdout.includes("\0") ? null : stdout;
+  } catch {
+    return null;
+  }
+}
+
 /** Blob oid of `path` at `commit`, or null when the path is absent. */
 export async function blobOidAt(
   repoDir: string,

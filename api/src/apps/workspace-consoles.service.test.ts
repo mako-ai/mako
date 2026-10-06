@@ -1190,12 +1190,15 @@ describe("write-through", () => {
   });
 
   it("renaming a folder moves every console under it in one commit", async () => {
+    // Workspace folders: a workspace console's "Old/x" is the workspace
+    // "Old" (folder chains are found in the console's scope).
     const folder = await manager.createFolder(
       "Old",
       WS,
       USER,
       undefined,
       false,
+      "workspace",
     );
     const sub = await manager.createFolder(
       "Sub",

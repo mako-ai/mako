@@ -108,6 +108,7 @@ import {
   listTree,
   log as repoLog,
   readBlob,
+  readBlobByOid,
   readBlobsBatch,
   resolveCommit,
   type BlobMutation,
@@ -866,6 +867,79 @@ export async function commitConsoleState(input: {
       : undefined,
   });
   return { ...result, path, sourceBlobSha: blobOid(writes[path]) };
+}
+
+/**
+ * Put a deleted console's file back as it was LAST COMMITTED: the blob the
+ * row's `sourceBlobSha` names is read from the object store (a deleted
+ * file's blob outlives the deletion) and written at the row's (possibly
+ * re-chosen) path, path-must-be-absent; its chart sidecar comes back as it
+ * was just before the deletion. The row's working copy — an unsaved draft —
+ * is never what a restore commits. A row with no committed blob (never
+ * adopted) is projected from the row, its only definition.
+ */
+export async function restoreConsoleBlob(input: {
+  row: RowLike & { sourceBlobSha?: string | null; path?: string | null };
+  actorUserId?: string | null;
+  message: string;
+}): Promise<ConsoleCommitResult & { path: string; sourceBlobSha: string }> {
+  const workspaceId = input.row.workspaceId.toString();
+  const repoDir = await freshMain(workspaceId);
+  const contents = input.row.sourceBlobSha
+    ? await readBlobByOid(repoDir, input.row.sourceBlobSha)
+    : null;
+  if (contents === null) {
+    return commitConsoleState({
+      row: input.row,
+      actorUserId: input.actorUserId,
+      message: input.message,
+      expectAbsent: true,
+    });
+  }
+  const path = await repoPathForRow(input.row);
+  const sidecarPath = chartSidecarPath(path);
+  const writes: Record<string, string> = { [path]: contents };
+  const sidecar = await committedSidecarFor(
+    repoDir,
+    input.row.path,
+    input.row.sourceBlobSha as string,
+  );
+  if (sidecar !== null) writes[sidecarPath] = sidecar;
+  const result = await commitConsoleBatch({
+    workspaceId,
+    actorUserId: input.actorUserId,
+    mutation: { writes },
+    message: input.message,
+    expectBlobs: { [path]: null, [sidecarPath]: null },
+    alreadyFresh: true,
+  });
+  return { ...result, path, sourceBlobSha: blobOid(contents) };
+}
+
+/**
+ * The chart sidecar that sat beside `path` while it held `blob`: read in
+ * the commit just before the last one that touched `path` (the deletion),
+ * or in that commit itself. Null when there was none or the history does
+ * not show that blob there any more (the path was reused).
+ */
+async function committedSidecarFor(
+  repoDir: string,
+  path: string | null | undefined,
+  blob: string,
+): Promise<string | null> {
+  if (!path || !parseConsoleRepoPath(path)) return null;
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return null;
+  const [last] = await repoLog(repoDir, head, 1, path);
+  if (!last) return null;
+  for (const at of [`${last.oid}^`, last.oid]) {
+    if ((await blobOidAt(repoDir, at, path)) !== blob) continue;
+    const sidecar = await readBlob(repoDir, at, chartSidecarPath(path)).catch(
+      () => null,
+    );
+    return sidecar && !sidecar.isBinary ? sidecar.contents : null;
+  }
+  return null;
 }
 
 /** Remove a console's file (and sidecar) from the repo. */
