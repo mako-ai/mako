@@ -19,6 +19,12 @@ import {
   vi,
 } from "vitest";
 
+const published = vi.hoisted(() => [] as Array<{ type: string }>);
+vi.mock("../services/realtime.service", () => ({
+  publishRealtimeEvent: vi.fn((_ws: string, event: { type: string }) => {
+    published.push(event);
+  }),
+}));
 // See flow-rename.test.ts: a hook on the freshen that precedes every main
 // commit, to land a competing change in the race window.
 const freshenHook = vi.hoisted(() => ({
@@ -190,6 +196,7 @@ describe("resolve + rename", () => {
       warnings: [],
     });
     expect(await commitCount()).toBe(commitsBefore + 1);
+    expect(published.some(e => e.type === "dbt.job.updated")).toBe(true);
     expect(await fileAt(jobFilePath("nightly-build"))).toBeNull();
     const file = parseJobFile((await fileAt(jobFilePath("nightly"))) ?? "");
     expect(file).toMatchObject({ name: "Nightly", aliases: ["nightly-build"] });

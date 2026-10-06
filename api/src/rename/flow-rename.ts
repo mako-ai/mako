@@ -38,6 +38,7 @@ import {
 } from "../apps/repository.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   FLOW_SLUG_RE,
   flowFilePath,
@@ -386,6 +387,12 @@ export async function renameFlow(
       );
     }
   }
+  // Open stores refetch: a form that still holds the old name would
+  // otherwise write it back on its next save (see flowNameForSave).
+  publishRealtimeEvent(workspaceId, {
+    type: "flow.updated",
+    flowId: String(row._id),
+  });
   logger.info("Flow renamed", {
     workspaceId,
     flowId: String(row._id),

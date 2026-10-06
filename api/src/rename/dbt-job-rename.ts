@@ -46,6 +46,7 @@ import {
 } from "../dbt/dbt-config.service";
 import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
 import {
@@ -387,6 +388,10 @@ export async function renameDbtJob(
       );
     }
   }
+  publishRealtimeEvent(workspaceId, {
+    type: "dbt.job.updated",
+    projectId: String(project._id),
+  });
   logger.info("dbt job renamed", {
     workspaceId,
     jobId: String(row._id),
