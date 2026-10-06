@@ -258,20 +258,42 @@ describe("rename", () => {
       id: C_ID,
       via: "alias",
     });
+    // A's manifest is not rewritten; the index supersedes its claim.
     expect(
       parseAppManifest(await fileAt("apps/bar/mako.json"), "bar").aliases,
-    ).toEqual([]);
+    ).toEqual(["a"]);
     // A plain rename names nothing and warns about nothing.
     expect(
       (await renameObject(editor, "app", { ref: C_ID, slug: "a-v3" })).warnings,
     ).toEqual([]);
   });
 
+  it("answers read-only (403) to someone who can see the app but not write it, as POST /move does", async () => {
+    // A member on a folder-only workspace app reads as viewer (no row,
+    // no workspaceRole): the app is in their list, so never "not found".
+    for (const role of ["member", "viewer"]) {
+      await expect(
+        renameObject({ ...editor, role }, "app", { ref: "a", title: "X" }),
+      ).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringMatching(/read-only access/),
+      });
+    }
+    // A private app of someone else is invisible: 404, nothing revealed.
+    await expect(
+      renameObject(
+        { ...editor, userId: new Types.ObjectId().toString(), role: "admin" },
+        "app",
+        { ref: `users/${USER}/apps/c`, title: "X" },
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
   it("refuses a slug change from a viewer or a role-less API key, an empty title, and an unknown app", async () => {
     const viewer = { ...editor, role: "viewer" };
     await expect(
       renameObject(viewer, "app", { ref: "a", slug: "x" }),
-    ).rejects.toMatchObject({ status: 404 });
+    ).rejects.toMatchObject({ status: 403 });
     // A workspace API key with nobody behind it: no per-user ACL (as the
     // app tools), but a slug change is a move, and moving in the Workspace
     // tree needs an editing role — exactly app_move_app's refusal.

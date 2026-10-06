@@ -16,7 +16,6 @@ import { AppProject } from "../../database/workspace-schema";
 import {
   findAppInSnapshotVia,
   loadAppsIndex,
-  resolveAppRef,
   type AppIndexRow,
 } from "../../apps/app-index.service";
 import {
@@ -32,12 +31,11 @@ import {
   projectFromIndexRow,
   renameProject,
   resolveProjectRef,
-  type SupersededAlias,
+  supersessionWarnings,
 } from "../../apps/worktree.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import {
   RenameError,
-  type RenameContext,
   type RenameHandler,
   type RenameLocation,
   type ResolvedRef,
@@ -83,47 +81,6 @@ async function findVia(
   return found;
 }
 
-/**
- * What the caller must know when a name this rename keeps as an alias was
- * also another app's old name: the link now opens the renamed app, and the
- * other app no longer answers to it. The other app is named only when the
- * caller may see it.
- */
-async function supersessionWarnings(
-  ctx: RenameContext,
-  newTitle: string,
-  superseded: SupersededAlias[],
-): Promise<string[]> {
-  const warnings: string[] = [];
-  for (const entry of superseded) {
-    let other = "another app";
-    if (!ctx.userId) {
-      other = `"${entry.title}" (${entry.path})`;
-    } else {
-      const state = await AppProject.findOne({
-        _id: new Types.ObjectId(entry.appId),
-        workspaceId: new Types.ObjectId(ctx.workspaceId),
-      });
-      const row = await resolveAppRef(ctx.workspaceId, entry.appId);
-      const resource =
-        state ?? (row ? projectFromIndexRow(ctx.workspaceId, row) : null);
-      if (resource && canReadResource(resource, ctx.userId, ctx.role)) {
-        other = `"${entry.title}" (${entry.path})`;
-      }
-    }
-    const link = entry.name.includes("/")
-      ? entry.name
-      : `/apps/${encodeURIComponent(entry.name)}`;
-    warnings.push(
-      `${link} now opens "${newTitle}"; it was also an old name of ${other}, which no longer answers to it` +
-        (entry.manifestUpdated
-          ? "."
-          : " (its mako.json could not be parsed, so the name is still listed there; the index ignores it)."),
-    );
-  }
-  return warnings;
-}
-
 export const appRenameHandler: RenameHandler = {
   kind: "app",
   describe:
@@ -158,7 +115,16 @@ export const appRenameHandler: RenameHandler = {
     if (!project) throw new RenameError(`App ${request.ref} not found`, 404);
     // The same gate as every app write: a per-user ACL when there is a user
     // behind the call, none for a workspace API key (apps-tools' loadProject).
+    // Readable but not writable is "read-only", as POST /move answers — the
+    // app is right there in the caller's list; "not found" is only for an
+    // app they cannot see at all (which must not reveal that it exists).
     if (ctx.userId && !canWriteResource(project, ctx.userId, ctx.role)) {
+      if (canReadResource(project, ctx.userId, ctx.role)) {
+        throw new RenameError(
+          "You have read-only access to this app. Ask an editor or the owner to rename it (or to share edit access with you).",
+          403,
+        );
+      }
       throw new RenameError(`App ${request.ref} not found`, 404);
     }
     const from = appRootFor(project);
@@ -214,7 +180,9 @@ export const appRenameHandler: RenameHandler = {
         aliasesAdded: result.aliasesAdded,
         ...(result.commit ? { commit: result.commit } : {}),
         warnings: await supersessionWarnings(
-          ctx,
+          ctx.workspaceId,
+          ctx.userId,
+          ctx.role,
           afterRow?.title ?? result.title,
           result.superseded,
         ),

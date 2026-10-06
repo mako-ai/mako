@@ -769,21 +769,25 @@ export function walkHistory(
     let current = app.path;
     // A manifest declaring an id that is not this app's is another app's
     // (a stamp writes the row's own id, so a later-stamped app agrees with
-    // itself); one declaring none cannot be told apart and is left alone.
+    // itself). The id only matters for an event INTO the path the walk is
+    // at: anything created at, or renamed into, some other path is another
+    // app's arrival whatever its manifest says — this app's own history is
+    // the one chain the walk follows, so an unchained event cannot be its
+    // (most apps declare no id at all, and must still count).
     const foreign = (id: string | undefined) => !!id && id !== app.appId;
     // Paths another app arrived at in events NEWER than where the walk is.
     const arrivedLater = new Set<string>();
     for (const event of events) {
       if (event.kind === "create") {
         if (event.path === current) break;
-        if (foreign(event.id)) arrivedLater.add(event.path);
+        arrivedLater.add(event.path);
         continue;
       }
-      if (foreign(event.id)) {
+      if (event.to !== current) {
         arrivedLater.add(event.to);
         continue;
       }
-      if (event.to !== current) continue;
+      if (foreign(event.id)) continue;
       const from = event.from;
       const name =
         basename(from) === basename(current) ? from : aliasForOldPath(from);
