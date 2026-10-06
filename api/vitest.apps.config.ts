@@ -44,6 +44,8 @@ export default defineConfig({
       // GET/list from git at main; leftover local git without a binding
       // must not populate the list (issue #956).
       "src/services/flow-sync.repo.test.ts",
+      // Graceful rename of flows: resolution by old slug, one-commit move.
+      "src/rename/flow-rename.test.ts",
       // The live connector probe: its service (bounded, read-only, secrets
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",

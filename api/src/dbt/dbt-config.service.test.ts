@@ -580,6 +580,113 @@ describe("sync from repo", () => {
   });
 });
 
+describe("a moved job file is the same job (graceful rename)", () => {
+  it("an added file whose aliases name the removed slug re-keys the row in place", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Nightly build");
+    await commitDbtJobFile(project, job);
+    const before = await DbtJob.findById(job._id);
+    // Runtime the scheduler owns, keyed by the row: must survive the move.
+    await DbtJob.updateOne(
+      { _id: job._id },
+      {
+        $set: {
+          "scheduledRun.runCount": 7,
+          "scheduledRun.lastStatus": "success",
+        },
+      },
+    );
+    const moved = serializeJobFile({
+      name: "Nightly build (renamed)",
+      aliases: [job.slug!],
+      environment: "prod",
+      commands: ["build --select realadvisor"],
+      schedule: { cron: "0 6 * * *", timezone: "Europe/Zurich" },
+      enabled: true,
+      deferToProduction: false,
+    });
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: { [jobFilePath("nightly")]: moved },
+        deletes: [jobFilePath(job.slug!)],
+      },
+      { message: "laptop git mv" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+
+    const after = await DbtJob.findById(job._id);
+    expect(after).not.toBeNull();
+    expect(after!.slug).toBe("nightly");
+    expect(after!.name).toBe("Nightly build (renamed)");
+    expect(after!.aliases).toEqual([job.slug]);
+    expect(after!.scheduledRun?.runCount).toBe(7);
+    expect(after!.sourceBlobSha).not.toBe(before!.sourceBlobSha);
+    // One row, not a second one under the new slug.
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+    // The old slug and the id both still resolve through the live list.
+    const live = await loadLiveJobById(project, job._id.toString());
+    expect(live?.row?._id.toString()).toBe(job._id.toString());
+    // …and so does the id GET/list would have handed out for the new file
+    // before the push synced.
+    const derived = derivedJobId(WS.toString(), "nightly").toString();
+    expect((await loadLiveJobById(project, derived))?.id.toString()).toBe(
+      job._id.toString(),
+    );
+  });
+
+  it("identical content under a new name is a rename; two candidates are not guessed", async () => {
+    const project = await seedProject();
+    const job = await seedJob(project, "Hourly");
+    await commitDbtJobFile(project, job);
+    const raw = (await fileAt(jobFilePath(job.slug!)))!;
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath("hourly-v2")]: raw.replace(
+            "name: Hourly",
+            "name: Hourly v2",
+          ),
+        },
+        deletes: [jobFilePath(job.slug!)],
+      },
+      { message: "copy + delete" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const renamed = await DbtJob.findById(job._id);
+    expect(renamed?.slug).toBe("hourly-v2");
+    expect(renamed?.aliases).toEqual(["hourly"]);
+    // The write-through now carries the alias in the file, so a later edit
+    // from the product never drops it.
+    await commitDbtJobFile(project, renamed!);
+    expect(await fileAt(jobFilePath("hourly-v2"))).toContain(
+      "aliases:\n  - hourly",
+    );
+
+    // Ambiguous: two new files both claim the old slug → today's behaviour
+    // (the row goes, both files become jobs), never a guess.
+    const two = raw.replace("name: Hourly", "name: Hourly v3");
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath("a")]: `aliases: [hourly-v2]\n${two}`,
+          [jobFilePath("b")]: `aliases: [hourly-v2]\n${two}`,
+        },
+        deletes: [jobFilePath("hourly-v2")],
+      },
+      { message: "ambiguous" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    expect(await DbtJob.findById(job._id)).toBeNull();
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(2);
+  });
+});
+
 describe("adoption", () => {
   it("writes files for unstamped jobs + environments once, re-runnable", async () => {
     const project = await seedProject();
