@@ -273,6 +273,30 @@ describe("connector.yaml aliases", () => {
     expect(stripConnectorAliases(withConnectorAlias(YAML, "a")!)).toBe(YAML);
   });
 
+  it("zero-indent block lists are items too; a shape the edit cannot keep parseable is refused", () => {
+    const zero = "runtime: node\naliases:\n- a\nentry: connector.ts\n";
+    expect(withConnectorAlias(zero, "b")).toBe(
+      "runtime: node\naliases:\n- a\n- b\nentry: connector.ts\n",
+    );
+    expect(parseConnectorFile(withConnectorAlias(zero, "b")!)).toMatchObject({
+      ok: true,
+      value: { aliases: ["a", "b"] },
+    });
+    expect(stripConnectorAliases(zero)).toBe(
+      "runtime: node\nentry: connector.ts\n",
+    );
+    // A multi-line flow list: extending it in place would break the file,
+    // so the edit is refused; the hash falls back to the raw bytes.
+    const multi =
+      "runtime: node\naliases: [\n  a,\n  b ]\nentry: connector.ts\n";
+    expect(parseConnectorFile(multi)).toMatchObject({
+      ok: true,
+      value: { aliases: ["a", "b"] },
+    });
+    expect(withConnectorAlias(multi, "c")).toBeNull();
+    expect(stripConnectorAliases(multi)).toBe(multi);
+  });
+
   it("the content hash ignores `aliases`: a rename is not new code", () => {
     const enc = (t: string) => new TextEncoder().encode(t);
     const a = new Map([
@@ -736,6 +760,32 @@ describe("renameWorkspaceConnector (UI / REST / MCP)", () => {
     expect(await ConnectorDefinition.countDocuments({ workspaceId: WS })).toBe(
       2,
     );
+  }, 60_000);
+
+  it("a connector.yaml the edit cannot keep parseable: rename refused (409), nothing committed, row untouched", async () => {
+    const multi =
+      "runtime: node\naliases: [\n  legacy ]\nentry: connector.ts\n";
+    await pushAcme("acme", multi);
+    await syncConnectorsFromRepo(WS);
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    });
+    expect(row?.aliases).toEqual(["legacy"]);
+    const before = await log(repoDirFor(WS), MAIN, 50);
+    await expect(
+      renameWorkspaceConnector(ctx, { from: "acme", to: "acme-crm" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("edit connector.yaml by hand"),
+    });
+    expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(before.length);
+    expect(await pathsAtMain()).toContain("connectors/acme/connector.yaml");
+    expect(
+      (await readBlob(repoDirFor(WS), MAIN, "connectors/acme/connector.yaml"))
+        .contents,
+    ).toBe(multi);
+    expect((await ConnectorDefinition.findById(row!._id))?.slug).toBe("acme");
   }, 60_000);
 
   it("handler: resolves current, alias and git-history refs; renames through the service", async () => {

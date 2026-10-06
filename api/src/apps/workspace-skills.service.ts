@@ -39,7 +39,7 @@ import { findRenamedFolder } from "../rename/git-renames";
 import {
   SKILLS_DIR,
   SKILLS_README,
-  editSkillFrontMatter,
+  editSkillFrontMatterChecked,
   SKILLS_README_PATH,
   SKILL_FILE_GLOB,
   SKILL_NAME_RE,
@@ -375,15 +375,21 @@ export async function commitSkillSave(
     }
     // A line edit of the front matter: the retired skill's file is one
     // the user did not touch, and nothing but its alias list may change.
-    const edited = editSkillFrontMatter(raw as string, {
-      aliases: (parsed.aliases ?? []).filter(a => a !== skill.name),
-    });
-    if (edited === null) {
+    // Re-parsed before it is written — a file this cannot edit safely is
+    // refused, and the save does not happen.
+    const edited = editSkillFrontMatterChecked(
+      options.retireAliasFrom,
+      raw as string,
+      {
+        aliases: (parsed.aliases ?? []).filter(a => a !== skill.name),
+      },
+    );
+    if (!edited.ok) {
       throw new Error(
-        `skills/${options.retireAliasFrom}/SKILL.md has no front matter block to edit`,
+        `"${skill.name}" is a previous name of the skill "${options.retireAliasFrom}": ${edited.reason}`,
       );
     }
-    writes[path] = edited;
+    writes[path] = edited.contents;
     message += ` (retires the alias from "${options.retireAliasFrom}")`;
   }
   await commitBlobsOnBranch(
@@ -481,16 +487,19 @@ export async function commitSkillFlags(
         : parseSkillFile(options.retireAliasFrom, otherRaw);
     const edited =
       other && otherRaw !== null
-        ? editSkillFrontMatter(otherRaw, {
+        ? editSkillFrontMatterChecked(options.retireAliasFrom, otherRaw, {
             aliases: (other.aliases ?? []).filter(a => a !== name),
           })
-        : null;
-    if (edited === null) {
+        : ({
+            ok: false,
+            reason: `skills/${options.retireAliasFrom}/SKILL.md does not parse`,
+          } as const);
+    if (!edited.ok) {
       throw new Error(
-        `"${name}" is a previous name of the skill "${options.retireAliasFrom}", whose SKILL.md cannot be edited; fix it before activating`,
+        `"${name}" is a previous name of the skill "${options.retireAliasFrom}": ${edited.reason}; fix it before activating`,
       );
     }
-    writes[otherPath] = edited;
+    writes[otherPath] = edited.contents;
     message += ` (retires the alias from "${options.retireAliasFrom}")`;
   }
   await commitBlobsOnBranch(
@@ -608,16 +617,15 @@ export async function commitSkillRename(
   const aliasesAdded = aliases.filter(a => !(parsed.aliases ?? []).includes(a));
   // Only `name` and `aliases` change; comments, license, allowed-tools,
   // metadata and the body are the author's and are kept byte for byte.
-  const renamedFile = editSkillFrontMatter(raw as string, {
+  // The moved file is re-parsed under its NEW folder name before anything
+  // is committed; a front matter the editor cannot handle is a 409 with
+  // the hand fix, and the folder stays where it is.
+  const renamedFile = editSkillFrontMatterChecked(toName, raw as string, {
     name: toName,
     aliases,
   });
-  if (renamedFile === null) {
-    return {
-      ok: false,
-      status: 400,
-      error: `skills/${fromName}/SKILL.md has no front matter block to edit`,
-    };
+  if (!renamedFile.ok) {
+    return { ok: false, status: 409, error: renamedFile.reason };
   }
 
   const blobs = await readBlobsBatch(repoDir, head, oldPaths);
@@ -627,7 +635,8 @@ export async function commitSkillRename(
     const newPath = `skills/${toName}/${oldPath.slice(`skills/${fromName}/`.length)}`;
     const buf = blobs.get(oldPath);
     if (!buf) continue;
-    writes[newPath] = oldPath === skillFilePath(fromName) ? renamedFile : buf;
+    writes[newPath] =
+      oldPath === skillFilePath(fromName) ? renamedFile.contents : buf;
     moved.push(newPath);
   }
   const result = await commitBlobsOnBranch(
