@@ -82,6 +82,9 @@ import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
 import DbtConsoleView from "./DbtConsoleView";
 import DbtRunsView from "./DbtRunsView";
+import ProcessView from "./processes/ProcessView";
+import ProcessRunView from "./processes/ProcessRunView";
+import ProcessInbox from "./processes/ProcessInbox";
 import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -3015,6 +3018,19 @@ function Editor({
                     <DbtConsoleView
                       projectId={tab.metadata?.projectId as string}
                     />
+                  ) : tab.kind === "process" ? (
+                    <ProcessView
+                      tabId={tab.id}
+                      processId={tab.metadata?.processId as string}
+                    />
+                  ) : tab.kind === "process-run" ? (
+                    <ProcessRunView
+                      tabId={tab.id}
+                      processId={tab.metadata?.processId as string}
+                      runId={tab.metadata?.runId as string}
+                    />
+                  ) : tab.kind === "process-inbox" ? (
+                    <ProcessInbox />
                   ) : tab.kind === "dbt-runs" ? (
                     <DbtRunsView
                       tabId={tab.id}

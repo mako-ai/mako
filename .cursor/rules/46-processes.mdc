@@ -1,0 +1,29 @@
+---
+globs: api/src/processes/**/*.ts,app/src/components/processes/**/*.tsx,app/src/store/processStore.ts
+description: Processes — durable agentic business processes (SDK, runtime, tools, UI)
+---
+
+# Processes
+
+Durable business processes written as code: `defineProcess({ run: async (ctx, input) => … })`
+over five primitives — `ctx.step`, `ctx.agent`, `ctx.approval`, `ctx.task`,
+`ctx.wait`. Authoring guide: `api/src/processes/README.md` (read it before
+writing a process). Design: `PROCESS_PLATFORM_DESIGN.md`.
+
+## Rules
+
+- New process = `api/src/processes/library/<id>.ts` + one line in
+  `library/index.ts` + a test in `processes.test.ts`. Nothing else.
+- Side effects only inside primitives; code between them re-runs on resume.
+- Step names are identities (unique per call; put ids in loop names).
+- Every tool has an effect: `read` / `write` / `destructive`. Destructive tools
+  are refused inside `ctx.agent` — run them in `ctx.step` after `ctx.approval`.
+- A process may only call tools in its `tools` envelope; tools only resolve
+  connection slots they declare and the workspace bound.
+- Every journal/DB write in the runtime happens inside a `driver.run()`
+  callback (`runtime/context.ts` invariants) — never in replayed code.
+- The engine is behind `Driver`/`ExecutionEngine` (`runtime/driver.ts`,
+  `runtime/engine.ts`); Inngest specifics live only in
+  `runtime/inngest-engine.ts` and `inngest/functions/process-run.ts`.
+- Tests: `api/src/processes/**/*.test.ts` run in `vitest.apps.config.ts`
+  (real Mongo, `LocalEngine`, scripted agents).

@@ -143,6 +143,18 @@ function segmentsForTab(
       return plain(["Transforms", ctx.dbtProjectName, tab.title || "Runs"]);
     case "notebook":
       return plain(["Notebooks", tab.title || "Notebook"]);
+    case "process":
+      return plain(["Processes", tab.title || "Process"]);
+    case "process-run":
+      return plain([
+        "Processes",
+        (tab.metadata?.processName as string | undefined) ||
+          (tab.metadata?.processId as string | undefined) ||
+          "Process",
+        tab.title || "Run",
+      ]);
+    case "process-inbox":
+      return plain(["Processes", "Inbox"]);
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       // Runtime still degrades gracefully for stale persisted tabs.

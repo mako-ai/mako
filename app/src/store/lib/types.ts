@@ -28,7 +28,10 @@ export type TabKind =
   | "dbt-job"
   | "dbt-console"
   | "dbt-runs"
-  | "notebook";
+  | "notebook"
+  | "process"
+  | "process-run"
+  | "process-inbox";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
@@ -191,6 +194,7 @@ export type LeftPaneView =
   | "notebooks"
   | "dbt"
   | "source-control"
+  | "processes"
   | "settings";
 
 /**

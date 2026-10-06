@@ -142,6 +142,13 @@ export function tabRevealTarget(
     case "notebook-diff":
       // A transient diff view; nothing in an explorer corresponds to it.
       return null;
+    case "process":
+    case "process-run":
+    case "process-inbox":
+      // The Processes explorer is a flat list, not a ResourceTree: it
+      // highlights the open process itself and never needs scrolling into
+      // view, so there is no tree node to reveal.
+      return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;

@@ -56,7 +56,20 @@ export function extractOutline(source: string): OutlineItem[] {
     const name = match[3];
     items.push({
       kind: match[1] as OutlineItem["kind"],
-      name: quote === "`" ? name.replace(/\$\{[^}]*\}/g, "…") : name,
+      // `${item.system}` → {system}: readable, and says what varies.
+      name:
+        quote === "`"
+          ? name.replace(
+              /\$\{([^}]*)\}/g,
+              (_, expr: string) =>
+                `{${
+                  expr
+                    .split(/[^\w$]+/)
+                    .filter(Boolean)
+                    .pop() ?? "…"
+                }}`,
+            )
+          : name,
       dynamic: quote === "`" && name.includes("${"),
     });
   }

@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
+import {
+  focusProcessInboxTab,
+  focusProcessRunTab,
+  focusProcessTab,
+} from "../process-runtime/shell";
 import { useDashboardStore } from "../store/dashboardStore";
 import { appUrlSlug, useAppsStore } from "../store/appsStore";
 import { resolveAppRef } from "../lib/apps-explorer-tree";
@@ -130,6 +135,11 @@ export function UrlSync() {
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
     const dbtConsoleMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
     const notebookMatch = path.match(TAB_DEEP_LINK_PATTERNS.notebook);
+    const processInboxMatch = path.match(
+      TAB_DEEP_LINK_PATTERNS["process-inbox"],
+    );
+    const processRunMatch = path.match(TAB_DEEP_LINK_PATTERNS["process-run"]);
+    const processMatch = path.match(TAB_DEEP_LINK_PATTERNS.process);
     const planMatch = path.match(TAB_DEEP_LINK_PATTERNS.plan);
     const settingsSectionMatch = path.match(TAB_DEEP_LINK_PATTERNS.settings);
     const settingsMatch = path.match(/^\/settings\/?$/);
@@ -324,6 +334,18 @@ export function UrlSync() {
       const projectId = dbtConsoleMatch[1];
       setLeftPane("dbt");
       focusDbtConsoleTab(projectId, "Console");
+    } else if (processInboxMatch) {
+      // /processes/inbox — before /processes/:processId ("inbox" is reserved).
+      setLeftPane("processes");
+      focusProcessInboxTab();
+    } else if (processRunMatch) {
+      // /processes/:processId/runs/:runId — the view syncs the real title.
+      setLeftPane("processes");
+      focusProcessRunTab(processRunMatch[1], processRunMatch[2], "Run");
+    } else if (processMatch) {
+      // /processes/:processId
+      setLeftPane("processes");
+      focusProcessTab(processMatch[1], processMatch[1]);
     } else if (notebookMatch) {
       // /n/:notebookId — focusNotebookTab dedupes against an existing tab and
       // activates it. NotebookRenderer loads the doc by id and syncs the real

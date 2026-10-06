@@ -22,7 +22,11 @@ import {
   type RunStatus,
 } from "./runtime/models";
 import { append, errorMessage } from "./runtime/journal";
-import { ensureVersion, buildManifest } from "./runtime/version";
+import {
+  ensureVersion,
+  buildManifest,
+  extractOutline,
+} from "./runtime/version";
 import { projectRun, type JournalEvent } from "./runtime/project";
 import { getExecutionEngine } from "./runtime/engine";
 import { getRuntimeDeps } from "./runtime/deps";
@@ -51,8 +55,9 @@ const oid = (id: string) => {
 
 function requireDefinition(processId: string): ProcessDefinition {
   const definition = getProcessDefinition(processId);
-  if (!definition)
+  if (!definition) {
     throw new ProcessServiceError(`Unknown process "${processId}"`, 404);
+  }
   return definition;
 }
 
@@ -189,7 +194,9 @@ export async function getProcessDetail(workspaceId: string, processId: string) {
       id: version.id,
       number: version.number,
       hash: version.hash,
-      outline: versionDoc?.outline ?? [],
+      // Derived from the stored source at read time, so outline improvements
+      // apply to old versions too.
+      outline: versionDoc ? extractOutline(versionDoc.source) : [],
       source: versionDoc?.source ?? "",
     },
     versions: versions.map(v => ({
@@ -357,7 +364,7 @@ export async function getRunDetail(workspaceId: string, runId: string) {
   const [events, requests, version] = await Promise.all([
     ProcessEvent.find({ runId: run._id }).sort({ ts: 1, _id: 1 }).lean(),
     HumanRequest.find({ runId: run._id }).lean(),
-    ProcessVersion.findById(run.versionId).select("number hash outline").lean(),
+    ProcessVersion.findById(run.versionId).select("number hash source").lean(),
   ]);
   const journal: JournalEvent[] = events.map(e => ({
     id: e._id.toString(),
@@ -375,7 +382,7 @@ export async function getRunDetail(workspaceId: string, runId: string) {
     version: {
       id: run.versionId.toString(),
       number: run.versionNumber,
-      outline: version?.outline ?? [],
+      outline: version ? extractOutline(version.source) : [],
       current: current ? { id: current.id, number: current.number } : null,
     },
     steps: projectRun(journal),
@@ -627,8 +634,9 @@ export async function respondToHumanRequest(
     },
     { new: true },
   ).lean();
-  if (!updated)
+  if (!updated) {
     throw new ProcessServiceError("Request was decided concurrently", 409);
+  }
 
   await append(
     {

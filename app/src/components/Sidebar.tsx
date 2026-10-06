@@ -19,6 +19,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useFlowStore } from "../store/flowStore";
+import { useProcessStore } from "../store/processStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { useRepoStore } from "../store/repoStore";
@@ -142,6 +143,7 @@ export function SidebarUserMenu({
       useExplorerStore.getState().reset();
       useChatStore.getState().reset();
       useFlowStore.getState().reset();
+      useProcessStore.getState().reset();
 
       await logout();
 

@@ -33,6 +33,9 @@ export const TAB_KIND_ENTITY_LABELS = {
   "dbt-runs": "runs view",
   "dbt-console": "project",
   notebook: "notebook",
+  process: "process",
+  "process-run": "process run",
+  "process-inbox": "inbox",
 } as const satisfies Record<NonNullable<TabKind>, string>;
 
 export function tabKindEntityLabel(kind: TabKind | undefined): string {

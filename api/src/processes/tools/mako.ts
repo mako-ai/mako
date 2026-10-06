@@ -42,8 +42,9 @@ export const sqlQuery = defineTool({
       _id: new Types.ObjectId(bound.id),
       workspaceId: new Types.ObjectId(t.workspaceId),
     });
-    if (!connection)
+    if (!connection) {
       throw new Error("Bound warehouse connection no longer exists");
+    }
     const result = await databaseConnectionService.executeQuery(
       connection.toObject({ getters: true }),
       sql,
@@ -77,8 +78,9 @@ export const webSearch = defineTool({
   }),
   async execute({ query, maxResults }, t) {
     const provider = getWebSearchProvider();
-    if (!provider)
+    if (!provider) {
       throw new Error("Web search is not configured (TAVILY_API_KEY)");
+    }
     return { results: await provider.search(query, maxResults, t.signal) };
   },
 });

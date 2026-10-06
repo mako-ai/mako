@@ -14,6 +14,7 @@ export type NavigationView =
   | "notebooks"
   | "apps"
   | "dbt"
+  | "processes"
   | "source-control"
   | "settings"
   | "views";
@@ -39,6 +40,7 @@ export const topNavigationItems: {
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
   { view: "apps", icon: EXPLORER_ICONS["apps"], label: "Apps" },
+  { view: "processes", icon: EXPLORER_ICONS.processes, label: "Processes" },
 ];
 
 export const bottomNavigationItems: {

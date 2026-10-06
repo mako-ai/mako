@@ -354,7 +354,7 @@ describe("DSAR erasure (reference process)", () => {
       "agent:Create action plan",
       "task:Confirm subject identity",
       "approval:Approve erasure plan",
-      "step:… in …",
+      "step:{proposedAction} in {system}",
       "agent:Verify erasure",
       "step:Write report",
       "step:Send confirmation",

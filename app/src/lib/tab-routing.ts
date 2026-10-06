@@ -74,6 +74,11 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dbt-runs": /^\/x\/([a-zA-Z0-9-]+)\/runs\/?$/,
   "dbt-console": /^\/x\/([a-zA-Z0-9-]+)\/?$/,
   notebook: /^\/n\/([a-zA-Z0-9-]+)\/?$/,
+  // Processes: /processes/inbox is matched before /processes/:processId
+  // (process ids are kebab-case; "inbox" is reserved).
+  "process-inbox": /^\/processes\/inbox\/?$/,
+  "process-run": /^\/processes\/([a-z0-9-]+)\/runs\/([a-f0-9]{24})\/?$/,
+  process: /^\/processes\/([a-z0-9-]+)\/?$/,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -184,6 +189,19 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const notebookId = tab.metadata?.notebookId as string | undefined;
       return notebookId ? `/n/${notebookId}` : null;
     }
+    case "process": {
+      const processId = tab.metadata?.processId as string | undefined;
+      return processId ? `/processes/${processId}` : null;
+    }
+    case "process-run": {
+      const processId = tab.metadata?.processId as string | undefined;
+      const runId = tab.metadata?.runId as string | undefined;
+      return processId && runId
+        ? `/processes/${processId}/runs/${runId}`
+        : null;
+    }
+    case "process-inbox":
+      return "/processes/inbox";
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;

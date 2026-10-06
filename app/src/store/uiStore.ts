@@ -296,6 +296,7 @@ export type ActiveExplorer =
   | "apps"
   | "notebooks"
   | "dbt"
+  | "processes"
   | "source-control"
   | "settings"
   | null;
@@ -313,6 +314,7 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "apps",
   "notebooks",
   "dbt",
+  "processes",
   "source-control",
   "settings",
 ]);

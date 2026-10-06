@@ -48,6 +48,9 @@ import {
   Users,
   Wallet,
   GitCompare,
+  Inbox,
+  ListChecks,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import DbtIcon from "../components/icons/DbtIcon";
@@ -71,6 +74,7 @@ export const EXPLORER_ICONS = {
   dashboards: ChartPie,
   apps: AppWindowMac,
   notebooks: Notebook,
+  processes: Workflow,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
 
@@ -103,6 +107,9 @@ export const TAB_KIND_ICONS = {
   "dbt-console": Terminal,
   "dbt-runs": History,
   notebook: Notebook,
+  process: Workflow,
+  "process-run": ListChecks,
+  "process-inbox": Inbox,
 } as const satisfies Record<NonNullable<TabKind>, LucideIcon>;
 
 export function tabKindIcon(kind: TabKind | undefined): LucideIcon {

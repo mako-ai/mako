@@ -100,6 +100,15 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "dbt-runs",
     metadata: { projectId: "proj-1" },
   }),
+  process: baseTab({
+    kind: "process",
+    metadata: { processId: "dsar-erasure" },
+  }),
+  "process-run": baseTab({
+    kind: "process-run",
+    metadata: { processId: "dsar-erasure", runId: "65f0c0ffee0000000000abcd" },
+  }),
+  "process-inbox": baseTab({ kind: "process-inbox" }),
 };
 
 const ALL_KINDS = Object.keys(FIXTURES) as Array<NonNullable<TabKind>>;

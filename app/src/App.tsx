@@ -76,6 +76,9 @@ const SourceControlExplorer = lazy(
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
+const ProcessesExplorer = lazy(
+  () => import("./components/processes/ProcessesExplorer"),
+);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -554,6 +557,8 @@ function MainApp() {
         return <SourceControlExplorer />;
       case "dbt":
         return <DbtExplorer />;
+      case "processes":
+        return <ProcessesExplorer />;
       case "settings":
         return <SettingsExplorer />;
       default:

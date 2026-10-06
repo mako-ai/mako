@@ -36,6 +36,13 @@ An unclassified tool is registered but never reaches the model (silently dead).
 MCP tools are always deferred; they activate via `search_tools`/`load_tools`.
 `pnpm --filter api tools:measure` prints per-tool token weights.
 
+## Processes (durable agentic workflows)
+
+Business processes are code: `api/src/processes/library/<id>.ts` with
+`defineProcess` over `ctx.step / agent / approval / task / wait`, executed on
+Inngest with Mako's own journal. Read `api/src/processes/README.md` before
+writing one; design in `PROCESS_PLATFORM_DESIGN.md`.
+
 ## Essential Commands
 
 ### Development

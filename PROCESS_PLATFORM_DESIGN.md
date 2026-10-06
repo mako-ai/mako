@@ -107,7 +107,7 @@ export default defineProcess({
 
 | Call | Returns | Durable semantics |
 |---|---|---|
-| `ctx.step(name, fn, opts?)` | `T` (JSON) | Runs `fn` at least once and memoizes its result. Not re-executed after it succeeds, even across worker crashes, retries, deploys or a manual re-run. `opts`: `retries`, `timeout`. `fn` receives `s` (`log`, `artifact`, `call(tool, input)`, `idempotencyKey`, `signal`, `attempt`). |
+| `ctx.step(name, fn, opts?)` | `T` (JSON) | Runs `fn` at least once and memoizes its result. Not re-executed after it succeeds, even across worker crashes, retries, deploys or a manual re-run. `opts`: `retries`, `timeout`. `fn` receives `s` (`log`, `artifact`, `call(tool, input)`, `previousOutput()`, `idempotencyKey`, `signal`, `attempt`). |
 | `ctx.agent(name, spec)` | `z.infer<output>` | A bounded tool loop through an `AgentHarness`. It is one step in the timeline, and its trace is recorded. The harness resumes from its own trace after a crash (§5.3). |
 | `ctx.approval(title, spec)` | `{ approved, outcome, data, comment, by, at }` | Pauses the run with **nothing running**, as a durable human request. `data` is immutable once requested. If `schema` is given, the approver may edit it and the edit is validated. A timeout gives `outcome: "expired"`. |
 | `ctx.task(title, spec)` | `{ data, by, at }` | Pauses until someone submits the form (`form: zod object`). The same mechanism as approval. Throws `HumanRequestExpiredError` on timeout. |
@@ -560,11 +560,84 @@ cost from the gateway when it is reported.
 
 ---
 
-## 13. What v1 does not do (yet)
+## 13. Vibe-code test (Phase 5): three workflows on the unchanged runtime
+
+All three were written the way a newcomer would write them: read the SDK, copy
+the DSAR file's shape. None needed a runtime change. One gap led to a small,
+generic SDK addition.
+
+| Process | Shape | Lines | What it exercised | Friction found |
+|---|---|---|---|---|
+| `churn-risk-review` | schedule → step (scan) → N parallel agents → step per CSM | ~110 | `trigger.schedule` with fixed input; `Promise.all` over `ctx.agent`; grouping in plain code | none |
+| `lead-enrichment` | event/manual → step → N agents → **one editable approval over the batch** → step per lead (write tool) | ~85 | approval over a list, edited before write-back; write tools from steps | none |
+| `competitor-watch` | schedule → N agents (web tools) → "what changed since last week?" → agent → artifact + email | ~100 | artifacts; agents with web tools | **needed the previous run's output.** Added `s.previousOutput()` (a read inside a step, so memoized). It is generic: any diff-against-last-time monitor needs it. |
+
+Smaller observations, kept in mind but not changed:
+
+- **Helpers are not part of a version.** Functions called by `run` but defined
+  outside it (DSAR's `execute`) are not in the hash. The deploy SHA is
+  recorded per version, and workspace-repo processes will hash the file.
+- **Narrowing in callbacks.** TypeScript does not narrow `input.replyTo` inside
+  a step callback (`as string`). A language papercut, not an SDK one.
+- **Large fan-outs.** `Promise.all` over 500 accounts means 500 agent steps,
+  which is fine. 2 000 would hit Inngest's 1 000-step limit. Next primitive
+  candidate: start a child run (`ctx.step` + `startRun`, plus an event wait for
+  its completion) as a documented pattern before considering an API.
+- **One approval per item vs per batch.** Both work: per-item creates N inbox
+  entries. Batch review with an editable table was the better UX for leads.
+
+Outcome: the primitive set stayed at five. `ctx.parallel`, `ctx.map` and
+`ctx.log` were never wanted.
+
+## 14. Verification
+
+- **`api/src/processes/processes.test.ts`** (21 tests; real Mongo, LocalEngine,
+  scripted agents) covers:
+  - DSAR end to end, including an approver edit that removes a record;
+  - rejection;
+  - outline extraction;
+  - flaky-step retries;
+  - PermanentError plus "retry run" resuming at the failed step without
+    re-running memoized steps;
+  - the ledger: an interrupted destructive call without `reconcile` fails
+    closed, and with `reconcile` it is not repeated; a completed destructive
+    call is returned from the ledger when its step retries;
+  - task form validation;
+  - durable sleep with a controlled clock;
+  - event waits with `match`;
+  - idempotent event triggers that start only when enabled;
+  - cancel, which cancels the pending request and refuses late responses;
+  - assignee authorization;
+  - approval expiry;
+  - a version change under a waiting run;
+  - agent provisioning (destructive and out-of-envelope tools refused);
+  - connection-slot binding;
+  - the AI SDK harness against a mock model;
+  - all three vibe-code processes;
+  - the scheduler (once per tick, only when enabled).
+- **`runtime/inngest-driver.test.ts`** pins the Inngest mapping: boxing,
+  retry → NonRetriableError, check → waitForEvent → re-read.
+- **Manual, against the real Inngest dev server (`inngest-cli dev`) plus the
+  API on in-memory Mongo with scripted agents:**
+  - a DSAR run paused on `waitForEvent` with nothing running;
+  - the approval resumed it in about 4 s and it completed (`engine: inngest`);
+  - cancelling a waiting run produced an Inngest run status of `CANCELLED`;
+  - the signal-redelivery function ran and correctly did nothing;
+  - no errors in the dev-server log.
+- **Manual, in the app (Playwright):** the process list, process page (derived
+  flow and tool envelope with effect badges), the inbox (plan rendered as a
+  table, edit plus comment), the run timeline (PAUSED marker, agent trace,
+  tool calls), the event log, and the completed run.
+
+## 15. What v1 does not do (yet)
+
 
 Webhook ingestion, notifications for approvals, `RetryAfter` mapping, child
 runs/fan-out beyond ~200 steps, per-step "re-run this step only" (vs retry run),
 realtime push (the UI polls), pinning, workspace-repo processes, sandbox
-resource, a process-test runner in CI for library processes (the scripted
-harness + LocalEngine exist; see `processes.test.ts`), quorum approvals,
-SLA/escalation.
+resource, quorum approvals, SLA/escalation, billing integration of process LLM usage
+(`trackUsage` needs an invocation type and a payer), a UI for binding
+connection slots (the API exists: `PATCH /processes/:id { bindings }`),
+sidebar "reveal" for process tabs (the explorer is a flat list), and real
+vendor tools for DSAR (Close, SendGrid, Zendesk) to replace the sample
+systems.
