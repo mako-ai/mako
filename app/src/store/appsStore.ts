@@ -457,18 +457,26 @@ interface AppsStore {
     description?: string,
     /** Destination folder path (`apps`, `apps/Sales`, `users/<me>/apps`). */
     folder?: string,
-  ) => Promise<AppMeta | null>;
+  ) => Promise<{
+    app: AppMeta;
+    /** Its name was another app's old link, which opens it from now on. */
+    warnings: string[];
+  } | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
   /**
    * File an app in another folder (and/or rename its folder). One commit on
    * main; the app keeps its id so tabs, favourites and deployments follow.
+   */
+  /**
+   * The server's `warnings` when the move changed which app a link opens,
+   * or null when it failed (the store's `error` says why).
    */
   moveApp: (
     workspaceId: string,
     appId: string,
     folder: string,
     name?: string,
-  ) => Promise<boolean>;
+  ) => Promise<{ warnings: string[] } | null>;
   createAppFolder: (workspaceId: string, path: string) => Promise<boolean>;
   moveAppFolder: (
     workspaceId: string,
@@ -1016,12 +1024,12 @@ export const useAppsStore = create<AppsStore>()(
               params: { path: { workspaceId } },
               body: { title, description, ...(folder ? { folder } : {}) },
             }),
-          ) as { app?: AppMeta };
+          ) as { app?: AppMeta; warnings?: string[] };
           if (body.app) {
             set(s => {
               s.apps.unshift(body.app as AppMeta);
             });
-            return body.app;
+            return { app: body.app, warnings: body.warnings ?? [] };
           }
           return null;
         } catch (e) {
@@ -1039,7 +1047,7 @@ export const useAppsStore = create<AppsStore>()(
               params: { path: { workspaceId, id: appId } },
               body: { folder, ...(name ? { name } : {}) },
             }),
-          ) as { to?: string; app?: AppMeta };
+          ) as { to?: string; app?: AppMeta; warnings?: string[] };
           // Optimistic enough: the server answered with the new location, so
           // the row moves now and the full list catches up right behind it.
           set(s => {
@@ -1055,12 +1063,12 @@ export const useAppsStore = create<AppsStore>()(
           const moved = get().apps.find(a => a.id === appId);
           if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
           void get().fetchApps(workspaceId);
-          return true;
+          return { warnings: body.warnings ?? [] };
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to move app");
           });
-          return false;
+          return null;
         }
       },
 

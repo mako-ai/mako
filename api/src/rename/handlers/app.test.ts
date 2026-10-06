@@ -28,6 +28,7 @@ import {
   unbindTestWorkspaceRepo,
 } from "../../apps/bind-test-workspace-repo";
 import { invalidateAppsIndexCache } from "../../apps/app-index.service";
+import { User } from "../../database/schema";
 import { parseAppManifest } from "../../apps/app-paths";
 import { runGit } from "../../apps/git";
 import { renameObject, resolveObjectRef } from "../registry";
@@ -266,6 +267,105 @@ describe("rename", () => {
     expect(
       (await renameObject(editor, "app", { ref: C_ID, slug: "a-v3" })).warnings,
     ).toEqual([]);
+  });
+
+  it("warns when the NEW link was another app's old link — it opens this app from now on", async () => {
+    // A: a → bar → baz (old names "a" and "bar"). D, a new top-level app,
+    // renamed onto "a".
+    await renameObject(editor, "app", { ref: "a", slug: "bar" });
+    await renameObject(editor, "app", { ref: "bar", slug: "baz" });
+    const D_ID = new Types.ObjectId().toHexString();
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "apps/d/mako.json": manifest("D", D_ID) } },
+      { message: "new app d", author: { name: "L", email: "l@x" } },
+    );
+    invalidateAppsIndexCache(WS);
+    const result = await renameObject(editor, "app", { ref: D_ID, slug: "a" });
+    expect(result.warnings).toEqual([
+      '/apps/a used to open "A" (apps/baz); it now opens this app.',
+    ]);
+    expect(await resolveObjectRef(editor, "app", "a")).toMatchObject({
+      id: D_ID,
+      via: "current",
+    });
+    // The app that loses a link is named only to someone who may see it:
+    // A becomes someone else's private app. D moves on to "bar" — A's
+    // other old name — keeping "a", which A also listed.
+    const A = (await resolveProjectRef(WS, "baz"))!;
+    await ensureProjectRow(A, USER);
+    await AppProject.updateOne(
+      { _id: A._id },
+      {
+        $set: { access: "private", owner_id: new Types.ObjectId().toString() },
+      },
+    );
+    expect(
+      (await renameObject(editor, "app", { ref: D_ID, slug: "bar" })).warnings,
+    ).toEqual([
+      "/apps/bar used to open another app; it now opens this app.",
+      '/apps/a now opens "D"; it was also an old name of another app, which no longer answers to it.',
+    ]);
+  });
+
+  it("refuses a link another app already uses, in the words of the link", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          "apps/x/mako.json": manifest("X"),
+          "apps/Sales/CH/y/mako.json": manifest("Y"),
+        },
+      },
+      { message: "x and y", author: { name: "L", email: "l@x" } },
+    );
+    invalidateAppsIndexCache(WS);
+    await expect(
+      renameObject(editor, "app", { ref: "x", slug: "a" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "An app already uses the link /apps/a.",
+    });
+    await expect(
+      renameObject(editor, "app", { ref: B_ID, slug: "y" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: 'An app named "y" already exists in apps/Sales/CH.',
+    });
+  });
+
+  it("authors the rename commit as the person who renamed, like every other kind", async () => {
+    // A user of their own: the author lookup is cached per process.
+    const RENAMER = new Types.ObjectId().toString();
+    await User.create({ _id: RENAMER, email: "renamer@example.com" });
+    const as = { workspaceId: WS, userId: RENAMER, role: "admin" };
+    const authorOfHead = async () =>
+      (
+        await runGit([
+          "-C",
+          repoDirFor(WS),
+          "log",
+          "-1",
+          "--format=%an <%ae>|%cn <%ce>",
+          MAIN,
+        ])
+      ).stdout.trim();
+    await renameObject(as, "app", { ref: "a", title: "Acquisition" });
+    expect(await authorOfHead()).toBe(
+      "renamer <renamer@example.com>|Mako <bot@mako.ai>",
+    );
+    await renameObject(as, "app", { ref: "a", slug: "acquisition" });
+    expect(await authorOfHead()).toBe(
+      "renamer <renamer@example.com>|Mako <bot@mako.ai>",
+    );
+    // Nobody behind the call (a workspace API key): Mako, as before.
+    await renameObject({ workspaceId: WS }, "app", {
+      ref: "acquisition",
+      title: "Keyed",
+    });
+    expect(await authorOfHead()).toBe("Mako <bot@mako.ai>|Mako <bot@mako.ai>");
   });
 
   it("answers read-only (403) to someone who can see the app but not write it, as POST /move does", async () => {

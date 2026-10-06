@@ -71,6 +71,7 @@ import { derivedAppId, parseAppManifest } from "./app-paths";
 import {
   createAppFolder,
   createProject,
+  createProjectWith,
   deleteAppFolder,
   ensureProjectRow,
   moveAppFolder,
@@ -81,6 +82,7 @@ import {
   readFile,
   globFiles,
   stampAppId,
+  supersessionWarnings,
 } from "./worktree.service";
 import { appFolderChanged } from "./deploy-on-push";
 import { runGit } from "./git";
@@ -578,7 +580,7 @@ describe("moves", () => {
     const b = (await resolveProjectRef(WS, B_ID))!;
     await expect(
       moveProject(b, { scope: "workspace", folderSegments: [], slug: "a" }),
-    ).rejects.toThrow(/already exists/);
+    ).rejects.toThrow("An app already uses the link /apps/a.");
     await expect(
       moveProject(b, { scope: "workspace", folderSegments: ["a"] }),
     ).rejects.toThrow(/is an app, not a folder/);
@@ -953,6 +955,51 @@ describe("createProject", () => {
     expect((await resolveProjectRef(WS, personal._id.toString()))?.access).toBe(
       "private",
     );
+  });
+
+  it("says whose old link a new app takes over", async () => {
+    // A: a → Ops/report (its manifest keeps "a"). A new app titled "A"
+    // lands at apps/a: /apps/a opens it from now on.
+    const A = (await resolveProjectRef(WS, "a"))!;
+    await moveProject(A, {
+      scope: "workspace",
+      folderSegments: ["Ops"],
+      slug: "report",
+    });
+    const { project, takenOver } = await createProjectWith({
+      workspaceId: WS,
+      title: "A",
+      userId: USER,
+    });
+    expect(project.path).toBe("apps/a");
+    expect(takenOver).toEqual([
+      {
+        name: "a",
+        appId: A._id.toString(),
+        path: "apps/Ops/report",
+        title: "A",
+        takenOver: true,
+      },
+    ]);
+    expect(
+      await supersessionWarnings(WS, USER, "admin", project.title, takenOver),
+    ).toEqual([
+      '/apps/a used to open "A" (apps/Ops/report); it now opens this app.',
+    ]);
+    expect(findAppInSnapshot(await loadAppsIndex(WS), "a")?.appId).toBe(
+      project._id.toString(),
+    );
+    // Nested, it takes no bare name: nothing to say.
+    expect(
+      (
+        await createProjectWith({
+          workspaceId: WS,
+          title: "A",
+          userId: USER,
+          folder: { scope: "workspace", folderSegments: ["Sales"] },
+        })
+      ).takenOver,
+    ).toEqual([]);
   });
 });
 
