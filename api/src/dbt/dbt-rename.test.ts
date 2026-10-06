@@ -539,6 +539,50 @@ describe("modes, path conflicts and node-name clashes", () => {
     expect(project).toBeTruthy();
   });
 
+  it("a same-relative-path symlink OUTSIDE dbt/ lends the move neither its mode nor its oid", async () => {
+    await seedProject();
+    const repoDir = repoDirFor(WS);
+    const link = (
+      await runGit(["-C", repoDir, "hash-object", "-w", "--stdin"], {
+        stdin: "../../somewhere/else.sql",
+      })
+    ).stdout.trim();
+    // `src/` is 4 chars like `dbt/`: minus their top-level dir, these paths
+    // are the dbt project's models/orders.sql and models/mart.sql.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        entries: [
+          { path: "src/models/orders.sql", oid: link, mode: "120000" },
+          { path: "src/models/mart.sql", oid: link, mode: "120000" },
+        ],
+      },
+      { message: "unrelated symlinks" },
+    );
+    await renameDbtFile(member, {
+      from: "models/orders.sql",
+      to: "models/fct_orders.sql",
+    });
+    const tree = await listTree(repoDir, (await resolveCommit(repoDir, MAIN))!);
+    const moved = tree.find(e => e.path === "dbt/models/fct_orders.sql");
+    expect(moved?.mode).toBe("100644");
+    expect(moved?.oid).not.toBe(link);
+    expect(await fileAt("models/fct_orders.sql")).toBe(
+      "select 1 as id, 1 as customer_id\n",
+    );
+    // The dbt file sharing a relative path with the other symlink is still
+    // text to rewrite, not a link to skip.
+    expect(await fileAt("models/mart.sql")).toContain("ref('fct_orders')");
+    // And the unrelated symlinks are untouched.
+    for (const p of ["src/models/orders.sql", "src/models/mart.sql"]) {
+      expect(tree.find(e => e.path === p)).toMatchObject({
+        mode: "120000",
+        oid: link,
+      });
+    }
+  });
+
   it("a move UNDER an existing file is refused (409) and that file survives", async () => {
     await seedProject();
     await expect(
