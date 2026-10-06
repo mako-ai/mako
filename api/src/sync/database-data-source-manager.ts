@@ -227,11 +227,21 @@ class SourceConnectionManager {
       description: source.description,
       type: source.type,
       workspaceId: source.workspaceId ? String(source.workspaceId) : undefined,
+      // The definition this credential was saved under: the connector that
+      // runs it and the schema that decrypts it are resolved by THIS id,
+      // never by a name another folder could take over (resolver.ts).
+      connectorDefinitionId: source.connectorDefinitionId
+        ? String(source.connectorDefinitionId)
+        : undefined,
       active: source.isActive,
       connection: await this.decryptConfig(
         source.config,
         source.type,
         source.workspaceId ? String(source.workspaceId) : undefined,
+        {
+          type: source.type,
+          connectorDefinitionId: source.connectorDefinitionId,
+        },
       ),
       settings: {
         sync_batch_size: source.settings?.sync_batch_size || 100,
