@@ -218,25 +218,44 @@ export interface RenamableApp {
 const EDITING_ROLES = new Set(["owner", "admin", "member"]);
 
 /**
- * Why this person may NOT rename the app, or `null` when they may — the
- * two rules the rename route applies (api/src/rename/handlers/app.ts), so
- * the explorer neither offers what the server refuses nor hides what it
+ * What this person may rename on an app from the explorer:
+ *
+ *  - `full` — its name (the title) and its link (the folder);
+ *  - `title` — its name only; `linkReason` says why the link is locked;
+ *  - `none` — nothing; `reason` says why.
+ *
+ * The two rules the rename route applies (api/src/rename/handlers/app.ts),
+ * so the explorer neither offers what the server refuses nor hides what it
  * allows:
  *
- *  - the app's write ACL (resource-acl canWriteResource): its owner first,
- *    whatever its access; anyone it is shared with as an editor; on a
- *    workspace-access app, admins and members its workspace role makes
- *    editors. GET /apps sends the answer as `canWrite` — the list carries
- *    no `sharedWith`, so only the server knows a share. A list without it
- *    (an older API) falls back to owner, then workspace role;
- *  - the tree rule (authorizeAppMove), since a rename may move the folder:
- *    the workspace tree is organised by editing members, a personal tree
- *    by its owner alone.
+ *  - ANY rename needs the app's write ACL (resource-acl canWriteResource):
+ *    its owner first, whatever its access; anyone it is shared with as an
+ *    editor; on a workspace-access app, admins and members its workspace
+ *    role makes editors. GET /apps sends the answer as `canWrite` — the
+ *    list carries no `sharedWith`, so only the server knows a share. A
+ *    list without it (an older API) falls back to owner, then role;
+ *  - a LINK change moves the folder, so the tree rule (authorizeAppMove)
+ *    applies too: a personal tree is its owner's alone, the workspace tree
+ *    is organised by editing members. An editor the tree rule stops (an
+ *    app in someone else's personal folder, shared with them) still
+ *    renames the title — which is all the server would let them change.
+ *
+ * `nameOf` turns the personal folder's owner id into something to show
+ * (their email); without it the reason says "its owner".
  */
-export function appRenameRefusal(
+export type AppRenameRights =
+  | { kind: "full" }
+  | { kind: "title"; linkReason: string }
+  | { kind: "none"; reason: string };
+
+export function appRenameRights(
   app: RenamableApp,
-  viewer: { userId?: string; role?: string },
-): string | null {
+  viewer: {
+    userId?: string;
+    role?: string;
+    nameOf?: (userId: string) => string | undefined;
+  },
+): AppRenameRights {
   const { userId, role } = viewer;
   const writable =
     app.canWrite ??
@@ -246,16 +265,26 @@ export function appRenameRefusal(
           role === "admin" ||
           (role === "member" && app.workspaceRole === "editor"))));
   if (!writable) {
-    return "You have read-only access to this app. Ask an editor or the owner to rename it (or to share edit access with you).";
+    return {
+      kind: "none",
+      reason:
+        "You have read-only access to this app. Ask an editor or the owner to rename it (or to share edit access with you).",
+    };
   }
-  const path = appPathOf(app);
-  if (path.startsWith("users/")) {
-    const mine = !!userId && path.startsWith(`users/${userId}/apps/`);
-    return mine
-      ? null
-      : "This app is in its owner's personal folder: only they can rename it.";
+  const personal = /^users\/([^/]+)\/apps\//.exec(appPathOf(app));
+  if (personal) {
+    const ownerId = personal[1];
+    if (userId && ownerId === userId) return { kind: "full" };
+    const owner = viewer.nameOf?.(ownerId) ?? "its owner";
+    return {
+      kind: "title",
+      linkReason: `Only ${owner} can change this app's link.`,
+    };
   }
   return role && EDITING_ROLES.has(role)
-    ? null
-    : "Only workspace editors can reorganise the Workspace tree.";
+    ? { kind: "full" }
+    : {
+        kind: "title",
+        linkReason: "Only workspace editors can change this app's link.",
+      };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   APP_FOLDER_ENTITY,
-  appRenameRefusal,
+  appRenameRights,
   buildAppTree,
   folderNodeId,
   folderPathFromNodeId,
@@ -222,9 +222,10 @@ describe("resolveAppRef aliases (the server's findAppInSnapshot, mirrored)", () 
   });
 });
 
-describe("appRenameRefusal (the rename route's rules, mirrored)", () => {
+describe("appRenameRights (the rename route's rules, mirrored)", () => {
   const me = "u1";
   const member = { userId: me, role: "member" };
+  const full = { kind: "full" };
 
   it("lets a member rename an app they OWN, even once shared with the workspace", () => {
     // createProject makes a new app private and owned by its creator; the
@@ -236,64 +237,96 @@ describe("appRenameRefusal (the rename route's rules, mirrored)", () => {
       owner_id: me,
       workspaceRole: "viewer" as const,
     };
-    expect(appRenameRefusal(own, member)).toBeNull();
+    expect(appRenameRights(own, member)).toEqual(full);
     // …and the server, which says so in `canWrite`, agrees.
-    expect(appRenameRefusal({ ...own, canWrite: true }, member)).toBeNull();
+    expect(appRenameRights({ ...own, canWrite: true }, member)).toEqual(full);
     // A private app of their own too.
     expect(
-      appRenameRefusal({ ...own, access: "private" as const }, member),
-    ).toBeNull();
+      appRenameRights({ ...own, access: "private" as const }, member),
+    ).toEqual(full);
   });
 
   it("follows the server's canWrite for a share the list cannot see", () => {
-    // Someone else's private app, shared with this member as an editor:
-    // only the server knows the share.
+    // Someone else's private app in the WORKSPACE tree, shared with this
+    // member as an editor: only the server knows the share.
     const shared = {
       id: "b",
       path: "apps/Sales/b",
       access: "private" as const,
       owner_id: "u2",
     };
-    expect(appRenameRefusal({ ...shared, canWrite: true }, member)).toBeNull();
-    expect(appRenameRefusal({ ...shared, canWrite: false }, member)).toMatch(
-      /read-only/,
+    expect(appRenameRights({ ...shared, canWrite: true }, member)).toEqual(
+      full,
     );
-    expect(appRenameRefusal(shared, member)).toMatch(/read-only/);
+    expect(appRenameRights({ ...shared, canWrite: false }, member)).toEqual({
+      kind: "none",
+      reason: expect.stringMatching(/read-only/),
+    });
+    expect(appRenameRights(shared, member).kind).toBe("none");
   });
 
   it("falls back to the workspace role without canWrite", () => {
     const app = { id: "c", path: "apps/c", access: "workspace" as const };
-    expect(appRenameRefusal(app, { userId: me, role: "admin" })).toBeNull();
-    expect(appRenameRefusal(app, member)).toMatch(/read-only/);
+    expect(appRenameRights(app, { userId: me, role: "admin" })).toEqual(full);
+    expect(appRenameRights(app, member).kind).toBe("none");
     expect(
-      appRenameRefusal({ ...app, workspaceRole: "editor" as const }, member),
-    ).toBeNull();
+      appRenameRights({ ...app, workspaceRole: "editor" as const }, member),
+    ).toEqual(full);
     expect(
-      appRenameRefusal(
+      appRenameRights(
         { ...app, workspaceRole: "editor" as const },
         { userId: me, role: "viewer" },
-      ),
-    ).toMatch(/read-only/);
+      ).kind,
+    ).toBe("none");
   });
 
-  it("applies the tree rule: a personal tree is its owner's, the workspace tree its editors'", () => {
+  it("offers the NAME only where the tree rule locks the link: someone else's personal folder", () => {
+    // u2's personal app, shared with u1 as an editor: the server renames
+    // its title (canWriteResource) but refuses a folder move out of u2's
+    // tree (authorizeAppMove).
+    const theirs = {
+      id: "e",
+      path: "users/u2/apps/theirs",
+      access: "private" as const,
+      owner_id: "u2",
+      canWrite: true,
+    };
     expect(
-      appRenameRefusal(
+      appRenameRights(theirs, {
+        ...member,
+        nameOf: id => (id === "u2" ? "ana@example.com" : undefined),
+      }),
+    ).toEqual({
+      kind: "title",
+      linkReason: "Only ana@example.com can change this app's link.",
+    });
+    // No name to show: still title only.
+    expect(appRenameRights(theirs, member)).toEqual({
+      kind: "title",
+      linkReason: "Only its owner can change this app's link.",
+    });
+    // Shared as a viewer: nothing at all.
+    expect(appRenameRights({ ...theirs, canWrite: false }, member).kind).toBe(
+      "none",
+    );
+    // The owner, in their own folder, whatever their workspace role: all.
+    expect(
+      appRenameRights(
         { id: "d", path: `users/${me}/apps/scratch`, canWrite: true },
         { userId: me, role: "viewer" },
       ),
-    ).toBeNull();
+    ).toEqual(full);
+  });
+
+  it("offers the NAME only to a writer whose role does not organise the Workspace tree", () => {
     expect(
-      appRenameRefusal(
-        { id: "e", path: "users/u2/apps/theirs", canWrite: true },
-        member,
-      ),
-    ).toMatch(/personal folder/);
-    expect(
-      appRenameRefusal(
+      appRenameRights(
         { id: "f", path: "apps/f", canWrite: true },
         { userId: me, role: "viewer" },
       ),
-    ).toMatch(/Workspace tree/);
+    ).toEqual({
+      kind: "title",
+      linkReason: "Only workspace editors can change this app's link.",
+    });
   });
 });
