@@ -786,8 +786,45 @@ async function isAncestor(
 
 const serialized = createSerializer();
 
-/** Per-process memo: the rows cannot change while main's sha does not. */
+/**
+ * Per-process memo: the rows cannot change while main's sha does not —
+ * with one exception. While the history scan for this sha is still owed
+ * (`historyScannedSha` lags), a catch-up on ANY instance may add aliases to
+ * the rows without main moving; a snapshot cached in that state is only
+ * trusted for {@link SNAPSHOT_PENDING_SCAN_TTL_MS}, then re-read from the
+ * rows (one head read, one rows read; no scan on the request path).
+ */
 const snapshotCache = new Map<string, AppsIndexSnapshot>();
+/** Workspace → when a snapshot with a pending scan was cached. */
+const snapshotPendingScanAt = new Map<string, number>();
+const SNAPSHOT_PENDING_SCAN_TTL_MS = 60_000;
+
+function cacheSnapshot(
+  workspaceId: string,
+  snapshot: AppsIndexSnapshot,
+  scanPending: boolean,
+): void {
+  snapshotCache.set(workspaceId, snapshot);
+  if (scanPending) snapshotPendingScanAt.set(workspaceId, Date.now());
+  else snapshotPendingScanAt.delete(workspaceId);
+}
+
+/** The memo, unless it was cached with a scan owed and has aged out. */
+function cachedSnapshot(
+  workspaceId: string,
+  sha: string,
+): AppsIndexSnapshot | undefined {
+  const cached = snapshotCache.get(workspaceId);
+  if (cached?.sha !== sha) return undefined;
+  const pendingSince = snapshotPendingScanAt.get(workspaceId);
+  if (
+    pendingSince !== undefined &&
+    Date.now() - pendingSince > SNAPSHOT_PENDING_SCAN_TTL_MS
+  ) {
+    return undefined;
+  }
+  return cached;
+}
 
 function rowToIndex(
   row: Pick<IAppIndexEntry, keyof AppIndexRow | "indexAliases">,
@@ -859,19 +896,26 @@ async function syncNow(
     if (head.sha === sha) {
       // A history scan that failed when these rows were built is retried
       // off the request path, so the aliases arrive without waiting for
-      // main to move — and no read pays for the scan.
-      if (head.historyScannedSha !== sha) {
-        scheduleHistoryCatchUp(workspaceId, repoDir, sha);
-      }
+      // main to move — and no read pays for the scan. Until it lands (here
+      // or on another instance), the memo is re-read from the rows on each
+      // pass through here; loadAppsIndex only gets here once a minute.
+      const scanPending = head.historyScannedSha !== sha;
+      if (scanPending) scheduleHistoryCatchUp(workspaceId, repoDir, sha);
       const cached = snapshotCache.get(workspaceId);
-      if (cached?.sha === sha) return cached;
+      if (
+        cached?.sha === sha &&
+        !scanPending &&
+        !snapshotPendingScanAt.has(workspaceId)
+      ) {
+        return cached;
+      }
       const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
       const snapshot = {
         sha,
         apps: rows.map(rowToIndex),
         folders: head.folders,
       };
-      snapshotCache.set(workspaceId, snapshot);
+      cacheSnapshot(workspaceId, snapshot, scanPending);
       return snapshot;
     }
     // Never rebuild BACKWARDS. On a multi-instance host the instance that
@@ -1205,7 +1249,7 @@ async function syncNow(
     apps: rows,
     folders: read.folders,
   };
-  snapshotCache.set(workspaceId, snapshot);
+  cacheSnapshot(workspaceId, snapshot, !historyScanned);
   const duplicates = rows.filter(r => r.duplicateOf).length;
   logger.info("Apps index synced from repo", {
     workspaceId,
@@ -1264,10 +1308,23 @@ export function historyCatchUpFor(workspaceId: string): Promise<void> {
   return historyCatchUps.get(workspaceId) ?? Promise.resolve();
 }
 
-async function catchUpHistory(
+/**
+ * Exported for its test only. `beforeWrite` runs between the read and the
+ * writes, where another instance's sync can land.
+ *
+ * The writes are compare-and-set, not overwrites: this runs outside the
+ * sync's serialization on OTHER instances, so by the time it writes, a sync
+ * elsewhere may have re-indexed the rows at a newer main (and learned, say,
+ * a laptop move between the two commits). A row is written only if it is
+ * still the row that was read — same `indexedSha`, same `indexAliases` —
+ * and the head only while it still describes `sha`; a late writer can
+ * never take an alias away.
+ */
+export async function catchUpHistory(
   workspaceId: string,
   repoDir: string,
   sha: string,
+  options: { beforeWrite?: () => Promise<void> } = {},
 ): Promise<void> {
   const ws = new Types.ObjectId(workspaceId);
   const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
@@ -1286,6 +1343,8 @@ async function catchUpHistory(
       scanned ? `${scanned}..${sha}` : sha,
     ),
   );
+  await options.beforeWrite?.();
+  let written = 0;
   for (const row of rows) {
     if (row.duplicateOf) continue;
     const learned = mergeAliases(
@@ -1299,17 +1358,28 @@ async function catchUpHistory(
     ) {
       continue;
     }
-    await AppIndexEntry.updateOne(
-      { _id: row._id },
+    const result = await AppIndexEntry.updateOne(
+      {
+        _id: row._id,
+        indexedSha: sha,
+        indexAliases:
+          row.indexAliases === undefined ? { $in: [null, []] } : had,
+      },
       { $set: { indexAliases: learned } },
     );
+    written += result.modifiedCount;
   }
-  await AppIndexHead.updateOne(
-    { workspaceId: ws, sha },
+  const mark = await AppIndexHead.updateOne(
+    { workspaceId: ws, sha, historyScannedSha: { $ne: sha } },
     { $set: { historyScannedSha: sha } },
   );
   invalidateAppsIndexCache(workspaceId);
-  logger.info("Apps index: history aliases caught up", { workspaceId, sha });
+  logger.info("Apps index: history aliases caught up", {
+    workspaceId,
+    sha,
+    rowsWritten: written,
+    marked: mark.modifiedCount > 0,
+  });
 }
 
 /**
@@ -1326,16 +1396,19 @@ export async function loadAppsIndex(
   if (options.freshen !== false) await freshenForServe(workspaceId);
   const sha = await resolveCommit(repoDir, MAIN);
   if (!sha) return EMPTY;
-  const cached = snapshotCache.get(workspaceId);
-  if (cached?.sha === sha) return cached;
+  const cached = cachedSnapshot(workspaceId, sha);
+  if (cached) return cached;
   return (await syncAppsIndexFromRepo(workspaceId)) ?? EMPTY;
 }
 
 /** Forget the memo (tests, and after a lifecycle commit on this instance). */
 export function invalidateAppsIndexCache(workspaceId?: string): void {
-  if (workspaceId) snapshotCache.delete(workspaceId);
-  else {
+  if (workspaceId) {
+    snapshotCache.delete(workspaceId);
+    snapshotPendingScanAt.delete(workspaceId);
+  } else {
     snapshotCache.clear();
+    snapshotPendingScanAt.clear();
     // A full reset (tests) also forgets when a history catch-up was last
     // tried, so the next load may schedule one at once.
     historyCatchUpLastTried.clear();
