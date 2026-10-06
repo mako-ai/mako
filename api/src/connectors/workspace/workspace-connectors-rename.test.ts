@@ -115,6 +115,7 @@ import {
   resolveConnector,
 } from "../../rename/connector";
 import { connectorRenameHandler } from "../../rename/handlers/connector";
+import { renameObject } from "../../rename/registry";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -1455,6 +1456,21 @@ describe("renameWorkspaceConnector (UI / REST / MCP)", () => {
       current: { slug: "acme", title: "Acme CRM", path: "connectors/acme/" },
     });
     expect(await resolveConnector(ctx, "nope")).toBeNull();
+    // Its id names it too, and a rename to its current slug by id is the
+    // registry's no-op like every other kind.
+    const current = await connectorRenameHandler.resolve(ctx, "acme");
+    expect(
+      await connectorRenameHandler.resolve(ctx, current!.id),
+    ).toMatchObject({
+      via: "current",
+      id: current!.id,
+      current: { slug: "acme" },
+    });
+    expect(
+      await renameObject(ctx, "connector", { ref: current!.id, slug: "acme" }),
+    ).toMatchObject({
+      warnings: ["Nothing to change: it already has that name."],
+    });
 
     const renamed = await connectorRenameHandler.rename(ctx, {
       ref: "acme",

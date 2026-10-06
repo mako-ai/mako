@@ -16,7 +16,7 @@
  * same checkpoints/history/webhook — never a teardown plus a create.
  *
  * Handlers live in `./handlers/<kind>.ts` and are listed in `./registry.ts`.
- * The agent/MCP tool `rename_object` and `GET /links/resolve` dispatch here;
+ * The agent/MCP tool `rename_object` and `GET /objects/resolve` dispatch here;
  * the UI keeps its per-kind routes, which call the same services.
  */
 
