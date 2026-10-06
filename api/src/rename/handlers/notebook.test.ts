@@ -11,12 +11,17 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { NotebookIndex } from "../../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  commitBlobsOnBranch,
   initRepo,
   log as repoLog,
   readBlob,
   repoDirFor,
 } from "../../apps/repository.service";
 import { getNotebookStore } from "../../notebooks/store";
+import {
+  parseNotebookFile,
+  serializeNotebookFile,
+} from "../../notebooks/deepnote-file";
 import { checkpointNotebook } from "../../notebooks/notebook-git.service";
 import {
   bindTestWorkspaceRepo,
@@ -141,6 +146,39 @@ describe("notebook rename", () => {
     expect((await NotebookIndex.findOne({ notebookId: id }))?.name).toBe(
       "After",
     );
+  });
+
+  it("renaming onto the name of a laptop-made (unindexed) .deepnote takes the next free path", async () => {
+    const id = await seedNotebook("Alpha", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    // A notebook made on a laptop, pushed, not yet indexed.
+    const laptopId = "22222222-2222-4222-8222-222222222222";
+    const laptop = serializeNotebookFile({
+      id: laptopId,
+      name: "Beta",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      version: 1,
+      blocks: [{ id: "b1", type: "markdown", source: "# laptop beta" }],
+    } as never);
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "notebooks/beta.deepnote": laptop } },
+      { message: "laptop" },
+    );
+    const result = await renameObject(u1, "notebook", {
+      ref: id,
+      title: "Beta",
+    });
+    expect(result.after.path).toBe("notebooks/beta-2.deepnote");
+    expect(
+      parseNotebookFile((await fileAt("notebooks/beta.deepnote"))!)?.id,
+    ).toBe(laptopId);
+    expect(
+      parseNotebookFile((await fileAt("notebooks/beta-2.deepnote"))!)?.id,
+    ).toBe(id);
+    expect(await fileAt("notebooks/alpha.deepnote")).toBeNull();
   });
 
   it("refuses a slug, an empty title, and another member's private notebook", async () => {

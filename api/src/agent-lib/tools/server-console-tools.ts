@@ -36,7 +36,8 @@ import {
 } from "../../database/workspace-schema";
 import {
   ConsoleManager,
-  ConsolePathTakenError,
+  ConsoleConflictError,
+  ConsoleScopeError,
 } from "../../utils/console-manager";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { workspaceService } from "../../services/workspace.service";
@@ -359,7 +360,10 @@ export function createServerConsoleTools({
                     { userId, verb: "rename", publish: false },
                   );
                 } catch (error) {
-                  if (error instanceof ConsolePathTakenError) {
+                  if (
+                    error instanceof ConsoleConflictError ||
+                    error instanceof ConsoleScopeError
+                  ) {
                     return { success: false, error: error.message };
                   }
                   throw error;

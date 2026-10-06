@@ -23,7 +23,8 @@ import {
 } from "../../database/workspace-schema";
 import {
   ConsoleManager,
-  ConsolePathTakenError,
+  ConsoleConflictError,
+  ConsoleScopeError,
 } from "../../utils/console-manager";
 import {
   derivedConsoleId,
@@ -309,10 +310,15 @@ export const consoleRenameHandler: RenameHandler = {
         { userId: ctx.userId, verb: folderChanged ? "move" : "rename" },
       );
     } catch (error) {
-      // The service re-checks the target under its own lock-free write;
-      // the pre-check above is for a clearer message, not the guarantee.
-      if (error instanceof ConsolePathTakenError) {
+      // The guarantee is the commit itself: relocateConsole's write is a
+      // compare-and-swap on the source and target blobs, so a rename that
+      // lost a race (or a laptop push that landed the target) is refused
+      // there. The pre-check above only gives a clearer message earlier.
+      if (error instanceof ConsoleConflictError) {
         throw new RenameError(error.message, 409);
+      }
+      if (error instanceof ConsoleScopeError) {
+        throw new RenameError(error.message, 403);
       }
       throw error;
     }

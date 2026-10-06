@@ -101,6 +101,7 @@ import {
 import {
   DEFAULT_BRANCH,
   blobOid,
+  blobOidAt,
   commitBlobsOnBranch,
   diffNameStatus,
   listTree,
@@ -631,6 +632,18 @@ export async function loadLiveConsoleById(
  * cost a sync per read; the next push moves main and clears the entry.
  */
 const healMisses = new Map<string, string>();
+const HEAL_MISSES_MAX = 2_000;
+
+/** Remember a miss; the oldest entries go first once the map is full. */
+function rememberHealMiss(key: string, head: string): void {
+  healMisses.delete(key);
+  healMisses.set(key, head);
+  while (healMisses.size > HEAL_MISSES_MAX) {
+    const oldest = healMisses.keys().next().value;
+    if (oldest === undefined) break;
+    healMisses.delete(oldest);
+  }
+}
 
 async function healedLiveConsole(
   workspaceId: string,
@@ -657,7 +670,7 @@ async function healedLiveConsole(
   });
   // Still at the stale path, or gone: the file really was deleted.
   if (!row?.path || row.path === stalePath || row.is_deleted) {
-    if (head) healMisses.set(missKey, head);
+    if (head) rememberHealMiss(missKey, head);
     return null;
   }
   const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
@@ -685,17 +698,19 @@ export async function commitConsoleBatch(input: {
   message: string;
   /** Skip adoption — used by adoption itself. */
   skipAdoption?: boolean;
+  /**
+   * Compare-and-swap on content (see commitBlobsOnBranch): path → the blob
+   * oid the caller read at main, `null` = must be absent. A relocation
+   * decided from a file that moved or changed since, or whose target
+   * appeared, is refused (`BlobPreconditionError`), never re-applied.
+   */
+  expectBlobs?: Record<string, string | null>;
+  /** The caller already ran `freshMain` for this write; do not fetch twice. */
+  alreadyFresh?: boolean;
 }): Promise<ConsoleCommitResult> {
-  const repoDir = await requireWorkspaceRepo(input.workspaceId);
-  if (
-    appsRequireConnectedRepo() &&
-    !(await resolveMirrorTarget(input.workspaceId))
-  ) {
-    throw new RepoRequiredError();
-  }
-  // Commit onto the mirror's main, not a stale cached tip (consoles pin to
-  // the default branch — see branch-policy.ts).
-  await freshenBeforeMainWrite(input.workspaceId);
+  const repoDir = input.alreadyFresh
+    ? await requireWorkspaceRepo(input.workspaceId)
+    : await freshMain(input.workspaceId);
   if (!input.skipAdoption && !(await consolesAdopted(repoDir))) {
     // First console write on a workspace that never adopted: bring every
     // saved console in (snapshot; the CLI replays history).
@@ -715,9 +730,58 @@ export async function commitConsoleBatch(input: {
   const result = await commitBlobsOnBranch(repoDir, branch, input.mutation, {
     message: input.message,
     author,
+    expectBlobs: input.expectBlobs,
   });
   if (!result.unchanged) queueMirrorPush(input.workspaceId);
   return { commitOid: result.commitOid, unchanged: result.unchanged };
+}
+
+/**
+ * The workspace repo with main freshened from the mirror — what every
+ * write must read from before deciding what to write (a laptop push that
+ * arrives in that fetch must be seen, not overwritten). Returns the repo
+ * dir; throws RepoRequiredError exactly as commitConsoleBatch does.
+ */
+async function freshMain(workspaceId: string): Promise<string> {
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
+    throw new RepoRequiredError();
+  }
+  // Commit onto the mirror's main, not a stale cached tip (consoles pin to
+  // the default branch — see branch-policy.ts).
+  await freshenBeforeMainWrite(workspaceId);
+  return repoDir;
+}
+
+/**
+ * A console file at main, as a relocation needs it: the raw contents and
+ * blob oid (the CAS expectation) plus the chart sidecar, if any.
+ */
+async function fileAtMainFor(
+  repoDir: string,
+  head: string,
+  path: string,
+): Promise<{
+  contents: string;
+  oid: string;
+  sidecar: { contents: string; oid: string } | null;
+} | null> {
+  const oid = await blobOidAt(repoDir, head, path);
+  if (!oid) return null;
+  const contents = await readAt(repoDir, path);
+  if (contents === null) return null;
+  const sidecarPath = chartSidecarPath(path);
+  const sidecarOid = await blobOidAt(repoDir, head, sidecarPath);
+  const sidecarContents =
+    sidecarOid === null ? null : await readAt(repoDir, sidecarPath);
+  return {
+    contents,
+    oid,
+    sidecar:
+      sidecarOid !== null && sidecarContents !== null
+        ? { contents: sidecarContents, oid: sidecarOid }
+        : null,
+  };
 }
 
 /**
@@ -771,6 +835,14 @@ export async function commitConsoleRemoval(input: {
  * on main authored as the user under a "rename:" subject. Returns null when
  * there is no file at `fromPath`; the caller then falls back to projecting
  * the row, which is the only definition left.
+ *
+ * The commit is a compare-and-swap (`expectBlobs`): `fromPath` must still
+ * hold the blob read here and `toPath` (and its sidecar) must be absent at
+ * commit time — so two renames racing for one free name cannot both win,
+ * a laptop push that lands the target name between read and commit is
+ * not overwritten, and a save racing the rename is not undone. The read
+ * happens AFTER main is freshened from the mirror for the same reason.
+ * Throws `BlobPreconditionError` (repository.service) when refused.
  */
 export async function commitConsoleRelocation(input: {
   workspaceId: string;
@@ -781,31 +853,42 @@ export async function commitConsoleRelocation(input: {
 }): Promise<
   (ConsoleCommitResult & { path: string; sourceBlobSha: string }) | null
 > {
-  const repoDir = await requireWorkspaceRepo(input.workspaceId);
-  // Read what the mirror's main holds, not a cached tip.
-  await freshenBeforeMainWrite(input.workspaceId);
-  const contents = await readAt(repoDir, input.fromPath);
-  if (contents === null) return null;
+  const repoDir = await freshMain(input.workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return null;
+  const file = await fileAtMainFor(repoDir, head, input.fromPath);
+  if (!file) return null;
   const fromSidecar = chartSidecarPath(input.fromPath);
   const toSidecar = chartSidecarPath(input.toPath);
-  const sidecar = await readAt(repoDir, fromSidecar);
-  const writes: Record<string, string> = { [input.toPath]: contents };
-  if (sidecar !== null) writes[toSidecar] = sidecar;
+  const writes: Record<string, string> = { [input.toPath]: file.contents };
+  if (file.sidecar) writes[toSidecar] = file.sidecar.contents;
   const deletes = [input.fromPath, fromSidecar];
-  if (sidecar === null) deletes.push(toSidecar);
+  if (!file.sidecar) deletes.push(toSidecar);
   const result = await commitConsoleBatch({
     workspaceId: input.workspaceId,
     actorUserId: input.actorUserId,
     mutation: { writes, deletes: deletes.filter(d => !(d in writes)) },
     message: input.message,
+    expectBlobs: {
+      [input.fromPath]: file.oid,
+      [fromSidecar]: file.sidecar?.oid ?? null,
+      [input.toPath]: null,
+      [toSidecar]: null,
+    },
+    alreadyFresh: true,
   });
-  return { ...result, path: input.toPath, sourceBlobSha: blobOid(contents) };
+  return { ...result, path: input.toPath, sourceBlobSha: file.oid };
 }
 
 /**
- * Re-project a set of rows whose paths changed together (folder rename or
- * move, folder access change). Each entry is the row's desired state plus
- * the path it currently occupies.
+ * Move a set of rows whose paths changed together (folder rename or move,
+ * folder access change) in one commit. Each entry is the row's desired
+ * state plus the path it currently occupies. Like `commitConsoleRelocation`
+ * this moves each file AS IT IS AT MAIN — a folder rename must not publish
+ * every console's unsaved draft — and projects a row only when it has no
+ * file at main. The whole batch is a compare-and-swap: every source must
+ * still be the blob read, every destination that is not also a source
+ * must be absent (`BlobPreconditionError` otherwise).
  */
 export async function commitConsoleMoves(input: {
   workspaceId: string;
@@ -818,19 +901,40 @@ export async function commitConsoleMoves(input: {
     paths: Map<string, { path: string; sourceBlobSha: string }>;
   }
 > {
+  const repoDir = await freshMain(input.workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
   const folderCache = new Map<string, FolderLean | null>();
   const writes: Record<string, string> = {};
   const deletes: string[] = [];
+  const expectBlobs: Record<string, string | null> = {};
   const paths = new Map<string, { path: string; sourceBlobSha: string }>();
   for (const { id, row, previousPath } of input.rows) {
     const path = await repoPathForRow(row, folderCache);
-    const files = filesFor(path, fileStateFromRow(row));
-    Object.assign(writes, files.writes);
-    deletes.push(...files.deletes);
+    const file =
+      head && previousPath
+        ? await fileAtMainFor(repoDir, head, previousPath)
+        : null;
+    if (file && previousPath) {
+      writes[path] = file.contents;
+      if (file.sidecar) writes[chartSidecarPath(path)] = file.sidecar.contents;
+      else deletes.push(chartSidecarPath(path));
+      expectBlobs[previousPath] = file.oid;
+      expectBlobs[chartSidecarPath(previousPath)] = file.sidecar?.oid ?? null;
+      paths.set(id, { path, sourceBlobSha: file.oid });
+    } else {
+      const files = filesFor(path, fileStateFromRow(row));
+      Object.assign(writes, files.writes);
+      deletes.push(...files.deletes);
+      paths.set(id, { path, sourceBlobSha: blobOid(files.writes[path]) });
+    }
     if (previousPath && previousPath !== path) {
       deletes.push(previousPath, chartSidecarPath(previousPath));
     }
-    paths.set(id, { path, sourceBlobSha: blobOid(files.writes[path]) });
+  }
+  // Destinations must be free — unless they are also a source in this same
+  // batch (A→B while another goes B→A), whose expectation is its blob.
+  for (const path of Object.keys(writes)) {
+    if (!(path in expectBlobs)) expectBlobs[path] = null;
   }
   // A path both written and deleted (A→B while another goes B→A) must end
   // up written: deletes are applied first by the index-info order.
@@ -840,6 +944,8 @@ export async function commitConsoleMoves(input: {
     actorUserId: input.actorUserId,
     mutation: { writes, deletes: finalDeletes },
     message: input.message,
+    expectBlobs,
+    alreadyFresh: true,
   });
   return { ...result, paths };
 }
@@ -1113,23 +1219,28 @@ async function syncNow(
   // the same blob (a pure `git mv`), then for the paths git's own rename
   // detection pairs them with (a `git mv` plus an edit in the same push —
   // brief rule 3). Anything unclaimed at the end is a deletion.
+  // Only LIVE orphans are rename candidates, for the blob pass as much as
+  // for git's rename detection: a soft-deleted row is a settled deletion,
+  // and it comes back only when a file reappears AT ITS OWN PATH (the
+  // `rowByPath` hit below, counted as restored) — never by content, which
+  // would hand a long-deleted row and its collaborators to whoever pushes
+  // the same query later. The set of deleted rows also grows for the life
+  // of the workspace and must never be walked per push.
   const orphans = rows.filter(r => r.path && !byPath.has(r.path));
+  const liveOrphans = orphans.filter(o => !o.is_deleted);
   const orphanByBlob = new Map<string, IndexRow[]>();
-  for (const o of orphans) {
+  for (const o of liveOrphans) {
     if (!o.sourceBlobSha) continue;
     const list = orphanByBlob.get(o.sourceBlobSha) ?? [];
     list.push(o);
     orphanByBlob.set(o.sourceBlobSha, list);
   }
-  // Rename detection is bounded on purpose: only LIVE orphans (a
-  // soft-deleted row is a settled deletion, and the set of those grows for
-  // the life of the workspace — it must never be walked per push), and only
-  // when some new file has no row and no identical-blob claimant (else there
-  // is nothing a rename could explain). null marks a new path two vanished
-  // rows were both mapped to: keep neither guess — the blob pass or a
-  // deletion is honest, a wrong re-key is not.
+  // Rename detection is bounded on purpose: only when some new file has no
+  // row and no identical-blob claimant (else there is nothing a rename
+  // could explain). null marks a new path two vanished rows were both
+  // mapped to: keep neither guess — the blob pass or a deletion is honest,
+  // a wrong re-key is not.
   const orphanByNewPath = new Map<string, IndexRow | null>();
-  const liveOrphans = orphans.filter(o => !o.is_deleted);
   const unclaimed = consoleEntries.some(
     e => !rowByPath.has(e.path) && !orphanByBlob.has(e.oid),
   );
