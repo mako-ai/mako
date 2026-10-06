@@ -10,6 +10,7 @@
  * preselected it), and a shared editor offered moves that could only fail.
  */
 import type { ConsoleEntry } from "../store/consoleTreeStore";
+import { consoleFolderTrail, consoleLeafName } from "./console-name";
 
 export type ConsoleSection = "my" | "workspace";
 
@@ -274,4 +275,29 @@ export function renameMoveNotice(input: {
   return input.renamedTo
     ? `Moved to ${place} as '${input.renamedTo}'`
     : `Moved to ${place}`;
+}
+
+/**
+ * The snackbar after a save: where the console is, in the breadcrumb's
+ * words — a console shared with me is "Shared with me", never its owner's
+ * folder ("Console saved to 'Team Drafts/Secret Margin ed2'" named a folder
+ * the editor cannot see).
+ */
+export function consoleSavedNotice(input: {
+  access: "private" | "workspace" | undefined;
+  ownerId: string | undefined;
+  currentUserId: string | undefined;
+  /** The console's derived path (folders + leaf), as the tab knows it. */
+  filePath: string;
+  /** Its name (the tab's title); the path's leaf when absent. */
+  name?: string;
+}): string {
+  const name = input.name || consoleLeafName(input.filePath);
+  const place = consolePlacement({
+    access: input.access,
+    ownerId: input.ownerId,
+    currentUserId: input.currentUserId,
+    folders: consoleFolderTrail(input.filePath, name),
+  });
+  return `Console saved to ${[place.section, ...place.folders, name].join(" › ")}`;
 }

@@ -4,6 +4,7 @@ import {
   consoleNameProblem,
   consoleNameTakenBy,
   consolePlacement,
+  consoleSavedNotice,
   consoleSectionLabel,
   renameMoveNotice,
   renameMoveRequest,
@@ -298,5 +299,39 @@ describe("renameMoveNotice — renamed is not moved", () => {
         name: "Alpha Two",
       }),
     ).toBe("Moved to My Consoles as 'Alpha Two'");
+  });
+});
+
+describe("consoleSavedNotice — a save says where, in the breadcrumb's words", () => {
+  it("a console shared with me is saved to 'Shared with me' — never its owner's folder", () => {
+    expect(
+      consoleSavedNotice({
+        access: "private",
+        ownerId: "owner",
+        currentUserId: "editor2",
+        filePath: "Team Drafts/Secret Margin ed2",
+        name: "Secret Margin ed2",
+      }),
+    ).toBe("Console saved to Shared with me › Secret Margin ed2");
+  });
+
+  it("my own console and a Workspace console keep their folder trail", () => {
+    expect(
+      consoleSavedNotice({
+        access: "private",
+        ownerId: "me",
+        currentUserId: "me",
+        filePath: "Team Drafts/Revenue",
+      }),
+    ).toBe("Console saved to My Consoles › Team Drafts › Revenue");
+    expect(
+      consoleSavedNotice({
+        access: "workspace",
+        ownerId: "someone",
+        currentUserId: "me",
+        filePath: "finance/Alpha Four",
+        name: "Alpha Four",
+      }),
+    ).toBe("Console saved to Workspace › finance › Alpha Four");
   });
 });

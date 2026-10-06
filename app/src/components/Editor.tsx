@@ -122,6 +122,7 @@ import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { accessForMove } from "../store/lib/createResourceTreeStore";
 import {
   consolePlacement,
+  consoleSavedNotice,
   locateInConsoleTree,
   relocationScope,
   renameMoveNotice,
@@ -1532,11 +1533,18 @@ function Editor({
         });
 
         // The place as the tab knows it (a saved console stays where it
-        // is) — no extension: an SQL console is not a ".js" file.
-        const savedAt = keepPlace
-          ? (useConsoleStore.getState().tabs[tabId]?.filePath ?? savePath)
-          : savePath;
-        setSnackbarMessage(`Console saved to '${savedAt}'`);
+        // is), in the breadcrumb's words — no extension, and never the
+        // owner's folders of a console shared with this person.
+        const saved = useConsoleStore.getState().tabs[tabId];
+        setSnackbarMessage(
+          consoleSavedNotice({
+            access: saved?.access,
+            ownerId: saved?.owner_id,
+            currentUserId: user?.id,
+            filePath: (keepPlace ? saved?.filePath : undefined) ?? savePath,
+            name: saved?.title,
+          }),
+        );
         setSnackbarOpen(true);
         success = true;
 
