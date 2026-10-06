@@ -1404,6 +1404,36 @@ describe("walkHistory (pure)", () => {
     ).toEqual({ aliases: [], superseded: ["foo"], arrived: ["bar", "foo"] });
   });
 
+  it("decides a name an app left twice by its LAST departure: reclaimed, it is the app's own again", () => {
+    // A: foo → bar; B created at foo, then foo → baz; A: bar → foo → qux.
+    const B = "b".repeat(24);
+    const events = [
+      rename("apps/foo", "apps/qux", A),
+      rename("apps/bar", "apps/foo", A),
+      rename("apps/foo", "apps/baz", B),
+      create("apps/foo", B),
+      rename("apps/foo", "apps/bar", A),
+      create("apps/foo", A),
+    ];
+    const out = walkHistory(
+      [
+        row("apps/qux", { appId: A, hasManifestId: true }),
+        row("apps/baz", { appId: B, hasManifestId: true }),
+      ],
+      events,
+    );
+    // Not ALSO superseded for its first stint, which B ended.
+    expect(out.get("apps/qux")).toMatchObject({
+      aliases: ["foo", "bar"],
+      superseded: [],
+    });
+    // B left foo before A came back: B's claim is the superseded one.
+    expect(out.get("apps/baz")).toMatchObject({
+      aliases: [],
+      superseded: ["foo"],
+    });
+  });
+
   it("records a folder moved under the same name by its old path, so the bare name still finds it", () => {
     // A was apps/report, moved (laptop, before the upgrade) into
     // apps/Sales/report; B is apps/Ops/report.
@@ -2317,6 +2347,33 @@ describe("a name reused and then given up", () => {
     expect(await who("foo")).toBe("apps/foo-v2 via=alias");
     expect(await supersededOf("apps/bar")).toEqual(["foo"]);
     expect(await rebuilt("foo")).toBe("apps/foo-v2 via=alias");
+  });
+
+  it("a name the older app took back and left again is the older app's — incremental, forced and fresh rebuild alike", async () => {
+    // A: foo → bar (UI). B created at foo, renamed foo → baz. A renamed
+    // bar → foo, then foo → qux. A held foo LAST: /apps/foo opens A.
+    const aId = await setup();
+    await externalCommit({ "apps/foo/mako.json": manifest("B") });
+    expect(await who("foo")).toBe("apps/foo via=current");
+    const B = (await resolveProjectRef(WS, "foo"))!;
+    await renameProject(B, { slug: "baz" }, { userId: USER });
+    await renameProject(
+      (await resolveProjectRef(WS, aId))!,
+      { slug: "foo" },
+      { userId: USER },
+    );
+    await renameProject(
+      (await resolveProjectRef(WS, aId))!,
+      { slug: "qux" },
+      { userId: USER },
+    );
+    expect(await who("foo")).toBe("apps/qux via=alias");
+    await syncAppsIndexFromRepo(WS, { force: true });
+    invalidateAppsIndexCache(WS);
+    expect(await who("foo")).toBe("apps/qux via=alias");
+    expect(await rebuilt("foo")).toBe("apps/qux via=alias");
+    // B keeps the names that are its own.
+    expect(await who("baz")).toBe("apps/baz via=current");
   });
 
   for (const read of ["never", "between", "not between"] as const) {

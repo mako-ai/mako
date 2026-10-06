@@ -828,8 +828,16 @@ export function walkHistory(
       const name =
         basename(from) === basename(current) ? from : aliasForOldPath(from);
       current = from;
-      if (latest.get(from) === "arrived") superseded.push(name);
-      else aliases.push(name);
+      // An app can leave the same name more than once (renamed away,
+      // back, and away again). Its LAST departure — the first one the
+      // walk meets — decides: a name it reclaimed after another app had
+      // taken it is its own again, however that earlier stint ended.
+      const seen = (list: readonly string[]) =>
+        list.some(other => aliasMatchesRef(other, name));
+      if (!seen(aliases) && !seen(superseded)) {
+        if (latest.get(from) === "arrived") superseded.push(name);
+        else aliases.push(name);
+      }
       if (aliases.length >= MAX_ALIASES_PER_APP) break;
     }
     out.set(app.path, { aliases, superseded, arrived });
