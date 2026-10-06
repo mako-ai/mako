@@ -51,7 +51,10 @@ export async function renameObject(
   // A rename to what the object is already called succeeds with nothing to
   // do, the same answer for every kind (handlers used to disagree: 200, 409,
   // 400, or a save that bumped a version for nothing).
-  const current = await RENAME_HANDLERS[kind].resolve(ctx, request.ref.trim());
+  // The same ref the resolve endpoint accepts: a padded id or name must not
+  // resolve there and 404 here.
+  const ref = request.ref.trim();
+  const current = await RENAME_HANDLERS[kind].resolve(ctx, ref);
   if (current && isNoOp(request, current.current)) {
     return {
       kind,
@@ -62,7 +65,7 @@ export async function renameObject(
       warnings: ["Nothing to change: it already has that name."],
     };
   }
-  return RENAME_HANDLERS[kind].rename(ctx, request);
+  return RENAME_HANDLERS[kind].rename(ctx, { ...request, ref });
 }
 
 function isNoOp(request: RenameRequest, current: RenameLocation): boolean {

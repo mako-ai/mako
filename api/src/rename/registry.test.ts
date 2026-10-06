@@ -56,6 +56,16 @@ describe("renameObject", () => {
     expect(rename).toHaveBeenCalledOnce();
   });
 
+  it("hands the handler the trimmed ref the resolve endpoint accepts", async () => {
+    const rename = stub({ title: "Revenue" });
+    rename.mockResolvedValue({ id: "d1" });
+    await renameObject(ctx, "dashboard", { ref: "  d1 ", title: "Revenue v2" });
+    expect(rename).toHaveBeenCalledWith(ctx, {
+      ref: "d1",
+      title: "Revenue v2",
+    });
+  });
+
   it("refuses a request with nothing to rename", async () => {
     await expect(renameObject(ctx, "dashboard", { ref: "d1" })).rejects.toThrow(
       /new title, a new slug/,
