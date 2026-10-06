@@ -707,28 +707,116 @@ export async function rekeyFlowSlug(
   await Flow.updateOne(
     { _id: flowId, slug: from },
     {
-      $set: { slug: to, ...(commit ? { lastRenameCommit: commit } : {}) },
+      $set: {
+        slug: to,
+        ...(commit
+          ? { lastRenameCommit: commit, lastRenameAt: new Date() }
+          : {}),
+      },
       $addToSet: { aliases: from },
     },
   );
 }
 
 /**
- * Whether the tree at `head` predates the row's last rename — i.e. a push
- * reaction that read the files before a rename commit landed and the rows
- * after the row was re-keyed. Such a view still shows the OLD file and not
- * the new one; it must neither recreate the old slug as a new flow nor
- * "rename back". Rows that recorded no commit (renamed before this field
- * existed) fall back to the weaker signal the caller supplies.
+ * How long a rename commit is trusted to be "on its way to main". Within it,
+ * a tree that does not contain the commit is read as older than the rename
+ * (a push reaction that read the files before the commit landed and the rows
+ * after): it must neither recreate the old slug nor rename back. After it, a
+ * commit still absent from main never landed — the tree is the truth again.
  */
-async function treePredatesRename(
+export const RENAME_GUARD_MS = 10 * 60 * 1000;
+
+/**
+ * Whether the row's last rename is recorded, recent, and NOT in `head`'s
+ * history — the one situation in which the tree must not be believed about
+ * this row. No recorded commit means no guard: a row that merely carries
+ * aliases is judged on the tree like any other.
+ */
+async function renameGuardActive(
   repoDir: string,
   head: string,
-  row: Pick<IFlow, "lastRenameCommit">,
-  fallback: boolean,
+  row: Pick<IFlow, "lastRenameCommit" | "lastRenameAt">,
 ): Promise<boolean> {
-  if (!row.lastRenameCommit) return fallback;
+  if (!row.lastRenameCommit || !row.lastRenameAt) return false;
+  if (Date.now() - row.lastRenameAt.getTime() > RENAME_GUARD_MS) return false;
   return !(await isAncestorCommit(repoDir, row.lastRenameCommit, head));
+}
+
+/**
+ * Before the files are read against the rows: retire rename guards the tree
+ * has caught up with, and resolve the ones it never will.
+ *
+ *  - The commit is in `head`'s history, or the file at the row's current
+ *    slug is in the tree under some other commit (a history rewrite kept
+ *    the tree): the rename landed. The guard is cleared.
+ *  - The guard has expired and the tree still shows the file under one of
+ *    the row's OLD names and not under its current one: the rename commit
+ *    never reached main. The tree is the truth, so the row is re-keyed back
+ *    to the name the file has — same id, nothing torn down — and that is
+ *    said loudly, because somebody's rename was lost.
+ *  - Expired with neither file present: nothing to decide here; the guard
+ *    is cleared and the row is a removal candidate like any other.
+ *  - Recent and absent: the guard stays and the callers below honour it.
+ */
+async function settleRenameGuards(args: {
+  workspaceId: string;
+  repoDir: string;
+  head: string;
+  fileSlugs: ReadonlySet<string>;
+}): Promise<void> {
+  const { workspaceId, repoDir, head, fileSlugs } = args;
+  const guarded = await Flow.find({
+    workspaceId,
+    lastRenameCommit: { $exists: true },
+  });
+  for (const row of guarded) {
+    const clear = () =>
+      Flow.updateOne(
+        { _id: row._id },
+        { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
+      );
+    const commit = row.lastRenameCommit as string;
+    if (await isAncestorCommit(repoDir, commit, head)) {
+      await clear();
+      continue;
+    }
+    if (row.slug && fileSlugs.has(row.slug)) {
+      logger.info("Flow rename present in the tree under another commit", {
+        workspaceId,
+        slug: row.slug,
+        lastRenameCommit: commit,
+      });
+      await clear();
+      continue;
+    }
+    const age = row.lastRenameAt
+      ? Date.now() - row.lastRenameAt.getTime()
+      : Infinity;
+    if (age <= RENAME_GUARD_MS) continue;
+    const oldSlug = (row.aliases ?? []).find(alias => fileSlugs.has(alias));
+    if (row.slug && oldSlug) {
+      logger.error(
+        "Flow rename commit never reached main; re-keying the row back to the file the tree has",
+        {
+          workspaceId,
+          flowId: String(row._id),
+          renamedTo: row.slug,
+          revertedTo: oldSlug,
+          lastRenameCommit: commit,
+        },
+      );
+      await rekeyFlowSlug(row._id as Types.ObjectId, row.slug, oldSlug);
+    } else {
+      logger.warn("Flow rename commit never reached main; trusting the tree", {
+        workspaceId,
+        flowId: String(row._id),
+        slug: row.slug,
+        lastRenameCommit: commit,
+      });
+    }
+    await clear();
+  }
 }
 
 /**
@@ -795,10 +883,10 @@ export async function rekeyRenamedFlows(args: {
   const removedRows: IFlow[] = [];
   for (const row of rows) {
     if (row.slug === undefined || fileBySlug.has(row.slug)) continue;
-    // A row renamed by a commit this tree does not contain is not "gone":
-    // the tree is older than the rename. Leave it out of the pairing — its
-    // old file in this tree is not a candidate for anything.
-    if (await treePredatesRename(repoDir, head, row, false)) {
+    // A row renamed by a recent commit this tree does not contain is not
+    // "gone": the tree is older than the rename. Leave it out of the
+    // pairing — its old file in this tree is not a candidate for anything.
+    if (await renameGuardActive(repoDir, head, row)) {
       logger.info("Tree predates a flow rename; not pairing its old slug", {
         workspaceId,
         slug: row.slug,
@@ -1099,6 +1187,14 @@ export async function syncFlowsFromRepo(
   // Ids for files with no row are derived from the slug; a row of another
   // slug may already hold one (a renamed git-born flow), so the free
   // derivation is decided against the rows as they stand.
+  try {
+    await settleRenameGuards({ workspaceId, repoDir, head, fileSlugs });
+  } catch (error) {
+    logger.warn("Flow rename guards could not be settled", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   const idRows = await Flow.find({ workspaceId }).select("_id slug").lean();
   try {
     await rekeyRenamedFlows({ workspaceId, repoDir, head, files });
@@ -1178,22 +1274,18 @@ export async function syncFlowsFromRepo(
     const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
     // A file at a slug some row holds as an ALIAS is either a new flow
     // taking an old name (legitimate: current wins, the old row loses the
-    // alias below) or a tree read before that row's rename commit landed
-    // (its old file is still here, its new one is not). The second must
-    // create nothing and tear nothing down: the row is kept as it is and
-    // the next push, which contains the rename, reconciles.
+    // alias below) or a tree read before that row's recent rename commit
+    // landed (its old file is still here, its new one is not). The second
+    // must create nothing and tear nothing down: the row is kept as it is
+    // and the next push, which contains the rename, reconciles. Only a
+    // recorded, recent, not-yet-landed rename says so (`renameGuardActive`).
     if (!row) {
       const claimant = await Flow.findOne({ workspaceId, aliases: slug })
-        .select("_id slug aliases lastRenameCommit")
+        .select("_id slug aliases lastRenameCommit lastRenameAt")
         .lean();
       if (
         claimant?.slug &&
-        (await treePredatesRename(
-          repoDir,
-          head,
-          claimant,
-          !fileSlugs.has(claimant.slug),
-        ))
+        (await renameGuardActive(repoDir, head, claimant))
       ) {
         logger.info("Tree predates a flow rename; keeping the renamed row", {
           workspaceId,

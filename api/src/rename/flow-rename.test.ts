@@ -412,3 +412,107 @@ describe("review findings: concurrency", () => {
     });
   });
 });
+
+describe("round 2: saves racing renames, files edited in place", () => {
+  it("[r2-2] a save whose first freshen overlaps a rename fails on the slug re-read; one landing on the commit's freshen fails the CAS — never two files", async () => {
+    const { runGit } = await import("../apps/git");
+    const ls = async () =>
+      (
+        await runGit([
+          "-C",
+          repoDirFor(WS),
+          "ls-tree",
+          "--name-only",
+          "-r",
+          DEFAULT_BRANCH,
+          "flows/",
+        ])
+      ).stdout
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+    await push({ "flows/foo.yml": flowYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+
+    // (i) the rename lands during the save's own freshen
+    const inFlight = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    inFlight!.name = "Foo (edited in form)";
+    freshenHook.fn = async () => {
+      await flowRenameHandler.rename(ctx(), { ref: "foo", slug: "bar" });
+    };
+    const first = await commitFlowFile(inFlight!, "u1");
+    expect(first.ok).toBe(false);
+    expect(first.error).toMatch(/renamed to "bar"/);
+    expect(await ls()).toEqual(["flows/bar.yml"]);
+
+    // (ii) the rename lands during the freshen INSIDE the commit (after the
+    // slug re-read passed): the compare-and-swap on the file refuses it.
+    const again = await Flow.findOne({ workspaceId: WS, slug: "bar" });
+    again!.name = "Bar (edited in form)";
+    freshenHook.fn = async () => {
+      freshenHook.fn = async () => {
+        await flowRenameHandler.rename(ctx(), { ref: "bar", slug: "baz" });
+      };
+    };
+    const second = await commitFlowFile(again!, "u1");
+    expect(second.ok).toBe(false);
+    expect(second.error).toMatch(/changed in the workspace repo/);
+    expect(await ls()).toEqual(["flows/baz.yml"]);
+    freshenHook.fn = null;
+
+    // One flow, one stream, after the push sync.
+    await syncFlowsFromRepo(WS, "u1");
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows.map(r => r.slug)).toEqual(["baz"]);
+    expect(rows[0]._id.toString()).toBe(inFlight!._id.toString());
+  });
+
+  it("[r2-4] a rename edits name:/aliases: in place — comments and unknown keys survive, title-only included", async () => {
+    const annotated = [
+      "# owned by growth team — do not change the schema",
+      "name: Foo",
+      "description: leads stream",
+      "type: webhook",
+      "source:",
+      "  type: connector",
+      `  connector_id: ${CONNECTOR}`,
+      "destination:",
+      `  connection_id: ${DEST}`,
+      "  table:",
+      "    schema: raw_a  # prod dataset",
+      "    create_if_not_exists: true",
+      "webhook:",
+      "  enabled: true",
+      "sync:",
+      "  engine: cdc",
+      "",
+    ].join("\n");
+    await push({ "flows/foo.yml": annotated });
+    await syncFlowsFromRepo(WS, "u1");
+    await flowRenameHandler.rename(ctx(), {
+      ref: "foo",
+      title: "Foo → Warehouse",
+    });
+    expect(await fileAt("flows/foo.yml")).toBe(
+      annotated.replace("name: Foo", "name: Foo → Warehouse"),
+    );
+    await flowRenameHandler.rename(ctx(), { ref: "foo", slug: "foo-sync" });
+    expect(await fileAt("flows/foo-sync.yml")).toBe(
+      annotated.replace(
+        "name: Foo\n",
+        "name: Foo → Warehouse\naliases:\n  - foo\n",
+      ),
+    );
+    // A file the editor cannot handle in place is refused, not rewritten.
+    const blockName = annotated.replace("name: Foo\n", "name: |\n  Foo\n");
+    await push({ "flows/odd.yml": blockName });
+    await syncFlowsFromRepo(WS, "u1");
+    await expect(
+      flowRenameHandler.rename(ctx(), { ref: "odd", title: "Odd" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/edited in place/),
+    });
+    expect(await fileAt("flows/odd.yml")).toBe(blockName);
+  });
+});

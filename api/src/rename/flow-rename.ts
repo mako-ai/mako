@@ -44,7 +44,6 @@ import {
   flowFilePath,
   isValidFlowSlug,
   parseFlowFileResult,
-  serializeFlowFile,
 } from "../services/flow-config-files";
 import { commitFlowConfig } from "../services/flow-config.service";
 import {
@@ -53,6 +52,7 @@ import {
   listFlowDefinitionsAtMain,
 } from "../services/flow-sync.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
+import { editNameAndAliases } from "./yaml-name-aliases";
 import {
   RenameError,
   type RenameContext,
@@ -293,11 +293,24 @@ export async function renameFlow(
     slugChanged ? [oldSlug] : [],
     nextSlug,
   );
-  const nextContents = serializeFlowFile({
-    ...parsed.file,
-    name: nextName,
-    ...(aliases.length > 0 ? { aliases } : {}),
-  });
+  // Edited in place — the two keys a rename owns, on their own lines — so
+  // comments, unknown keys and anything else the parser does not model
+  // survive. Verified by the real parser before anything is committed; a
+  // file this cannot be done to is refused, never re-serialised.
+  const nextContents = editNameAndAliases(contents, nextName, aliases);
+  const reparsed =
+    nextContents === null ? null : parseFlowFileResult(nextContents);
+  if (
+    nextContents === null ||
+    !reparsed?.ok ||
+    reparsed.file.name !== nextName ||
+    (reparsed.file.aliases ?? []).join("\0") !== aliases.join("\0")
+  ) {
+    throw new RenameError(
+      `${oldPath} could not be edited in place (its \`name:\` or \`aliases:\` is not a plain one-line value / list); edit the file by hand, then rename.`,
+      409,
+    );
+  }
   const before = locationOf(row);
   const titleChanged = nextName !== parsed.file.name;
   if (!slugChanged && !titleChanged) {
@@ -355,7 +368,9 @@ export async function renameFlow(
         slug: nextSlug,
         name: nextName,
         ...(aliases.length > 0 ? { aliases } : {}),
-        ...(slugChanged ? { lastRenameCommit: commit.commitOid } : {}),
+        ...(slugChanged
+          ? { lastRenameCommit: commit.commitOid, lastRenameAt: new Date() }
+          : {}),
       },
       ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
     },

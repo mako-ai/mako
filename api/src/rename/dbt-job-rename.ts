@@ -37,7 +37,6 @@ import {
   isValidJobSlug,
   jobFilePath,
   parseJobFile,
-  serializeJobFile,
 } from "../dbt/dbt-config-files";
 import {
   commitDbtConfig,
@@ -48,6 +47,7 @@ import {
 import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
 import { mergedAliases } from "./flow-dbt-job-pairing";
+import { editNameAndAliases } from "./yaml-name-aliases";
 import {
   RenameError,
   type RenameContext,
@@ -291,11 +291,21 @@ export async function renameDbtJob(
     slugChanged ? [oldSlug] : [],
     nextSlug,
   );
-  const nextContents = serializeJobFile({
-    ...parsed,
-    name: nextName,
-    ...(aliases.length > 0 ? { aliases } : {}),
-  });
+  // In place (see flow-rename.ts): comments, unknown keys and commands
+  // beyond the tenth survive; refused rather than re-serialised.
+  const nextContents = editNameAndAliases(contents, nextName, aliases);
+  const reparsed = nextContents === null ? null : parseJobFile(nextContents);
+  if (
+    nextContents === null ||
+    !reparsed ||
+    reparsed.name !== nextName ||
+    (reparsed.aliases ?? []).join("\0") !== aliases.join("\0")
+  ) {
+    throw new RenameError(
+      `${oldPath} could not be edited in place (its \`name:\` or \`aliases:\` is not a plain one-line value / list); edit the file by hand, then rename.`,
+      409,
+    );
+  }
   const before = locationOf(project, row);
   const titleChanged = nextName !== parsed.name;
   if (!slugChanged && !titleChanged) {
@@ -346,7 +356,9 @@ export async function renameDbtJob(
         slug: nextSlug,
         name: nextName,
         ...(aliases.length > 0 ? { aliases } : {}),
-        ...(slugChanged ? { lastRenameCommit: commit.commitOid } : {}),
+        ...(slugChanged
+          ? { lastRenameCommit: commit.commitOid, lastRenameAt: new Date() }
+          : {}),
       },
       ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
     },
@@ -361,7 +373,7 @@ export async function renameDbtJob(
           path: jobFilePath(nextSlug),
           slug: nextSlug,
           oid: blobOid(nextContents),
-          parsed: { ...parsed, name: nextName, aliases },
+          parsed: reparsed,
         },
         fresh,
       );
