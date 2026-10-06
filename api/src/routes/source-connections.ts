@@ -21,7 +21,11 @@ import {
   isWorkspaceConnectorType,
   slugFromType,
 } from "../connectors/workspace/SandboxedConnector";
-import { findConnectorDefinitionRow } from "../connectors/workspace/resolver";
+import {
+  ConnectorBindingError,
+  findConnectorDefinitionRow,
+  resolveConnectionBinding,
+} from "../connectors/workspace/resolver";
 import {
   PROBE_DEFAULT_LIMIT,
   PROBE_MAX_LIMIT,
@@ -278,6 +282,12 @@ async function publicSourceConnection(
 ): Promise<Record<string, unknown>> {
   const record = asSourceRecord(doc);
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
+  // Set when the connection's binding does not resolve: the edit form shows
+  // the message and, for a connector that is gone, re-sends `type` on save
+  // so the save re-binds (PUT below).
+  let connectorBinding:
+    | { ok: false; problem: ConnectorBindingError["problem"]; message: string }
+    | undefined;
   try {
     schema = await syncConnectorRegistry.getConfigSchemaForType(
       String(record.type ?? ""),
@@ -289,16 +299,99 @@ async function publicSourceConnection(
       },
     );
   } catch (error) {
-    logger.warn("Could not load connector schema while redacting config", {
-      type: record.type,
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (error instanceof ConnectorBindingError) {
+      connectorBinding = {
+        ok: false,
+        problem: error.problem,
+        message: error.message,
+      };
+    } else {
+      logger.warn("Could not load connector schema while redacting config", {
+        type: record.type,
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return {
     ...record,
     config: redactSourceConfig(record.config, schema),
+    ...(connectorBinding ? { connectorBinding } : {}),
   };
+}
+
+/**
+ * A connection whose binding does not resolve cannot have its credential
+ * encrypted, decrypted or run: that is a state to fix (re-bind or delete),
+ * not a server fault — 409 with the resolver's explanation of how.
+ */
+function connectorBindingConflict(error: unknown) {
+  return error instanceof ConnectorBindingError
+    ? {
+        body: {
+          success: false as const,
+          error: error.message,
+          code: "connector_binding",
+          problem: error.problem,
+        },
+        status: 409 as const,
+      }
+    : null;
+}
+
+/**
+ * Naming a connection's OWN `ws:` type in a PUT is a deliberate act, and it
+ * re-binds the connection to the definition that slug currently names —
+ * but only when the connection has no live binding to keep:
+ *
+ *  - its stamped definition is GONE (the folder was deleted; a restore is
+ *    a new row with a new id, so without this a revert would strand the
+ *    connection for good), or
+ *  - it was never stamped (a row the stamping migration found no
+ *    definition for), where this binds it to what it already resolves to.
+ *
+ * A stamp pointing at a LIVE definition is never moved this way, even when
+ * `type` now names a different one: moving a credential to another
+ * connector takes a type change. Returns whether the stamp changed.
+ */
+async function rebindOnExplicitType(
+  workspaceId: string,
+  sourceConnection: {
+    _id: unknown;
+    type: string;
+    connectorDefinitionId?: Types.ObjectId;
+  },
+): Promise<boolean> {
+  const current = await resolveConnectionBinding(workspaceId, {
+    type: sourceConnection.type,
+    connectorDefinitionId: sourceConnection.connectorDefinitionId,
+  });
+  const rebindable = current.ok
+    ? current.via === "current"
+    : current.problem !== "name-moved";
+  if (!rebindable) return false;
+  const target = await findConnectorDefinitionRow(
+    workspaceId,
+    slugFromType(sourceConnection.type),
+  );
+  // Same-type means `type` is already canonical: a current slug, never an
+  // alias claimant. Nothing named → nothing to bind to; the stamp stays.
+  if (!target || target.via !== "current") return false;
+  logger.info(
+    "Re-bound a source connection to its connector by an explicit type",
+    {
+      workspaceId,
+      connectionId: String(sourceConnection._id),
+      type: sourceConnection.type,
+      from:
+        sourceConnection.connectorDefinitionId == null
+          ? null
+          : String(sourceConnection.connectorDefinitionId),
+      to: String(target.row._id),
+    },
+  );
+  sourceConnection.connectorDefinitionId = target.row._id as Types.ObjectId;
+  return true;
 }
 
 sourceConnectionRoutes.openapi(
@@ -589,6 +682,12 @@ sourceConnectionRoutes.openapi(
                 )?.row._id as Types.ObjectId | undefined)
               : undefined;
           hasChanges = true;
+        } else if (
+          isWorkspaceConnectorType(nextType) &&
+          workspaceId &&
+          (await rebindOnExplicitType(workspaceId, sourceConnection))
+        ) {
+          hasChanges = true;
         }
       }
       if (
@@ -692,6 +791,10 @@ sourceConnectionRoutes.openapi(
           : "No changes detected",
       });
     } catch (error) {
+      // A config edit on a connection whose connector is gone (or whose
+      // type names another): nothing was written; say how to re-bind.
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       return c.json(
         {
           success: false,
@@ -834,6 +937,8 @@ sourceConnectionRoutes.openapi(
         data: result,
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       return c.json(
         {
           success: false,

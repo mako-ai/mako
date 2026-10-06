@@ -93,31 +93,67 @@ export interface ConnectionBinding {
 }
 
 /**
+ * Why a connection's binding resolves to nothing.
+ *
+ *  - `definition-gone`: stamped, and the stamped row no longer exists — its
+ *    folder was deleted. A folder restored later (a revert) is indexed as a
+ *    NEW row, so the stamp never comes back on its own; the remedy is a
+ *    human re-bind (PUT the connection naming its `ws:` type).
+ *  - `name-moved`: stamped to a live row, but `type` names a DIFFERENT live
+ *    row. Never re-bound by naming the same type again: only a type change
+ *    moves a credential to another connector.
+ *  - `not-found`: unstamped, and no row's current slug is the one in `type`.
+ */
+export type ConnectionBindingProblem =
+  | "definition-gone"
+  | "name-moved"
+  | "not-found";
+
+/** A refusal to resolve a connection's connector, saying why and what to do. */
+export class ConnectorBindingError extends Error {
+  constructor(
+    public readonly problem: ConnectionBindingProblem,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ConnectorBindingError";
+  }
+}
+
+export type ConnectionBindingResolution =
+  | { ok: true; row: IConnectorDefinition; via: "stamp" | "current" }
+  | { ok: false; problem: ConnectionBindingProblem; message: string };
+
+/**
  * The definition a CONNECTION is bound to — the only resolution a path
  * that decrypts, encrypts or runs a credential may use.
  *
  * Stamped (`connectorDefinitionId`): that row, by id, and nothing else.
- * The row gone → null (fail closed: the credential's connector no longer
- * exists). `type` naming a live connector that is NOT that row → null and
- * a log line (fail closed: a name has been moved under the credential).
+ * The row gone → refused (fail closed: the credential's connector no longer
+ * exists). `type` naming a live connector that is NOT that row → refused
+ * and a log line (fail closed: a name has been moved under the credential).
  * `type` naming nothing is fine — the slug in `type` is cosmetic.
  *
  * Unstamped (rows predating the stamp): the row whose CURRENT slug `type`
  * names, never one that merely lists it as an alias — an alias is a
  * courtesy for links, not a binding for a secret.
+ *
+ * A refusal carries a message a person can act on: it names the problem
+ * and the re-bind that fixes it.
  */
-export async function findConnectorDefinitionFor(
+export async function resolveConnectionBinding(
   workspaceId: string,
   binding: ConnectionBinding,
-): Promise<{ row: IConnectorDefinition; via: "stamp" | "current" } | null> {
+): Promise<ConnectionBindingResolution> {
   const slug = slugFromWorkspaceType(binding.type);
   const stamp =
     binding.connectorDefinitionId == null
       ? null
       : String(binding.connectorDefinitionId);
   if (stamp) {
-    if (!/^[0-9a-f]{24}$/.test(stamp)) return null;
-    const row = await ConnectorDefinition.findOne({ workspaceId, _id: stamp });
+    const row = /^[0-9a-f]{24}$/.test(stamp)
+      ? await ConnectorDefinition.findOne({ workspaceId, _id: stamp })
+      : null;
     if (!row) {
       logger.warn(
         "A source connection is bound to a connector that no longer exists",
@@ -127,7 +163,16 @@ export async function findConnectorDefinitionFor(
           connectorDefinitionId: stamp,
         },
       );
-      return null;
+      return {
+        ok: false,
+        problem: "definition-gone",
+        message:
+          `This connection was saved for the connector "${slug}" (definition ${stamp}), which no longer exists — its folder was removed. ` +
+          `A connector folder that is deleted and restored later (e.g. by a revert) is indexed as a NEW connector, ` +
+          `and a credential is never handed to another connector on its own, so this connection stays locked until it is re-bound. ` +
+          `If ${CONNECTORS_DIR}/${slug}/ is back on main and is the connector this credential is for, re-bind it: open the connection, ` +
+          `keep "${slug}" selected and save — or PUT the connection with {"type": "${WORKSPACE_PREFIX}${slug}"}. Otherwise delete the connection.`,
+      };
     }
     const named = await ConnectorDefinition.findOne({ workspaceId, slug });
     if (named && String(named._id) !== stamp) {
@@ -140,16 +185,45 @@ export async function findConnectorDefinitionFor(
           namedId: String(named._id),
         },
       );
-      return null;
+      return {
+        ok: false,
+        problem: "name-moved",
+        message:
+          `This connection is bound to the connector "${row.slug}" (definition ${stamp}), but its type "${binding.type}" now names a different connector, ` +
+          `and a credential is never used by a connector it was not saved for. ` +
+          `To keep it on its own connector, PUT the connection with {"type": "${WORKSPACE_PREFIX}${row.slug}"}. ` +
+          `To use the connector now at ${CONNECTORS_DIR}/${slug}/, create a connection for it and enter the credential there.`,
+      };
     }
-    return { row, via: "stamp" };
+    return { ok: true, row, via: "stamp" };
   }
   const row = await ConnectorDefinition.findOne({ workspaceId, slug });
-  return row ? { row, via: "current" } : null;
+  if (row) return { ok: true, row, via: "current" };
+  return {
+    ok: false,
+    problem: "not-found",
+    message:
+      `No connector "${slug}" in this workspace (this connection is not bound to a connector by id; it resolves by its current slug only). ` +
+      `Push a folder at ${CONNECTORS_DIR}/${slug}/ to main, then save the connection with {"type": "${WORKSPACE_PREFIX}${slug}"} to bind it — or delete it.`,
+  };
 }
 
+/** `resolveConnectionBinding`, as the row or null. */
+export async function findConnectorDefinitionFor(
+  workspaceId: string,
+  binding: ConnectionBinding,
+): Promise<{ row: IConnectorDefinition; via: "stamp" | "current" } | null> {
+  const resolved = await resolveConnectionBinding(workspaceId, binding);
+  return resolved.ok ? { row: resolved.row, via: resolved.via } : null;
+}
+
+/** SandboxedConnector's WORKSPACE_TYPE_PREFIX; it imports this module. */
+const WORKSPACE_PREFIX = "ws:";
+
 function slugFromWorkspaceType(type: string): string {
-  return type.startsWith("ws:") ? type.slice(3) : type;
+  return type.startsWith(WORKSPACE_PREFIX)
+    ? type.slice(WORKSPACE_PREFIX.length)
+    : type;
 }
 
 function loaded(row: IConnectorDefinition): LoadedConnector {
@@ -171,21 +245,19 @@ function loaded(row: IConnectorDefinition): LoadedConnector {
   };
 }
 
-/** `findConnectorDefinitionFor`, throwing with the reason instead of null. */
+/**
+ * `resolveConnectionBinding`, throwing a {@link ConnectorBindingError} with
+ * the reason (and the fix) instead of returning a refusal.
+ */
 export async function loadConnectorDefinitionFor(
   workspaceId: string,
   binding: ConnectionBinding,
 ): Promise<LoadedConnector> {
-  const found = await findConnectorDefinitionFor(workspaceId, binding);
-  if (!found) {
-    const slug = slugFromWorkspaceType(binding.type);
-    throw new Error(
-      binding.connectorDefinitionId == null
-        ? `No connector "${slug}" in this workspace (this connection is not bound to a connector by id; it resolves by its current slug only). Push a folder at ${CONNECTORS_DIR}/${slug}/ to main, or re-save the connection.`
-        : `This connection's connector (${String(binding.connectorDefinitionId)}, "${slug}") no longer exists, or "${slug}" now names another connector. Re-point or delete the connection.`,
-    );
+  const resolved = await resolveConnectionBinding(workspaceId, binding);
+  if (!resolved.ok) {
+    throw new ConnectorBindingError(resolved.problem, resolved.message);
   }
-  return loaded(found.row);
+  return loaded(resolved.row);
 }
 
 export async function loadConnectorDefinition(

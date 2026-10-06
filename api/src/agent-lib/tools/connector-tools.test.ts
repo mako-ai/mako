@@ -58,6 +58,7 @@ vi.mock("../../connectors/probe.service", async importOriginal => {
 
 import { ProbeError } from "../../connectors/probe.service";
 import {
+  ConnectorDefinition,
   Connector as SourceConnection,
   DatabaseConnection,
 } from "../../database/workspace-schema";
@@ -245,6 +246,54 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
       connector: "salesforce",
     });
     expect(String(unknown.error)).toMatch(/No connector "salesforce"/);
+  });
+
+  it("inspect_connection resolves a ws: connection through its binding, never by its slug", async () => {
+    const def = (slug: string, entity: string, field: string) =>
+      ConnectorDefinition.create({
+        workspaceId: new Types.ObjectId(WS),
+        slug,
+        sha: "a",
+        sourceSha: "s",
+        status: "indexed",
+        entities: [entity],
+        aliases: [],
+        spec: {
+          connectionSpecification: {
+            type: "object",
+            properties: { [field]: { type: "string", airbyte_secret: true } },
+          },
+        },
+      });
+    const bound = await def("acme-crm", "contacts", "apiKey");
+    await def("acme", "invoices", "token");
+    const connection = (type: string) =>
+      SourceConnection.create({
+        workspaceId: new Types.ObjectId(WS),
+        name: type,
+        type,
+        connectorDefinitionId: bound._id,
+        config: {},
+        isActive: true,
+        settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
+        createdBy: "u1",
+      });
+    const inspect = async (type: string) =>
+      tools().inspect_connection.execute({
+        connectionId: String((await connection(type))._id),
+      });
+    const names = (r: Record<string, unknown>) =>
+      (r.configFields as Array<{ name: string }>).map(f => f.name);
+
+    // `type` names nothing: cosmetic, the stamp decides.
+    const cosmetic = await inspect("ws:acme-old");
+    expect(cosmetic.entities).toEqual(["contacts"]);
+    expect(names(cosmetic)).toEqual(["apiKey"]);
+    // `type` names ANOTHER live connector: fail closed — never its entities
+    // or its field list.
+    const moved = await inspect("ws:acme");
+    expect(moved.entities).toEqual([]);
+    expect(names(moved)).toEqual([]);
   });
 
   it("another workspace's connection is not found, by any tool", async () => {

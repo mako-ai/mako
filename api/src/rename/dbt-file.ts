@@ -303,11 +303,15 @@ export async function renameDbtFile(
   // Modes travel with the move: an executable stays executable, and a
   // symlink (`120000`, whose blob is the link TARGET) is moved by oid —
   // its "content" is never rewritten, that would corrupt the link.
+  // Keyed by PROJECT path, so only `dbt/` entries belong in it: slicing every
+  // repo path would let `src/models/orders.sql` (any 4-char top-level dir)
+  // overwrite `dbt/models/orders.sql`'s entry, and its mode and oid would
+  // travel with the move.
+  const dbtPrefix = `${DBT_ROOT}/`;
   const modeByPath = new Map(
-    (await listTree(repoDir, readRef)).map(e => [
-      e.path.slice(DBT_ROOT.length + 1),
-      e,
-    ]),
+    (await listTree(repoDir, readRef))
+      .filter(e => e.path.startsWith(dbtPrefix))
+      .map(e => [e.path.slice(dbtPrefix.length), e]),
   );
   const sourceEntry = modeByPath.get(from);
   const sourceIsSymlink = sourceEntry?.mode === "120000";
