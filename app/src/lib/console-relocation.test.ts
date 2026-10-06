@@ -5,6 +5,7 @@ import {
   consoleNameTakenBy,
   consolePlacement,
   consoleSectionLabel,
+  renameMoveNotice,
   locateInConsoleTree,
   relocationScope,
 } from "./console-relocation";
@@ -172,5 +173,39 @@ describe("consolePlacement — one rule for the tree and the breadcrumb", () => 
         folders: ["finance"],
       }),
     ).toEqual({ section: "Workspace", folders: ["finance"] });
+  });
+});
+
+describe("renameMoveNotice — renamed is not moved", () => {
+  it("says Renamed for a name-only change inside a folder", () => {
+    expect(
+      renameMoveNotice({
+        renamedTo: "Alpha Two",
+        moved: false,
+        section: "Workspace",
+        folders: ["finance"],
+        name: "Alpha Two",
+      }),
+    ).toBe("Renamed to 'Alpha Two'");
+  });
+
+  it("says Moved, with the place, when the folder or section changed", () => {
+    expect(
+      renameMoveNotice({
+        moved: true,
+        section: "Workspace",
+        folders: ["finance"],
+        name: "Alpha",
+      }),
+    ).toBe("Moved to Workspace › finance");
+    expect(
+      renameMoveNotice({
+        renamedTo: "Alpha Two",
+        moved: true,
+        section: "My Consoles",
+        folders: [],
+        name: "Alpha Two",
+      }),
+    ).toBe("Moved to My Consoles as 'Alpha Two'");
   });
 });

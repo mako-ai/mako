@@ -48,4 +48,21 @@ describe("remoteUpdateMessage", () => {
       ),
     ).toBe("This console was deleted in another window.");
   });
+
+  it("says a git push, even when the person pushed it themselves", () => {
+    expect(
+      remoteUpdateMessage(
+        { kind: "updated", draftRevision: 3, updatedBy: "u1", via: "git" },
+        "u1",
+      ),
+    ).toBe(
+      "This console was updated from a git push — your unsaved changes are based on an older copy.",
+    );
+    expect(
+      remoteUpdateMessage(
+        { kind: "deleted", draftRevision: 9, updatedBy: "u2", via: "git" },
+        "u1",
+      ),
+    ).toBe("This console was deleted by a git push.");
+  });
 });

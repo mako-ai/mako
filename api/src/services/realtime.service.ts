@@ -40,8 +40,14 @@ export type RealtimeEvent =
        */
       clientId?: string;
       origin: "draft" | "save" | "agent";
+      /**
+       * "git": the change came in by a push (a laptop clone, GitHub) and
+       * the index sync applied it — whoever pushed, it was not another
+       * window of the app.
+       */
+      via?: "git";
     }
-  | { type: "console.deleted"; consoleId: string }
+  | { type: "console.deleted"; consoleId: string; via?: "git" }
   | {
       type: "console.run.completed";
       consoleId: string;

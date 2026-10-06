@@ -9,6 +9,7 @@ import {
   type ConsoleLocation,
 } from "../utils/console-manager";
 import { BlobPreconditionError } from "../apps/repository.service";
+import { consolePathTakenMessage } from "../apps/console-files";
 import { canWriteResource } from "../utils/resource-acl";
 import { wouldCreateFolderCycle } from "../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
@@ -1253,7 +1254,7 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: `A console already exists at ${error.path}`,
+            error: consolePathTakenMessage(error.path, c.get("user")?.id),
           },
           409,
         );
@@ -1634,7 +1635,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: `A console already exists at ${wanted}`,
+                error: consolePathTakenMessage(wanted, c.get("user")?.id),
               },
               409,
             );
@@ -1662,7 +1663,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: `A console already exists at ${error.path}`,
+                error: consolePathTakenMessage(error.path, c.get("user")?.id),
               },
               409,
             );
@@ -1811,7 +1812,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: `A console already exists at ${error.path}`,
+                error: consolePathTakenMessage(error.path, c.get("user")?.id),
               },
               409,
             );
@@ -2030,7 +2031,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
     }
     if (error instanceof BlobPreconditionError) {
       return c.json(
-        { success: false, error: `A console already exists at ${error.path}` },
+        {
+          success: false,
+          error: consolePathTakenMessage(error.path, c.get("user")?.id),
+        },
         409,
       );
     }
@@ -2363,7 +2367,7 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: `A console already exists at ${error.path}`,
+            error: consolePathTakenMessage(error.path, c.get("user")?.id),
           },
           409,
         );

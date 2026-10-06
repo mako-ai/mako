@@ -1682,6 +1682,7 @@ async function syncNow(
     publishRealtimeEvent(workspaceId, {
       type: "console.deleted",
       consoleId: row._id.toString(),
+      via: "git",
     });
   }
 
@@ -1693,6 +1694,7 @@ async function syncNow(
       name: row.name,
       updatedBy: actor,
       origin: "save",
+      via: "git",
     });
     if (row.descriptionSourceSha !== row.sourceBlobSha) {
       requestConsoleDescription({

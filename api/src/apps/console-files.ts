@@ -176,6 +176,34 @@ export function isChartSidecarPath(path: string): boolean {
 }
 
 /**
+ * "A console named 'Ghost6' already exists in New Folder." — the refusal
+ * of a save, rename, move or copy onto a taken file, in the words of the
+ * explorer (its name and its folder, or the section's root), never the
+ * repo path (`consoles/New Folder/Ghost6.sql` reached the e2e's modal). A
+ * chart sidecar names its console. `actorUserId` decides whether a
+ * private root is "My Consoles" or someone else's.
+ */
+export function consolePathTakenMessage(
+  path: string,
+  actorUserId?: string | null,
+): string {
+  const consolePath = isChartSidecarPath(path)
+    ? `${path.slice(0, -CHART_SUFFIX.length)}.sql`
+    : path;
+  const location = parseConsoleRepoPath(consolePath);
+  if (!location) return "A console with that name already exists there.";
+  const where =
+    location.folderSegments.length > 0
+      ? location.folderSegments.join(" › ")
+      : location.scope === "workspace"
+        ? "Workspace"
+        : !actorUserId || location.ownerId === actorUserId
+          ? "My Consoles"
+          : "its owner's consoles";
+  return `A console named '${location.name}' already exists in ${where}.`;
+}
+
+/**
  * `consoles/a/b/name.sql` → location, `users/<id>/consoles/name.js` →
  * private location, anything else (README, sidecars, foreign extensions,
  * files under other roots) → null.

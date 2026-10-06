@@ -6,6 +6,8 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { Dashboard } from "../../database/workspace-schema";
 import { renameObject, resolveObjectRef } from "../registry";
+import { dashboardDiffBase } from "../../services/dashboard-diff-base";
+import { computeSnapshotDiff } from "../../services/version-comment.service";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -131,5 +133,38 @@ describe("dashboard rename", () => {
       renameObject(owner, "dashboard", { ref: id, title: "x" }),
     ).rejects.toMatchObject({ status: 409 });
     expect((await Dashboard.findById(id))?.title).toBe("Guarded");
+  });
+
+  it("a save's diff does not list a rename that is already saved", async () => {
+    // The latest version still carries the old title: a rename writes the
+    // title without a version.
+    const id = await seed("Dash Beta");
+    const saved = {
+      title: "Dash Beta",
+      layout: { columns: 12, rowHeight: 80 },
+    };
+    await renameObject(owner, "dashboard", { ref: id, title: "Dash Gamma" });
+    const live = await Dashboard.findById(id, { title: 1 }).lean();
+
+    // The editor's pending definition: the new title, one real edit.
+    const pending = {
+      title: "Dash Gamma",
+      layout: { columns: 12, rowHeight: 90 },
+    };
+    const diff = computeSnapshotDiff(dashboardDiffBase(saved, live), pending);
+    expect(diff).toContain('"rowHeight": 90');
+    expect(diff).not.toContain("Dash Beta");
+    expect(diff).not.toMatch(/^[-+].*"title"/m);
+
+    // A title edited in the editor (not renamed) is still a change.
+    const retitled = computeSnapshotDiff(dashboardDiffBase(saved, live), {
+      ...pending,
+      title: "Dash Delta",
+    });
+    expect(retitled).toMatch(/^-.*"title": "Dash Gamma"/m);
+    expect(retitled).toMatch(/^\+.*"title": "Dash Delta"/m);
+
+    // Never saved: nothing to diff against.
+    expect(dashboardDiffBase(null, live)).toBeNull();
   });
 });

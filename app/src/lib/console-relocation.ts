@@ -192,3 +192,28 @@ export function consolePlacement(input: {
     folders: section === "Shared with me" ? [] : input.folders,
   };
 }
+
+/**
+ * The snackbar after the editor's "Rename / Move…": "Renamed to 'X'" when
+ * only the name changed — wherever the console is (a console in a folder
+ * read "Moved to 'finance/Alpha Two'" for a rename) — and "Moved to …"
+ * when its folder or section did.
+ */
+export function renameMoveNotice(input: {
+  /** The new name, when the name changed. */
+  renamedTo?: string;
+  /** The folder or section changed. */
+  moved: boolean;
+  /** Where it is now: its section and folder trail. */
+  section: string;
+  folders: string[];
+  name: string;
+}): string {
+  if (!input.moved) {
+    return `Renamed to '${input.renamedTo ?? input.name}'`;
+  }
+  const place = [input.section, ...input.folders].join(" › ");
+  return input.renamedTo
+    ? `Moved to ${place} as '${input.renamedTo}'`
+    : `Moved to ${place}`;
+}

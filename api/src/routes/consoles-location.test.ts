@@ -272,7 +272,10 @@ describe("a rename or a move answers where the console is now", () => {
     const c = await save("mine", "SELECT 2\n", OWNER, "workspace");
     const r = await req("PATCH", `/${c._id}/rename`, { name: "taken" }, OWNER);
     expect(r.status).toBe(409);
-    expect(r.body.error).toContain("A console already exists at");
+    // In the explorer's words, never the repo path.
+    expect(r.body.error).toBe(
+      "A console named 'taken' already exists in Workspace.",
+    );
     const m = await req(
       "PATCH",
       `/${c._id}/move`,
@@ -280,7 +283,9 @@ describe("a rename or a move answers where the console is now", () => {
       OWNER,
     );
     expect(m.status).toBe(409);
-    expect(m.body.error).toContain("A console already exists at");
+    expect(m.body.error).toBe(
+      "A console named 'taken' already exists in Workspace.",
+    );
     expect((await SavedConsole.findById(c._id))?.name).toBe("mine");
   });
 

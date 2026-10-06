@@ -31,7 +31,11 @@ import {
   uniquePath,
   type LiveConsole,
 } from "../apps/workspace-consoles.service";
-import { chartSidecarPath, parseConsoleRepoPath } from "../apps/console-files";
+import {
+  chartSidecarPath,
+  consolePathTakenMessage,
+  parseConsoleRepoPath,
+} from "../apps/console-files";
 import { BlobPreconditionError } from "../apps/repository.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
@@ -215,8 +219,12 @@ export class ConsoleConflictError extends Error {
  * between. Never resolved by overwriting.
  */
 export class ConsolePathTakenError extends ConsoleConflictError {
-  constructor(readonly path: string) {
-    super(`A console already exists at ${path}`);
+  constructor(
+    readonly path: string,
+    /** Who asked: a private root is "My Consoles" only to its owner. */
+    actorUserId?: string | null,
+  ) {
+    super(consolePathTakenMessage(path, actorUserId));
     this.name = "ConsolePathTakenError";
   }
 }
@@ -1190,6 +1198,7 @@ export class ConsoleManager {
             workspaceId,
             toPath,
             savedConsole._id,
+            userId,
           );
         }
         // Git first (apps.md §16.3): the file is the record, the row follows.
@@ -1519,7 +1528,12 @@ export class ConsoleManager {
       const toPath = await repoPathForRow(current);
       const message = `${options.verb ?? "rename"}: ${current.name}`;
       if (toPath !== current.path) {
-        await this.assertConsolePathFree(workspaceId, toPath, current._id);
+        await this.assertConsolePathFree(
+          workspaceId,
+          toPath,
+          current._id,
+          options.userId,
+        );
       }
       if (!current.path) {
         // Never committed (a saved console from before adoption): the row
@@ -1555,7 +1569,7 @@ export class ConsoleManager {
             error.path === toPath ||
             error.path === chartSidecarPath(toPath)
           ) {
-            throw new ConsolePathTakenError(error.path);
+            throw new ConsolePathTakenError(error.path, options.userId);
           }
           return "drift";
         }
@@ -1794,6 +1808,7 @@ export class ConsoleManager {
     workspaceId: string,
     path: string,
     self: Types.ObjectId,
+    actorUserId?: string | null,
   ): Promise<void> {
     const [def, row] = await Promise.all([
       readConsoleDefinitionAtMain(workspaceId, path),
@@ -1805,7 +1820,7 @@ export class ConsoleManager {
         is_deleted: { $ne: true },
       }).select("_id"),
     ]);
-    if (def || row) throw new ConsolePathTakenError(path);
+    if (def || row) throw new ConsolePathTakenError(path, actorUserId);
   }
 
   /**

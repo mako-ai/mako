@@ -186,3 +186,22 @@ export function resolveTreeDropTarget<TNode extends ResourceTreeLikeNode>(
 
   return null;
 }
+
+/**
+ * dnd-kit's drag attributes for a row. A row that cannot be DRAGGED (a
+ * console shared with this person, someone else's folder) still opens,
+ * renames and has a menu: dnd-kit's `aria-disabled="true"` told assistive
+ * tech the whole row was disabled, and its "draggable" role description
+ * and drag instructions described a gesture the row does not have.
+ */
+export function dragAttributes<A extends object>(
+  attributes: A,
+  disabled: boolean | undefined,
+): Partial<A> {
+  if (!disabled) return attributes;
+  const rest = { ...attributes } as Record<string, unknown>;
+  delete rest["aria-disabled"];
+  delete rest["aria-roledescription"];
+  delete rest["aria-describedby"];
+  return rest as Partial<A>;
+}
