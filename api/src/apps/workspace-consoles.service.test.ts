@@ -49,6 +49,7 @@ import {
   consoleHistory,
   deriveConsoleDescription,
   listConsoleDefinitionsAtMain,
+  loadLiveConsoleById,
   projectSavedConsole,
   restoreConsoleTo,
   syncConsolesIndexFromRepo,
@@ -253,6 +254,46 @@ describe("write-through", () => {
         "restore: b",
       ]),
     );
+  });
+
+  it("'Move to…' with a new name is ONE commit (rename + move together)", async () => {
+    const saved = await manager.saveConsole(
+      "draft name",
+      "SELECT 2",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const folder = await manager.createFolder(
+      "Archive",
+      WS,
+      USER,
+      undefined,
+      false,
+    );
+    const before = (await log(repoDirFor(WS), MAIN, 50)).length;
+    expect(
+      await manager.moveConsole(
+        saved._id.toString(),
+        WS,
+        folder._id.toString(),
+        undefined,
+        USER,
+        "final name",
+      ),
+    ).toBe(true);
+    const history = await log(repoDirFor(WS), MAIN, 50);
+    expect(history.length).toBe(before + 1);
+    expect(history[0]?.subject).toBe("move: final name");
+    const paths = await treePaths();
+    expect(paths).toContain("consoles/Archive/final name.sql");
+    expect(paths).not.toContain("consoles/draft name.sql");
+    const row = await SavedConsole.findById(saved._id);
+    expect(row?.name).toBe("final name");
+    expect(row?.path).toBe("consoles/Archive/final name.sql");
   });
 
   it("renaming a folder moves every console under it in one commit", async () => {
@@ -516,6 +557,103 @@ describe("sync from repo", () => {
     // Same content → the derivation stays current: no re-embed needed.
     expect(row?.descriptionSourceSha).toBe(row?.sourceBlobSha);
     expect(await SavedConsole.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+
+  it("a rename PLUS an edit in one push keeps the row (git -M), so /c/<id> survives", async () => {
+    const saved = await manager.saveConsole(
+      "weekly report",
+      "SELECT country, count(*) AS n\nFROM leads\nGROUP BY 1\nORDER BY 2 DESC\n-- weekly\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: saved._id },
+      { $set: { executionCount: 3 } },
+    );
+    const contents = (await fileAt("consoles/weekly report.sql"))!;
+    // `git mv` + a tweak, pushed together: the blob changes, the path too.
+    await externalCommit(
+      {
+        "consoles/Reports/weekly leads.sql": contents.replace(
+          "-- weekly",
+          "-- weekly, by country",
+        ),
+      },
+      ["consoles/weekly report.sql"],
+      "laptop: move and edit",
+    );
+    const stats = await syncConsolesIndexFromRepo(WS, USER);
+    expect(stats).toMatchObject({ renamed: 1, created: 0, deleted: 0 });
+    const row = await SavedConsole.findById(saved._id);
+    expect(row?.path).toBe("consoles/Reports/weekly leads.sql");
+    expect(row?.name).toBe("weekly leads");
+    expect(row?.code).toContain("-- weekly, by country");
+    expect(row?.executionCount).toBe(3);
+    expect(row?.is_deleted).not.toBe(true);
+    expect(await SavedConsole.countDocuments({ workspaceId: WS })).toBe(1);
+    // The id still resolves to the live file at its new path.
+    const hit = await loadLiveConsoleById(WS, saved._id.toString());
+    expect(hit && "live" in hit ? hit.live.path : null).toBe(
+      "consoles/Reports/weekly leads.sql",
+    );
+  });
+
+  it("a rewritten file (nothing like the old one) is a delete + create, not a guess", async () => {
+    const saved = await manager.saveConsole(
+      "alpha",
+      "SELECT 1 AS alpha_only_marker_row\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit(
+      {
+        "consoles/beta.sql":
+          "-- entirely different content\nSELECT id, name, email, created_at FROM customers WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 100\n",
+      },
+      ["consoles/alpha.sql"],
+    );
+    const stats = await syncConsolesIndexFromRepo(WS, USER);
+    expect(stats).toMatchObject({ renamed: 0, created: 1, deleted: 1 });
+    expect((await SavedConsole.findById(saved._id))?.is_deleted).toBe(true);
+  });
+
+  it("a GET by id between a push and its sync heals the stale path instead of 404ing", async () => {
+    const saved = await manager.saveConsole(
+      "stale",
+      "SELECT 'between push and sync' AS note\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const contents = (await fileAt("consoles/stale.sql"))!;
+    await externalCommit({ "consoles/Moved/stale.sql": contents }, [
+      "consoles/stale.sql",
+    ]);
+    // No sync ran: the row still says consoles/stale.sql.
+    expect((await SavedConsole.findById(saved._id))?.path).toBe(
+      "consoles/stale.sql",
+    );
+    const hit = await loadLiveConsoleById(WS, saved._id.toString());
+    expect(hit && "live" in hit ? hit.live.path : null).toBe(
+      "consoles/Moved/stale.sql",
+    );
+    expect((await SavedConsole.findById(saved._id))?.path).toBe(
+      "consoles/Moved/stale.sql",
+    );
+    // A row whose file really is gone still answers null.
+    await externalCommit({}, ["consoles/Moved/stale.sql"]);
+    expect(await loadLiveConsoleById(WS, saved._id.toString())).toBeNull();
   });
 
   it("never touches a workspace that has not adopted", async () => {

@@ -359,20 +359,20 @@ export function createServerConsoleTools({
                 // exceeds what the client has.
                 draftRevision: currentRevision + 1,
               };
-              if (title) setFields.name = leafConsoleName(title) || title;
 
-              const updated = await SavedConsole.findOneAndUpdate(
-                {
-                  _id: doc._id,
-                  workspaceId: new Types.ObjectId(workspaceId),
-                  draftRevision:
-                    currentRevision === 1
-                      ? { $in: [1, null] }
-                      : currentRevision,
-                },
-                { $set: setFields },
-                { new: true },
-              );
+              let updated: ISavedConsole | null =
+                await SavedConsole.findOneAndUpdate(
+                  {
+                    _id: doc._id,
+                    workspaceId: new Types.ObjectId(workspaceId),
+                    draftRevision:
+                      currentRevision === 1
+                        ? { $in: [1, null] }
+                        : currentRevision,
+                  },
+                  { $set: setFields },
+                  { new: true },
+                );
 
               if (!updated) {
                 logger.debug("modify_console revision race, retrying", {
@@ -380,6 +380,23 @@ export function createServerConsoleTools({
                   attempt,
                 });
                 continue;
+              }
+
+              // A title is a RENAME, not a field: the console's name is its
+              // file name in the repo, so it goes through the same service
+              // as the explorer's rename (one commit, id kept, old file
+              // removed). Setting `name` in Mongo alone left the file —
+              // and therefore the list, which reads git — unrenamed, and
+              // the next sync of that file reset the row to the file name.
+              const leaf = title ? leafConsoleName(title) || title : "";
+              if (leaf && leaf !== updated.name) {
+                const renamed = await consoleManager.relocateConsole(
+                  consoleId,
+                  workspaceId,
+                  { name: leaf },
+                  { userId, verb: "rename" },
+                );
+                if (renamed) updated = renamed.row;
               }
 
               publishUpdated(updated);

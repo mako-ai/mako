@@ -11,16 +11,23 @@
  * 2. SYNC. `syncConsolesIndexFromRepo` reconciles the index with the tree
  *    after any push (terminal, laptop clone, GitHub webhook). Content
  *    addressed: a row whose blob id equals the tree's is skipped; a vanished
- *    row whose blob reappears elsewhere is a rename (id, telemetry, shares,
- *    embedding survive); a vanished path soft-deletes its row. Never touches
- *    a repo that has not adopted (`consoles/README.md` absent).
+ *    row whose blob reappears elsewhere is a rename, and so is one git's
+ *    rename detection (`diff -M`, rename/git-renames.ts) pairs with a new
+ *    path — a laptop `git mv` plus an edit in the same push keeps the row
+ *    (id, telemetry, shares, schedule, embedding survive); a vanished path
+ *    nothing claims soft-deletes its row. Never touches a repo that has not
+ *    adopted (`consoles/README.md` absent).
  * 3. READ. GET/list serves the files at `main` (`consoles/`,
  *    `users/<id>/consoles/`). Mongo is joined only for ACL, runtime, SHA,
  *    and embeddings. A file with no row still appears; a row with no file
  *    is not a live definition. Reads never reconcile Mongo or publish
- *    realtime events — push/webhook sync owns that mutation. No GitHub
- *    binding → empty list, never 412. Leftover local git without a binding
- *    is not a read surface.
+ *    realtime events — push/webhook sync owns that mutation — with ONE
+ *    exception: a GET by id whose row points at a path that is no longer
+ *    in the tree runs the (serialized, idempotent) sync once before
+ *    answering 404, because between a push and its sync the row is stale
+ *    and the console would otherwise vanish for the seconds in between. No
+ *    GitHub binding → empty list, never 412. Leftover local git without a
+ *    binding is not a read surface.
  * 4. DERIVATION. Description + embedding are derived from the file and
  *    stamped with `descriptionSourceSha`; `deriveConsoleDescription` runs
  *    only while that differs from `sourceBlobSha`, behind a debounced
@@ -73,9 +80,12 @@ import {
   requireWorkspaceRepo,
   boundRepoDirIfExists,
 } from "./workspace-repo-required";
+import { detectRenamedPaths } from "../rename/git-renames";
 import {
+  CONSOLES_DIR,
   CONSOLES_README,
   CONSOLES_README_PATH,
+  USERS_DIR,
   chartSidecarPath,
   consoleRepoPath,
   parseChartSpec,
@@ -594,13 +604,43 @@ export async function loadLiveConsoleById(
 
   if (row?.path) {
     const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
-    if (!def) return null;
-    return { live: { ...def, row, id: row._id } };
+    if (def) return { live: { ...def, row, id: row._id } };
+    // The row's path is not in the tree: a push moved (or removed) the file
+    // and its sync has not landed yet — or lost the race with this read.
+    // Reconcile once (serialized with the push's own sync, a no-op when it
+    // already ran) and answer from the healed row, so a console renamed
+    // from a laptop never 404s for the window between push and sync.
+    return healedLiveConsole(workspaceId, consoleId, row.path);
   }
 
   const live = await loadLiveConsoles(workspaceId);
   const match = live.find(item => item.id.toString() === consoleId);
   return match ? { live: match } : null;
+}
+
+async function healedLiveConsole(
+  workspaceId: string,
+  consoleId: string,
+  stalePath: string,
+): Promise<{ draft: ISavedConsole } | { live: LiveConsole } | null> {
+  try {
+    await syncConsolesIndexFromRepo(workspaceId);
+  } catch (error) {
+    logger.warn("Console index heal on a stale path failed", {
+      workspaceId,
+      consoleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+  const row = await SavedConsole.findOne({
+    _id: new Types.ObjectId(consoleId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  // Still at the stale path, or gone: the file really was deleted.
+  if (!row?.path || row.path === stalePath || row.is_deleted) return null;
+  const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
+  return def ? { live: { ...def, row, id: row._id } } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -973,8 +1013,10 @@ async function syncNow(
   const touched: IndexRow[] = [];
   const actor = userId && userId.length > 0 ? userId : "git";
 
-  // Rows whose path is gone are rename candidates for new paths with the
-  // same blob; anything unclaimed at the end is a deletion.
+  // Rows whose path is gone are rename candidates: first for new paths with
+  // the same blob (a pure `git mv`), then for the paths git's own rename
+  // detection pairs them with (a `git mv` plus an edit in the same push —
+  // brief rule 3). Anything unclaimed at the end is a deletion.
   const orphans = rows.filter(r => r.path && !byPath.has(r.path));
   const orphanByBlob = new Map<string, IndexRow[]>();
   for (const o of orphans) {
@@ -982,6 +1024,23 @@ async function syncNow(
     const list = orphanByBlob.get(o.sourceBlobSha) ?? [];
     list.push(o);
     orphanByBlob.set(o.sourceBlobSha, list);
+  }
+  // null marks a new path two vanished rows were both mapped to: keep
+  // neither guess — the blob pass or a deletion is honest, a wrong re-key
+  // is not.
+  const orphanByNewPath = new Map<string, IndexRow | null>();
+  if (orphans.length > 0) {
+    const renamed = await detectRenamedPaths(
+      repoDir,
+      head,
+      orphans.map(o => o.path as string),
+      [CONSOLES_DIR, USERS_DIR],
+    );
+    for (const o of orphans) {
+      const to = renamed.get(o.path as string);
+      if (!to) continue;
+      orphanByNewPath.set(to, orphanByNewPath.has(to) ? null : o);
+    }
   }
 
   for (const entry of consoleEntries) {
@@ -996,8 +1055,11 @@ async function syncNow(
 
       if (!row) {
         const candidates = orphanByBlob.get(entry.oid);
-        const moved = candidates?.shift();
-        if (moved) {
+        const moved =
+          candidates?.find(c => !seenRows.has(c._id.toString())) ??
+          orphanByNewPath.get(entry.path) ??
+          undefined;
+        if (moved && !seenRows.has(moved._id.toString())) {
           row = moved;
           stats.renamed++;
         }

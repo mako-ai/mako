@@ -1794,28 +1794,8 @@ consoleRoutes.openapi(
       );
 
       if (success) {
-        // Bump the draft revision so revision-sync catches the rename, then
-        // poke subscribers (other tabs/users update the tab title live).
-        if (Types.ObjectId.isValid(consoleId)) {
-          const renamed = await SavedConsole.findOneAndUpdate(
-            {
-              _id: new Types.ObjectId(consoleId),
-              workspaceId: new Types.ObjectId(workspaceId),
-            },
-            { $inc: { draftRevision: 1 } },
-            { new: true },
-          );
-          if (renamed) {
-            publishRealtimeEvent(workspaceId, {
-              type: "console.updated",
-              consoleId,
-              draftRevision: renamed.draftRevision ?? 1,
-              name: renamed.name,
-              updatedBy: user.id,
-              origin: "save",
-            });
-          }
-        }
+        // The manager bumped the draft revision and poked subscribers
+        // (relocateConsole) — every rename path shares that.
         return c.json({
           success: true,
           message: "Console renamed successfully",
@@ -3426,7 +3406,7 @@ const consoleFolderBackend: FolderBackend = {
     return { ok: true };
   },
 
-  moveItem: async (ctx, { itemId, folderId, access }) => {
+  moveItem: async (ctx, { itemId, folderId, access, name }) => {
     if (Types.ObjectId.isValid(itemId)) {
       const existing = await SavedConsole.findOne({
         _id: new Types.ObjectId(itemId),
@@ -3444,12 +3424,14 @@ const consoleFolderBackend: FolderBackend = {
         };
       }
     }
+    // A move that also renames ("Move to…" with a new name) is one commit.
     const success = await consoleManager.moveConsole(
       itemId,
       ctx.workspaceId,
       folderId ?? null,
       access,
       ctx.userId,
+      name,
     );
     if (!success) return { ok: false, status: 404, error: "Console not found" };
     return { ok: true };
