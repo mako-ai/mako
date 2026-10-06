@@ -193,3 +193,35 @@ export function assertSafeRelPath(p: string): string {
   }
   return normalized;
 }
+
+/**
+ * A path in `taken` — or a folder above one — that differs from `to`, or
+ * from a folder on the way to it, only in upper/lower case. Never `own`,
+ * the thing being renamed: changing the case of its own name is a plain
+ * `git mv`. Git keeps `apps/Report` and `apps/report` apart; a checkout on
+ * macOS or Windows cannot, and the two become one there. Pure.
+ */
+export function caseTwinOf(
+  taken: ReadonlySet<string>,
+  to: string,
+  own?: string,
+): string | undefined {
+  // Every folder on disk: the occupied paths and the folders above them.
+  const known = new Set<string>();
+  for (const path of taken) {
+    const parts = path.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      known.add(parts.slice(0, i).join("/"));
+    }
+  }
+  const segments = to.split("/");
+  for (let i = segments.length; i >= 1; i--) {
+    const prefix = segments.slice(0, i).join("/");
+    if (known.has(prefix)) continue;
+    const key = prefix.toLowerCase();
+    for (const path of known) {
+      if (path !== own && path.toLowerCase() === key) return path;
+    }
+  }
+  return undefined;
+}

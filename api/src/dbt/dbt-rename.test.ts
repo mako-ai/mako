@@ -669,6 +669,40 @@ describe("modes, path conflicts and node-name clashes", () => {
     expect(await fileAt("models/mart.sql")).toBe(MART);
   });
 
+  it("refuses a path that differs from another file's, or a folder's, only in case — a file may change the case of its own name", async () => {
+    await seedProject();
+    // Git keeps the two apart; a checkout on macOS or Windows cannot.
+    await expect(
+      renameDbtFile(member, {
+        from: "models/orders.sql",
+        to: "models/Customers.sql",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining(
+        '"models/customers.sql" already exists, and "models/Customers.sql" differs from it only in upper/lower case',
+      ),
+    });
+    await expect(
+      renameDbtFile(member, {
+        from: "models/orders.sql",
+        to: "Models/orders_v2.sql",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining('"models" already exists'),
+    });
+    expect(await fileAt("models/orders.sql")).not.toBeNull();
+    // Its own name in another case: a plain git mv.
+    const own = await renameDbtFile(member, {
+      from: "models/mart.sql",
+      to: "models/Mart.sql",
+    });
+    expect(own.after.slug).toBe("models/Mart.sql");
+    expect(await fileAt("models/Mart.sql")).toBe(MART);
+    expect(await fileAt("models/mart.sql")).toBeNull();
+  });
+
   it("the handler accepts an OLD path the file moved away from", async () => {
     const project = await seedProject();
     await renameDbtFile(member, {

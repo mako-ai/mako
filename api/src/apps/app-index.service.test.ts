@@ -595,6 +595,70 @@ describe("moves", () => {
   });
 });
 
+describe("names that differ only in case", () => {
+  // Git keeps apps/Report and apps/report apart; a checkout on macOS or
+  // Windows makes them one folder. Refused within the tree — except an
+  // app changing the case of its OWN name, which is a plain git mv.
+  const caseNote =
+    "differs from it only in upper/lower case, and a checkout on macOS or Windows cannot tell the two apart.";
+
+  it("refuse a move or rename onto another app's or folder's name in another case", async () => {
+    await externalCommit({ "apps/Sales/CH/report/mako.json": manifest("R") });
+    const b = (await resolveProjectRef(WS, B_ID))!;
+    await expect(
+      moveProject(b, { scope: "workspace", folderSegments: [], slug: "A" }),
+    ).rejects.toThrow(`An app already uses the link /apps/a. "A" ${caseNote}`);
+    await expect(renameProject(b, { slug: "Report" })).rejects.toThrow(
+      `An app named "report" already exists in apps/Sales/CH. "Report" ${caseNote}`,
+    );
+    // A folder on the way counts too: apps/sales next to apps/Sales.
+    await expect(
+      moveProject(b, { scope: "workspace", folderSegments: ["sales"] }),
+    ).rejects.toThrow(
+      `A folder named "Sales" already exists in apps. "sales" ${caseNote}`,
+    );
+    await expect(
+      createAppFolder(WS, { scope: "workspace", folderSegments: ["empty"] }),
+    ).rejects.toThrow(
+      `A folder named "Empty" already exists in apps. "empty" ${caseNote}`,
+    );
+    await expect(
+      moveAppFolder(
+        WS,
+        { scope: "workspace", folderSegments: ["Empty"] },
+        { scope: "workspace", folderSegments: ["SALES"] },
+      ),
+    ).rejects.toThrow(caseNote);
+    expect((await resolveProjectRef(WS, B_ID))?.path).toBe("apps/Sales/CH/b");
+  });
+
+  it("let an app change the case of its own name, and give a new app a name free in every case", async () => {
+    const b = (await resolveProjectRef(WS, B_ID))!;
+    const renamed = await renameProject(b, { slug: "B" });
+    expect(renamed.to).toBe("apps/Sales/CH/B");
+    expect(
+      parseAppManifest(await fileAt("apps/Sales/CH/B/mako.json"), "B").id,
+    ).toBe(B_ID);
+    expect(await fileAt("apps/Sales/CH/b/mako.json")).toBeNull();
+    expect((await resolveProjectRef(WS, B_ID))?.path).toBe("apps/Sales/CH/B");
+    // A folder may change its own case too.
+    await moveAppFolder(
+      WS,
+      { scope: "workspace", folderSegments: ["Empty"] },
+      { scope: "workspace", folderSegments: ["EMPTY"] },
+    );
+    expect((await loadAppsIndex(WS)).folders).toContain("apps/EMPTY");
+    // apps/Report holds "report" in a case-insensitive checkout.
+    await externalCommit({ "apps/Report/mako.json": manifest("Report") });
+    const created = await createProject({
+      workspaceId: WS,
+      title: "Report",
+      userId: USER,
+    });
+    expect(created.path).toBe("apps/report-2");
+  });
+});
+
 describe("folders", () => {
   it("are created as .gitkeep markers, renamed with their apps, and deleted only when empty", async () => {
     await createAppFolder(
