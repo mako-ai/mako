@@ -10,6 +10,7 @@ import {
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
 import { onRealtimeEvent } from "./lib/realtime-channel";
+import { healFlowTabs } from "../flow-runtime/shell";
 
 // Zod schemas for validation
 const flowDataSourceSchema = z.object({
@@ -81,8 +82,13 @@ const flowSchema = z.object({
   aliases: z.array(z.string()).nullable().optional(),
   /** A file at main with no row yet (push not synced): not renameable. */
   gitOnly: z.boolean().optional(),
-  dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
-  destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
+  // Optional for database-to-database flows. `null` when the list could not
+  // look the connection up (a file-born flow naming a connection this
+  // workspace does not have, or one since deleted): the API sends null, and
+  // rejecting it made every persist of the whole flow list fail ("Validation
+  // failed when saving flow-store-v2"), freezing a stale copy on disk.
+  dataSourceId: flowDataSourceSchema.nullable().optional(),
+  destinationDatabaseId: flowDestinationSchema.nullable().optional(),
   destinationDatabaseName: z.string().nullable().optional(),
   type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
   schedule: flowScheduleSchema,
@@ -656,11 +662,15 @@ export const useFlowStore = create<FlowStore>()(
           };
 
           if (response.success) {
+            const flows = response.data || [];
             set(state => {
-              state.flows[workspaceId] = response.data || [];
+              state.flows[workspaceId] = flows;
               state.error[workspaceId] = null;
             });
-            return response.data || [];
+            // Open tabs follow a rename made anywhere (this list is what
+            // Refresh, `flow.updated` and a push all refetch).
+            healFlowTabs(flows);
+            return flows;
           } else {
             throw new Error(response.error || "Failed to fetch flows");
           }

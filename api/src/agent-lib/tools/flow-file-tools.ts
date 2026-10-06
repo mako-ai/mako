@@ -489,7 +489,7 @@ export function createFlowFileTools(workspaceId: string) {
               path: z
                 .string()
                 .describe(
-                  "Repo-relative path, e.g. `flows/stripe-to-bigquery.yml`. The slug in the filename is the flow's permanent identity.",
+                  "Repo-relative path, e.g. `flows/stripe-to-bigquery.yml`. The slug in the filename names the flow's file; to change it, use `rename_object` (the flow keeps its id).",
                 ),
               contents: z
                 .string()

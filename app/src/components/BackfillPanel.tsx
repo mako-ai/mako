@@ -817,13 +817,14 @@ export function BackfillPanel({
     setTimeout(() => setWebhookCopied(false), 1500);
   };
 
+  // `null` (typeof "object") when the list could not look the connection up.
   const connectorName =
     typeof flow?.dataSourceId === "object"
-      ? (flow.dataSourceId as any).name
+      ? flow.dataSourceId?.name
       : undefined;
   const destName =
     typeof flow?.destinationDatabaseId === "object"
-      ? (flow.destinationDatabaseId as any).name
+      ? flow.destinationDatabaseId?.name
       : undefined;
   const dataset = flow?.tableDestination?.schema;
 

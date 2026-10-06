@@ -23,6 +23,11 @@ const h = vi.hoisted(() => {
     tabs: {} as Record<string, unknown>,
   };
   return {
+    // One object, as the real auth context holds: a fresh user per render
+    // would re-run the outgoing URL sync on every render and hide an
+    // address-bar bug the app has.
+    user: { id: "u1" },
+    workspace: { id: "ws1" },
     focusNotebookTab: vi.fn(),
     closeNotebookTabsFor: vi.fn(),
     focusDashboardTab: vi.fn(),
@@ -64,6 +69,24 @@ const h = vi.hoisted(() => {
       return "t1";
     }),
     closeAppsTabsFor: vi.fn(),
+    // Opening a flow tab makes it the active one, as the real shell does.
+    focusFlowTabById: vi.fn((flowId: string, title = "Flow") => {
+      consoleState.tabs = {
+        f1: {
+          id: "f1",
+          kind: "flow-editor",
+          title,
+          content: "",
+          metadata: { flowId },
+        },
+      };
+      consoleState.activeTabId = "f1";
+      return "f1";
+    }),
+    closeFlowTabsFor: vi.fn(),
+    flowState: {
+      flows: {} as Record<string, Array<{ _id: string; name: string }>>,
+    },
     fetchApps: vi.fn().mockResolvedValue(undefined),
     apps: [
       {
@@ -92,10 +115,10 @@ vi.mock("../lib/object-links", () => ({
   resolveObjectRef: (...args: unknown[]) => h.resolveObjectRef(...args),
 }));
 vi.mock("../contexts/workspace-context", () => ({
-  useWorkspace: () => ({ currentWorkspace: { id: "ws1" } }),
+  useWorkspace: () => ({ currentWorkspace: h.workspace }),
 }));
 vi.mock("../contexts/auth-context", () => ({
-  useAuth: () => ({ user: { id: "u1" } }),
+  useAuth: () => ({ user: h.user }),
 }));
 vi.mock("../store/consoleStore", () => ({
   useConsoleStore: h.useConsoleStore,
@@ -139,6 +162,16 @@ vi.mock("../dbt-runtime/shell", () => ({
   focusDbtRunsTab: vi.fn(),
 }));
 
+vi.mock("../flow-runtime/shell", () => ({
+  focusFlowTabById: (...args: Parameters<typeof h.focusFlowTabById>) =>
+    h.focusFlowTabById(...args),
+  closeFlowTabsFor: (...args: unknown[]) => h.closeFlowTabsFor(...args),
+  getFlowTitle: (flow: { name: string }) => flow.name,
+}));
+vi.mock("../store/flowStore", () => ({
+  useFlowStore: { getState: () => h.flowState },
+}));
+
 vi.mock("../apps-runtime/shell", () => ({
   closeAppsTabsFor: (...args: unknown[]) => h.closeAppsTabsFor(...args),
   focusAppsFileTab: (...args: Parameters<typeof h.focusAppsFileTab>) =>
@@ -172,6 +205,13 @@ describe("UrlSync hydration", () => {
     vi.clearAllMocks();
     h.consoleState.activeTabId = null;
     h.consoleState.tabs = {};
+    h.consoleState.focusOrOpenTab.mockReturnValue(null);
+    h.flowState.flows = {};
+    // clearAllMocks keeps queued and persistent answers; one test's unused
+    // answer must not become the next test's.
+    h.resolveObjectRef.mockReset();
+    h.resolveObjectRef.mockResolvedValue(null);
+    h.fetchOneSourceConnection.mockReset();
   });
   // Unmount between tests: the dead-link Snackbar portals into body, and a
   // notice left open by one test must not be read by the next.
@@ -574,5 +614,208 @@ describe("UrlSync hydration", () => {
     );
     expect(h.consoleState.focusOrOpenTab).not.toHaveBeenCalled();
     expect(window.location.pathname).toBe("/");
+  });
+  /**
+   * A flow is addressed /f/<id>, but a slug in that slot — typed, or an old
+   * name kept in a bookmark — must not read as "deleted": the rename dialog
+   * promises the old name keeps working, and the server resolves it.
+   */
+  describe("flow links", () => {
+    const FLOW_ID = "6a1b2c3d4e5f6a7b8c9d0e1f";
+
+    it("opens a renamed flow from its old slug and rewrites the address to /f/<id>", async () => {
+      h.resolveObjectRef.mockResolvedValueOnce({
+        kind: "flow",
+        id: FLOW_ID,
+        via: "alias",
+        current: { title: "Orders v3 sync", url: `/f/${FLOW_ID}` },
+      });
+      window.history.replaceState({}, "", "/f/orders-sync");
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(h.focusFlowTabById).toHaveBeenCalledWith(
+          FLOW_ID,
+          "Orders v3 sync",
+        ),
+      );
+      expect(h.resolveObjectRef).toHaveBeenCalledWith(
+        "ws1",
+        "flow",
+        "orders-sync",
+      );
+      expect(window.location.pathname).toBe(`/f/${FLOW_ID}`);
+      expect(await screen.findByText(/That flow was renamed/)).toBeTruthy();
+      expect(screen.queryByText(/deleted/)).toBeNull();
+      // The placeholder an older build opened for the slug is cleaned up.
+      expect(h.closeFlowTabsFor).toHaveBeenCalledWith("orders-sync");
+      expect(h.setLeftPane).toHaveBeenCalledWith("flows");
+    });
+
+    it("opens a flow by its current slug without calling it renamed", async () => {
+      h.resolveObjectRef.mockResolvedValueOnce({
+        kind: "flow",
+        id: FLOW_ID,
+        via: "current",
+        current: { title: "Orders v3 sync", url: `/f/${FLOW_ID}` },
+      });
+      window.history.replaceState({}, "", "/f/orders-v3-sync");
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(window.location.pathname).toBe(`/f/${FLOW_ID}`),
+      );
+      expect(h.focusFlowTabById).toHaveBeenCalledWith(
+        FLOW_ID,
+        "Orders v3 sync",
+      );
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(screen.queryByText(/renamed/)).toBeNull();
+    });
+
+    it("opens a listed flow id without asking the server", async () => {
+      h.flowState.flows = { ws1: [{ _id: FLOW_ID, name: "Orders v3 sync" }] };
+      window.history.replaceState({}, "", `/f/${FLOW_ID}`);
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(h.focusFlowTabById).toHaveBeenCalledWith(
+          FLOW_ID,
+          "Orders v3 sync",
+        ),
+      );
+      expect(h.resolveObjectRef).not.toHaveBeenCalled();
+    });
+
+    it("reports a dead link only on a real not-found, and leaves the address on the shown tab", async () => {
+      h.consoleState.tabs = {
+        c1: { id: "c1", kind: "console", title: "Scratch", content: "" },
+      };
+      h.consoleState.activeTabId = "c1";
+      h.resolveObjectRef.mockResolvedValueOnce(null);
+      window.history.replaceState({}, "", `/f/${FLOW_ID}`);
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(h.closeFlowTabsFor).toHaveBeenCalledWith(FLOW_ID),
+      );
+      expect(h.focusFlowTabById).not.toHaveBeenCalled();
+      expect(await screen.findByText(/flow link doesn't resolve/)).toBeTruthy();
+      expect(window.location.pathname).toBe("/c/c1");
+    });
+
+    it("does not call a flow name deleted when the server cannot answer", async () => {
+      h.resolveObjectRef.mockRejectedValueOnce(new Error("HTTP 503"));
+      window.history.replaceState({}, "", "/f/orders-sync");
+
+      render(<UrlSync />);
+
+      expect(await screen.findByText(/didn't answer/)).toBeTruthy();
+      expect(screen.queryByText(/deleted|doesn't resolve/)).toBeNull();
+      expect(h.focusFlowTabById).not.toHaveBeenCalled();
+      expect(window.location.pathname).toBe("/");
+    });
+
+    it("still opens a flow id when the server cannot answer", async () => {
+      h.resolveObjectRef.mockRejectedValueOnce(new Error("HTTP 503"));
+      window.history.replaceState({}, "", `/f/${FLOW_ID}`);
+
+      render(<UrlSync />);
+
+      await waitFor(() =>
+        expect(h.focusFlowTabById).toHaveBeenCalledWith(FLOW_ID),
+      );
+      expect(h.closeFlowTabsFor).not.toHaveBeenCalled();
+      expect(screen.queryByText(/doesn't resolve|didn't answer/)).toBeNull();
+    });
+  });
+
+  /**
+   * A dead link opens no tab, so whatever tab was open before stays on
+   * screen; the address bar must name THAT tab, not "/".
+   */
+  describe("address bar after a dead link", () => {
+    beforeEach(() => {
+      h.consoleState.tabs = {
+        c1: { id: "c1", kind: "console", title: "Scratch", content: "" },
+      };
+      h.consoleState.activeTabId = "c1";
+    });
+
+    it("app", async () => {
+      h.resolveObjectRef.mockResolvedValueOnce(null);
+      window.history.replaceState({}, "", "/apps/ghost");
+
+      render(<UrlSync />);
+
+      expect(await screen.findByText(/app link doesn't resolve/)).toBeTruthy();
+      expect(window.location.pathname).toBe("/c/c1");
+    });
+
+    it("app file", async () => {
+      h.resolveObjectRef.mockResolvedValueOnce(null);
+      window.history.replaceState({}, "", "/apps/ghost/file/src/main.tsx");
+
+      render(<UrlSync />);
+
+      expect(await screen.findByText(/app link doesn't resolve/)).toBeTruthy();
+      expect(window.location.pathname).toBe("/c/c1");
+    });
+
+    it("notebook", async () => {
+      h.resolveObjectRef.mockResolvedValueOnce(null);
+      window.history.replaceState(
+        {},
+        "",
+        "/n/00000000-0000-4000-8000-000000000001",
+      );
+
+      render(<UrlSync />);
+
+      expect(
+        await screen.findByText(/notebook link doesn't resolve/),
+      ).toBeTruthy();
+      expect(window.location.pathname).toBe("/c/c1");
+    });
+
+    it("dashboard", async () => {
+      h.resolveObjectRef.mockResolvedValueOnce(null);
+      window.history.replaceState({}, "", "/d/507f1f77bcf86cd799439031");
+
+      render(<UrlSync />);
+
+      expect(
+        await screen.findByText(/dashboard link doesn't resolve/),
+      ).toBeTruthy();
+      expect(window.location.pathname).toBe("/c/c1");
+    });
+
+    it("source connection", async () => {
+      h.fetchOneSourceConnection.mockResolvedValueOnce(null);
+      window.history.replaceState({}, "", "/cx/507f1f77bcf86cd799439032");
+
+      render(<UrlSync />);
+
+      expect(
+        await screen.findByText(/source connection link doesn't resolve/),
+      ).toBeTruthy();
+      expect(window.location.pathname).toBe("/c/c1");
+    });
+
+    it("falls back to / when no tab is left open", async () => {
+      h.consoleState.tabs = {};
+      h.consoleState.activeTabId = null;
+      h.resolveObjectRef.mockResolvedValueOnce(null);
+      window.history.replaceState({}, "", "/apps/ghost");
+
+      render(<UrlSync />);
+
+      expect(await screen.findByText(/app link doesn't resolve/)).toBeTruthy();
+      expect(window.location.pathname).toBe("/");
+    });
   });
 });
