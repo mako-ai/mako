@@ -5,7 +5,9 @@
  * so the title silently never moved; now both are here, the link unchanged
  * unless touched. A changed link does not break the old one: the server
  * records the previous slug as an alias in mako.json, so every old link
- * and ref still opens the app (api/src/rename/handlers/app.ts).
+ * and ref still opens the app (api/src/rename/handlers/app.ts). What the
+ * server could NOT promise — the name was another app's old name too, and
+ * that app loses it — comes back as `warnings`, which the explorer shows.
  */
 import { useEffect, useState } from "react";
 import {
@@ -124,8 +126,8 @@ export function AppRenameDialog({
         />
         <Typography variant="caption" color="text.secondary">
           {slugChanged
-            ? "The old link keeps working: the previous name is kept as an alias of the app."
-            : "Changing the link renames the app's folder; the old link keeps working."}
+            ? "The previous name is kept as an alias of this app, so its old link keeps opening it — unless another app also used that name before; you'll be told."
+            : "Changing the link renames the app's folder; the previous name is kept as an alias."}
         </Typography>
         {error && (
           <Typography

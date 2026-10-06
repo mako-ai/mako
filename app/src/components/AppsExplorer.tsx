@@ -26,6 +26,7 @@ import {
   IconButton,
   ListItemIcon,
   MenuItem,
+  Snackbar,
   TextField,
   Tooltip,
   Typography,
@@ -352,6 +353,9 @@ export default function AppsExplorer() {
   } | null>(null);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  // What the server could not promise about the rename (an old name that
+  // was another app's too): shown after the dialog closes, never swallowed.
+  const [renameWarnings, setRenameWarnings] = useState<string[] | null>(null);
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -920,6 +924,7 @@ export default function AppsExplorer() {
           );
         }
         setRenameDialog(null);
+        setRenameWarnings(result.warnings.length > 0 ? result.warnings : null);
         await fetchApps(workspaceId);
       } catch (e) {
         setRenameError(e instanceof Error ? e.message : String(e));
@@ -1637,6 +1642,15 @@ export default function AppsExplorer() {
         error={renameError}
         onClose={() => !renameBusy && setRenameDialog(null)}
         onConfirm={submitRenameDialog}
+      />
+
+      {/* After a rename: what the server could not promise (see AppRenameDialog). */}
+      <Snackbar
+        open={renameWarnings !== null}
+        autoHideDuration={12000}
+        onClose={() => setRenameWarnings(null)}
+        message={(renameWarnings ?? []).join(" ")}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       />
 
       {shareApp && (
