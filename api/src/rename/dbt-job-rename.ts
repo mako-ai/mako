@@ -141,7 +141,12 @@ export async function resolveDbtJobRef(
     const rows = await DbtJob.find({ projectId: project._id })
       .select("_id slug")
       .lean();
-    const id = String(freeDerivedJobId(ctx.workspaceId, def.slug, rows));
+    // The file's row when it has one (see flow-rename.ts); the derived id
+    // only for a file not yet synced.
+    const id = String(
+      rows.find(row => row.slug === def.slug)?._id ??
+        freeDerivedJobId(ctx.workspaceId, def.slug, rows),
+    );
     return {
       kind: "dbt_job",
       id,
