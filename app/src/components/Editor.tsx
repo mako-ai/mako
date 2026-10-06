@@ -120,7 +120,9 @@ import { setIframeDragGuard } from "../lib/iframe-drag-guard";
 import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { accessForMove } from "../store/lib/createResourceTreeStore";
+import { findById } from "../store/lib/tree-helpers";
 import {
+  consoleCopiedNotice,
   consolePlacement,
   consoleSavedNotice,
   locateInConsoleTree,
@@ -2004,7 +2006,23 @@ function Editor({
             source_console_id: saveDialogTabId,
             new_console_id: targetId,
           });
-          setSnackbarMessage(`Saved a copy as '${savePath}'`);
+          // Where the copy went, in the explorer's words — as Duplicate
+          // says it.
+          const folder = folderId
+            ? findById(
+                (section === "workspace"
+                  ? consoleTreeWorkspace
+                  : consoleTreeMy) ?? [],
+                folderId,
+              )
+            : null;
+          setSnackbarMessage(
+            consoleCopiedNotice({
+              section: section === "workspace" ? "Workspace" : "My Consoles",
+              path: folder?.path ? `${folder.path}/${savePath}` : savePath,
+              name: savePath,
+            }),
+          );
           setSnackbarOpen(true);
         } else {
           // "new" — first-time save of a draft; update the originating tab.

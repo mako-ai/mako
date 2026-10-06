@@ -36,7 +36,7 @@ import { useConsoleContentStore } from "../store/consoleContentStore";
 import { hasUnsavedLocalEdits, useConsoleStore } from "../store/consoleStore";
 import { filterTree, findById } from "../store/lib/tree-helpers";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
-import { consoleCopiedNotice } from "../lib/console-relocation";
+import { consoleCopiedNotice, treeMoveNotice } from "../lib/console-relocation";
 import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
@@ -363,35 +363,68 @@ function ConsoleExplorer(
 
     const renamedTo =
       newName && newName !== selectedItem.name ? newName : undefined;
+    let ok = true;
     if (renamedTo && selectedItem.isDirectory) {
       const renameItem = useConsoleTreeStore.getState().renameItem;
-      await renameItem(currentWorkspace.id, selectedItem.id, renamedTo, true);
+      ok =
+        (await renameItem(
+          currentWorkspace.id,
+          selectedItem.id,
+          renamedTo,
+          true,
+        )) !== false;
     }
 
     // Re-scope (private ↔ workspace) only when the user changed section;
     // the server refuses a scope flip from anyone but the owner, and a
     // move within the same section must not look like one.
-    const access = accessForMove(getSectionForItem(selectedItem), section);
+    const fromSection = getSectionForItem(selectedItem);
+    const access = accessForMove(fromSection, section);
+    const moved =
+      targetFolderId !== getParentFolderIdForItem(selectedItem) ||
+      section !== fromSection;
     // A refusal (403 scope flip, 409 name taken) lands in the store's
     // actionError, which the snackbar below shows; an open tab is
     // retargeted by the store from the server's answer (name, folder,
     // visibility) — never from a path computed here.
-    if (selectedItem.isDirectory) {
-      await moveFolder(
+    if (ok && selectedItem.isDirectory) {
+      ok = await moveFolder(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
         access,
       );
-    } else {
+    } else if (ok) {
       // Rename + move in ONE request: a console is a file in the repo, and
       // two requests made two commits (rename, then move) for one gesture.
-      await moveConsole(
+      ok = await moveConsole(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
         access,
         renamedTo,
+      );
+    }
+
+    // Say where it went (it used to say nothing): in the explorer's words.
+    if (ok) {
+      const tree = useConsoleTreeStore.getState();
+      const target = targetFolderId
+        ? findById(
+            (section === "workspace"
+              ? tree.workspaceItems[currentWorkspace.id]
+              : tree.myItems[currentWorkspace.id]) ?? [],
+            targetFolderId,
+          )
+        : null;
+      setNotice(
+        treeMoveNotice({
+          moved,
+          renamedTo,
+          name: selectedItem.name,
+          section,
+          folderPath: target?.path,
+        }),
       );
     }
 

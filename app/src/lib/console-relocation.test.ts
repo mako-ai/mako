@@ -9,6 +9,7 @@ import {
   consoleSectionLabel,
   renameMoveNotice,
   renameMoveRequest,
+  treeMoveNotice,
   locateInConsoleTree,
   relocationScope,
 } from "./console-relocation";
@@ -348,5 +349,47 @@ describe("consoleCopiedNotice — a Duplicate says where the copy went", () => {
         name: "Ghost copy",
       }),
     ).toBe("Copied to My Consoles › Team Drafts as 'Ghost copy'");
+  });
+});
+
+describe("Save a Copy and the tree's Move to… say where", () => {
+  it("a copy saved into a Workspace folder", () => {
+    expect(
+      consoleCopiedNotice({
+        section: "Workspace",
+        path: "finance/Q copy",
+        name: "Q copy",
+      }),
+    ).toBe("Copied to Workspace › finance as 'Q copy'");
+  });
+
+  it("Move to… names the place, a name-only change says Renamed, nothing changed says nothing", () => {
+    expect(
+      treeMoveNotice({
+        moved: true,
+        name: "Alpha",
+        section: "workspace",
+        folderPath: "finance/Q3",
+      }),
+    ).toBe("Moved to Workspace › finance › Q3");
+    expect(
+      treeMoveNotice({
+        moved: true,
+        renamedTo: "Beta",
+        name: "Alpha",
+        section: "my",
+      }),
+    ).toBe("Moved to My Consoles as 'Beta'");
+    expect(
+      treeMoveNotice({
+        moved: false,
+        renamedTo: "Beta",
+        name: "Alpha",
+        section: "my",
+      }),
+    ).toBe("Renamed to 'Beta'");
+    expect(
+      treeMoveNotice({ moved: false, name: "Alpha", section: "my" }),
+    ).toBeNull();
   });
 });
