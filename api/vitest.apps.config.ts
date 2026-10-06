@@ -16,6 +16,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "src/apps/worktree.service.test.ts",
+      "src/rename/registry.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
       "src/migrations/2026-09-02-110000_workspace_self_directive_to_git.test.ts",

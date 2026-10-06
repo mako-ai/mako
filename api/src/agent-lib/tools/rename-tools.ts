@@ -12,8 +12,10 @@ import { workspaceService } from "../../services/workspace.service";
 import { RENAME_HANDLERS, renameObject } from "../../rename/registry";
 import { RENAME_KINDS, RenameError } from "../../rename/types";
 
+// Handlers may or may not lead their line with the kind; say it once.
 const KIND_LINES = RENAME_KINDS.map(
-  kind => `- ${kind}: ${RENAME_HANDLERS[kind].describe}`,
+  kind =>
+    `- ${kind}: ${RENAME_HANDLERS[kind].describe.replace(new RegExp(`^${kind}:\\s*`), "")}`,
 ).join("\n");
 
 export function createRenameTools(

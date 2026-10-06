@@ -14,6 +14,7 @@ import { DBT_CAPABILITIES } from "./dbt-capabilities";
 import { MEMBER_CAPABILITIES } from "./member-capabilities";
 import { NOTEBOOK_CAPABILITIES } from "./notebook-capabilities";
 import { QUERY_CAPABILITIES } from "./query-capabilities";
+import { RENAME_CAPABILITIES } from "./rename-capabilities";
 import type { AgentCapabilityDefinition, AgentSurface } from "./types";
 
 export const AGENT_CAPABILITIES: readonly AgentCapabilityDefinition[] = [
@@ -25,6 +26,7 @@ export const AGENT_CAPABILITIES: readonly AgentCapabilityDefinition[] = [
   ...NOTEBOOK_CAPABILITIES,
   ...CONNECTOR_CAPABILITIES,
   ...MEMBER_CAPABILITIES,
+  ...RENAME_CAPABILITIES,
 ];
 
 export const AGENT_CAPABILITY_BY_NAME: ReadonlyMap<

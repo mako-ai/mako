@@ -17,6 +17,7 @@ import {
   type RenameContext,
   type RenameHandler,
   type RenameKind,
+  type RenameLocation,
   type RenameRequest,
   type RenameResult,
   type ResolvedRef,
@@ -47,7 +48,31 @@ export async function renameObject(
   if (request.title === undefined && request.slug === undefined) {
     throw new RenameError("Give a new title, a new slug, or both.");
   }
+  // A rename to what the object is already called succeeds with nothing to
+  // do, the same answer for every kind (handlers used to disagree: 200, 409,
+  // 400, or a save that bumped a version for nothing).
+  const current = await RENAME_HANDLERS[kind].resolve(ctx, request.ref.trim());
+  if (current && isNoOp(request, current.current)) {
+    return {
+      kind,
+      id: current.id,
+      before: current.current,
+      after: current.current,
+      aliasesAdded: [],
+      warnings: ["Nothing to change: it already has that name."],
+    };
+  }
   return RENAME_HANDLERS[kind].rename(ctx, request);
+}
+
+function isNoOp(request: RenameRequest, current: RenameLocation): boolean {
+  const titleSame =
+    request.title === undefined || request.title.trim() === current.title;
+  const slugSame =
+    request.slug === undefined ||
+    request.slug.trim() === current.slug ||
+    request.slug.trim() === current.path;
+  return titleSame && slugSame;
 }
 
 export async function resolveObjectRef(

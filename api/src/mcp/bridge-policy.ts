@@ -153,8 +153,12 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_commit: bridge(),
   app_create_app: bridge(),
   app_move_app: bridge(),
-  // Ids never change and old names keep resolving, so not destructive.
-  rename_object: bridge({ destructiveHint: false }),
+  // Gated per kind by RENAME_CAPABILITIES (agent-tools). Flagged destructive
+  // for MCP clients even though ids survive and old names keep resolving: a
+  // dbt model rename leaves the old warehouse relation behind for SQL that
+  // still names it, and a connector rename re-points every connection of
+  // that connector — a client should confirm before calling it.
+  rename_object: bridge({ destructiveHint: true }),
   app_dev_log: bridge(),
   app_edit_file: bridge(),
   app_glob: bridge(),

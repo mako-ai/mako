@@ -9,7 +9,10 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
-import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import {
+  isSessionAuth,
+  unifiedAuthMiddleware,
+} from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -74,7 +77,9 @@ async function contextFor(c: AuthenticatedContext): Promise<RenameContext> {
   const role = user
     ? (await workspaceService.getMember(workspaceId, user.id))?.role
     : undefined;
-  return { workspaceId, userId: user?.id, role };
+  // String(): a legacy API key carries its creator as an ObjectId, and the
+  // handlers compare ids as strings.
+  return { workspaceId, userId: user ? String(user.id) : undefined, role };
 }
 
 function failure(c: AuthenticatedContext, error: unknown, what: string) {
@@ -167,9 +172,11 @@ objectRoutes.openapi(
         return c.json({ success: false, error: `Unknown kind: ${kind}` }, 400);
       }
       const ctx = await contextFor(c);
-      if (!ctx.userId) {
-        // A workspace API key renames through MCP (`rename_object`), where
-        // its scopes are enforced; this route is the signed-in UI's.
+      if (!isSessionAuth(c) || !ctx.userId) {
+        // API keys rename through MCP (`rename_object`), where their scopes
+        // and grants are enforced; this route is the signed-in UI's. (A key
+        // always carries its creator as `user`, so a userId check alone
+        // would let legacy unscoped keys through.)
         return c.json(
           { success: false, error: "Renaming requires a signed-in user" },
           403,
