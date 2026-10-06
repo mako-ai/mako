@@ -183,7 +183,11 @@ export function withConnectorAlias(
       contents.endsWith("\n") || contents === ""
         ? contents
         : `${contents}${nl}`;
-    return `${base}aliases:${nl}  - ${alias}${nl}`;
+    return checkedAliasEdit(
+      contents,
+      `${base}aliases:${nl}  - ${alias}${nl}`,
+      alias,
+    );
   }
   const lines = contents.split(nl);
   const keyAt = lines.findIndex(l => /^aliases:\s*(\[.*\])?\s*(#.*)?$/.test(l));
@@ -193,20 +197,43 @@ export function withConnectorAlias(
     const inner = flow[2].trim();
     lines[keyAt] =
       `${flow[1]}${inner ? `${inner}, ${alias}` : alias}${flow[3]}`;
-    return lines.join(nl);
+    return checkedAliasEdit(contents, lines.join(nl), alias);
   }
-  // Block list: items follow the key, each `<indent>- value`.
+  // Block list: items follow the key, each `<indent>- value` — the indent
+  // may be none at all (`- acme` right under the key is valid YAML).
   let last = keyAt;
   let indent: string | null = null;
   for (let i = keyAt + 1; i < lines.length; i++) {
-    const item = /^(\s+)-\s/.exec(lines[i]);
+    const item = /^(\s*)-\s/.exec(lines[i]);
     if (!item || (indent !== null && item[1] !== indent)) break;
     indent = item[1];
     last = i;
   }
   if (indent === null) return null; // `aliases:` with items we could not see
   lines.splice(last + 1, 0, `${indent}- ${alias}`);
-  return lines.join(nl);
+  return checkedAliasEdit(contents, lines.join(nl), alias);
+}
+
+/**
+ * The guard behind every path above: the edited yaml must still parse as
+ * a connector file AND carry the alias. A shape the line edit did not
+ * foresee (a multi-line flow list, an anchor) would otherwise be
+ * committed broken — and a connector whose yaml does not parse is
+ * blocked, with every connection of it stranded.
+ */
+function checkedAliasEdit(
+  original: string,
+  edited: string,
+  alias: string,
+): string | null {
+  const before = parseConnectorFile(original);
+  const after = parseConnectorFile(edited);
+  if (!before.ok || !after.ok) return null;
+  if (!after.value.aliases.includes(alias)) return null;
+  // Everything but `aliases` must read exactly as it did.
+  const rest = (v: ConnectorFile) =>
+    JSON.stringify({ ...v, aliases: undefined });
+  return rest(before.value) === rest(after.value) ? edited : null;
 }
 
 /**
@@ -221,10 +248,20 @@ export function stripConnectorAliases(contents: string): string {
   if (keyAt < 0) return contents;
   let end = keyAt + 1;
   if (!/^aliases:\s*\[/.test(lines[keyAt])) {
-    while (end < lines.length && /^\s+-\s/.test(lines[end])) end++;
+    while (end < lines.length && /^\s*-\s/.test(lines[end])) end++;
   }
   lines.splice(keyAt, end - keyAt);
-  return lines.join(nl);
+  const stripped = lines.join(nl);
+  // A shape the line edit did not foresee: hash the raw bytes instead (at
+  // worst a spec re-run on rename) rather than hash something that is
+  // not the file minus its aliases — the rest must read exactly the same.
+  const before = parseConnectorFile(contents);
+  const after = parseConnectorFile(stripped);
+  if (!before.ok || !after.ok || after.value.aliases.length > 0)
+    return contents;
+  const rest = (v: ConnectorFile) =>
+    JSON.stringify({ ...v, aliases: undefined });
+  return rest(before.value) === rest(after.value) ? stripped : contents;
 }
 
 /**

@@ -214,9 +214,12 @@ export async function renameWorkspaceConnector(
       ? withConnectorAlias(yamlBuf.toString("utf8"), from)
       : null;
   if (nextYaml === null) {
+    // Either the file does not parse, or its `aliases` is written in a
+    // shape the line edit cannot extend without breaking it (the result
+    // is re-parsed before it is used). Nothing is committed.
     throw new RenameError(
-      `connectors/${from}/connector.yaml does not parse; fix it before renaming so nothing is lost`,
-      400,
+      `connectors/${from}/connector.yaml could not be edited in place; edit connector.yaml by hand (move the folder and add \`aliases: [${from}]\`), or fix the file before renaming`,
+      409,
     );
   }
   const writes: Record<string, string | Buffer> = {};

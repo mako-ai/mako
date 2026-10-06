@@ -121,7 +121,9 @@ export function editSkillFrontMatter(
     if (at >= 0) {
       let end = at + 1;
       if (!/^aliases:\s*\[/.test(fm[at])) {
-        while (end < fm.length && /^\s+-\s/.test(fm[end])) end++;
+        // Block list items at ANY indent — `- old` directly under the key,
+        // with no indent, is valid YAML and what people type by hand.
+        while (end < fm.length && /^\s*-\s/.test(fm[end])) end++;
       }
       fm.splice(at, end - at);
     }
@@ -129,7 +131,113 @@ export function editSkillFrontMatter(
       fm.push(`aliases: [${edit.aliases.join(", ")}]`);
     }
   }
-  return ["---", ...fm, ...lines.slice(close)].join(nl);
+  const result = ["---", ...fm, ...lines.slice(close)].join(nl);
+  // Never trust a line edit: a shape this did not foresee (a multi-line
+  // flow list whose tail lines YAML then folds into the PREVIOUS key's
+  // value, an anchor, …) would commit a file the catalog can no longer
+  // parse — or one that parses with another key silently changed — and
+  // the skill and every alias with it would drop out or lie. Re-read what
+  // was written and refuse unless the front matter still parses, says
+  // exactly what was intended, and every OTHER key is as it was.
+  return frontMatterSays(normalized, result, edit) ? result : null;
+}
+
+/** The parsed front matter of a SKILL.md, or null when it has none / is broken. */
+function frontMatterOf(contents: string): Record<string, unknown> | null {
+  const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/.exec(
+    contents.replace(/^\uFEFF/, ""),
+  );
+  if (!match) return null;
+  let data: unknown;
+  try {
+    data = yaml.load(match[1]);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  return data as Record<string, unknown>;
+}
+
+/** Stable, order-independent rendering for comparing YAML values. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_k, v) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.entries(v as Record<string, unknown>).sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0,
+          ),
+        )
+      : v,
+  );
+}
+
+/**
+ * Does the edited file's front matter parse, carry `name`/`aliases` as
+ * intended, and keep every other key exactly as the original had it?
+ */
+function frontMatterSays(
+  original: string,
+  edited: string,
+  intended: { name?: string; aliases?: string[] },
+): boolean {
+  const before = frontMatterOf(original);
+  const after = frontMatterOf(edited);
+  if (!before || !after) return false;
+  if (intended.name !== undefined && after.name !== intended.name) return false;
+  if (intended.aliases !== undefined) {
+    const written = Array.isArray(after.aliases)
+      ? after.aliases.filter((a): a is string => typeof a === "string")
+      : after.aliases === undefined
+        ? []
+        : null;
+    if (written === null) return false;
+    const want = [...new Set(intended.aliases)].sort();
+    if (written.length !== want.length) return false;
+    if (![...written].sort().every((a, i) => a === want[i])) return false;
+  }
+  const edited_ = new Set(["name", "aliases"]);
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (edited_.has(key)) continue;
+    if (canonical(before[key]) !== canonical(after[key])) return false;
+  }
+  return true;
+}
+
+export type SkillEditOutcome =
+  | { ok: true; contents: string }
+  | { ok: false; reason: string };
+
+/**
+ * `editSkillFrontMatter` plus the guard every commit path must apply: the
+ * edited file is re-parsed with `parseSkillFile` under its folder name,
+ * and the aliases it carries must be exactly the intended ones. A file
+ * the editor cannot handle is refused with the fix spelled out, and the
+ * caller commits nothing.
+ */
+export function editSkillFrontMatterChecked(
+  folderName: string,
+  contents: string,
+  edit: { name?: string; aliases?: string[] },
+): SkillEditOutcome {
+  const edited = editSkillFrontMatter(contents, edit);
+  const parsed = edited === null ? null : parseSkillFile(folderName, edited);
+  const want = edit.aliases ? [...new Set(edit.aliases)].sort() : null;
+  const got = parsed ? [...(parsed.aliases ?? [])].sort() : null;
+  const aliasesMatch =
+    want === null ||
+    (got !== null &&
+      got.length === want.length &&
+      got.every((a, i) => a === want[i]));
+  if (!parsed || !aliasesMatch) {
+    return {
+      ok: false,
+      reason: `skills/${folderName}/SKILL.md could not be edited in place without breaking it; edit SKILL.md by hand (set ${
+        edit.name !== undefined ? `\`name: ${edit.name}\` and ` : ""
+      }\`aliases: [${(edit.aliases ?? []).join(", ")}]\`)`,
+    };
+  }
+  return { ok: true, contents: edited as string };
 }
 
 export function serializeSkillFile(skill: WorkspaceSkillFile): string {

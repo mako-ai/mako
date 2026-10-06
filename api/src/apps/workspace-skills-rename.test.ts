@@ -29,6 +29,7 @@ vi.mock("../rename/git-renames", async importOriginal => {
 import * as gitRenames from "../rename/git-renames";
 import {
   editSkillFrontMatter,
+  editSkillFrontMatterChecked,
   parseSkillFile,
   serializeSkillFile,
   skillFilePath,
@@ -211,6 +212,163 @@ describe("front matter is edited in place, never re-serialized", () => {
     expect(await fileAt(skillFilePath("new_name"))).toBe(
       HAND_WRITTEN.replace("name: old_name", "name: new_name"),
     );
+  });
+});
+
+describe("hand-written front matter the editor must handle, or refuse", () => {
+  // A zero-indented block list is valid YAML and what people type by hand.
+  const ZERO_INDENT = [
+    "---",
+    "name: foo",
+    "description: Use for X",
+    "aliases:",
+    "- old",
+    "license: MIT",
+    "---",
+    "",
+    "Body.",
+    "",
+  ].join("\n");
+  // A multi-line flow list: the line editor cannot extend this safely.
+  const MULTILINE_FLOW = [
+    "---",
+    "name: foo",
+    "description: Use for X",
+    "aliases: [",
+    "  old,",
+    "  older ]",
+    "license: MIT",
+    "---",
+    "",
+    "Body.",
+    "",
+  ].join("\n");
+
+  it("editSkillFrontMatter consumes zero-indent items; refuses what it cannot keep parseable", () => {
+    expect(
+      editSkillFrontMatter(ZERO_INDENT, {
+        name: "bar",
+        aliases: ["old", "foo"],
+      }),
+    ).toBe(
+      [
+        "---",
+        "name: bar",
+        "description: Use for X",
+        "license: MIT",
+        "aliases: [old, foo]",
+        "---",
+        "",
+        "Body.",
+        "",
+      ].join("\n"),
+    );
+    expect(
+      parseSkillFile(
+        "bar",
+        editSkillFrontMatter(ZERO_INDENT, {
+          name: "bar",
+          aliases: ["old", "foo"],
+        })!,
+      ),
+    ).toMatchObject({
+      aliases: ["old", "foo"],
+    });
+    expect(
+      editSkillFrontMatter(MULTILINE_FLOW, {
+        name: "bar",
+        aliases: ["old", "older", "foo"],
+      }),
+    ).toBeNull();
+    expect(
+      editSkillFrontMatterChecked("bar", MULTILINE_FLOW, {
+        name: "bar",
+        aliases: ["foo"],
+      }),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("edit SKILL.md by hand"),
+    });
+  });
+
+  it("rename + retire of a zero-indent list keep the skill parseable and in the catalog", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "skills/foo/SKILL.md": ZERO_INDENT } },
+      { message: "hand-written" },
+    );
+    invalidateSkillCatalog(WS);
+    expect((await findSkill(WS, "foo"))?.aliases).toEqual(["old"]);
+    const renamed = await commitSkillRename(WS, "foo", "bar");
+    expect(renamed.ok).toBe(true);
+    const catalog = await loadSkillCatalog(WS);
+    expect(catalog.invalid).toEqual([]);
+    expect(catalog.skills.map(s => [s.name, s.aliases])).toEqual([
+      ["bar", ["old", "foo"]],
+    ]);
+    expect(await fileAt(skillFilePath("bar"))).toContain("license: MIT");
+    // Retire `old` by creating a new skill with that name.
+    const saved = await saveSkill(
+      WS,
+      { name: "old", loadWhen: "new", body: "New." },
+      "u1",
+    );
+    expect(saved).toMatchObject({ success: true, skill: { created: true } });
+    const after = await loadSkillCatalog(WS);
+    expect(after.invalid).toEqual([]);
+    expect(after.skills.map(s => [s.name, s.aliases])).toEqual([
+      ["bar", ["foo"]],
+      ["old", undefined],
+    ]);
+  });
+
+  it("a front matter the editor cannot handle is refused (409) and the file is untouched", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "skills/foo/SKILL.md": MULTILINE_FLOW } },
+      { message: "hand-written" },
+    );
+    invalidateSkillCatalog(WS);
+    expect((await findSkill(WS, "foo"))?.aliases).toEqual(["old", "older"]);
+    const before = await log(repoDirFor(WS), MAIN, 50);
+    expect(await commitSkillRename(WS, "foo", "bar")).toMatchObject({
+      ok: false,
+      status: 409,
+      error: expect.stringContaining("edit SKILL.md by hand"),
+    });
+    // Retiring an alias from it (a new skill named `old`) is refused the same way.
+    const saved = await saveSkill(
+      WS,
+      { name: "old", loadWhen: "new", body: "New." },
+      "u1",
+    );
+    expect(saved).toMatchObject({
+      success: false,
+      error: expect.stringContaining("edit SKILL.md by hand"),
+    });
+    expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(before.length);
+    expect(await fileAt(skillFilePath("foo"))).toBe(MULTILINE_FLOW);
+    expect(await fileAt(skillFilePath("bar"))).toBeNull();
+    expect(await fileAt(skillFilePath("old"))).toBeNull();
+    // Activation of a proposal under that name is refused too, nothing committed.
+    const proposal = await saveSkill(
+      WS,
+      { name: "old", loadWhen: "p", body: "P." },
+      "agent",
+      { origin: "agent" },
+    );
+    expect(proposal).toMatchObject({
+      success: true,
+      skill: { pendingApproval: true },
+    });
+    const mid = await log(repoDirFor(WS), MAIN, 50);
+    await expect(
+      toggleSkillSuppressed(WS, skillId(WS, "old"), false, "u1"),
+    ).rejects.toThrow(/edit SKILL.md by hand/);
+    expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(mid.length);
+    expect(await fileAt(skillFilePath("foo"))).toBe(MULTILINE_FLOW);
   });
 });
 
