@@ -1038,7 +1038,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "File the app in another folder (and/or rename its folder)",
     description:
-      "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it. Filed elsewhere under the same name, nothing is rebuilt and the index remembers the old path. Renamed (`name`), the old folder name is recorded as an `aliases` entry in mako.json in the same commit — the old /apps/<slug> link and old refs keep opening it — and that manifest write rebuilds the app once. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
+      "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it. Filed elsewhere under the same name, an app that already has an id is not rebuilt (the index remembers the old path); any mako.json write — a stamp, a new alias, a title change — rebuilds it once. Renamed (`name`), the old folder name is recorded as an `aliases` entry in mako.json in the same commit, so the old /apps/<slug> link and old refs keep opening it. `warnings` lists any other app that used that name before and stops answering to it. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -1073,7 +1073,7 @@ appsRoutes.openapi(
       const moved = await moveProject(
         loaded.project,
         { ...target, slug: name },
-        { userId },
+        { userId, role },
       );
       return c.json(
         {

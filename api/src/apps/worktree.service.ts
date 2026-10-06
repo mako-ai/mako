@@ -125,6 +125,7 @@ import {
   type AppScope,
 } from "./app-paths";
 import { appSdkDependency } from "./app-sdk-package";
+import { canReadResource } from "../utils/resource-acl";
 
 // Identity helpers moved to app-paths.ts (pure); re-exported so existing
 // importers keep working.
@@ -1053,9 +1054,9 @@ function isWithin(candidate: string, root: string): boolean {
  * the old one as an alias in the SAME commit, so the old link keeps opening
  * it (the planner is {@link aliasesForMoves}; the lookup is
  * findAppInSnapshot). An app whose name does not change (filed elsewhere,
- * or carried along by a folder move) gets no write at all: its tree stays
- * as it was and nothing rebuilds; the index records its old path itself.
- * Paths are the NEW ones (post-move).
+ * or carried along by a folder move) gets no write at all when it already
+ * carries its id: its tree stays as it was and nothing rebuilds; the index
+ * records its old path itself. Paths are the NEW ones (post-move).
  *
  * A manifest that cannot be parsed stops the move: the alias has to be
  * written INTO it, and writing a fresh manifest over whatever the user had
@@ -1068,9 +1069,11 @@ function isWithin(candidate: string, root: string): boolean {
  * app (that app was renamed away from it first, then this one was created
  * there). Two claims would make the link die; instead the most recent
  * holder keeps it — while this app sat there, the link opened this app
- * anyway — and the older claim is dropped from the other app's manifest in
- * the same commit (`superseded` says which, for the caller's warning; the
- * index drops its own copy on the sync that follows).
+ * anyway. The older claim is superseded in the INDEX on the sync that
+ * follows (`supersededAliases`, re-derived from history on every rebuild
+ * by walkHistory); the other app's manifest is never touched: it may be
+ * someone else's private app, and a write there would rebuild and
+ * redeploy it. `superseded` says which apps, for the caller's warning.
  */
 export interface SupersededAlias {
   /** The name, as the new holder's manifest records it. */
@@ -1079,8 +1082,6 @@ export interface SupersededAlias {
   appId: string;
   path: string;
   title: string;
-  /** False when its manifest could not be rewritten (unparseable): the index still supersedes it. */
-  manifestUpdated: boolean;
 }
 
 async function moveWritesUnder(
@@ -1130,23 +1131,14 @@ async function moveWritesUnder(
       for (const name of plan.add) {
         for (const other of snapshot.apps) {
           if (other.appId === app.appId || other.duplicateOf) continue;
-          const claimed = other.aliases.filter(alias =>
-            aliasMatchesRef(alias, name),
-          );
-          if (claimed.length === 0) continue;
-          const theirs = `${other.path}/${APP_MANIFEST}`;
-          const contents = writes[theirs] ?? (await readAt(theirs));
-          const stripped = addManifestAliases(contents, [], claimed);
-          const manifestUpdated = stripped !== null;
-          if (stripped !== null && stripped !== contents) {
-            writes[theirs] = stripped;
+          if (!other.aliases.some(alias => aliasMatchesRef(alias, name))) {
+            continue;
           }
           superseded.push({
             name,
             appId: other.appId,
             path: other.path,
             title: other.title,
-            manifestUpdated,
           });
         }
       }
@@ -1242,20 +1234,77 @@ async function commitOnMainDurably(
  * File an app somewhere else: `git mv` of its folder, as one commit on main.
  * The app keeps its id (stamped into the manifest in the same commit if it
  * had none), so deployments, sharing, env vars and favourites all follow it.
- * Filed elsewhere under the same name, the folder's tree oid is unchanged
- * and nothing rebuilds (deploy-on-push keys on that); the index records the
- * old path so old refs keep resolving. RENAMED (a new folder name), the old
- * name becomes an alias in the manifest in the same commit — so the old
- * `/apps/<slug>` link keeps opening it — and that one manifest write is
- * what deploy-on-push rebuilds once.
+ * Filed elsewhere under the same name, an app that already carries its id
+ * keeps its tree oid and nothing rebuilds (deploy-on-push keys on that; a
+ * stamp is a manifest write, so a pre-ids app rebuilds once); the index
+ * records the old path so old refs keep resolving. RENAMED (a new folder
+ * name), the old name becomes an alias in the manifest in the same commit —
+ * so the old `/apps/<slug>` link keeps opening it — and that one manifest
+ * write is what deploy-on-push rebuilds once. `warnings` says when that
+ * old name was another app's old name too (that app stops answering to it;
+ * see moveWritesUnder) — every caller shows them.
  */
 export async function moveProject(
   project: IAppProject,
   target: AppFolderTarget & { slug?: string },
-  options: { userId?: string; author?: GitAuthor } = {},
-): Promise<{ from: string; to: string }> {
-  const { from, to } = await moveProjectWith(project, target, options);
-  return { from, to };
+  options: { userId?: string; role?: string; author?: GitAuthor } = {},
+): Promise<{ from: string; to: string; warnings: string[] }> {
+  const { from, to, superseded } = await moveProjectWith(
+    project,
+    target,
+    options,
+  );
+  return {
+    from,
+    to,
+    warnings: await supersessionWarnings(
+      project.workspaceId.toString(),
+      options.userId,
+      options.role,
+      project.title ?? to.split("/").pop() ?? "",
+      superseded,
+    ),
+  };
+}
+
+/**
+ * What the caller must know when a name a rename keeps as an alias was
+ * also another app's old name: the link now opens the renamed app, and the
+ * other app no longer answers to it. The other app is named only when the
+ * caller may see it (a workspace API key with nobody behind it sees all).
+ */
+export async function supersessionWarnings(
+  workspaceId: string,
+  userId: string | undefined,
+  role: string | undefined,
+  newTitle: string,
+  superseded: readonly SupersededAlias[],
+): Promise<string[]> {
+  const warnings: string[] = [];
+  for (const entry of superseded) {
+    let other = "another app";
+    if (!userId) {
+      other = `"${entry.title}" (${entry.path})`;
+    } else {
+      const state = await AppProject.findOne({
+        _id: new Types.ObjectId(entry.appId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      const row = await resolveAppRef(workspaceId, entry.appId);
+      const resource =
+        state ?? (row ? projectFromIndexRow(workspaceId, row) : null);
+      if (resource && canReadResource(resource, userId, role)) {
+        other = `"${entry.title}" (${entry.path})`;
+      }
+    }
+    const link = entry.name.includes("/")
+      ? entry.name
+      : `/apps/${encodeURIComponent(entry.name)}`;
+    warnings.push(
+      `${link} now opens "${newTitle}"; it was also an old name of ${other}, which no longer answers to it.`,
+    );
+  }
+  return warnings;
 }
 
 /**

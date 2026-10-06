@@ -843,13 +843,41 @@ export default function AppsExplorer() {
   );
 
   /** May this person rename the app row (not pinned, not shared with them, in a tree they write to)? */
+  /**
+   * May this person rename the app row? The server's rule (resource-acl
+   * canWriteResource + the tree rule of authorizeAppMove), without side
+   * effects: this decides what the context menu SHOWS, and a refusal must
+   * not surface an error for a right-click. `mayWriteTo` (which does) is
+   * for the moment of acting.
+   */
   const mayRenameApp = useCallback(
     (appId: string): boolean => {
       const app = appById.get(appId);
       const folder = folderOfApp(appId);
-      return !!app && !!folder && !isSharedWithMe(appId) && mayWriteTo(folder);
+      if (!app || !folder || isSharedWithMe(appId)) return false;
+      const role = currentWorkspace?.role;
+      const inPersonalTree =
+        !!personalRoot &&
+        (folder === personalRoot || folder.startsWith(`${personalRoot}/`));
+      if (!inPersonalTree && !canOrganize) return false;
+      // Owner of a private app; an editor of a workspace app: admins and
+      // owners always, members when the app's workspace role says so (a
+      // folder-only app has none, and reads as viewer — exactly what the
+      // server answers).
+      if (app.access === "private") return app.owner_id === userId;
+      if (role === "owner" || role === "admin") return true;
+      if (role === "viewer") return false;
+      return app.workspaceRole === "editor";
     },
-    [appById, folderOfApp, isSharedWithMe, mayWriteTo],
+    [
+      appById,
+      folderOfApp,
+      isSharedWithMe,
+      currentWorkspace?.role,
+      personalRoot,
+      canOrganize,
+      userId,
+    ],
   );
 
   /**
