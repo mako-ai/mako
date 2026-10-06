@@ -42,6 +42,13 @@ export interface AppRenameDialogProps {
    * only the name is ever sent.
    */
   linkLockedReason?: string;
+  /**
+   * Whether the app has a published deployment. A rename rewrites
+   * mako.json, and deploy-on-push republishes a published app once for
+   * it; an app never published has nothing to republish, so it is not
+   * told it will be.
+   */
+  published?: boolean;
   busy?: boolean;
   /** The server's refusal, shown under the fields until the next attempt. */
   error?: string | null;
@@ -60,6 +67,7 @@ export function AppRenameDialog({
   prefillSlug,
   slugIsLink,
   linkLockedReason,
+  published = false,
   busy = false,
   error = null,
   onClose,
@@ -136,11 +144,18 @@ export function AppRenameDialog({
           slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
         />
         <Typography variant="caption" color="text.secondary">
-          {linkLocked
-            ? "Changing the name rewrites mako.json, which republishes the app once."
-            : slugChanged
-              ? "The previous name is kept as an alias of this app, so its old link keeps opening it. If another app used that name before, that app stops answering to it — you'll be told."
-              : "Changing the link renames the app's folder; the previous name is kept as an alias. Either change rewrites mako.json, which republishes the app once."}
+          {slugChanged
+            ? "The previous name is kept as an alias of this app, so its old link keeps opening it. If another app used that name before, that app stops answering to it — you'll be told."
+            : [
+                linkLocked
+                  ? "Only the name can change here."
+                  : "Changing the link renames the app's folder; the previous name is kept as an alias.",
+                published
+                  ? "A change rewrites mako.json, which republishes the app once."
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
         </Typography>
         {error && (
           <Typography

@@ -75,7 +75,13 @@ import {
 } from "./config";
 import { requireWorkspaceRepo } from "./workspace-repo-required";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
-import { assertSafeRelPath, EMPTY_TREE, runGit, ZERO_OID } from "./git";
+import {
+  assertSafeRelPath,
+  caseTwinOf,
+  EMPTY_TREE,
+  runGit,
+  ZERO_OID,
+} from "./git";
 import {
   DEFAULT_BRANCH,
   commitTree,
@@ -789,11 +795,15 @@ async function uniqueSlug(
 ): Promise<string> {
   const base = slugify(title);
   const taken = await occupiedPaths(workspaceId);
-  const pathFor = (slug: string) => appRepoPath({ ...target, slug });
-  if (!taken.has(pathFor(base))) return base;
+  // Free in git AND in a case-insensitive checkout (caseTwinOf).
+  const free = (slug: string) => {
+    const at = appRepoPath({ ...target, slug });
+    return !taken.has(at) && !caseTwinOf(taken, at);
+  };
+  if (free(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}-${i}`;
-    if (!taken.has(pathFor(candidate))) return candidate;
+    if (free(candidate)) return candidate;
   }
 }
 
@@ -1176,6 +1186,27 @@ function occupiedPathError(
   );
 }
 
+/**
+ * {@link occupiedPathError} for a case twin ({@link caseTwinOf}): an app,
+ * or a folder (listed, or only the parent of something in `taken`).
+ */
+function caseTwinError(
+  twin: string,
+  to: string,
+  snapshot: { folders: readonly string[] },
+  taken: ReadonlySet<string>,
+): AppFolderError {
+  const wanted = to.split("/")[twin.split("/").length - 1] ?? to;
+  const isFolder = snapshot.folders.includes(twin) || !taken.has(twin);
+  const occupied = occupiedPathError(twin, {
+    folders: isFolder ? [twin] : [],
+  }).message;
+  return new AppFolderError(
+    `${occupied} "${wanted}" differs from it only in upper/lower case, and a checkout on macOS or Windows cannot tell the two apart.`,
+    409,
+  );
+}
+
 async function moveWritesUnder(
   workspaceId: string,
   repoDir: string,
@@ -1554,6 +1585,8 @@ async function moveProjectWith(
   }
   const taken = await occupiedPaths(workspaceId);
   if (taken.has(to)) throw occupiedPathError(to, snapshot);
+  const twin = caseTwinOf(taken, to, from);
+  if (twin) throw caseTwinError(twin, to, snapshot, taken);
   // Never file an app inside another app: the outer one would swallow it.
   const parent = snapshot.apps.find(a => isWithin(to, a.path));
   if (parent) {
@@ -1632,6 +1665,9 @@ export async function createAppFolder(
   if (snapshot.folders.includes(folderPath)) {
     throw new AppFolderError(`${folderPath} already exists`, 409);
   }
+  const taken = await occupiedPaths(workspaceId);
+  const twin = caseTwinOf(taken, folderPath);
+  if (twin) throw caseTwinError(twin, folderPath, snapshot, taken);
   const clash = snapshot.apps.find(
     a => a.path === folderPath || isWithin(folderPath, a.path),
   );
@@ -1676,6 +1712,8 @@ export async function moveAppFolder(
   if (taken.has(toPath)) {
     throw new AppFolderError(`${toPath} already exists`, 409);
   }
+  const twin = caseTwinOf(taken, toPath, fromPath);
+  if (twin) throw caseTwinError(twin, toPath, snapshot, taken);
   const parentApp = snapshot.apps.find(a => isWithin(toPath, a.path));
   if (parentApp) {
     throw new AppFolderError(`${parentApp.path} is an app, not a folder`, 409);

@@ -76,6 +76,7 @@ import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
 import { findRenamedPath } from "./git-renames";
 import { isUtf8Text } from "../apps/text-bytes";
+import { caseTwinOf } from "../apps/git";
 import {
   RenameError,
   type RenameContext,
@@ -313,6 +314,19 @@ export async function renameDbtFile(
       .filter(e => e.path.startsWith(dbtPrefix))
       .map(e => [e.path.slice(dbtPrefix.length), e]),
   );
+  // Git keeps models/Orders.sql and models/orders.sql apart; a checkout on
+  // macOS or Windows cannot. A target that differs from another file — or
+  // from a folder on the way — only in upper/lower case is refused. The
+  // file's OWN case change is a plain git mv: it is not in `others`, and
+  // neither is a folder only it was in.
+  const others = new Set([...modeByPath.keys()].filter(p => p !== from));
+  const twin = caseTwinOf(others, to);
+  if (twin) {
+    throw new RenameError(
+      `"${twin}" already exists, and "${to}" differs from it only in upper/lower case — a checkout on macOS or Windows cannot tell the two apart.`,
+      409,
+    );
+  }
   const sourceEntry = modeByPath.get(from);
   const sourceIsSymlink = sourceEntry?.mode === "120000";
   if (!sourceIsSymlink && !isUtf8Text(sourceRaw)) {
