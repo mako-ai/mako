@@ -9,12 +9,40 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+// See flow-rename.test.ts: a hook on the freshen that precedes every main
+// commit, to land a competing change in the race window.
+const freshenHook = vi.hoisted(() => ({
+  fn: null as null | (() => Promise<void>),
+}));
+vi.mock("../apps/cloud-repo.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/cloud-repo.service")>();
+  return {
+    ...actual,
+    freshenBeforeMainWrite: async (workspaceId: string) => {
+      await actual.freshenBeforeMainWrite(workspaceId);
+      const fn = freshenHook.fn;
+      freshenHook.fn = null;
+      if (fn) await fn();
+    },
+  };
+});
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { DbtJob, DbtProject } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  commitBlobsOnBranch,
   initRepo,
   log as gitLog,
   readBlob,
@@ -233,7 +261,6 @@ describe("resolve + rename", () => {
     }
     expect((await DbtJob.findById(a._id))?.slug).toBe("a-new");
 
-    const { commitBlobsOnBranch } = await import("../apps/repository.service");
     await commitBlobsOnBranch(
       repoDirFor(WS.toString()),
       DEFAULT_BRANCH,
@@ -248,4 +275,106 @@ describe("resolve + rename", () => {
     // Seven commits through the freshen/CAS path: comfortably inside 30 s
     // alone, not when the machine runs three suites at once.
   }, 90_000);
+});
+
+describe("round 2: a save racing a rename; files edited in place", () => {
+  it("[r2-2] a job save overlapping a rename fails (slug re-read, then the file CAS) — never two scheduled jobs", async () => {
+    const { runGit } = await import("../apps/git");
+    const ls = async () =>
+      (
+        await runGit([
+          "-C",
+          repoDirFor(WS.toString()),
+          "ls-tree",
+          "--name-only",
+          "-r",
+          DEFAULT_BRANCH,
+          "dbt/jobs/",
+        ])
+      ).stdout
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+    const project = await seedProject();
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          [jobFilePath("nightly")]:
+            "name: Nightly\nenvironment: prod\ncommands:\n  - build --select x\n",
+        },
+      },
+      { message: "push" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+
+    const inFlight = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly",
+    });
+    inFlight!.commands = ["build --select y"];
+    freshenHook.fn = async () => {
+      await dbtJobRenameHandler.rename(apiKey(), {
+        ref: "nightly",
+        slug: "nightly-2",
+      });
+    };
+    await expect(commitDbtJobFile(project, inFlight!, "u1")).rejects.toThrow(
+      /renamed to "nightly-2"/,
+    );
+    expect(await ls()).toEqual([jobFilePath("nightly-2")]);
+
+    const again = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly-2",
+    });
+    again!.commands = ["build --select z"];
+    freshenHook.fn = async () => {
+      freshenHook.fn = async () => {
+        await dbtJobRenameHandler.rename(apiKey(), {
+          ref: "nightly-2",
+          slug: "nightly-3",
+        });
+      };
+    };
+    await expect(commitDbtJobFile(project, again!, "u1")).rejects.toThrow(
+      /changed in the workspace repo/,
+    );
+    expect(await ls()).toEqual([jobFilePath("nightly-3")]);
+    freshenHook.fn = null;
+    await syncDbtConfigFromRepo(WS.toString());
+    const rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [inFlight!._id.toString(), "nightly-3"],
+    ]);
+  });
+
+  it("[r2-4] twelve commands and a comment survive a rename untouched", async () => {
+    const project = await seedProject();
+    const jobYaml =
+      "# nightly prod build\nname: N\nenvironment: prod\ncommands:\n" +
+      Array.from({ length: 12 }, (_, i) => `  - build --select m${i}`).join(
+        "\n",
+      ) +
+      "\n";
+    await commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes: { [jobFilePath("n")]: jobYaml } },
+      { message: "push" },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    await dbtJobRenameHandler.rename(apiKey(), {
+      ref: "n",
+      title: "Nightly",
+      slug: "nightly",
+    });
+    expect(await fileAt(jobFilePath("nightly"))).toBe(
+      jobYaml.replace("name: N\n", "name: Nightly\naliases:\n  - n\n"),
+    );
+    expect(
+      (await DbtJob.findOne({ projectId: project._id, slug: "nightly" }))?.name,
+    ).toBe("Nightly");
+  });
 });

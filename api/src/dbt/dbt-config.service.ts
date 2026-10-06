@@ -32,6 +32,7 @@ import {
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   repoDirFor,
   blobOid,
@@ -148,15 +149,86 @@ async function dropJobAliasesClaimedElsewhere(
   };
 }
 
-/** See `treePredatesRename` in flow-sync.service.ts — same rule for jobs. */
-async function treePredatesJobRename(
+/** See `RENAME_GUARD_MS` in flow-sync.service.ts — the same window for jobs. */
+export const JOB_RENAME_GUARD_MS = 10 * 60 * 1000;
+
+/**
+ * Whether the row's last rename is recorded, recent and not in `head`'s
+ * history — the one case the tree must not be believed about this row
+ * (see `renameGuardActive` in flow-sync.service.ts). No recorded commit,
+ * no guard.
+ */
+async function jobRenameGuardActive(
   repoDir: string,
   head: string,
-  row: Pick<IDbtJob, "lastRenameCommit">,
-  fallback: boolean,
+  row: Pick<IDbtJob, "lastRenameCommit" | "lastRenameAt">,
 ): Promise<boolean> {
-  if (!row.lastRenameCommit) return fallback;
+  if (!row.lastRenameCommit || !row.lastRenameAt) return false;
+  if (Date.now() - row.lastRenameAt.getTime() > JOB_RENAME_GUARD_MS) {
+    return false;
+  }
   return !(await isAncestorCommit(repoDir, row.lastRenameCommit, head));
+}
+
+/**
+ * Retire rename guards the tree caught up with and resolve the ones it
+ * never will — the job twin of `settleRenameGuards` in flow-sync.service.ts:
+ * landed (in history, or the current file is in the tree under another
+ * commit) → cleared; expired with the file still under an old name → the
+ * row is re-keyed back to that name, loudly; expired otherwise → cleared.
+ */
+async function settleJobRenameGuards(args: {
+  workspaceId: string;
+  projectId: Types.ObjectId;
+  repoDir: string;
+  head: string;
+  fileSlugs: ReadonlySet<string>;
+}): Promise<void> {
+  const { workspaceId, projectId, repoDir, head, fileSlugs } = args;
+  const guarded = await DbtJob.find({
+    projectId,
+    lastRenameCommit: { $exists: true },
+  });
+  for (const row of guarded) {
+    const clear = () =>
+      DbtJob.updateOne(
+        { _id: row._id },
+        { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
+      );
+    const commit = row.lastRenameCommit as string;
+    if (await isAncestorCommit(repoDir, commit, head)) {
+      await clear();
+      continue;
+    }
+    if (row.slug && fileSlugs.has(row.slug)) {
+      await clear();
+      continue;
+    }
+    const age = row.lastRenameAt
+      ? Date.now() - row.lastRenameAt.getTime()
+      : Infinity;
+    if (age <= JOB_RENAME_GUARD_MS) continue;
+    const oldSlug = (row.aliases ?? []).find(alias => fileSlugs.has(alias));
+    if (row.slug && oldSlug) {
+      logger.error(
+        "dbt job rename commit never reached main; re-keying the row back to the file the tree has",
+        {
+          workspaceId,
+          jobId: row._id.toString(),
+          renamedTo: row.slug,
+          revertedTo: oldSlug,
+          lastRenameCommit: commit,
+        },
+      );
+      await rekeyJobSlug(row._id, row.slug, oldSlug);
+    } else {
+      logger.warn(
+        "dbt job rename commit never reached main; trusting the tree",
+        { workspaceId, jobId: row._id.toString(), slug: row.slug },
+      );
+    }
+    await clear();
+  }
 }
 
 /** Authored job files at main; unbound workspaces deliberately read empty. */
@@ -723,7 +795,12 @@ export async function rekeyJobSlug(
   await DbtJob.updateOne(
     { _id: jobId, slug: from },
     {
-      $set: { slug: to, ...(commit ? { lastRenameCommit: commit } : {}) },
+      $set: {
+        slug: to,
+        ...(commit
+          ? { lastRenameCommit: commit, lastRenameAt: new Date() }
+          : {}),
+      },
       $addToSet: { aliases: from },
     },
   );
@@ -762,9 +839,9 @@ export async function rekeyRenamedJobs(args: {
   const removedRows: IDbtJob[] = [];
   for (const row of rows) {
     if (row.slug === undefined || fileBySlug.has(row.slug)) continue;
-    // A tree older than the row's rename commit still shows its old file;
-    // that is not a candidate for anything (see flow-sync.service.ts).
-    if (await treePredatesJobRename(repoDir, head, row, false)) {
+    // A tree older than the row's recent rename commit still shows its old
+    // file; that is not a candidate for anything (see flow-sync.service.ts).
+    if (await jobRenameGuardActive(repoDir, head, row)) {
       logger.info("Tree predates a job rename; not pairing its old slug", {
         workspaceId,
         slug: row.slug,
@@ -865,9 +942,17 @@ export async function commitDbtJobFile(
   messageOverride?: string,
 ): Promise<void> {
   if (!job.slug) return; // pre-adoption row; the migration stamps slugs
+  const workspaceId = project.workspaceId.toString();
+  const contents = serializeJobFile(jobToFile(job));
+  const sha = blobOid(contents);
   // Never write to a slug a concurrent rename has already moved away from
-  // (the old file would come back beside the new one): the row's current
-  // slug decides, and a stale one fails the request.
+  // (the old file would come back beside the new one as a second scheduled
+  // job). The row's current slug is read AFTER the freshen that precedes
+  // every main write, and the commit is a compare-and-swap on the file
+  // (`expectBlobs`): a rename or edit landing in between fails the request
+  // with the reason rather than being written over.
+  await requireWorkspaceRepo(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
   if (!job.isNew) {
     const current = await DbtJob.findById(job._id).select("slug").lean();
     if (current?.slug && current.slug !== job.slug) {
@@ -876,14 +961,29 @@ export async function commitDbtJobFile(
       );
     }
   }
-  const contents = serializeJobFile(jobToFile(job));
-  const sha = blobOid(contents);
-  const written = await commitConfig(
-    project.workspaceId.toString(),
-    { writes: { [jobFilePath(job.slug)]: contents } },
-    messageOverride ?? `dbt: job "${job.name}" (${job.slug})`,
-    actorUserId ? await authorForUser(actorUserId) : undefined,
-  );
+  const written = true;
+  try {
+    await commitDbtConfig(
+      workspaceId,
+      { writes: { [jobFilePath(job.slug)]: contents } },
+      messageOverride ?? `dbt: job "${job.name}" (${job.slug})`,
+      actorUserId ? await authorForUser(actorUserId) : undefined,
+      job.isNew
+        ? // A new job's file must not exist yet (a git-only file of the
+          // same slug is someone else's job).
+          { [jobFilePath(job.slug)]: null }
+        : job.sourceBlobSha
+          ? { [jobFilePath(job.slug)]: job.sourceBlobSha }
+          : undefined,
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new Error(
+        `${error.path} changed in the workspace repo while this change was being made (a rename or another edit landed first); reload and retry`,
+      );
+    }
+    throw error;
+  }
   // Stamp AFTER the file exists. Stamping first meant a failed commit left
   // the row claiming a sha for a file that was never written, and the
   // push-sync short-circuits on a matching sha. For a not-yet-persisted
@@ -1005,6 +1105,20 @@ async function syncDbtConfigNow(
     const slug = slugFromJobFilePath(path);
     if (slug) fileSlugs.add(slug);
   }
+  try {
+    await settleJobRenameGuards({
+      workspaceId,
+      projectId: project._id,
+      repoDir,
+      head,
+      fileSlugs,
+    });
+  } catch (error) {
+    logger.warn("dbt job rename guards could not be settled", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   const idRows = await DbtJob.find({ projectId: project._id })
     .select("_id slug")
     .lean();
@@ -1078,16 +1192,11 @@ async function syncDbtConfigNow(
         projectId: project._id,
         aliases: slug,
       })
-        .select("_id slug lastRenameCommit")
+        .select("_id slug lastRenameCommit lastRenameAt")
         .lean();
       if (
         claimant?.slug &&
-        (await treePredatesJobRename(
-          repoDir,
-          head,
-          claimant,
-          !fileSlugs.has(claimant.slug),
-        ))
+        (await jobRenameGuardActive(repoDir, head, claimant))
       ) {
         logger.info("Tree predates a job rename; keeping the renamed row", {
           workspaceId,
@@ -1165,11 +1274,22 @@ async function syncDbtConfigNow(
   }
 
   // A job file removed on main removes the job (runs keep their history).
+  // Except a job renamed WHILE this sync ran: its new slug was not in the
+  // tree this sync read, but its rename commit is on its way to main — the
+  // guard says so — and deleting it here would recreate it under a new id
+  // on the next push. The next sync, which contains the rename, sees it.
   const stale = await DbtJob.find({
     projectId: project._id,
     slug: { $exists: true, $nin: [...seenSlugs] },
-  }).select("slug name");
+  }).select("slug name lastRenameCommit lastRenameAt");
   for (const doc of stale) {
+    if (await jobRenameGuardActive(repoDir, head, doc)) {
+      logger.info("dbt job renamed during this sync; not sweeping it", {
+        workspaceId,
+        slug: doc.slug,
+      });
+      continue;
+    }
     await DbtJob.deleteOne({ _id: doc._id });
     logger.info("dbt job removed (file deleted on main)", {
       workspaceId,

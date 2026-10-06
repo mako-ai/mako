@@ -962,6 +962,13 @@ export interface IFlow extends Document {
    */
   lastRenameCommit?: string;
   /**
+   * When `lastRenameCommit` was made. The guard it drives expires: a rename
+   * commit still absent from main after `RENAME_GUARD_MS` is one that never
+   * landed (a divergence reset, an instance recycled before its mirror
+   * push), and the tree is then trusted again.
+   */
+  lastRenameAt?: Date;
+  /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
    * file itself. Derived cache — git is the store.
@@ -2329,6 +2336,7 @@ const FlowSchema = new Schema<IFlow>(
       default: undefined,
     },
     lastRenameCommit: { type: String },
+    lastRenameAt: { type: Date },
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
@@ -4679,6 +4687,8 @@ export interface IDbtJob extends Document {
   aliases?: string[];
   /** The commit that last moved this job's file; see IFlow.lastRenameCommit. */
   lastRenameCommit?: string;
+  /** When it was made; see IFlow.lastRenameAt. */
+  lastRenameAt?: Date;
   sourceBlobSha?: string;
   /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
   definitionInvalid?: {
@@ -4728,6 +4738,7 @@ const DbtJobSchema = new Schema<IDbtJob>(
     slug: { type: String },
     aliases: { type: [String], default: undefined },
     lastRenameCommit: { type: String },
+    lastRenameAt: { type: Date },
     sourceBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },

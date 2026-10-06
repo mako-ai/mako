@@ -22,6 +22,7 @@ import {
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
@@ -92,34 +93,54 @@ export async function commitFlowFile(
   if (!flow.slug || !flow.name?.trim()) {
     return { ok: true, changed: false };
   }
-  // The row in hand may predate a rename that landed while the request was
-  // in flight: writing `flows/<old slug>.yml` would resurrect the moved
-  // file beside the new one. Write only to the row's CURRENT slug; a stale
-  // one fails the request (the caller reloads and retries) rather than
-  // guessing which of two files the definition belongs to.
-  const current = await Flow.findById(flow._id).select("slug").lean();
-  if (current && current.slug && current.slug !== flow.slug) {
-    return {
-      ok: false,
-      changed: false,
-      error: `the flow was renamed to "${current.slug}" while this change was being made; reload and retry`,
-    };
-  }
+  const workspaceId = flow.workspaceId.toString();
   const contents = serializeFlowFile(flowToFile(flow));
   const sha = blobOid(contents);
   if (flow.sourceBlobSha === sha) {
     return { ok: true, changed: false, sourceBlobSha: sha };
   }
   try {
-    await commitConfig(
-      flow.workspaceId.toString(),
+    // The row in hand may predate a rename that landed while the request
+    // was in flight: writing `flows/<old slug>.yml` would resurrect the
+    // moved file beside the new one — a second stream on the same source
+    // and destination. Two checks, in the order the race can hit them:
+    // the row's CURRENT slug, read AFTER the freshen that precedes every
+    // main write (a rename landing during that freshen is seen); and a
+    // compare-and-swap on the file itself (`expectBlobs`: the path must
+    // still hold the blob this row was last synced from), which catches a
+    // rename or edit landing between that read and the commit. Either
+    // fails the request — the caller reloads and retries — rather than
+    // guessing which of two files the definition belongs to.
+    await requireWorkspaceRepo(workspaceId);
+    await freshenBeforeMainWrite(workspaceId);
+    const current = await Flow.findById(flow._id).select("slug").lean();
+    if (current && current.slug && current.slug !== flow.slug) {
+      return {
+        ok: false,
+        changed: false,
+        error: `the flow was renamed to "${current.slug}" while this change was being made; reload and retry`,
+      };
+    }
+    await commitFlowConfig(
+      workspaceId,
       { writes: { [flowFilePath(flow.slug)]: contents } },
       messageOverride ?? `flow: "${flow.name ?? flow.slug}" (${flow.slug})`,
       actorUserId ? await authorForUser(actorUserId) : undefined,
+      // A row never synced from a blob has nothing to compare against.
+      flow.sourceBlobSha
+        ? { [flowFilePath(flow.slug)]: flow.sourceBlobSha }
+        : undefined,
     );
     return { ok: true, changed: true, sourceBlobSha: sha };
   } catch (error) {
     if (error instanceof RepoRequiredError) throw error;
+    if (error instanceof BlobPreconditionError) {
+      return {
+        ok: false,
+        changed: false,
+        error: `${error.path} changed in the workspace repo while this change was being made (a rename or another edit landed first); reload and retry`,
+      };
+    }
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Flow config write-through failed", {
       workspaceId: flow.workspaceId.toString(),

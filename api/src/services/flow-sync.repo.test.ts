@@ -32,6 +32,26 @@ vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
 const inngestSent = vi.hoisted(() => [] as Array<{ name: string }>);
+// A hook right before the stream reconcile: lets a test land a rename in the
+// window between the sync reading its tree/rows and acting on them.
+const reconcileHook = vi.hoisted(() => ({
+  fn: null as null | (() => Promise<void>),
+}));
+vi.mock("../sync-cdc/flow-reconcile", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../sync-cdc/flow-reconcile")>();
+  return {
+    ...actual,
+    reconcileFlowsFromRepo: async (
+      input: Parameters<typeof actual.reconcileFlowsFromRepo>[0],
+    ) => {
+      const fn = reconcileHook.fn;
+      reconcileHook.fn = null;
+      if (fn) await fn();
+      return actual.reconcileFlowsFromRepo(input);
+    },
+  };
+});
 vi.mock("../inngest/client", () => ({
   inngest: {
     send: vi.fn(async (event: { name: string }) => {
@@ -916,5 +936,200 @@ describe("a moved file is the same flow (graceful rename)", () => {
     expect(after?.slug).toBe("one");
     expect(after?.aliases).toEqual(["two"]);
     expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+});
+
+describe("round 2: lost and racing renames", () => {
+  it("[r2-1] a rename landing while a push sync runs is not undone and not torn down (flows: the reconciler honours ids)", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    await push({ "flows/nightly.yml": flowYaml("Nightly") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "nightly" });
+    await seedRuntime(row!._id);
+    // A laptop push edits the file; the UI rename lands while that push is
+    // being synced (after the rows were read, before the reconcile).
+    await push({ "flows/nightly.yml": flowYaml("Nightly v2") });
+    reconcileHook.fn = async () => {
+      await flowRenameHandler.rename(
+        { workspaceId: WS },
+        { ref: "nightly", slug: "nightly-2" },
+      );
+    };
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.deferred).toEqual([]);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._id.toString()).toBe(row!._id.toString());
+    expect(rows[0].slug).toBe("nightly-2");
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+    // The next sync (tree now contains the rename) changes nothing.
+    const next = await syncFlowsFromRepo(WS, "u1");
+    expect(next).toMatchObject({ created: 0, unchanged: 1 });
+    expect((await Flow.find({ workspaceId: WS })).map(r => r.slug)).toEqual([
+      "nightly-2",
+    ]);
+  });
+
+  it("[r2-3] a rename commit that never reaches main is honoured for a while, then the tree wins: re-keyed back, edits applied, same id", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { resolveFlowRef } = await import("../rename/flow-rename");
+    const { runGit } = await import("../apps/git");
+    await push({ "flows/foo.yml": flowYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    await seedRuntime(row!._id);
+    const pre = await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+    // The mirror never got the rename commit; a divergence reset parks it.
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre as string,
+    ]);
+    await push({
+      "flows/foo.yml": flowYaml("Foo edited on laptop").replace(
+        "schema: raw_close",
+        "schema: raw_edited",
+      ),
+    });
+
+    // Within the window: the row is kept as renamed, nothing created.
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const early = await syncFlowsFromRepo(WS, "u1");
+    expect(early.created).toBe(0);
+    expect((await Flow.find({ workspaceId: WS })).map(r => r.slug)).toEqual([
+      "bar",
+    ]);
+
+    // After the window: the commit is still not on main → it never landed.
+    await Flow.updateOne(
+      { _id: row!._id },
+      { $set: { lastRenameAt: new Date(Date.now() - 11 * 60_000) } },
+    );
+    const late = await syncFlowsFromRepo(WS, "u1");
+    expect(late.created).toBe(0);
+    expect(late.updated).toBe(1);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._id.toString()).toBe(row!._id.toString());
+    expect(rows[0].slug).toBe("foo");
+    expect(rows[0].name).toBe("Foo edited on laptop");
+    expect(rows[0].tableDestination?.schema).toBe("raw_edited");
+    expect(rows[0].lastRenameCommit).toBeUndefined();
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+    const live = await loadLiveFlows(WS);
+    expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
+      ["foo", row!._id.toString()],
+    ]);
+    expect(await resolveFlowRef({ workspaceId: WS }, "foo")).toMatchObject({
+      id: row!._id.toString(),
+      via: "current",
+    });
+    // Idempotent afterwards.
+    expect(await syncFlowsFromRepo(WS, "u1")).toMatchObject({
+      created: 0,
+      unchanged: 1,
+    });
+  });
+
+  it("[r2-3] after a history rewrite that kept the tree, a laptop rename of a renamed flow is still a rename", async () => {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const { runGit } = await import("../apps/git");
+    await push({ "flows/foo.yml": flowYaml("Foo") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    await seedRuntime(row!._id);
+    const pre = await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "foo", slug: "bar" },
+    );
+    // Squash: same tree, a new commit on top of `pre`.
+    const dir = repoDirFor(WS);
+    const tree = (
+      await runGit(["-C", dir, "rev-parse", `${DEFAULT_BRANCH}^{tree}`])
+    ).stdout.trim();
+    const squashed = (
+      await runGit([
+        "-C",
+        dir,
+        "-c",
+        "user.name=x",
+        "-c",
+        "user.email=x@x",
+        "commit-tree",
+        tree,
+        "-p",
+        pre as string,
+        "-m",
+        "squashed",
+      ])
+    ).stdout.trim();
+    await runGit([
+      "-C",
+      dir,
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      squashed,
+    ]);
+    await syncFlowsFromRepo(WS, "u1");
+    expect((await Flow.findById(row!._id))?.lastRenameCommit).toBeUndefined();
+
+    const head = await resolveCommit(dir, `refs/heads/${DEFAULT_BRANCH}`);
+    const contents = (await readBlob(dir, head as string, "flows/bar.yml"))
+      .contents;
+    await move("bar", "baz", contents);
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.created).toBe(0);
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._id.toString()).toBe(row!._id.toString());
+    expect(rows[0].slug).toBe("baz");
+    expect(await runtimeCounts(row!._id)).toEqual([1, 1, 1]);
+  });
+
+  it("[r2-5] a row with aliases but no recorded rename gets no stale-tree benefit of the doubt", async () => {
+    await push({ "flows/bar.yml": flowYaml("Bar", "aliases: [foo]") });
+    await syncFlowsFromRepo(WS, "u1");
+    const bar = await Flow.findOne({ workspaceId: WS, slug: "bar" });
+    expect(bar!.aliases).toEqual(["foo"]);
+    expect(bar!.lastRenameCommit).toBeUndefined();
+    // Delete bar.yml, add an unrelated foo.yml (different target).
+    const OTHER = new Types.ObjectId().toString();
+    await move(
+      "bar",
+      "foo",
+      flowYaml("Foo").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${OTHER}`,
+      ),
+    );
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const result = await syncFlowsFromRepo(WS, "u1");
+    expect(result.created).toBe(1);
+    const foo = await Flow.findOne({ workspaceId: WS, slug: "foo" });
+    expect(foo).not.toBeNull();
+    expect(foo!._id.toString()).not.toBe(bar!._id.toString());
+    const barAfter = await Flow.findById(bar!._id);
+    // Torn down, or deferred by the mirror guard in this rig — and in
+    // either case no longer answering to "foo".
+    if (barAfter) {
+      expect(result.deferred).toEqual(["bar"]);
+      expect(barAfter.aliases ?? []).toEqual([]);
+    }
   });
 });

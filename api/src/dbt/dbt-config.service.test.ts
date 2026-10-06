@@ -5,7 +5,35 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+// A hook inside the sync's per-job schedule registration: lets a test land
+// a rename while a push sync is between reading its tree and sweeping.
+const scheduleHook = vi.hoisted(() => ({
+  fn: null as null | (() => Promise<void>),
+}));
+vi.mock("./dbt-run.service", async importOriginal => {
+  const actual = await importOriginal<typeof import("./dbt-run.service")>();
+  return {
+    ...actual,
+    applyJobScheduleChange: async (
+      job: Parameters<typeof actual.applyJobScheduleChange>[0],
+    ) => {
+      const fn = scheduleHook.fn;
+      scheduleHook.fn = null;
+      if (fn) await fn();
+      return actual.applyJobScheduleChange(job);
+    },
+  };
+});
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { DbtJob, DbtProject } from "../database/workspace-schema";
@@ -15,6 +43,7 @@ import {
   initRepo,
   readBlob,
   repoDirFor,
+  resolveCommit,
 } from "../apps/repository.service";
 import {
   DBT_ENVIRONMENTS_PATH,
@@ -634,7 +663,7 @@ describe("a moved job file is the same job (graceful rename)", () => {
     expect((await loadLiveJobById(project, derived))?.id.toString()).toBe(
       job._id.toString(),
     );
-  });
+  }, 90_000);
 
   it("identical content under a new name is a rename; two candidates are not guessed", async () => {
     const project = await seedProject();
@@ -684,7 +713,7 @@ describe("a moved job file is the same job (graceful rename)", () => {
     await syncDbtConfigFromRepo(WS.toString());
     expect(await DbtJob.findById(job._id)).toBeNull();
     expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(2);
-  });
+  }, 90_000);
 });
 
 describe("review findings (graceful rename)", () => {
@@ -722,7 +751,7 @@ describe("review findings (graceful rename)", () => {
     expect(fr!._id.toString()).not.toBe(job._id.toString());
     expect(fr!.scheduledRun?.runCount ?? 0).toBe(0);
     expect(await DbtJob.findById(job._id)).toBeNull();
-  });
+  }, 90_000);
 
   it("[2] a new file at a renamed git-born job's OLD slug: new id, no throw, later files still created, alias released", async () => {
     const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
@@ -788,7 +817,104 @@ describe("review findings (graceful rename)", () => {
     expect(
       (await resolveDbtJobRef({ workspaceId: WS.toString() }, "nightly"))?.id,
     ).toBe(v2._id.toString());
-  });
+  }, 90_000);
+});
+
+describe("round 2: lost and racing renames (jobs)", () => {
+  const file = (name: string, cron = "0 6 * * *", sel = "x") =>
+    serializeJobFile({
+      name,
+      environment: "prod",
+      commands: [`build --select ${sel}`],
+      schedule: { cron, timezone: "UTC" },
+      enabled: true,
+      deferToProduction: false,
+    });
+  const c = (writes: Record<string, string>, deletes: string[] = []) =>
+    commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes, deletes },
+      { message: "push" },
+    );
+
+  it("[r2-1] a rename landing during a push sync is not swept; the id survives the next sync", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const project = await seedProject();
+    await c({ [jobFilePath("nightly")]: file("Nightly") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const id0 = (await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly",
+    }))!._id.toString();
+    await c({ [jobFilePath("nightly")]: file("Nightly", "0 7 * * *") });
+    scheduleHook.fn = async () => {
+      await dbtJobRenameHandler.rename(
+        { workspaceId: WS.toString() },
+        { ref: "nightly", slug: "nightly-2" },
+      );
+    };
+    await syncDbtConfigFromRepo(WS.toString());
+    let rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [id0, "nightly-2"],
+    ]);
+    await syncDbtConfigFromRepo(WS.toString());
+    rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [id0, "nightly-2"],
+    ]);
+    expect(rows[0].aliases).toEqual(["nightly"]);
+  }, 90_000);
+
+  it("[r2-3] a job rename commit that never reaches main: honoured for a while, then re-keyed back with the edits, same id", async () => {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { runGit } = await import("../apps/git");
+    const project = await seedProject();
+    await c({ [jobFilePath("nightly")]: file("Nightly") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const row = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "nightly",
+    });
+    const pre = await resolveCommit(repoDirFor(WS.toString()), MAIN);
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "nightly", slug: "nightly-2" },
+    );
+    await runGit([
+      "-C",
+      repoDirFor(WS.toString()),
+      "update-ref",
+      MAIN,
+      pre as string,
+    ]);
+    await c({
+      [jobFilePath("nightly")]: file("Nightly edited", "0 6 * * *", "z"),
+    });
+
+    await syncDbtConfigFromRepo(WS.toString());
+    expect(
+      (await DbtJob.find({ projectId: project._id })).map(r => r.slug),
+    ).toEqual(["nightly-2"]);
+
+    await DbtJob.updateOne(
+      { _id: row!._id },
+      { $set: { lastRenameAt: new Date(Date.now() - 11 * 60_000) } },
+    );
+    await syncDbtConfigFromRepo(WS.toString());
+    const rows = await DbtJob.find({ projectId: project._id });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._id.toString()).toBe(row!._id.toString());
+    expect(rows[0].slug).toBe("nightly");
+    expect(rows[0].name).toBe("Nightly edited");
+    expect(rows[0].commands).toEqual(["build --select z"]);
+    expect(rows[0].lastRenameCommit).toBeUndefined();
+    const live = await loadLiveJobs(project);
+    expect(live.map(l => [l.def.slug, l.row?._id.toString()])).toEqual([
+      ["nightly", row!._id.toString()],
+    ]);
+  }, 90_000);
 });
 
 describe("adoption", () => {
