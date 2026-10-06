@@ -28,7 +28,12 @@ import {
   focusDashboardDataSourceTab,
   focusDashboardTab,
 } from "../dashboard-runtime/shell";
-import { focusFlowTabById } from "../flow-runtime/shell";
+import {
+  closeFlowTabsFor,
+  focusFlowTabById,
+  getFlowTitle,
+} from "../flow-runtime/shell";
+import { useFlowStore } from "../store/flowStore";
 import {
   closeNotebookTabsFor,
   focusNotebookTab,
@@ -112,6 +117,31 @@ const DEAD_APP_LINK =
   "That app link doesn't resolve anymore — the app may have been deleted or renamed.";
 const MOVED_APP_LINK =
   "That app was renamed — the link has been updated to its new address.";
+const DEAD_FLOW_LINK =
+  "That flow link doesn't resolve anymore — the flow may have been deleted.";
+const MOVED_FLOW_LINK =
+  "That flow was renamed — the link has been updated to its new address.";
+const UNCHECKED_FLOW_LINK =
+  "Couldn't look up that flow link — the server didn't answer. Try again in a moment.";
+
+const OBJECT_ID = /^[0-9a-f]{24}$/i;
+
+/**
+ * The address of what the screen shows once a dead link was refused: the
+ * active tab's URL (the outgoing sync's own rule), "/settings" on the
+ * settings view, else "/". A dead link opens no tab, so the active tab is
+ * whatever was open before — rewriting to a flat "/" left the address bar
+ * naming nothing while that tab stayed on screen, and the sync effect,
+ * which fires only when the active tab's URL changes, never corrected it.
+ * Read AFTER any `close…TabsFor`: closing the dead tab may activate another.
+ */
+function shownTabUrl(): string {
+  const { activeTabId, tabs } = useConsoleStore.getState();
+  const tab = activeTabId ? tabs[activeTabId] : undefined;
+  const path = activeTabId && tab ? tabUrlPath(activeTabId, tab) : null;
+  if (path) return path;
+  return useUIStore.getState().leftPane === "settings" ? "/settings" : "/";
+}
 
 /**
  * UrlSync component
@@ -237,7 +267,7 @@ export function UrlSync() {
         .then(entity => {
           if (!entity) {
             closeSourceConnectionTabsFor(connectorId);
-            window.history.replaceState(null, "", "/");
+            window.history.replaceState(null, "", shownTabUrl());
             setDeadLinkNotice(
               "That source connection link doesn't resolve anymore — it may have been deleted.",
             );
@@ -254,11 +284,62 @@ export function UrlSync() {
           );
         });
     } else if (flowMatch) {
-      // /f/:flowId
-      const flowId = flowMatch[1];
+      // /f/:ref — the flow's id (what the app writes), or a name: a slug
+      // someone typed, or one the flow USED to have — the rename dialog
+      // promises the old name keeps working. A listed id or an open tab
+      // opens at once; anything else asks the server, which knows every
+      // flow, every alias, and a push the list has not caught up with.
+      const flowRef = flowMatch[1];
       setLeftPane("flows");
-
-      focusFlowTabById(flowId);
+      const workspaceId = currentWorkspace.id;
+      const isId = OBJECT_ID.test(flowRef);
+      const listedFlow = isId
+        ? (useFlowStore.getState().flows[workspaceId] ?? []).find(
+            flow => flow._id === flowRef,
+          )
+        : undefined;
+      if (listedFlow) {
+        focusFlowTabById(flowRef, getFlowTitle(listedFlow));
+      } else if (
+        !isId ||
+        !focusOrOpenTab({ kind: "flow-editor", metadata: { flowId: flowRef } })
+      ) {
+        // Tabs carry the id. One keyed by a NAME is the placeholder an
+        // older build opened for a slug link; it can only say "not found".
+        if (!isId) closeFlowTabsFor(flowRef);
+        resolveObjectRef(workspaceId, "flow", flowRef).then(
+          resolved => {
+            if (!resolved) {
+              if (isId) closeFlowTabsFor(flowRef);
+              window.history.replaceState(null, "", shownTabUrl());
+              setDeadLinkNotice(DEAD_FLOW_LINK);
+              return;
+            }
+            focusFlowTabById(resolved.id, resolved.current.title || "Flow");
+            if (resolved.id !== flowRef) {
+              // Addressed by name: the address bar says /f/<id>, so the next
+              // copy of the link survives any later rename.
+              window.history.replaceState(
+                null,
+                "",
+                resolved.current.url ?? `/f/${resolved.id}`,
+              );
+              if (resolved.via === "alias") setDeadLinkNotice(MOVED_FLOW_LINK);
+            }
+          },
+          () => {
+            // The server could not answer: "unknown", not "deleted". An id
+            // opens as before (the editor reports what the list says); a
+            // name cannot be opened without the server, so say that.
+            if (isId) {
+              focusFlowTabById(flowRef);
+              return;
+            }
+            window.history.replaceState(null, "", shownTabUrl());
+            setDeadLinkNotice(UNCHECKED_FLOW_LINK);
+          },
+        );
+      }
     } else if (dashboardDataSourceMatch) {
       // /d/:dashboardId/data/:dataSourceId
       const dashboardId = dashboardDataSourceMatch[1];
@@ -285,7 +366,7 @@ export function UrlSync() {
           resolved => {
             if (!resolved) {
               closeDashboardTabsFor(dashboardId);
-              window.history.replaceState(null, "", "/");
+              window.history.replaceState(null, "", shownTabUrl());
               setDeadLinkNotice(
                 "That dashboard link doesn't resolve anymore — it may have been deleted.",
               );
@@ -341,10 +422,10 @@ export function UrlSync() {
           if (!app) {
             // Only an id can name tabs to close; a slug that resolves to
             // nothing names no tab (tabs carry the id).
-            if (/^[0-9a-f]{24}$/i.test(appRef)) {
+            if (OBJECT_ID.test(appRef)) {
               closeAppsTabsFor(appRef.toLowerCase());
             }
-            window.history.replaceState(null, "", "/");
+            window.history.replaceState(null, "", shownTabUrl());
             setDeadLinkNotice(DEAD_APP_LINK);
             return;
           }
@@ -387,10 +468,10 @@ export function UrlSync() {
             // view — breadcrumb, terminal, a live Publish button — around
             // nothing, and reloading restored the same dead id, so the page
             // looked permanently stuck. Clear it and fall back to the list.
-            if (/^[0-9a-f]{24}$/i.test(appRef)) {
+            if (OBJECT_ID.test(appRef)) {
               closeAppsTabsFor(appRef.toLowerCase());
             }
-            window.history.replaceState(null, "", "/");
+            window.history.replaceState(null, "", shownTabUrl());
             setDeadLinkNotice(DEAD_APP_LINK);
             return;
           }
@@ -498,7 +579,7 @@ export function UrlSync() {
           resolved => {
             if (!resolved) {
               closeNotebookTabsFor(notebookId);
-              window.history.replaceState(null, "", "/");
+              window.history.replaceState(null, "", shownTabUrl());
               setDeadLinkNotice(
                 "That notebook link doesn't resolve anymore — it may have been deleted.",
               );
