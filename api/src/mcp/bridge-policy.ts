@@ -153,6 +153,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_commit: bridge(),
   app_create_app: bridge(),
   app_move_app: bridge(),
+  // Ids never change and old names keep resolving, so not destructive.
+  rename_object: bridge({ destructiveHint: false }),
   app_dev_log: bridge(),
   app_edit_file: bridge(),
   app_glob: bridge(),
