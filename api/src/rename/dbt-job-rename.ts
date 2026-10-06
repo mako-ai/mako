@@ -20,6 +20,7 @@ import { authorForUser } from "../apps/workspace-consoles.service";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { freshenBeforeMainWrite } from "../apps/cloud-repo.service";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   blobOid,
   readBlob,
@@ -40,8 +41,8 @@ import {
 } from "../dbt/dbt-config-files";
 import {
   commitDbtConfig,
-  derivedJobId,
   ensureJobDerivedCache,
+  freeDerivedJobId,
   listJobDefinitionsAtMain,
 } from "../dbt/dbt-config.service";
 import { resolveDbtAccess } from "../dbt/rbac";
@@ -110,9 +111,10 @@ function locationOf(
 }
 
 /**
- * What `ref` points at. dbt reads are open to every member (rbac.ts), so no
- * further gate here. A file at main with no row yet resolves to the id
- * GET/list hands out for it (`derivedJobId`).
+ * What `ref` points at, in this order: a row's id or current slug; a file at
+ * main whose slug is `ref` (current even before its push is synced; it
+ * resolves to the id GET/list hands out for it); then an alias exactly one
+ * row or file claims. dbt reads are open to every member (rbac.ts).
  */
 export async function resolveDbtJobRef(
   ctx: RenameContext,
@@ -121,32 +123,48 @@ export async function resolveDbtJobRef(
   const project = await projectOf(ctx.workspaceId);
   if (!project) return null;
   const found = await findJobByRef(project, ref);
-  if (found) {
+  if (found?.via === "current") {
     return {
       kind: "dbt_job",
       id: String(found.row._id),
-      via: found.via,
+      via: "current",
       current: locationOf(project, found.row),
     };
   }
   if (!JOB_SLUG_RE.test(ref)) return null;
   const defs = await listJobDefinitionsAtMain(ctx.workspaceId);
-  const current = defs.find(def => def.slug === ref);
-  const byAlias = defs.filter(def => def.parsed?.aliases?.includes(ref));
-  const def = current ?? (byAlias.length === 1 ? byAlias[0] : undefined);
-  if (!def) return null;
-  const id = String(derivedJobId(ctx.workspaceId, def.slug));
-  return {
-    kind: "dbt_job",
-    id,
-    via: current ? "current" : "alias",
-    current: {
-      title: def.parsed?.name ?? def.slug,
-      slug: def.slug,
-      path: def.path,
-      url: dbtJobUrl(String(project._id), id),
-    },
+  const gitOnly = async (
+    def: (typeof defs)[number],
+    via: ResolvedRef["via"],
+  ): Promise<ResolvedRef> => {
+    const rows = await DbtJob.find({ projectId: project._id })
+      .select("_id slug")
+      .lean();
+    const id = String(freeDerivedJobId(ctx.workspaceId, def.slug, rows));
+    return {
+      kind: "dbt_job",
+      id,
+      via,
+      current: {
+        title: def.parsed?.name ?? def.slug,
+        slug: def.slug,
+        path: def.path,
+        url: dbtJobUrl(String(project._id), id),
+      },
+    };
   };
+  const currentFile = defs.find(def => def.slug === ref);
+  if (currentFile) return gitOnly(currentFile, "current");
+  if (found) {
+    return {
+      kind: "dbt_job",
+      id: String(found.row._id),
+      via: "alias",
+      current: locationOf(project, found.row),
+    };
+  }
+  const byAlias = defs.filter(def => def.parsed?.aliases?.includes(ref));
+  return byAlias.length === 1 ? gitOnly(byAlias[0], "alias") : null;
 }
 
 /**
@@ -184,6 +202,15 @@ export async function renameDbtJob(
     );
   }
   const oldSlug = row.slug;
+  if (found.via === "alias") {
+    const defs = await listJobDefinitionsAtMain(workspaceId);
+    if (defs.some(def => def.slug === request.ref)) {
+      throw new RenameError(
+        `"${request.ref}" is now a job of its own (dbt/jobs/${request.ref}.yml, not synced yet); refer to the renamed job by its id or current slug "${oldSlug}".`,
+        409,
+      );
+    }
+  }
 
   const title = request.title?.trim();
   if (title !== undefined) {
@@ -285,15 +312,32 @@ export async function renameDbtJob(
   const message = slugChanged
     ? `dbt: rename job "${parsed.name}" → "${nextName}" (${oldSlug} → ${nextSlug})`
     : `dbt: rename job "${parsed.name}" → "${nextName}" (${oldSlug})`;
-  const commit = await commitDbtConfig(
-    workspaceId,
-    {
-      writes: { [jobFilePath(nextSlug)]: nextContents },
-      ...(slugChanged ? { deletes: [oldPath] } : {}),
-    },
-    message,
-    ctx.userId ? await authorForUser(ctx.userId) : undefined,
-  );
+  // Compare-and-swap on the file (see flow-rename.ts): the old file must
+  // still be the one read, and the new path still free.
+  let commit: { commitOid: string; unchanged: boolean };
+  try {
+    commit = await commitDbtConfig(
+      workspaceId,
+      {
+        writes: { [jobFilePath(nextSlug)]: nextContents },
+        ...(slugChanged ? { deletes: [oldPath] } : {}),
+      },
+      message,
+      ctx.userId ? await authorForUser(ctx.userId) : undefined,
+      {
+        [oldPath]: blobOid(contents),
+        ...(slugChanged ? { [jobFilePath(nextSlug)]: null } : {}),
+      },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new RenameError(
+        `${error.path} changed while renaming (another save or rename landed first); nothing was changed — reload and retry.`,
+        409,
+      );
+    }
+    throw error;
+  }
 
   await DbtJob.updateOne(
     { _id: row._id },
@@ -302,6 +346,7 @@ export async function renameDbtJob(
         slug: nextSlug,
         name: nextName,
         ...(aliases.length > 0 ? { aliases } : {}),
+        ...(slugChanged ? { lastRenameCommit: commit.commitOid } : {}),
       },
       ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
     },

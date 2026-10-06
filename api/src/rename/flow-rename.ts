@@ -31,7 +31,9 @@ import { authorForUser } from "../apps/workspace-consoles.service";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { freshenBeforeMainWrite } from "../apps/cloud-repo.service";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
+  blobOid,
   readBlob,
   resolveCommit,
 } from "../apps/repository.service";
@@ -46,8 +48,8 @@ import {
 } from "../services/flow-config-files";
 import { commitFlowConfig } from "../services/flow-config.service";
 import {
-  derivedFlowId,
   ensureFlowDerivedCache,
+  freeDerivedFlowId,
   listFlowDefinitionsAtMain,
 } from "../services/flow-sync.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
@@ -114,41 +116,59 @@ function locationOf(row: Pick<IFlow, "_id" | "slug" | "name">) {
 }
 
 /**
- * What `ref` points at: id, current slug, or an old slug. Flows are
- * workspace-wide (no per-user ACL), so anyone the objects route let in may
- * resolve one. A file at main with no row yet resolves to the id GET/list
- * hands out for it (`derivedFlowId`), by slug or by its own `aliases:`.
+ * What `ref` points at, in this order: a row's id or current slug; a file at
+ * main whose slug is `ref` (current, even before its push is synced — it
+ * resolves to the id GET/list hands out for it); and only then an alias,
+ * on a row or in a file's `aliases:`, when exactly one claims it. A current
+ * name is never shadowed by an alias. Flows are workspace-wide (no per-user
+ * ACL), so anyone the objects route let in may resolve one.
  */
 export async function resolveFlowRef(
   ctx: RenameContext,
   ref: string,
 ): Promise<ResolvedRef | null> {
   const found = await findFlowByRef(ctx.workspaceId, ref);
-  if (found) {
+  if (found?.via === "current") {
     return {
       kind: "flow",
       id: String(found.row._id),
-      via: found.via,
+      via: "current",
       current: locationOf(found.row),
     };
   }
   if (!FLOW_SLUG_RE.test(ref)) return null;
   const defs = await listFlowDefinitionsAtMain(ctx.workspaceId);
-  const current = defs.find(def => def.slug === ref);
-  const byAlias = defs.filter(def => def.parsed?.aliases?.includes(ref));
-  const def = current ?? (byAlias.length === 1 ? byAlias[0] : undefined);
-  if (!def) return null;
-  return {
-    kind: "flow",
-    id: String(derivedFlowId(ctx.workspaceId, def.slug)),
-    via: current ? "current" : "alias",
-    current: {
-      title: def.parsed?.name ?? def.slug,
-      slug: def.slug,
-      path: def.path,
-      url: flowUrl(String(derivedFlowId(ctx.workspaceId, def.slug))),
-    },
+  const gitOnly = (def: (typeof defs)[number], via: ResolvedRef["via"]) => {
+    return (async (): Promise<ResolvedRef> => {
+      const rows = await Flow.find({ workspaceId: ctx.workspaceId })
+        .select("_id slug")
+        .lean();
+      const id = String(freeDerivedFlowId(ctx.workspaceId, def.slug, rows));
+      return {
+        kind: "flow",
+        id,
+        via,
+        current: {
+          title: def.parsed?.name ?? def.slug,
+          slug: def.slug,
+          path: def.path,
+          url: flowUrl(id),
+        },
+      };
+    })();
   };
+  const currentFile = defs.find(def => def.slug === ref);
+  if (currentFile) return gitOnly(currentFile, "current");
+  if (found) {
+    return {
+      kind: "flow",
+      id: String(found.row._id),
+      via: "alias",
+      current: locationOf(found.row),
+    };
+  }
+  const byAlias = defs.filter(def => def.parsed?.aliases?.includes(ref));
+  return byAlias.length === 1 ? gitOnly(byAlias[0], "alias") : null;
 }
 
 /**
@@ -174,6 +194,17 @@ export async function renameFlow(
     );
   }
   const oldSlug = row.slug;
+  if (found.via === "alias") {
+    // An old name that a NEW file at main has since taken is that file's,
+    // not this row's — even before the push that creates its row is synced.
+    const defs = await listFlowDefinitionsAtMain(workspaceId);
+    if (defs.some(def => def.slug === request.ref)) {
+      throw new RenameError(
+        `"${request.ref}" is now a flow of its own (flows/${request.ref}.yml, not synced yet); refer to the renamed flow by its id or current slug "${oldSlug}".`,
+        409,
+      );
+    }
+  }
 
   // ---- validate the request against the same rules as creation ----------
   const title = request.title?.trim();
@@ -284,15 +315,34 @@ export async function renameFlow(
   const message = slugChanged
     ? `flow: rename "${parsed.file.name}" → "${nextName}" (${oldSlug} → ${nextSlug})`
     : `flow: rename "${parsed.file.name}" → "${nextName}" (${oldSlug})`;
-  const commit = await commitFlowConfig(
-    workspaceId,
-    {
-      writes: { [flowFilePath(nextSlug)]: nextContents },
-      ...(slugChanged ? { deletes: [oldPath] } : {}),
-    },
-    message,
-    ctx.userId ? await authorForUser(ctx.userId) : undefined,
-  );
+  // Compare-and-swap on the file itself: the commit applies only if the old
+  // file is still the one read above and the new path is still free. Two
+  // renames racing, or a save that landed in between, otherwise re-apply
+  // this move on top of the other's and leave both files behind.
+  let commit: { commitOid: string; unchanged: boolean };
+  try {
+    commit = await commitFlowConfig(
+      workspaceId,
+      {
+        writes: { [flowFilePath(nextSlug)]: nextContents },
+        ...(slugChanged ? { deletes: [oldPath] } : {}),
+      },
+      message,
+      ctx.userId ? await authorForUser(ctx.userId) : undefined,
+      {
+        [oldPath]: blobOid(contents),
+        ...(slugChanged ? { [flowFilePath(nextSlug)]: null } : {}),
+      },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new RenameError(
+        `${error.path} changed while renaming (another save or rename landed first); nothing was changed — reload and retry.`,
+        409,
+      );
+    }
+    throw error;
+  }
 
   // ---- the row, in place: same id, new slug, old slug kept ----------------
   // Targeted update, never `save()` (a legacy row that no longer passes the
@@ -305,6 +355,7 @@ export async function renameFlow(
         slug: nextSlug,
         name: nextName,
         ...(aliases.length > 0 ? { aliases } : {}),
+        ...(slugChanged ? { lastRenameCommit: commit.commitOid } : {}),
       },
       ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
     },

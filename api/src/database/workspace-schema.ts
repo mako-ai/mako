@@ -956,6 +956,12 @@ export interface IFlow extends Document {
    */
   aliases?: string[];
   /**
+   * The commit that last moved this flow's file (a rename). A tree that does
+   * not contain it predates the rename: the push reactor must not read the
+   * old file it still shows as a new flow, nor as a rename back.
+   */
+  lastRenameCommit?: string;
+  /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
    * file itself. Derived cache — git is the store.
@@ -2322,6 +2328,7 @@ const FlowSchema = new Schema<IFlow>(
       type: [String],
       default: undefined,
     },
+    lastRenameCommit: { type: String },
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
@@ -4654,6 +4661,8 @@ export interface IDbtJob extends Document {
   slug?: string;
   /** Previous slugs that still resolve to this job (graceful rename). */
   aliases?: string[];
+  /** The commit that last moved this job's file; see IFlow.lastRenameCommit. */
+  lastRenameCommit?: string;
   sourceBlobSha?: string;
   /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
   definitionInvalid?: {
@@ -4702,6 +4711,7 @@ const DbtJobSchema = new Schema<IDbtJob>(
     name: { type: String, required: true, trim: true },
     slug: { type: String },
     aliases: { type: [String], default: undefined },
+    lastRenameCommit: { type: String },
     sourceBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },

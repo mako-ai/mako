@@ -267,6 +267,10 @@ export function FlowsExplorer() {
       if (flowNode.itemType !== "flow" || !flowNode.flowId) return null;
       const flow = flows.find(item => item._id === flowNode.flowId);
       if (!flow) return null;
+      // A file at main whose push has not been synced yet has no row to
+      // re-key (the list shows it from git with a placeholder id); the
+      // rename service would refuse it, so say why instead of offering it.
+      const gitOnly = (flow as { createdBy?: string }).createdBy === "git";
       return [
         <MenuItem
           key="open"
@@ -282,6 +286,10 @@ export function FlowsExplorer() {
         </MenuItem>,
         <MenuItem
           key="rename"
+          disabled={gitOnly}
+          title={
+            gitOnly ? "This flow's push has not been synced yet" : undefined
+          }
           onClick={() => {
             helpers.closeMenu();
             setRenameTarget({
@@ -295,7 +303,7 @@ export function FlowsExplorer() {
           <ListItemIcon>
             <RenameIcon size={16} strokeWidth={1.5} />
           </ListItemIcon>
-          Rename…
+          {gitOnly ? "Rename… (push not synced yet)" : "Rename…"}
         </MenuItem>,
       ];
     },

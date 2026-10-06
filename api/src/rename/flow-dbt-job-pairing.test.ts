@@ -2,11 +2,13 @@
  * Laptop-rename pairing (graceful rename, rule 3): which vanished slug is
  * which appeared slug. The decision this protects is "never tear down a
  * live stream that merely moved" — and its mirror, "never re-key a stream
- * onto the wrong file", which is why ambiguity resolves to nothing.
+ * onto a different file", which is why ambiguity resolves to nothing and
+ * why git's similarity and identical content only ever pair two files that
+ * point at the same source and destination.
  *
  * The rules are pure and tested as data; git's rename detection is driven
- * against a real bare repo so the plumbing (`-M` over two synthetic trees)
- * is exercised, not mocked.
+ * against a real bare repo so the plumbing (`-M90%` over two synthetic
+ * trees) is exercised, not mocked.
  *
  * Run: npx tsx src/rename/flow-dbt-job-pairing.test.ts
  */
@@ -21,6 +23,7 @@ import {
   commitBlobsOnBranch,
   initRepo,
 } from "../apps/repository.service";
+import { flowRenameTarget, parseFlowFile } from "../services/flow-config-files";
 import {
   definitionIdentity,
   detectGitRenames,
@@ -29,13 +32,17 @@ import {
   readBlobByOid,
 } from "./flow-dbt-job-pairing";
 
-const FLOW = (name: string, cron = "0 3 * * *") =>
+const FLOW = (
+  name: string,
+  cron = "0 3 * * *",
+  source = "6a2bd881b6f8c41ea17e9bc7",
+) =>
   [
     `name: ${name}`,
     "type: scheduled",
     "source:",
     "  type: connector",
-    "  connection_id: 6a2bd881b6f8c41ea17e9bc7",
+    `  connection_id: ${source}`,
     "destination:",
     "  connection_id: 69c2719490eb18199aafa882",
     "schedule:",
@@ -45,6 +52,8 @@ const FLOW = (name: string, cron = "0 3 * * *") =>
     "  engine: cdc",
     "",
   ].join("\n");
+/** The flows above (default source) all point at the same source + destination. */
+const T = "same-target";
 
 // ---- identity: name and aliases are the only rename-mutable keys ----------
 assert.equal(
@@ -60,72 +69,158 @@ assert.notEqual(
 assert.equal(definitionIdentity("not: [valid"), null);
 assert.equal(definitionIdentity("- a list\n"), null);
 
+// ---- the target key: what a flow reads from and writes to -----------------
+{
+  const ch = parseFlowFile(FLOW("Close CH"));
+  const fr = parseFlowFile(
+    FLOW("Close FR", "0 3 * * *", "69c2719490eb18199aafa999"),
+  );
+  const chRenamed = parseFlowFile(FLOW("Close CH (renamed)", "0 9 * * *"));
+  assert.ok(ch && fr && chRenamed);
+  assert.notEqual(flowRenameTarget(ch), flowRenameTarget(fr));
+  assert.equal(flowRenameTarget(ch), flowRenameTarget(chRenamed));
+}
+
 // ---- rule 1: the added file's aliases name the removed slug ---------------
 {
   const result = pairRenamedSlugs({
-    removed: [{ slug: "close-crm", contents: FLOW("Close") }],
+    removed: [{ slug: "close-crm", contents: FLOW("Close"), target: T }],
     added: [
       {
         slug: "crm-sync",
         contents: FLOW("Close", "0 9 * * *"), // edited too: alias still wins
         aliases: ["close-crm"],
+        target: T,
       },
-      { slug: "unrelated", contents: FLOW("Other"), aliases: [] },
+      { slug: "unrelated", contents: FLOW("Other"), aliases: [], target: T },
     ],
   });
   assert.deepEqual(result.pairs, [
     { from: "close-crm", to: "crm-sync", via: "alias" },
   ]);
   assert.deepEqual(result.ambiguous, []);
+  assert.deepEqual(result.targetMismatch, []);
 }
 
-// ---- rule 1, the other direction: renamed BACK to an old name ------------
+// ---- rule 1 is FORWARD only. "The removed row lists the added slug as an
+// alias" is exactly what a tree read before a rename commit looks like, and
+// pairing on it would undo the rename. Not a pairing.
 {
   const result = pairRenamedSlugs({
     removed: [
-      { slug: "crm-sync", aliases: ["close-crm"], contents: FLOW("x") },
+      {
+        slug: "crm-sync",
+        aliases: ["close-crm"],
+        contents: FLOW("x"),
+        target: T,
+      },
     ],
     added: [
-      { slug: "close-crm", contents: FLOW("y", "1 1 * * *"), aliases: [] },
+      {
+        slug: "close-crm",
+        contents: FLOW("y", "1 1 * * *"),
+        aliases: [],
+        target: T,
+      },
+    ],
+  });
+  assert.deepEqual(result.pairs, []);
+}
+
+// ---- rule 1 honours an explicit alias across targets, but reports it -----
+{
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "close-ch", contents: FLOW("CH"), target: "ch" }],
+    added: [
+      {
+        slug: "close-fr",
+        contents: FLOW("FR"),
+        aliases: ["close-ch"],
+        target: "fr",
+      },
     ],
   });
   assert.deepEqual(result.pairs, [
-    { from: "crm-sync", to: "close-crm", via: "alias" },
+    { from: "close-ch", to: "close-fr", via: "alias" },
+  ]);
+  assert.deepEqual(result.targetMismatch, [
+    { from: "close-ch", to: "close-fr" },
   ]);
 }
 
-// ---- rule 2: git says so ---------------------------------------------------
+// ---- rule 2: git says so — and both files point at the same thing --------
 {
   const result = pairRenamedSlugs({
-    removed: [{ slug: "a", contents: FLOW("A") }],
-    added: [{ slug: "b", contents: FLOW("A", "5 5 * * *"), aliases: [] }],
+    removed: [{ slug: "a", contents: FLOW("A"), target: T }],
+    added: [
+      { slug: "b", contents: FLOW("A", "5 5 * * *"), aliases: [], target: T },
+    ],
     gitRenames: new Map([["a", "b"]]),
   });
   assert.deepEqual(result.pairs, [{ from: "a", to: "b", via: "git" }]);
+  assert.deepEqual(result.targetMismatch, []);
+}
+{
+  // The reviewer's case: delete close-ch, add close-fr — same boilerplate,
+  // DIFFERENT source connection and schema. Git calls it a rename; it is
+  // not one, and treating it as one would hand FR the CH checkpoints.
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "close-ch", contents: FLOW("Close CH"), target: "ch" }],
+    added: [
+      {
+        slug: "close-fr",
+        contents: FLOW("Close FR"),
+        aliases: [],
+        target: "fr",
+      },
+    ],
+    gitRenames: new Map([["close-ch", "close-fr"]]),
+  });
+  assert.deepEqual(result.pairs, []);
+  assert.deepEqual(result.ambiguous, []);
+}
+{
+  // An unknown target pairs with nothing under rules 2 and 3.
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "a", contents: FLOW("A"), target: null }],
+    added: [{ slug: "b", contents: FLOW("A"), aliases: [], target: null }],
+    gitRenames: new Map([["a", "b"]]),
+  });
+  assert.deepEqual(result.pairs, []);
 }
 {
   // Git naming a slug that was not added is not a pairing.
   const result = pairRenamedSlugs({
-    removed: [{ slug: "a", contents: FLOW("A") }],
-    added: [{ slug: "b", contents: FLOW("B", "5 5 * * *"), aliases: [] }],
+    removed: [{ slug: "a", contents: FLOW("A"), target: T }],
+    added: [
+      { slug: "b", contents: FLOW("B", "5 5 * * *"), aliases: [], target: T },
+    ],
     gitRenames: new Map([["a", "zzz"]]),
   });
   assert.deepEqual(result.pairs, []);
 }
 
-// ---- rule 3: identical apart from name/aliases ---------------------------
+// ---- rule 3: identical apart from name/aliases, same target ---------------
 {
   const result = pairRenamedSlugs({
-    removed: [{ slug: "a", contents: FLOW("Old") }],
-    added: [{ slug: "b", contents: FLOW("New"), aliases: [] }],
+    removed: [{ slug: "a", contents: FLOW("Old"), target: T }],
+    added: [{ slug: "b", contents: FLOW("New"), aliases: [], target: T }],
   });
   assert.deepEqual(result.pairs, [{ from: "a", to: "b", via: "identical" }]);
 }
 {
+  // Identical YAML but a different target: the target wins, no pairing.
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "a", contents: FLOW("Old"), target: "x" }],
+    added: [{ slug: "b", contents: FLOW("New"), aliases: [], target: "y" }],
+  });
+  assert.deepEqual(result.pairs, []);
+}
+{
   // A removed slug with no known contents cannot be paired by content.
   const result = pairRenamedSlugs({
-    removed: [{ slug: "a" }],
-    added: [{ slug: "b", contents: FLOW("New"), aliases: [] }],
+    removed: [{ slug: "a", target: T }],
+    added: [{ slug: "b", contents: FLOW("New"), aliases: [], target: T }],
   });
   assert.deepEqual(result.pairs, []);
   assert.deepEqual(result.ambiguous, []);
@@ -135,10 +230,10 @@ assert.equal(definitionIdentity("- a list\n"), null);
 {
   // Two added files both claim the old slug.
   const result = pairRenamedSlugs({
-    removed: [{ slug: "a", contents: FLOW("A") }],
+    removed: [{ slug: "a", contents: FLOW("A"), target: T }],
     added: [
-      { slug: "b", contents: FLOW("B"), aliases: ["a"] },
-      { slug: "c", contents: FLOW("C"), aliases: ["a"] },
+      { slug: "b", contents: FLOW("B"), aliases: ["a"], target: T },
+      { slug: "c", contents: FLOW("C"), aliases: ["a"], target: T },
     ],
   });
   assert.deepEqual(result.pairs, []);
@@ -149,10 +244,10 @@ assert.equal(definitionIdentity("- a list\n"), null);
 {
   // Two added files identical to the removed one.
   const result = pairRenamedSlugs({
-    removed: [{ slug: "a", contents: FLOW("A") }],
+    removed: [{ slug: "a", contents: FLOW("A"), target: T }],
     added: [
-      { slug: "b", contents: FLOW("B"), aliases: [] },
-      { slug: "c", contents: FLOW("C"), aliases: [] },
+      { slug: "b", contents: FLOW("B"), aliases: [], target: T },
+      { slug: "c", contents: FLOW("C"), aliases: [], target: T },
     ],
   });
   assert.deepEqual(result.pairs, []);
@@ -162,10 +257,10 @@ assert.equal(definitionIdentity("- a list\n"), null);
   // Two removed slugs both identical to ONE added file: given to neither.
   const result = pairRenamedSlugs({
     removed: [
-      { slug: "a", contents: FLOW("A") },
-      { slug: "b", contents: FLOW("B") },
+      { slug: "a", contents: FLOW("A"), target: T },
+      { slug: "b", contents: FLOW("B"), target: T },
     ],
-    added: [{ slug: "c", contents: FLOW("C"), aliases: [] }],
+    added: [{ slug: "c", contents: FLOW("C"), aliases: [], target: T }],
   });
   assert.deepEqual(result.pairs, []);
   assert.deepEqual(result.ambiguous.map(e => e.slug).sort(), ["a", "b"]);
@@ -173,10 +268,15 @@ assert.equal(definitionIdentity("- a list\n"), null);
 {
   // An ambiguous higher rule does not fall through to a lower one.
   const result = pairRenamedSlugs({
-    removed: [{ slug: "a", contents: FLOW("A") }],
+    removed: [{ slug: "a", contents: FLOW("A"), target: T }],
     added: [
-      { slug: "b", contents: FLOW("B"), aliases: ["a"] },
-      { slug: "c", contents: FLOW("C", "9 9 * * *"), aliases: ["a"] },
+      { slug: "b", contents: FLOW("B"), aliases: ["a"], target: T },
+      {
+        slug: "c",
+        contents: FLOW("C", "9 9 * * *"),
+        aliases: ["a"],
+        target: T,
+      },
     ],
     gitRenames: new Map([["a", "b"]]),
   });
@@ -189,7 +289,7 @@ assert.deepEqual(
     removed: [],
     added: [{ slug: "b", contents: "", aliases: [] }],
   }),
-  { pairs: [], ambiguous: [] },
+  { pairs: [], ambiguous: [], targetMismatch: [] },
 );
 
 // ---- mergedAliases: grows, dedupes, never holds the current slug ----------
@@ -229,6 +329,27 @@ async function gitCases(): Promise<void> {
       [...renames],
       [["flows/close-crm.yml", "flows/crm-sync.yml"]],
       "git must pair a moved-and-edited file",
+    );
+
+    // At 90% a file that only shares the format's boilerplate (different
+    // connection, different name) is not a rename any more — git's default
+    // 50% reported exactly that as one.
+    const lookalike = FLOW("Close FR", "0 3 * * *", "69c2719490eb18199aafa999");
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "flows/close-fr.yml": lookalike } },
+      { message: "add fr" },
+    );
+    assert.deepEqual(
+      [
+        ...(await detectGitRenames(
+          repoDir,
+          [{ path: "flows/close-crm.yml", oid: blobOid(old) }],
+          [{ path: "flows/close-fr.yml", oid: blobOid(lookalike) }],
+        )),
+      ],
+      [],
     );
 
     // The old blob is still readable by its oid: that is what lets the

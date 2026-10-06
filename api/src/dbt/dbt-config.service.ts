@@ -48,6 +48,7 @@ import {
   DBT_ENVIRONMENTS_PATH,
   type DbtEnvironmentsFile,
   jobFilePath,
+  jobRenameTarget,
   parseEnvironmentsFile,
   parseJobFile,
   serializeEnvironmentsFile,
@@ -60,6 +61,7 @@ import { parseDbtCommands } from "./commands";
 import { applyJobScheduleChange } from "./dbt-run.service";
 import {
   detectGitRenames,
+  isAncestorCommit,
   mergedAliases,
   pairRenamedSlugs,
   readBlobByOid,
@@ -86,11 +88,75 @@ export interface LiveJob {
 export function derivedJobId(
   workspaceId: string,
   slug: string,
+  /** >1 only when generation 1 is held by a renamed row; see freeDerivedJobId. */
+  generation = 1,
 ): Types.ObjectId {
   const digest = createHash("sha1")
-    .update(`dbt-job:${workspaceId}:${slug}`)
+    .update(
+      `dbt-job:${workspaceId}:${slug}${generation > 1 ? `#${generation}` : ""}`,
+    )
     .digest("hex");
   return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/**
+ * The stable id for a job file with no row: the first derivation not held
+ * by a row of a different slug (a git-born job that was renamed keeps its
+ * id, so a new file at its old name must not collide). Deterministic over
+ * the same rows, so GET/list and push-sync agree.
+ */
+export function freeDerivedJobId(
+  workspaceId: string,
+  slug: string,
+  rows: Array<{ _id: Types.ObjectId; slug?: string }>,
+): Types.ObjectId {
+  for (let generation = 1; generation <= 32; generation++) {
+    const id = derivedJobId(workspaceId, slug, generation);
+    const holder = rows.find(row => row._id.equals(id));
+    if (!holder || holder.slug === slug) return id;
+  }
+  return new Types.ObjectId();
+}
+
+/**
+ * An alias two rows claim resolves to neither: a file whose `aliases:` names
+ * something another row already answers to (by slug or alias — a copied
+ * file, typically) loses that entry. Returns the dropped names for the log.
+ */
+async function dropJobAliasesClaimedElsewhere(
+  projectId: Types.ObjectId,
+  jobId: Types.ObjectId,
+  aliases: string[],
+): Promise<{ kept: string[]; dropped: string[] }> {
+  if (aliases.length === 0) return { kept: [], dropped: [] };
+  const claimants = await DbtJob.find({
+    projectId,
+    _id: { $ne: jobId },
+    $or: [{ slug: { $in: aliases } }, { aliases: { $in: aliases } }],
+  })
+    .select("slug aliases")
+    .lean();
+  const claimed = new Set<string>();
+  for (const claimant of claimants) {
+    for (const name of [claimant.slug, ...(claimant.aliases ?? [])]) {
+      if (name && aliases.includes(name)) claimed.add(name);
+    }
+  }
+  return {
+    kept: aliases.filter(alias => !claimed.has(alias)),
+    dropped: [...claimed],
+  };
+}
+
+/** See `treePredatesRename` in flow-sync.service.ts — same rule for jobs. */
+async function treePredatesJobRename(
+  repoDir: string,
+  head: string,
+  row: Pick<IDbtJob, "lastRenameCommit">,
+  fallback: boolean,
+): Promise<boolean> {
+  if (!row.lastRenameCommit) return fallback;
+  return !(await isAncestorCommit(repoDir, row.lastRenameCommit, head));
 }
 
 /** Authored job files at main; unbound workspaces deliberately read empty. */
@@ -245,7 +311,11 @@ export async function ensureJobDerivedCache(
   const reschedule = scheduleDiffers(row, file);
   const unset: Record<string, 1> = { definitionInvalid: 1 };
   if (!file.schedule) unset.schedule = 1;
-  const aliases = mergedAliases(row.aliases, file.aliases, row.slug);
+  const { kept: aliases } = await dropJobAliasesClaimedElsewhere(
+    row.projectId,
+    row._id,
+    mergedAliases(row.aliases, file.aliases, row.slug),
+  );
   await DbtJob.updateOne(
     { _id: row._id },
     {
@@ -287,7 +357,7 @@ function joinLiveJobs(
     row: bySlug.get(def.slug) ?? null,
     id:
       bySlug.get(def.slug)?._id ??
-      derivedJobId(project.workspaceId.toString(), def.slug),
+      freeDerivedJobId(project.workspaceId.toString(), def.slug, rows),
   }));
 }
 
@@ -586,12 +656,15 @@ export async function commitDbtConfig(
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
   author?: GitAuthor,
+  /** Compare-and-swap on content; see `commitBlobsOnBranch`. */
+  expectBlobs?: Record<string, string | null>,
 ): Promise<{ commitOid: string; unchanged: boolean }> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
+    expectBlobs,
   });
   if (!result.unchanged) queueMirrorPush(workspaceId);
   return { commitOid: result.commitOid, unchanged: result.unchanged };
@@ -643,11 +716,16 @@ export async function rekeyJobSlug(
   jobId: Types.ObjectId,
   from: string,
   to: string,
+  /** The commit that carries the move; see `IDbtJob.lastRenameCommit`. */
+  commit?: string,
 ): Promise<void> {
   await DbtJob.updateOne({ _id: jobId }, { $pull: { aliases: to } });
   await DbtJob.updateOne(
     { _id: jobId, slug: from },
-    { $set: { slug: to }, $addToSet: { aliases: from } },
+    {
+      $set: { slug: to, ...(commit ? { lastRenameCommit: commit } : {}) },
+      $addToSet: { aliases: from },
+    },
   );
 }
 
@@ -663,9 +741,11 @@ export async function rekeyRenamedJobs(args: {
   workspaceId: string;
   projectId: Types.ObjectId;
   repoDir: string;
+  /** The commit `files` were read at. */
+  head: string;
   files: Array<{ path: string; contents: string }>;
 }): Promise<SlugRenamePair[]> {
-  const { workspaceId, projectId, repoDir, files } = args;
+  const { workspaceId, projectId, repoDir, head, files } = args;
   const fileBySlug = new Map<string, { path: string; contents: string }>();
   for (const file of files) {
     const slug = slugFromJobFilePath(file.path);
@@ -676,12 +756,24 @@ export async function rekeyRenamedJobs(args: {
   for (const row of rows) {
     if (row.slug) rowBySlug.set(row.slug, row);
   }
-  const removedRows = rows.filter(
-    row => row.slug !== undefined && !fileBySlug.has(row.slug),
-  );
   const addedFiles = [...fileBySlug.entries()].filter(
     ([slug]) => !rowBySlug.has(slug),
   );
+  const removedRows: IDbtJob[] = [];
+  for (const row of rows) {
+    if (row.slug === undefined || fileBySlug.has(row.slug)) continue;
+    // A tree older than the row's rename commit still shows its old file;
+    // that is not a candidate for anything (see flow-sync.service.ts).
+    if (await treePredatesJobRename(repoDir, head, row, false)) {
+      logger.info("Tree predates a job rename; not pairing its old slug", {
+        workspaceId,
+        slug: row.slug,
+        head,
+      });
+      continue;
+    }
+    removedRows.push(row);
+  }
   if (removedRows.length === 0 || addedFiles.length === 0) return [];
 
   const removed: RemovedSlug[] = [];
@@ -690,17 +782,23 @@ export async function rekeyRenamedJobs(args: {
       ? await readBlobByOid(repoDir, row.sourceBlobSha)
       : null;
     if (contents === null) contents = serializeJobFile(jobToFile(row));
+    const parsedOld = parseJobFile(contents);
     removed.push({
       slug: row.slug as string,
       aliases: row.aliases ?? [],
       contents,
+      target: parsedOld ? jobRenameTarget(parsedOld) : null,
     });
   }
-  const added = addedFiles.map(([slug, file]) => ({
-    slug,
-    contents: file.contents,
-    aliases: parseJobFile(file.contents)?.aliases ?? [],
-  }));
+  const added = addedFiles.map(([slug, file]) => {
+    const parsed = parseJobFile(file.contents);
+    return {
+      slug,
+      contents: file.contents,
+      aliases: parsed?.aliases ?? [],
+      target: parsed ? jobRenameTarget(parsed) : null,
+    };
+  });
   const gitRenames = new Map<string, string>();
   for (const [from, to] of await detectGitRenames(
     repoDir,
@@ -727,12 +825,18 @@ export async function rekeyRenamedJobs(args: {
       candidates: entry.candidates,
     });
   }
+  for (const entry of pairing.targetMismatch) {
+    logger.warn(
+      "dbt job renamed by alias onto a different environment/commands",
+      { workspaceId, from: entry.from, to: entry.to },
+    );
+  }
   const done: SlugRenamePair[] = [];
   for (const pair of pairing.pairs) {
     const row = rowBySlug.get(pair.from);
     if (!row) continue;
     try {
-      await rekeyJobSlug(row._id, pair.from, pair.to);
+      await rekeyJobSlug(row._id, pair.from, pair.to, head);
       done.push(pair);
       logger.info("dbt job renamed in place from a pushed file move", {
         workspaceId,
@@ -761,6 +865,17 @@ export async function commitDbtJobFile(
   messageOverride?: string,
 ): Promise<void> {
   if (!job.slug) return; // pre-adoption row; the migration stamps slugs
+  // Never write to a slug a concurrent rename has already moved away from
+  // (the old file would come back beside the new one): the row's current
+  // slug decides, and a stale one fails the request.
+  if (!job.isNew) {
+    const current = await DbtJob.findById(job._id).select("slug").lean();
+    if (current?.slug && current.slug !== job.slug) {
+      throw new Error(
+        `the job was renamed to "${current.slug}" while this change was being made; reload and retry`,
+      );
+    }
+  }
   const contents = serializeJobFile(jobToFile(job));
   const sha = blobOid(contents);
   const written = await commitConfig(
@@ -885,11 +1000,20 @@ async function syncDbtConfigNow(
   // the loop looks rows up by slug, so the moved file is an update of the
   // row (same id, same URL, same run history) and the stale sweep at the
   // end never sees the old slug as a deleted job.
+  const fileSlugs = new Set<string>();
+  for (const path of blobs.keys()) {
+    const slug = slugFromJobFilePath(path);
+    if (slug) fileSlugs.add(slug);
+  }
+  const idRows = await DbtJob.find({ projectId: project._id })
+    .select("_id slug")
+    .lean();
   try {
     await rekeyRenamedJobs({
       workspaceId,
       projectId: project._id,
       repoDir,
+      head,
       files: [...blobs].map(([path, buf]) => ({
         path,
         contents: buf.toString("utf8"),
@@ -944,20 +1068,61 @@ async function syncDbtConfigNow(
       continue;
     }
     const scheduleChanged = !row || scheduleDiffers(row, parsed);
+    // A file at a slug some row holds as an ALIAS: a new job taking an old
+    // name (current wins; the old row loses the alias below), unless this
+    // tree predates that row's rename commit — then the old file is just
+    // the pre-rename view and must not become a second job. The row is
+    // counted as seen so the stale sweep leaves it alone.
+    if (!row) {
+      const claimant = await DbtJob.findOne({
+        projectId: project._id,
+        aliases: slug,
+      })
+        .select("_id slug lastRenameCommit")
+        .lean();
+      if (
+        claimant?.slug &&
+        (await treePredatesJobRename(
+          repoDir,
+          head,
+          claimant,
+          !fileSlugs.has(claimant.slug),
+        ))
+      ) {
+        logger.info("Tree predates a job rename; keeping the renamed row", {
+          workspaceId,
+          path,
+          renamedTo: claimant.slug,
+        });
+        seenSlugs.add(claimant.slug);
+        continue;
+      }
+    }
     const doc =
       row ??
       new DbtJob({
         // The id GET/list already handed out for this git-only file: a tab
         // opened before the push landed keeps resolving after it.
-        _id: derivedJobId(workspaceId, slug),
+        _id: freeDerivedJobId(workspaceId, slug, idRows),
         workspaceId: project.workspaceId,
         projectId: project._id,
         slug,
         createdBy: "sync",
       });
     doc.name = parsed.name;
-    const aliases = mergedAliases(doc.aliases, parsed.aliases, slug);
-    if (aliases.length > 0) doc.aliases = aliases;
+    const merged = await dropJobAliasesClaimedElsewhere(
+      project._id,
+      doc._id,
+      mergedAliases(doc.aliases, parsed.aliases, slug),
+    );
+    if (merged.dropped.length > 0) {
+      logger.warn("dbt job file lists aliases another job already claims", {
+        workspaceId,
+        path,
+        dropped: merged.dropped,
+      });
+    }
+    doc.aliases = merged.kept.length > 0 ? merged.kept : undefined;
     doc.environment = parsed.environment;
     doc.commands = parsed.commands;
     doc.schedule = parsed.schedule
@@ -967,7 +1132,27 @@ async function syncDbtConfigNow(
     doc.deferToProduction = parsed.deferToProduction;
     doc.sourceBlobSha = sha;
     const clearInvalid = isMarkedInvalid(doc);
-    await doc.save();
+    // One file's failure is that file's problem: a save that throws (a
+    // duplicate id, a schema refusal) must not skip every file after it and
+    // the stale sweep with it. The row that exists is kept; a new one is
+    // simply not created.
+    try {
+      await doc.save();
+    } catch (error) {
+      logger.warn("dbt job file could not be saved; keeping current row", {
+        workspaceId,
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+    if (!row) {
+      // Current always wins: the old row drops the alias this file took.
+      await DbtJob.updateMany(
+        { projectId: project._id, aliases: slug, _id: { $ne: doc._id } },
+        { $pull: { aliases: slug } },
+      );
+    }
     if (clearInvalid) {
       // Assigning undefined to a nested path persists `{}`; unset it.
       await DbtJob.updateOne(

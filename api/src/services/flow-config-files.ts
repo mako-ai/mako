@@ -61,6 +61,33 @@ export function isValidFlowSlug(slug: string): boolean {
   return FLOW_SLUG_RE.test(slug) && slugifyFlowName(slug) === slug;
 }
 
+/**
+ * What a flow points at, as one comparable string: its source connection and
+ * its destination (connection, database, table connection/database/schema/
+ * table). Two files with different targets are different streams however
+ * alike their YAML is — the rename pairing (api/src/rename) refuses to treat
+ * one as the other renamed, because that would hand a new stream another's
+ * checkpoints. `null` when the file has no source or destination to speak of.
+ */
+export function flowRenameTarget(file: FlowFile): string | null {
+  const source =
+    file.source.type === "database"
+      ? ["db", file.source.connectionId ?? "", file.source.database ?? ""]
+      : ["connector", file.source.connectionId];
+  if (!source[1]) return null;
+  const t = file.destination.table;
+  const destination = [
+    file.destination.connectionId,
+    file.destination.databaseName ?? "",
+    t?.connectionId ?? "",
+    t?.database ?? "",
+    t?.schema ?? "",
+    t?.tableName ?? "",
+  ];
+  if (!destination[0]) return null;
+  return JSON.stringify([source, destination]);
+}
+
 /** Stable filename identity for a flow, derived once from its name. */
 export function slugifyFlowName(name: string): string {
   return slugifyName(name, { fallback: "flow" });

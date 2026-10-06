@@ -10,7 +10,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ZERO_OID, assertSafeRelPath } from "./git";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
+  blobOid,
+  blobOidAt,
+  commitBlobsOnBranch,
   commitTree,
   diffNameStatus,
   globTree,
@@ -146,6 +150,71 @@ describe("updateRefCas", () => {
     // Stale writer (expects c1) must lose.
     expect(await updateRefCas(repoDir, ref, c1, c1)).toBe(false);
     expect(await resolveCommit(repoDir, ref)).toBe(c2);
+  });
+});
+
+describe("commitBlobsOnBranch expectBlobs (compare-and-swap on content)", () => {
+  it("refuses a mutation whose read-side file changed or whose new path appeared, and commits otherwise", async () => {
+    const { commitOid: c1 } = await initRepo(repoDir, {
+      "flows/a.yml": "name: A\n",
+    });
+    const aOid = blobOid("name: A\n");
+    expect(await blobOidAt(repoDir, c1, "flows/a.yml")).toBe(aOid);
+    expect(await blobOidAt(repoDir, c1, "flows/b.yml")).toBeNull();
+
+    // Someone else edits a.yml first.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "flows/a.yml": "name: A edited\n" } },
+      { message: "edit" },
+    );
+    const headBefore = await resolveCommit(
+      repoDir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    // A move decided from the ORIGINAL a.yml must not re-apply on top.
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { "flows/b.yml": "name: B\n" }, deletes: ["flows/a.yml"] },
+        {
+          message: "mv",
+          expectBlobs: { "flows/a.yml": aOid, "flows/b.yml": null },
+        },
+      ),
+    ).rejects.toBeInstanceOf(BlobPreconditionError);
+    expect(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`)).toBe(
+      headBefore,
+    );
+
+    // Decided from the current a.yml: applies.
+    const edited = blobOid("name: A edited\n");
+    const moved = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "flows/b.yml": "name: B\n" }, deletes: ["flows/a.yml"] },
+      {
+        message: "mv",
+        expectBlobs: { "flows/a.yml": edited, "flows/b.yml": null },
+      },
+    );
+    expect(moved.unchanged).toBe(false);
+    expect(await blobOidAt(repoDir, moved.commitOid, "flows/a.yml")).toBeNull();
+    expect(await blobOidAt(repoDir, moved.commitOid, "flows/b.yml")).toBe(
+      blobOid("name: B\n"),
+    );
+
+    // "Must be absent" fails once the path exists.
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { "flows/b.yml": "name: B2\n" } },
+        { message: "x", expectBlobs: { "flows/b.yml": null } },
+      ),
+    ).rejects.toMatchObject({ path: "flows/b.yml", expected: null });
   });
 });
 

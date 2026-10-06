@@ -55,6 +55,15 @@ export function jobFilePath(slug: string): string {
 /** The shape a slug (and so an alias) must have to be a job file name. */
 export const JOB_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 
+/**
+ * What a job does, as one comparable string: its environment and commands.
+ * Two files that build different things are different jobs however alike
+ * their YAML is; the rename pairing (api/src/rename) pairs only equal targets.
+ */
+export function jobRenameTarget(file: DbtJobFile): string {
+  return JSON.stringify([file.environment, file.commands]);
+}
+
 /** Whether `slug` could have been minted by {@link slugifyJobName}. */
 export function isValidJobSlug(slug: string): boolean {
   return JOB_SLUG_RE.test(slug) && slugifyJobName(slug) === slug;
