@@ -13,7 +13,7 @@ import {
 export const connectorRenameHandler: RenameHandler = {
   kind: "connector",
   describe:
-    "connector: `ref` is the workspace connector's slug (or `ws:<slug>`, or an old slug); `slug` = the new folder slug. Moves connectors/<old>/ to connectors/<new>/ and records the old slug in connector.yaml `aliases` (one commit on main), re-keys the index row in place and moves every connection typed ws:<old> to ws:<new> — old-typed connections keep working through the alias. `title` is read-only (the display name is `defineConnector({ name })` in the connector's code).",
+    "`ref` is the workspace connector's slug (or `ws:<slug>`, or an old slug); `slug` = the new folder slug. Moves connectors/<old>/ to connectors/<new>/ and records the old slug in connector.yaml `aliases` (one commit on main), re-keys the index row in place and moves every connection typed ws:<old> to ws:<new> — old-typed connections keep working through the alias. `title` is read-only (the display name is `defineConnector({ name })` in the connector's code).",
   resolve: resolveConnector,
   async rename(ctx, request) {
     if (!request.slug) {

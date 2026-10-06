@@ -144,26 +144,36 @@ export async function renameWorkspaceConnector(
   ctx: RenameContext,
   input: RenameConnectorInput,
 ): Promise<RenameResult> {
-  const from = connectorSlugFromRef(input.from);
   const to = connectorSlugFromRef(input.to);
-  if (!isValidSlug(from) || !isValidSlug(to)) {
+  if (!isValidSlug(to)) {
     throw new RenameError(
       "A connector slug is lowercase letters, digits and dashes (e.g. acme-crm)",
       400,
     );
   }
-  if (from === to) throw new RenameError("The new slug is the old slug", 400);
   const wsId = new Types.ObjectId(ctx.workspaceId);
 
-  // The row that is renamed is the one the LIVE slug names; renaming "an
-  // alias" would be renaming a name that already moved.
-  const row = await ConnectorDefinition.findOne({
-    workspaceId: wsId,
-    slug: from,
-  });
+  // `from` may be the row's id, its current slug or an old one — the same
+  // refs `resolve` accepts. Whatever was named, the move is always from
+  // the row's CURRENT slug.
+  const ref = input.from.trim();
+  let row = /^[0-9a-f]{24}$/.test(ref)
+    ? await ConnectorDefinition.findOne({ workspaceId: wsId, _id: ref })
+    : null;
   if (!row) {
-    throw new RenameError(`No connector "${from}" in this workspace`, 404);
+    const resolved = await resolveConnector(ctx, ref);
+    row = resolved
+      ? await ConnectorDefinition.findOne({
+          workspaceId: wsId,
+          _id: resolved.id,
+        })
+      : null;
   }
+  if (!row) {
+    throw new RenameError(`No connector "${ref}" in this workspace`, 404);
+  }
+  const from = row.slug;
+  if (from === to) throw new RenameError("The new slug is the old slug", 400);
   if (await ConnectorDefinition.exists({ workspaceId: wsId, slug: to })) {
     throw new RenameError(`A connector "${to}" already exists`, 409);
   }
@@ -229,7 +239,8 @@ export async function renameWorkspaceConnector(
 
   // Re-key the index now (the push-time reconcile would find the same
   // rename through the alias and do nothing more), then move connections.
-  const wasVerified = row.status === "verified";
+  // `sourceSha` is unchanged on purpose: the hash ignores `aliases`, so a
+  // verified connector stays verified — a rename is not new code.
   row.slug = to;
   row.aliases = [...new Set([...(row.aliases ?? []), from])].filter(
     a => a !== to,
@@ -246,9 +257,9 @@ export async function renameWorkspaceConnector(
     type: `${WORKSPACE_TYPE_PREFIX}${from}`,
   });
 
-  // connector.yaml changed, so the folder's content hash did: the next
-  // index pass re-runs `spec` (in the sync box, not inline here — a rename
-  // should not wait on a sandbox).
+  // Let the index pass see the new tree (it finds the row already re-keyed
+  // and the content hash unchanged, so nothing re-runs; done in the
+  // background so a rename never waits on the sync box).
   void syncConnectorsFromRepo(ctx.workspaceId, ctx.userId).catch(error => {
     logger.warn("Connector re-index after rename failed", {
       workspaceId: ctx.workspaceId,
@@ -265,11 +276,6 @@ export async function renameWorkspaceConnector(
   if (remaining > 0) {
     warnings.push(
       `${remaining} connection${remaining === 1 ? "" : "s"} still typed ws:${from}; they keep working through the alias.`,
-    );
-  }
-  if (wasVerified) {
-    warnings.push(
-      "The connector's spec is re-captured on the next index pass; its status is 'indexed' until the next successful connection test.",
     );
   }
   return {

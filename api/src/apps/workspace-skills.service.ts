@@ -246,18 +246,37 @@ export async function resolveSkillRefThroughHistory(
   if (!(await getWorkspaceRepo(workspaceId))) return null;
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null) return null;
-  const moved = await findRenamedFolder(
-    repoDir,
-    MAIN,
-    SKILLS_DIR,
-    trimmed,
-    "SKILL.md",
-  );
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return null;
+  // One git log per (main head, name): every `load_skill` of a system skill
+  // misses the workspace catalog first, and a scan per miss would be a
+  // process spawn per turn. The answer cannot change until main moves.
+  const key = `${workspaceId}\0${head}\0${trimmed}`;
+  let moved = historyCache.get(key);
+  if (moved === undefined) {
+    moved = await findRenamedFolder(
+      repoDir,
+      MAIN,
+      SKILLS_DIR,
+      trimmed,
+      "SKILL.md",
+    );
+    historyCache.set(key, moved);
+    while (historyCache.size > MAX_CACHED_HISTORY_LOOKUPS) {
+      const oldest = historyCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      historyCache.delete(oldest);
+    }
+  }
   if (!moved || moved === trimmed) return null;
   const catalog = await loadSkillCatalog(workspaceId);
   const skill = catalog.skills.find(s => s.name === moved);
   return skill ? { skill, via: "alias" } : null;
 }
+
+/** (workspace, main head, name) → where the folder went, or null. Bounded. */
+const MAX_CACHED_HISTORY_LOOKUPS = 512;
+const historyCache = new Map<string, string | null>();
 
 /** A skill by its current name or (unambiguous) alias. */
 export async function findSkill(
@@ -314,7 +333,17 @@ export async function skillsAdopted(repoDir: string): Promise<boolean> {
 export async function commitSkillSave(
   workspaceId: string,
   skill: WorkspaceSkillFile,
-  options: { author?: GitAuthor } = {},
+  options: {
+    author?: GitAuthor;
+    /**
+     * A skill that still lists `skill.name` among its `aliases`: the new
+     * skill takes the name, so the alias is retired from that file in the
+     * same commit (a name must have one answer). Its file is rewritten
+     * only when it parses; otherwise the save is refused rather than
+     * leaving two claimants or clobbering a hand-written file.
+     */
+    retireAliasFrom?: string;
+  } = {},
 ): Promise<void> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
@@ -323,11 +352,28 @@ export async function commitSkillSave(
     writes[SKILLS_README_PATH] = SKILLS_README;
   }
   writes[skillFilePath(skill.name)] = serializeSkillFile(skill);
+  let message = `Save skill "${skill.name}"`;
+  if (options.retireAliasFrom) {
+    const path = skillFilePath(options.retireAliasFrom);
+    const raw = await readRepoFile(repoDir, path);
+    const parsed =
+      raw === null ? null : parseSkillFile(options.retireAliasFrom, raw);
+    if (!parsed) {
+      throw new Error(
+        `"${skill.name}" is a previous name of the skill "${options.retireAliasFrom}", whose SKILL.md does not parse; fix it before reusing the name`,
+      );
+    }
+    writes[path] = serializeSkillFile({
+      ...parsed,
+      aliases: (parsed.aliases ?? []).filter(a => a !== skill.name),
+    });
+    message += ` (retires the alias from "${options.retireAliasFrom}")`;
+  }
   await commitBlobsOnBranch(
     repoDir,
     DEFAULT_BRANCH,
     { writes },
-    { message: `Save skill "${skill.name}"`, author: options.author },
+    { message, author: options.author },
   );
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);

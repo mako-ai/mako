@@ -346,6 +346,45 @@ describe("project update + file list/delete/rename", () => {
     );
   });
 
+  it("renameFile refuses while an unsaved buffer mentions the model (it would be rewritten)", async () => {
+    api.get.mockResolvedValue({
+      success: true,
+      files: [{ path: "models/a.sql" }, { path: "models/mart.sql" }],
+    });
+    await useDbtStore.getState().fetchFiles(WS, "p1");
+    useDbtStore.getState().writeFile("p1", "models/a.sql", "x");
+    useDbtStore.setState(state => {
+      state.filesByProject.p1["models/mart.sql"] = {
+        content: "select * from {{ ref('a') }}",
+        dirty: true,
+        loaded: true,
+      };
+      state.filesByProject.p1["models/other.sql"] = {
+        content: "select 1 -- unrelated unsaved edit",
+        dirty: true,
+        loaded: true,
+      };
+    });
+    api.post.mockClear();
+    const refused = await useDbtStore
+      .getState()
+      .renameFile(WS, "p1", "models/a.sql", "models/b.sql");
+    expect(refused).toBeNull();
+    expect(api.post).not.toHaveBeenCalled();
+    expect(useDbtStore.getState().error["file:p1:models/a.sql"]).toMatch(
+      /unsaved changes in models\/mart.sql first/,
+    );
+    // Without ref rewriting there is nothing to clobber: it proceeds.
+    api.post.mockResolvedValue({ success: true, result: { warnings: [] } });
+    expect(
+      await useDbtStore
+        .getState()
+        .renameFile(WS, "p1", "models/a.sql", "models/b.sql", {
+          updateRefs: false,
+        }),
+    ).toEqual({ warnings: [] });
+  });
+
   it("a remote rename poke retargets open tabs", async () => {
     api.get.mockResolvedValue({
       success: true,

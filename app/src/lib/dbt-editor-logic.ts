@@ -69,9 +69,16 @@ export function modelNameForPath(path: string): string | null {
  * rename dialog offers to rewrite refs and job selectors.
  */
 export function isRefableDbtPath(path: string): boolean {
+  // Snapshots are named by their `{% snapshot %}` block, not the file.
   return (
-    ((path.startsWith("models/") || path.startsWith("snapshots/")) &&
-      path.endsWith(".sql")) ||
+    (path.startsWith("models/") &&
+      (path.endsWith(".sql") || path.endsWith(".py"))) ||
     (path.startsWith("seeds/") && path.endsWith(".csv"))
   );
+}
+
+/** `models/x.sql` → `x`: the node a rename with updateRefs rewrites refs to. */
+export function refNameForDbtPath(path: string): string | null {
+  if (!isRefableDbtPath(path)) return null;
+  return basename(path).replace(/\.(sql|py|csv)$/, "");
 }

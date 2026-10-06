@@ -79,14 +79,31 @@ const MART = [
 ].join("\n");
 
 const JOB = [
+  "# nightly  (a comment the author wrote)",
   "name: Daily",
+  "description: unknown to the parser, must survive",
   "environment: dev",
   "commands:",
   "  - dbt run --select orders+ tag:daily",
   "  - dbt test -s customers,orders",
+  "  - dbt run --select marts.orders",
   "enabled: true",
   "",
 ].join("\n");
+
+const PROJECT_YML = [
+  "name: analytics",
+  "models:",
+  "  analytics:",
+  "    marts:",
+  "      orders:",
+  "        +materialized: table",
+  "",
+].join("\n");
+const SELECTORS =
+  "selectors:\n  - name: nightly\n    definition:\n      method: fqn\n      value: orders+\n";
+const SNAPSHOT =
+  "{% snapshot orders_snapshot %}\nselect * from {{ ref('orders') }}\n{% endsnapshot %}\n";
 
 async function seedProject(extra: Record<string, string> = {}) {
   const project = await DbtProject.create({
@@ -99,7 +116,9 @@ async function seedProject(extra: Record<string, string> = {}) {
     createdBy: "tester",
   });
   await seedDbtGitTree(WS, {
-    "dbt_project.yml": "name: analytics\n",
+    "dbt_project.yml": PROJECT_YML,
+    "selectors.yml": SELECTORS,
+    "snapshots/orders.sql": SNAPSHOT,
     "models/orders.sql": "select 1 as id, 1 as customer_id\n",
     "models/customers.sql": "select 1 as id, 'x' as name\n",
     "models/orders_archive.sql": "select * from {{ ref('orders') }}\n",
@@ -173,10 +192,23 @@ describe("renameDbtFile", () => {
     expect(await fileAt("models/orders_archive.sql")).toBe(
       "select * from {{ ref('fct_orders') }}\n",
     );
-    // Job selectors: the job file is re-serialized, so compare the commands.
-    const job = await fileAt("jobs/daily.yml");
-    expect(job).toContain("dbt run --select fct_orders+ tag:daily");
-    expect(job).toContain("dbt test -s customers,fct_orders");
+    // Job selectors are rewritten on the command lines; every other byte
+    // of the author's file (comment, unknown key) survives.
+    expect(await fileAt("jobs/daily.yml")).toBe(
+      JOB.replace("--select orders+", "--select fct_orders+").replace(
+        "customers,orders",
+        "customers,fct_orders",
+      ),
+    );
+    expect(result.warnings.join("\n")).toMatch(
+      /jobs\/daily.yml: selector "marts.orders" still names 'orders'/,
+    );
+    // dbt_project.yml model config key follows too.
+    expect(await fileAt("dbt_project.yml")).toContain("      fct_orders:\n");
+    expect(await fileAt("selectors.yml")).toBe(SELECTORS);
+    expect(result.warnings.join("\n")).toMatch(
+      /selectors.yml still mentions 'orders'/,
+    );
     // The model's own schema.yml entry follows, so its tests stay attached.
     expect(await fileAt("models/schema.yml")).toContain("name: fct_orders\n");
 
@@ -200,6 +232,8 @@ describe("renameDbtFile", () => {
         path: "models/orders.sql",
         deleted: true,
         renamedTo: "models/fct_orders.sql",
+        // On main the change is everyone's: workspace-wide poke.
+        forUserId: undefined,
       }),
     );
     expect(events).toContainEqual(
@@ -252,6 +286,34 @@ describe("renameDbtFile", () => {
       await fileAt("models/fct_orders.sql", "refs/heads/feature/renames"),
     ).not.toBeNull();
     expect(result.warnings.join("\n")).toMatch(/branch 'feature\/renames'/);
+    // A branch-local change pokes only the actor's windows: a teammate on
+    // another branch has no such path and must not lose the file.
+    const events = realtime.publishRealtimeEvent.mock.calls
+      .map(c => c[1])
+      .filter(e => e.type === "dbt.file.updated");
+    expect(events).not.toHaveLength(0);
+    for (const e of events) expect(e.forUserId).toBe(USER);
+  });
+
+  it("renaming a snapshot file does not touch the model of the same name", async () => {
+    await seedProject();
+    const result = await renameDbtFile(member, {
+      from: "snapshots/orders.sql",
+      to: "snapshots/orders_v2.sql",
+    });
+    expect(await fileAt("models/mart.sql")).toBe(MART);
+    expect(await fileAt("snapshots/orders_v2.sql")).toBe(SNAPSHOT);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("moving a model out of models/ warns that its refs were left behind", async () => {
+    await seedProject();
+    const result = await renameDbtFile(member, {
+      from: "models/orders.sql",
+      to: "analyses/orders.sql",
+    });
+    expect(await fileAt("models/mart.sql")).toBe(MART);
+    expect(result.warnings.join("\n")).toMatch(/is not a model path/);
   });
 
   it("refuses viewers, missing sources and occupied targets", async () => {

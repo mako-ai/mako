@@ -3,17 +3,22 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  mentionsName,
   refNameForDbtPath,
+  rewriteJobCommands,
   rewriteNodeProperties,
+  rewriteProjectModelConfig,
   rewriteRefs,
   rewriteSelectors,
+  selectorsStillNaming,
 } from "./dbt-ref-rewrite";
 
 describe("refNameForDbtPath", () => {
-  it("names models, snapshots and seeds; nothing else", () => {
+  it("names SQL/Python models and seeds; snapshots are named by their block, not the file", () => {
     expect(refNameForDbtPath("models/marts/orders.sql")).toBe("orders");
-    expect(refNameForDbtPath("snapshots/orders_snap.sql")).toBe("orders_snap");
+    expect(refNameForDbtPath("models/ml/churn.py")).toBe("churn");
     expect(refNameForDbtPath("seeds/countries.csv")).toBe("countries");
+    expect(refNameForDbtPath("snapshots/orders.sql")).toBeNull();
     expect(refNameForDbtPath("models/schema.yml")).toBeNull();
     expect(refNameForDbtPath("macros/orders.sql")).toBeNull();
     expect(refNameForDbtPath("dbt_project.yml")).toBeNull();
@@ -203,5 +208,101 @@ describe("rewriteNodeProperties", () => {
     const r = rewriteNodeProperties(SCHEMA, "nothing_here", "x");
     expect(r.count).toBe(0);
     expect(r.text).toBe(SCHEMA);
+  });
+});
+
+describe("rewriteJobCommands (textual — the file is the author's)", () => {
+  const JOB = [
+    "# nightly build",
+    "name: Daily",
+    "description: Runs everything, in order.  # unknown to parseJobFile",
+    "environment: dev",
+    "commands:",
+    "  - dbt deps",
+    "  - dbt seed",
+    "  - dbt run --select orders+  # the fact table first",
+    "  - 'dbt test -s customers,orders'",
+    '  - "dbt run --select \\"orders tag:x\\""',
+    "  - dbt run --select marts.orders",
+    "  - dbt run --select staging",
+    "  - dbt run --select other",
+    "  - dbt run --select more",
+    "  - dbt run --select evenmore",
+    "  - dbt run --select tag:nightly",
+    "  - |",
+    "    dbt run --select orders",
+    "enabled: true",
+    "",
+  ].join("\n");
+
+  it("rewrites the command lines only; comments, unknown keys and all 12 commands survive", () => {
+    const r = rewriteJobCommands(JOB, "orders", "fct_orders");
+    expect(r.count).toBe(2);
+    const expected = JOB.replace(
+      "  - dbt run --select orders+  # the fact table first",
+      "  - dbt run --select fct_orders+  # the fact table first",
+    ).replace(
+      "'dbt test -s customers,orders'",
+      "'dbt test -s customers,fct_orders'",
+    );
+    expect(r.text).toBe(expected);
+    // A quoted scalar with escapes and a block scalar are reported, not guessed.
+    expect(r.unrewritable).toEqual([
+      '"dbt run --select \\"orders tag:x\\""',
+      "|",
+    ]);
+    expect(r.text.split("\n").filter(l => /^ {2}- /.test(l))).toHaveLength(12);
+  });
+
+  it("dotted and method selectors are detected, not rewritten", () => {
+    expect(
+      selectorsStillNaming("dbt run --select marts.orders", "orders"),
+    ).toEqual(["marts.orders"]);
+    expect(
+      selectorsStillNaming("dbt run --select fqn:orders tag:x", "orders"),
+    ).toEqual(["fqn:orders"]);
+    expect(selectorsStillNaming("dbt run --target orders", "orders")).toEqual(
+      [],
+    );
+    expect(selectorsStillNaming("dbt run --select orders_x", "orders")).toEqual(
+      [],
+    );
+  });
+});
+
+describe("rewriteProjectModelConfig", () => {
+  const PROJECT = [
+    "name: analytics",
+    "models:",
+    "  analytics:",
+    "    +materialized: view",
+    "    marts:",
+    "      orders:",
+    "        +materialized: table",
+    "      orders_archive:",
+    "        +enabled: false",
+    "seeds:",
+    "  analytics:",
+    "    orders:",
+    "      +enabled: true",
+    "",
+  ].join("\n");
+
+  it("renames the model's config key under models: and nothing else", () => {
+    const r = rewriteProjectModelConfig(PROJECT, "orders", "fct_orders");
+    expect(r.count).toBe(1);
+    expect(r.text).toBe(
+      PROJECT.replace(
+        "      orders:\n        +materialized: table",
+        "      fct_orders:\n        +materialized: table",
+      ),
+    );
+    // The project-name level is never a model.
+    expect(rewriteProjectModelConfig(PROJECT, "analytics", "x").count).toBe(0);
+  });
+
+  it("mentionsName is a whole-word check", () => {
+    expect(mentionsName("value: orders+", "orders")).toBe(true);
+    expect(mentionsName("value: orders_x", "orders")).toBe(false);
   });
 });

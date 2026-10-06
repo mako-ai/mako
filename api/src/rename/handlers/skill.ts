@@ -27,7 +27,7 @@ const SKILLS_URL = "/settings/skills";
 export const skillRenameHandler: RenameHandler = {
   kind: "skill",
   describe:
-    "skill: `ref` is the skill's name, an old name, or its id; `slug` (or `title` — a skill has one name) = the new snake_case name. Moves skills/<old>/ to skills/<new>/ and records the old name in the front matter `aliases`, one commit on main; load_skill and links keep resolving the old name.",
+    "`ref` is the skill's name, an old name, or its id; `slug` (or `title` — a skill has one name) = the new snake_case name. Moves skills/<old>/ to skills/<new>/ and records the old name in the front matter `aliases`, one commit on main; load_skill and links keep resolving the old name.",
   async resolve(ctx, ref) {
     const byId = await findSkillById(ctx.workspaceId, ref);
     const hit = byId

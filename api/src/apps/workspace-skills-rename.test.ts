@@ -9,9 +9,24 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+
+// Spy on the git scan (real implementation) to prove the history cache.
+vi.mock("../rename/git-renames", async importOriginal => {
+  const actual = await importOriginal<typeof import("../rename/git-renames")>();
+  return { ...actual, findRenamedFolder: vi.fn(actual.findRenamedFolder) };
+});
+import * as gitRenames from "../rename/git-renames";
 import {
   parseSkillFile,
   serializeSkillFile,
@@ -294,21 +309,20 @@ describe("renameSkill / loadSkill / saveSkill through aliases", () => {
       success: true,
       skill: { name: "sales_guide", id: skillId(WS, "sales_guide") },
     });
-    // save_skill with the old name → updates the renamed skill, no duplicate.
+    // save_skill under the CURRENT name updates it and keeps its aliases.
     const saved = await saveSkill(
       WS,
-      { name: "sales_playbook", loadWhen: "when selling", body: "Updated." },
+      { name: "sales_guide", loadWhen: "when selling", body: "Updated." },
       "u1",
     );
     expect(saved).toMatchObject({
       success: true,
       skill: { name: "sales_guide", created: false },
     });
-    expect((await loadSkillCatalog(WS)).skills.map(s => s.name)).toEqual([
-      "sales_guide",
-    ]);
     expect(await fileAt(skillFilePath("sales_guide"))).toContain("Updated.");
-    expect(await fileAt(skillFilePath("sales_playbook"))).toBeNull();
+    expect((await findSkill(WS, "sales_guide"))?.aliases).toEqual([
+      "sales_playbook",
+    ]);
 
     // Rename by alias ref: moves from the CURRENT name.
     const r2 = await renameSkill(WS, "sales_playbook", "selling", "u1");
@@ -320,6 +334,67 @@ describe("renameSkill / loadSkill / saveSkill through aliases", () => {
     expect(await renameSkill(WS, "ghost", "x", "u1")).toMatchObject({
       success: false,
       status: 404,
+    });
+  });
+
+  it("saving under a RETIRED name creates a new skill that takes the name; the alias is retired in the same commit", async () => {
+    await commitSkillSave(WS, skill("revenue"));
+    await renameSkill(WS, "revenue", "revenue_v1", "u1");
+    expect(await resolveSkillRef(WS, "revenue")).toMatchObject({
+      via: "alias",
+    });
+    const before = await log(repoDirFor(WS), MAIN, 50);
+
+    const saved = await saveSkill(
+      WS,
+      { name: "revenue", loadWhen: "new revenue skill", body: "Fresh." },
+      "u1",
+    );
+    expect(saved).toMatchObject({
+      success: true,
+      skill: { name: "revenue", created: true },
+    });
+    const after = await log(repoDirFor(WS), MAIN, 50);
+    expect(after.length).toBe(before.length + 1); // one commit for both files
+    expect(after[0].subject).toContain('retires the alias from "revenue_v1"');
+
+    // The live name wins; the old skill is untouched except for the alias.
+    expect(await resolveSkillRef(WS, "revenue")).toMatchObject({
+      via: "current",
+      skill: { name: "revenue", body: "Fresh." },
+    });
+    expect((await findSkill(WS, "revenue_v1"))?.aliases).toBeUndefined();
+    expect(await fileAt(skillFilePath("revenue_v1"))).toContain(
+      "Do the revenue thing.",
+    );
+    expect((await loadSkillCatalog(WS)).skills.map(s => s.name)).toEqual([
+      "revenue",
+      "revenue_v1",
+    ]);
+  });
+
+  it("a workspace skill renamed away from a system skill's name stops shadowing it", async () => {
+    // `apps` is a system skill; a workspace skill may take the name…
+    await commitSkillSave(WS, skill("apps"));
+    expect(await loadSkill(WS, "apps")).toMatchObject({
+      success: true,
+      skill: { id: skillId(WS, "apps") },
+    });
+    // …and once renamed, the system skill is visible again: order is
+    // workspace current → system → workspace alias.
+    await renameSkill(WS, "apps", "apps_house_rules", "u1");
+    const loaded = await loadSkill(WS, "apps");
+    expect(loaded.success).toBe(true);
+    if (loaded.success) {
+      expect(loaded.skill.name).toBe("apps");
+      expect(loaded.skill.id).not.toBe(skillId(WS, "apps_house_rules"));
+    }
+    // A name no system skill has still reaches the alias.
+    await commitSkillSave(WS, skill("kpi"));
+    await renameSkill(WS, "kpi", "kpi_v2", "u1");
+    expect(await loadSkill(WS, "kpi")).toMatchObject({
+      success: true,
+      skill: { name: "kpi_v2" },
     });
   });
 
@@ -351,6 +426,13 @@ describe("renameSkill / loadSkill / saveSkill through aliases", () => {
       skill: { name: "new_folder" },
     });
     expect(await resolveSkillRefThroughHistory(WS, "never_was")).toBeNull();
+    // The scan is cached per (main head, name): a second lookup spawns no git.
+    const scans = vi.mocked(gitRenames.findRenamedFolder).mock.calls.length;
+    await resolveSkillRefThroughHistory(WS, "old_folder");
+    await resolveSkillRefThroughHistory(WS, "never_was");
+    expect(vi.mocked(gitRenames.findRenamedFolder).mock.calls.length).toBe(
+      scans,
+    );
   });
 });
 

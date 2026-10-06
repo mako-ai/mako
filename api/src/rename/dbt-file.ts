@@ -54,16 +54,15 @@ import {
   readWorkingFile,
 } from "../dbt/dbt-working-tree.service";
 import {
+  mentionsName,
   refNameForDbtPath,
+  rewriteJobCommands,
   rewriteNodeProperties,
+  rewriteProjectModelConfig,
   rewriteRefs,
-  rewriteSelectors,
+  selectorsStillNaming,
 } from "../dbt/dbt-ref-rewrite";
-import {
-  DBT_JOBS_DIR,
-  parseJobFile,
-  serializeJobFile,
-} from "../dbt/dbt-config-files";
+import { DBT_JOBS_DIR } from "../dbt/dbt-config-files";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
@@ -281,6 +280,11 @@ export async function renameDbtFile(
   const updateRefs = input.updateRefs !== false;
   let movedContent = source.content;
 
+  if (oldModel && !newModel) {
+    warnings.push(
+      `'${from}' was the model '${oldModel}'; '${to}' is not a model path, so ref('${oldModel}') calls, selectors and its schema entry were left as they are and will fail to resolve.`,
+    );
+  }
   if (oldModel && newModel && oldModel !== newModel) {
     if (updateRefs) {
       const packageName = await projectPackageName(project, actor);
@@ -302,9 +306,36 @@ export async function renameDbtFile(
         if (!buf || buf.includes(0)) continue; // binary: not dbt text
         const text = buf.toString("utf8");
         const isJob = `${DBT_ROOT}/${path}`.startsWith(`${DBT_JOBS_DIR}/`);
-        const next = isJob
-          ? rewriteJobSelectors(text, oldModel, newModel)
-          : rewriteProjectFile(path, text, oldModel, newModel, packageName);
+        let next: { text: string; count: number };
+        if (isJob) {
+          const job = rewriteJobCommands(text, oldModel, newModel);
+          next = job;
+          for (const cmd of job.unrewritable) {
+            warnings.push(
+              `${path}: command ${JSON.stringify(cmd)} names '${oldModel}' but could not be rewritten in place — edit it by hand.`,
+            );
+          }
+          for (const line of job.text.split("\n")) {
+            for (const hit of selectorsStillNaming(line, oldModel)) {
+              warnings.push(
+                `${path}: selector ${JSON.stringify(hit)} still names '${oldModel}' (a dotted or method selector Mako cannot rewrite safely).`,
+              );
+            }
+          }
+        } else {
+          next = rewriteProjectFile(
+            path,
+            text,
+            oldModel,
+            newModel,
+            packageName,
+          );
+          if (path === "selectors.yml" && mentionsName(next.text, oldModel)) {
+            warnings.push(
+              `selectors.yml still mentions '${oldModel}' — YAML selectors are not rewritten.`,
+            );
+          }
+        }
         if (next.count > 0) {
           writes[path] = next.text;
           rewritten.push(path);
@@ -348,7 +379,12 @@ export async function renameDbtFile(
   }
 
   // Poke open windows: the old tab retargets, the new path and every
-  // rewritten file pull fresh content, job views refetch.
+  // rewritten file pull fresh content, job views refetch. A commit on a
+  // session branch is invisible to teammates on other branches — a
+  // workspace-wide poke would move THEIR tabs to a path their branch does
+  // not have — so it is scoped to the actor's windows (`forUserId`), like
+  // every other branch-local dbt edit.
+  const forUserId = branch === DEFAULT_BRANCH ? undefined : actor;
   const poke = (path: string, extra: Record<string, unknown> = {}) =>
     publishRealtimeEvent(ctx.workspaceId, {
       type: "dbt.file.updated",
@@ -357,6 +393,7 @@ export async function renameDbtFile(
       updatedBy: actor,
       clientId: input.clientId,
       origin: ctx.userId ? "save" : "agent",
+      forUserId,
       ...extra,
     });
   poke(from, { deleted: true, renamedTo: to });
@@ -405,31 +442,12 @@ function rewriteProjectFile(
 ): { text: string; count: number } {
   const refs = rewriteRefs(text, oldModel, newModel, packageName);
   if (!/\.ya?ml$/i.test(path)) return refs;
+  if (path === "dbt_project.yml") {
+    const cfg = rewriteProjectModelConfig(refs.text, oldModel, newModel);
+    return { text: cfg.text, count: refs.count + cfg.count };
+  }
   const props = rewriteNodeProperties(refs.text, oldModel, newModel);
   return { text: props.text, count: refs.count + props.count };
-}
-
-/**
- * Rewrite selectors in every command of a job file. Job files are written
- * by `serializeJobFile`, so a parse → rewrite → re-serialize round trip is
- * lossless; a file that does not parse is left alone (it is already not a
- * job the scheduler would run) rather than overwritten.
- */
-function rewriteJobSelectors(
-  text: string,
-  oldModel: string,
-  newModel: string,
-): { text: string; count: number } {
-  const parsed = parseJobFile(text);
-  if (!parsed) return { text, count: 0 };
-  let count = 0;
-  const commands = parsed.commands.map(command => {
-    const r = rewriteSelectors(command, oldModel, newModel);
-    count += r.count;
-    return r.text;
-  });
-  if (count === 0) return { text, count: 0 };
-  return { text: serializeJobFile({ ...parsed, commands }), count };
 }
 
 /**
