@@ -63,6 +63,7 @@ import {
   mergeAliases,
   resolveAppRef,
   syncAppsIndexFromRepo,
+  walkHistory,
   type AppIndexRow,
   type ManifestHistoryEvent,
 } from "./app-index.service";
@@ -75,6 +76,7 @@ import {
   moveAppFolder,
   moveProject,
   projectFromIndexRow,
+  renameProject,
   resolveProjectRef,
   readFile,
   globFiles,
@@ -1166,7 +1168,12 @@ describe("aliasesFromHistory (pure)", () => {
       create("apps/p", A),
     ];
     const out = aliasesFromHistory(apps, events);
-    expect(out.get("apps/y")).toEqual(["x", "p"]);
+    // "x" is where B arrived after A left: B's link now, superseded for A.
+    expect(out.get("apps/y")).toEqual(["p"]);
+    expect(walkHistory(apps, events).get("apps/y")).toEqual({
+      aliases: ["p"],
+      superseded: ["x"],
+    });
     expect(out.get("apps/x")).toBeUndefined();
     // Even without the creation record, an id that is not B's is not B's past.
     expect(
@@ -1190,6 +1197,93 @@ describe("aliasesFromHistory (pure)", () => {
     ).toBeUndefined();
   });
 });
+
+describe("walkHistory (pure)", () => {
+  const rename = (from: string, to: string, id?: string) =>
+    ({ kind: "rename", from, to, id }) as ManifestHistoryEvent;
+  const create = (path: string, id?: string) =>
+    ({ kind: "create", path, id }) as ManifestHistoryEvent;
+  const A = "a".repeat(24);
+  const C = "c".repeat(24);
+
+  it("gives a reused name to its most recent holder: the older claim is superseded, not an alias", () => {
+    // A: foo → bar. C created at foo, then renamed foo → foo-v2.
+    const events = [
+      rename("apps/foo", "apps/foo-v2", C),
+      create("apps/foo", C),
+      rename("apps/foo", "apps/bar", A),
+      create("apps/foo", A),
+    ];
+    const apps = [
+      row("apps/bar", { appId: A, hasManifestId: true }),
+      row("apps/foo-v2", { appId: C, hasManifestId: true }),
+    ];
+    const out = walkHistory(apps, events);
+    expect(out.get("apps/bar")).toEqual({ aliases: [], superseded: ["foo"] });
+    expect(out.get("apps/foo-v2")).toEqual({
+      aliases: ["foo"],
+      superseded: [],
+    });
+    // Before C was renamed away, "foo" was C's current name; after, the
+    // link follows C — one claimant, never two.
+    const snap = {
+      sha: "",
+      folders: [],
+      apps: apps.map(a => ({
+        ...a,
+        aliases: withoutSupersededList(
+          out.get(a.path)!.aliases,
+          out.get(a.path)!.superseded,
+        ),
+      })),
+    };
+    expect(findAppInSnapshotVia(snap, "foo")).toMatchObject({
+      via: "alias",
+      app: { appId: C },
+    });
+  });
+
+  it("records a folder moved under the same name by its old path, so the bare name still finds it", () => {
+    // A was apps/report, moved (laptop, before the upgrade) into
+    // apps/Sales/report; B is apps/Ops/report.
+    const B = "b".repeat(24);
+    const apps = [
+      row("apps/Sales/report", { appId: A, hasManifestId: true }),
+      row("apps/Ops/report", { appId: B, hasManifestId: true }),
+    ];
+    const out = walkHistory(apps, [
+      rename("apps/report", "apps/Sales/report", A),
+      create("apps/report", A),
+      create("apps/Ops/report", B),
+    ]);
+    expect(out.get("apps/Sales/report")?.aliases).toEqual(["apps/report"]);
+    const served = mergeAliases(
+      [out.get("apps/Sales/report")!.aliases],
+      ["report", "apps/Sales/report"],
+    );
+    expect(served).toEqual(["apps/report"]);
+    expect(
+      findAppInSnapshotVia(
+        {
+          sha: "",
+          folders: [],
+          apps: [
+            row("apps/Sales/report", { appId: A, aliases: served }),
+            row("apps/Ops/report", { appId: B }),
+          ],
+        },
+        "report",
+      ),
+    ).toMatchObject({ via: "alias", app: { appId: A } });
+  });
+});
+
+function withoutSupersededList(
+  aliases: string[],
+  superseded: string[],
+): string[] {
+  return aliases.filter(alias => !superseded.includes(alias));
+}
 
 describe("mergeAliases (pure)", () => {
   it("keeps the NEWEST names when capping, each once, and never the app's own", () => {
@@ -1536,10 +1630,8 @@ describe("the index learns aliases on its own", () => {
     );
     await externalCommit({ "apps/x/mako.json": manifest("New X", B2_ID) });
     let snapshot = await loadAppsIndex(WS);
-    expect(snapshot.apps.find(a => a.appId === A_ID)?.aliases).toEqual([
-      "x",
-      "p",
-    ]);
+    // "x" is B's now (it arrived there after A left): not A's alias.
+    expect(snapshot.apps.find(a => a.appId === A_ID)?.aliases).toEqual(["p"]);
     expect(snapshot.apps.find(a => a.appId === B2_ID)?.aliases).toEqual([]);
     expect(findAppInSnapshot(snapshot, "p")?.appId).toBe(A_ID);
     // "x" is B's current name now: current beats A's alias.
@@ -1773,6 +1865,127 @@ describe("the index learns aliases on its own", () => {
     await expect(
       manifestRenamesInHistory(path.join(tmpRoot, "no-such-repo"), "main"),
     ).rejects.toBeInstanceOf(HistoryScanError);
+  });
+});
+
+describe("a name reused after a rename", () => {
+  const manifestOf = async (path: string) =>
+    parseAppManifest(await fileAt(`${path}/mako.json`), path);
+
+  it("follows its most recent holder when that app is renamed in turn, in one commit, with a warning", async () => {
+    // A: foo → bar (alias foo). C created at apps/foo. C: foo → foo-v2.
+    const aManifest = await fileAt("apps/a/mako.json");
+    await externalCommit(
+      { "apps/foo/mako.json": aManifest! },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "a is foo",
+    );
+    const A = (await resolveProjectRef(WS, "foo"))!;
+    await moveProject(A, {
+      scope: "workspace",
+      folderSegments: [],
+      slug: "bar",
+    });
+    expect((await manifestOf("apps/bar")).aliases).toEqual(["foo"]);
+    const C_ID = new Types.ObjectId().toHexString();
+    await externalCommit({ "apps/foo/mako.json": manifest("Foo v2", C_ID) });
+    expect(findAppInSnapshotVia(await loadAppsIndex(WS), "foo")).toMatchObject({
+      via: "current",
+      app: { appId: C_ID },
+    });
+
+    const before = await resolveCommit(repoDirFor(WS), MAIN);
+    const C = (await resolveProjectRef(WS, C_ID))!;
+    const result = await renameProject(C, { slug: "foo-v2" }, { userId: USER });
+    expect(result.aliasesAdded).toEqual(["foo"]);
+    expect(result.superseded).toMatchObject([
+      { name: "foo", appId: A._id.toString(), path: "apps/bar", title: "A" },
+    ]);
+    // One commit: C's manifest gained the alias, A's lost it.
+    const { stdout } = await runGit([
+      "-C",
+      repoDirFor(WS),
+      "rev-list",
+      "--count",
+      `${before}..${await resolveCommit(repoDirFor(WS), MAIN)}`,
+    ]);
+    expect(stdout.trim()).toBe("1");
+    expect((await manifestOf("apps/foo-v2")).aliases).toEqual(["foo"]);
+    expect((await manifestOf("apps/bar")).aliases).toEqual([]);
+    let snapshot = await loadAppsIndex(WS);
+    expect(findAppInSnapshotVia(snapshot, "foo")).toMatchObject({
+      via: "alias",
+      app: { appId: C_ID },
+    });
+    // Only "foo" is superseded; "a" (where it began) is still its own.
+    expect(snapshot.apps.find(a => a.path === "apps/bar")?.aliases).toEqual([
+      "a",
+    ]);
+    // A rebuild from history agrees.
+    await AppIndexEntry.deleteMany({ workspaceId: WS });
+    await AppIndexHead.deleteMany({ workspaceId: WS });
+    invalidateAppsIndexCache();
+    snapshot = await loadAppsIndex(WS);
+    expect(findAppInSnapshotVia(snapshot, "foo")).toMatchObject({
+      via: "alias",
+      app: { appId: C_ID },
+    });
+    // Only "foo" is superseded; "a" (where it began) is still its own.
+    expect(snapshot.apps.find(a => a.path === "apps/bar")?.aliases).toEqual([
+      "a",
+    ]);
+  });
+
+  it("follows its most recent holder after a laptop rename too, overriding the older manifest's claim", async () => {
+    const aManifest = await fileAt("apps/a/mako.json");
+    await externalCommit(
+      { "apps/foo/mako.json": aManifest! },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "a is foo",
+    );
+    const A = (await resolveProjectRef(WS, "foo"))!;
+    await moveProject(A, {
+      scope: "workspace",
+      folderSegments: [],
+      slug: "bar",
+    });
+    const C_ID = new Types.ObjectId().toHexString();
+    await externalCommit({ "apps/foo/mako.json": manifest("Foo v2", C_ID) });
+    await loadAppsIndex(WS);
+    // `git mv apps/foo apps/foo-v2`, pushed as-is: nobody rewrote A's file.
+    await externalCommit(
+      { "apps/foo-v2/mako.json": manifest("Foo v2", C_ID) },
+      ["apps/foo/mako.json"],
+      "git mv foo foo-v2",
+    );
+    let snapshot = await loadAppsIndex(WS);
+    expect((await manifestOf("apps/bar")).aliases).toEqual(["foo"]);
+    // Only "foo" is superseded; "a" (where it began) is still its own.
+    expect(snapshot.apps.find(a => a.path === "apps/bar")?.aliases).toEqual([
+      "a",
+    ]);
+    expect(
+      (
+        await AppIndexEntry.findOne({
+          workspaceId: WS,
+          path: "apps/bar",
+        }).lean()
+      )?.supersededAliases,
+    ).toEqual(["foo"]);
+    expect(findAppInSnapshotVia(snapshot, "foo")).toMatchObject({
+      via: "alias",
+      app: { appId: C_ID },
+    });
+    // The resolver every route uses, and a rebuild from history, agree.
+    expect((await resolveProjectRef(WS, "foo"))?._id.toString()).toBe(C_ID);
+    await AppIndexEntry.deleteMany({ workspaceId: WS });
+    await AppIndexHead.deleteMany({ workspaceId: WS });
+    invalidateAppsIndexCache();
+    snapshot = await loadAppsIndex(WS);
+    expect(findAppInSnapshotVia(snapshot, "foo")).toMatchObject({
+      via: "alias",
+      app: { appId: C_ID },
+    });
   });
 });
 

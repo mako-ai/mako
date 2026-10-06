@@ -16,6 +16,7 @@ import { AppProject } from "../../database/workspace-schema";
 import {
   findAppInSnapshotVia,
   loadAppsIndex,
+  resolveAppRef,
   type AppIndexRow,
 } from "../../apps/app-index.service";
 import {
@@ -31,10 +32,12 @@ import {
   projectFromIndexRow,
   renameProject,
   resolveProjectRef,
+  type SupersededAlias,
 } from "../../apps/worktree.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import {
   RenameError,
+  type RenameContext,
   type RenameHandler,
   type RenameLocation,
   type ResolvedRef,
@@ -78,6 +81,47 @@ async function findVia(
     );
   }
   return found;
+}
+
+/**
+ * What the caller must know when a name this rename keeps as an alias was
+ * also another app's old name: the link now opens the renamed app, and the
+ * other app no longer answers to it. The other app is named only when the
+ * caller may see it.
+ */
+async function supersessionWarnings(
+  ctx: RenameContext,
+  newTitle: string,
+  superseded: SupersededAlias[],
+): Promise<string[]> {
+  const warnings: string[] = [];
+  for (const entry of superseded) {
+    let other = "another app";
+    if (!ctx.userId) {
+      other = `"${entry.title}" (${entry.path})`;
+    } else {
+      const state = await AppProject.findOne({
+        _id: new Types.ObjectId(entry.appId),
+        workspaceId: new Types.ObjectId(ctx.workspaceId),
+      });
+      const row = await resolveAppRef(ctx.workspaceId, entry.appId);
+      const resource =
+        state ?? (row ? projectFromIndexRow(ctx.workspaceId, row) : null);
+      if (resource && canReadResource(resource, ctx.userId, ctx.role)) {
+        other = `"${entry.title}" (${entry.path})`;
+      }
+    }
+    const link = entry.name.includes("/")
+      ? entry.name
+      : `/apps/${encodeURIComponent(entry.name)}`;
+    warnings.push(
+      `${link} now opens "${newTitle}"; it was also an old name of ${other}, which no longer answers to it` +
+        (entry.manifestUpdated
+          ? "."
+          : " (its mako.json could not be parsed, so the name is still listed there; the index ignores it)."),
+    );
+  }
+  return warnings;
 }
 
 export const appRenameHandler: RenameHandler = {
@@ -169,7 +213,11 @@ export const appRenameHandler: RenameHandler = {
           : { title: result.title, path: result.to },
         aliasesAdded: result.aliasesAdded,
         ...(result.commit ? { commit: result.commit } : {}),
-        warnings: [],
+        warnings: await supersessionWarnings(
+          ctx,
+          afterRow?.title ?? result.title,
+          result.superseded,
+        ),
       };
     } catch (error) {
       if (error instanceof AppFolderError) {

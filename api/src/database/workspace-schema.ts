@@ -5689,6 +5689,12 @@ export interface IAppIndexEntry extends Document {
    * found in git history. Kept across syncs; readers see the union.
    */
   indexAliases: string[];
+  /**
+   * Names the manifest still lists as aliases that another app has held
+   * more recently (it owns the link now); readers do not see them. Set by
+   * the sync from a move it saw or from history; carried across syncs.
+   */
+  supersededAliases: string[];
   /** Scheduled bindings, so the scheduler never opens the repo. */
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
   /** The main commit this row was built from. */
@@ -5720,6 +5726,7 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
     duplicateOf: { type: String },
     aliases: { type: [String], default: [] },
     indexAliases: { type: [String], default: [] },
+    supersededAliases: { type: [String], default: [] },
     schedules: {
       type: [
         new Schema(
