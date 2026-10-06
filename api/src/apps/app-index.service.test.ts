@@ -46,6 +46,7 @@ import {
   discoverApps,
   findAppInSnapshot,
   findAppInSnapshotVia,
+  historyCatchUpFor,
   invalidateAppsIndexCache,
   loadAppsIndex,
   manifestRenamesInHistory,
@@ -62,6 +63,7 @@ import {
   ensureProjectRow,
   moveAppFolder,
   moveProject,
+  projectFromIndexRow,
   resolveProjectRef,
   readFile,
   globFiles,
@@ -986,6 +988,58 @@ describe("alias resolution (pure)", () => {
       renamed.appId,
     );
   });
+
+  it("lets a renamed top-level app keep its link over a nested or personal app that took the bare name", () => {
+    const moved = row("apps/report-v2", { aliases: ["report"] });
+    const nested = row("apps/Sales/report");
+    const personal = row("users/u1/apps/report");
+    for (const other of [nested, personal]) {
+      const snap = { sha: "", apps: [moved, other], folders: [] };
+      expect(findAppInSnapshotVia(snap, "report")).toEqual({
+        app: moved,
+        via: "alias",
+      });
+      // The other app is still reachable by path and by id.
+      expect(findAppInSnapshot(snap, other.path)?.appId).toBe(other.appId);
+      expect(findAppInSnapshot(snap, other.appId)?.appId).toBe(other.appId);
+    }
+    // No alias: a unique nested name resolves as before.
+    expect(
+      findAppInSnapshot({ sha: "", apps: [nested], folders: [] }, "report")
+        ?.appId,
+    ).toBe(nested.appId);
+    // A nested app's path alias never answers the bare name.
+    expect(
+      findAppInSnapshot(
+        {
+          sha: "",
+          apps: [row("apps/x", { aliases: ["apps/Sales/report"] })],
+          folders: [],
+        },
+        "report",
+      ),
+    ).toBeNull();
+  });
+
+  it("treats a bare name several nested apps share as final: no fall-through to a third app's alias", () => {
+    const apps = [
+      row("apps/Sales/kpi"),
+      row("apps/Ops/kpi"),
+      row("apps/Finance/kpi-v2", { aliases: ["apps/Finance/kpi"] }),
+    ];
+    expect(findAppInSnapshot({ sha: "", apps, folders: [] }, "kpi")).toBeNull();
+    // …but a top-level old name of the third app would still win.
+    const withTopLevelPast = [
+      ...apps.slice(0, 2),
+      row("apps/Finance/kpi-v2", { aliases: ["kpi"] }),
+    ];
+    expect(
+      findAppInSnapshotVia(
+        { sha: "", apps: withTopLevelPast, folders: [] },
+        "kpi",
+      ),
+    ).toMatchObject({ via: "alias", app: { path: "apps/Finance/kpi-v2" } });
+  });
 });
 
 describe("aliasesForMoves (pure)", () => {
@@ -1021,14 +1075,23 @@ describe("aliasesForMoves (pure)", () => {
     ).toMatchObject({ add: [], indexOnly: ["apps/Sales/CH/b"] });
   });
 
-  it("records a nested app's old path with its old slug when the name changes", () => {
+  it("records a nested or personal app's old PATH, never its bare name, when the name changes", () => {
     const nested = row("apps/Sales/CH/b");
     expect(
       aliasesForMoves(
         [nested],
         [{ from: "apps/Sales/CH/b", to: "apps/Ops/b2" }],
       ).get("apps/Sales/CH/b"),
-    ).toMatchObject({ add: ["b", "apps/Sales/CH/b"], indexOnly: [] });
+    ).toMatchObject({ add: ["apps/Sales/CH/b"], indexOnly: [] });
+    // A personal rename must not plant a bare name that collides with a
+    // workspace app's old link.
+    const personal = row("users/u1/apps/report");
+    expect(
+      aliasesForMoves(
+        [personal],
+        [{ from: "users/u1/apps/report", to: "users/u1/apps/report-old" }],
+      ).get("users/u1/apps/report"),
+    ).toMatchObject({ add: ["users/u1/apps/report"], indexOnly: [] });
   });
 
   it("covers every app under a moved folder without touching a manifest", () => {
@@ -1067,7 +1130,6 @@ describe("aliasesFromHistory (pure)", () => {
     ]);
     expect(out.get("apps/traffic-performance")).toEqual([
       "seller-media-buying-3",
-      "seller-media",
       "apps/Sales/seller-media",
     ]);
     // Ops/x came FROM seller-media-buying-3 (the oldest rename) — and the
@@ -1100,6 +1162,15 @@ describe("aliasesFromHistory (pure)", () => {
       aliasesFromHistory(
         [row("apps/x", { hasManifestId: false })],
         [create("apps/x"), rename("apps/p", "apps/x")],
+      ).get("apps/x"),
+    ).toBeUndefined();
+    // A creation at the current path under ANOTHER id stops the walk too:
+    // whatever was there before was not this app, and git could not tell
+    // the two manifests apart (a dropped mismatched pair reports one).
+    expect(
+      aliasesFromHistory(
+        [row("apps/x", { appId: B, hasManifestId: true })],
+        [create("apps/x", A), rename("apps/p", "apps/x")],
       ).get("apps/x"),
     ).toBeUndefined();
   });
@@ -1141,13 +1212,15 @@ describe("moves record aliases", () => {
       "b-renamed",
     );
     expect(manifest.id).toBe(B_ID);
-    expect(manifest.aliases).toEqual(["b", "apps/Sales/CH/b"]);
+    // A nested app's old name is its PATH: its link was the id, and a bare
+    // "b" must not claim some top-level app's old link.
+    expect(manifest.aliases).toEqual(["apps/Sales/CH/b"]);
     // Every old ref opens the app; the new name is never an alias.
-    for (const ref of ["b", "apps/b", "apps/Sales/CH/b", "Sales/CH/b", B_ID]) {
+    for (const ref of ["apps/Sales/CH/b", "Sales/CH/b", B_ID]) {
       expect((await resolveProjectRef(WS, ref))?._id.toString()).toBe(B_ID);
     }
     const indexed = (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID)!;
-    expect([...indexed.aliases].sort()).toEqual(["apps/Sales/CH/b", "b"]);
+    expect(indexed.aliases).toEqual(["apps/Sales/CH/b"]);
     expect(indexed.aliases).not.toContain("b-renamed");
 
     // Renamed back: the name in between becomes the alias (slug and, for
@@ -1160,8 +1233,8 @@ describe("moves record aliases", () => {
     });
     expect(
       parseAppManifest(await fileAt("apps/Ops/b/mako.json"), "b").aliases,
-    ).toEqual(["apps/Sales/CH/b", "b-renamed", "apps/Ops/b-renamed"]);
-    expect((await resolveProjectRef(WS, "b-renamed"))?._id.toString()).toBe(
+    ).toEqual(["apps/Sales/CH/b", "apps/Ops/b-renamed"]);
+    expect((await resolveProjectRef(WS, "Ops/b-renamed"))?._id.toString()).toBe(
       B_ID,
     );
   });
@@ -1231,40 +1304,62 @@ describe("moves record aliases", () => {
     ).toEqual(["apps/Sales/CH/b"]);
   });
 
-  it("a copy of an app claims none of its aliases, and gives them up in the file when stamped", async () => {
-    const b = (await resolveProjectRef(WS, B_ID))!;
-    await moveProject(b, {
+  it("a copy of an app claims none of its aliases, and gives them up in the file when stamped or moved", async () => {
+    const a = (await resolveProjectRef(WS, "a"))!;
+    await moveProject(a, {
       scope: "workspace",
-      folderSegments: ["Sales", "CH"],
-      slug: "b-renamed",
+      folderSegments: [],
+      slug: "a-renamed",
     });
-    const manifestWithAliases = await fileAt(
-      "apps/Sales/CH/b-renamed/mako.json",
-    );
-    expect(parseAppManifest(manifestWithAliases, "x").aliases).toContain("b");
-    // Copied as-is from a checkout: same id, same aliases.
-    await externalCommit({ "apps/b-copy/mako.json": manifestWithAliases! });
+    const manifestWithAliases = await fileAt("apps/a-renamed/mako.json");
+    expect(parseAppManifest(manifestWithAliases, "x").aliases).toEqual(["a"]);
+    // Copied as-is from a checkout (`cp -r`), twice: same id, same aliases.
+    await externalCommit({
+      "apps/a-copy/mako.json": manifestWithAliases!,
+      "apps/a-copy2/mako.json": manifestWithAliases!,
+    });
     const snapshot = await loadAppsIndex(WS);
-    const copy = snapshot.apps.find(a => a.path === "apps/b-copy")!;
-    expect(copy.duplicateOf).toBe(B_ID);
+    const copy = snapshot.apps.find(x => x.path === "apps/a-copy")!;
+    const copy2 = snapshot.apps.find(x => x.path === "apps/a-copy2")!;
+    expect(copy.duplicateOf).toBe(a._id.toString());
     expect(copy.aliases).toEqual([]);
     // The old name still opens the original, not "neither".
-    expect(findAppInSnapshotVia(snapshot, "b")).toMatchObject({
-      app: { appId: B_ID },
+    expect(findAppInSnapshotVia(snapshot, "a")).toMatchObject({
+      app: { appId: a._id.toString() },
       via: "alias",
     });
+
+    // Stamped: its own id, the source's aliases gone from the file.
     await stampAppId(WS, copy, { userId: USER });
     const stamped = parseAppManifest(
-      await fileAt("apps/b-copy/mako.json"),
-      "b-copy",
+      await fileAt("apps/a-copy/mako.json"),
+      "a-copy",
     );
     expect(stamped.id).toBe(copy.appId);
-    expect(stamped.aliases).toEqual([]);
     expect("aliases" in stamped.raw).toBe(false);
-    expect(
-      (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/b-copy")
-        ?.aliases,
-    ).toEqual([]);
+
+    // Renamed instead (the dialog, rename_object, app_move_app): the move
+    // stamps the copy's id and must strip the aliases the same way, or the
+    // rename would hand the copy the original's old link again.
+    await moveProject(
+      projectFromIndexRow(WS, copy2),
+      { scope: "workspace", folderSegments: [], slug: "a-copy3" },
+      { userId: USER },
+    );
+    const moved = parseAppManifest(
+      await fileAt("apps/a-copy3/mako.json"),
+      "a-copy3",
+    );
+    expect(moved.id).toBe(copy2.appId);
+    expect(moved.aliases).toEqual(["a-copy2"]);
+    const after = await loadAppsIndex(WS);
+    expect(after.apps.find(x => x.path === "apps/a-copy3")?.duplicateOf).toBe(
+      undefined,
+    );
+    expect(findAppInSnapshotVia(after, "a")).toMatchObject({
+      app: { appId: a._id.toString() },
+      via: "alias",
+    });
   });
 
   it("refuse to move an app whose manifest cannot be parsed, leaving it in place", async () => {
@@ -1295,16 +1390,18 @@ describe("the index learns aliases on its own", () => {
     );
     let indexed = (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID)!;
     expect(indexed.path).toBe("apps/Ops/b2");
-    expect(indexed.aliases).toEqual(["b", "apps/Sales/CH/b"]);
+    expect(indexed.aliases).toEqual(["apps/Sales/CH/b"]);
     // The file is untouched — the index remembers for it.
     expect(
       parseAppManifest(await fileAt("apps/Ops/b2/mako.json"), "b2").aliases,
     ).toEqual([]);
-    expect((await resolveProjectRef(WS, "b"))?._id.toString()).toBe(B_ID);
+    expect((await resolveProjectRef(WS, "Sales/CH/b"))?._id.toString()).toBe(
+      B_ID,
+    );
 
     await externalCommit({ "README.md": "y\n" });
     indexed = (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID)!;
-    expect(indexed.aliases).toEqual(["b", "apps/Sales/CH/b"]);
+    expect(indexed.aliases).toEqual(["apps/Sales/CH/b"]);
   });
 
   it("from git history, so an app renamed before aliases existed gets its old link back", async () => {
@@ -1387,7 +1484,6 @@ describe("the index learns aliases on its own", () => {
       via: "alias",
     });
     expect(snapshot.apps.find(a => a.appId === B_ID)?.aliases).toEqual([
-      "b",
       "apps/Sales/CH/b",
     ]);
 
@@ -1484,5 +1580,114 @@ describe("the index learns aliases on its own", () => {
     ]);
     head = await AppIndexHead.findOne({ workspaceId: WS }).lean();
     expect(head?.historyScannedSha).toBe(next);
+  });
+
+  it("retries a failed scan in the background on the next load, even when main did not move", async () => {
+    const aManifest = await fileAt("apps/a/mako.json");
+    await externalCommit(
+      { "apps/a-old/mako.json": aManifest! },
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "mv a a-old",
+    );
+    const sha = await resolveCommit(repoDirFor(WS), MAIN);
+    await loadAppsIndex(WS);
+    // The build's scan failed: rows, no mark, no history aliases.
+    await AppIndexHead.updateOne(
+      { workspaceId: WS },
+      { $unset: { historyScannedSha: 1 } },
+    );
+    await AppIndexEntry.updateMany(
+      { workspaceId: WS },
+      { $set: { indexAliases: [] } },
+    );
+    invalidateAppsIndexCache();
+    // The read itself does not pay for the scan…
+    const served = await loadAppsIndex(WS);
+    expect(served.apps.find(a => a.path === "apps/a-old")?.aliases).toEqual([]);
+    // …the catch-up behind it does, once, and marks the scan done.
+    await historyCatchUpFor(WS);
+    expect(
+      (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/a-old")
+        ?.aliases,
+    ).toEqual(["a"]);
+    expect(
+      (await AppIndexHead.findOne({ workspaceId: WS }).lean())
+        ?.historyScannedSha,
+    ).toBe(sha);
+    expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(sha);
+  });
+
+  it("reports a manifest git pairs with another app's as that app's creation, so the walk stops there", async () => {
+    // Two long, near-identical manifests under different ids, one deleted
+    // and one added in a single commit: git's -M calls it a rename; the ids
+    // say it is not.
+    const Q = new Types.ObjectId().toHexString();
+    const R = new Types.ObjectId().toHexString();
+    const long = (id: string) =>
+      JSON.stringify(
+        { id, title: "Q", description: "x".repeat(400), entry: "src/main.tsx" },
+        null,
+        2,
+      ) + "\n";
+    await externalCommit({ "apps/q/mako.json": long(Q) });
+    await externalCommit(
+      { "apps/r/mako.json": long(R) },
+      ["apps/q/mako.json"],
+      "replace q by r",
+    );
+    const sha = await resolveCommit(repoDirFor(WS), MAIN);
+    const events = await manifestRenamesInHistory(repoDirFor(WS), sha!);
+    expect(events.find(e => e.kind === "rename" && e.to === "apps/r")).toBe(
+      undefined,
+    );
+    expect(events).toContainEqual({ kind: "create", path: "apps/r", id: R });
+    expect(
+      (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/r")?.aliases,
+    ).toEqual([]);
+    expect(await resolveAppRef(WS, "q")).toBeNull();
+  });
+
+  it("fails the scan loudly when git cannot be read, rather than scanning without ids", async () => {
+    await expect(
+      manifestRenamesInHistory(path.join(tmpRoot, "no-such-repo"), "main"),
+    ).rejects.toBeInstanceOf(HistoryScanError);
+  });
+});
+
+describe("resolveProjectRef", () => {
+  it("prefers an app whose folder left main (its row remains) over a live app that holds its name as an alias", async () => {
+    const a = (await resolveProjectRef(WS, "a"))!;
+    const row = await ensureProjectRow(a, USER);
+    expect(row.slug).toBe("a");
+    // The folder goes (a published app keeps its row until it is deleted).
+    await externalCommit(
+      {},
+      ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
+      "delete folder a",
+    );
+    // A live app that claims "a" as an old name, from a laptop edit.
+    const T = new Types.ObjectId().toHexString();
+    await externalCommit({
+      "apps/tmp/mako.json":
+        JSON.stringify({ id: T, title: "Tmp", aliases: ["a"] }, null, 2) + "\n",
+    });
+    expect(findAppInSnapshotVia(await loadAppsIndex(WS), "a")).toMatchObject({
+      via: "alias",
+      app: { appId: T },
+    });
+    // The resolver every route and tool uses: current state first.
+    expect((await resolveProjectRef(WS, "a"))?._id.toString()).toBe(
+      a._id.toString(),
+    );
+    expect((await resolveProjectRef(WS, "apps/a"))?._id.toString()).toBe(
+      a._id.toString(),
+    );
+    expect(
+      (await resolveProjectRef(WS, a._id.toString()))?._id.toString(),
+    ).toBe(a._id.toString());
+    expect((await resolveProjectRef(WS, "tmp"))?._id.toString()).toBe(T);
+    // Once the state row is gone, the alias answers.
+    await AppProject.deleteOne({ _id: a._id });
+    expect((await resolveProjectRef(WS, "a"))?._id.toString()).toBe(T);
   });
 });

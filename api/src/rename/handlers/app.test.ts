@@ -216,7 +216,7 @@ describe("rename", () => {
     expect(written).toMatchObject({
       id: B_ID,
       title: "Billing",
-      aliases: ["b", "apps/Sales/CH/b"],
+      aliases: ["apps/Sales/CH/b"],
     });
     expect(result.after).toMatchObject({
       title: "Billing",
