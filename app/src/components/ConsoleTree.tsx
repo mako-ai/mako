@@ -321,6 +321,11 @@ function ConsoleTreeInner(
             label: "Shared with me",
             nodes: sharedWithMe,
             noNewFolder: true,
+            // Another member's console, in a folder of theirs: renamed in
+            // place, never moved from here — an admin's "Move to…" put it
+            // at its owner's root, unasked (who sees it is the Share
+            // dialog's call).
+            noMoveOut: true,
           },
         ]
       : []),

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  canMoveFromSection,
   findAncestorPaths,
   findNodeInSections,
   flattenVisibleNodeIds,
@@ -178,5 +179,27 @@ describe("resource-tree utils", () => {
       targetFolderId: "folder-a",
       sectionKey: "my",
     });
+  });
+});
+
+describe("canMoveFromSection — no Move to… and no drag out of a noMoveOut section", () => {
+  const listed: ResourceTreeLikeSection<TestNode>[] = [
+    {
+      key: "my",
+      nodes: [{ id: "mine", name: "Mine", path: "Mine", isDirectory: false }],
+    },
+    {
+      key: "shared",
+      noMoveOut: true,
+      nodes: [
+        { id: "theirs", name: "Theirs", path: "Theirs", isDirectory: false },
+      ],
+    },
+  ];
+
+  it("allows a move from My Consoles, refuses one from Shared with me", () => {
+    expect(canMoveFromSection(listed, "mine")).toBe(true);
+    expect(canMoveFromSection(listed, "theirs")).toBe(false);
+    expect(canMoveFromSection(listed, "unknown")).toBe(false);
   });
 });

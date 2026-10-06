@@ -12,6 +12,12 @@ export interface ResourceTreeLikeSection<
   nodes: TNode[];
   droppableId?: string;
   defaultAccess?: string;
+  /**
+   * Items listed here are not this person's to place (consoles' "Shared
+   * with me": another member's, in a folder of theirs): no "Move to…",
+   * no drag out.
+   */
+  noMoveOut?: boolean;
 }
 
 export interface ResourceTreeNodeLocation<
@@ -87,6 +93,21 @@ export function findNodeInSections<TNode extends ResourceTreeLikeNode>(
     }
   }
   return null;
+}
+
+/**
+ * Whether the node `id` may be moved from where it is listed: anywhere but
+ * a `noMoveOut` section (an admin's "Move Here" from "Shared with me" took
+ * the owner's console out of the owner's folder, unasked).
+ */
+export function canMoveFromSection<TNode extends ResourceTreeLikeNode>(
+  sections: ResourceTreeLikeSection<TNode>[],
+  id: string,
+): boolean {
+  const location = findNodeInSections(sections, id);
+  if (!location) return false;
+  const section = sections.find(s => s.key === location.sectionKey);
+  return !section?.noMoveOut;
 }
 
 export function findAncestorPaths<TNode extends ResourceTreeLikeNode>(
