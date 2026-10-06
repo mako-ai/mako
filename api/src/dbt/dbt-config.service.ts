@@ -250,9 +250,10 @@ export async function listJobDefinitionsAtMain(
       definitions.push({
         path,
         slug,
-        oid: blob.isBinary
-          ? blobOid(Buffer.from(blob.contents, "base64"))
-          : blobOid(blob.contents),
+        // Git's id from the raw bytes: a file that is not valid UTF-8 hashes
+        // differently once decoded, and a row storing that sha could never
+        // pass the write-through's compare-and-swap again.
+        oid: blob.oid,
         parsed: blob.isBinary ? null : parseJobFile(blob.contents),
       });
     } catch (error) {
@@ -859,10 +860,13 @@ export async function rekeyRenamedJobs(args: {
   repoDir: string;
   /** The commit `files` were read at. */
   head: string;
-  files: Array<{ path: string; contents: string }>;
+  files: Array<{ path: string; contents: string; oid: string }>;
 }): Promise<SlugRenamePair[]> {
   const { workspaceId, projectId, repoDir, head, files } = args;
-  const fileBySlug = new Map<string, { path: string; contents: string }>();
+  const fileBySlug = new Map<
+    string,
+    { path: string; contents: string; oid: string }
+  >();
   for (const file of files) {
     const slug = slugFromJobFilePath(file.path);
     if (slug) fileBySlug.set(slug, file);
@@ -924,7 +928,7 @@ export async function rekeyRenamedJobs(args: {
     })),
     addedFiles.map(([slug, file]) => ({
       path: jobFilePath(slug),
-      oid: blobOid(file.contents),
+      oid: file.oid,
     })),
   )) {
     const fromSlug = slugFromJobFilePath(from);
@@ -1180,6 +1184,7 @@ async function syncDbtConfigNow(
       files: [...blobs].map(([path, buf]) => ({
         path,
         contents: buf.toString("utf8"),
+        oid: blobOid(buf),
       })),
     });
   } catch (error) {
@@ -1194,7 +1199,8 @@ async function syncDbtConfigNow(
     if (!slug) continue;
     seenSlugs.add(slug);
     const contents = buf.toString("utf8");
-    const sha = blobOid(contents);
+    // Git's id from the raw bytes, never a hash of the decoded text.
+    const sha = blobOid(buf);
     const row = await DbtJob.findOne({ projectId: project._id, slug });
     // Level already — unless the row is still flagged from an earlier bad
     // version and the file was reverted to this exact content, in which

@@ -272,13 +272,13 @@ export async function listFlowDefinitionsAtMain(
 ): Promise<FlowDefinitionAtMain[]> {
   const { files } = await readFlowFilesAtMain(workspaceId, { freshen: false });
   const defs: FlowDefinitionAtMain[] = [];
-  for (const { path, contents } of files) {
+  for (const { path, contents, oid } of files) {
     const slug = slugFromFlowFilePath(path);
     if (!slug) continue;
     defs.push({
       path,
       slug,
-      oid: blobOid(contents),
+      oid,
       contents,
       parsed: parseFlowFile(contents),
     });
@@ -487,27 +487,22 @@ export async function ensureFlowDerivedCache(flow: {
   if (!head) return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
   const path = `flows/${flow.slug}.yml`;
   let contents: string;
+  let sha: string;
   try {
     const blob = await readBlob(repoDir, head, path);
     if (blob.isBinary) {
       const row = await Flow.findById(flow._id);
-      if (row) {
-        await markFlowInvalid(
-          row,
-          "binary flow file",
-          path,
-          blobOid(Buffer.from(blob.contents, "base64")),
-        );
-      }
+      if (row) await markFlowInvalid(row, "binary flow file", path, blob.oid);
       return "invalid";
     }
     contents = blob.contents;
+    // Git's id from the raw bytes, never a hash of the decoded text.
+    sha = blob.oid;
   } catch {
     const row = await Flow.findById(flow._id);
     if (row) await markFlowInvalid(row, "flow file missing at main", path);
     return "missing";
   }
-  const sha = blobOid(contents);
   const wasMarked = isFlowMarkedInvalid(flow);
   if (flow.sourceBlobSha === sha && !wasMarked) return "ok";
   const parsed = parseFlowFile(contents);
@@ -901,10 +896,13 @@ export async function rekeyRenamedFlows(args: {
   repoDir: string;
   /** The commit `files` were read at. */
   head: string;
-  files: Array<{ path: string; contents: string }>;
+  files: Array<{ path: string; contents: string; oid: string }>;
 }): Promise<SlugRenamePair[]> {
   const { workspaceId, repoDir, head, files } = args;
-  const fileBySlug = new Map<string, { path: string; contents: string }>();
+  const fileBySlug = new Map<
+    string,
+    { path: string; contents: string; oid: string }
+  >();
   for (const file of files) {
     const slug = slugFromFlowFilePath(file.path);
     if (slug) fileBySlug.set(slug, file);
@@ -978,7 +976,7 @@ export async function rekeyRenamedFlows(args: {
     })),
     addedFiles.map(([slug, file]) => ({
       path: flowFilePath(slug),
-      oid: blobOid(file.contents),
+      oid: file.oid,
     })),
   )) {
     const fromSlug = slugFromFlowFilePath(from);
@@ -1111,7 +1109,13 @@ export function hydrateFlowRow(
 export interface FlowFilesAtMain {
   /** The commit the files were read at; null when there is no repo/main. */
   commit: string | null;
-  files: Array<{ path: string; contents: string }>;
+  /**
+   * `oid` is git's blob id from the raw bytes — the only sha a row may
+   * store, because the write-through's compare-and-swap checks it against
+   * the repo (a file that is not valid UTF-8 hashes differently once
+   * decoded, and a row holding that sha could never save again).
+   */
+  files: Array<{ path: string; contents: string; oid: string }>;
 }
 
 /**
@@ -1163,6 +1167,7 @@ export async function readFlowFilesAtMain(
     files: [...blobs.entries()].map(([path, buf]) => ({
       path,
       contents: buf.toString("utf8"),
+      oid: blobOid(buf),
     })),
   };
 }
@@ -1242,12 +1247,14 @@ export async function syncFlowsFromRepo(
     });
   }
 
-  for (const { path, contents } of files) {
+  for (const { path, contents, oid } of files) {
     const slug = slugFromFlowFilePath(path);
     if (!slug) continue;
     seen.add(slug);
 
-    const sha = blobOid(contents);
+    // Git's id from the raw bytes (see FlowFilesAtMain): what the row
+    // stores must be what the repo answers to.
+    const sha = oid;
     const parsedForDesired = parseFlowFile(contents);
     const row = await Flow.findOne({ workspaceId, slug });
     // The desired set is EVERY file present, not only the changed ones: the

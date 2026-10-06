@@ -103,8 +103,27 @@ export async function commitFlowFile(
   const workspaceId = flow.workspaceId.toString();
   const contents = serializeFlowFile(flowToFile(flow));
   const sha = blobOid(contents);
-  if (flow.sourceBlobSha === sha) {
+  const invalid = typeof flow.definitionInvalid?.reason === "string";
+  // Nothing to write only when the row is healthy AND the repo already
+  // holds this exact definition. An INVALID row holds its last valid
+  // definition while main holds something broken: that definition is
+  // exactly what must be committed, even unchanged — the caller then
+  // clears the marker, and it must not do so over a file still broken.
+  if (!invalid && (flow.lastSeenBlobSha ?? flow.sourceBlobSha) === sha) {
     return { ok: true, changed: false, sourceBlobSha: sha };
+  }
+  // A row marked invalid before `lastSeenBlobSha` existed does not know
+  // what is on main; writing with no precondition could overwrite a fix
+  // someone pushed meanwhile. The reload stamps the field (GET's resync
+  // records the blob it sees), so ask for one rather than guess.
+  if (invalid && !flow.lastSeenBlobSha) {
+    return {
+      ok: false,
+      changed: false,
+      conflict: true,
+      error:
+        "the flow was marked invalid before the repo state was recorded on it; reload the flow (which records it) and retry",
+    };
   }
   try {
     // The row in hand may predate a rename that landed while the request
@@ -132,15 +151,10 @@ export async function commitFlowFile(
     // What the path must still hold: the blob this row last SAW at main —
     // `lastSeenBlobSha`, which a broken file sets too, so a UI save that
     // fixes a bad laptop push is allowed through (that is the recovery
-    // path), while an edit nobody has seen yet is refused. Rows from before
-    // that field fall back to the last applied blob — unless they are
-    // marked invalid, where the applied blob is by definition not what is
-    // on main and the pre-CAS behaviour (overwrite) is the safe default.
-    const expected =
-      flow.lastSeenBlobSha ??
-      (typeof flow.definitionInvalid?.reason === "string"
-        ? undefined
-        : flow.sourceBlobSha);
+    // path), while an edit nobody has seen yet is refused. A healthy row
+    // from before that field falls back to the last applied blob (equal to
+    // what it saw); an invalid one was sent to reload above.
+    const expected = flow.lastSeenBlobSha ?? flow.sourceBlobSha;
     await commitFlowConfig(
       workspaceId,
       { writes: { [flowFilePath(flow.slug)]: contents } },

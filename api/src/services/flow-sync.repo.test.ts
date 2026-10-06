@@ -89,7 +89,7 @@ import {
   resolveLiveFlowRow,
   syncFlowsFromRepo,
 } from "./flow-sync.service";
-import { flowFilePath } from "./flow-config-files";
+import { flowFilePath, parseFlowFile } from "./flow-config-files";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -1207,5 +1207,191 @@ describe("round 3: fixing a broken file from the UI", () => {
     const refused = await commitFlowFile(fixed!, "u1");
     expect(refused).toMatchObject({ ok: false, conflict: true });
     expect(refused.error).toMatch(/changed in the workspace repo/);
+  });
+});
+
+describe("round 4: non-UTF-8 files, invalid rows saving their last valid definition, legacy invalid rows", () => {
+  /**
+   * Commit raw bytes at a path on main — `commitBlobsOnBranch` takes JS
+   * strings (UTF-8 on the way into git), so a Latin-1 file needs the
+   * plumbing directly.
+   */
+  async function pushRaw(relPath: string, bytes: Buffer): Promise<string> {
+    const { execFileSync } = await import("node:child_process");
+    const { runGit } = await import("../apps/git");
+    const dir = repoDirFor(WS);
+    const oid = execFileSync(
+      "git",
+      ["-C", dir, "hash-object", "-w", "--stdin"],
+      { input: bytes },
+    )
+      .toString()
+      .trim();
+    const head = (await resolveCommit(
+      dir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    const index = path.join(
+      tmpRoot,
+      `idx-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const env = { GIT_DIR: dir, GIT_INDEX_FILE: index };
+    await runGit(["read-tree", head], { env, cwd: dir });
+    await runGit(["update-index", "--index-info"], {
+      env,
+      cwd: dir,
+      stdin: `100644 ${oid}\t${relPath}\n`,
+    });
+    const tree = (
+      await runGit(["write-tree"], { env, cwd: dir })
+    ).stdout.trim();
+    const commit = (
+      await runGit([
+        "-C",
+        dir,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit-tree",
+        tree,
+        "-p",
+        head,
+        "-m",
+        "raw",
+      ])
+    ).stdout.trim();
+    await runGit([
+      "-C",
+      dir,
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      commit,
+    ]);
+    await fs.rm(index, { force: true });
+    return oid;
+  }
+
+  it("[r4-1] a Latin-1 file is stored under git's own oid, so the UI can still save it (valid and broken)", async () => {
+    const { commitFlowFile } = await import("./flow-config.service");
+    const { blobOidAt } = await import("../apps/repository.service");
+    const latin1 = Buffer.from(flowYaml("Café"), "latin1");
+    expect(latin1.toString("utf8")).not.toBe(flowYaml("Café")); // really not UTF-8
+    const gitOid = await pushRaw("flows/cafe.yml", latin1);
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "cafe" });
+    expect(row).not.toBeNull();
+    expect(row!.sourceBlobSha).toBe(gitOid);
+    expect(row!.lastSeenBlobSha).toBe(gitOid);
+    expect(blobOid(latin1.toString("utf8"))).not.toBe(gitOid); // the old, wrong value
+    // GET/list agrees (its own resync and def.oid use the raw bytes too).
+    const head = (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    expect(await blobOidAt(repoDirFor(WS), head, "flows/cafe.yml")).toBe(
+      gitOid,
+    );
+    expect((await loadLiveFlowById(WS, row!._id.toString()))?.def.oid).toBe(
+      gitOid,
+    );
+    await ensureFlowDerivedCache(row!);
+    expect((await Flow.findById(row!._id))!.lastSeenBlobSha).toBe(gitOid);
+
+    // The UI edits it: the compare-and-swap must pass.
+    row!.name = "Café (renamed in the UI)";
+    const saved = await commitFlowFile(row!, "u1");
+    expect(saved).toMatchObject({ ok: true, changed: true });
+
+    // A BROKEN Latin-1 file: the blob seen is git's oid too, so the fix
+    // from the UI goes through as well.
+    const brokenLatin1 = Buffer.from("name: [Café unclosed", "latin1");
+    const brokenOid = await pushRaw("flows/cafe.yml", brokenLatin1);
+    await syncFlowsFromRepo(WS, "u1");
+    const marked = await Flow.findById(row!._id);
+    expect(isFlowMarkedInvalid(marked!)).toBe(true);
+    expect(marked!.lastSeenBlobSha).toBe(brokenOid);
+    marked!.name = "Café fixed";
+    expect((await commitFlowFile(marked!, "u1")).ok).toBe(true);
+  });
+
+  it("[r4-2] an invalid row saving its last VALID definition unchanged still commits — main gets fixed, not just the marker cleared", async () => {
+    const { commitFlowFile } = await import("./flow-config.service");
+    await push({ "flows/y.yml": flowYaml("Y") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "y" });
+    const broken = "name: [unclosed";
+    await push({ "flows/y.yml": broken });
+    await syncFlowsFromRepo(WS, "u1");
+    const marked = await Flow.findById(row!._id);
+    expect(isFlowMarkedInvalid(marked!)).toBe(true);
+    // What the UI shows is the last valid definition; the user saves it
+    // as is (no field changed).
+    const saved = await commitFlowFile(marked!, "u1");
+    expect(saved).toMatchObject({ ok: true, changed: true });
+    const head = (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    const onMain = (await readBlob(repoDirFor(WS), head, "flows/y.yml"))
+      .contents;
+    expect(onMain).not.toBe(broken);
+    expect(parseFlowFile(onMain)).not.toBeNull();
+    // The route's follow-up (stamp + unset + save) leaves the row level and
+    // healthy, and the next GET does not re-mark it.
+    marked!.sourceBlobSha = saved.sourceBlobSha;
+    marked!.lastSeenBlobSha = saved.sourceBlobSha;
+    await Flow.updateOne(
+      { _id: row!._id },
+      { $unset: { definitionInvalid: 1 } },
+    );
+    await marked!.save();
+    expect(await ensureFlowDerivedCache((await Flow.findById(row!._id))!)).toBe(
+      "ok",
+    );
+    expect(isFlowMarkedInvalid((await Flow.findById(row!._id))!)).toBe(false);
+    // A healthy row level with the repo is still a no-op save.
+    const again = await commitFlowFile((await Flow.findById(row!._id))!, "u1");
+    expect(again).toMatchObject({ ok: true, changed: false });
+  });
+
+  it("[r4-3] a legacy invalid row (no lastSeenBlobSha) must reload first: it cannot overwrite a fix pushed meanwhile", async () => {
+    const { commitFlowFile } = await import("./flow-config.service");
+    await push({ "flows/z.yml": flowYaml("Z") });
+    await syncFlowsFromRepo(WS, "u1");
+    const row = await Flow.findOne({ workspaceId: WS, slug: "z" });
+    await push({ "flows/z.yml": "name: [unclosed" });
+    await syncFlowsFromRepo(WS, "u1");
+    // A row marked before the field existed.
+    await Flow.updateOne({ _id: row!._id }, { $unset: { lastSeenBlobSha: 1 } });
+    const legacy = await Flow.findById(row!._id);
+    expect(isFlowMarkedInvalid(legacy!)).toBe(true);
+    expect(legacy!.lastSeenBlobSha).toBeUndefined();
+    // Someone fixes the file from a laptop; the push has not synced yet.
+    const laptopFix = flowYaml("Z fixed on a laptop");
+    await push({ "flows/z.yml": laptopFix });
+
+    legacy!.name = "Z from a stale form";
+    const refused = await commitFlowFile(legacy!, "u1");
+    expect(refused).toMatchObject({ ok: false, conflict: true });
+    expect(refused.error).toMatch(/reload/);
+    const head = (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+    expect((await readBlob(repoDirFor(WS), head, "flows/z.yml")).contents).toBe(
+      laptopFix,
+    );
+
+    // The reload (GET's resync) records what is on main — here the laptop
+    // fix applies and heals the row — after which saves work again.
+    expect(await ensureFlowDerivedCache((await Flow.findById(row!._id))!)).toBe(
+      "resynced",
+    );
+    const reloaded = await Flow.findById(row!._id);
+    expect(reloaded!.name).toBe("Z fixed on a laptop");
+    expect(reloaded!.lastSeenBlobSha).toBe(blobOid(laptopFix));
+    reloaded!.name = "Z edited after the reload";
+    expect((await commitFlowFile(reloaded!, "u1")).ok).toBe(true);
   });
 });

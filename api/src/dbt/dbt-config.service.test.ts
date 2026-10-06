@@ -1005,6 +1005,75 @@ describe("round 3: fixing a broken job file from the UI; auto-disable", () => {
   }, 90_000);
 });
 
+describe("round 4: a non-UTF-8 job file is stored under git's own oid", () => {
+  it("[r4-1] sync, GET/list and the write-through all use the raw-byte oid, so a Latin-1 job can still be saved", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { runGit } = await import("../apps/git");
+    const { blobOidAt } = await import("../apps/repository.service");
+    const project = await seedProject();
+    const dir = repoDirFor(WS.toString());
+    const text =
+      "name: Café nightly\nenvironment: prod\ncommands:\n  - build --select x\n";
+    const latin1 = Buffer.from(text, "latin1");
+    expect(latin1.toString("utf8")).not.toBe(text);
+    const oid = execFileSync(
+      "git",
+      ["-C", dir, "hash-object", "-w", "--stdin"],
+      { input: latin1 },
+    )
+      .toString()
+      .trim();
+    const head = (await resolveCommit(dir, MAIN)) as string;
+    const index = path.join(tmpRoot, `idx-${Date.now()}`);
+    const env = { GIT_DIR: dir, GIT_INDEX_FILE: index };
+    await runGit(["read-tree", head], { env, cwd: dir });
+    await runGit(["update-index", "--index-info"], {
+      env,
+      cwd: dir,
+      stdin: `100644 ${oid}\t${jobFilePath("cafe")}\n`,
+    });
+    const tree = (
+      await runGit(["write-tree"], { env, cwd: dir })
+    ).stdout.trim();
+    const commit = (
+      await runGit([
+        "-C",
+        dir,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit-tree",
+        tree,
+        "-p",
+        head,
+        "-m",
+        "raw",
+      ])
+    ).stdout.trim();
+    await runGit(["-C", dir, "update-ref", MAIN, commit]);
+    await fs.rm(index, { force: true });
+
+    await syncDbtConfigFromRepo(WS.toString());
+    const row = await DbtJob.findOne({ projectId: project._id, slug: "cafe" });
+    expect(row).not.toBeNull();
+    expect(row!.sourceBlobSha).toBe(oid);
+    expect(row!.lastSeenBlobSha).toBe(oid);
+    expect(blobOid(latin1.toString("utf8"))).not.toBe(oid);
+    expect(await blobOidAt(dir, commit, jobFilePath("cafe"))).toBe(oid);
+    const live = await loadLiveJobs(project);
+    expect(live.find(l => l.def.slug === "cafe")?.def.oid).toBe(oid);
+
+    row!.name = "Café nightly (edited)";
+    await expect(
+      commitDbtJobFile(project, row!, "u1"),
+    ).resolves.toBeUndefined();
+    expect(await fileAt(jobFilePath("cafe"))).toContain(
+      "Café nightly (edited)",
+    );
+  }, 90_000);
+});
+
 describe("adoption", () => {
   it("writes files for unstamped jobs + environments once, re-runnable", async () => {
     const project = await seedProject();
