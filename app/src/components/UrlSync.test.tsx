@@ -11,7 +11,7 @@
  * hydration actually opens the notebook tab for a /n/:id deep link.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 const h = vi.hoisted(() => {
   const consoleState = {
@@ -161,6 +161,9 @@ import { UrlSync } from "./UrlSync";
 
 describe("UrlSync hydration", () => {
   beforeEach(() => {
+    // No globals here, so testing-library does not unmount between tests on
+    // its own; a snackbar left by the previous test would match again.
+    cleanup();
     vi.clearAllMocks();
     h.consoleState.activeTabId = null;
     h.consoleState.tabs = {};
@@ -199,6 +202,17 @@ describe("UrlSync hydration", () => {
    * resolve anymore" and a bounce to "/".
    */
   it("opens a renamed app from its old /apps/<slug> link and updates the address bar", async () => {
+    h.resolveObjectRef.mockResolvedValueOnce({
+      kind: "app",
+      id: "app1",
+      via: "alias",
+      current: {
+        title: "Seller Media",
+        slug: "seller-media",
+        path: "apps/seller-media",
+        url: "/apps/seller-media",
+      },
+    });
     window.history.replaceState({}, "", "/apps/seller-media-buying-3?tab=a");
 
     render(<UrlSync />);
@@ -215,12 +229,43 @@ describe("UrlSync hydration", () => {
       "/apps/seller-media?tab=a",
     );
     expect(await screen.findByText(/renamed/)).toBeTruthy();
-    // The list answered; the server was not asked.
-    expect(h.resolveObjectRef).not.toHaveBeenCalled();
+    // The list knew the alias, and the server was still asked — it sees
+    // every app, the list only those this person may see.
+    expect(h.resolveObjectRef).toHaveBeenCalledWith(
+      "ws1",
+      "app",
+      "seller-media-buying-3",
+    );
+    // The app is listed already: no second list fetch.
+    expect(h.fetchApps).toHaveBeenCalledTimes(1);
     expect(h.closeAppsTabsFor).not.toHaveBeenCalled();
   });
 
+  it("trusts the server over the list for an old name: ambiguous there means a dead link here", async () => {
+    // The list resolves the alias, the server does not (another app this
+    // person cannot see claims the same old name).
+    h.resolveObjectRef.mockResolvedValueOnce(null);
+    window.history.replaceState({}, "", "/apps/seller-media-buying-3");
+
+    render(<UrlSync />);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
+    expect(h.focusAppsTab).not.toHaveBeenCalled();
+    expect(await screen.findByText(/doesn't resolve/)).toBeTruthy();
+  });
+
   it("does the same for an old file link", async () => {
+    h.resolveObjectRef.mockResolvedValueOnce({
+      kind: "app",
+      id: "app1",
+      via: "alias",
+      current: {
+        title: "Seller Media",
+        slug: "seller-media",
+        path: "apps/seller-media",
+        url: "/apps/seller-media",
+      },
+    });
     window.history.replaceState(
       {},
       "",
@@ -270,7 +315,7 @@ describe("UrlSync hydration", () => {
       "app",
       "fresh-old-name",
     );
-    // The list was refetched once more, for the row the tab renders from.
+    // Not in the list yet: refetched once more, for the row the tab renders from.
     expect(h.fetchApps).toHaveBeenCalledTimes(2);
     expect(window.location.pathname).toBe("/apps/fresh");
   });
