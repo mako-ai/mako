@@ -2207,3 +2207,266 @@ describe("cycle 3: renames that lose a race, the miss window, aliases the file k
     expect((await Flow.findById(R!._id))!.aliases).toEqual(["a"]);
   });
 });
+
+describe("cycle 4: a lost rename judged on ANOTHER instance; another file at the new name", () => {
+  const runGit = async (args: string[]) =>
+    (await import("../apps/git")).runGit(args);
+  const headOf = async () =>
+    (await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    )) as string;
+  /**
+   * A UI rename a→b whose mirror push lost: main is reset to the tree
+   * before it. With `otherInstance`, the objects only the renaming instance
+   * had (the rename commit, the renamed file's blob) are gone too — what an
+   * instance that never fetched them sees.
+   */
+  async function loseRenameTo(
+    to: string,
+    opts: { otherInstance: boolean },
+  ): Promise<void> {
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const pre = await headOf();
+    await flowRenameHandler.rename({ workspaceId: WS }, { ref: "a", slug: to });
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    if (opts.otherInstance) {
+      await runGit([
+        "-C",
+        repoDirFor(WS),
+        "reflog",
+        "expire",
+        "--expire=now",
+        "--all",
+      ]);
+      await runGit(["-C", repoDirFor(WS), "gc", "--prune=now", "-q"]);
+    }
+  }
+  const expireGuard = (id: Types.ObjectId) =>
+    Flow.updateOne(
+      { _id: id },
+      { $set: { lastRenameAt: new Date(Date.now() - 60 * 60_000) } },
+    );
+  const otherStream = (name: string) => {
+    const src = new Types.ObjectId().toString();
+    const dst = new Types.ObjectId().toString();
+    return flowYaml(name)
+      .replace(`connector_id: ${CONNECTOR}`, `connector_id: ${src}`)
+      .replace(`connection_id: ${DEST}`, `connection_id: ${dst}`);
+  };
+
+  it("[c4-1] the rename records the blob it started from", async () => {
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    const before = R!.sourceBlobSha;
+    await loseRenameTo("b", { otherInstance: false });
+    const after = await Flow.findById(R!._id);
+    expect(after!.renameFromBlobSha).toBe(before);
+    expect(after!.sourceBlobSha).not.toBe(before);
+  });
+
+  for (const variant of ["pure move", "move + edit"] as const) {
+    it(`[c4-1] another instance: a UI rename lost to a laptop \`git mv\` a→x (${variant}) re-keys the row in place, never a new flow`, async () => {
+      await push({ "flows/a.yml": flowYaml("A") });
+      await syncFlowsFromRepo(WS, "u1");
+      const R = await Flow.findOne({ workspaceId: WS, slug: "a" });
+      await seedRuntime(R!._id);
+      const endpoint = R!.webhookConfig?.endpoint;
+      await loseRenameTo("b", { otherInstance: true });
+      const body =
+        variant === "pure move"
+          ? flowYaml("A")
+          : flowYaml("A").replace("cron: 0 3 * * *", "cron: 0 4 * * *");
+      await move("a", "x", body);
+      const result = await syncFlowsFromRepo(WS, "u2");
+      expect(result.created).toBe(0);
+      let rows = await Flow.find({ workspaceId: WS });
+      expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+        [R!._id.toString(), "x"],
+      ]);
+      expect(rows[0].webhookConfig?.endpoint).toBe(endpoint);
+      if (variant === "move + edit") {
+        expect(rows[0].backfillSchedule?.cron).toBe("0 4 * * *");
+      }
+      // …and still one flow, the same one, once the guard has expired.
+      await expireGuard(R!._id);
+      await push({ "README.md": "y\n" });
+      await syncFlowsFromRepo(WS, "u2");
+      rows = await Flow.find({ workspaceId: WS });
+      expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+        [R!._id.toString(), "x"],
+      ]);
+      expect(await runtimeCounts(R!._id)).toEqual([1, 1, 1]);
+      expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+    });
+  }
+
+  it("[c4-2] a UI rename a→b that lost to an UNRELATED flows/b.yml: the row goes back to a, the newcomer is a flow of its own", async () => {
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const F = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await seedRuntime(F!._id);
+    const endpoint = F!.webhookConfig?.endpoint;
+    await loseRenameTo("b", { otherInstance: true });
+    await push({ "flows/b.yml": otherStream("Newcomer") });
+    const result = await syncFlowsFromRepo(WS, "u2");
+    expect(result.created).toBe(1);
+    const back = await Flow.findById(F!._id);
+    expect(back!.slug).toBe("a");
+    expect(back!.name).toBe("A");
+    expect(String(back!.dataSourceId)).toBe(CONNECTOR);
+    expect(back!.webhookConfig?.endpoint).toBe(endpoint);
+    expect(back!.lastRenameCommit).toBeUndefined();
+    expect(back!.renameFromBlobSha).toBeUndefined();
+    expect(back!.aliases ?? []).toEqual([]);
+    const newcomer = await Flow.findOne({ workspaceId: WS, slug: "b" });
+    expect(newcomer!._id.toString()).not.toBe(F!._id.toString());
+    expect(newcomer!.name).toBe("Newcomer");
+    expect(String(newcomer!.dataSourceId)).not.toBe(CONNECTOR);
+    expect(newcomer!.webhookConfig?.endpoint).toContain(
+      `/${WS}/${newcomer!._id.toString()}`,
+    );
+    expect(await Flow.countDocuments({ workspaceId: WS })).toBe(2);
+    expect(await runtimeCounts(F!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+  });
+
+  it("[c4-2] on a tree that cannot be verified the other file is never applied to the row; the verified tree then settles it", async () => {
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const F = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await seedRuntime(F!._id);
+    await loseRenameTo("b", { otherInstance: true });
+    await push({ "flows/b.yml": otherStream("Newcomer") });
+    const head = await headOf();
+    mirror.main = "0".repeat(40);
+    // Neither the push-sync nor a read applies it.
+    const result = await syncFlowsFromRepo(WS, "u2");
+    expect(result.created).toBe(0);
+    expect(await ensureFlowDerivedCache((await Flow.findById(F!._id))!)).toBe(
+      "missing",
+    );
+    let rows = await Flow.find({ workspaceId: WS });
+    expect(rows.map(r => [r._id.toString(), r.slug, r.name])).toEqual([
+      [F!._id.toString(), "b", "A"],
+    ]);
+    expect(String(rows[0].dataSourceId)).toBe(CONNECTOR);
+    // GET and the list show the row under the file it still has (a); the
+    // newcomer is git-only until a verified sync creates it.
+    const live = await loadLiveFlows(WS);
+    expect(
+      live.map(l => [l.def.slug, l.row?._id.toString() ?? "git-only"]),
+    ).toEqual([
+      ["a", F!._id.toString()],
+      ["b", "git-only"],
+    ]);
+    expect((await loadLiveFlowById(WS, F!._id.toString()))?.def.slug).toBe("a");
+    // The mirror's main after all: settled, the newcomer created.
+    mirror.main = head;
+    await syncFlowsFromRepo(WS, "u2");
+    rows = await Flow.find({ workspaceId: WS }).sort({ slug: 1 });
+    expect(rows.map(r => [r.slug, r.name])).toEqual([
+      ["a", "A"],
+      ["b", "Newcomer"],
+    ]);
+    expect(rows[0]._id.toString()).toBe(F!._id.toString());
+    expect(await runtimeCounts(F!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+  });
+
+  it("[c4-2] the read paths settle it too: the list never hands the row the newcomer's definition", async () => {
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const F = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await loseRenameTo("b", { otherInstance: true });
+    await push({ "flows/b.yml": otherStream("Newcomer") });
+    const live = await loadLiveFlows(WS);
+    expect(
+      live.map(l => [l.def.slug, l.row?._id.toString() ?? "git-only"]),
+    ).toEqual([
+      ["a", F!._id.toString()],
+      ["b", "git-only"],
+    ]);
+    const row = await Flow.findById(F!._id);
+    expect(row!.slug).toBe("a");
+    expect(row!.name).toBe("A");
+    expect(String(row!.dataSourceId)).toBe(CONNECTOR);
+  });
+
+  it("[c4-2] the newcomer at b AND a laptop `git mv` a→x: the row follows x (paired by the blob it started from), the newcomer is new", async () => {
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const F = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    await seedRuntime(F!._id);
+    await loseRenameTo("b", { otherInstance: true });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: {
+          "flows/x.yml": flowYaml("A").replace(
+            "cron: 0 3 * * *",
+            "cron: 0 5 * * *",
+          ),
+          "flows/b.yml": otherStream("Newcomer"),
+        },
+        deletes: ["flows/a.yml"],
+      },
+      { message: "laptop: git mv a x, new flow b" },
+    );
+    const result = await syncFlowsFromRepo(WS, "u2");
+    expect(result.created).toBe(1);
+    const rows = await Flow.find({ workspaceId: WS }).sort({ slug: 1 });
+    expect(rows.map(r => [r.slug, r.name])).toEqual([
+      ["b", "Newcomer"],
+      ["x", "A"],
+    ]);
+    expect(rows[1]._id.toString()).toBe(F!._id.toString());
+    expect(rows[1].backfillSchedule?.cron).toBe("0 5 * * *");
+    expect(await runtimeCounts(F!._id)).toEqual([1, 1, 1]);
+    expect(inngestSent.map(e => e.name)).not.toContain("flow.cancel");
+  });
+
+  it("[c4-2] the rename's own file under another commit (a history rewrite) still counts as landed", async () => {
+    await push({ "flows/a.yml": flowYaml("A") });
+    await syncFlowsFromRepo(WS, "u1");
+    const F = await Flow.findOne({ workspaceId: WS, slug: "a" });
+    const pre = await headOf();
+    const { flowRenameHandler } = await import("../rename/handlers/flow");
+    const renamed = await flowRenameHandler.rename(
+      { workspaceId: WS },
+      { ref: "a", slug: "b" },
+    );
+    const renamedFile = (
+      await readBlob(repoDirFor(WS), renamed.commit as string, "flows/b.yml")
+    ).contents;
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      pre,
+    ]);
+    // The same move, re-made as another commit (a rebase on the mirror).
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "flows/b.yml": renamedFile }, deletes: ["flows/a.yml"] },
+      { message: "rebased rename" },
+    );
+    await syncFlowsFromRepo(WS, "u2");
+    const rows = await Flow.find({ workspaceId: WS });
+    expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+      [F!._id.toString(), "b"],
+    ]);
+    expect(rows[0].lastRenameCommit).toBeUndefined();
+    expect(rows[0].renameFromBlobSha).toBeUndefined();
+  });
+});

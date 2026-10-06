@@ -68,7 +68,7 @@ import {
   isAncestorCommit,
   mergedAliases,
   pairRenamedSlugs,
-  readBlobByOid,
+  pairingBaseBlob,
   type RemovedSlug,
   type SlugRenamePair,
 } from "../rename/flow-dbt-job-pairing";
@@ -174,6 +174,34 @@ async function jobRenameGuardActive(
 }
 
 /**
+ * Whether the file under a renamed job's NEW name is that job's: it builds
+ * the same thing (environment + commands), or it lists one of the job's old
+ * names. See `renamedRowOwnsFile` in flow-sync.service.ts.
+ */
+function renamedJobOwnsFile(row: IDbtJob, file: DbtJobFile): boolean {
+  if (jobRenameTarget(jobToFile(row)) === jobRenameTarget(file)) return true;
+  const aliases = row.aliases ?? [];
+  return (file.aliases ?? []).some(alias => aliases.includes(alias));
+}
+
+/**
+ * The job's recorded rename is not in `head`'s history and the parsed file
+ * under its current slug is another job's: never applied to this row (it
+ * would run the other job's commands on this job's schedule and history).
+ * See `foreignFileAtRenamedSlug` in flow-sync.service.ts.
+ */
+async function foreignJobFileAtRenamedSlug(
+  repoDir: string,
+  head: string,
+  row: IDbtJob,
+  file: DbtJobFile | null,
+): Promise<boolean> {
+  if (!row.lastRenameCommit || file === null) return false;
+  if (renamedJobOwnsFile(row, file)) return false;
+  return !(await isAncestorCommit(repoDir, row.lastRenameCommit, head));
+}
+
+/**
  * Fetch at most once per workspace per 30 s when a job row's file is not at
  * this instance's main (see flow-sync.service.ts `freshenOnMiss`).
  */
@@ -241,11 +269,16 @@ interface JobRenameSettleContext {
 /**
  * One row's guard, on a verified tree — the job twin of
  * `settleFlowRenameGuard` (flow-sync.service.ts): landed (in history, or the
- * current file is in the tree under another commit) → cleared; expired with
+ * current file is in the tree under another commit AND is the job's own —
+ * same environment + commands, or it lists one of the job's old names) →
+ * cleared; another job's file under the new name → lost now, whatever the
+ * age: re-keyed back (to a same-thing old-name file, else to the name it
+ * had before the rename) so that file can be a job of its own; expired with
  * the file still under the most recent old name that builds the SAME thing
- * (environment + commands) → re-keyed back, loudly; expired otherwise →
- * cleared. `clear` is scoped to the guard judged, so a newer one written
- * concurrently survives.
+ * → re-keyed back, loudly; expired otherwise → cleared. A lost rename hands
+ * the row back the blob it started from (`renameFromBlobSha` →
+ * `sourceBlobSha`). The clears are scoped to the guard judged, so a newer
+ * one written concurrently survives.
  */
 async function settleJobRenameGuard(
   row: IDbtJob,
@@ -253,52 +286,97 @@ async function settleJobRenameGuard(
 ): Promise<"kept" | "cleared" | "rekeyed"> {
   const { workspaceId, repoDir, head, fileSlugs, parsedFileAt } = ctx;
   const commit = row.lastRenameCommit as string;
-  const clear = () =>
-    DbtJob.updateOne(
-      { _id: row._id, lastRenameCommit: commit },
-      { $unset: { lastRenameCommit: 1, lastRenameAt: 1 } },
-    );
+  const guard = { _id: row._id, lastRenameCommit: commit };
+  const unsetGuard = {
+    lastRenameCommit: 1,
+    lastRenameAt: 1,
+    renameFromBlobSha: 1,
+  } as const;
+  const clearLanded = () => DbtJob.updateOne(guard, { $unset: unsetGuard });
+  const clearLost = () =>
+    DbtJob.updateOne(guard, {
+      $unset: unsetGuard,
+      ...(row.renameFromBlobSha
+        ? { $set: { sourceBlobSha: row.renameFromBlobSha } }
+        : {}),
+    });
   if (await isAncestorCommit(repoDir, commit, head)) {
-    await clear();
+    await clearLanded();
     return "cleared";
   }
-  if (row.slug && fileSlugs.has(row.slug)) {
-    await clear();
-    return "cleared";
-  }
-  const age = row.lastRenameAt
-    ? Date.now() - row.lastRenameAt.getTime()
-    : Infinity;
-  if (age <= JOB_RENAME_GUARD_MS) return "kept";
   const target = jobRenameTarget(jobToFile(row));
-  const oldSlug = [...(row.aliases ?? [])].reverse().find(alias => {
+  const sameJobOldSlug = [...(row.aliases ?? [])].reverse().find(alias => {
     if (!fileSlugs.has(alias)) return false;
     const parsed = parsedFileAt(alias);
     return parsed !== null && jobRenameTarget(parsed) === target;
   });
-  if (row.slug && oldSlug) {
+  let lostNow = false;
+  if (row.slug && fileSlugs.has(row.slug)) {
+    const atSlug = parsedFileAt(row.slug);
+    // An unparseable file is never applied (only marked): landed, unless
+    // the job is still under an old name.
+    const landed =
+      atSlug === null
+        ? sameJobOldSlug === undefined
+        : renamedJobOwnsFile(row, atSlug);
+    if (landed) {
+      await clearLanded();
+      return "cleared";
+    }
+    lostNow = true;
+  }
+  const age = row.lastRenameAt
+    ? Date.now() - row.lastRenameAt.getTime()
+    : Infinity;
+  if (!lostNow && age <= JOB_RENAME_GUARD_MS) return "kept";
+  let back = sameJobOldSlug;
+  if (back === undefined && lostNow) {
+    const free: string[] = [];
+    for (const alias of [...(row.aliases ?? [])].reverse()) {
+      const held = await DbtJob.exists({
+        projectId: row.projectId,
+        slug: alias,
+        _id: { $ne: row._id },
+      });
+      if (!held) free.push(alias);
+    }
+    back = free.find(alias => !fileSlugs.has(alias)) ?? free[0];
+  }
+  if (row.slug && back !== undefined) {
     logger.error(
-      "dbt job rename commit never reached main; re-keying the row back to the file the tree has",
+      lostNow
+        ? "dbt job rename lost its new name to another job's file on main; re-keying the row back so that file can be a job of its own"
+        : "dbt job rename commit never reached main; re-keying the row back to the file the tree has",
       {
         workspaceId,
         jobId: row._id.toString(),
         renamedTo: row.slug,
-        revertedTo: oldSlug,
+        revertedTo: back,
+        sameJob: back === sameJobOldSlug,
         lastRenameCommit: commit,
       },
     );
-    await rekeyJobSlug(row._id, row.slug, oldSlug, undefined, {
+    await rekeyJobSlug(row._id, row.slug, back, undefined, {
       recordOldAsAlias: false,
     });
-    await clear();
+    await clearLost();
     return "rekeyed";
+  }
+  if (lostNow) {
+    // No free old name: kept; the sync and the list still never apply the
+    // other file to it (`foreignJobFileAtRenamedSlug`).
+    logger.error(
+      "dbt job rename lost its new name to another job's file on main, and the row has no free old name to go back to; keeping it",
+      { workspaceId, jobId: row._id.toString(), slug: row.slug },
+    );
+    return "kept";
   }
   logger.warn("dbt job rename commit never reached main; trusting the tree", {
     workspaceId,
     jobId: row._id.toString(),
     slug: row.slug,
   });
-  await clear();
+  await clearLost();
   return "cleared";
 }
 
@@ -335,8 +413,9 @@ async function settleJobRenameGuards(args: {
 /**
  * The read paths' settle step (list/editor): a job whose rename commit never
  * landed, with no push since, would otherwise vanish from the list while
- * the scheduler kept running its row. Settled as the sync would, on a
- * verified tree. Returns true when a row was re-keyed.
+ * the scheduler kept running its row — and one whose new name another
+ * job's file took would be shown (and resynced) as that job. Settled as the
+ * sync would, on a verified tree. Returns true when a row was re-keyed.
  */
 async function settleLostJobRenamesForRead(args: {
   workspaceId: string;
@@ -346,14 +425,20 @@ async function settleLostJobRenamesForRead(args: {
 }): Promise<boolean> {
   const { workspaceId, projectId, repoDir, defs } = args;
   const fileSlugs = new Set(defs.map(def => def.slug));
+  const bySlug = new Map(defs.map(def => [def.slug, def] as const));
+  // Its file is missing — or another job's file holds its new name.
   const candidates = (
     await DbtJob.find({ projectId, lastRenameCommit: { $exists: true } })
-  ).filter(row => row.slug && !fileSlugs.has(row.slug));
+  ).filter(row => {
+    if (!row.slug) return false;
+    if (!fileSlugs.has(row.slug)) return true;
+    const parsed = bySlug.get(row.slug)?.parsed ?? null;
+    return parsed !== null && !renamedJobOwnsFile(row, parsed);
+  });
   if (candidates.length === 0) return false;
   const head = await resolveCommit(repoDir, MAIN);
   if (!head) return false;
   if (!(await currentTreeCheck(workspaceId, head)())) return false;
-  const bySlug = new Map(defs.map(def => [def.slug, def] as const));
   let rekeyed = false;
   for (const row of candidates) {
     const outcome = await settleJobRenameGuard(row, {
@@ -600,14 +685,24 @@ function joinLiveJobs(
   project: IDbtProject,
   defs: JobDefinitionAtMain[],
   rows: IDbtJob[],
+  /** Rows whose new name another job's file holds (`foreignHeldJobIds`). */
+  foreignHeld: ReadonlySet<string> = new Set(),
 ): LiveJob[] {
-  const bySlug = new Map(rows.map(row => [row.slug, row]));
-  // An old-name file of a row whose own file is not here is that row (see
-  // joinLiveFlows in flow-sync.service.ts).
+  const bySlug = new Map(
+    rows
+      .filter(row => !foreignHeld.has(row._id.toString()))
+      .map(row => [row.slug, row]),
+  );
+  // An old-name file of a row whose own file is not here (or whose new name
+  // another job's file took first) is that row (see joinLiveFlows in
+  // flow-sync.service.ts).
   const defSlugs = new Set(defs.map(def => def.slug));
   const byAliasOfOrphan = new Map<string, IDbtJob>();
   for (const row of rows) {
-    if (!row.slug || defSlugs.has(row.slug)) continue;
+    if (!row.slug) continue;
+    if (defSlugs.has(row.slug) && !foreignHeld.has(row._id.toString())) {
+      continue;
+    }
     for (const alias of row.aliases ?? []) {
       if (!bySlug.has(alias)) byAliasOfOrphan.set(alias, row);
     }
@@ -657,7 +752,9 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
       defs = await listJobDefinitionsAtMain(workspaceId);
     }
   }
-  if (orphaned(defs, rows).length > 0) {
+  // …or whose new name another job's file took (settled the same way).
+  let foreignHeld = await foreignHeldJobIds(workspaceId, defs, rows);
+  if (orphaned(defs, rows).length > 0 || foreignHeld.size > 0) {
     const repoDir = await boundRepoDirIfExists(workspaceId);
     if (
       repoDir != null &&
@@ -669,12 +766,14 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
       }))
     ) {
       rows = await DbtJob.find({ projectId: project._id });
+      foreignHeld = await foreignHeldJobIds(workspaceId, defs, rows);
     }
   }
   const bySlug = new Map(rows.map(row => [row.slug, row]));
   for (const def of defs) {
     const row = bySlug.get(def.slug);
-    if (!row) continue;
+    // Another job's file is never resynced onto this row.
+    if (!row || foreignHeld.has(row._id.toString())) continue;
     try {
       await ensureJobDerivedCache(project, def, row);
     } catch (error) {
@@ -685,7 +784,36 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
       });
     }
   }
-  return joinLiveJobs(project, defs, rows);
+  return joinLiveJobs(project, defs, rows, foreignHeld);
+}
+
+/**
+ * Rows (by id) whose new name another job's file holds while their rename
+ * has not landed here; see `foreignHeldFlowIds` in flow-sync.service.ts.
+ */
+async function foreignHeldJobIds(
+  workspaceId: string,
+  defs: JobDefinitionAtMain[],
+  rows: IDbtJob[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const guarded = rows.filter(row => row.lastRenameCommit && row.slug);
+  if (guarded.length === 0) return out;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return out;
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return out;
+  const bySlug = new Map(defs.map(def => [def.slug, def] as const));
+  for (const row of guarded) {
+    const def = bySlug.get(row.slug as string);
+    if (
+      def &&
+      (await foreignJobFileAtRenamedSlug(repoDir, head, row, def.parsed))
+    ) {
+      out.add(row._id.toString());
+    }
+  }
+  return out;
 }
 
 export async function loadLiveJobById(
@@ -1049,6 +1177,8 @@ export async function rekeyJobSlug(
           : {}),
       },
       ...(recordOldAsAlias ? { $addToSet: { aliases: from } } : {}),
+      // A new guard is a move the tree already holds (see rekeyFlowSlug).
+      ...(commit ? { $unset: { renameFromBlobSha: 1 } } : {}),
     },
   );
 }
@@ -1111,11 +1241,13 @@ export async function rekeyRenamedJobs(args: {
   if (removedRows.length === 0 || addedFiles.length === 0) return [];
 
   const removed: RemovedSlug[] = [];
+  const baseOids: Array<string | undefined> = [];
   for (const row of removedRows) {
-    let contents = row.sourceBlobSha
-      ? await readBlobByOid(repoDir, row.sourceBlobSha)
-      : null;
-    if (contents === null) contents = serializeJobFile(jobToFile(row));
+    // What main last had: the pre-rename blob while the tree does not hold
+    // the row's rename (see `pairingBaseBlob`), else the last-synced one.
+    const base = await pairingBaseBlob(repoDir, head, row);
+    baseOids.push(base?.oid);
+    const contents = base?.contents ?? serializeJobFile(jobToFile(row));
     const parsedOld = parseJobFile(contents);
     removed.push({
       slug: row.slug as string,
@@ -1136,9 +1268,9 @@ export async function rekeyRenamedJobs(args: {
   const gitRenames = new Map<string, string>();
   for (const [from, to] of await detectGitRenames(
     repoDir,
-    removedRows.map(row => ({
+    removedRows.map((row, i) => ({
       path: jobFilePath(row.slug as string),
-      oid: row.sourceBlobSha,
+      oid: baseOids[i],
     })),
     addedFiles.map(([slug, file]) => ({
       path: jobFilePath(slug),
@@ -1416,24 +1548,22 @@ async function syncDbtConfigNow(
       reason,
     });
   });
+  const parsedCache = new Map<string, DbtJobFile | null>();
+  const parsedFileAt = (slug: string): DbtJobFile | null => {
+    if (!parsedCache.has(slug)) {
+      const buf = blobs.get(jobFilePath(slug));
+      parsedCache.set(slug, buf ? parseJobFile(buf.toString("utf8")) : null);
+    }
+    return parsedCache.get(slug) ?? null;
+  };
   try {
-    const parsedCache = new Map<string, DbtJobFile | null>();
     await settleJobRenameGuards({
       workspaceId,
       projectId: project._id,
       repoDir,
       head,
       fileSlugs,
-      parsedFileAt: slug => {
-        if (!parsedCache.has(slug)) {
-          const buf = blobs.get(jobFilePath(slug));
-          parsedCache.set(
-            slug,
-            buf ? parseJobFile(buf.toString("utf8")) : null,
-          );
-        }
-        return parsedCache.get(slug) ?? null;
-      },
+      parsedFileAt,
       treeIsCurrent,
     });
   } catch (error) {
@@ -1502,6 +1632,25 @@ async function syncDbtConfigNow(
       }
       continue;
     }
+    // Another job's file under the new name of a rename that has not landed
+    // here (the settle step re-keys such a row away on a verified tree):
+    // never this job's definition. The row stays as it is (its slug is seen,
+    // so the sweep keeps it) and the file waits for the name to be free.
+    if (
+      row &&
+      (await foreignJobFileAtRenamedSlug(repoDir, head, row, parsed))
+    ) {
+      logger.warn(
+        "Another job's file holds a renamed job's new name; not applying it to that job",
+        {
+          workspaceId,
+          path,
+          jobId: row._id.toString(),
+          lastRenameCommit: row.lastRenameCommit,
+        },
+      );
+      continue;
+    }
     // Allowlist, environment, schedule — never index a job we refuse to run,
     // and never let one bad file throw out of the loop (a cron the scheduler
     // cannot parse used to abort the sync for every file after it).
@@ -1531,8 +1680,17 @@ async function syncDbtConfigNow(
         // its current file absent from this tree): a stale tree, or the
         // file moved back — told apart by whether the tree is the mirror's
         // main; unknown → keep the row (see flow-sync.service.ts).
+        // ("Absent" includes another job's file holding its new name.)
+        const claimantFileHere =
+          fileSlugs.has(claimant.slug) &&
+          !(await foreignJobFileAtRenamedSlug(
+            repoDir,
+            head,
+            claimant,
+            parsedFileAt(claimant.slug),
+          ));
         const sameJob =
-          !fileSlugs.has(claimant.slug) &&
+          !claimantFileHere &&
           jobRenameTarget(jobToFile(claimant)) === jobRenameTarget(parsed);
         const keep = guarded || (sameJob && !(await treeIsCurrent()));
         if (keep) {

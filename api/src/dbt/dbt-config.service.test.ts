@@ -1480,3 +1480,171 @@ describe("adoption", () => {
     expect(again.written).toBe(0);
   });
 });
+
+describe("cycle 4 (jobs): a lost rename judged on ANOTHER instance; another job's file at the new name", () => {
+  /** Big enough that one edited line keeps git's similarity above 90%. */
+  const file = (name: string, sel = "x", cron = "0 6 * * *") =>
+    [
+      `name: ${name}`,
+      "description: builds the nightly marts for the analytics team",
+      "environment: prod",
+      "commands:",
+      ...[1, 2, 3, 4, 5, 6, 7, 8].map(
+        i => `  - build --select ${sel}_model_${i}`,
+      ),
+      "schedule:",
+      `  cron: "${cron}"`,
+      "  timezone: UTC",
+      "",
+    ].join("\n");
+  const c = (writes: Record<string, string>, deletes: string[] = []) =>
+    commitBlobsOnBranch(
+      repoDirFor(WS.toString()),
+      DEFAULT_BRANCH,
+      { writes, deletes },
+      { message: "push" },
+    );
+  /** A UI rename a→to whose mirror push lost (see the flow twin). */
+  async function loseRenameTo(to: string, otherInstance: boolean) {
+    const { dbtJobRenameHandler } = await import("../rename/handlers/dbt-job");
+    const { runGit } = await import("../apps/git");
+    const dir = repoDirFor(WS.toString());
+    const pre = (await resolveCommit(dir, MAIN)) as string;
+    await dbtJobRenameHandler.rename(
+      { workspaceId: WS.toString() },
+      { ref: "a", slug: to },
+    );
+    await runGit(["-C", dir, "update-ref", MAIN, pre]);
+    if (otherInstance) {
+      await runGit(["-C", dir, "reflog", "expire", "--expire=now", "--all"]);
+      await runGit(["-C", dir, "gc", "--prune=now", "-q"]);
+    }
+  }
+  const expireGuard = (id: Types.ObjectId) =>
+    DbtJob.updateOne(
+      { _id: id },
+      { $set: { lastRenameAt: new Date(Date.now() - 60 * 60_000) } },
+    );
+
+  it("[c4-1] the rename records the blob it started from", async () => {
+    const project = await seedProject();
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    await loseRenameTo("b", false);
+    const after = (await DbtJob.findById(R._id))!;
+    expect(after.renameFromBlobSha).toBe(R.sourceBlobSha);
+    expect(after.sourceBlobSha).not.toBe(R.sourceBlobSha);
+  });
+
+  for (const variant of ["pure move", "move + edit"] as const) {
+    it(`[c4-1] another instance: a UI rename lost to a laptop \`git mv\` a→x (${variant}) re-keys the job in place — one job, same id`, async () => {
+      const project = await seedProject();
+      await c({ [jobFilePath("a")]: file("A") });
+      await syncDbtConfigFromRepo(WS.toString());
+      const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+      await loseRenameTo("b", true);
+      await c(
+        {
+          [jobFilePath("x")]:
+            variant === "pure move" ? file("A") : file("A", "x", "0 7 * * *"),
+        },
+        [jobFilePath("a")],
+      );
+      await syncDbtConfigFromRepo(WS.toString());
+      let rows = await DbtJob.find({ projectId: project._id });
+      expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+        [R._id.toString(), "x"],
+      ]);
+      if (variant === "move + edit") {
+        expect(rows[0].schedule?.cron).toBe("0 7 * * *");
+      }
+      // …and still that one job once the guard has expired.
+      await expireGuard(R._id);
+      await c({ "README.md": "y\n" });
+      await syncDbtConfigFromRepo(WS.toString());
+      rows = await DbtJob.find({ projectId: project._id });
+      expect(rows.map(r => [r._id.toString(), r.slug])).toEqual([
+        [R._id.toString(), "x"],
+      ]);
+    }, 90_000);
+  }
+
+  it("[c4-2] a UI rename a→b that lost to ANOTHER job's dbt/jobs/b.yml: the job goes back to a, the newcomer is a job of its own", async () => {
+    const project = await seedProject();
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    await loseRenameTo("b", true);
+    await c({ [jobFilePath("b")]: file("Other", "other") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const rows = await DbtJob.find({ projectId: project._id }).sort({
+      slug: 1,
+    });
+    expect(rows.map(r => [r.slug, r.name, r.commands[0]])).toEqual([
+      ["a", "A", "build --select x_model_1"],
+      ["b", "Other", "build --select other_model_1"],
+    ]);
+    expect(rows[0]._id.toString()).toBe(R._id.toString());
+    expect(rows[1]._id.toString()).not.toBe(R._id.toString());
+    expect(rows[0].lastRenameCommit).toBeUndefined();
+    expect(rows[0].renameFromBlobSha).toBeUndefined();
+    expect(rows[0].aliases ?? []).toEqual([]);
+  }, 90_000);
+
+  it("[c4-2] on a tree that cannot be verified the other job's file is never applied — not by the sync, not by the list; the verified tree settles it", async () => {
+    const project = await seedProject();
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    await loseRenameTo("b", true);
+    await c({ [jobFilePath("b")]: file("Other", "other") });
+    const head = (await resolveCommit(
+      repoDirFor(WS.toString()),
+      MAIN,
+    )) as string;
+    mirror.main = "0".repeat(40);
+    await syncDbtConfigFromRepo(WS.toString());
+    const live = await loadLiveJobs(project);
+    expect(
+      live.map(l => [l.def.slug, l.row?._id.toString() ?? "git-only"]),
+    ).toEqual([
+      ["a", R._id.toString()],
+      ["b", "git-only"],
+    ]);
+    let rows = await DbtJob.find({ projectId: project._id });
+    expect(rows.map(r => [r._id.toString(), r.slug, r.commands[0]])).toEqual([
+      [R._id.toString(), "b", "build --select x_model_1"],
+    ]);
+    mirror.main = head;
+    await syncDbtConfigFromRepo(WS.toString());
+    rows = await DbtJob.find({ projectId: project._id }).sort({ slug: 1 });
+    expect(rows.map(r => [r.slug, r.name])).toEqual([
+      ["a", "A"],
+      ["b", "Other"],
+    ]);
+    expect(rows[0]._id.toString()).toBe(R._id.toString());
+  }, 90_000);
+
+  it("[c4-2] the list alone settles it on a verified tree", async () => {
+    const project = await seedProject();
+    await c({ [jobFilePath("a")]: file("A") });
+    await syncDbtConfigFromRepo(WS.toString());
+    const R = (await DbtJob.findOne({ projectId: project._id, slug: "a" }))!;
+    await loseRenameTo("b", true);
+    await c({ [jobFilePath("b")]: file("Other", "other") });
+    const live = await loadLiveJobs(project);
+    expect(
+      live.map(l => [l.def.slug, l.row?._id.toString() ?? "git-only"]),
+    ).toEqual([
+      ["a", R._id.toString()],
+      ["b", "git-only"],
+    ]);
+    const row = (await DbtJob.findById(R._id))!;
+    expect([row.slug, row.name, row.commands[0]]).toEqual([
+      "a",
+      "A",
+      "build --select x_model_1",
+    ]);
+  }, 90_000);
+});

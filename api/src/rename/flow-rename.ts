@@ -381,7 +381,19 @@ export async function renameFlow(
         name: nextName,
         ...(aliases.length > 0 ? { aliases } : {}),
         ...(slugChanged
-          ? { lastRenameCommit: commit.commitOid, lastRenameAt: new Date() }
+          ? {
+              lastRenameCommit: commit.commitOid,
+              lastRenameAt: new Date(),
+              // What the push-sync pairs a laptop move against while the
+              // guard holds: the blob this rename started from (it was on
+              // the mirror, so every instance has it) — or, when an earlier
+              // rename of this row has not settled yet, the one THAT
+              // started from.
+              renameFromBlobSha:
+                row.lastRenameCommit && row.renameFromBlobSha
+                  ? row.renameFromBlobSha
+                  : oldOid,
+            }
           : {}),
       },
       ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
