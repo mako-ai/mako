@@ -35,6 +35,13 @@ export interface AppRenameDialogProps {
   prefillSlug?: string;
   /** Whether the link is addressed by the slug (`/apps/<slug>`) or the id. */
   slugIsLink: boolean;
+  /**
+   * Why this person may change the NAME but not the LINK, when that is so
+   * (appRenameRights `title`: someone else's personal folder, shared with
+   * them as an editor). The link field shows, disabled, with this reason;
+   * only the name is ever sent.
+   */
+  linkLockedReason?: string;
   busy?: boolean;
   /** The server's refusal, shown under the fields until the next attempt. */
   error?: string | null;
@@ -52,22 +59,25 @@ export function AppRenameDialog({
   currentSlug,
   prefillSlug,
   slugIsLink,
+  linkLockedReason,
   busy = false,
   error = null,
   onClose,
   onConfirm,
 }: AppRenameDialogProps) {
+  const linkLocked = !!linkLockedReason;
+  const initialSlug = linkLocked ? currentSlug : (prefillSlug ?? currentSlug);
   const [title, setTitle] = useState(currentTitle);
-  const [slug, setSlug] = useState(prefillSlug ?? currentSlug);
+  const [slug, setSlug] = useState(initialSlug);
   useEffect(() => {
     if (open) {
       setTitle(currentTitle);
-      setSlug(prefillSlug ?? currentSlug);
+      setSlug(initialSlug);
     }
-  }, [open, currentTitle, currentSlug, prefillSlug]);
+  }, [open, currentTitle, initialSlug]);
 
   const titleChanged = title.trim() !== currentTitle && title.trim() !== "";
-  const slugChanged = slug.trim() !== currentSlug;
+  const slugChanged = !linkLocked && slug.trim() !== currentSlug;
   const slugValid = !slugChanged || isValidFolderName(slug);
   const titleValid = title.trim() !== "";
   const canSubmit =
@@ -115,19 +125,22 @@ export function AppRenameDialog({
           }}
           error={!slugValid}
           helperText={
-            !slugValid
+            linkLockedReason ??
+            (!slugValid
               ? "Letters, numbers, spaces, dots, dashes and underscores; must start with a letter or number."
               : slugIsLink
                 ? `/apps/${slug.trim() || currentSlug}`
-                : "The folder name in the workspace repo; the link uses the app's id."
+                : "The folder name in the workspace repo; the link uses the app's id.")
           }
-          disabled={busy}
+          disabled={busy || linkLocked}
           slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
         />
         <Typography variant="caption" color="text.secondary">
-          {slugChanged
-            ? "The previous name is kept as an alias of this app, so its old link keeps opening it. If another app used that name before, that app stops answering to it — you'll be told."
-            : "Changing the link renames the app's folder; the previous name is kept as an alias. Either change rewrites mako.json, which republishes the app once."}
+          {linkLocked
+            ? "Changing the name rewrites mako.json, which republishes the app once."
+            : slugChanged
+              ? "The previous name is kept as an alias of this app, so its old link keeps opening it. If another app used that name before, that app stops answering to it — you'll be told."
+              : "Changing the link renames the app's folder; the previous name is kept as an alias. Either change rewrites mako.json, which republishes the app once."}
         </Typography>
         {error && (
           <Typography

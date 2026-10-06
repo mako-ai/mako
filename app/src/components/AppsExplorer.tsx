@@ -89,7 +89,8 @@ import {
 import { APP_DIR_SEP, APP_FILE_SEP } from "../lib/explorer-reveal";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import {
-  appRenameRefusal,
+  appRenameRights,
+  type AppRenameRights,
   basenameOf,
   buildAppTree,
   folderNodeId,
@@ -246,7 +247,7 @@ interface FolderDialogState {
 }
 
 export default function AppsExplorer() {
-  const { currentWorkspace } = useWorkspace();
+  const { currentWorkspace, members } = useWorkspace();
   const confirm = useConfirm();
   const workspaceId = currentWorkspace?.id;
   // Viewers read; every editing member may reorganise the Workspace tree.
@@ -844,26 +845,37 @@ export default function AppsExplorer() {
   );
 
   /**
-   * Why this person may NOT rename the app row, or null when they may: the
-   * server's rules (appRenameRefusal — the app's write ACL as GET /apps
-   * reports it, and the tree rule of authorizeAppMove), without side
-   * effects. `mayRenameApp` decides what the context menu SHOWS; a rename
-   * asked for anyway (F2, double-click) says why it cannot happen.
+   * What this person may rename on the app row — name and link, the name
+   * only, or nothing (with why): the server's rules (appRenameRights — the
+   * app's write ACL as GET /apps reports it, and the tree rule of
+   * authorizeAppMove for the link), without side effects. `mayRenameApp`
+   * decides what the context menu SHOWS; a rename asked for anyway (F2,
+   * double-click) says why it cannot happen.
    */
-  const renameRefusal = useCallback(
-    (appId: string): string | null => {
+  const emailByUserId = useMemo(
+    () => new Map(members.map(m => [m.userId, m.email])),
+    [members],
+  );
+  const renameRights = useCallback(
+    (appId: string): AppRenameRights => {
       const app = appById.get(appId);
-      if (!app) return "This app is no longer in the list.";
-      return appRenameRefusal(
+      if (!app) {
+        return { kind: "none", reason: "This app is no longer in the list." };
+      }
+      return appRenameRights(
         { ...app, path: appRootOf(app) },
-        { userId, role: currentWorkspace?.role },
+        {
+          userId,
+          role: currentWorkspace?.role,
+          nameOf: id => emailByUserId.get(id),
+        },
       );
     },
-    [appById, userId, currentWorkspace?.role],
+    [appById, userId, currentWorkspace?.role, emailByUserId],
   );
   const mayRenameApp = useCallback(
-    (appId: string): boolean => renameRefusal(appId) === null,
-    [renameRefusal],
+    (appId: string): boolean => renameRights(appId).kind !== "none",
+    [renameRights],
   );
 
   /**
@@ -878,16 +890,16 @@ export default function AppsExplorer() {
     (node: { id: string }): boolean => {
       const parsed = parseNodeId(node.id);
       if (parsed.kind !== "app" || parsed.pinned) return false;
-      const refusal = renameRefusal(parsed.appId);
-      if (refusal) {
-        setError(refusal);
+      const rights = renameRights(parsed.appId);
+      if (rights.kind === "none") {
+        setError(rights.reason);
         return true;
       }
       setRenameError(null);
       setRenameDialog({ appId: parsed.appId });
       return true;
     },
-    [renameRefusal, setError],
+    [renameRights, setError],
   );
 
   /**
@@ -1651,6 +1663,14 @@ export default function AppsExplorer() {
           (renameDialog && appById.get(renameDialog.appId)?.slug) ?? ""
         }
         prefillSlug={renameDialog?.slug}
+        linkLockedReason={
+          renameDialog
+            ? (() => {
+                const rights = renameRights(renameDialog.appId);
+                return rights.kind === "title" ? rights.linkReason : undefined;
+              })()
+            : undefined
+        }
         slugIsLink={
           !!renameDialog &&
           (() => {
