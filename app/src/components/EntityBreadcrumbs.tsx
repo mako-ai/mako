@@ -6,6 +6,8 @@ import { useSchemaStore } from "../store/schemaStore";
 import { useAppsStore } from "../store/appsStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDbtStore } from "../store/dbtStore";
+import { useFlowStore } from "../store/flowStore";
+import { getFlowTitle } from "../flow-runtime/shell";
 import { useUIStore } from "../store/uiStore";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
 import { tabRevealTarget } from "../lib/explorer-reveal";
@@ -27,6 +29,8 @@ interface EntityContext {
   dashboardDataSourceName?: string;
   appTitle?: string;
   dbtProjectName?: string;
+  /** The listed flow's name — current even when the tab's title lags. */
+  flowTitle?: string;
 }
 
 /**
@@ -112,7 +116,7 @@ function segmentsForTab(
     case "connectors":
       return plain(["Sources", tab.title || "New source connection"]);
     case "flow-editor":
-      return plain(["Flows", tab.title || "New flow"]);
+      return plain(["Flows", ctx.flowTitle || tab.title || "New flow"]);
     case "settings":
       return plain([
         "Settings",
@@ -211,6 +215,17 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
       : undefined,
   );
 
+  // A flow keeps its id through every rename; its name is the list's.
+  const flowId =
+    tab?.kind === "flow-editor"
+      ? (tab.metadata?.flowId as string | undefined)
+      : undefined;
+  const flowTitle = useFlowStore(s => {
+    if (!flowId || !currentWorkspace) return undefined;
+    const flow = s.flows[currentWorkspace.id]?.find(f => f._id === flowId);
+    return flow ? getFlowTitle(flow) : undefined;
+  });
+
   const dashboardId = tab?.metadata?.dashboardId as string | undefined;
   const dataSourceId = tab?.metadata?.dataSourceId as string | undefined;
   const dashboardTitle = useDashboardStore(s =>
@@ -233,6 +248,7 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
     dashboardDataSourceName,
     appTitle,
     dbtProjectName,
+    flowTitle,
   });
 
   return (
