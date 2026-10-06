@@ -20,3 +20,18 @@ export function focusNotebookTab(notebookId: string, title: string): string {
     { replacePristine: false, pin: true },
   ) as string;
 }
+
+/**
+ * Close every tab for a notebook that no longer resolves (a dead `/n/:id`
+ * link): persisted tabs would otherwise restore the same dead id on every
+ * reload. Returns whether anything was closed.
+ */
+export function closeNotebookTabsFor(notebookId: string): boolean {
+  const store = useConsoleStore.getState();
+  const doomed = Object.values(store.tabs).filter(
+    (tab: { id: string; kind?: string; metadata?: { notebookId?: string } }) =>
+      tab.kind === "notebook" && tab.metadata?.notebookId === notebookId,
+  );
+  for (const tab of doomed) store.closeTab(tab.id);
+  return doomed.length > 0;
+}

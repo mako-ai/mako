@@ -24,11 +24,16 @@ import { useMcpStore } from "../store/mcpStore";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
 import { closeSourceConnectionTabsFor } from "../lib/source-connection-tabs";
 import {
+  closeDashboardTabsFor,
   focusDashboardDataSourceTab,
   focusDashboardTab,
 } from "../dashboard-runtime/shell";
 import { focusFlowTabById } from "../flow-runtime/shell";
-import { focusNotebookTab } from "../notebook-runtime/shell";
+import {
+  closeNotebookTabsFor,
+  focusNotebookTab,
+} from "../notebook-runtime/shell";
+import { resolveObjectRef } from "../lib/object-links";
 import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
@@ -195,13 +200,24 @@ export function UrlSync() {
 
       // Focus if open; else resolve the title, then open (focusDashboardTab
       // dedupes again in case a tab appeared while the list was loading).
+      // A dashboard the list does not know (deleted, or another workspace)
+      // used to open a blank "Dashboard" tab with no word why — the same
+      // dead-link notice apps and source connections show is due here.
       if (!focusOrOpenTab({ kind: "dashboard", metadata: { dashboardId } })) {
         useDashboardStore
           .getState()
           .fetchDashboards(currentWorkspace.id)
           .then(dashboards => {
             const dashboard = dashboards.find(d => d._id === dashboardId);
-            focusDashboardTab(dashboardId, dashboard?.title || "Dashboard");
+            if (!dashboard) {
+              closeDashboardTabsFor(dashboardId);
+              window.history.replaceState(null, "", "/");
+              setDeadLinkNotice(
+                "That dashboard link doesn't resolve anymore — it may have been deleted.",
+              );
+              return;
+            }
+            focusDashboardTab(dashboardId, dashboard.title || "Dashboard");
           });
       }
     } else if (tableMatch) {
@@ -326,11 +342,31 @@ export function UrlSync() {
       focusDbtConsoleTab(projectId, "Console");
     } else if (notebookMatch) {
       // /n/:notebookId — focusNotebookTab dedupes against an existing tab and
-      // activates it. NotebookRenderer loads the doc by id and syncs the real
-      // name onto the tab, so a placeholder title is fine on cold load.
+      // activates it. A tab already open is focused as-is; a cold deep link
+      // first asks the server what the id is (one small resolve call — the
+      // same lookup the rename service answers), so a deleted notebook gets
+      // the dead-link notice instead of a placeholder tab that 404s inside.
+      // NotebookRenderer still loads the doc and syncs the live name.
       const notebookId = notebookMatch[1];
       setLeftPane("notebooks");
-      focusNotebookTab(notebookId, "Untitled notebook");
+      if (!focusOrOpenTab({ kind: "notebook", metadata: { notebookId } })) {
+        void resolveObjectRef(currentWorkspace.id, "notebook", notebookId).then(
+          resolved => {
+            if (!resolved) {
+              closeNotebookTabsFor(notebookId);
+              window.history.replaceState(null, "", "/");
+              setDeadLinkNotice(
+                "That notebook link doesn't resolve anymore — it may have been deleted.",
+              );
+              return;
+            }
+            focusNotebookTab(
+              resolved.id,
+              resolved.current.title || "Untitled notebook",
+            );
+          },
+        );
+      }
     } else if (planMatch) {
       // /p/:chatId — plans only exist within a chat session, so we can only
       // focus a plan tab that is already present in this browser's state.

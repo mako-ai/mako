@@ -344,14 +344,11 @@ function ConsoleExplorer(
   ) => {
     if (!currentWorkspace || !selectedItem?.id) return;
 
-    if (newName && newName !== selectedItem.name) {
+    const renamedTo =
+      newName && newName !== selectedItem.name ? newName : undefined;
+    if (renamedTo && selectedItem.isDirectory) {
       const renameItem = useConsoleTreeStore.getState().renameItem;
-      await renameItem(
-        currentWorkspace.id,
-        selectedItem.id,
-        newName,
-        selectedItem.isDirectory,
-      );
+      await renameItem(currentWorkspace.id, selectedItem.id, renamedTo, true);
     }
 
     if (selectedItem.isDirectory) {
@@ -362,11 +359,14 @@ function ConsoleExplorer(
         section === "workspace" ? "workspace" : "private",
       );
     } else {
+      // Rename + move in ONE request: a console is a file in the repo, and
+      // two requests made two commits (rename, then move) for one gesture.
       const success = await moveConsole(
         currentWorkspace.id,
         selectedItem.id,
         targetFolderId,
         section === "workspace" ? "workspace" : "private",
+        renamedTo,
       );
       if (success) {
         const nextName = newName || selectedItem.name;

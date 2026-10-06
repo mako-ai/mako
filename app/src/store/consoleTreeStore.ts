@@ -109,12 +109,13 @@ export const useConsoleTreeStore = createResourceTreeStore<
         throw error;
       }
     },
-    moveItem: async (workspaceId, id, folderId, access) =>
+    moveItem: async (workspaceId, id, folderId, access, name) =>
       ok(
         unwrapBody(
           await api.PATCH(`${base}/{id}/move`, {
             params: { path: { workspaceId, id } },
-            body: { folderId, access },
+            // A rename-while-moving rides along so the server commits once.
+            body: { folderId, access, ...(name ? { name } : {}) },
           }),
         ) as { success: boolean },
       ),
