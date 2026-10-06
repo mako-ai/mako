@@ -88,13 +88,31 @@ export async function pathExistsAt(
  * `oldPath` existing at `ref` is the caller's concern — this answers only
  * "where did it go", never "is it still here".
  */
+export interface RenameScanOptions {
+  /** Newest rename commits to scan (default 200). */
+  limit?: number;
+  /**
+   * Minimum similarity (percent) for git to call a delete + add a rename
+   * (git's default is 50). Kinds whose marker file is small and often
+   * identical across objects (a connector's entry file) ask for more, so
+   * two unrelated folders are not paired.
+   */
+  similarity?: number;
+}
+
+function renameFlag(options: RenameScanOptions): string {
+  const pct = options.similarity;
+  return pct && pct > 0 && pct <= 100 ? `-M${Math.round(pct)}%` : "-M";
+}
+
 export async function findRenamedPath(
   repoDir: string,
   ref: string,
   oldPath: string,
   dirPrefix: string,
-  limit = 200,
+  options: RenameScanOptions = {},
 ): Promise<string | null> {
+  const limit = options.limit ?? 200;
   let stdout: string;
   try {
     ({ stdout } = await runGit(
@@ -103,7 +121,7 @@ export async function findRenamedPath(
         repoDir,
         "log",
         "--format=%x01%H",
-        "-M",
+        renameFlag(options),
         "--name-status",
         "--diff-filter=R",
         "-z",
@@ -133,20 +151,71 @@ export async function findRenamedFolder(
   dir: string,
   oldFolder: string,
   marker: string,
-  limit = 200,
+  options: RenameScanOptions = {},
 ): Promise<string | null> {
   const next = await findRenamedPath(
     repoDir,
     ref,
     `${dir}/${oldFolder}/${marker}`,
     dir,
-    limit,
+    options,
   );
   if (!next) return null;
   const m = new RegExp(
     `^${escapeRegExp(dir)}/([^/]+)/${escapeRegExp(marker)}$`,
   ).exec(next);
   return m ? m[1] : null;
+}
+
+/**
+ * Folder renames between two commits, for kinds keyed by directory whose
+ * index remembers the commit it last read (`row.sha`): a push that moved
+ * `<dir>/<old>/<marker>` to `<dir>/<new>/<marker>` is a rename, not a
+ * delete plus a create. Returns new folder → old folder. Empty (never a
+ * throw) when either commit is unknown here.
+ */
+export async function renamedFoldersBetween(
+  repoDir: string,
+  fromCommit: string,
+  toCommit: string,
+  dir: string,
+  marker: string,
+  options: RenameScanOptions = {},
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!fromCommit || !toCommit || fromCommit === toCommit) return out;
+  let stdout: string;
+  try {
+    ({ stdout } = await runGit(
+      [
+        "-C",
+        repoDir,
+        "diff",
+        "--name-status",
+        renameFlag(options),
+        "-z",
+        "--diff-filter=R",
+        fromCommit,
+        toCommit,
+        "--",
+        dir,
+      ],
+      { timeoutMs: 60_000 },
+    ));
+  } catch {
+    return out;
+  }
+  const fields = stdout.split("\0");
+  const re = new RegExp(
+    `^${escapeRegExp(dir)}/([^/]+)/${escapeRegExp(marker)}$`,
+  );
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    if (!fields[i].startsWith("R")) continue;
+    const from = re.exec(fields[i + 1]);
+    const to = re.exec(fields[i + 2]);
+    if (from && to && from[1] !== to[1]) out.set(to[1], from[1]);
+  }
+  return out;
 }
 
 function escapeRegExp(s: string): string {

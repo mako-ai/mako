@@ -6,7 +6,11 @@
  * never boot a sandbox, and they must be honest about a connector that is not
  * usable yet rather than hiding it.
  */
-import { listConnectorDefinitions, loadConnectorDefinition } from "./resolver";
+import {
+  findConnectorDefinitionRow,
+  listConnectorDefinitions,
+  loadConnectorDefinition,
+} from "./resolver";
 import {
   connectionSpecificationToForm,
   type FormSchema,
@@ -31,6 +35,8 @@ export interface WorkspaceConnectorSummary {
   /** Why the last connection test failed. A bad key, not a broken connector. */
   lastCheckError?: string;
   hasIcon: boolean;
+  /** Previous slugs; connections typed `ws:<alias>` still resolve here. */
+  aliases: string[];
   source: "workspace";
 }
 
@@ -57,6 +63,7 @@ export async function listWorkspaceConnectors(
       blockedReason: row.blockedReason,
       lastCheckError: row.lastCheckError,
       hasIcon: row.hasIcon === true,
+      aliases: row.aliases ?? [],
       source: "workspace" as const,
     };
   });
@@ -96,17 +103,18 @@ export async function connectorTypeExists(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (!isWorkspaceConnectorType(type)) return { ok: true };
   const slug = slugFromType(type);
-  const row = await ConnectorDefinition.findOne({ workspaceId, slug }).lean();
-  if (!row) {
+  const found = await findConnectorDefinitionRow(workspaceId, slug);
+  if (!found) {
     return {
       ok: false,
       reason: `This workspace has no connector "${slug}". Push a folder at connectors/${slug}/ to main.`,
     };
   }
+  const row = found.row;
   if (row.status === "blocked") {
     return {
       ok: false,
-      reason: `The connector "${slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
+      reason: `The connector "${row.slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
     };
   }
   return { ok: true };

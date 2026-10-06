@@ -26,6 +26,13 @@ export interface ConnectorFile {
   /** Entry file for the `node` runtime, relative to the folder. */
   entry: string;
   page?: { vendor?: string; category?: string; docs?: string };
+  /**
+   * Previous folder slugs. A rename writes the old slug here so every
+   * `SourceConnection.type = "ws:<old>"` keeps resolving to this
+   * definition (api/src/rename). Lives in the file so a clone or a laptop
+   * `git mv` that keeps it behaves exactly like a UI rename.
+   */
+  aliases: string[];
 }
 
 export type ParseResult =
@@ -116,14 +123,65 @@ export function parseConnectorFile(contents: string): ParseResult {
     };
   }
 
+  const rawAliases = raw.aliases;
+  if (
+    rawAliases !== undefined &&
+    (!Array.isArray(rawAliases) ||
+      rawAliases.some(a => typeof a !== "string" || !isValidSlug(a)))
+  ) {
+    return {
+      ok: false,
+      reason:
+        "`aliases` must be a list of previous folder slugs, e.g. `aliases: [acme]`.",
+    };
+  }
+  const aliases = [...new Set((rawAliases as string[] | undefined) ?? [])];
+
   return {
     ok: true,
     value: {
       runtime: runtime as ConnectorRuntime,
       entry,
       page: page as ConnectorFile["page"],
+      aliases,
     },
   };
+}
+
+/**
+ * `connector.yaml` with `alias` added to its `aliases`, as text. The file
+ * is the author's: when it has no `aliases` key the list is appended and
+ * every other byte (comments included) is kept; when it already has one,
+ * the document is re-emitted with the list extended. Null when the file
+ * does not parse — a rename must not overwrite what it cannot read.
+ */
+export function withConnectorAlias(
+  contents: string,
+  alias: string,
+): string | null {
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(contents);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const doc = parsed as Record<string, unknown>;
+  const existing = Array.isArray(doc.aliases)
+    ? doc.aliases.filter((a): a is string => typeof a === "string")
+    : null;
+  if (existing && existing.includes(alias)) return contents;
+  if (existing === null) {
+    const base =
+      contents.endsWith("\n") || contents === "" ? contents : `${contents}\n`;
+    return `${base}aliases:\n  - ${alias}\n`;
+  }
+  return yaml.dump(
+    { ...doc, aliases: [...existing, alias] },
+    { lineWidth: 100 },
+  );
 }
 
 /**

@@ -47,6 +47,8 @@ const MAX_FOLDER_BYTES = 2 * 1024 * 1024;
 
 export interface LoadedConnector {
   slug: string;
+  /** Previous slugs; `ws:<alias>` resolves here while nothing live claims it. */
+  aliases: string[];
   runtime: string;
   /** The file `connector.yaml` names, defaulted for rows written before it was indexed. */
   entry: string;
@@ -64,23 +66,44 @@ export interface LoadedConnector {
  * blocked because its spec failed to parse" is actionable, and "connector not
  * found" for a folder that plainly exists is not.
  */
+/**
+ * The row a slug names: the live slug first, else the ONE row whose
+ * `aliases` carry it (api/src/rename — an alias claimed by two rows
+ * resolves to neither, so a `ws:old` connection cannot silently run the
+ * wrong connector). `via` says which, for callers that migrate.
+ */
+export async function findConnectorDefinitionRow(
+  workspaceId: string,
+  slug: string,
+): Promise<{ row: IConnectorDefinition; via: "current" | "alias" } | null> {
+  const current = await ConnectorDefinition.findOne({ workspaceId, slug });
+  if (current) return { row: current, via: "current" };
+  const claimants = await ConnectorDefinition.find({
+    workspaceId,
+    aliases: slug,
+  }).limit(2);
+  return claimants.length === 1 ? { row: claimants[0], via: "alias" } : null;
+}
+
 export async function loadConnectorDefinition(
   workspaceId: string,
   slug: string,
 ): Promise<LoadedConnector> {
-  const row = await ConnectorDefinition.findOne({ workspaceId, slug }).lean();
-  if (!row) {
+  const found = await findConnectorDefinitionRow(workspaceId, slug);
+  if (!found) {
     throw new Error(
       `No connector "${slug}" in this workspace. Push a folder at ${CONNECTORS_DIR}/${slug}/ to main.`,
     );
   }
+  const row = found.row;
   if (row.status === "blocked") {
     throw new Error(
-      `The connector "${slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
+      `The connector "${row.slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
     );
   }
   return {
     slug: row.slug,
+    aliases: row.aliases ?? [],
     runtime: row.runtime,
     entry: row.entry || DEFAULT_ENTRY,
     sha: row.sha,
@@ -100,6 +123,7 @@ export async function listConnectorDefinitions(
     .lean();
   return rows.map(row => ({
     slug: row.slug,
+    aliases: row.aliases ?? [],
     runtime: row.runtime,
     entry: row.entry || DEFAULT_ENTRY,
     sha: row.sha,
