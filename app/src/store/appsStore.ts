@@ -28,6 +28,7 @@ import {
 } from "../apps-runtime/shell";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
+import { useRecentsStore } from "./recentsStore";
 import { useUIStore } from "./uiStore";
 import type { PublicShareInfo } from "./shareStore";
 
@@ -119,6 +120,12 @@ export interface AppMeta {
    * the server filed it under an id of its own and offers to stamp it.
    */
   duplicateOf?: string;
+  /**
+   * Previous slugs or repo paths of a renamed app (mako.json `aliases`,
+   * plus what the server's index learned from git). An old `/apps/<slug>`
+   * link resolves through them — see resolveAppRef and UrlSync.
+   */
+  aliases?: string[];
   title: string;
   description?: string;
   updatedAt?: string;
@@ -937,9 +944,21 @@ export const useAppsStore = create<AppsStore>()(
           // Drop tabs pointing at apps this workspace does not have, so a
           // deleted app cannot leave a working-looking workspace view behind.
           reconcileAppsTabs(new Set(apps.map(a => a.id)));
-          // And keep the survivors' URL handles current: a push that moved
-          // an app changes what its tabs' links should say.
-          healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
+          // And keep the survivors' URL handles and titles current: a push
+          // that moved or renamed an app changes what its tabs' links and
+          // names should say. Recents reopen by id, so they heal the same way.
+          healAppsTabs(
+            new Map(apps.map(a => [a.id, appUrlSlug(a)])),
+            new Map(apps.map(a => [a.id, a.title])),
+          );
+          useRecentsStore
+            .getState()
+            .healApps(
+              workspaceId,
+              new Map(
+                apps.map(a => [a.id, { title: a.title, slug: appUrlSlug(a) }]),
+              ),
+            );
         } catch (e) {
           // GET /apps is 412 without a GitHub binding. That is an empty
           // explorer (disconnect, never linked), not a load failure. Keeping

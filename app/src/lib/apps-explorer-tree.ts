@@ -116,6 +116,8 @@ export interface RefApp {
   id: string;
   slug?: string;
   path?: string;
+  /** Previous slugs or repo paths (the server's `aliases`). */
+  aliases?: string[];
 }
 
 /** Repo-relative folder of an app; legacy rows sit at `apps/<slug>`. */
@@ -130,13 +132,38 @@ export function appPathOf(app: RefApp): string {
  * name, else the top-level `apps/<slug>`, else nothing. An ambiguous nested
  * name must NOT silently pick a folder — the server refuses it too, and a
  * client that guessed would open one app while the address bar named another.
+ *
+ * Only when nothing current matches are `aliases` (previous names of a
+ * renamed app) tried, so an old name can never shadow a live one, and only
+ * when exactly ONE app claims the alias. Mirrors `findAppInSnapshot` in
+ * api/src/apps/app-index.service.ts; keep the two in step.
  */
 export function resolveAppRef<T extends RefApp>(
   apps: readonly T[],
   ref: string,
 ): T | null {
+  return resolveAppRefVia(apps, ref)?.app ?? null;
+}
+
+/** {@link resolveAppRef}, saying whether a current name or an alias matched. */
+export function resolveAppRefVia<T extends RefApp>(
+  apps: readonly T[],
+  ref: string,
+): { app: T; via: "current" | "alias" } | null {
   const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
   if (!clean) return null;
+  const current = findCurrentApp(apps, clean);
+  if (current) return { app: current, via: "current" };
+  const claimants = apps.filter(a =>
+    (a.aliases ?? []).some(alias => aliasMatchesRef(alias, clean)),
+  );
+  return claimants.length === 1 ? { app: claimants[0], via: "alias" } : null;
+}
+
+function findCurrentApp<T extends RefApp>(
+  apps: readonly T[],
+  clean: string,
+): T | null {
   if (/^[0-9a-f]{24}$/i.test(clean)) {
     const lower = clean.toLowerCase();
     const byId = apps.find(a => a.id.toLowerCase() === lower);
@@ -152,4 +179,15 @@ export function resolveAppRef<T extends RefApp>(
   const matches = apps.filter(a => basenameOf(appPathOf(a)) === clean);
   if (matches.length === 1) return matches[0];
   return matches.find(a => appPathOf(a) === `apps/${clean}`) ?? null;
+}
+
+/**
+ * Does an alias name the (cleaned) ref? Equal, or equal with or without
+ * the leading `apps/`: a bare-slug alias `x` answers `apps/x`, a path alias
+ * `apps/S/x` answers `S/x`.
+ */
+export function aliasMatchesRef(alias: string, clean: string): boolean {
+  return (
+    alias === clean || alias === `apps/${clean}` || `apps/${alias}` === clean
+  );
 }

@@ -4,7 +4,8 @@ import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { appUrlSlug, useAppsStore } from "../store/appsStore";
-import { resolveAppRef } from "../lib/apps-explorer-tree";
+import { resolveAppRefVia } from "../lib/apps-explorer-tree";
+import { resolveObjectRef } from "../lib/object-links";
 import {
   closeAppsTabsFor,
   focusAppsFileTab,
@@ -33,8 +34,58 @@ import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
   decodeUrlSegment,
+  legacyAppPathname,
   tabUrlPath,
 } from "../lib/tab-routing";
+
+/**
+ * What an `/apps/<ref>` link points at: the app, and whether the ref is
+ * its current name or an old one. The fetched list answers first (its
+ * `aliases` mirror the server's); a miss asks the server, which also knows
+ * an app pushed a moment ago that the list does not have yet. `null` when
+ * nothing (or more than one app) claims the ref.
+ */
+async function resolveAppLink(
+  workspaceId: string,
+  ref: string,
+): Promise<{
+  id: string;
+  title: string;
+  slug: string | undefined;
+  via: "current" | "alias";
+} | null> {
+  const local = resolveAppRefVia(useAppsStore.getState().apps, ref);
+  if (local) {
+    return {
+      id: local.app.id,
+      title: local.app.title,
+      slug: appUrlSlug(local.app),
+      via: local.via,
+    };
+  }
+  const remote = await resolveObjectRef(workspaceId, "app", ref);
+  if (!remote) return null;
+  // The list may still be catching up with a push: refetch once so the
+  // tab has a row to render, then take the handle from whichever is fresher.
+  await useAppsStore.getState().fetchApps(workspaceId);
+  const listed = useAppsStore.getState().apps.find(a => a.id === remote.id);
+  const current = remote.current;
+  return {
+    id: remote.id,
+    title: listed?.title ?? current.title ?? "App",
+    slug: listed
+      ? appUrlSlug(listed)
+      : current.slug && current.path === `apps/${current.slug}`
+        ? current.slug
+        : undefined,
+    via: remote.via,
+  };
+}
+
+const DEAD_APP_LINK =
+  "That app link doesn't resolve anymore — the app may have been deleted or renamed.";
+const MOVED_APP_LINK =
+  "That app was renamed — the link has been updated to its new address.";
 
 /**
  * UrlSync component
@@ -96,7 +147,10 @@ export function UrlSync() {
     // Don't hydrate if not authenticated or no workspace
     if (isHydrated.current || !currentWorkspace || !user) return;
 
-    const path = window.location.pathname;
+    // `/a/<ref>` and `/a2/<ref>` are apps v1's addresses; they still mean
+    // the app (see tab-routing.ts).
+    const path =
+      legacyAppPathname(window.location.pathname) ?? window.location.pathname;
 
     // Reload vs deep link, and they deserve opposite answers. The URL follows
     // the active TAB, so on a plain reload the handlers below would move the
@@ -233,59 +287,82 @@ export function UrlSync() {
         }),
       );
     } else if (appFileMatch) {
-      // /a/:appId/file/:path — Apps file editor
-      const appId = decodeUrlSegment(appFileMatch[1]);
+      // /apps/:ref/file/:path — Apps file editor
+      const appRef = decodeUrlSegment(appFileMatch[1]);
       const filePath = decodePathSegments(appFileMatch[2]);
       setLeftPane("apps");
+      const workspaceId = currentWorkspace.id;
       void useAppsStore
         .getState()
-        .fetchApps(currentWorkspace.id)
-        .then(() => {
-          // Resolve exactly as the server does: id, repo path, or a slug
-          // that names ONE app (else the top-level one). Guessing a nested
-          // app from a bare name would open one app while the address bar
-          // named another.
-          const app = resolveAppRef(useAppsStore.getState().apps, appId);
+        .fetchApps(workspaceId)
+        .then(() => resolveAppLink(workspaceId, appRef))
+        .then(app => {
           if (!app) {
-            closeAppsTabsFor(appId);
+            // Only an id can name tabs to close; a slug that resolves to
+            // nothing names no tab (tabs carry the id).
+            if (/^[0-9a-f]{24}$/i.test(appRef)) {
+              closeAppsTabsFor(appRef.toLowerCase());
+            }
             window.history.replaceState(null, "", "/");
-            setDeadLinkNotice(
-              "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
-            );
+            setDeadLinkNotice(DEAD_APP_LINK);
             return;
           }
-          focusAppsFileTab(app.id, filePath, appUrlSlug(app));
+          focusAppsFileTab(app.id, filePath, app.slug);
+          if (app.via === "alias") {
+            window.history.replaceState(
+              null,
+              "",
+              `/apps/${encodeURIComponent(app.slug ?? app.id)}/file/${appFileMatch[2]}`,
+            );
+            setDeadLinkNotice(MOVED_APP_LINK);
+          }
         });
     } else if (appMatch) {
-      // /a/:appId — Apps (git-backed, experimental)
-      const appId = decodeUrlSegment(appMatch[1]);
+      // /apps/:ref — Apps (git-backed)
+      const appRef = decodeUrlSegment(appMatch[1]);
       // The app's own query (a shared filtered view). Read NOW, synchronously:
       // the outgoing sync below rewrites the address bar to the tab's URL as
       // soon as hydration completes, and until the tab carries this search
       // that URL has none — reading it after the fetch would find it gone.
       const appSearch = window.location.search;
       setLeftPane("apps");
-      const store = useAppsStore.getState();
-      void store.fetchApps(currentWorkspace.id).then(() => {
-        // The path segment may be a slug (the app's folder in the repo) or a
-        // legacy Mongo id. Resolve either; the outgoing sync then rewrites the
-        // URL to the slug form, so old links upgrade themselves.
-        const app = resolveAppRef(useAppsStore.getState().apps, appId);
-        if (!app) {
-          // The link points at an app that is gone, or lives in another
-          // workspace. Opening a tab anyway rendered the whole workspace view
-          // — breadcrumb, terminal, a live Publish button — around nothing,
-          // and reloading restored the same dead id, so the page looked
-          // permanently stuck. Clear it and fall back to the list instead.
-          closeAppsTabsFor(appId);
-          window.history.replaceState(null, "", "/");
-          setDeadLinkNotice(
-            "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
-          );
-          return;
-        }
-        focusAppsTab(app.id, app.title, appUrlSlug(app), appSearch);
-      });
+      const workspaceId = currentWorkspace.id;
+      void useAppsStore
+        .getState()
+        .fetchApps(workspaceId)
+        .then(() => resolveAppLink(workspaceId, appRef))
+        .then(app => {
+          // The path segment may be a slug (the app's folder in the repo), a
+          // Mongo id, or a name the app USED to have. Resolve any of them —
+          // exactly as the server does: id, repo path, a slug that names ONE
+          // app (else the top-level one), and only then an alias. Guessing a
+          // nested app from a bare name would open one app while the address
+          // bar named another.
+          if (!app) {
+            // The link points at an app that is gone, or lives in another
+            // workspace. Opening a tab anyway rendered the whole workspace
+            // view — breadcrumb, terminal, a live Publish button — around
+            // nothing, and reloading restored the same dead id, so the page
+            // looked permanently stuck. Clear it and fall back to the list.
+            if (/^[0-9a-f]{24}$/i.test(appRef)) {
+              closeAppsTabsFor(appRef.toLowerCase());
+            }
+            window.history.replaceState(null, "", "/");
+            setDeadLinkNotice(DEAD_APP_LINK);
+            return;
+          }
+          focusAppsTab(app.id, app.title, app.slug, appSearch);
+          if (app.via === "alias") {
+            // A renamed app: open it, and make the address bar say where it
+            // is now, so the next copy of the link is the current one.
+            window.history.replaceState(
+              null,
+              "",
+              `/apps/${encodeURIComponent(app.slug ?? app.id)}${appSearch}`,
+            );
+            setDeadLinkNotice(MOVED_APP_LINK);
+          }
+        });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path
       const projectId = dbtFileMatch[1];

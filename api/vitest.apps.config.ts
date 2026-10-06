@@ -66,6 +66,8 @@ export default defineConfig({
       // Apps in real folders: the index over the tree at main, manifest
       // identity, moves that keep it, and the folder commits.
       "src/apps/app-index.service.test.ts",
+      // Graceful rename of an app: one commit, the old slug an alias.
+      "src/rename/handlers/app.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       // A deploy's outcome as a GitHub commit status on the pushed sha.

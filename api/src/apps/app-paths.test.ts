@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import {
+  addManifestAliases,
   appKeyOf,
   appRepoPath,
   derivedAppId,
   isSafeSegment,
+  parseAppAliases,
   parseAppFolderPath,
   parseAppManifest,
   parseAppRepoPath,
+  setManifestTitle,
   stampManifestId,
 } from "./app-paths";
 
@@ -141,4 +144,89 @@ assert.equal(isSafeSegment("a/b"), false);
 assert.equal(isSafeSegment(".hidden"), false);
 assert.equal(parseAppRepoPath("apps/café")?.slug, "café");
 
-console.log("app-paths: ok");
+// Aliases ------------------------------------------------------------------
+
+// Normalized, deduplicated, and anything unusable set aside (never fatal).
+assert.deepEqual(parseAppAliases(undefined), { aliases: [], rejected: [] });
+assert.deepEqual(parseAppAliases("report"), {
+  aliases: [],
+  rejected: ["report"],
+});
+assert.deepEqual(
+  parseAppAliases([
+    " old-name ",
+    "/apps/Sales/old/",
+    "old-name",
+    "",
+    7,
+    "a/../b",
+  ]),
+  { aliases: ["old-name", "apps/Sales/old"], rejected: ["", 7, "a/../b"] },
+);
+assert.deepEqual(
+  parseAppManifest('{"title":"X","aliases":["one","two"]}', "x").aliases,
+  ["one", "two"],
+);
+assert.deepEqual(parseAppManifest('{"title":"X"}', "x").aliases, []);
+
+// addManifestAliases: append, dedupe, drop the app's current names, keep
+// everything else where it is, and refuse an unparseable manifest.
+const withAliases = addManifestAliases(
+  '{\n  "id": "5ae23997208465e4541cd59d",\n  "title": "X",\n  "entry": "src/main.tsx"\n}\n',
+  ["old", "apps/Sales/old"],
+  ["x", "apps/x"],
+);
+assert.deepEqual(JSON.parse(withAliases!), {
+  id: "5ae23997208465e4541cd59d",
+  title: "X",
+  entry: "src/main.tsx",
+  aliases: ["old", "apps/Sales/old"],
+});
+// Already recorded: the contents come back untouched (same string).
+assert.equal(addManifestAliases(withAliases, ["old"]), withAliases);
+// The app's own current name is noise and is dropped, even if it was there.
+assert.deepEqual(
+  JSON.parse(addManifestAliases(withAliases, ["x"], ["x"])!).aliases,
+  ["old", "apps/Sales/old"],
+);
+// Dropping the last alias removes the key rather than leaving `[]`.
+assert.equal(
+  "aliases" in
+    JSON.parse(addManifestAliases('{"title":"X","aliases":["x"]}', [], ["x"])!),
+  false,
+);
+assert.equal(addManifestAliases("{not json", ["old"]), null);
+assert.equal(addManifestAliases("[1,2]", ["old"]), null);
+// A missing manifest becomes a minimal one (the move stamps the id first).
+assert.deepEqual(JSON.parse(addManifestAliases(null, ["old"])!), {
+  aliases: ["old"],
+});
+
+// setManifestTitle: in place when present, after the id when not, and
+// never over a file it could not read.
+assert.deepEqual(
+  JSON.parse(
+    setManifestTitle(
+      '{"id":"5ae23997208465e4541cd59d","title":"X","entry":"e"}',
+      "Y",
+    )!,
+  ),
+  { id: "5ae23997208465e4541cd59d", title: "Y", entry: "e" },
+);
+assert.deepEqual(
+  Object.keys(
+    JSON.parse(
+      setManifestTitle('{"id":"5ae23997208465e4541cd59d","entry":"e"}', "Y")!,
+    ),
+  ),
+  ["id", "title", "entry"],
+);
+assert.deepEqual(
+  Object.keys(JSON.parse(setManifestTitle('{"entry":"e"}', "Y")!)),
+  ["title", "entry"],
+);
+const same = '{"title":"Y"}';
+assert.equal(setManifestTitle(same, "Y"), same);
+assert.equal(setManifestTitle("{oops", "Y"), null);
+
+console.log("app-paths.test.ts: ok");

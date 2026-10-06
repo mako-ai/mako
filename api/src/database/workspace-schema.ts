@@ -5607,6 +5607,17 @@ export interface IAppIndexEntry extends Document {
    * id instead and the UI offers to stamp a fresh one.
    */
   duplicateOf?: string;
+  /**
+   * Previous slugs or repo paths from the manifest's `aliases`: old links
+   * resolve here when no current slug or path claims them.
+   */
+  aliases: string[];
+  /**
+   * Previous slugs or repo paths the INDEX knows that the manifest does not
+   * carry: a laptop `git mv` seen by the sync, and renames of the manifest
+   * found in git history. Kept across syncs; readers see the union.
+   */
+  indexAliases: string[];
   /** Scheduled bindings, so the scheduler never opens the repo. */
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
   /** The main commit this row was built from. */
@@ -5636,6 +5647,8 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
     description: { type: String },
     hasManifestId: { type: Boolean, required: true, default: false },
     duplicateOf: { type: String },
+    aliases: { type: [String], default: [] },
+    indexAliases: { type: [String], default: [] },
     schedules: {
       type: [
         new Schema(

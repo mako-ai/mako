@@ -6,6 +6,7 @@ import {
   folderPathFromNodeId,
   parentPathOf,
   resolveAppRef,
+  resolveAppRefVia,
 } from "./apps-explorer-tree";
 
 const apps = [
@@ -128,5 +129,45 @@ describe("resolveAppRef", () => {
     ).toBeNull();
     expect(resolveAppRef(list, "")).toBeNull();
     expect(resolveAppRef(list, "nope")).toBeNull();
+  });
+});
+
+describe("resolveAppRef aliases (the server's findAppInSnapshot, mirrored)", () => {
+  const live = { id: "6aaaed797eb3d8d53c497fd1", slug: "y", path: "apps/y" };
+  const renamed = {
+    id: "6aaaed797eb3d8d53c497fd2",
+    slug: "x",
+    path: "apps/x",
+    aliases: ["y", "old", "apps/Sales/old"],
+  };
+  const list = [live, renamed];
+
+  it("lets a current name beat an alias, always", () => {
+    expect(resolveAppRefVia(list, "y")).toEqual({ app: live, via: "current" });
+    expect(resolveAppRef(list, "apps/y")).toBe(live);
+  });
+
+  it("resolves an alias nothing current claims, bare or with apps/", () => {
+    expect(resolveAppRefVia(list, "old")).toEqual({
+      app: renamed,
+      via: "alias",
+    });
+    expect(resolveAppRef(list, "apps/old")).toBe(renamed);
+    expect(resolveAppRef(list, "/old/")).toBe(renamed);
+    // A path alias answers its path forms only.
+    expect(resolveAppRef(list, "apps/Sales/old")).toBe(renamed);
+    expect(resolveAppRef(list, "Sales/old")).toBe(renamed);
+    expect(resolveAppRef(list, "nope")).toBeNull();
+  });
+
+  it("resolves an alias two apps claim to neither", () => {
+    const other = {
+      id: "6aaaed797eb3d8d53c497fd3",
+      slug: "z",
+      path: "apps/z",
+      aliases: ["old"],
+    };
+    expect(resolveAppRef([...list, other], "old")).toBeNull();
+    expect(resolveAppRef([...list, other], "apps/Sales/old")).toBe(renamed);
   });
 });

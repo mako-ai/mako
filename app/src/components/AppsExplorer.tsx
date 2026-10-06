@@ -76,7 +76,11 @@ import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import AppEnvDialog from "./AppEnvDialog";
-import { focusAppsFileTab, focusAppsTab } from "../apps-runtime/shell";
+import {
+  focusAppsFileTab,
+  focusAppsTab,
+  healAppsTabs,
+} from "../apps-runtime/shell";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -107,6 +111,8 @@ import {
   FolderNameDialog,
   isValidFolderName,
 } from "./apps-explorer/AppFolderDialogs";
+import { AppRenameDialog } from "./apps-explorer/AppRenameDialog";
+import { renameObject } from "../lib/object-links";
 
 const AppIcon = TAB_KIND_ICONS["app"];
 
@@ -338,6 +344,14 @@ export default function AppsExplorer() {
     null,
   );
   const [folderBusy, setFolderBusy] = useState(false);
+  // The app rename dialog: name (title) and link (slug) together. `slug`
+  // is pre-filled from an inline edit when one got through.
+  const [renameDialog, setRenameDialog] = useState<{
+    appId: string;
+    slug?: string;
+  } | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -824,10 +838,38 @@ export default function AppsExplorer() {
     ],
   );
 
+  /** May this person rename the app row (not pinned, not shared with them, in a tree they write to)? */
+  const mayRenameApp = useCallback(
+    (appId: string): boolean => {
+      const app = appById.get(appId);
+      const folder = folderOfApp(appId);
+      return !!app && !!folder && !isSharedWithMe(appId) && mayWriteTo(folder);
+    },
+    [appById, folderOfApp, isSharedWithMe, mayWriteTo],
+  );
+
   /**
-   * Inline rename (F2 / double-click): a git folder, a Starred folder, or an
-   * app row — which renames the app's FOLDER (its slug) in place, the one
-   * name the row can honestly change; the title lives in mako.json.
+   * Renaming an app row (F2, double-click, the menu) opens the dialog: an
+   * app has a NAME (the title in mako.json) and a LINK (its folder, the
+   * slug), and an inline box can only honestly change one of them. The
+   * tree asks before it opens its inline editor; `true` means "handled".
+   */
+  const handleRenameRequest = useCallback(
+    (node: { id: string }): boolean => {
+      const parsed = parseNodeId(node.id);
+      if (parsed.kind !== "app" || parsed.pinned) return false;
+      if (!mayRenameApp(parsed.appId)) return true;
+      setRenameError(null);
+      setRenameDialog({ appId: parsed.appId });
+      return true;
+    },
+    [mayRenameApp],
+  );
+
+  /**
+   * Inline rename (F2 / double-click): a git folder or a Starred folder. An
+   * app row never reaches here any more (handleRenameRequest takes it), but
+   * a typed name that somehow does opens the dialog with it as the link.
    */
   const handleRename = useCallback(
     (id: string, name: string) => {
@@ -847,24 +889,45 @@ export default function AppsExplorer() {
           void moveAppFolder(workspaceId, parsed.folderPath, to);
         }
       } else if (parsed.kind === "app" && !parsed.pinned) {
-        const app = appById.get(parsed.appId);
-        const folder = folderOfApp(parsed.appId);
-        if (!app || !folder || isSharedWithMe(parsed.appId)) return;
-        if (name !== app.slug && mayWriteTo(folder)) {
-          void moveApp(workspaceId, parsed.appId, folder, name);
-        }
+        if (!mayRenameApp(parsed.appId)) return;
+        setRenameError(null);
+        setRenameDialog({ appId: parsed.appId, slug: name });
       }
     },
-    [
-      workspaceId,
-      renameFavourite,
-      mayWriteTo,
-      moveAppFolder,
-      moveApp,
-      appById,
-      folderOfApp,
-      isSharedWithMe,
-    ],
+    [workspaceId, renameFavourite, mayWriteTo, moveAppFolder, mayRenameApp],
+  );
+
+  /**
+   * The rename itself goes through the one rename service every path uses
+   * (`POST /objects/app/rename` → api/src/rename/handlers/app.ts): one
+   * commit on main, the old slug kept as an alias. The list refetch moves
+   * the row and heals every open tab's title and link.
+   */
+  const submitRenameDialog = useCallback(
+    async (change: { title?: string; slug?: string }) => {
+      if (!workspaceId || !renameDialog) return;
+      setRenameBusy(true);
+      setRenameError(null);
+      try {
+        const result = await renameObject(workspaceId, "app", {
+          ref: renameDialog.appId,
+          ...change,
+        });
+        if (result.after.title) {
+          healAppsTabs(
+            new Map(),
+            new Map([[renameDialog.appId, result.after.title]]),
+          );
+        }
+        setRenameDialog(null);
+        await fetchApps(workspaceId);
+      } catch (e) {
+        setRenameError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setRenameBusy(false);
+      }
+    },
+    [workspaceId, renameDialog, fetchApps],
   );
 
   const submitFolderDialog = useCallback(
@@ -957,6 +1020,23 @@ export default function AppsExplorer() {
         </MenuItem>,
       ];
       if (pinned) return items;
+      if (mayRenameApp(appId)) {
+        items.push(
+          <MenuItem
+            key="rename"
+            onClick={() => {
+              helpers.closeMenu();
+              setRenameError(null);
+              setRenameDialog({ appId });
+            }}
+          >
+            <ListItemIcon>
+              <RenameIcon size={16} />
+            </ListItemIcon>
+            Rename…
+          </MenuItem>,
+        );
+      }
       items.push(
         <MenuItem
           key="env"
@@ -1003,7 +1083,15 @@ export default function AppsExplorer() {
       );
       return items;
     },
-    [appById, starred, handleToggleStar, workspaceId, stampAppId, handleDelete],
+    [
+      appById,
+      starred,
+      handleToggleStar,
+      workspaceId,
+      stampAppId,
+      handleDelete,
+      mayRenameApp,
+    ],
   );
 
   const folderMenuItems = useCallback(
@@ -1409,6 +1497,7 @@ export default function AppsExplorer() {
                     return handleCreateStarFolder(favId);
                   }}
                   onRenameItem={handleRename}
+                  onRenameRequest={handleRenameRequest}
                   // An app row displays its TITLE but renames its FOLDER
                   // (the slug); editing the visible title must not git-mv
                   // the directory to "Daily tracker v2".
@@ -1526,6 +1615,29 @@ export default function AppsExplorer() {
         busy={folderBusy}
         onClose={() => !folderBusy && setFolderDialog(null)}
         onConfirm={submitFolderDialog}
+      />
+
+      <AppRenameDialog
+        open={!!renameDialog}
+        initialTitle={
+          (renameDialog && appById.get(renameDialog.appId)?.title) ?? ""
+        }
+        initialSlug={
+          renameDialog?.slug ??
+          (renameDialog && appById.get(renameDialog.appId)?.slug) ??
+          ""
+        }
+        slugIsLink={
+          !!renameDialog &&
+          (() => {
+            const app = appById.get(renameDialog.appId);
+            return !!app && appUrlRef(app) !== app.id;
+          })()
+        }
+        busy={renameBusy}
+        error={renameError}
+        onClose={() => !renameBusy && setRenameDialog(null)}
+        onConfirm={submitRenameDialog}
       />
 
       {shareApp && (
