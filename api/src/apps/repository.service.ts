@@ -407,8 +407,9 @@ export async function commitBlobsOnBranch(
   const deletes = (mutation.deletes ?? []).map(p => assertSafeRelPath(p));
   const modeOf = (rel: string): IndexMode => {
     const mode = mutation.modes?.[rel] ?? "100644";
-    if (!INDEX_MODES.has(mode))
+    if (!INDEX_MODES.has(mode)) {
       throw new Error(`Unsupported mode ${mode} for ${rel}`);
+    }
     return mode;
   };
   const entries = (mutation.entries ?? []).map(entry => {
