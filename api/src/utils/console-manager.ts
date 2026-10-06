@@ -22,6 +22,7 @@ import {
 import { chartSidecarPath } from "../apps/console-files";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
 const logger = getLogger(["api", "consoles"]);
 
@@ -1039,7 +1040,96 @@ export class ConsoleManager {
   }
 
   /**
-   * Rename a console in the database
+   * THE console rename/move: a new name, folder and/or access level applied
+   * to the row and projected onto the repo as ONE commit (the old file goes
+   * in the same commit — brief rule 4). Every path that changes where a
+   * console lives — the explorer's rename and "Move to…", the REST routes,
+   * the agent's `modify_console` title and `rename_object` — ends here, so
+   * the id, shares, schedule and telemetry never detach and the file never
+   * moves twice. Returns the updated row (and the commit, when the file
+   * moved), or null when the console does not exist in the workspace. A
+   * draft (unsaved) console is renamed in the index only; it reaches git on
+   * its first save.
+   */
+  async relocateConsole(
+    consoleId: string,
+    workspaceId: string,
+    change: {
+      name?: string;
+      /** `null` moves to the root; `undefined` leaves the folder alone. */
+      folderId?: string | null;
+      access?: ConsoleAccessLevel;
+    },
+    options: {
+      userId?: string;
+      /** Commit subject prefix: `<verb>: <new name>` (default `rename`). */
+      verb?: "rename" | "move";
+    } = {},
+  ): Promise<{ row: ISavedConsole; commit?: string } | null> {
+    if (!Types.ObjectId.isValid(consoleId)) return null;
+    const current = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!current) return null;
+
+    const updateFields: Record<string, unknown> = { updatedAt: new Date() };
+    if (change.name !== undefined) {
+      current.name = change.name;
+      updateFields.name = change.name;
+    }
+    if (change.folderId !== undefined) {
+      current.folderId = change.folderId
+        ? new Types.ObjectId(change.folderId)
+        : undefined;
+      updateFields.folderId = change.folderId
+        ? new Types.ObjectId(change.folderId)
+        : null;
+    }
+    if (change.access) {
+      current.access = change.access;
+      current.isPrivate = change.access === "private";
+      updateFields.access = change.access;
+      updateFields.isPrivate = change.access === "private";
+    }
+    let commit: string | undefined;
+    if (current.isSaved) {
+      const committed = await commitConsoleState({
+        row: current,
+        previousPath: current.path,
+        actorUserId: options.userId,
+        message: `${options.verb ?? "rename"}: ${current.name}`,
+      });
+      updateFields.path = committed.path;
+      updateFields.sourceBlobSha = committed.sourceBlobSha;
+      if (!committed.unchanged) commit = committed.commitOid;
+    }
+
+    // Bump the draft revision so revision-sync catches the rename, then
+    // poke subscribers (other tabs/users update the tab title live).
+    const updated = await SavedConsole.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: updateFields, $inc: { draftRevision: 1 } },
+      { new: true },
+    );
+    if (!updated) return null;
+    publishRealtimeEvent(workspaceId, {
+      type: "console.updated",
+      consoleId,
+      draftRevision: updated.draftRevision ?? 1,
+      name: updated.name,
+      updatedBy: options.userId ?? "agent",
+      origin: "save",
+    });
+    return { row: updated, commit };
+  }
+
+  /**
+   * Rename a console. A `Folder/Sub/name` value also moves it into that
+   * folder chain (created on demand) — in the same commit.
    */
   async renameConsole(
     consoleId: string,
@@ -1052,61 +1142,23 @@ export class ConsoleManager {
       const parts = newName.split("/");
       const consoleName = parts[parts.length - 1];
 
-      let folderId: string | undefined = undefined;
+      let folderId: string | null | undefined = undefined;
 
       if (parts.length > 1) {
         // Extract folder path and find/create the folder
         const folderParts = parts.slice(0, -1);
-        folderId = await this.ensureFolderPath(
-          folderParts,
-          workspaceId,
-          userId,
-        );
+        folderId =
+          (await this.ensureFolderPath(folderParts, workspaceId, userId)) ??
+          null;
       }
 
-      const updateFields: any = {
-        name: consoleName,
-        updatedAt: new Date(),
-      };
-
-      // Update folderId if we have a folder path
-      if (parts.length > 1) {
-        updateFields.folderId = folderId ? new Types.ObjectId(folderId) : null;
-      }
-
-      const current = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!current) return false;
-      if (current.isSaved) {
-        current.name = consoleName;
-        if (parts.length > 1) {
-          current.folderId = folderId
-            ? new Types.ObjectId(folderId)
-            : undefined;
-        }
-        const committed = await commitConsoleState({
-          row: current,
-          previousPath: current.path,
-          actorUserId: userId,
-          message: `rename: ${consoleName}`,
-        });
-        updateFields.path = committed.path;
-        updateFields.sourceBlobSha = committed.sourceBlobSha;
-      }
-
-      const result = await SavedConsole.updateOne(
-        {
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        {
-          $set: updateFields,
-        },
+      const updated = await this.relocateConsole(
+        consoleId,
+        workspaceId,
+        { name: consoleName, folderId },
+        { userId, verb: "rename" },
       );
-
-      return result.modifiedCount > 0;
+      return updated !== null;
     } catch (error) {
       if (error instanceof RepoRequiredError) throw error;
       logger.error("Error renaming console", { error });
@@ -1584,7 +1636,10 @@ export class ConsoleManager {
   }
 
   /**
-   * Move a console to a different folder (or root if folderId is null)
+   * Move a console to a different folder (or root if folderId is null),
+   * optionally changing its access and its name in the same commit — the
+   * explorer's "Move to…" lets the user rename while moving, and that must
+   * be one commit, not a rename followed by a move.
    */
   async moveConsole(
     consoleId: string,
@@ -1592,57 +1647,15 @@ export class ConsoleManager {
     folderId: string | null,
     access?: ConsoleAccessLevel,
     userId?: string,
+    name?: string,
   ): Promise<boolean> {
-    const objectId = Types.ObjectId.isValid(consoleId)
-      ? new Types.ObjectId(consoleId)
-      : null;
-    if (!objectId) return false;
-
-    const updateFields: Record<string, any> = {
-      updatedAt: new Date(),
-    };
-
-    if (folderId) {
-      updateFields.folderId = new Types.ObjectId(folderId);
-    } else {
-      updateFields.folderId = null;
-    }
-
-    if (access) {
-      updateFields.access = access;
-      updateFields.isPrivate = access === "private";
-    }
-
-    const current = await SavedConsole.findOne({
-      _id: objectId,
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!current) return false;
-    if (current.isSaved) {
-      current.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
-      if (access) {
-        current.access = access;
-        current.isPrivate = access === "private";
-      }
-      const committed = await commitConsoleState({
-        row: current,
-        previousPath: current.path,
-        actorUserId: userId,
-        message: `move: ${current.name}`,
-      });
-      updateFields.path = committed.path;
-      updateFields.sourceBlobSha = committed.sourceBlobSha;
-    }
-
-    const result = await SavedConsole.updateOne(
-      {
-        _id: objectId,
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      { $set: updateFields },
+    const updated = await this.relocateConsole(
+      consoleId,
+      workspaceId,
+      { folderId, access, name: name?.trim() || undefined },
+      { userId, verb: "move" },
     );
-
-    return result.modifiedCount > 0;
+    return updated !== null;
   }
 
   /**

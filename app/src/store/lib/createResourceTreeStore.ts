@@ -53,6 +53,7 @@ export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
     id: string,
     folderId: string | null,
     access?: TreeAccessLevel,
+    name?: string,
   ) => Promise<unknown>;
   moveFolder: (
     workspaceId: string,
@@ -88,12 +89,17 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
 
   fetchTree: (workspaceId: string) => Promise<void>;
   refresh: (workspaceId: string) => Promise<void>;
-  /** Optimistic; resolves `false` after the tree was refetched on failure. */
+  /**
+   * Optimistic; resolves `false` after the tree was refetched on failure.
+   * `name` renames in the same request ("Move to…" with a new name) so a
+   * git-backed kind commits once, not a rename then a move.
+   */
   moveItem: (
     workspaceId: string,
     itemId: string,
     targetFolderId: string | null,
     access?: TreeAccessLevel,
+    name?: string,
   ) => Promise<boolean>;
   moveFolder: (
     workspaceId: string,
@@ -113,6 +119,12 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
     name: string,
     isDirectory: boolean,
   ) => Promise<boolean>;
+  /**
+   * Reflect a rename the server already applied (an editor save, a realtime
+   * poke) in the tree WITHOUT sending another request — `renameItem` is the
+   * request path. Unknown ids are ignored.
+   */
+  reflectRename: (workspaceId: string, itemId: string, name: string) => void;
   deleteItem: (
     workspaceId: string,
     itemId: string,
@@ -327,7 +339,7 @@ export function createResourceTreeStore<
         await get().fetchTree(workspaceId);
       },
 
-      moveItem: async (workspaceId, itemId, targetFolderId, access) => {
+      moveItem: async (workspaceId, itemId, targetFolderId, access, name) => {
         set(state => {
           const entry = removeFromAnySection(
             state as Sections,
@@ -336,6 +348,7 @@ export function createResourceTreeStore<
           );
           if (!entry) return;
           if (access) entry.access = access;
+          if (name) entry.name = name;
           insertIntoFolder(
             state as Sections,
             workspaceId,
@@ -350,7 +363,13 @@ export function createResourceTreeStore<
           );
         });
         try {
-          await endpoints.moveItem(workspaceId, itemId, targetFolderId, access);
+          await endpoints.moveItem(
+            workspaceId,
+            itemId,
+            targetFolderId,
+            access,
+            name,
+          );
           return true;
         } catch {
           await get().refresh(workspaceId);
@@ -453,6 +472,15 @@ export function createResourceTreeStore<
           await get().refresh(workspaceId);
           return false;
         }
+      },
+
+      reflectRename: (workspaceId, itemId, name) => {
+        set(state => {
+          const node = findInAnySection(state as Sections, workspaceId, itemId);
+          if (!node || node.name === name) return;
+          node.name = name;
+          resortIn(state as Sections, workspaceId, itemId);
+        });
       },
 
       deleteItem: async (workspaceId, itemId, isDirectory) => {

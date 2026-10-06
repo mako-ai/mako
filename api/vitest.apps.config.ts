@@ -84,6 +84,12 @@ export default defineConfig({
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
+      // Graceful rename (api/src/rename): the console/notebook handlers
+      // drive real git + Mongo; dashboards and connections are Mongo-only.
+      "src/rename/handlers/console.test.ts",
+      "src/rename/handlers/notebook.test.ts",
+      "src/rename/handlers/dashboard.test.ts",
+      "src/rename/handlers/connection.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

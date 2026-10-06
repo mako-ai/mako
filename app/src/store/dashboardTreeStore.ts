@@ -1,4 +1,5 @@
 import { api, unwrapBody } from "../api";
+import { renameObject } from "../lib/object-links";
 import {
   createResourceTreeStore,
   type ResourceTreeEntry,
@@ -50,13 +51,12 @@ export const useDashboardTreeStore = createResourceTreeStore<DashboardEntry>({
         ) as { data?: { id: string } }
       ).data,
     // A dashboard's display name is its `title`; folders have a `name`.
-    renameItem: async (workspaceId, id, name) =>
-      unwrapBody(
-        await api.PUT(`${base}/{id}`, {
-          params: { path: { workspaceId, id } },
-          body: { title: name },
-        }),
-      ),
+    // The graceful-rename service (api/src/rename): the same function the
+    // agent's `rename_object` uses. A bare `PUT { title }` was a full save —
+    // it created a version and PUBLISHED the working definition, so renaming
+    // a dashboard in the tree silently shipped its unpublished edits.
+    renameItem: (workspaceId, id, name) =>
+      renameObject(workspaceId, "dashboard", { ref: id, title: name }),
     renameFolder: async (workspaceId, id, name) =>
       unwrapBody(
         await api.PATCH(`${base}/folders/{id}/rename`, {

@@ -53,6 +53,8 @@ import {
   updateNotebookIndex,
 } from "../services/notebook-index.service";
 import { NotebookManager } from "../utils/notebook-manager";
+import { renameNotebook } from "../rename/notebook";
+import { RenameError } from "../rename/types";
 
 const logger = loggers.api("notebooks");
 
@@ -510,6 +512,38 @@ notebookRoutes.openapi(
     const store = getNotebookStore();
     const ws = workspaceId(c);
     const id = c.req.valid("param").id;
+
+    // A body with ONLY a name is the explorer's rename: the same service
+    // the agent's `rename_object` and the objects route use (one checkpoint
+    // commit moves the file; the id never changes). A name alongside blocks
+    // is an editor save and stays on the versioned path below.
+    if (body.name !== undefined && body.blocks === undefined) {
+      try {
+        const { doc } = await renameNotebook({
+          workspaceId: ws,
+          notebookId: id,
+          name: body.name,
+          actorUserId: c.get("user")?.id,
+          role: memberRole(c),
+          clientId:
+            typeof body.clientId === "string" ? body.clientId : undefined,
+        });
+        return c.json({ success: true, data: doc });
+      } catch (error) {
+        if (error instanceof RenameError) {
+          return c.json(
+            {
+              success: false,
+              error:
+                error.status === 404 ? "Notebook not found" : error.message,
+            },
+            error.status,
+          );
+        }
+        throw error;
+      }
+    }
+
     const access = await requireNotebookAccess(
       ws,
       id,

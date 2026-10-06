@@ -24,6 +24,11 @@ const h = vi.hoisted(() => {
   };
   return {
     focusNotebookTab: vi.fn(),
+    closeNotebookTabsFor: vi.fn(),
+    focusDashboardTab: vi.fn(),
+    closeDashboardTabsFor: vi.fn(),
+    fetchDashboards: vi.fn().mockResolvedValue([]),
+    resolveObjectRef: vi.fn().mockResolvedValue(null),
     setLeftPane: vi.fn(),
     captureOAuthReturn: vi.fn(),
     fetchOneSourceConnection: vi.fn(),
@@ -82,6 +87,11 @@ const h = vi.hoisted(() => {
 
 vi.mock("../notebook-runtime/shell", () => ({
   focusNotebookTab: h.focusNotebookTab,
+  closeNotebookTabsFor: (...args: unknown[]) => h.closeNotebookTabsFor(...args),
+}));
+// The dead-link check for /n/:id and the rename service share one lookup.
+vi.mock("../lib/object-links", () => ({
+  resolveObjectRef: (...args: unknown[]) => h.resolveObjectRef(...args),
 }));
 vi.mock("../contexts/workspace-context", () => ({
   useWorkspace: () => ({ currentWorkspace: { id: "ws1" } }),
@@ -118,11 +128,16 @@ vi.mock("../lib/source-connection-tabs", () => ({
 // Stores/shells only touched by branches the notebook path never enters; stub
 // their named exports so module import resolves without pulling real deps.
 vi.mock("../store/dashboardStore", () => ({
-  useDashboardStore: { getState: () => ({}) },
+  useDashboardStore: {
+    getState: () => ({ fetchDashboards: h.fetchDashboards }),
+  },
 }));
 vi.mock("../store/dbtStore", () => ({ useDbtStore: { getState: () => ({}) } }));
 vi.mock("../dashboard-runtime/shell", () => ({
   focusDashboardDataSourceTab: vi.fn(),
+  focusDashboardTab: (...args: unknown[]) => h.focusDashboardTab(...args),
+  closeDashboardTabsFor: (...args: unknown[]) =>
+    h.closeDashboardTabsFor(...args),
 }));
 vi.mock("../dbt-runtime/shell", () => ({
   focusDbtConsoleTab: vi.fn(),
@@ -303,21 +318,93 @@ describe("UrlSync hydration", () => {
   });
 
   it("opens the notebook tab when deep-linking /n/:id", async () => {
-    window.history.replaceState(
-      {},
-      "",
-      "/n/ce545d56-98d3-4d13-b1b5-0fd640fc1f5c",
-    );
+    const id = "ce545d56-98d3-4d13-b1b5-0fd640fc1f5c";
+    h.resolveObjectRef.mockResolvedValue({
+      kind: "notebook",
+      id,
+      via: "current",
+      current: { title: "Churn study", url: `/n/${id}` },
+    });
+    window.history.replaceState({}, "", `/n/${id}`);
 
     render(<UrlSync />);
 
     await waitFor(() =>
-      expect(h.focusNotebookTab).toHaveBeenCalledWith(
-        "ce545d56-98d3-4d13-b1b5-0fd640fc1f5c",
-        expect.any(String),
-      ),
+      expect(h.focusNotebookTab).toHaveBeenCalledWith(id, "Churn study"),
     );
+    expect(h.resolveObjectRef).toHaveBeenCalledWith("ws1", "notebook", id);
     expect(h.setLeftPane).toHaveBeenCalledWith("notebooks");
+    expect(h.closeNotebookTabsFor).not.toHaveBeenCalled();
+  });
+
+  it("focuses an already-open notebook tab without asking the server", async () => {
+    const id = "ce545d56-98d3-4d13-b1b5-0fd640fc1f5c";
+    h.consoleState.focusOrOpenTab.mockReturnValueOnce("tab-1");
+    window.history.replaceState({}, "", `/n/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.setLeftPane).toHaveBeenCalledWith("notebooks"),
+    );
+    expect(h.resolveObjectRef).not.toHaveBeenCalled();
+    expect(h.focusNotebookTab).not.toHaveBeenCalled();
+  });
+
+  it("shows the dead-link notice instead of a placeholder tab when /n/:id is gone", async () => {
+    const id = "00000000-0000-4000-8000-000000000000";
+    h.resolveObjectRef.mockResolvedValue(null);
+    window.history.replaceState({}, "", `/n/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.closeNotebookTabsFor).toHaveBeenCalledWith(id),
+    );
+    expect(h.focusNotebookTab).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
+    await waitFor(() =>
+      expect(
+        document.body.textContent?.includes(
+          "That notebook link doesn't resolve",
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("opens a dashboard tab with its title when /d/:id exists", async () => {
+    const id = "507f1f77bcf86cd799439021";
+    h.fetchDashboards.mockResolvedValue([{ _id: id, title: "Revenue" }]);
+    window.history.replaceState({}, "", `/d/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusDashboardTab).toHaveBeenCalledWith(id, "Revenue"),
+    );
+    expect(h.setLeftPane).toHaveBeenCalledWith("dashboards");
+    expect(h.closeDashboardTabsFor).not.toHaveBeenCalled();
+  });
+
+  it("shows the dead-link notice instead of a blank 'Dashboard' tab when /d/:id is gone", async () => {
+    const id = "507f1f77bcf86cd799439022";
+    h.fetchDashboards.mockResolvedValue([]);
+    window.history.replaceState({}, "", `/d/${id}`);
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.closeDashboardTabsFor).toHaveBeenCalledWith(id),
+    );
+    expect(h.focusDashboardTab).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
+    await waitFor(() =>
+      expect(
+        document.body.textContent?.includes(
+          "That dashboard link doesn't resolve",
+        ),
+      ).toBe(true),
+    );
   });
 
   it("opens a source-connection tab when /cx/:id still exists", async () => {
