@@ -82,6 +82,7 @@ function ConsoleExplorer(
   const {
     myItems: myConsoles,
     workspaceItems: sharedWithWorkspace,
+    sharedItems: sharedWithMe,
     loading,
     error,
   } = tree;
@@ -480,12 +481,17 @@ function ConsoleExplorer(
             searchQuery.length >= 2
               ? filterTree(sharedWithWorkspace, searchQuery)
               : sharedWithWorkspace;
+          const filteredSharedConsoles =
+            searchQuery.length >= 2
+              ? filterTree(sharedWithMe, searchQuery)
+              : sharedWithMe;
 
           const treeIds =
             searchQuery.length >= 2
               ? new Set([
                   ...collectIds(filteredMyConsoles),
                   ...collectIds(filteredWorkspaceConsoles),
+                  ...collectIds(filteredSharedConsoles),
                 ])
               : new Set<string>();
           const extraServerResults = searchResults.filter(
@@ -496,6 +502,7 @@ function ConsoleExplorer(
             searchQuery.length >= 2 &&
             filteredMyConsoles.length === 0 &&
             filteredWorkspaceConsoles.length === 0 &&
+            filteredSharedConsoles.length === 0 &&
             extraServerResults.length === 0 &&
             !searchLoading;
 

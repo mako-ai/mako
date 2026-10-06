@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { dragAttributes } from "./utils";
 
 /**
  * Touch drags start on a long-press (see useDragSensors), which iOS would
@@ -89,7 +90,7 @@ export function DraggableFolderScope({
 
   const headerElement = isValidElement(header)
     ? cloneElement(header, {
-        ...attributes,
+        ...dragAttributes(attributes, disabled),
         ...listeners,
         ...(header.props as HTMLAttributes<HTMLElement>),
       })
@@ -159,7 +160,7 @@ export function DraggableTreeItem({
   return (
     <div ref={setRef} style={dragWrapperStyle(isDragging)}>
       {cloneElement(children, {
-        ...attributes,
+        ...dragAttributes(attributes, disabled),
         ...listeners,
         ...childProps,
       })}

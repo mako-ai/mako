@@ -94,6 +94,11 @@ export interface ResourceTreeSection {
   droppableId?: string;
   defaultAccess?: "private" | "workspace";
   /**
+   * Nothing is created here: the header offers no "New Folder" (consoles'
+   * "Shared with me" — other members' items, nobody's place to file into).
+   */
+  noNewFolder?: boolean;
+  /**
    * When true, skip rendering the section header row entirely. Useful for
    * explorers that have only one implicit section (e.g. Databases, Flows,
    * Sources) and don't want a visible group label.
@@ -1476,7 +1481,11 @@ function ResourceTreeInner(
             }));
           }
         }}
-        onContextMenu={event => handleSectionContextMenu(event, section.key)}
+        onContextMenu={
+          section.noNewFolder
+            ? undefined
+            : event => handleSectionContextMenu(event, section.key)
+        }
         sx={{
           py: 0,
           pl: 1.5,

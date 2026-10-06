@@ -117,12 +117,14 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
-import { consoleLeafName } from "../lib/console-name";
+import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
 import { accessForMove } from "../store/lib/createResourceTreeStore";
 import {
+  consolePlacement,
   locateInConsoleTree,
   relocationScope,
+  renameMoveNotice,
   type ConsoleTreeSpot,
 } from "../lib/console-relocation";
 import { generateObjectId } from "../utils/objectId";
@@ -2150,6 +2152,9 @@ function Editor({
     const renamedTo = newName && newName !== ctx.name ? newName : undefined;
     const tree = useConsoleTreeStore.getState();
     let ok: boolean;
+    // Did the folder or section change? (A rename in place did not, and
+    // says "Renamed", wherever the console sits.)
+    let moved = false;
     if (ctx.scope.kind === "in-place") {
       // Its folder is not theirs to change (often one they cannot see):
       // PATCH /rename keeps it.
@@ -2164,7 +2169,7 @@ function Editor({
       // Re-scope only when the section actually changed (the owner's or an
       // admin's call); the folder picked is honoured; one commit.
       const access = accessForMove(ctx.section, section);
-      const moved = targetFolderId !== ctx.folderId || access !== undefined;
+      moved = targetFolderId !== ctx.folderId || access !== undefined;
       if (!renamedTo && !moved) return;
       ok = await tree.moveItem(
         currentWorkspace.id,
@@ -2187,13 +2192,23 @@ function Editor({
     }
     trackEvent("console_renamed", { console_id: consoleId });
     // Where the server put it (the store retargeted the tab from its
-    // answer) — no extension: the language decides that, not ".js".
+    // answer), in the breadcrumb's words — no extension, no repo path.
     const now = useConsoleStore.getState().tabs[consoleId];
-    const where = now?.filePath || renamedTo || ctx.name;
+    const name = now?.title || renamedTo || ctx.name;
+    const place = consolePlacement({
+      access: now?.access,
+      ownerId: now?.owner_id,
+      currentUserId: user?.id,
+      folders: consoleFolderTrail(now?.filePath ?? name, name),
+    });
     setSnackbarMessage(
-      renamedTo && where === renamedTo
-        ? `Renamed to '${renamedTo}'`
-        : `Moved to '${where}'`,
+      renameMoveNotice({
+        renamedTo,
+        moved,
+        section: place.section,
+        folders: place.folders,
+        name,
+      }),
     );
     setSnackbarOpen(true);
   };
@@ -3356,7 +3371,14 @@ function Editor({
           workspaceId={currentWorkspace.id}
           consoleId={consoleHistory.tabId}
           onRestored={() =>
-            reloadConsole(currentWorkspace.id, consoleHistory.tabId)
+            // In place, editor included, clean afterwards — reloadConsole
+            // reopened the tab, which left Monaco on the old text.
+            void useConsoleStore
+              .getState()
+              .reloadConsoleFromServer(
+                currentWorkspace.id,
+                consoleHistory.tabId,
+              )
           }
         />
       )}

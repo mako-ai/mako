@@ -1,4 +1,4 @@
-import { api, unwrapBody, ApiError } from "../api";
+import { api, unwrapBody, ApiError, toErrorMessage } from "../api";
 import type { ConsoleContentResponse, ConsoleLocation } from "../lib/api-types";
 import {
   createResourceTreeStore,
@@ -98,6 +98,7 @@ async function retargetOpenTab(
       [
         ...(state.myItems[workspaceId] ?? []),
         ...(state.workspaceItems[workspaceId] ?? []),
+        ...(state.sharedItems[workspaceId] ?? []),
       ],
       location.id,
     );
@@ -119,12 +120,13 @@ function findIn(
   return null;
 }
 
-/** A node of the current tree, in either section. */
+/** A node of the current tree, in any section. */
 function findNode(workspaceId: string, id: string): ConsoleEntry | null {
   const state = useConsoleTreeStore.getState();
   return (
     findIn(state.myItems[workspaceId], id) ??
-    findIn(state.workspaceItems[workspaceId], id)
+    findIn(state.workspaceItems[workspaceId], id) ??
+    findIn(state.sharedItems[workspaceId], id)
   );
 }
 
@@ -197,17 +199,21 @@ export const useConsoleTreeStore = createResourceTreeStore<
           tree?: ConsoleEntry[];
           myConsoles?: ConsoleEntry[];
           sharedWithWorkspace?: ConsoleEntry[];
+          sharedWithMe?: ConsoleEntry[];
         };
         return {
           my: data.myConsoles ?? data.tree ?? [],
           workspace: data.sharedWithWorkspace ?? [],
+          // Another member's private console shared with this person: its
+          // own section, as the breadcrumb names it (consolePlacement).
+          shared: data.sharedWithMe ?? [],
         };
       } catch (error) {
         // Writes 412 without GitHub; GET/list is an empty explorer (disconnect
         // or never linked). Keeping the previous tree left the sidebar
         // populated after unlink.
         if (error instanceof ApiError && error.status === 412) {
-          return { my: [], workspace: [] };
+          return { my: [], workspace: [], shared: [] };
         }
         throw error;
       }
@@ -376,9 +382,17 @@ export const useConsoleTreeStore = createResourceTreeStore<
           }),
         ) as {
           success: boolean;
-          data?: { id: string; name: string; folderId?: string };
+          error?: string;
+          data?: {
+            id: string;
+            name: string;
+            folderId?: string | null;
+            owner_id?: string;
+          };
         };
-        if (!res.success || !res.data) return null;
+        if (!res.success || !res.data) {
+          throw new Error(res.error || "Could not duplicate the console.");
+        }
         const created = res.data;
         set(state => {
           const original = helpers.findInAnySection(
@@ -386,24 +400,52 @@ export const useConsoleTreeStore = createResourceTreeStore<
             workspaceId,
             consoleId,
           );
-          if (!original) return;
           const copy: ConsoleEntry = {
-            ...original,
+            ...(original ?? {}),
             id: created.id,
             name: created.name,
+            path: created.name,
             isDirectory: false,
+            access: "private",
+            isPrivate: true,
+            canWrite: true,
+            ...(created.owner_id ? { owner_id: created.owner_id } : {}),
           };
-          // The copy lands next to the original, whichever section/folder.
-          for (const section of helpers.allSections(state, workspaceId)) {
-            const parent = findParentArray(section, consoleId);
-            if (parent) {
-              insertAlphabetically(parent, copy);
-              return;
-            }
+          delete copy.children;
+          // A copy is the copier's: My Consoles, in the folder the server
+          // chose (theirs — never the original's when that is someone
+          // else's or a workspace folder; null = the root). It used to land
+          // next to the original — under Workspace, for a console shared
+          // with them — until a refresh moved it.
+          helpers.insertIntoFolder(
+            state,
+            workspaceId,
+            copy,
+            created.folderId ?? null,
+            "my",
+          );
+          const folder = created.folderId
+            ? helpers.findInAnySection(state, workspaceId, created.folderId)
+            : null;
+          const placed = helpers.findInAnySection(
+            state,
+            workspaceId,
+            created.id,
+          );
+          if (placed && folder?.path) {
+            placed.path = `${folder.path}/${created.name}`;
           }
         });
         return { id: created.id, name: created.name };
-      } catch {
+      } catch (err: unknown) {
+        // The server's reason, for the explorer's snackbar — a failed copy
+        // used to say nothing at all.
+        set(state => {
+          state.actionError[workspaceId] = toErrorMessage(
+            err,
+            "Could not duplicate the console.",
+          );
+        });
         return null;
       }
     },

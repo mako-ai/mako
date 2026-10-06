@@ -217,6 +217,29 @@ export async function ensureFolderChain(
   workspaceId: string,
   scope: { access: ConsoleAccessLevel; ownerId?: string },
 ): Promise<Types.ObjectId | undefined> {
+  return walkFolderChain(segments, workspaceId, scope, true);
+}
+
+/**
+ * The folder chain `segments` in `scope` when it already exists there —
+ * `ensureFolderChain`'s scoped lookup, creating nothing. Null when any
+ * link is missing (or `segments` is empty: the scope's root).
+ */
+export async function findFolderChain(
+  segments: string[],
+  workspaceId: string,
+  scope: { access: ConsoleAccessLevel; ownerId?: string },
+): Promise<Types.ObjectId | null> {
+  if (segments.length === 0) return null;
+  return (await walkFolderChain(segments, workspaceId, scope, false)) ?? null;
+}
+
+async function walkFolderChain(
+  segments: string[],
+  workspaceId: string,
+  scope: { access: ConsoleAccessLevel; ownerId?: string },
+  create: boolean,
+): Promise<Types.ObjectId | undefined> {
   const ws = new Types.ObjectId(workspaceId);
   const scopeFilter =
     scope.access === "private"
@@ -237,6 +260,7 @@ export async function ensureFolderChain(
     })
       .select("_id")
       .lean<{ _id: Types.ObjectId } | null>();
+    if (!folder && !create) return undefined;
     if (!folder) {
       const created = await ConsoleFolder.create({
         workspaceId: ws,
@@ -1559,7 +1583,6 @@ async function syncNow(
         databaseName: parsed.meta.databaseName ?? null,
         databaseId: parsed.meta.databaseId ?? null,
         resultsViewMode: parsed.meta.resultsViewMode ?? null,
-        mongoOptions: parsed.meta.mongoOptions ?? null,
         chartSpec: chartSpec ?? null,
         is_deleted: false,
         isSaved: true,
@@ -1577,6 +1600,12 @@ async function syncNow(
       }
       const scheduleSet = scheduleFields(parsed.meta.schedule, row);
       Object.assign(set, scheduleSet.set);
+      // `mongoOptions` is a nested object in the schema: it is the file's
+      // pair or ABSENT, never null — a null here made every later
+      // `new SavedConsole({... mongoOptions: row.mongoOptions })` (Duplicate)
+      // fail validation ("Cast to Object failed for value null").
+      const mongoOptions = mongoOptionsFromFile(parsed.meta.mongoOptions);
+      if (mongoOptions) set.mongoOptions = mongoOptions;
 
       if (row) {
         await SavedConsole.updateOne(
@@ -1584,7 +1613,11 @@ async function syncNow(
           {
             $set: set,
             $inc: { version: 1, draftRevision: 1 },
-            $unset: { deletedAt: "", ...scheduleSet.unset },
+            $unset: {
+              deletedAt: "",
+              ...scheduleSet.unset,
+              ...(mongoOptions ? {} : { mongoOptions: "" }),
+            },
           },
         );
         const fresh = await SavedConsole.findById(row._id);
@@ -1649,6 +1682,7 @@ async function syncNow(
     publishRealtimeEvent(workspaceId, {
       type: "console.deleted",
       consoleId: row._id.toString(),
+      via: "git",
     });
   }
 
@@ -1660,6 +1694,7 @@ async function syncNow(
       name: row.name,
       updatedBy: actor,
       origin: "save",
+      via: "git",
     });
     if (row.descriptionSourceSha !== row.sourceBlobSha) {
       requestConsoleDescription({
@@ -1683,6 +1718,22 @@ async function sidecarMatches(
   if (!sidecar) return !rowHas;
   if (!rowHas || !chartSpec) return false;
   return sidecar.oid === blobOid(serializeChartSpec(chartSpec));
+}
+
+/**
+ * A console file's collection/operation as the index stores them: both set,
+ * or nothing — an empty or partial pair is no Mongo target at all.
+ */
+export function mongoOptionsFromFile(
+  meta: { collection?: string; operation?: string } | null | undefined,
+): ISavedConsole["mongoOptions"] | undefined {
+  if (!meta?.collection) return undefined;
+  return {
+    collection: meta.collection,
+    operation: (meta.operation || "find") as NonNullable<
+      ISavedConsole["mongoOptions"]
+    >["operation"],
+  };
 }
 
 function scheduleFields(

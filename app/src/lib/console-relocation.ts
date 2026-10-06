@@ -141,21 +141,79 @@ export function consoleNameProblem(name: string): string | null {
   return null;
 }
 
+/** The explorer section a console is listed under. */
+export type ConsolePlacementSection =
+  | "My Consoles"
+  | "Workspace"
+  | "Shared with me";
+
 /**
  * The breadcrumb's section for a console, from its EFFECTIVE visibility
  * and owner: a private console someone shared with this person is not
  * "My Consoles" (the e2e's shared editor read "My Consoles › Team Drafts"
- * for a console that was never theirs) — it is shared with them, and the
- * folder trail that follows is its real folder, its owner's.
+ * for a console that was never theirs) — it is shared with them.
  */
 export function consoleSectionLabel(
   access: "private" | "workspace" | undefined,
   ownerId: string | undefined,
   currentUserId: string | undefined,
-): string {
+): ConsolePlacementSection {
   if (access === "workspace") return "Workspace";
   if (ownerId && currentUserId && ownerId !== currentUserId) {
     return "Shared with me";
   }
   return "My Consoles";
+}
+
+/**
+ * Where a console sits — ONE rule for the explorer tree and the
+ * breadcrumb (the server's `listConsolesSplit` lists by it): effectively
+ * workspace → Workspace, in its folders; private and mine → My Consoles,
+ * in my folders; another member's private console shared with me →
+ * Shared with me, FLAT — its folder is its owner's, which the tree does
+ * not show, so the breadcrumb does not name it either (the e2e's tree
+ * said "Workspace" while the breadcrumb said "Shared with me › Team
+ * Drafts").
+ */
+export function consolePlacement(input: {
+  access: "private" | "workspace" | undefined;
+  ownerId: string | undefined;
+  currentUserId: string | undefined;
+  /** The console's folder trail, root first (from its path). */
+  folders: string[];
+}): { section: ConsolePlacementSection; folders: string[] } {
+  const section = consoleSectionLabel(
+    input.access,
+    input.ownerId,
+    input.currentUserId,
+  );
+  return {
+    section,
+    folders: section === "Shared with me" ? [] : input.folders,
+  };
+}
+
+/**
+ * The snackbar after the editor's "Rename / Move…": "Renamed to 'X'" when
+ * only the name changed — wherever the console is (a console in a folder
+ * read "Moved to 'finance/Alpha Two'" for a rename) — and "Moved to …"
+ * when its folder or section did.
+ */
+export function renameMoveNotice(input: {
+  /** The new name, when the name changed. */
+  renamedTo?: string;
+  /** The folder or section changed. */
+  moved: boolean;
+  /** Where it is now: its section and folder trail. */
+  section: string;
+  folders: string[];
+  name: string;
+}): string {
+  if (!input.moved) {
+    return `Renamed to '${input.renamedTo ?? input.name}'`;
+  }
+  const place = [input.section, ...input.folders].join(" › ");
+  return input.renamedTo
+    ? `Moved to ${place} as '${input.renamedTo}'`
+    : `Moved to ${place}`;
 }

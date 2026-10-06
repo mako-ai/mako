@@ -15,7 +15,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
 import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
-import { consoleSectionLabel } from "../lib/console-relocation";
+import { consolePlacement } from "../lib/console-relocation";
 import { useAuth } from "../contexts/auth-context";
 
 interface BreadcrumbSegment {
@@ -70,17 +70,18 @@ function segmentsForTab(
           { label: "Unsaved console", italic: true },
         ];
       }
-      const group = consoleSectionLabel(
-        tab.access,
-        tab.owner_id,
-        ctx.currentUserId,
-      );
       // Single source of truth: the leaf is the live display name (tab.title);
       // the folder trail is derived from the full path by stripping that leaf
       // (robust to a leaf name that itself contains slashes — legacy data).
+      // Section and folders follow the explorer's placement rule.
       const leaf = tab.title || consoleLeafName(tab.filePath);
-      const folderParts = consoleFolderTrail(tab.filePath, leaf);
-      return plain(["Consoles", group, ...folderParts, leaf]);
+      const { section, folders } = consolePlacement({
+        access: tab.access,
+        ownerId: tab.owner_id,
+        currentUserId: ctx.currentUserId,
+        folders: consoleFolderTrail(tab.filePath, leaf),
+      });
+      return plain(["Consoles", section, ...folders, leaf]);
     }
     case "table-data":
       return plain([

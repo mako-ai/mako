@@ -45,6 +45,7 @@ import {
   getUserDisplayName,
 } from "../services/entity-version.service";
 import { generateDashboardVersionComment } from "../services/version-comment.service";
+import { dashboardDiffBase } from "../services/dashboard-diff-base";
 import { getEntityChatPrompts } from "../services/entity-version-context.service";
 import {
   registerCollaboratorRoutes,
@@ -1485,9 +1486,18 @@ app.openapi(
         .sort({ version: -1 })
         .lean();
 
-      const previousSnapshot =
+      const live = await Dashboard.findOne(
+        {
+          _id: new Types.ObjectId(dashboardId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        },
+        { title: 1 },
+      ).lean<{ title?: string } | null>();
+      const previousSnapshot = dashboardDiffBase(
         (latestVersion?.snapshot as Record<string, unknown> | undefined) ??
-        null;
+          null,
+        live,
+      );
 
       const chatPrompts = await getEntityChatPrompts(
         workspaceId,

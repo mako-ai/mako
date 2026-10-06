@@ -44,6 +44,10 @@ import {
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
+import {
+  addEditorShortcut,
+  consoleShortcutApplies,
+} from "../lib/monaco-editor-commands";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
@@ -690,34 +694,50 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       // Always connect editor to the hook (needed for AI modifications)
       setEditor(editor);
 
+      // ⌘↵ / ⌘S / ⌘⇧S belong to THIS editor (addEditorShortcut: an
+      // `addCommand` chord is page-wide and the last-mounted tab's handler
+      // won — ⌘S committed a background console's draft).
+      const applies = () =>
+        consoleShortcutApplies(consoleId, useConsoleStore.getState());
+
       // CMD/CTRL + Enter execution support
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-        const activeId = useConsoleStore.getState().activeTabId;
-        if (activeId !== consoleId) {
-          return;
-        }
-        handleExecute();
+      addEditorShortcut(editor, {
+        id: "mako.console.run",
+        label: "Run console",
+        keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+        run: () => {
+          if (applies()) handleExecute();
+        },
       });
 
       // CMD/CTRL + S save support (if onSave is provided)
       if (onSave) {
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-          handleSave();
+        addEditorShortcut(editor, {
+          id: "mako.console.save",
+          label: "Save console",
+          keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+          run: () => {
+            if (applies()) void handleSave();
+          },
         });
       }
 
       // CMD/CTRL + Shift + S → Save as Copy (fallback to first-time save when
       // onSaveAsCopy isn't available).
-      editor.addCommand(
-        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS,
-        () => {
+      addEditorShortcut(editor, {
+        id: "mako.console.saveAsCopy",
+        label: "Save console as a copy",
+        keybinding:
+          monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS,
+        run: () => {
+          if (!applies()) return;
           if (onSaveAsCopyRef.current) {
             handleSaveAsCopy();
           } else if (onSaveRef.current) {
-            handleSave();
+            void handleSave();
           }
         },
-      );
+      });
 
       // Auto-focus the editor when it mounts
       editor.focus();
@@ -1089,9 +1109,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
       const modifiedEditor = diffEditor.getModifiedEditor();
       if (modifiedEditor) {
-        modifiedEditor.addCommand(
-          monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
-          () => {
+        // Scoped to this diff's editor, like the console's own shortcuts:
+        // a page-wide ⌘↵ ran the diff tab's query from any other console.
+        addEditorShortcut(modifiedEditor, {
+          id: "mako.console.runDiff",
+          label: "Run console",
+          keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+          run: () => {
             const content = getExecutionContent();
             if (onExecuteRef.current) {
               onExecuteRef.current(
@@ -1101,7 +1125,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               );
             }
           },
-        );
+        });
       }
     },
     [getExecutionContent],

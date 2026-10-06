@@ -9,6 +9,7 @@ import {
   type ConsoleLocation,
 } from "../utils/console-manager";
 import { BlobPreconditionError } from "../apps/repository.service";
+import { consolePathTakenMessage } from "../apps/console-files";
 import { canWriteResource } from "../utils/resource-acl";
 import { wouldCreateFolderCycle } from "../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
@@ -104,6 +105,7 @@ function emptyConsoleTree() {
     success: true as const,
     myConsoles: [] as never[],
     sharedWithWorkspace: [] as never[],
+    sharedWithMe: [] as never[],
     tree: [] as never[],
   };
 }
@@ -339,7 +341,7 @@ consoleRoutes.openapi(
         );
         const userRole = member?.role || "member";
 
-        const { myConsoles, sharedWithWorkspace } =
+        const { myConsoles, sharedWithWorkspace, sharedWithMe } =
           await consoleManager.listConsolesSplit(
             access.workspaceId,
             userId,
@@ -350,6 +352,7 @@ consoleRoutes.openapi(
           success: true,
           myConsoles,
           sharedWithWorkspace,
+          sharedWithMe,
           tree: myConsoles,
         });
       }
@@ -1251,7 +1254,7 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: `A console already exists at ${error.path}`,
+            error: consolePathTakenMessage(error.path, c.get("user")?.id),
           },
           409,
         );
@@ -1632,7 +1635,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: `A console already exists at ${wanted}`,
+                error: consolePathTakenMessage(wanted, c.get("user")?.id),
               },
               409,
             );
@@ -1660,7 +1663,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: `A console already exists at ${error.path}`,
+                error: consolePathTakenMessage(error.path, c.get("user")?.id),
               },
               409,
             );
@@ -1809,7 +1812,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: `A console already exists at ${error.path}`,
+                error: consolePathTakenMessage(error.path, c.get("user")?.id),
               },
               409,
             );
@@ -2028,7 +2031,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
     }
     if (error instanceof BlobPreconditionError) {
       return c.json(
-        { success: false, error: `A console already exists at ${error.path}` },
+        {
+          success: false,
+          error: consolePathTakenMessage(error.path, c.get("user")?.id),
+        },
         409,
       );
     }
@@ -2340,10 +2346,14 @@ consoleRoutes.openapi(
           {
             success: true,
             message: "Console duplicated",
+            // Where the copy is: the caller's My Consoles, in `folderId`
+            // (null = its root) — the tree places it from this answer.
             data: {
               id: copy._id.toString(),
               name: copy.name,
-              folderId: copy.folderId?.toString(),
+              folderId: copy.folderId?.toString() ?? null,
+              access: "private",
+              owner_id: user.id,
             },
           },
           201,
@@ -2357,7 +2367,7 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: `A console already exists at ${error.path}`,
+            error: consolePathTakenMessage(error.path, c.get("user")?.id),
           },
           409,
         );

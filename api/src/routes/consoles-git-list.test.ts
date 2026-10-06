@@ -35,7 +35,7 @@ assert.ok(
 
 assert.ok(
   /if \(bound == null\) return \[\]/.test(manager) ||
-    /if \(bound == null\) \{\s*return \{ myConsoles: \[\], sharedWithWorkspace: \[\] \}/.test(
+    /if \(bound == null\) \{\s*return \{\s*myConsoles: \[\],\s*sharedWithWorkspace: \[\],\s*sharedWithMe: \[\],?\s*\}/.test(
       manager,
     ),
   "Unbound GET/list must be empty — leftover Mongo is not a live definition",

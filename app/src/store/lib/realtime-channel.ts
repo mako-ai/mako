@@ -27,8 +27,10 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "draft" | "save" | "agent";
+      /** "git": a push brought it in (the index sync), not an app window. */
+      via?: "git";
     }
-  | { type: "console.deleted"; consoleId: string }
+  | { type: "console.deleted"; consoleId: string; via?: "git" }
   | {
       type: "console.run.completed";
       consoleId: string;

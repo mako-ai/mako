@@ -55,6 +55,10 @@ import {
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import MonacoEditor, { type Monaco } from "@monaco-editor/react";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
+import {
+  addEditorShortcut,
+  type ActionEditor,
+} from "../lib/monaco-editor-commands";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import {
@@ -367,19 +371,29 @@ export default function DbtFileEditor({
 
   // ⌘S saves, ⌘↵ previews. Both are registered once on mount, so they read the
   // live handler through a ref rather than capturing the mount-time closure.
+  // They are THIS editor's (addEditorShortcut): a page-wide `addCommand`
+  // chord took ⌘S and ⌘↵ from every console tab mounted before it.
   const previewRef = useRef<() => void>(() => {});
   const handleEditorMount = useCallback(
     (
-      editor: { addCommand: (keys: number, handler: () => void) => void },
+      editor: ActionEditor,
       monaco: {
         KeyMod: { CtrlCmd: number };
         KeyCode: { KeyS: number; Enter: number };
       },
     ) => {
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveNow);
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
-        previewRef.current(),
-      );
+      addEditorShortcut(editor, {
+        id: "mako.dbt.save",
+        label: "Save file",
+        keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+        run: saveNow,
+      });
+      addEditorShortcut(editor, {
+        id: "mako.dbt.preview",
+        label: "Preview model",
+        keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+        run: () => previewRef.current(),
+      });
     },
     [saveNow],
   );
