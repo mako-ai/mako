@@ -97,6 +97,7 @@ import {
 } from "./repository.service";
 import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
 import {
+  aliasMatchesRef,
   aliasesForMoves,
   invalidateAppsIndexCache,
   loadAppsIndex,
@@ -1062,16 +1063,36 @@ function isWithin(candidate: string, root: string): boolean {
  *
  * `manifestPatch` is a rename's title change, applied to that app's
  * manifest in the same write — one commit per rename, whatever it changes.
+ *
+ * A name the moved app is leaving may already be an OLD name of another
+ * app (that app was renamed away from it first, then this one was created
+ * there). Two claims would make the link die; instead the most recent
+ * holder keeps it — while this app sat there, the link opened this app
+ * anyway — and the older claim is dropped from the other app's manifest in
+ * the same commit (`superseded` says which, for the caller's warning; the
+ * index drops its own copy on the sync that follows).
  */
+export interface SupersededAlias {
+  /** The name, as the new holder's manifest records it. */
+  name: string;
+  /** The app that loses its claim. */
+  appId: string;
+  path: string;
+  title: string;
+  /** False when its manifest could not be rewritten (unparseable): the index still supersedes it. */
+  manifestUpdated: boolean;
+}
+
 async function moveWritesUnder(
   workspaceId: string,
   repoDir: string,
   moves: Array<{ from: string; to: string }>,
   manifestPatch?: { path: string; title?: string },
-): Promise<Record<string, string>> {
+): Promise<{ writes: Record<string, string>; superseded: SupersededAlias[] }> {
   const snapshot = await loadAppsIndex(workspaceId, { freshen: false });
   const plans = aliasesForMoves(snapshot.apps, moves);
   const writes: Record<string, string> = {};
+  const superseded: SupersededAlias[] = [];
   const readAt = async (rel: string): Promise<string | null> => {
     try {
       return (await readBlob(repoDir, DEFAULT_BRANCH, rel)).contents;
@@ -1106,6 +1127,29 @@ async function moveWritesUnder(
     if (plan && plan.add.length > 0) {
       manifest = addManifestAliases(manifest, plan.add, plan.drop);
       if (manifest === null) throw unparseable(app);
+      for (const name of plan.add) {
+        for (const other of snapshot.apps) {
+          if (other.appId === app.appId || other.duplicateOf) continue;
+          const claimed = other.aliases.filter(alias =>
+            aliasMatchesRef(alias, name),
+          );
+          if (claimed.length === 0) continue;
+          const theirs = `${other.path}/${APP_MANIFEST}`;
+          const contents = writes[theirs] ?? (await readAt(theirs));
+          const stripped = addManifestAliases(contents, [], claimed);
+          const manifestUpdated = stripped !== null;
+          if (stripped !== null && stripped !== contents) {
+            writes[theirs] = stripped;
+          }
+          superseded.push({
+            name,
+            appId: other.appId,
+            path: other.path,
+            title: other.title,
+            manifestUpdated,
+          });
+        }
+      }
     }
     if (manifestPatch?.path === app.path && manifestPatch.title !== undefined) {
       manifest = setManifestTitle(manifest, manifestPatch.title);
@@ -1134,7 +1178,7 @@ async function moveWritesUnder(
       }
     }
   }
-  return writes;
+  return { writes, superseded };
 }
 
 /**
@@ -1233,6 +1277,8 @@ export async function renameProject(
   title: string;
   commit?: string;
   aliasesAdded: string[];
+  /** Other apps' older claims to the names added, dropped in this commit. */
+  superseded: SupersededAlias[];
 }> {
   const workspaceId = project.workspaceId.toString();
   const from = appRootFor(project);
@@ -1246,7 +1292,7 @@ export async function renameProject(
   const titleChanges = title !== undefined && title !== currentTitle;
   const slug = change.slug?.trim() ?? location.slug;
   if (slug !== location.slug) {
-    const { to, commit, aliasesAdded } = await moveProjectWith(
+    const { to, commit, aliasesAdded, superseded } = await moveProjectWith(
       project,
       { ...location, slug },
       options,
@@ -1265,10 +1311,17 @@ export async function renameProject(
       title: titleChanges ? title : currentTitle,
       commit,
       aliasesAdded,
+      superseded,
     };
   }
   if (!titleChanges) {
-    return { from, to: from, title: currentTitle, aliasesAdded: [] };
+    return {
+      from,
+      to: from,
+      title: currentTitle,
+      aliasesAdded: [],
+      superseded: [],
+    };
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
   const manifestPath = `${from}/${APP_MANIFEST}`;
@@ -1307,7 +1360,14 @@ export async function renameProject(
     { $set: { title } },
   );
   pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
-  return { from, to: from, title, commit: commitOid, aliasesAdded: [] };
+  return {
+    from,
+    to: from,
+    title,
+    commit: commitOid,
+    aliasesAdded: [],
+    superseded: [],
+  };
 }
 
 /** {@link moveProject}, with the commit and aliases a rename reports. */
@@ -1321,6 +1381,7 @@ async function moveProjectWith(
   to: string;
   commit?: string;
   aliasesAdded: string[];
+  superseded: SupersededAlias[];
 }> {
   const workspaceId = project.workspaceId.toString();
   const repoDir = await requireWorkspaceRepo(workspaceId);
@@ -1332,7 +1393,7 @@ async function moveProjectWith(
     );
   }
   const to = appRepoPath({ ...target, slug });
-  if (to === from) return { from, to, aliasesAdded: [] };
+  if (to === from) return { from, to, aliasesAdded: [], superseded: [] };
   const snapshot = await loadAppsIndex(workspaceId);
   if (!snapshot.apps.some(a => a.path === from)) {
     throw new AppFolderError(`App folder ${from} is not on main`, 404);
@@ -1349,6 +1410,7 @@ async function moveProjectWith(
   const moves = [{ from, to }];
   const aliasesAdded =
     aliasesForMoves(snapshot.apps, moves).get(from)?.add ?? [];
+  let superseded: SupersededAlias[] = [];
   const { commitOid } = await commitOnMainDurably(
     workspaceId,
     repoDir,
@@ -1359,15 +1421,14 @@ async function moveProjectWith(
       if (!fresh.apps.some(a => a.path === from)) {
         throw new AppFolderError(`App folder ${from} is not on main`, 404);
       }
-      return {
+      const planned = await moveWritesUnder(
+        workspaceId,
+        repoDir,
         moves,
-        writes: await moveWritesUnder(
-          workspaceId,
-          repoDir,
-          moves,
-          manifestPatch ? { path: from, ...manifestPatch } : undefined,
-        ),
-      };
+        manifestPatch ? { path: from, ...manifestPatch } : undefined,
+      );
+      superseded = planned.superseded;
+      return { moves, writes: planned.writes };
     },
     {
       message:
@@ -1397,7 +1458,7 @@ async function moveProjectWith(
     { $set: { path: to, slug, ...visibility } },
   );
   pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
-  return { from, to, commit: commitOid, aliasesAdded };
+  return { from, to, commit: commitOid, aliasesAdded, superseded };
 }
 
 /**
@@ -1478,7 +1539,7 @@ export async function moveAppFolder(
       }
       return {
         moves,
-        writes: await moveWritesUnder(workspaceId, repoDir, moves),
+        writes: (await moveWritesUnder(workspaceId, repoDir, moves)).writes,
       };
     },
     { message: `Move folder ${fromPath} → ${toPath}`, author: options.author },

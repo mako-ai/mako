@@ -519,7 +519,13 @@ export class HistoryScanError extends Error {
  *    little or no change (a plain `git mv`, the UI's move commit);
  *  - a manifest DELETED and one ADDED in the same commit that declare the
  *    same `id` — a move plus an edit of a tiny file, which `-M` scores as
- *    unrelated (a 40-byte manifest shares no 64-byte chunk with its edit).
+ *    unrelated (a 40-byte manifest shares no 64-byte chunk with its edit);
+ *  - likewise when the deleted manifest declared NO id (an app that
+ *    predates ids, moved by the UI, which stamps it in the move commit):
+ *    the added one is its continuation when its `aliases` name the deleted
+ *    folder (the move writes exactly that), or when its id is the deleted
+ *    path's derived id (`workspaceId` given) — the id a stamp gives such an
+ *    app.
  *
  * Each event carries the manifest's declared id where it had one, so the
  * walk (aliasesFromHistory) can tell one app's past from another's that
@@ -535,7 +541,7 @@ export class HistoryScanError extends Error {
 export async function manifestRenamesInHistory(
   repoDir: string,
   range: string,
-  options: { maxCommits?: number } = {},
+  options: { maxCommits?: number; workspaceId?: string } = {},
 ): Promise<ManifestHistoryEvent[]> {
   const suffix = `/${APP_MANIFEST}`;
   const asAppDir = (p: string): string | null => {
@@ -639,12 +645,14 @@ export async function manifestRenamesInHistory(
         `reading manifests at ${commit.sha} failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    const idAt = (blobs: Map<string, Buffer>, dir: string) => {
+    const manifestAt = (blobs: Map<string, Buffer>, dir: string) => {
       const blob = blobs.get(`${dir}${suffix}`);
       return blob
-        ? parseAppManifest(blob.toString("utf8"), dir.split("/").pop() ?? "").id
+        ? parseAppManifest(blob.toString("utf8"), dir.split("/").pop() ?? "")
         : undefined;
     };
+    const idAt = (blobs: Map<string, Buffer>, dir: string) =>
+      manifestAt(blobs, dir)?.id;
     for (const pair of commit.renamed) {
       const oldId = idAt(before, pair.from);
       const newId = idAt(after, pair.to);
@@ -666,11 +674,32 @@ export async function manifestRenamesInHistory(
       }
       for (const dir of commit.deleted) {
         const id = idAt(before, dir);
-        const targets = id ? addedById.get(id) : undefined;
-        // One deleted manifest, one added, same id: a move. Several added
+        let targets = id ? addedById.get(id) : undefined;
+        if (!id) {
+          // An unstamped manifest went. Its continuation, if any, is an
+          // added manifest whose aliases name this folder, or whose id is
+          // what a stamp gives an app at this path.
+          const derived = options.workspaceId
+            ? derivedAppId(options.workspaceId, appKeyOf(dir)).toHexString()
+            : undefined;
+          targets = commit.added.filter(added => {
+            const next = manifestAt(after, added);
+            return (
+              !!next &&
+              (next.aliases.some(alias => aliasMatchesRef(alias, dir)) ||
+                (!!derived && next.id === derived))
+            );
+          });
+        }
+        // One deleted manifest, one added, same app: a move. Several added
         // with the same id are copies of each other, not a move.
-        if (id && targets?.length === 1 && targets[0] !== dir) {
-          out.push({ kind: "rename", from: dir, to: targets[0], id });
+        if (targets?.length === 1 && targets[0] !== dir) {
+          out.push({
+            kind: "rename",
+            from: dir,
+            to: targets[0],
+            id: id ?? idAt(after, targets[0]),
+          });
           moved.add(targets[0]);
         }
       }
@@ -706,24 +735,80 @@ export function aliasesFromHistory(
   events: ReadonlyArray<ManifestHistoryEvent>,
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
+  for (const [path, { aliases }] of walkHistory(apps, events)) {
+    if (aliases.length > 0) out.set(path, aliases);
+  }
+  return out;
+}
+
+/**
+ * {@link aliasesFromHistory} with the names the app held but LOST: a name
+ * another app arrived at (was created at, or renamed into) after this app
+ * left it is `superseded`, not an alias — the most recent holder of a name
+ * owns its link. While the newcomer sat at `apps/foo`, `/apps/foo` opened
+ * it (a current name beats any alias); when the newcomer is renamed away
+ * in turn, the link follows the newcomer rather than dying as a name two
+ * apps claim. A rename made in the UI drops the name from the older app's
+ * manifest in the same commit (worktree.service moveWritesUnder); this is
+ * what makes a laptop rename, and every rebuild from history, agree.
+ *
+ * A folder moved under the SAME name (`apps/report` → `apps/Sales/report`)
+ * records the old PATH, as aliasesForMoves does for a move it sees: the
+ * bare slug would only be dropped as the app's current name, and the path
+ * is what lets `/apps/report` still find it.
+ */
+export function walkHistory(
+  apps: ReadonlyArray<Pick<AppIndexRow, "path" | "appId" | "hasManifestId">>,
+  events: ReadonlyArray<ManifestHistoryEvent>,
+): Map<string, { aliases: string[]; superseded: string[] }> {
+  const out = new Map<string, { aliases: string[]; superseded: string[] }>();
+  const basename = (path: string) => path.split("/").pop() ?? path;
   for (const app of apps) {
-    const found: string[] = [];
+    const aliases: string[] = [];
+    const superseded: string[] = [];
     let current = app.path;
-    const foreign = (id: string | undefined) =>
-      !!id && app.hasManifestId && id !== app.appId;
+    // A manifest declaring an id that is not this app's is another app's
+    // (a stamp writes the row's own id, so a later-stamped app agrees with
+    // itself); one declaring none cannot be told apart and is left alone.
+    const foreign = (id: string | undefined) => !!id && id !== app.appId;
+    // Paths another app arrived at in events NEWER than where the walk is.
+    const arrivedLater = new Set<string>();
     for (const event of events) {
       if (event.kind === "create") {
         if (event.path === current) break;
+        if (foreign(event.id)) arrivedLater.add(event.path);
         continue;
       }
-      if (event.to !== current || foreign(event.id)) continue;
-      current = event.from;
-      found.push(aliasForOldPath(current));
-      if (found.length >= MAX_ALIASES_PER_APP) break;
+      if (foreign(event.id)) {
+        arrivedLater.add(event.to);
+        continue;
+      }
+      if (event.to !== current) continue;
+      const from = event.from;
+      const name =
+        basename(from) === basename(current) ? from : aliasForOldPath(from);
+      current = from;
+      if (arrivedLater.has(from)) superseded.push(name);
+      else aliases.push(name);
+      if (aliases.length >= MAX_ALIASES_PER_APP) break;
     }
-    if (found.length > 0) out.set(app.path, found);
+    out.set(app.path, { aliases, superseded });
   }
   return out;
+}
+
+/**
+ * `aliases` without the names in `superseded`, in whatever form the list
+ * spells them (`foo` or `apps/foo`, `apps/S/x` or `S/x`).
+ */
+export function withoutSuperseded(
+  aliases: readonly string[],
+  superseded: readonly string[],
+): string[] {
+  if (superseded.length === 0) return [...aliases];
+  return aliases.filter(
+    alias => !superseded.some(name => aliasMatchesRef(alias, name)),
+  );
 }
 
 /**
@@ -827,7 +912,10 @@ function cachedSnapshot(
 }
 
 function rowToIndex(
-  row: Pick<IAppIndexEntry, keyof AppIndexRow | "indexAliases">,
+  row: Pick<
+    IAppIndexEntry,
+    keyof AppIndexRow | "indexAliases" | "supersededAliases"
+  >,
 ): AppIndexRow {
   return {
     appId: row.appId,
@@ -840,10 +928,13 @@ function rowToIndex(
     description: row.description ?? undefined,
     hasManifestId: row.hasManifestId,
     duplicateOf: row.duplicateOf ?? undefined,
-    aliases: mergeAliases([
-      [...(row.aliases ?? [])].reverse(),
-      row.indexAliases ?? [],
-    ]),
+    aliases: withoutSuperseded(
+      mergeAliases([
+        [...(row.aliases ?? [])].reverse(),
+        row.indexAliases ?? [],
+      ]),
+      row.supersededAliases ?? [],
+    ),
     schedules: (row.schedules ?? []).map(s => ({
       binding: s.binding,
       cron: s.cron,
@@ -1044,10 +1135,16 @@ async function syncNow(
   //    links back, and only the commits since the last SUCCESSFUL scan
   //    otherwise (`historyScannedSha`; a failed scan is retried next time);
   //  - what the row already knew, carried over.
-  // Each row's `aliases` is then the union with its manifest's. A COPY of an
-  // app (`duplicateOf`) gets none: its manifest's aliases are the source's,
-  // and a name two apps claim resolves to neither — the copy must not take
-  // the original's old links down with it.
+  // Each row's `aliases` is then the union with its manifest's, minus what
+  // is SUPERSEDED: a name another app held more recently (it moved away
+  // from it in this very sync, or history says it arrived there after this
+  // app left — walkHistory). The newer holder's rename keeps that link;
+  // the older claim is dropped from the index here and from the manifest
+  // by a UI rename (moveWritesUnder); a manifest a laptop left claiming it
+  // is overridden through `supersededAliases`, carried across syncs. A COPY
+  // of an app (`duplicateOf`) gets none of this: its manifest's aliases are
+  // the source's, and a name two apps claim resolves to neither — the copy
+  // must not take the original's old links down with it.
   const existingById = new Map(existing.map(row => [row.appId, row]));
   const projectById = new Map(projectRows.map(p => [p._id.toString(), p]));
   const previousPathOf = (appId: string): string | undefined =>
@@ -1071,13 +1168,14 @@ async function syncNow(
       : undefined;
   const fullScan = !scannedSha || !(await commitExists(repoDir, scannedSha));
   let historyScanned = true;
-  let history = new Map<string, string[]>();
+  let history = new Map<string, { aliases: string[]; superseded: string[] }>();
   try {
-    history = aliasesFromHistory(
+    history = walkHistory(
       rows,
       await manifestRenamesInHistory(
         repoDir,
         fullScan ? sha : `${scannedSha}..${sha}`,
+        { workspaceId },
       ),
     );
   } catch (error) {
@@ -1088,25 +1186,61 @@ async function syncNow(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  // Names the apps moving in THIS sync held until now: every other app's
+  // claim to them is superseded.
+  const takenNow = new Map<string, string[]>();
+  for (const row of rows) {
+    const from = previousPathOf(row.appId);
+    const plan = from ? movePlans.get(from) : undefined;
+    if (plan) takenNow.set(row.appId, [...plan.add, ...plan.indexOnly]);
+  }
+  const takenByOthers = (appId: string): string[] =>
+    [...takenNow].flatMap(([id, names]) => (id === appId ? [] : names));
   const indexAliasesByPath = new Map<string, string[]>();
+  const supersededByPath = new Map<string, string[]>();
   for (const row of rows) {
     if (row.duplicateOf) {
       row.aliases = [];
       indexAliasesByPath.set(row.path, []);
+      supersededByPath.set(row.path, []);
       continue;
     }
-    const from = previousPathOf(row.appId);
-    const plan = from ? movePlans.get(from) : undefined;
-    const learned = mergeAliases(
+    const plan = takenNow.has(row.appId)
+      ? movePlans.get(previousPathOf(row.appId)!)
+      : undefined;
+    const walked = history.get(row.path);
+    const superseded = mergeAliases(
       [
-        plan ? [...plan.add, ...plan.indexOnly] : [],
-        history.get(row.path) ?? [],
-        existingById.get(row.appId)?.indexAliases ?? [],
+        takenByOthers(row.appId),
+        walked?.superseded ?? [],
+        existingById.get(row.appId)?.supersededAliases ?? [],
       ],
-      [row.slug, row.path, ...row.aliases],
+      [row.slug, row.path],
+    );
+    const learned = withoutSuperseded(
+      mergeAliases(
+        [
+          plan ? [...plan.add, ...plan.indexOnly] : [],
+          walked?.aliases ?? [],
+          existingById.get(row.appId)?.indexAliases ?? [],
+        ],
+        [row.slug, row.path, ...row.aliases],
+      ),
+      superseded,
     );
     indexAliasesByPath.set(row.path, learned);
-    row.aliases = mergeAliases([[...row.aliases].reverse(), learned]);
+    // Only a superseded name the manifest still spells needs remembering:
+    // the index side is simply not kept, and a rebuild re-derives it.
+    supersededByPath.set(
+      row.path,
+      superseded.filter(name =>
+        row.aliases.some(alias => aliasMatchesRef(alias, name)),
+      ),
+    );
+    row.aliases = withoutSuperseded(
+      mergeAliases([[...row.aliases].reverse(), learned]),
+      superseded,
+    );
   }
 
   // Rows whose id or path no longer exists go first, so the unique indexes
@@ -1141,6 +1275,7 @@ async function syncNow(
                 ? []
                 : (read.manifests.get(row.path)?.aliases ?? []),
               indexAliases: indexAliasesByPath.get(row.path) ?? [],
+              supersededAliases: supersededByPath.get(row.path) ?? [],
               schedules: row.schedules,
               indexedSha: sha,
             },
@@ -1336,26 +1471,36 @@ export async function catchUpHistory(
       ? head.historyScannedSha
       : undefined;
   const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
-  const history = aliasesFromHistory(
+  const history = walkHistory(
     rows,
     await manifestRenamesInHistory(
       repoDir,
       scanned ? `${scanned}..${sha}` : sha,
+      { workspaceId },
     ),
   );
   await options.beforeWrite?.();
   let written = 0;
+  const same = (a: readonly string[], b: readonly string[]) =>
+    a.length === b.length && a.every((x, i) => x === b[i]);
   for (const row of rows) {
     if (row.duplicateOf) continue;
-    const learned = mergeAliases(
-      [history.get(row.path) ?? [], row.indexAliases ?? []],
-      [row.slug, row.path, ...(row.aliases ?? [])],
+    const walked = history.get(row.path);
+    const superseded = mergeAliases(
+      [walked?.superseded ?? [], row.supersededAliases ?? []],
+      [row.slug, row.path],
+    ).filter(name =>
+      (row.aliases ?? []).some(alias => aliasMatchesRef(alias, name)),
+    );
+    const learned = withoutSuperseded(
+      mergeAliases(
+        [walked?.aliases ?? [], row.indexAliases ?? []],
+        [row.slug, row.path, ...(row.aliases ?? [])],
+      ),
+      mergeAliases([walked?.superseded ?? [], row.supersededAliases ?? []]),
     );
     const had = row.indexAliases ?? [];
-    if (
-      learned.length === had.length &&
-      learned.every((a, i) => a === had[i])
-    ) {
+    if (same(learned, had) && same(superseded, row.supersededAliases ?? [])) {
       continue;
     }
     const result = await AppIndexEntry.updateOne(
@@ -1365,7 +1510,7 @@ export async function catchUpHistory(
         indexAliases:
           row.indexAliases === undefined ? { $in: [null, []] } : had,
       },
-      { $set: { indexAliases: learned } },
+      { $set: { indexAliases: learned, supersededAliases: superseded } },
     );
     written += result.modifiedCount;
   }

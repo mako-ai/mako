@@ -17,6 +17,7 @@ import {
 } from "../../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
+  commitBlobsOnBranch,
   initRepo,
   readBlob,
   repoDirFor,
@@ -233,6 +234,37 @@ describe("rename", () => {
       id: B_ID,
       via: "alias",
     });
+  });
+
+  it("warns when the old name it keeps was another app's old name too — that app loses it", async () => {
+    await renameObject(editor, "app", { ref: "a", slug: "bar" });
+    const C_ID = new Types.ObjectId().toHexString();
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "apps/a/mako.json": manifest("A again", C_ID) } },
+      { message: "new app at apps/a", author: { name: "L", email: "l@x" } },
+    );
+    invalidateAppsIndexCache(WS);
+    const result = await renameObject(editor, "app", {
+      ref: C_ID,
+      slug: "a-v2",
+    });
+    expect(result.aliasesAdded).toEqual(["a"]);
+    expect(result.warnings).toEqual([
+      '/apps/a now opens "A again"; it was also an old name of "A" (apps/bar), which no longer answers to it.',
+    ]);
+    expect(await resolveObjectRef(editor, "app", "a")).toMatchObject({
+      id: C_ID,
+      via: "alias",
+    });
+    expect(
+      parseAppManifest(await fileAt("apps/bar/mako.json"), "bar").aliases,
+    ).toEqual([]);
+    // A plain rename names nothing and warns about nothing.
+    expect(
+      (await renameObject(editor, "app", { ref: C_ID, slug: "a-v3" })).warnings,
+    ).toEqual([]);
   });
 
   it("refuses a slug change from a viewer or a role-less API key, an empty title, and an unknown app", async () => {
