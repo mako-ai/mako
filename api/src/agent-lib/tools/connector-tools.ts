@@ -105,6 +105,8 @@ interface SourceRow {
   type?: string;
   description?: string;
   isActive?: boolean;
+  /** The definition a `ws:` credential is bound to (resolver.ts). */
+  connectorDefinitionId?: Types.ObjectId;
 }
 
 /** A source connection's identity, from a projection that never loads `config`. */
@@ -116,7 +118,7 @@ async function findSourceConnection(
     _id: new Types.ObjectId(connectionId),
     workspaceId: new Types.ObjectId(workspaceId),
   })
-    .select("_id name type description isActive")
+    .select("_id name type description isActive connectorDefinitionId")
     .lean()) as SourceRow | null;
 }
 
@@ -129,6 +131,8 @@ async function connectorCapabilities(
   workspaceId: string,
   type: string,
   identity: { id: string; name: string },
+  /** A connection's binding: its `ws:` connector is the stamped definition. */
+  connectorDefinitionId?: Types.ObjectId,
 ): Promise<{ entities: string[]; incremental: Record<string, unknown> }> {
   try {
     const connector = await syncConnectorRegistry.getConnectorFor({
@@ -136,6 +140,9 @@ async function connectorCapabilities(
       name: identity.name,
       type,
       workspaceId,
+      connectorDefinitionId: connectorDefinitionId
+        ? String(connectorDefinitionId)
+        : undefined,
       active: true,
       connection: {},
       settings: {},
@@ -190,13 +197,18 @@ async function describeSourceConnection(
 ): Promise<Record<string, unknown>> {
   const type = row.type ?? "";
   const identity = { id: String(row._id), name: row.name ?? "" };
+  // Both resolve through the connection's binding (its stamped definition),
+  // never by slug: `type` may by now name a different connector.
   const [capabilities, configFields] = await Promise.all([
-    connectorCapabilities(workspaceId, type, identity),
-    configFieldsFor(
+    connectorCapabilities(
       workspaceId,
       type,
-      row as { connectorDefinitionId?: unknown },
+      identity,
+      row.connectorDefinitionId,
     ),
+    configFieldsFor(workspaceId, type, {
+      connectorDefinitionId: row.connectorDefinitionId,
+    }),
   ]);
   return {
     id: identity.id,
