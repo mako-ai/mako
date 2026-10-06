@@ -243,6 +243,11 @@ async function projectPackageName(
   }
 }
 
+/** True when the bytes survive a UTF-8 decode/encode round trip. */
+function isUtf8Text(content: Buffer): boolean {
+  return Buffer.from(content.toString("utf8"), "utf8").equals(content);
+}
+
 /** Git's blob id for these bytes (`git hash-object`). */
 function gitBlobOid(content: Buffer): string {
   return createHash("sha1")
@@ -279,12 +284,33 @@ export async function renameDbtFile(
   if (!source) throw new RenameError(`File not found: ${from}`, 404);
   if (target) throw new RenameError(`"${to}" already exists`, 409);
 
+  // The branch the rename commits to (the session branch, or main when it
+  // has none yet) — every blob below is read from it.
+  const repoDir = await repoForWorkspace(ctx.workspaceId);
+  const checkoutBranch = await getCheckoutBranch(project, actor);
+  const readRef = (await resolveCommit(repoDir, `refs/heads/${checkoutBranch}`))
+    ? `refs/heads/${checkoutBranch}`
+    : `refs/heads/${DEFAULT_BRANCH}`;
+  // The moved file's raw bytes: its blob oid is what the commit expects, and
+  // a file that is not UTF-8 text cannot be moved through the text write
+  // path without corrupting it (every invalid byte would become U+FFFD).
+  const sourceRaw = (
+    await readBlobsBatch(repoDir, readRef, [`${DBT_ROOT}/${from}`])
+  ).get(`${DBT_ROOT}/${from}`);
+  if (!sourceRaw) throw new RenameError(`File not found: ${from}`, 404);
+  if (!isUtf8Text(sourceRaw)) {
+    throw new RenameError(
+      `${from} is not UTF-8 text, so Mako cannot move it without changing its bytes — rename it with git.`,
+      400,
+    );
+  }
+
   const writes: Record<string, string> = {};
   const deletes = [from];
   // What this rename read, by blob oid: the commit refuses if any of it
   // changed before the commit lands (a save racing the rename).
   const expectBlobs: Record<string, string | null> = {
-    [from]: gitBlobOid(Buffer.from(source.content, "utf8")),
+    [from]: gitBlobOid(sourceRaw),
     [to]: null,
   };
   const warnings: string[] = [];
@@ -307,19 +333,23 @@ export async function renameDbtFile(
       const files = (await listWorkingFiles(project, actor))
         .map(f => f.path)
         .filter(p => p !== from && isRewritableDbtPath(p));
-      const repoDir = await repoForWorkspace(ctx.workspaceId);
-      const branch = await getCheckoutBranch(project, actor);
-      const ref_ = (await resolveCommit(repoDir, `refs/heads/${branch}`))
-        ? `refs/heads/${branch}`
-        : `refs/heads/${DEFAULT_BRANCH}`;
       const blobs = await readBlobsBatch(
         repoDir,
-        ref_,
+        readRef,
         files.map(p => `${DBT_ROOT}/${p}`),
       );
       for (const path of files) {
         const buf = blobs.get(`${DBT_ROOT}/${path}`);
         if (!buf || buf.includes(0)) continue; // binary: not dbt text
+        if (!isUtf8Text(buf)) {
+          // Rewriting it as text would change every invalid byte.
+          if (mentionsName(buf.toString("latin1"), oldModel)) {
+            warnings.push(
+              `${path} is not UTF-8 text and may still name '${oldModel}' — it was left as it is; edit it by hand.`,
+            );
+          }
+          continue;
+        }
         const text = buf.toString("utf8");
         const isJob = `${DBT_ROOT}/${path}`.startsWith(`${DBT_JOBS_DIR}/`);
         let next: { text: string; count: number };

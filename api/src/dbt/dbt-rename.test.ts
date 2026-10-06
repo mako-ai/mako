@@ -385,6 +385,38 @@ describe("renameDbtFile", () => {
     expect(await fileAt("models/orders_v2.sql")).toBeNull();
   });
 
+  it("renames UTF-8 text with non-ASCII characters (the read blob matches)", async () => {
+    await seedProject({ "models/café.sql": "-- café ☕\nselect 1 as id\n" });
+    await renameDbtFile(member, {
+      from: "models/café.sql",
+      to: "models/cafe.sql",
+    });
+    expect(await fileAt("models/cafe.sql")).toBe(
+      "-- café ☕\nselect 1 as id\n",
+    );
+    expect(await fileAt("models/café.sql")).toBeNull();
+  });
+
+  it("refuses to move a file that is not UTF-8, leaving its bytes untouched", async () => {
+    await seedProject();
+    const latin1 = Buffer.from("-- caf\xe9\nselect 1 as id\n", "latin1");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "dbt/models/legacy.sql": latin1 } },
+      { message: "a latin-1 file from a laptop" },
+    );
+    await expect(
+      renameDbtFile(member, {
+        from: "models/legacy.sql",
+        to: "models/legacy_v2.sql",
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    const raw = await readBlob(repoDirFor(WS), MAIN, "dbt/models/legacy.sql");
+    expect(raw.isBinary ? null : raw.contents).not.toBeNull();
+    expect(await fileAt("models/legacy_v2.sql")).toBeNull();
+  });
+
   it("refuses viewers, missing sources and occupied targets", async () => {
     await seedProject();
     await expect(
