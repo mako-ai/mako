@@ -1029,6 +1029,27 @@ export async function logFollow(
   return parseFollowLog(stdout, path);
 }
 
+/** The newest commit of `refOrOid` that deleted `path` (null: none). */
+export async function lastDeletionCommit(
+  repoDir: string,
+  refOrOid: string,
+  path: string,
+): Promise<string | null> {
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "log",
+    "-1",
+    "--format=%H",
+    "--diff-filter=D",
+    refOrOid,
+    "--",
+    assertSafeRelPath(path),
+  ]);
+  const oid = stdout.trim();
+  return isOid(oid) ? oid : null;
+}
+
 export interface ChangedFile {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";

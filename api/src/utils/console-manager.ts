@@ -15,10 +15,12 @@ import {
   commitConsoleRelocation,
   commitConsoleRemoval,
   commitConsoleState,
+  consoleDeletionSegment,
   consoleFilesDrifted,
   descriptionIsAuthored,
   ensureConsoleFolderRecords,
   ensureFolderChain,
+  storableFolderName,
   findFolderChain,
   folderSegmentsFor,
   loadLiveConsoleById,
@@ -109,7 +111,12 @@ function folderIdForLive(
       folder?.ownerId?.toString() !== live.location.ownerId;
     if (folder && !foreignPrivate) return own;
   }
-  const segments = live.location.folderSegments;
+  // Up to the first directory name no folder record can hold (a laptop
+  // pushed "consoles/Team /x.sql"): such a file is listed in its nearest
+  // ancestor that has a record, or at the root.
+  const all = live.location.folderSegments;
+  const bad = all.findIndex(name => !storableFolderName(name));
+  const segments = bad === -1 ? all : all.slice(0, bad);
   if (segments.length === 0) return undefined;
   // In the file's scope, as `ensureFolderChain` files it: a private file's
   // "Team" is its owner's private folder, never the workspace namesake —
@@ -484,26 +491,39 @@ export class ConsoleManager {
     const unfiled = live.filter(
       item =>
         item.location.folderSegments.length > 0 &&
+        // A directory name no record can hold is placed by its nearest
+        // ancestor (`folderIdForLive`), never written.
+        item.location.folderSegments.every(storableFolderName) &&
         folderIdForLive(item, folders) === undefined,
     );
     if (unfiled.length === 0) return folders;
-    await ensureConsoleFolderRecords(
-      workspaceId,
-      unfiled.map(item => {
-        const isPrivate = item.location.scope === "private";
-        return {
-          rowId: item.row?._id,
-          segments: item.location.folderSegments,
-          access: isPrivate ? ("private" as const) : ("workspace" as const),
-          ownerId: isPrivate
-            ? item.location.ownerId
-            : (item.row?.owner_id ?? item.row?.createdBy)?.toString(),
-        };
-      }),
-    );
-    return ConsoleFolder.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).sort({ name: 1 });
+    // A repair that fails lists what there is: it must never blank the
+    // tree (the listing's catch-all answers every section empty).
+    try {
+      await ensureConsoleFolderRecords(
+        workspaceId,
+        unfiled.map(item => {
+          const isPrivate = item.location.scope === "private";
+          return {
+            rowId: item.row?._id,
+            segments: item.location.folderSegments,
+            access: isPrivate ? ("private" as const) : ("workspace" as const),
+            ownerId: isPrivate
+              ? item.location.ownerId
+              : (item.row?.owner_id ?? item.row?.createdBy)?.toString(),
+          };
+        }),
+      );
+      return await ConsoleFolder.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).sort({ name: 1 });
+    } catch (error) {
+      logger.warn("Console folder records could not be repaired", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return folders;
+    }
   }
 
   /**
@@ -2784,23 +2804,38 @@ export class ConsoleManager {
     const current = await SavedConsole.findOne({
       _id: new Types.ObjectId(consoleId),
       workspaceId: new Types.ObjectId(workspaceId),
-    }).select("path name");
+    }).select("path name sourceBlobSha");
     if (!current) return false;
     // The row keeps its `path` so a restore puts the file back where it was.
+    // A restore ADDS that file again, and git's history of it starts there:
+    // the file's history up to this deletion is kept as an earlier life of
+    // this row (`historySegments`), never found again by path — another
+    // console may take the path meanwhile.
+    let segment: { path: string; until: string } | null = null;
     if (current.path) {
-      await commitConsoleRemoval({
+      const removed = await commitConsoleRemoval({
         workspaceId,
         path: current.path,
         actorUserId: userId,
         message: `delete: ${current.path}`,
       });
+      segment = await consoleDeletionSegment(
+        workspaceId,
+        current.path,
+        removed.unchanged
+          ? { ownBlob: current.sourceBlobSha }
+          : { removalCommit: removed.commitOid },
+      ).catch(() => null);
     }
     const result = await SavedConsole.updateOne(
       {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: { is_deleted: true, deletedAt: new Date() } },
+      {
+        $set: { is_deleted: true, deletedAt: new Date() },
+        ...(segment ? { $addToSet: { historySegments: segment } } : {}),
+      },
     );
     return result.modifiedCount > 0;
   }
@@ -2825,10 +2860,12 @@ export class ConsoleManager {
     const set: Record<string, unknown> = { is_deleted: false };
     if (current.isSaved) {
       // The console's old name may have been taken while it was deleted (a
-      // rename or a push landed there, and the sync released this row's
-      // path): a restore must not overwrite that file — it comes back as
-      // "name (2)", exactly as adoption resolves two rows on one path.
-      const freeName = await this.freeNameFor(current, current.path);
+      // rename, a push, or a new console saved there): a restore must not
+      // overwrite that file — it comes back as "name (2)", exactly as
+      // adoption resolves two rows on one path. A deleted console's path is
+      // not its own any more (its file is gone, and the row keeps the path
+      // only to come back there when it is free): no `ownPath`.
+      const freeName = await this.freeNameFor(current, null);
       if (freeName !== current.name) {
         current.name = freeName;
         set.name = freeName;
