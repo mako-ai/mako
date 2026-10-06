@@ -33,6 +33,7 @@ import { ensureLocalRepo, queueMirrorPush } from "../apps/cloud-repo.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
@@ -75,7 +76,16 @@ async function repoDirIfExists(workspaceId: string): Promise<string | null> {
   return boundRepoDirIfExists(workspaceId);
 }
 
-async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
+/**
+ * The first free `.deepnote` path for the notebook's name. Taken means:
+ * another index row's path, OR a file at main that is not this notebook's
+ * (a laptop-made notebook the index does not know yet — its file must not
+ * be overwritten by a rename onto its name).
+ */
+async function uniqueNotebookPath(
+  repoDir: string,
+  index: INotebookIndex,
+): Promise<string> {
   const base = slugifyNotebookName(index.name);
   let slug = base;
   for (let i = 2; i < 100; i++) {
@@ -88,10 +98,24 @@ async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
       path: wanted,
       notebookId: { $ne: index.notebookId },
     }).select("_id");
-    if (!clash) return wanted;
+    if (!clash && !(await foreignFileAt(repoDir, wanted, index.notebookId))) {
+      return wanted;
+    }
     slug = `${base}-${i}`;
   }
   throw new Error(`No free path for notebook "${index.name}"`);
+}
+
+/** Is there a file at `path` on main that is not notebook `notebookId`'s? */
+async function foreignFileAt(
+  repoDir: string,
+  path: string,
+  notebookId: string,
+): Promise<boolean> {
+  const blob = await readBlob(repoDir, MAIN_REF, path).catch(() => null);
+  if (!blob) return false;
+  if (blob.isBinary) return true;
+  return parseNotebookFile(blob.contents)?.id !== notebookId;
 }
 
 /**
@@ -107,7 +131,7 @@ async function checkpointPathFor(
   repoDir: string,
   index: INotebookIndex,
 ): Promise<string> {
-  if (!index.path) return uniqueNotebookPath(index);
+  if (!index.path) return uniqueNotebookPath(repoDir, index);
   const slug = index.path.slice(
     index.path.lastIndexOf("/") + 1,
     -NOTEBOOK_FILE_EXTENSION.length,
@@ -116,7 +140,7 @@ async function checkpointPathFor(
     access: index.access,
     ownerId: index.ownerId,
   });
-  if (scoped !== index.path) return uniqueNotebookPath(index); // access flip
+  if (scoped !== index.path) return uniqueNotebookPath(repoDir, index); // access flip
   const committed = await readBlob(repoDir, MAIN_REF, index.path).catch(
     () => null,
   );
@@ -124,7 +148,9 @@ async function checkpointPathFor(
     committed && !committed.isBinary
       ? parseNotebookFile(committed.contents)?.name
       : undefined;
-  return committedName === index.name ? index.path : uniqueNotebookPath(index);
+  return committedName === index.name
+    ? index.path
+    : uniqueNotebookPath(repoDir, index);
 }
 
 /**
@@ -169,17 +195,35 @@ export async function checkpointNotebook(
 
   const deletes =
     index.path && index.path !== wantedPath ? [index.path] : undefined;
-  const result = await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes: { [wantedPath]: contents }, deletes },
-    {
-      message: deletes?.length
-        ? `notebook: move to ${wantedPath}`
-        : `notebook: checkpoint "${index.name}"`,
-      author: actorUserId ? await authorForUser(actorUserId) : undefined,
-    },
-  );
+  let result: Awaited<ReturnType<typeof commitBlobsOnBranch>>;
+  try {
+    result = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { [wantedPath]: contents }, deletes },
+      {
+        message: deletes?.length
+          ? `notebook: move to ${wantedPath}`
+          : `notebook: checkpoint "${index.name}"`,
+        author: actorUserId ? await authorForUser(actorUserId) : undefined,
+        // A move onto a new path must find it free at commit time: a file
+        // that lands there between the unique-name check and the commit
+        // (a laptop push) is not overwritten; the next checkpoint picks
+        // the next free name.
+        expectBlobs: deletes?.length ? { [wantedPath]: null } : undefined,
+      },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      logger.warn("Notebook checkpoint refused: target path appeared", {
+        workspaceId,
+        notebookId,
+        path: wantedPath,
+      });
+      return { committed: false };
+    }
+    throw error;
+  }
   index.path = wantedPath;
   index.checkpointBlobSha = sha;
   await index.save();
@@ -452,7 +496,7 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
     });
     const sha = blobOid(contents);
     if (index.checkpointBlobSha === sha && index.path) continue;
-    const path = await uniqueNotebookPath(index);
+    const path = await uniqueNotebookPath(repoDir, index);
     writes[path] = contents;
     stamps.push({ index, path, sha });
   }

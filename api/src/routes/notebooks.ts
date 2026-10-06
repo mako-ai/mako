@@ -523,7 +523,11 @@ notebookRoutes.openapi(
           workspaceId: ws,
           notebookId: id,
           name: body.name,
-          actorUserId: c.get("user")?.id,
+          // Legacy API keys carry an ObjectId here; the ACL compares strings.
+          actorUserId:
+            c.get("user")?.id === undefined
+              ? undefined
+              : String(c.get("user")?.id),
           role: memberRole(c),
           clientId:
             typeof body.clientId === "string" ? body.clientId : undefined,
