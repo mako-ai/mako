@@ -702,8 +702,14 @@ describe("a console that was never indexed (pushed, not synced)", () => {
       { writes: { "consoles/other.sql": "SELECT 'other'\n" } },
       { sync: false },
     );
+    // …and by the id the tree lists it under, for the agent too.
+    const otherId = derivedConsoleId(rig.ws, "consoles/other.sql").toString();
+    expect(
+      (await resolveObjectRef(rig.ctx(admin), "console", otherId))?.current
+        .path,
+    ).toBe("consoles/other.sql");
     const res = await renameObject(rig.ctx(admin), "console", {
-      ref: "consoles/other.sql",
+      ref: otherId,
       title: "other-2",
     });
     expect(res.after.path).toBe("consoles/other-2.sql");

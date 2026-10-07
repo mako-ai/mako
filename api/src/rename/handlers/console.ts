@@ -31,6 +31,7 @@ import {
 import {
   ConsoleFolderTwinError,
   checkNewFolderChain,
+  consoleRowForId,
   ensureFolderChain,
   folderSegmentsFor,
   listConsoleDefinitionsAtMain,
@@ -105,12 +106,11 @@ async function findRow(
 ): Promise<ISavedConsole | null> {
   const ws = new Types.ObjectId(ctx.workspaceId);
   if (Types.ObjectId.isValid(ref)) {
-    const row = await SavedConsole.findOne({
-      _id: new Types.ObjectId(ref),
-      workspaceId: ws,
-      is_deleted: { $ne: true },
-    });
-    return row && canRead(row, ctx) ? row : null;
+    // The id the tree lists a pushed, not-yet-indexed file under (its
+    // derived id) is indexed on demand — the same console every route
+    // acts on by that id (`consoleRowForId`).
+    const row = await consoleRowForId(ctx.workspaceId, ref);
+    return row && !row.is_deleted && canRead(row, ctx) ? row : null;
   }
 
   const live = (await loadLiveConsoles(ctx.workspaceId)).filter(item =>
