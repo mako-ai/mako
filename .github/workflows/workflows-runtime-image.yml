@@ -1,0 +1,100 @@
+name: Build & publish workflows runtime image
+
+# Builds the workflows runtime image (deploy/workflows/runtime): the Hatchet
+# worker that runs workspace workflows/. Publishes to the dev + prod Artifact
+# Registries. PRs build-only (validate the Dockerfile); master + manual runs
+# push. Workspace worker Deployments pick up the new tag on their next deploy
+# (WORKFLOWS_RUNTIME_IMAGE on the API).
+on:
+  push:
+    branches: [master]
+    paths:
+      - "deploy/workflows/runtime/**"
+      - ".github/workflows/workflows-runtime-image.yml"
+  pull_request:
+    paths:
+      - "deploy/workflows/runtime/**"
+      - ".github/workflows/workflows-runtime-image.yml"
+  workflow_dispatch:
+
+env:
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  IMAGE_NAME: workflows-runtime
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflows-runtime-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-publish:
+    name: Build + publish workflows runtime image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # One SA (GCP_DEV_SERVICE_ACCOUNT) has cross-project push access to both
+      # the dev and prod Artifact Registries — same as the app deploy.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+
+      - name: Resolve registries
+        id: reg
+        env:
+          PROD_CONFIG: ${{ vars.GCP_PROD_DEPLOY_CONFIG }}
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          DEV="${GCP_REGION}-docker.pkg.dev/${{ vars.GCP_DEV_PROJECT_ID }}/${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}/${IMAGE_NAME}"
+          PROD_PROJECT=$(echo "${PROD_CONFIG}" | jq -er '.project_id')
+          PROD_REPO=$(echo "${PROD_CONFIG}" | jq -er '.artifact_repository')
+          PROD="${GCP_REGION}-docker.pkg.dev/${PROD_PROJECT}/${PROD_REPO}/${IMAGE_NAME}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "dev=${DEV}" >> "$GITHUB_OUTPUT"
+          echo "prod=${PROD}" >> "$GITHUB_OUTPUT"
+          echo "Dev registry:  ${DEV}"
+          echo "Prod registry: ${PROD}"
+
+      - name: Build image (context = repo root)
+        run: |
+          docker build \
+            -f deploy/workflows/runtime/Dockerfile \
+            -t runtime:${{ steps.reg.outputs.sha }} \
+            .
+
+      # PRs stop here (Dockerfile validated). master + manual runs publish.
+      - name: Publish to dev registry
+        if: github.event_name != 'pull_request'
+        run: |
+          for TAG in "${{ steps.reg.outputs.sha }}" latest; do
+            docker tag runtime:${{ steps.reg.outputs.sha }} ${{ steps.reg.outputs.dev }}:${TAG}
+            docker push ${{ steps.reg.outputs.dev }}:${TAG}
+          done
+
+      - name: Publish to prod registry
+        if: github.event_name != 'pull_request'
+        run: |
+          for TAG in "${{ steps.reg.outputs.sha }}" latest; do
+            docker tag runtime:${{ steps.reg.outputs.sha }} ${{ steps.reg.outputs.prod }}:${TAG}
+            docker push ${{ steps.reg.outputs.prod }}:${TAG}
+          done
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Workflows runtime image published :whale:"
+            echo "- \`${{ steps.reg.outputs.dev }}:${{ steps.reg.outputs.sha }}\` (+ \`:latest\`)"
+            echo "- \`${{ steps.reg.outputs.prod }}:${{ steps.reg.outputs.sha }}\` (+ \`:latest\`)"
+            echo ""
+            echo "Point \`WORKFLOWS_RUNTIME_IMAGE\` at the new tag; worker pods pick it up on their next deploy."
+          } >> "$GITHUB_STEP_SUMMARY"

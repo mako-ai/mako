@@ -1,0 +1,39 @@
+# Helm values for hatchet/hatchet-stack 0.19.0 (engine v0.107.0), installed by
+# provision.sh into namespace `hatchet` on the notebook-kernels cluster.
+#
+# - Postgres is Neon (DATABASE_URL, the DIRECT endpoint — never `-pooler`),
+#   set by provision.sh from the HATCHET_DATABASE_URL secret.
+# - No RabbitMQ: Hatchet uses Postgres as its queue.
+# - Nothing is exposed outside the cluster. Workers reach the engine over
+#   in-cluster gRPC; the Mako API reaches the REST API on pod IPs over the VPC
+#   (the same path it uses for kernel gateways); staff reach the dashboard with
+#   `kubectl -n hatchet port-forward svc/hatchet-frontend 8080:8080`.
+sharedConfig:
+  image:
+    tag: "v0.107.0"
+  serverUrl: "http://hatchet-api.hatchet.svc.cluster.local:8080"
+  serverAuthCookieDomain: "localhost:8080"
+  serverAuthCookieInsecure: "t"
+  serverAuthSetEmailVerified: "t"
+  serverAuthBasicAuthEnabled: "t"
+  grpcBroadcastAddress: "hatchet-engine.hatchet.svc.cluster.local:7070"
+  grpcInsecure: "t"
+  defaultAdminEmail: "workflows-admin@mako.ai"
+  # defaultAdminPassword and env.DATABASE_URL are passed with --set by provision.sh.
+  env:
+    SERVER_MSGQUEUE_KIND: "postgres"
+
+api:
+  replicaCount: 1
+
+engine:
+  replicaCount: 1
+
+postgres:
+  enabled: false
+
+rabbitmq:
+  enabled: false
+
+caddy:
+  enabled: false

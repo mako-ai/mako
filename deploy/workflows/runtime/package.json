@@ -1,0 +1,20 @@
+{
+  "name": "@mako/workflows-runtime",
+  "private": true,
+  "description": "Runtime image for workspace workflows: fetch workflows/ at GIT_SHA, typecheck, run a Hatchet worker. Workflow code can import exactly these packages.",
+  "type": "module",
+  "dependencies": {
+    "@ai-sdk/gateway": "3.0.210",
+    "@ai-sdk/mcp": "1.0.91",
+    "@hatchet-dev/typescript-sdk": "1.36.0",
+    "@types/node": "20.17.57",
+    "ai": "6.0.301",
+    "tsx": "4.19.4",
+    "typescript": "5.8.3",
+    "zod": "4.2.1"
+  },
+  "overrides": {
+    "@ai-sdk/provider": "3.0.18",
+    "@ai-sdk/provider-utils": "4.0.57"
+  }
+}
