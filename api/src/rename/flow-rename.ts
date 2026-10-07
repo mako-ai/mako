@@ -45,7 +45,6 @@ import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   FLOW_SLUG_RE,
   flowFilePath,
-  isValidFlowSlug,
   parseFlowFileResult,
 } from "../services/flow-config-files";
 import { commitFlowConfig } from "../services/flow-config.service";
@@ -56,9 +55,8 @@ import {
 } from "../services/flow-sync.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
-import { cleanRenameTitle } from "./title-rules";
+import { cleanRenameTitle, renameSlugError } from "./title-rules";
 import { retiredIdHolders } from "./retired-ids";
-import { unsafeSlugReason } from "../utils/slugify";
 import {
   RenameError,
   type RenameContext,
@@ -279,13 +277,8 @@ export async function renameFlow(
   const newSlug = request.slug?.trim();
   const slugChanged = newSlug !== undefined && newSlug !== oldSlug;
   if (slugChanged) {
-    if (!isValidFlowSlug(newSlug)) {
-      throw new RenameError(
-        `"${newSlug}" is not a valid file name: lowercase letters, digits and single dashes, up to 64 characters (it becomes flows/${newSlug}.yml).`,
-      );
-    }
-    const unsafe = unsafeSlugReason(newSlug);
-    if (unsafe) throw new RenameError(unsafe);
+    const slugProblem = renameSlugError("flow", newSlug);
+    if (slugProblem) throw new RenameError(slugProblem);
     // Taken by another flow's current slug OR by an old name it still
     // answers to — an old link must never start opening a different flow.
     const holder = await Flow.findOne({

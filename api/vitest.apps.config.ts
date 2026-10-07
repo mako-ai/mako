@@ -125,6 +125,8 @@ export default defineConfig({
       "src/rename/scenarios/flow-rename-hostile.scenarios.test.ts",
       "src/rename/scenarios/dbt-job-rename.scenarios.test.ts",
       "src/rename/scenarios/dbt-job-rename-hostile.scenarios.test.ts",
+      // The rename dialog's copy of the name rules equals the server's.
+      "src/rename/scenarios/name-rules-parity.test.ts",
       // Exhaustive scenario suites (graceful rename, #1037): consoles,
       // notebooks, dashboards and connections against the real routes,
       // services, git and Mongo — the matrix of entry points × operations ×
