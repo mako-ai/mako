@@ -480,12 +480,14 @@ export async function renameDbtFile(
           if (isJob) jobsTouched = true;
         }
       }
-      // The moved file may ref itself (a comment, a docs block) — rewrite it too.
+      // The moved file may ref itself (a comment, a docs block) — rewrite it
+      // too, when it is a file dbt parses: a seed's CSV is DATA, and a
+      // cell that happens to read `ref('countries')` is not a reference.
       if (sourceIsSymlink) {
         warnings.push(
           `${from} is a symlink; it was moved as-is (its target was not rewritten).`,
         );
-      } else {
+      } else if (isRewritableDbtPath(from)) {
         movedContent = rewriteRefs(
           sourceText,
           oldModel,
