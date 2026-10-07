@@ -1040,10 +1040,14 @@ export class ConsoleManager {
         folderId,
         workspaceId,
       );
+      const watched = await this.othersVisibilityUnder(folderId, workspaceId, {
+        userId,
+      });
       folder.access = access;
       folder.isPrivate = access === "private";
       await folder.save();
       try {
+        await this.assertVisibilityKept(watched);
         await this.assertFolderScopeFlipAllowed(
           folderId,
           workspaceId,
@@ -1077,7 +1081,8 @@ export class ConsoleManager {
       if (
         error instanceof RepoRequiredError ||
         error instanceof BlobPreconditionError ||
-        error instanceof ConsoleConflictError
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleScopeError
       ) {
         throw error;
       }
@@ -2277,6 +2282,66 @@ export class ConsoleManager {
   }
 
   /**
+   * The consoles under a folder (saved or draft, not trashed) whose
+   * visibility `actor` may NOT change (`mayChangeVisibility`: not theirs,
+   * and the actor is no workspace admin), each with who sees it now. A
+   * folder drag or access flip must leave every one of them exactly as
+   * visible as it is: publishing one by inheritance, OR hiding one that
+   * the workspace sees only through this folder (a private console filed
+   * in a workspace folder), is its owner's or an admin's call — never the
+   * folder owner's, a shared editor's or a plain member's.
+   */
+  private async othersVisibilityUnder(
+    folderId: string,
+    workspaceId: string,
+    actor: { userId?: string; isAdmin?: boolean },
+  ): Promise<Array<{ row: ISavedConsole; seen: ConsoleAccessLevel }>> {
+    // A workspace API key or an admin may change anyone's visibility.
+    if (!actor.userId || actor.isAdmin) return [];
+    const wid = new Types.ObjectId(workspaceId);
+    const folderIds: Types.ObjectId[] = [];
+    const queue = [new Types.ObjectId(folderId)];
+    const seenFolders = new Set<string>();
+    while (queue.length > 0) {
+      const id = queue.shift() as Types.ObjectId;
+      if (seenFolders.has(id.toString())) continue;
+      seenFolders.add(id.toString());
+      folderIds.push(id);
+      const children = await ConsoleFolder.find({
+        workspaceId: wid,
+        parentId: id,
+      }).select("_id");
+      queue.push(...children.map(c => c._id));
+    }
+    const rows = await SavedConsole.find({
+      workspaceId: wid,
+      folderId: { $in: folderIds },
+      is_deleted: { $ne: true },
+    });
+    const out: Array<{ row: ISavedConsole; seen: ConsoleAccessLevel }> = [];
+    for (const row of rows) {
+      if (mayChangeVisibility(row, actor)) continue;
+      out.push({ row, seen: await this.effectiveVisibility(row) });
+    }
+    return out;
+  }
+
+  /** Refuse (`ConsoleScopeError`) when any of `watched` is seen differently now. */
+  private async assertVisibilityKept(
+    watched: Array<{ row: ISavedConsole; seen: ConsoleAccessLevel }>,
+  ): Promise<void> {
+    for (const { row, seen } of watched) {
+      const now = await this.effectiveVisibility(row);
+      if (now === seen) continue;
+      throw new ConsoleScopeError(
+        now === "workspace"
+          ? "This folder holds another member's private console that the move would publish to the workspace — only its owner or a workspace admin can change who sees it."
+          : "This folder holds another member's console that the workspace sees only through this folder; the move would hide it — only its owner or a workspace admin can change who sees it.",
+      );
+    }
+  }
+
+  /**
    * A folder flipped (or moved) to the workspace publishes every console
    * under it by inheritance — so every private console there must be one
    * the actor may publish (`mayChangeVisibility`: their own, or any for a
@@ -2812,6 +2877,13 @@ export class ConsoleManager {
       access === "workspace" ||
       (visibleBefore === "private" && visibleAfter === "workspace");
 
+    // Who sees each console under it that is not the actor's to re-scope,
+    // measured before anything moves (see `othersVisibilityUnder`).
+    const watched = await this.othersVisibilityUnder(folderId, workspaceId, {
+      userId,
+      isAdmin,
+    });
+
     const result = await ConsoleFolder.updateOne(
       {
         _id: new Types.ObjectId(folderId),
@@ -2826,6 +2898,9 @@ export class ConsoleManager {
       workspaceId,
     );
     try {
+      // Narrowing is gated like publishing: a drag or a flip changes who
+      // sees nobody's console but the actor's own (or any, for an admin).
+      await this.assertVisibilityKept(watched);
       // Destinations free, and the publication the actor's to make? Asked
       // with the folder's new parent/access in place and BEFORE any
       // console row changes — the same rule as an access flip: the folder
