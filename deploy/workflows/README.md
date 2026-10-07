@@ -22,8 +22,25 @@ gVisor node pool.
 | Local                | —              | Hatchet Lite in `docker-compose.yml`            |
 
 Previews share one Hatchet. Each PR prefixes its tenants and worker
-Deployments with `pr-<n>-`, and `cleanup-preview.yml` removes them when the PR
-closes.
+Deployments with `pr-<n>-` (`WORKFLOWS_NAME_PREFIX`). When the PR closes,
+`cleanup-preview.yml` deletes its Deployments and Secrets; the idle Hatchet
+tenants stay.
+
+Hatchet refuses to start unless its database timezone is UTC. Neon defaults to
+GMT, so `provision.sh` sets it before the install.
+
+## What the Mako API needs
+
+| Variable                  | Where                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------- |
+| `HATCHET_ADMIN_PASSWORD`  | Secret Manager, mounted with `--set-secrets`. Creates a tenant per workspace. |
+| `WORKFLOWS_RUNTIME_IMAGE` | The `workflows-runtime` image in the project's registry                       |
+| `WORKFLOWS_NAME_PREFIX`   | Previews only: `pr-<n>-`                                                      |
+| `KERNEL_GKE_*`            | Already set for notebook kernels; the same cluster                            |
+| `HATCHET_API_URL`         | Local only (Hatchet Lite). Deployed, the API finds the Hatchet pod itself.    |
+
+Workflows stay off for a workspace until staff turn them on:
+`PUT /api/admin/workspaces/:workspaceId/workflows` with `{ "enabled": true }`.
 
 ## Per-workspace objects (created by the Mako API, not by hand)
 

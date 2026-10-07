@@ -57,6 +57,22 @@ jobs:
             --region ${GCP_REGION} \
             --quiet || echo "Service ${SERVICE_NAME} not found or already deleted"
 
+      # Workflow workers this preview deployed (deploy/workflows). Their
+      # Hatchet tenants stay: idle tenants cost nothing and hold no code.
+      - name: Get workflows cluster credentials
+        continue-on-error: true
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: mako-notebooks
+          location: europe-west1-b
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Delete workflow workers
+        continue-on-error: true
+        run: |
+          kubectl -n mako-workflows delete deployment,secret \
+            -l "mako.ai/env=pr-${PR_NUMBER}" --ignore-not-found --wait=false
+
       - name: Delete Docker images from Artifact Registry
         continue-on-error: true
         run: |

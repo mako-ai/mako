@@ -48,7 +48,7 @@ the same GKE cluster, gVisor node pool and locked-down egress.
 
 | Piece | What | New or reused |
 |---|---|---|
-| Hatchet | Official Helm chart, namespace `hatchet`, Cloud SQL Postgres. Dashboard for staff only, behind IAP. | New |
+| Hatchet | Official Helm chart, namespace `hatchet`, Neon Postgres (direct endpoint, timezone UTC). Dashboard for staff only, through `kubectl port-forward`. | New |
 | Namespace | `mako-workflows` on the gVisor node pool | Pool reused |
 | Network policy | Copy of the kernel policy (HTTPS out, no private ranges, no metadata server), plus Hatchet gRPC | Copied |
 | Runtime image | Node 20 + pinned `@hatchet-dev/typescript-sdk`, `ai`, `@ai-sdk/gateway`, `@ai-sdk/mcp`, `zod`, `tsx`, `typescript`, and `entrypoint.mjs` | New |

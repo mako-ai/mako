@@ -226,6 +226,10 @@ jobs:
       KERNEL_PROVIDER: gke
       KERNEL_GKE_ENDPOINT: ${{ vars.DEV_KERNEL_GKE_ENDPOINT }}
       KERNEL_GKE_CA_CERT: ${{ vars.DEV_KERNEL_GKE_CA_CERT }}
+      # Workflows (deploy/workflows): previews share the dev Hatchet and
+      # cluster, so each PR prefixes its tenants and worker Deployments.
+      WORKFLOWS_RUNTIME_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_DEV_PROJECT_ID }}/${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}/workflows-runtime:latest
+      WORKFLOWS_NAME_PREFIX: pr-${{ needs.detect-changes.outputs.pr_number }}-
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
@@ -670,6 +674,9 @@ jobs:
             --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
             --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
             --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
+            --set-env-vars WORKFLOWS_RUNTIME_IMAGE=${WORKFLOWS_RUNTIME_IMAGE} \
+            --set-env-vars WORKFLOWS_NAME_PREFIX=${WORKFLOWS_NAME_PREFIX} \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
             --quiet
 
           # Get the Cloud Run URL

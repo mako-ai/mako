@@ -148,6 +148,22 @@ export interface IWorkspace extends Document {
   workspaceRepos?: IWorkspaceRepoBinding[];
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
   appsRepo?: IWorkspaceRepoBinding;
+  /**
+   * Workflows as code (rfcs/workflows-as-code.md). Mako stores only how to
+   * reach this workspace's Hatchet tenant: workflows and schedules live in
+   * git, the live commit in Kubernetes, runs and logs in Hatchet.
+   */
+  workflows?: IWorkspaceWorkflows;
+}
+
+export interface IWorkspaceWorkflows {
+  /** Staff-set feature flag. Nothing deploys while this is not true. */
+  enabled: boolean;
+  hatchetTenantId?: string;
+  /** Tenant API token, encrypted like connection secrets. */
+  hatchetToken?: string;
+  /** The worker pod's key in `apiKeys` (scope `workflows:runtime`). */
+  workerApiKeyId?: Types.ObjectId;
 }
 
 export interface IWorkspaceRepoBinding {
@@ -1369,6 +1385,16 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         ),
       ],
       default: undefined,
+    },
+    workflows: {
+      type: {
+        enabled: { type: Boolean, default: false },
+        hatchetTenantId: { type: String },
+        hatchetToken: { type: String },
+        workerApiKeyId: { type: Schema.Types.ObjectId },
+      },
+      default: undefined,
+      _id: false,
     },
     appsRepo: {
       type: {

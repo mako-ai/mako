@@ -317,6 +317,17 @@ export function syncRepoBackedResources(
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  // Workflows (`workflows/`, rfcs/workflows-as-code.md): a change at main
+  // rolls the workspace's worker to the new commit. A commit that fails its
+  // typecheck never becomes ready, so the previous worker keeps running.
+  void import("../workflows/on-push")
+    .then(m => m.deployWorkflowsFromRepo(workspaceId, userId))
+    .catch(error => {
+      logger.warn("Workflows deploy after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   // Flow definitions (RFC #904 block 3): `flows/<slug>.yml` is authoritative,
   // so an external edit reconfigures a live CDC stream and a removed file
   // tears one down. Caught like the others — one resource's bad YAML must not

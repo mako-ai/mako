@@ -5,7 +5,7 @@
 #
 # Run once per environment, by someone with admin rights on the project:
 #   PROJECT_ID=mako-ai-dev  ./provision.sh    # shared by all PR previews
-#   PROJECT_ID=mako-ai-prod ./provision.sh    # production
+#   PROJECT_ID=mako-ai-prod RUNTIME_SA=mako-runtime@mako-ai-prod.iam.gserviceaccount.com ./provision.sh
 #
 # Before the first run, store Hatchet's Postgres URL (Neon, DIRECT endpoint —
 # the host WITHOUT `-pooler`) in that project's Secret Manager:
@@ -61,6 +61,15 @@ echo "→ Setting Hatchet database timezone to UTC"
 psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -q -c \
   "DO \$\$ BEGIN EXECUTE format('ALTER DATABASE %I SET timezone TO ''UTC''', current_database()); END \$\$;"
 
+# The Mako API (Cloud Run) reads HATCHET_ADMIN_PASSWORD at runtime to create a
+# tenant per workspace. Prod runs as a dedicated SA (set RUNTIME_SA); dev and
+# previews run as the default compute SA, which Editor does not let read secrets.
+RUNTIME_SA="${RUNTIME_SA:-$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')-compute@developer.gserviceaccount.com}"
+echo "→ Granting ${RUNTIME_SA} access to HATCHET_ADMIN_PASSWORD"
+gcloud secrets add-iam-policy-binding HATCHET_ADMIN_PASSWORD --project="${PROJECT_ID}" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/secretmanager.secretAccessor" --condition=None --quiet >/dev/null
+
 # --- 2. Hatchet -----------------------------------------------------------------
 echo "→ Installing Hatchet (chart ${CHART_VERSION})"
 helm repo add hatchet https://hatchet-dev.github.io/hatchet-charts >/dev/null 2>&1 || true
@@ -109,7 +118,9 @@ cat <<EOF
    Dashboard : kubectl -n hatchet port-forward svc/hatchet-frontend 8080:8080
                login workflows-admin@mako.ai / secret HATCHET_ADMIN_PASSWORD
 
-The Mako API needs (Cloud Run env, from Secret Manager):
-   HATCHET_ADMIN_PASSWORD   (secret)
-The cluster endpoint/CA are the existing KERNEL_GKE_* values; nothing else is new.
+The Mako API needs (Cloud Run):
+   HATCHET_ADMIN_PASSWORD    --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest
+   WORKFLOWS_RUNTIME_IMAGE   the workflows-runtime image in this project's registry
+   WORKFLOWS_NAME_PREFIX     previews only: pr-<n>-
+The cluster endpoint/CA are the existing KERNEL_GKE_* values.
 EOF

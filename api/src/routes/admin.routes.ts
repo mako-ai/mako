@@ -8,6 +8,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { requireSuperAdmin } from "../auth/super-admin";
 import { loggers } from "../logging";
@@ -19,6 +20,8 @@ import {
   setCuratedModel,
 } from "../services/model-catalog.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { Workspace } from "../database/workspace-schema";
+import { deployWorkflowsFromRepo } from "../workflows/on-push";
 
 const logger = loggers.app();
 
@@ -248,6 +251,64 @@ adminRoutes.openapi(
         },
         500,
       );
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PUT /api/admin/workspaces/{workspaceId}/workflows
+// Body: { enabled: boolean }
+// Workflows (rfcs/workflows-as-code.md) are behind a staff-set flag per
+// workspace. Turning it on deploys `workflows/` at main if there is one.
+// ---------------------------------------------------------------------------
+adminRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/workspaces/{workspaceId}/workflows",
+    tags: ["Admin"],
+    summary: "Turn workflows on or off for a workspace (admin)",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: true,
+        content: {
+          "application/json": { schema: z.object({ enabled: z.boolean() }) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { enabled } = c.req.valid("json");
+      if (!Types.ObjectId.isValid(workspaceId)) {
+        return c.json({ success: false, error: "Invalid workspace ID" }, 400);
+      }
+      const result = await Workspace.updateOne(
+        { _id: new Types.ObjectId(workspaceId) },
+        { $set: { "workflows.enabled": enabled } },
+      );
+      if (result.matchedCount === 0) {
+        return c.json({ success: false, error: "Workspace not found" }, 404);
+      }
+      const deploy = enabled
+        ? await deployWorkflowsFromRepo(workspaceId, c.get("user")?.id).catch(
+            error => ({
+              deployed: false as const,
+              reason: error instanceof Error ? error.message : String(error),
+            }),
+          )
+        : null;
+      return c.json({ success: true as const, enabled, deploy }, 200);
+    } catch (error) {
+      logger.error("Failed to set the workflows flag", { error });
+      return c.json({ success: false, error: "Failed to update" }, 500);
     }
   },
 );

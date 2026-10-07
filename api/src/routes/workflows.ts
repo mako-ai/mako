@@ -1,0 +1,407 @@
+/**
+ * Workflows — `/api/workspaces/:workspaceId/workflows` for people, and
+ * `/api/workflows/runtime` for a workspace's worker pod
+ * (rfcs/workflows-as-code.md).
+ *
+ * Mako keeps no copy of workflow state. Each handler reads the owner of the
+ * fact it returns: Kubernetes for what is deployed, Hatchet for workflows,
+ * runs and logs. Hatchet responses are returned in Hatchet's own shape.
+ *
+ * The runtime routes accept only a workspace API key carrying the
+ * `workflows:runtime` scope, which Mako mints for the worker pod and a person
+ * cannot put on a key. The key decides the workspace; no id is taken from the
+ * request.
+ */
+import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
+import { Types } from "mongoose";
+
+import { ensureCommitLocally } from "../apps/cloud-repo.service";
+import { isOid, runGitBuffer } from "../apps/git";
+import { repoDirFor, repoExists } from "../apps/repository.service";
+import { hashApiKey } from "../auth/api-key.middleware";
+import {
+  hasWorkspaceApiKeyScope,
+  resolveWorkspaceApiKeyScopes,
+} from "../auth/api-key-scopes";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { Workspace } from "../database/workspace-schema";
+import { loggers } from "../logging";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { workspaceService } from "../services/workspace.service";
+import {
+  HatchetError,
+  cancelRun,
+  isHatchetConfigured,
+  isHatchetId,
+  readWorkspaceTenant,
+  replayRun,
+  resolveHatchetRead,
+  tenantFetch,
+  tenantJson,
+  triggerRun,
+  type WorkspaceTenant,
+} from "../workflows/hatchet";
+import {
+  isWorkflowsKubeConfigured,
+  readWorkerStatus,
+  type WorkerStatus,
+} from "../workflows/kube";
+import { WORKFLOWS_DIR } from "../workflows/on-push";
+
+const logger = loggers.api("workflows");
+
+// --- Workspace routes -------------------------------------------------------
+
+export const workflowRoutes = createRouter();
+
+const WorkspaceParam = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+});
+const RunParam = WorkspaceParam.extend({
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
+});
+const NameParam = WorkspaceParam.extend({
+  name: z.string().openapi({ param: { name: "name", in: "path" } }),
+});
+
+workflowRoutes.use("*", unifiedAuthMiddleware);
+
+workflowRoutes.use("*", async (c: AuthenticatedContext, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  const user = c.get("user");
+  if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+    return c.json(
+      { success: false, error: "Invalid workspace ID format" },
+      400,
+    );
+  }
+  if (!user) {
+    return c.json({ success: false, error: "Authentication required" }, 401);
+  }
+  if (!(await workspaceService.hasAccess(workspaceId, user.id))) {
+    return c.json({ success: false, error: "Access denied to workspace" }, 403);
+  }
+  await next();
+});
+
+function fail(c: Context, error: unknown): Response {
+  if (error instanceof HatchetError) {
+    const status =
+      error.status === 404 ? 404 : error.status === 503 ? 503 : 502;
+    return c.json({ success: false, error: error.message }, status);
+  }
+  logger.error("Workflows route error", { error });
+  return c.json(
+    {
+      success: false,
+      error: error instanceof Error ? error.message : "Internal error",
+    },
+    500,
+  );
+}
+
+/** The workspace's tenant, or a response saying why there is none. */
+async function tenantOr(
+  c: Context,
+  workspaceId: string,
+): Promise<WorkspaceTenant | Response> {
+  if (!isHatchetConfigured()) {
+    return c.json(
+      { success: false, error: "Workflows are not configured on this server" },
+      503,
+    );
+  }
+  const tenant = await readWorkspaceTenant(workspaceId);
+  if (!tenant) {
+    return c.json(
+      {
+        success: false,
+        error:
+          "This workspace has no workflows yet. Merge a workflows/ folder to main.",
+      },
+      404,
+    );
+  }
+  return tenant;
+}
+
+/** Viewers read runs; starting, cancelling and replaying need a member. */
+async function mayRun(c: AuthenticatedContext): Promise<boolean> {
+  return workspaceService.hasRole(
+    c.req.param("workspaceId") as string,
+    c.get("user")!.id,
+    ["owner", "admin", "member"],
+  );
+}
+
+const NOT_DEPLOYED: WorkerStatus = {
+  liveSha: null,
+  targetSha: null,
+  deploying: false,
+  buildError: null,
+};
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/",
+    tags: ["Workflows"],
+    summary:
+      "What is deployed (from Kubernetes) and the registered workflows and crons (from Hatchet)",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const workspace = await Workspace.findById(workspaceId)
+        .select("workflows.enabled")
+        .lean();
+      const enabled = workspace?.workflows?.enabled === true;
+      const tenant = isHatchetConfigured()
+        ? await readWorkspaceTenant(workspaceId)
+        : null;
+      const [deployment, workflows, crons] = await Promise.all([
+        tenant && isWorkflowsKubeConfigured()
+          ? readWorkerStatus(workspaceId)
+          : NOT_DEPLOYED,
+        tenant
+          ? tenantJson<{ rows?: unknown[] }>(
+              tenant,
+              `/api/v1/tenants/${tenant.tenantId}/workflows`,
+            )
+          : null,
+        tenant
+          ? tenantJson<{ rows?: unknown[] }>(
+              tenant,
+              `/api/v1/tenants/${tenant.tenantId}/workflows/crons`,
+            )
+          : null,
+      ]);
+      return c.json(
+        {
+          success: true as const,
+          enabled,
+          deployment,
+          workflows: workflows?.rows ?? [],
+          crons: crons?.rows ?? [],
+        },
+        200,
+      );
+    } catch (error) {
+      return fail(c, error);
+    }
+  },
+);
+
+// Allowlisted Hatchet reads, in Hatchet's own response shapes. The tenant and
+// its token are added here; the caller cannot name either.
+workflowRoutes.get("/hatchet/*", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const tenant = await tenantOr(c, workspaceId);
+    if (tenant instanceof Response) return tenant;
+    const subPath = c.req.path.split("/workflows/hatchet/")[1] ?? "";
+    const target = resolveHatchetRead(subPath, tenant.tenantId);
+    if (!target) {
+      return c.json({ success: false, error: "Not found" }, 404);
+    }
+    const res = await tenantFetch(tenant, target, {
+      query: new URL(c.req.url).searchParams,
+    });
+    return new Response(res.body, {
+      status: res.status,
+      headers: {
+        "Content-Type": res.headers.get("Content-Type") ?? "application/json",
+      },
+    });
+  } catch (error) {
+    return fail(c, error);
+  }
+});
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{name}/run",
+    tags: ["Workflows"],
+    summary: "Start a run of a workflow",
+    security: AUTH_SECURITY,
+    request: {
+      params: NameParam,
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({
+              input: z.record(z.string(), z.unknown()).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId, name } = c.req.valid("param");
+      if (!(await mayRun(c))) {
+        return c.json(
+          { success: false, error: "Viewers cannot start runs" },
+          403,
+        );
+      }
+      const tenant = await tenantOr(c, workspaceId);
+      if (tenant instanceof Response) return tenant;
+      const body = await c.req.json().catch(() => ({}));
+      const run = await triggerRun(tenant, name, body?.input ?? {}, {
+        trigger: c.get("authType") === "session" ? "ui" : "api",
+        triggeredBy: String(c.get("user")!.id),
+      });
+      return c.json({ success: true as const, run }, 200);
+    } catch (error) {
+      return fail(c, error);
+    }
+  },
+);
+
+for (const [action, call] of [
+  ["cancel", cancelRun],
+  ["replay", replayRun],
+] as const) {
+  workflowRoutes.openapi(
+    createRoute({
+      method: "post",
+      path: `/runs/{id}/${action}`,
+      tags: ["Workflows"],
+      summary: action === "cancel" ? "Cancel a run" : "Replay a run",
+      security: AUTH_SECURITY,
+      request: { params: RunParam },
+      responses: OPEN_RESPONSES,
+    }),
+    async c => {
+      try {
+        const { workspaceId, id } = c.req.valid("param");
+        if (!isHatchetId(id)) {
+          return c.json({ success: false, error: "Invalid run id" }, 400);
+        }
+        if (!(await mayRun(c))) {
+          return c.json(
+            { success: false, error: `Viewers cannot ${action} runs` },
+            403,
+          );
+        }
+        const tenant = await tenantOr(c, workspaceId);
+        if (tenant instanceof Response) return tenant;
+        const result = await call(tenant, id);
+        return c.json({ success: true as const, result }, 200);
+      } catch (error) {
+        return fail(c, error);
+      }
+    },
+  );
+}
+
+// --- Runtime routes (worker pod only) ----------------------------------------
+
+export const workflowRuntimeRoutes = createRouter();
+
+const GATEWAY_BASE_URL = (
+  process.env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1/ai"
+).replace(/\/+$/, "");
+
+/** The workspace a worker key belongs to, or null when the key is not one. */
+async function workerWorkspaceId(c: Context): Promise<string | null> {
+  const header = c.req.header("Authorization");
+  if (!header?.startsWith("Bearer revops_")) return null;
+  const keyHash = hashApiKey(header.substring(7));
+  const workspace = await Workspace.findOne({ "apiKeys.keyHash": keyHash })
+    .select("apiKeys workflows.enabled")
+    .lean();
+  const key = workspace?.apiKeys?.find(k => k.keyHash === keyHash);
+  if (!workspace || !key || workspace.workflows?.enabled !== true) return null;
+  const scopes = resolveWorkspaceApiKeyScopes(key.scopes);
+  if (!hasWorkspaceApiKeyScope(scopes, "workflows:runtime")) return null;
+  return workspace._id.toString();
+}
+
+// `workflows/` at a commit, as a gzipped tarball. The pod asks for the commit
+// its Deployment names; the key limits it to its own workspace's repository.
+workflowRuntimeRoutes.get("/source/:sha", async c => {
+  try {
+    const workspaceId = await workerWorkspaceId(c);
+    if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
+    const sha = c.req.param("sha");
+    if (!isOid(sha)) return c.json({ error: "Invalid commit" }, 400);
+    // A fresh API instance has an empty disk: restore the repository and
+    // this commit from the mirror before reading it.
+    await ensureCommitLocally(workspaceId, sha);
+    const repoDir = repoDirFor(workspaceId);
+    if (!(await repoExists(repoDir))) {
+      return c.json({ error: "The workspace has no repository" }, 404);
+    }
+    const tarball = await runGitBuffer([
+      "-C",
+      repoDir,
+      "archive",
+      "--format=tar.gz",
+      sha,
+      WORKFLOWS_DIR,
+    ]);
+    return new Response(new Uint8Array(tarball), {
+      status: 200,
+      headers: { "Content-Type": "application/gzip" },
+    });
+  } catch (error) {
+    logger.warn("Workflow source fetch failed", { error });
+    return c.json({ error: "No workflows/ folder at that commit" }, 404);
+  }
+});
+
+// Model calls from workflow code, forwarded to the AI gateway with Mako's key.
+// The worker never holds a provider key.
+workflowRuntimeRoutes.all("/ai/*", async c => {
+  const workspaceId = await workerWorkspaceId(c);
+  if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
+  const subPath = c.req.path.split("/runtime/ai/")[1] ?? "";
+  const headers = new Headers();
+  c.req.raw.headers.forEach((value, name) => {
+    // Forward the gateway's own protocol headers and the content type only.
+    if (name === "content-type" || name.startsWith("ai-")) {
+      headers.set(name, value);
+    }
+  });
+  headers.set(
+    "Authorization",
+    `Bearer ${process.env.AI_GATEWAY_API_KEY ?? ""}`,
+  );
+  const hasBody = c.req.method !== "GET" && c.req.method !== "HEAD";
+  try {
+    const res = await fetch(`${GATEWAY_BASE_URL}/${subPath}`, {
+      method: c.req.method,
+      headers,
+      body: hasBody ? await c.req.arrayBuffer() : undefined,
+      signal: c.req.raw.signal,
+    });
+    logger.info("Workflow model call", {
+      workspaceId,
+      path: subPath,
+      model: c.req.header("ai-language-model-id"),
+      status: res.status,
+    });
+    return new Response(res.body, {
+      status: res.status,
+      headers: {
+        "Content-Type": res.headers.get("Content-Type") ?? "application/json",
+      },
+    });
+  } catch (error) {
+    logger.warn("Workflow model call failed", { workspaceId, error });
+    return c.json({ error: "The AI gateway is unreachable" }, 502);
+  }
+});
