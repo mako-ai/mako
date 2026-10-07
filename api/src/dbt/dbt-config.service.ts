@@ -780,6 +780,25 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
       foreignHeld = await foreignHeldJobIds(workspaceId, defs, rows);
     }
   }
+  // …or whose file moved and whose row was not re-keyed yet (a crash
+  // between a rename's commit and its row update, a laptop move read
+  // before its push sync): the sync's own pairing, as it orders it.
+  if (orphaned(defs, rows).length > 0) {
+    const repoDir = await boundRepoDirIfExists(workspaceId);
+    if (
+      repoDir != null &&
+      (await rekeyMovedJobsForRead({
+        workspaceId,
+        project,
+        repoDir,
+        defs,
+        rows,
+      }))
+    ) {
+      rows = await DbtJob.find({ projectId: project._id });
+      foreignHeld = await foreignHeldJobIds(workspaceId, defs, rows);
+    }
+  }
   const bySlug = new Map(rows.map(row => [row.slug, row]));
   for (const def of defs) {
     const row = bySlug.get(def.slug);
@@ -799,6 +818,62 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
     ...rows,
     ...(await retiredIdHolders(workspaceId, "dbt_job")),
   ]);
+}
+
+/**
+ * The read paths' twin of the push sync's pairing (see
+ * `rekeyMovedFlowsForRead` in flow-sync.service.ts): a job row whose file
+ * is not at main while a job file has no row is re-keyed in place, so the
+ * job is listed and opened under its new name with its own id instead of
+ * a git-only stand-in (and a 404 for its own id) until the next push. Only
+ * on a tree verified as the mirror's main; only ever re-keys.
+ */
+async function rekeyMovedJobsForRead(args: {
+  workspaceId: string;
+  project: IDbtProject;
+  repoDir: string;
+  defs: JobDefinitionAtMain[];
+  rows: IDbtJob[];
+}): Promise<boolean> {
+  const { workspaceId, project, repoDir, defs, rows } = args;
+  try {
+    const defSlugs = new Set(defs.map(def => def.slug));
+    const rowSlugs = new Set(rows.map(row => row.slug));
+    if (
+      !rows.some(row => row.slug && !defSlugs.has(row.slug)) ||
+      !defs.some(def => !rowSlugs.has(def.slug))
+    ) {
+      return false;
+    }
+    const head = await resolveCommit(repoDir, MAIN);
+    if (!head) return false;
+    const treeIsCurrent = currentTreeCheck(workspaceId, head);
+    if (!(await treeIsCurrent())) return false;
+    const blobs = await readBlobsBatch(
+      repoDir,
+      head,
+      defs.map(def => def.path),
+    );
+    const pairs = await rekeyRenamedJobs({
+      workspaceId,
+      projectId: project._id,
+      repoDir,
+      head,
+      treeIsCurrent,
+      files: [...blobs].map(([path, buf]) => ({
+        path,
+        contents: buf.toString("utf8"),
+        oid: blobOid(buf),
+      })),
+    });
+    return pairs.length > 0;
+  } catch (error) {
+    logger.warn("Could not pair a moved job on a read", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }
 
 /**
