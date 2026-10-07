@@ -1,17 +1,21 @@
 /**
  * Renaming a model rewrites `ref()`s and job selectors — and nothing else.
  */
+import yaml from "js-yaml";
 import { describe, expect, it } from "vitest";
 import { parseJobFile, serializeJobFile } from "./dbt-config-files";
 import {
   mentionsName,
+  needsYamlQuotes,
   refNameForDbtPath,
+  renamedScalarsAreStrings,
   rewriteJobCommands,
   rewriteNodeProperties,
   rewriteProjectModelConfig,
   rewriteRefs,
   rewriteSelectors,
   selectorsStillNaming,
+  yamlScalar,
 } from "./dbt-ref-rewrite";
 
 describe("refNameForDbtPath", () => {
@@ -467,5 +471,109 @@ describe("rewriteProjectModelConfig", () => {
   it("mentionsName is a whole-word check", () => {
     expect(mentionsName("value: orders+", "orders")).toBe(true);
     expect(mentionsName("value: orders_x", "orders")).toBe(false);
+  });
+});
+
+describe("a new name YAML would not read as text is quoted (review #1037)", () => {
+  /** Names a reader takes as a bool, null, number, date or float. */
+  const TYPED = [
+    "true",
+    "false",
+    "True",
+    "null",
+    "yes",
+    "no",
+    "on",
+    "off",
+    "y",
+    "~",
+    "123",
+    "1e3",
+    "0x1F",
+    "0o17",
+    "1_000",
+    "1:30",
+    "2026-10-06",
+    "2026-10-06T12:00:00Z",
+    ".5",
+    "-1",
+    ".inf",
+    "<<",
+  ];
+  const PROPS = [
+    "version: 2",
+    "models:",
+    "  - name: orders",
+    "    description: x",
+    "  - name: 'orders'",
+    '  - name: "orders"',
+    "unit_tests:",
+    "  - name: t",
+    "    model: orders",
+    "",
+  ].join("\n");
+
+  it("needsYamlQuotes: every typed-looking name, and none of the plain ones", () => {
+    for (const name of TYPED) {
+      expect([name, needsYamlQuotes(name)]).toEqual([name, true]);
+    }
+    for (const name of [
+      "orders",
+      "fct_orders",
+      "true_orders",
+      "orders_2026",
+      "nullable",
+      "on_time",
+    ]) {
+      expect([name, needsYamlQuotes(name)]).toEqual([name, false]);
+    }
+    expect(yamlScalar("true")).toBe('"true"');
+    expect(yamlScalar("true", "'")).toBe("'true'");
+    expect(yamlScalar("it's", "'")).toBe("'it''s'");
+    expect(yamlScalar("orders")).toBe("orders");
+  });
+
+  it("properties `name:` and unit_tests `model:` read back as the exact string, whatever the old quoting", () => {
+    for (const name of TYPED) {
+      const r = rewriteNodeProperties(PROPS, "orders", name);
+      expect(r.count).toBe(4);
+      const doc = yaml.load(r.text) as {
+        models: Array<{ name: unknown }>;
+        unit_tests: Array<{ model: unknown }>;
+      };
+      expect([name, doc.models.map(m => m.name)]).toEqual([
+        name,
+        [name, name, name],
+      ]);
+      expect([name, doc.unit_tests[0].model]).toEqual([name, name]);
+      expect(renamedScalarsAreStrings(PROPS, r.text, name, r.count)).toBe(true);
+    }
+  });
+
+  it("a dbt_project.yml config key and job selectors stay strings too", () => {
+    const project =
+      "name: analytics\nmodels:\n  analytics:\n    orders:\n      +materialized: table\n";
+    const job =
+      "name: J\nenvironment: dev\ncommands:\n  - dbt run --select orders+\n  - dbt test -s orders\n";
+    for (const name of TYPED) {
+      const cfg = rewriteProjectModelConfig(project, "models/orders.sql", name);
+      expect(cfg.count).toBe(1);
+      expect(cfg.text).toContain(`    ${JSON.stringify(name)}:\n`);
+      const parsed = yaml.load(cfg.text) as {
+        models: { analytics: Record<string, unknown> };
+      };
+      expect(Object.keys(parsed.models.analytics)).toEqual([name]);
+      const j = rewriteJobCommands(job, "orders", name);
+      expect((yaml.load(j.text) as { commands: unknown[] }).commands).toEqual([
+        `dbt run --select ${name}+`,
+        `dbt test -s ${name}`,
+      ]);
+    }
+  });
+
+  it("the check refuses what quoting would have prevented", () => {
+    const bare = PROPS.replace("  - name: orders\n", "  - name: true\n");
+    expect(renamedScalarsAreStrings(PROPS, bare, "true", 1)).toBe(false);
+    expect(renamedScalarsAreStrings(PROPS, "models: [", "x", 1)).toBe(false);
   });
 });

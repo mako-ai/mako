@@ -66,6 +66,7 @@ import {
   projectConfigsLostByMove,
   refNameForDbtPath,
   rewriteJobCommands,
+  renamedScalarsAreStrings,
   rewriteNodeProperties,
   rewriteProjectModelConfig,
   rewriteRefs,
@@ -567,6 +568,10 @@ export async function renameDbtFile(
         if (isJob) {
           const job = rewriteJobCommands(text, oldModel, newModel);
           next = job;
+          if (job.count > 0) {
+            assertStillYaml(path, text, job.text, newModel);
+            assertCommandsAreStrings(path, job.text, newModel);
+          }
           for (const cmd of job.unrewritable) {
             warnings.push(
               `${path}: command ${JSON.stringify(cmd)} names '${oldModel}' but could not be rewritten in place — edit it by hand.`,
@@ -756,10 +761,65 @@ function rewriteProjectFile(
   if (!/\.ya?ml$/i.test(path)) return refs;
   if (path === "dbt_project.yml") {
     const cfg = rewriteProjectModelConfig(refs.text, fromPath, newModel);
+    assertStillYaml(path, refs.text, cfg.text, newModel);
     return { text: cfg.text, count: refs.count + cfg.count };
   }
   const props = rewriteNodeProperties(refs.text, oldModel, newModel);
+  // Every `name:` / `model:` written must read back as the exact string:
+  // a model renamed `true`, `null`, `123` or `2026-10-06` is quoted, and
+  // if a reader would still take it as anything else, nothing is committed.
+  if (!renamedScalarsAreStrings(refs.text, props.text, newModel, props.count)) {
+    throw yamlTypeRefusal(path, newModel);
+  }
   return { text: props.text, count: refs.count + props.count };
+}
+
+/** The rewrite kept a YAML file parseable (when it parsed before). */
+function assertStillYaml(
+  path: string,
+  before: string,
+  after: string,
+  newModel: string,
+): void {
+  if (before === after) return;
+  try {
+    yaml.load(before);
+  } catch {
+    return; // it did not parse before: not ours to judge
+  }
+  try {
+    yaml.load(after);
+  } catch {
+    throw yamlTypeRefusal(path, newModel);
+  }
+}
+
+/** Every job command still reads as a string (selectors live inside them). */
+function assertCommandsAreStrings(
+  path: string,
+  text: string,
+  newModel: string,
+): void {
+  let doc: unknown;
+  try {
+    doc = yaml.load(text);
+  } catch {
+    return;
+  }
+  const commands = (doc as { commands?: unknown } | null)?.commands;
+  if (
+    Array.isArray(commands) &&
+    commands.some(cmd => typeof cmd !== "string")
+  ) {
+    throw yamlTypeRefusal(path, newModel);
+  }
+}
+
+function yamlTypeRefusal(path: string, newModel: string): RenameError {
+  return new RenameError(
+    `Renaming to '${newModel}' would leave ${path} with a name YAML does not read as plain text, so nothing was changed. Choose another name, or edit ${path} by hand.`,
+    409,
+  );
 }
 
 /**
