@@ -8,7 +8,12 @@ import {
   type ConsoleLocation,
 } from "../utils/console-manager";
 import { BlobPreconditionError } from "../apps/repository.service";
-import { consolePathTakenMessage } from "../apps/console-files";
+import {
+  ConsoleNameError,
+  cleanConsoleName,
+  consolePathTakenMessage,
+  normalizeConsoleName,
+} from "../apps/console-files";
 import { canWriteResource } from "../utils/resource-acl";
 import { wouldCreateFolderCycle } from "../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
@@ -62,6 +67,8 @@ import {
   consoleCaseVariantAtMain,
   consoleCommitChanges,
   consoleRowForId,
+  ConsoleFolderTwinError,
+  folderTwinOf,
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
@@ -1250,6 +1257,13 @@ consoleRoutes.openapi(
       );
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      // A name no file can carry: a clear 400, nothing written.
+      if (error instanceof ConsoleNameError) {
+        return c.json({ success: false, error: error.message }, 400);
+      }
+      if (error instanceof ConsoleFolderTwinError) {
+        return c.json({ success: false, error: error.message }, 409);
+      }
       // Saving over an existing console (by id or by path): one the caller
       // cannot write, a visibility change that is not theirs, a taken path.
       if (error instanceof ConsoleScopeError) {
@@ -1454,7 +1468,13 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // swap, the owner-or-admin rule on the EFFECTIVE visibility), and the
       // save then writes what the relocation left — never fields of its own.
       const placementRefused = (error: unknown) => {
-        if (error instanceof ConsoleConflictError) {
+        if (error instanceof ConsoleNameError) {
+          return c.json({ success: false, error: error.message }, 400);
+        }
+        if (
+          error instanceof ConsoleConflictError ||
+          error instanceof ConsoleFolderTwinError
+        ) {
           return c.json({ success: false, error: error.message }, 409);
         }
         if (error instanceof ConsoleScopeError) {
@@ -1622,6 +1642,15 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           }
           const access: ConsoleAccessLevel =
             body.access ?? liveScope ?? "private";
+          // A brand-new console's name is judged before any folder is
+          // made for it (a git-only console keeps the name its file has).
+          if (!liveFile) {
+            setFields.name = cleanConsoleName(
+              consoleName,
+              "console",
+              setOnInsertFields.language,
+            );
+          }
           const folderId =
             parts.length > 1
               ? await consoleManager.findOrCreateFolderPath(
@@ -1748,9 +1777,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         lastDraftOrigin: "user",
       };
 
-      // Only update name if explicitly provided
+      // Only update name if explicitly provided — as it will be stored
+      // and filed (a draft's name is judged on its first save).
       if (body.title !== undefined) {
-        setFields.name = body.title || "Untitled";
+        setFields.name =
+          normalizeConsoleName(String(body.title ?? "")) || "Untitled";
       }
 
       if (body.chartSpec !== undefined) setFields.chartSpec = body.chartSpec;
@@ -2017,6 +2048,13 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
     );
   } catch (error) {
     if (error instanceof RepoRequiredError) return repoRequired(c, error);
+    // A name no file can carry (a first save's): a clear 400.
+    if (error instanceof ConsoleNameError) {
+      return c.json({ success: false, error: error.message }, 400);
+    }
+    if (error instanceof ConsoleFolderTwinError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
     // A save's placement: a console the caller cannot write, a visibility
     // change that is not theirs, a taken path.
     if (error instanceof ConsoleScopeError) {
@@ -2157,7 +2195,13 @@ consoleRoutes.openapi(
       }
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      if (error instanceof ConsoleConflictError) {
+      if (error instanceof ConsoleNameError) {
+        return c.json({ success: false, error: error.message }, 400);
+      }
+      if (
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleFolderTwinError
+      ) {
         return c.json({ success: false, error: error.message }, 409);
       }
       if (error instanceof ConsoleScopeError) {
@@ -3792,8 +3836,45 @@ async function consoleFolderWriteDenied(
 
 const consoleFolderBackend: FolderBackend = {
   createFolder: async (ctx, { name, parentId, access }) => {
+    // A folder's name is a directory name in the repo: judged like a
+    // console's, and never a case twin of a sibling in its scope.
+    let clean: string;
+    try {
+      clean = cleanConsoleName(name, "folder");
+    } catch (error) {
+      if (error instanceof ConsoleNameError) {
+        return { ok: false, status: 400, error: error.message };
+      }
+      throw error;
+    }
+    const parent = parentId
+      ? await ConsoleFolder.findOne({
+          _id: new Types.ObjectId(parentId),
+          workspaceId: new Types.ObjectId(ctx.workspaceId),
+        })
+          .select("access isPrivate")
+          .lean<{ access?: ConsoleAccessLevel; isPrivate?: boolean } | null>()
+      : null;
+    const parentAccess =
+      parent && (parent.access ?? (parent.isPrivate ? "private" : "workspace"));
+    // createFolder's own rule: under a workspace folder it is one too.
+    const scopeAccess: ConsoleAccessLevel =
+      parentAccess === "workspace" ? "workspace" : (access ?? "private");
+    const twin = await folderTwinOf(
+      ctx.workspaceId,
+      parentId,
+      { access: scopeAccess, ownerId: ctx.userId },
+      clean,
+    );
+    if (twin) {
+      return {
+        ok: false,
+        status: 409,
+        error: new ConsoleFolderTwinError(twin, clean).message,
+      };
+    }
     const folder = await consoleManager.createFolder(
-      name,
+      clean,
       ctx.workspaceId,
       ctx.userId,
       parentId ?? undefined,
@@ -3901,7 +3982,13 @@ const consoleFolderBackend: FolderBackend = {
         isWorkspaceAdminRole(ctx.role),
       );
     } catch (error) {
-      if (error instanceof ConsoleConflictError) {
+      if (error instanceof ConsoleNameError) {
+        return { ok: false, status: 400, error: error.message };
+      }
+      if (
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleFolderTwinError
+      ) {
         return { ok: false, status: 409, error: error.message };
       }
       // A visibility change is the owner's or an admin's call — the same
@@ -3927,6 +4014,13 @@ registerFolderRoutes(consoleRoutes, {
   createdStatus: 201,
   onError: (c, error) => {
     if (error instanceof RepoRequiredError) return repoRequired(c, error);
+    // A folder name no directory can carry, or a case twin of a sibling.
+    if (error instanceof ConsoleNameError) {
+      return c.json({ success: false, error: error.message }, 400);
+    }
+    if (error instanceof ConsoleFolderTwinError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
     // A destination under the folder is another console's file (or a
     // laptop-pushed file with no row yet): nothing changed, say which.
     if (error instanceof ConsoleConflictError) {

@@ -14,8 +14,11 @@ import {
   commitConsoleMoves,
   commitConsoleRelocation,
   commitConsoleRemoval,
+  checkNewFolderChain,
+  folderTwinOf,
   commitConsoleState,
   consoleCaseVariantAtMain,
+  ConsoleFolderTwinError,
   consoleDeletionSegment,
   consoleFilesDrifted,
   descriptionIsAuthored,
@@ -36,8 +39,11 @@ import {
   type LiveConsole,
 } from "../apps/workspace-consoles.service";
 import {
+  ConsoleNameError,
   chartSidecarPath,
+  cleanConsoleName,
   consolePathTakenMessage,
+  normalizeConsoleName,
   parseConsoleRepoPath,
 } from "../apps/console-files";
 import { BlobPreconditionError } from "../apps/repository.service";
@@ -232,6 +238,8 @@ function metadataFromRow(savedConsole: ISavedConsole, consolePath: string) {
     _raw: savedConsole,
   };
 }
+
+export { ConsoleNameError, ConsoleFolderTwinError };
 
 /**
  * A rename/move could not be applied as decided: the file changed or moved
@@ -1318,7 +1326,10 @@ export class ConsoleManager {
         savedConsole.sourceBlobSha = committed.sourceBlobSha;
         await savedConsole.save();
       } else {
-        // Create new console (explicitly saved), its folders in its scope.
+        // Create new console (explicitly saved), its folders in its scope:
+        // a name is judged before any folder is made for it.
+        const language = options?.language || this.detectLanguage(content);
+        const cleanName = cleanConsoleName(consoleName, "console", language);
         const folderId =
           options?.folderId ??
           (folderParts.length > 0
@@ -1335,10 +1346,10 @@ export class ConsoleManager {
             : undefined,
           databaseName: databaseName,
           databaseId: databaseId,
-          name: consoleName,
+          name: cleanName,
           description: options?.description || "",
           code: content,
-          language: options?.language || this.detectLanguage(content),
+          language,
           createdBy: userId,
           isPrivate: newAccess === "private",
           isSaved: true,
@@ -1370,7 +1381,9 @@ export class ConsoleManager {
         error instanceof RepoRequiredError ||
         error instanceof BlobPreconditionError ||
         error instanceof ConsoleConflictError ||
-        error instanceof ConsoleScopeError
+        error instanceof ConsoleScopeError ||
+        error instanceof ConsoleNameError ||
+        error instanceof ConsoleFolderTwinError
       ) {
         throw error;
       }
@@ -1626,6 +1639,20 @@ export class ConsoleManager {
     });
     if (!current) return null;
 
+    // A new name is judged and stored normalized — the name IS the file
+    // name (`cleanConsoleName`): NFC, invisible and control characters
+    // gone, nothing a file name cannot carry. The name it already has
+    // (spelled however) is no change; a legacy name is never re-judged.
+    if (change.name !== undefined) {
+      const same = normalizeConsoleName(change.name) === current.name;
+      change = {
+        ...change,
+        name: same
+          ? undefined
+          : cleanConsoleName(change.name, "console", current.language),
+      };
+    }
+
     // Who can see it is the row's access AND its folder chain (a private
     // console in a workspace folder is workspace-visible by inheritance).
     // Changing either — the row's `access`, or the EFFECTIVE visibility by
@@ -1833,10 +1860,13 @@ export class ConsoleManager {
     if (request.path !== undefined) {
       const parts = request.path.split("/");
       name = parts[parts.length - 1];
-      wanted = parts.slice(0, -1);
+      wanted = parts.slice(0, -1).map(normalizeConsoleName);
     } else if (request.name !== undefined) {
       name = request.name;
     }
+    // Spelled differently, the same name is no change (relocateConsole
+    // judges a new one).
+    if (normalizeConsoleName(name) === existing.name) name = existing.name;
 
     const currentFolderId = existing.folderId?.toString() ?? null;
     let folderId = currentFolderId;
@@ -1851,14 +1881,22 @@ export class ConsoleManager {
       // A re-scope re-files the console in the new scope's namesake chain
       // (the owner's private "Team", or the workspace "Team").
       if (reScope || !sameChain) {
+        const scope = {
+          access: access ?? visibleNow,
+          ownerId: ownerId ?? userId,
+        };
+        // The folders this creates are named like any folder, and none is
+        // a case twin of a folder already there. The console's own name
+        // is judged first: a refused name creates no folder.
+        if (normalizeConsoleName(name) !== existing.name) {
+          cleanConsoleName(name, "console", existing.language);
+        }
+        const names = await checkNewFolderChain(chain, workspaceId, scope);
         folderId =
-          chain.length === 0
+          names.length === 0
             ? null
             : ((
-                await ensureFolderChain(chain, workspaceId, {
-                  access: access ?? visibleNow,
-                  ownerId: ownerId ?? userId,
-                })
+                await ensureFolderChain(names, workspaceId, scope)
               )?.toString() ?? null);
       }
     }
@@ -2023,7 +2061,9 @@ export class ConsoleManager {
       if (
         error instanceof RepoRequiredError ||
         error instanceof ConsoleConflictError ||
-        error instanceof ConsoleScopeError
+        error instanceof ConsoleScopeError ||
+        error instanceof ConsoleNameError ||
+        error instanceof ConsoleFolderTwinError
       ) {
         throw error;
       }
@@ -2085,9 +2125,24 @@ export class ConsoleManager {
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!folder) return false;
+      // A folder name is a directory name: judged like a console's, and
+      // never a case twin of a sibling in its scope.
+      const clean = cleanConsoleName(newName, "folder");
+      if (clean === folder.name) return true;
+      const twin = await folderTwinOf(
+        workspaceId,
+        folder.parentId,
+        {
+          access: folder.access ?? (folder.isPrivate ? "private" : "workspace"),
+          ownerId: folder.ownerId?.toString(),
+        },
+        clean,
+        folder._id,
+      );
+      if (twin) throw new ConsoleFolderTwinError(twin, clean);
       await this.syncSubtreeIfDrifted(folderId, workspaceId);
       const previousName = folder.name;
-      folder.name = newName;
+      folder.name = clean;
       await folder.save();
       try {
         await this.assertFolderSubtreePathsFree(folderId, workspaceId);
@@ -2107,7 +2162,9 @@ export class ConsoleManager {
       if (
         error instanceof RepoRequiredError ||
         error instanceof BlobPreconditionError ||
-        error instanceof ConsoleConflictError
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleNameError ||
+        error instanceof ConsoleFolderTwinError
       ) {
         throw error;
       }
@@ -2735,7 +2792,8 @@ export class ConsoleManager {
         `Mako cannot save into the folder “${bad}”: a folder name cannot be blank or start or end with a space. Rename that folder in the repository, or save a copy elsewhere.`,
       );
     }
-    const id = await ensureFolderChain(folderParts, workspaceId, scope);
+    const names = await checkNewFolderChain(folderParts, workspaceId, scope);
+    const id = await ensureFolderChain(names, workspaceId, scope);
     return id?.toString();
   }
 
@@ -3091,7 +3149,9 @@ export class ConsoleManager {
       ...liveRows.map(r => r.path as string),
     ]);
     const free = uniquePath(wanted, taken, ownPath);
-    if (free === wanted) return row.name;
+    // The name of the file it gets — also when that is its own: a derived
+    // name ("<name> copy" of a name at the length limit) is cut to fit
+    // its file, and the row must say what the file says.
     return parseConsoleRepoPath(free)?.name ?? row.name;
   }
 

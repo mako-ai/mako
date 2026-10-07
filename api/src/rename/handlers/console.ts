@@ -29,6 +29,8 @@ import {
   mayChangeVisibility,
 } from "../../utils/console-manager";
 import {
+  ConsoleFolderTwinError,
+  checkNewFolderChain,
   ensureFolderChain,
   folderSegmentsFor,
   listConsoleDefinitionsAtMain,
@@ -39,8 +41,11 @@ import {
   type LiveConsole,
 } from "../../apps/workspace-consoles.service";
 import {
+  ConsoleNameError,
+  cleanConsoleName,
   consoleExtension,
   consoleRepoPath,
+  normalizeConsoleName,
   parseConsoleRepoPath,
   splitConsoleFileName,
   type ConsoleLanguage,
@@ -111,7 +116,9 @@ async function findRow(
   const live = (await loadLiveConsoles(ctx.workspaceId)).filter(item =>
     fileReadable(item, ctx),
   );
-  const clean = ref.replace(/^\/+|\/+$/g, "");
+  // Names are stored and filed in Unicode NFC: a ref typed in NFD is the
+  // same name.
+  const clean = ref.normalize("NFC").replace(/^\/+|\/+$/g, "");
   // A ref that names a folder must match that folder: "Archive/report"
   // is not an alias for the only "Live/report". Only a bare name may fall
   // back to a leaf match.
@@ -212,6 +219,9 @@ function targetFor(
       target.name = split?.name ?? file;
       target.language = split?.language ?? language;
     }
+    // As stored and filed (NFC, no invisible or control characters).
+    target.folderSegments = target.folderSegments.map(normalizeConsoleName);
+    target.name = normalizeConsoleName(target.name);
     if (target.language !== language) {
       throw new RenameError(
         `A console's language is its file extension; keep .${language === "sql" ? "sql" : language === "javascript" ? "js" : "mongodb.js"} or create a new console.`,
@@ -219,7 +229,7 @@ function targetFor(
     }
   }
   if (title !== undefined) {
-    const clean = title.trim();
+    const clean = normalizeConsoleName(title);
     if (!clean) throw new RenameError("Give a non-empty title.");
     if (clean.includes("/")) {
       throw new RenameError(
@@ -266,6 +276,17 @@ export const consoleRenameHandler: RenameHandler = {
     );
     const target = targetFor(row, currentSegments, request.title, request.slug);
     const current = rowScope(row);
+    // A new name is judged before anything is created for it.
+    if (target.name !== row.name) {
+      try {
+        cleanConsoleName(target.name, "console", target.language);
+      } catch (error) {
+        if (error instanceof ConsoleNameError) {
+          throw new RenameError(error.message, 400);
+        }
+        throw error;
+      }
+    }
 
     // Re-scoping (private ↔ workspace) is the owner's or a workspace
     // admin's call — the one visibility rule every console route applies
@@ -329,14 +350,36 @@ export const consoleRenameHandler: RenameHandler = {
     const folderChanged =
       target.folderSegments.join("/") !== currentSegments.join("/") ||
       access !== undefined;
-    const folderId = folderChanged
-      ? ((
-          await ensureFolderChain(target.folderSegments, ctx.workspaceId, {
-            access: target.scope === "private" ? "private" : "workspace",
-            ownerId: target.ownerId ?? (row.owner_id || row.createdBy),
-          })
-        )?.toString() ?? null)
-      : undefined;
+    let folderId: string | null | undefined;
+    if (folderChanged) {
+      const scope = {
+        access: (target.scope === "private"
+          ? "private"
+          : "workspace") as ConsoleAccessLevel,
+        ownerId: target.ownerId ?? (row.owner_id || row.createdBy),
+      };
+      // Folders this creates are named like any folder and are no case
+      // twin of a folder already there.
+      try {
+        await checkNewFolderChain(
+          target.folderSegments,
+          ctx.workspaceId,
+          scope,
+        );
+      } catch (error) {
+        if (error instanceof ConsoleNameError) {
+          throw new RenameError(error.message, 400);
+        }
+        if (error instanceof ConsoleFolderTwinError) {
+          throw new RenameError(error.message, 409);
+        }
+        throw error;
+      }
+      folderId =
+        (
+          await ensureFolderChain(target.folderSegments, ctx.workspaceId, scope)
+        )?.toString() ?? null;
+    }
 
     let moved: Awaited<ReturnType<typeof consoleManager.relocateConsole>>;
     try {
@@ -359,8 +402,14 @@ export const consoleRenameHandler: RenameHandler = {
       // compare-and-swap on the source and target blobs, so a rename that
       // lost a race (or a laptop push that landed the target) is refused
       // there. The pre-check above only gives a clearer message earlier.
-      if (error instanceof ConsoleConflictError) {
+      if (
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleFolderTwinError
+      ) {
         throw new RenameError(error.message, 409);
+      }
+      if (error instanceof ConsoleNameError) {
+        throw new RenameError(error.message, 400);
       }
       if (error instanceof ConsoleScopeError) {
         throw new RenameError(error.message, 403);

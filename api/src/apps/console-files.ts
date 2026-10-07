@@ -136,6 +136,103 @@ export function safeSegment(name: string): string {
   return cleaned;
 }
 
+/** The longest console or folder name: one segment of its repo path. */
+export const MAX_CONSOLE_NAME_LENGTH = 120;
+
+/** Zero-width spaces/joiners, the word joiner and a BOM: invisible in a name. */
+const INVISIBLE_IN_NAME = /[\u200B-\u200D\u2060\uFEFF]/g;
+
+/**
+ * A console or folder name as a person typed it → as it is stored and
+ * filed. Unicode NFC (an "é" typed as e + ◌́ IS "é" — two consoles whose
+ * names look identical must not exist), invisible characters dropped,
+ * control characters and runs of whitespace made one space, the edges
+ * trimmed: exactly the cosmetic part of what `safeSegment` does to a file
+ * name, so the stored name IS its file's name and a sync reading the name
+ * back from the file never renames the console.
+ */
+export function normalizeConsoleName(name: string): string {
+  return name
+    .normalize("NFC")
+    .replace(INVISIBLE_IN_NAME, "")
+    .replace(/[\p{Cc}\s]+/gu, " ")
+    .trim();
+}
+
+/** Device names Windows reserves, with or without an extension (`NUL.txt`). */
+const RESERVED_ON_WINDOWS = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i;
+
+/**
+ * Why a (normalized) name cannot be a console's or a folder's — its file or
+ * directory name in the workspace repo, checked out on every OS — or null.
+ * Only NEW names are judged (a rename, a create): a console a laptop pushed
+ * under a name Mako would refuse keeps it until someone renames it.
+ */
+export function consoleNameProblem(
+  name: string,
+  kind: "console" | "folder",
+  language?: ConsoleLanguage,
+): string | null {
+  const what = kind === "console" ? "A console" : "A folder";
+  if (!name) return `${what} needs a name.`;
+  if (name.length > MAX_CONSOLE_NAME_LENGTH) {
+    return `${what} name can be at most ${MAX_CONSOLE_NAME_LENGTH} characters (this one has ${name.length}).`;
+  }
+  const bad = /[\\/:*?"<>|]/.exec(name)?.[0];
+  if (bad) {
+    return `${what} name cannot contain “${bad}”: / \\ : * ? " < > | are not allowed in file names on every computer.`;
+  }
+  if (name.startsWith(".")) return `${what} name cannot start with a dot.`;
+  if (name.endsWith(".")) return `${what} name cannot end with a dot.`;
+  if (RESERVED_ON_WINDOWS.test(name)) {
+    return `“${name.split(".")[0]}” is a reserved file name on Windows; choose another ${kind} name.`;
+  }
+  if (
+    kind === "console" &&
+    language === "javascript" &&
+    name.endsWith(".mongodb")
+  ) {
+    return "A JavaScript console's name cannot end in “.mongodb”: its file would read as a MongoDB console.";
+  }
+  // Anything else the file name would not carry as it is.
+  if (safeSegment(name) !== name) {
+    return `${what} name “${name}” cannot be used as a file name.`;
+  }
+  return null;
+}
+
+/**
+ * A name a console or folder cannot take (see `consoleNameProblem`): a
+ * clear 400 on every route, nothing changed.
+ */
+export class ConsoleNameError extends Error {
+  readonly status = 400 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsoleNameError";
+  }
+}
+
+/** `normalizeConsoleName`, refusing (`ConsoleNameError`) what cannot be one. */
+export function cleanConsoleName(
+  name: string,
+  kind: "console" | "folder",
+  language?: ConsoleLanguage,
+): string {
+  const clean = normalizeConsoleName(name);
+  const problem = consoleNameProblem(clean, kind, language);
+  if (problem) throw new ConsoleNameError(problem);
+  return clean;
+}
+
+/**
+ * A repo path as a case-insensitive, Unicode-normalizing file system sees
+ * it (macOS, Windows): two paths with one fold are one file there.
+ */
+export function foldConsolePath(path: string): string {
+  return path.normalize("NFC").toLowerCase();
+}
+
 const CHART_SUFFIX = ".chart.json";
 
 export function consoleRepoPath(location: {

@@ -116,6 +116,7 @@ export default defineConfig({
       // roles, hostile names, partial failures, races and scale.
       "src/routes/scenarios/console-rename.scenarios.test.ts",
       "src/routes/scenarios/console-visibility.scenarios.test.ts",
+      "src/routes/scenarios/console-hostile.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

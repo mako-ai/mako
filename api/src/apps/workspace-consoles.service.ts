@@ -85,9 +85,13 @@ import {
   CONSOLES_DIR,
   CONSOLES_README,
   CONSOLES_README_PATH,
+  ConsoleNameError,
   USERS_DIR,
   chartSidecarPath,
+  consoleNameProblem,
   consoleRepoPath,
+  foldConsolePath,
+  normalizeConsoleName,
   parseChartSpec,
   parseConsoleFile,
   parseConsoleRepoPath,
@@ -1486,7 +1490,137 @@ export async function consoleCaseVariantAtMain(
 ): Promise<string | null> {
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return null;
-  return caseVariantOf(repoDir, MAIN, path, new Set(ownPath ? [ownPath] : []));
+  const sameDir = await caseVariantOf(
+    repoDir,
+    MAIN,
+    path,
+    new Set(ownPath ? [ownPath] : []),
+  );
+  if (sameDir) return sameDir;
+  // Across directories and Unicode normal forms too: `consoles/team/x.sql`
+  // beside `consoles/Team/x.sql` (a folder twin a laptop pushed), or an
+  // NFD `café` beside the NFC one Mako writes — one file on macOS and
+  // Windows, which the same-directory, byte-wise check above cannot see.
+  const fold = foldConsolePath(path);
+  const own = ownPath ? foldConsolePath(ownPath) : null;
+  for (const def of await listConsoleDefinitionsAtMain(workspaceId)) {
+    if (def.path === path || def.path === ownPath) continue;
+    const folded = foldConsolePath(def.path);
+    if (folded === fold && folded !== own) return def.path;
+  }
+  return null;
+}
+
+/**
+ * A folder twin: a folder in `scope` under the same parent whose name
+ * differs from a NEW folder's only in letter case or Unicode form (one
+ * directory on macOS and Windows). Refused like a console's case twin.
+ */
+export class ConsoleFolderTwinError extends Error {
+  readonly status = 409 as const;
+  constructor(
+    readonly existing: string,
+    wanted: string,
+  ) {
+    super(
+      `A folder named '${existing}' already exists there — '${wanted}' differs only in upper/lower case, and they count as the same.`,
+    );
+    this.name = "ConsoleFolderTwinError";
+  }
+}
+
+/**
+ * The name of the folder beside which `name` would be a twin: a sibling
+ * (same parent, same scope) whose name differs only in letter case or
+ * Unicode form — or null. `ignoreFolderId` is the folder being renamed.
+ */
+export async function folderTwinOf(
+  workspaceId: string,
+  parentId: Types.ObjectId | string | null | undefined,
+  scope: { access: ConsoleAccessLevel; ownerId?: string },
+  name: string,
+  ignoreFolderId?: Types.ObjectId | string,
+): Promise<string | null> {
+  const ws = new Types.ObjectId(workspaceId);
+  const scopeFilter =
+    scope.access === "private"
+      ? {
+          ownerId: scope.ownerId,
+          $or: [{ access: "private" }, { isPrivate: true }],
+        }
+      : { $nor: [{ access: "private" }, { isPrivate: true }] };
+  const parentFilter = parentId
+    ? { parentId: new Types.ObjectId(parentId.toString()) }
+    : { $or: [{ parentId: null }, { parentId: { $exists: false } }] };
+  const siblings = await ConsoleFolder.find({
+    workspaceId: ws,
+    $and: [parentFilter, scopeFilter],
+  })
+    .select("_id name")
+    .lean<Array<{ _id: Types.ObjectId; name: string }>>();
+  const fold = foldConsolePath(name);
+  const twin = siblings.find(
+    f =>
+      (!ignoreFolderId || !f._id.equals(ignoreFolderId.toString())) &&
+      f.name !== name &&
+      foldConsolePath(f.name) === fold,
+  );
+  return twin?.name ?? null;
+}
+
+/**
+ * Before a person's request creates folders (a move to `Team/x`, a first
+ * save into `A/B/x`, "New folder"): the chain `segments` in `scope`, as it
+ * will be found or created, may only create folders whose names are
+ * folder names (`consoleNameProblem` → `ConsoleNameError`) and that are
+ * no twin of a sibling (`ConsoleFolderTwinError`). Folders that already
+ * exist under their exact name are taken as they are. Returns the
+ * segments normalized (`normalizeConsoleName`), to create the chain with.
+ * The index sync does not ask: a pushed directory is what it is.
+ */
+export async function checkNewFolderChain(
+  segments: string[],
+  workspaceId: string,
+  scope: { access: ConsoleAccessLevel; ownerId?: string },
+): Promise<string[]> {
+  const names = segments.map(normalizeConsoleName);
+  const ws = new Types.ObjectId(workspaceId);
+  const scopeFilter =
+    scope.access === "private"
+      ? {
+          ownerId: scope.ownerId,
+          $or: [{ access: "private" }, { isPrivate: true }],
+        }
+      : { $nor: [{ access: "private" }, { isPrivate: true }] };
+  let parentId: Types.ObjectId | undefined;
+  for (let i = 0; i < names.length; i++) {
+    const parentFilter = parentId
+      ? { parentId }
+      : { $or: [{ parentId: null }, { parentId: { $exists: false } }] };
+    const siblings = await ConsoleFolder.find({
+      workspaceId: ws,
+      $and: [parentFilter, scopeFilter],
+    })
+      .select("_id name")
+      .lean<Array<{ _id: Types.ObjectId; name: string }>>();
+    const others = siblings;
+    const exact = others.find(f => f.name === names[i]);
+    if (exact) {
+      parentId = exact._id;
+      continue;
+    }
+    // From here on every segment is a folder this request would create.
+    for (const name of names.slice(i)) {
+      const problem = consoleNameProblem(name, "folder");
+      if (problem) throw new ConsoleNameError(problem);
+    }
+    const twin = others.find(
+      f => foldConsolePath(f.name) === foldConsolePath(names[i]),
+    );
+    if (twin) throw new ConsoleFolderTwinError(twin.name, names[i]);
+    break;
+  }
+  return names;
 }
 
 /** The newest sync queued per workspace, while it is still pending. */
@@ -2336,8 +2470,27 @@ export async function projectSavedConsole(input: {
   for (const [key, value] of Object.entries(input.set)) {
     if (value !== undefined) desired[key] = value;
   }
-  const row = desired as unknown as RowLike;
   const previousPath = input.current?.path ?? input.previousPath ?? null;
+  // A name the console's file does not have yet — its first save, or a
+  // row whose name drifted from its file — is judged as a new name and
+  // stored normalized (the name IS the file name). A save under the name
+  // its file already has (a laptop-made console) is not judged.
+  const name = String(desired.name ?? "");
+  if (
+    !previousPath ||
+    parseConsoleRepoPath(previousPath)?.name !== desired.name
+  ) {
+    const language = rowLanguage(desired as Pick<RowLike, "language">);
+    const clean = normalizeConsoleName(name);
+    const problem = consoleNameProblem(clean, "console", language);
+    if (problem) throw new ConsoleNameError(problem);
+    if (clean !== name) {
+      desired.name = clean;
+      if (input.set.name !== undefined) input.set.name = clean;
+      else if (input.onInsert?.name !== undefined) input.onInsert.name = clean;
+    }
+  }
+  const row = desired as unknown as RowLike;
   const committed = await commitConsoleState({
     row,
     previousPath,
