@@ -16,6 +16,7 @@
  *  - work in another app: exactly as before (the plain merge).
  */
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -119,15 +120,33 @@ async function noticeFor(): Promise<string | undefined> {
   return (await getBoxState(sessionKeyFor(WS, ME)))?.notice?.message;
 }
 
+/** Every regular file and symlink under `root`, outside .git. */
+async function walk(root: string): Promise<string[]> {
+  const out: string[] = [];
+  const visit = async (rel: string) => {
+    for (const entry of await fs.readdir(path.join(root, rel), {
+      withFileTypes: true,
+    })) {
+      const child = rel ? `${rel}/${entry.name}` : entry.name;
+      if (child === ".git") continue;
+      if (entry.isDirectory()) await visit(child);
+      else out.push(child);
+    }
+  };
+  await visit("");
+  return out.sort();
+}
+
 /** No conflict markers anywhere in the working copy (tracked or not). */
 async function expectNoMarkers(root: string) {
-  const { stdout } = await run("grep", [
-    "-rl",
-    "--exclude-dir=.git",
-    "^<<<<<<<",
-    root,
-  ]).catch(() => ({ stdout: "" }));
-  expect(stdout.trim()).toBe("");
+  const marked: string[] = [];
+  for (const rel of await walk(root)) {
+    const stat = await fs.lstat(path.join(root, rel));
+    if (!stat.isFile()) continue;
+    const text = await fs.readFile(path.join(root, rel), "utf8");
+    if (/^(<<<<<<<|>>>>>>>) /m.test(text)) marked.push(rel);
+  }
+  expect(marked).toEqual([]);
 }
 
 describe("git's own --autostash, measured", () => {
@@ -176,15 +195,21 @@ describe("git's own --autostash, measured", () => {
     await up("commit", "-qam", "rename and edit");
     await up("push", "-q", "origin", "HEAD:main");
     await box("fetch", "-q");
-    const merged = await box("merge", "--autostash", "--no-edit", "@{u}");
-    // Exit 0 …
-    expect(merged.stderr + merged.stdout).toMatch(
-      /Applying autostash resulted in conflicts/,
-    );
-    // … and the person's file now holds conflict markers, at the NEW path.
+    // Behaviour, not git's wording (which differs between versions): the
+    // command SUCCEEDS (execFile rejects on a non-zero exit)…
+    await box("merge", "--autostash", "--no-edit", "@{u}");
+    // …the person's file, at the NEW path, now holds conflict markers…
     const file = await fs.readFile(`${dir}/box/apps/b/main.tsx`, "utf8");
-    expect(file).toContain("<<<<<<<");
+    expect(file).toMatch(/^<<<<<<< /m);
+    expect(file).toMatch(/^>>>>>>> /m);
     expect(file).toContain("MINE");
+    expect(file).toContain("THEIRS");
+    // …it is left unmerged in the index (porcelain v1: "UU")…
+    const status = await box("status", "--porcelain=v1");
+    expect(status.stdout).toMatch(/^UU apps\/b\/main\.tsx$/m);
+    // …and the stash entry is kept.
+    const stashes = await box("stash", "list");
+    expect(stashes.stdout.trim().split("\n").filter(Boolean)).toHaveLength(1);
   });
 });
 
@@ -321,7 +346,8 @@ describe("my drafts when another member renames the app", () => {
 
     const outcome = await boxPull(box.ctx);
     expect(outcome).toMatchObject({ plain: true });
-    expect(outcome?.failed).toMatch(/would be overwritten/);
+    // git refused; what it said is reported, never parsed.
+    expect(outcome?.failed).toBeTruthy();
     expect(await box.head()).toBe(before);
     expect(await box.read("apps/x/src/main.tsx")).toBe(
       "export const x = 'mine';\n",
@@ -360,8 +386,20 @@ async function snapshotOf(box: Awaited<ReturnType<typeof myBox>>) {
     status: await box.status(),
     staged: await box.sh(`git -C '${r}' diff --cached`),
     unstaged: await box.sh(`git -C '${r}' diff`),
-    files: await box.sh(
-      `cd '${r}' && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort | while read -r f; do printf '%s %s ' "$f" "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")"; shasum -a 256 < "$f"; done`,
+    // Node's fs, not shell tools: `stat -f` means file mode on BSD and
+    // FILESYSTEM status on GNU (whose free-block count moves on its own).
+    files: await Promise.all(
+      (await walk(r)).map(async rel => {
+        const abs = path.join(r, rel);
+        const stat = await fs.lstat(abs);
+        if (stat.isSymbolicLink()) {
+          return `${rel} link -> ${await fs.readlink(abs)}`;
+        }
+        const hash = createHash("sha256")
+          .update(await fs.readFile(abs))
+          .digest("hex");
+        return `${rel} ${(stat.mode & 0o777).toString(8)} ${stat.size} ${hash}`;
+      }),
     ),
   };
 }
@@ -402,7 +440,7 @@ describe("the paths a catch-up rarely takes", () => {
     const before = await snapshotOf(box);
 
     const outcome = await boxPull(box.ctx);
-    expect(outcome?.failed).toMatch(/conflict/i);
+    expect(outcome?.failed).toBeTruthy();
     expect(await snapshotOf(box)).toEqual(before);
     await expectNoMarkers(box.root);
     // …and also saved on a branch, which the message names.
@@ -431,13 +469,13 @@ describe("the paths a catch-up rarely takes", () => {
     expect(notice?.notice?.message).toMatch(
       /detached commit, not a branch, so it was not caught up with main — which renamed apps\/a → apps\/acq\. Your 2 uncommitted changes there are untouched/,
     );
-    expect(notice?.notice?.message).toContain("git switch main");
+    expect(notice?.notice?.message).toContain("git checkout main");
     // The next pull says nothing new.
     const at = notice?.notice?.at;
     await boxPull(box.ctx);
     expect((await getBoxState(sessionKeyFor(WS, ME)))?.notice?.at).toBe(at);
     // The advice works: back on main, the next catch-up carries them.
-    await box.sh(`git -C '${box.root}' switch -q main`);
+    await box.sh(`git -C '${box.root}' checkout -q main`);
     const carried = await boxPull(box.ctx);
     expect(carried?.plain).toBe(false);
     expect(await box.head()).toBe(await headOf(WS));
