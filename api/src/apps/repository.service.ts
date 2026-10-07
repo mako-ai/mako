@@ -456,6 +456,37 @@ export async function caseVariantOf(
 }
 
 /**
+ * `objectTypeAt` for many paths in one `cat-file --batch-check`. A path
+ * the batch protocol cannot carry (a line break in it) is asked alone.
+ */
+async function objectTypesAt(
+  repoDir: string,
+  commit: string,
+  relPaths: string[],
+): Promise<Map<string, "blob" | "tree" | null>> {
+  const out = new Map<string, "blob" | "tree" | null>();
+  const batchable: string[] = [];
+  for (const p of relPaths) {
+    if (/[\r\n]/.test(p)) {
+      out.set(p, await objectTypeAt(repoDir, commit, p));
+    } else {
+      batchable.push(p);
+    }
+  }
+  if (batchable.length === 0) return out;
+  const { stdout } = await runGit(
+    ["-C", repoDir, "cat-file", "--batch-check=%(objecttype)"],
+    { stdin: batchable.map(p => `${commit}:${p}`).join("\n") + "\n" },
+  );
+  const lines = stdout.split("\n");
+  batchable.forEach((p, i) => {
+    const type = lines[i]?.trim();
+    out.set(p, type === "blob" || type === "tree" ? type : null);
+  });
+  return out;
+}
+
+/**
  * Refuse a mutation that would turn a file into a folder or a folder into
  * a file, unless the mutation itself deletes what is in the way.
  */
@@ -466,16 +497,29 @@ async function assertNoPathConflicts(
   deletes: string[],
 ): Promise<void> {
   const deleted = new Set(deletes);
+  // Every path the checks below ask about, typed in ONE git process (it
+  // was a spawn per folder level per file: ~3 per written file, most of a
+  // large commit's time). Same answers, same order of refusals.
+  const asked = new Set<string>();
+  for (const target of targets) {
+    const segments = target.split("/");
+    for (let i = 1; i < segments.length; i++) {
+      const parent = segments.slice(0, i).join("/");
+      if (!deleted.has(parent)) asked.add(parent);
+    }
+    asked.add(target);
+  }
+  const types = await objectTypesAt(repoDir, head, [...asked]);
   for (const target of targets) {
     const segments = target.split("/");
     for (let i = 1; i < segments.length; i++) {
       const parent = segments.slice(0, i).join("/");
       if (deleted.has(parent)) continue;
-      if ((await objectTypeAt(repoDir, head, parent)) === "blob") {
+      if (types.get(parent) === "blob") {
         throw new PathConflictError(target, parent, "file");
       }
     }
-    if ((await objectTypeAt(repoDir, head, target)) === "tree") {
+    if (types.get(target) === "tree") {
       const { stdout } = await runGit([
         "-C",
         repoDir,
@@ -508,6 +552,52 @@ async function assertNoPathConflicts(
  * predecessor still happened (its author, date and message are the record),
  * and dropping it would silently renumber history (§13.18 doctrine).
  */
+/**
+ * Write blobs into the object store, byte for byte, and return their oids
+ * in order. ONE git process however many there are: each used to be its
+ * own `hash-object` spawn (~30ms), so a dbt model rename rewriting 1500
+ * files spent ~50s here. The bytes go through temp files to
+ * `hash-object --stdin-paths`, which prints one oid per path, in order.
+ *
+ * `--no-filters`: the stored blob is exactly these bytes. (The per-file
+ * `--path` this replaces asked git to apply attributes for the repo path;
+ * a bare repo reads none from its tree, so the only ones that could ever
+ * apply were a machine's global attributes file — a CRLF or clean filter
+ * there would have silently changed what Mako committed, and broken every
+ * caller that pins content by its raw blob oid.)
+ */
+export async function writeBlobs(
+  repoDir: string,
+  contents: ReadonlyArray<string | Buffer>,
+): Promise<string[]> {
+  if (contents.length === 0) return [];
+  if (contents.length === 1) {
+    const { stdout } = await runGit(
+      ["-C", repoDir, "hash-object", "-w", "--no-filters", "--stdin"],
+      { stdin: contents[0] },
+    );
+    return [stdout.trim()];
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mako-blobs-"));
+  try {
+    const files = contents.map((_, i) => path.join(dir, String(i)));
+    await Promise.all(files.map((file, i) => fs.writeFile(file, contents[i])));
+    const { stdout } = await runGit(
+      ["-C", repoDir, "hash-object", "-w", "--no-filters", "--stdin-paths"],
+      { stdin: files.join("\n") + "\n" },
+    );
+    const oids = stdout.split("\n").filter(Boolean);
+    if (oids.length !== contents.length || !oids.every(isOid)) {
+      throw new Error(
+        `hash-object wrote ${oids.length} blobs for ${contents.length} files`,
+      );
+    }
+    return oids;
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 export async function commitBlobsOnBranch(
   repoDir: string,
   branch: string,
@@ -556,14 +646,10 @@ export async function commitBlobsOnBranch(
   });
   // Blobs first: they are content-addressed, so writing them before knowing
   // the head is safe and keeps the CAS window short.
-  const oids = new Map<string, string>();
-  for (const [rel, contents] of writes) {
-    const { stdout } = await runGit(
-      ["-C", repoDir, "hash-object", "-w", "--stdin", "--path", rel],
-      { stdin: contents },
-    );
-    oids.set(rel, stdout.trim());
-  }
+  const oids = await writeBlobs(
+    repoDir,
+    writes.map(([, contents]) => contents),
+  ).then(list => new Map(writes.map(([rel], i) => [rel, list[i]])));
   const indexInfo =
     [
       ...deletes.map(rel => `0 ${ZERO_OID}\t${rel}`),

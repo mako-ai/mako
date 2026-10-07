@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ZERO_OID, assertSafeRelPath } from "./git";
+import { ZERO_OID, assertSafeRelPath, runGitBuffer } from "./git";
 import {
   BlobPreconditionError,
   DEFAULT_BRANCH,
@@ -217,6 +217,118 @@ describe("commitBlobsOnBranch expectBlobs (compare-and-swap on content)", () => 
         { message: "x", expectBlobs: { "flows/b.yml": null } },
       ),
     ).rejects.toMatchObject({ path: "flows/b.yml", expected: null });
+  });
+});
+
+describe("commitBlobsOnBranch writes many blobs in one go, byte for byte", () => {
+  it("CRLF, binary, non-UTF-8, empty, spaces and unicode in names, a symlink entry and an executable: exact bytes, oids, modes", async () => {
+    await initRepo(repoDir, { "README.md": "x\n" });
+    const files: Record<string, string | Buffer> = {
+      "a/crlf.sql": "select 1\r\nfrom t\r\n",
+      "a/binary.png": Buffer.from([0x89, 0x50, 0x00, 0xff, 0x00, 0x0a, 0x0d]),
+      "a/latin1.sql": Buffer.from("-- caf\xe9\n", "latin1"),
+      "a/empty.txt": "",
+      "a/with space.md": "spaces\n",
+      "a/café ☕.md": "unicode name\n",
+      "a/run.sh": "#!/bin/sh\necho hi\n",
+      "a/no-final-newline": "last line",
+    };
+    for (let i = 0; i < 40; i++) files[`bulk/f${i}.txt`] = `file ${i}\n`;
+    const link = blobOid("crlf.sql");
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "a/target.txt": "crlf.sql" } },
+      { message: "a blob the symlink entry can point at" },
+    );
+    const { commitOid } = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: files,
+        modes: { "a/run.sh": "100755" },
+        entries: [{ path: "a/link.sql", oid: link, mode: "120000" }],
+      },
+      { message: "many" },
+    );
+    const tree = new Map(
+      (await listTree(repoDir, commitOid)).map(e => [e.path, e]),
+    );
+    for (const [p, contents] of Object.entries(files)) {
+      const entry = tree.get(p);
+      expect([p, entry?.oid]).toEqual([p, blobOid(contents)]);
+      expect(entry?.mode).toBe(p === "a/run.sh" ? "100755" : "100644");
+      const bytes = await runGitBuffer([
+        "-C",
+        repoDir,
+        "cat-file",
+        "blob",
+        entry!.oid,
+      ]);
+      const want = Buffer.isBuffer(contents)
+        ? contents
+        : Buffer.from(contents, "utf8");
+      expect([p, bytes.equals(want)]).toEqual([p, true]);
+    }
+    expect(tree.get("a/link.sql")).toMatchObject({ oid: link, mode: "120000" });
+  });
+
+  it("one written file and none: same commit semantics", async () => {
+    await initRepo(repoDir, { "README.md": "x\n" });
+    const one = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "one.txt": "1\r\n" } },
+      { message: "one" },
+    );
+    expect(await blobOidAt(repoDir, one.commitOid, "one.txt")).toBe(
+      blobOid("1\r\n"),
+    );
+    const none = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { deletes: ["one.txt"] },
+      { message: "none" },
+    );
+    expect(await blobOidAt(repoDir, none.commitOid, "one.txt")).toBeNull();
+  });
+
+  it("path conflicts are refused exactly as before, the first one named, across a large batch", async () => {
+    await initRepo(repoDir, { "m/a.sql": "a\n", "d/x/y.txt": "y\n" });
+    const writes: Record<string, string> = {};
+    for (let i = 0; i < 60; i++) writes[`m/ok${i}.sql`] = `${i}\n`;
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { ...writes, "m/a.sql/b.sql": "b\n" } },
+        { message: "file as folder" },
+      ),
+    ).rejects.toMatchObject({
+      name: "PathConflictError",
+      path: "m/a.sql/b.sql",
+      conflict: "m/a.sql",
+      kind: "file",
+    });
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { ...writes, "d/x": "now a file\n" } },
+        { message: "folder as file" },
+      ),
+    ).rejects.toMatchObject({ name: "PathConflictError", kind: "directory" });
+    // …unless the mutation removes what is in the way.
+    const ok = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: { ...writes, "d/x": "now a file\n", "m/a.sql/b.sql": "b\n" },
+        deletes: ["d/x/y.txt", "m/a.sql"],
+      },
+      { message: "replace" },
+    );
+    expect(ok.unchanged).toBe(false);
   });
 });
 
