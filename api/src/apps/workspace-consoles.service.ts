@@ -1735,11 +1735,56 @@ async function syncNow(
       [CONSOLES_DIR, USERS_DIR],
     );
     for (const o of liveOrphans) {
-      const to = renamed.get(o.path as string);
-      if (!to || !sameConsoleOwner(o.path as string, to)) continue;
+      let from = o.path as string;
+      let to = renamed.get(from);
+      // One push can carry several moves of one file (`git mv a b`,
+      // commit, `git mv b c`, commit): the commit that removed `a` pairs
+      // it with `b`, which is gone too. Follow the chain to where the
+      // file is at head — bounded, every hop inside one ownership
+      // boundary — or the row was torn down and `c` minted anew (shares,
+      // schedule and history lost) for an ordinary rename-twice.
+      for (let hop = 0; to && !byPath.has(to) && hop < 16; hop++) {
+        if (!sameConsoleOwner(from, to)) break;
+        from = to;
+        to = (
+          await detectRenamedPaths(
+            repoDir,
+            head,
+            [from],
+            [CONSOLES_DIR, USERS_DIR],
+          )
+        ).get(from);
+      }
+      if (
+        !to ||
+        !byPath.has(to) ||
+        !sameConsoleOwner(from, to) ||
+        !sameConsoleOwner(o.path as string, to)
+      ) {
+        continue;
+      }
       orphanByNewPath.set(to, orphanByNewPath.has(to) ? null : o);
     }
   }
+
+  // Every file the loop below may read, in ONE `git cat-file --batch`
+  // (a file whose row already holds its blob is skipped there): a process
+  // per file made a push of a thousand new consoles take minutes to index.
+  const toRead: string[] = [];
+  for (const e of consoleEntries) {
+    if (liveByPath.get(e.path)?.sourceBlobSha === e.oid) continue;
+    toRead.push(e.path);
+    const sidecar = byPath.get(chartSidecarPath(e.path));
+    if (sidecar) toRead.push(sidecar.path);
+  }
+  const prefetched = await readBlobsBatch(repoDir, head, toRead).catch(
+    () => new Map<string, Buffer>(),
+  );
+  const readFile = async (rel: string): Promise<string | null> => {
+    const buf = prefetched.get(rel);
+    if (buf) return isBinaryBuffer(buf) ? null : buf.toString("utf8");
+    return readAt(repoDir, rel);
+  };
 
   for (const entry of consoleEntries) {
     // One file's failure is that file's problem: a folder-name validation
@@ -1797,12 +1842,12 @@ async function syncNow(
         else if (row.path === entry.path) stats.updated++;
       }
 
-      const contents = await readAt(repoDir, entry.path);
+      const contents = await readFile(entry.path);
       // Unreadable files are not healed from Mongo. Skip; GET/list omits them.
       if (contents === null) continue;
       const parsed = parseConsoleFile(contents, location.language);
       const chartSpec = sidecar
-        ? parseChartSpec((await readAt(repoDir, sidecar.path)) ?? "")
+        ? parseChartSpec((await readFile(sidecar.path)) ?? "")
         : undefined;
       const access: ConsoleAccessLevel =
         location.scope === "private" ? "private" : "workspace";

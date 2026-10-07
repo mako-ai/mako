@@ -520,6 +520,35 @@ describe("laptop push (git mv [+ edit])", () => {
     expect(await SavedConsole.countDocuments({})).toBe(1);
   });
 
+  it("a → b → c in two commits of ONE push: same id at c, shares kept", async () => {
+    const c = await attached("a");
+    const code = (await rig.fileAt("consoles/a.sql"))!;
+    await rig.laptop(
+      { writes: { "consoles/b.sql": code }, deletes: ["consoles/a.sql"] },
+      { sync: false, message: "mv a b" },
+    );
+    await rig.laptop(
+      { writes: { "consoles/b.sql": `${code}-- edited between the moves\n` } },
+      { sync: false, message: "edit b" },
+    );
+    await rig.laptop(
+      {
+        writes: {
+          "consoles/Moved/c.sql": `${code}-- edited between the moves\n`,
+        },
+        deletes: ["consoles/b.sql"],
+      },
+      { message: "mv b c" },
+    );
+    const row = (await rig.row(c._id))!;
+    expect(row.path).toBe("consoles/Moved/c.sql");
+    expect(row.is_deleted).toBeFalsy();
+    expect(row.sharedWith?.length).toBe(1);
+    expect(await SavedConsole.countDocuments({})).toBe(1);
+    // Its history runs through both moves to its creation.
+    expect((await rig.history(c._id)).length).toBeGreaterThanOrEqual(4);
+  });
+
   it("a renamed console's old name, re-pushed as a new file, is a NEW console", async () => {
     const c = await rig.save("a", owner);
     await renameObject(rig.ctx(owner), "console", {
