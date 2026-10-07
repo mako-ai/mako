@@ -382,6 +382,26 @@ describe("dashboard — names", () => {
     expect(doc.version).toBe(version + 2);
   });
 
+  it("a rename racing a delete: a dashboard deleted after the rename read it is not renamed back to life (404)", async () => {
+    const id = await dashboard("Doomed");
+    const real = Dashboard.findOneAndUpdate.bind(Dashboard);
+    const spy = vi
+      .spyOn(Dashboard, "findOneAndUpdate")
+      .mockImplementationOnce(((...args: Parameters<typeof real>) => {
+        // The delete lands between the rename's read and its write.
+        return Dashboard.deleteOne({ _id: new Types.ObjectId(id) }).then(() =>
+          real(...args),
+        );
+      }) as unknown as typeof Dashboard.findOneAndUpdate);
+    expect(
+      await status(
+        renameObject(ctx(OWNER), "dashboard", { ref: id, title: "Renamed" }),
+      ),
+    ).toBe(404);
+    spy.mockRestore();
+    expect(await Dashboard.findById(id)).toBeNull();
+  });
+
   it("another workspace's dashboard never resolves or renames here", async () => {
     const foreign = await dashboard("Foreign", {}, WS2);
     expect(

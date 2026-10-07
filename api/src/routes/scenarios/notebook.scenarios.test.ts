@@ -30,7 +30,28 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { Hono } from "hono";
 
 const who = vi.hoisted(() => ({ id: "", role: "member" as string | null }));
-const faults = vi.hoisted(() => ({ failCommits: 0 }));
+const faults = vi.hoisted(() => ({
+  failCommits: 0,
+  /** Run once, inside a rename, after its store/index write, before its checkpoint. */
+  beforeRenameCheckpoint: undefined as undefined | (() => Promise<unknown>),
+}));
+vi.mock("../../notebooks/notebook-git.service", async importOriginal => {
+  const actual =
+    await importOriginal<
+      typeof import("../../notebooks/notebook-git.service")
+    >();
+  return {
+    ...actual,
+    checkpointNotebook: async (
+      ...args: Parameters<typeof actual.checkpointNotebook>
+    ) => {
+      const hook = faults.beforeRenameCheckpoint;
+      faults.beforeRenameCheckpoint = undefined;
+      if (hook) await hook();
+      return actual.checkpointNotebook(...args);
+    },
+  };
+});
 vi.mock("../../apps/repository.service", async importOriginal => {
   const actual =
     await importOriginal<typeof import("../../apps/repository.service")>();
@@ -554,6 +575,54 @@ describe("laptop push", () => {
     // The next checkpoint keeps the laptop's path (the name did not change).
     await checkpointNotebook(WS, id, OWNER);
     expect((await index(id))?.path).toBe("notebooks/moved-on-laptop.deepnote");
+  });
+});
+
+describe("a delete racing a rename", () => {
+  const filesOf = async (id: string) => {
+    const out: string[] = [];
+    for (const p of await notebookPaths()) {
+      if (parseNotebookFile((await fileAt(p))!)?.id === id) out.push(p);
+    }
+    return out;
+  };
+
+  it("DELETE paused after its access check, a rename completes, DELETE resumes: the MOVED file is removed, nothing of the notebook stays", async () => {
+    const id = await seed("Start");
+    const store = getNotebookStore();
+    const realRemove = store.remove.bind(store);
+    let renameStatus = 0;
+    const spy = vi
+      .spyOn(store, "remove")
+      .mockImplementationOnce(async (ws, nb) => {
+        renameStatus = await status(
+          renameObject(ctx(OWNER), "notebook", { ref: id, title: "Renamed" }),
+        );
+        return realRemove(ws, nb);
+      });
+    const del = await api("DELETE", `/notebooks/${id}`, OWNER);
+    spy.mockRestore();
+    expect(renameStatus).toBe(200);
+    expect(del.status).toBe(200);
+    expect(await filesOf(id)).toEqual([]);
+    expect(await index(id)).toBeNull();
+    await syncNotebooksFromRepo(WS);
+    expect(await index(id)).toBeNull();
+  });
+
+  it("a rename paused after its store write (before its checkpoint), DELETE completes: the rename answers not-found, no file is left", async () => {
+    const id = await seed("Start");
+    let deleteStatus = 0;
+    faults.beforeRenameCheckpoint = async () => {
+      deleteStatus = (await api("DELETE", `/notebooks/${id}`, OWNER)).status;
+    };
+    const renameStatus = await status(
+      renameObject(ctx(OWNER), "notebook", { ref: id, title: "Renamed" }),
+    );
+    expect(deleteStatus).toBe(200);
+    expect(renameStatus).toBe(404);
+    expect(await filesOf(id)).toEqual([]);
+    expect(await index(id)).toBeNull();
   });
 });
 

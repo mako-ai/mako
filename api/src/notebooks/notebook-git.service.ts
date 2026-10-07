@@ -304,6 +304,42 @@ async function checkpointNotebookNow(
   return { committed: true, commitOid: result.commitOid };
 }
 
+/**
+ * A deleted notebook's index row and its file, as they are NOW: inside the
+ * checkpoint queue, so a rename's checkpoint that moves the file cannot
+ * interleave — the path is read here, at removal time, never earlier. (The
+ * route read it before deleting the store document: a rename landing in
+ * between moved the file, the delete removed the old path — nothing — and
+ * the moved file stayed on main for good, carrying the deleted notebook's
+ * id.) A checkpoint queued after this one finds no index and writes
+ * nothing.
+ */
+export function removeNotebookIndexAndFile(
+  workspaceId: string,
+  notebookId: string,
+  actorUserId?: string,
+): Promise<void> {
+  return serializedCheckpoints(workspaceId, async () => {
+    const index = await NotebookIndex.findOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+      notebookId,
+    }).select("path name");
+    await NotebookIndex.deleteOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+      notebookId,
+    });
+    if (index?.path) {
+      await removeNotebookFile(workspaceId, index, actorUserId).catch(error => {
+        logger.warn("Deleted notebook's file could not be removed", {
+          workspaceId,
+          notebookId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  });
+}
+
 /** Remove the notebook's file when the notebook itself is deleted. */
 export async function removeNotebookFile(
   workspaceId: string,

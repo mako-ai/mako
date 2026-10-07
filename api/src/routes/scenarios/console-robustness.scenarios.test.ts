@@ -66,6 +66,46 @@ vi.mock("../../apps/repository.service", async importOriginal => {
     },
   };
 });
+// Deterministic interleavings of a delete and a rename: a hook runs the
+// OTHER operation to completion at a chosen point of this one, once.
+const interleave = vi.hoisted(() => ({
+  /** Delete: after it read the row, before its removal commit. */
+  beforeRemoval: undefined as undefined | (() => Promise<unknown>),
+  /** Rename: after it read the row, before its relocation commit. */
+  beforeRelocation: undefined as undefined | (() => Promise<unknown>),
+  /** Rename: after its relocation commit, before its row write. */
+  afterRelocation: undefined as undefined | (() => Promise<unknown>),
+}));
+const once = async (
+  key: "beforeRemoval" | "beforeRelocation" | "afterRelocation",
+) => {
+  const hook = interleave[key];
+  interleave[key] = undefined;
+  if (hook) await hook();
+};
+vi.mock("../../apps/workspace-consoles.service", async importOriginal => {
+  const actual =
+    await importOriginal<
+      typeof import("../../apps/workspace-consoles.service")
+    >();
+  return {
+    ...actual,
+    commitConsoleRemoval: async (
+      ...args: Parameters<typeof actual.commitConsoleRemoval>
+    ) => {
+      await once("beforeRemoval");
+      return actual.commitConsoleRemoval(...args);
+    },
+    commitConsoleRelocation: async (
+      ...args: Parameters<typeof actual.commitConsoleRelocation>
+    ) => {
+      await once("beforeRelocation");
+      const result = await actual.commitConsoleRelocation(...args);
+      await once("afterRelocation");
+      return result;
+    },
+  };
+});
 vi.mock("../../apps/cloud-repo.service", async importOriginal => {
   const actual =
     await importOriginal<typeof import("../../apps/cloud-repo.service")>();
@@ -393,28 +433,112 @@ describe("races", () => {
     await expectConverged();
   });
 
-  it("a rename racing a delete: never a live file for a deleted console, never a resurrection", async () => {
-    resetFaults();
-    for (let round = 0; round < 3; round++) {
-      const c = await rig.save(`doomed-${round}`, owner);
-      const id = c._id.toString();
-      await Promise.all([
-        settle(
-          renameObject(rig.ctx(owner), "console", {
-            ref: id,
-            title: `renamed-${round}`,
-          }),
-        ),
-        settle(rig.api("DELETE", `/consoles/${id}`, owner)),
-      ]);
-      await syncConsolesIndexFromRepo(rig.ws);
+  /**
+   * The outcome of a delete/rename race, as each call answered it: a
+   * DELETE that succeeded means the console is deleted, its file — at
+   * whatever path it has now — is gone from main, and it stays so after
+   * any sync; a rename that "won" means the DELETE failed clearly. Never
+   * both a successful DELETE and a live console.
+   */
+  async function expectRaceOutcome(
+    id: string,
+    deleteStatus: number,
+    renameStatus: number,
+  ) {
+    const files = () =>
+      rig
+        .consolePaths()
+        .then(paths => paths.filter(p => /\/(start|renamed)\.sql$/.test(p)));
+    if (deleteStatus === 200) {
+      expect((await rig.row(id))!.is_deleted).toBe(true);
+      expect(await files()).toEqual([]);
+      for (let i = 0; i < 2; i++) {
+        await syncConsolesIndexFromRepo(rig.ws);
+        expect((await rig.row(id))!.is_deleted, "resurrected by a sync").toBe(
+          true,
+        );
+        expect(await files()).toEqual([]);
+      }
+      // The rename did not ALSO claim a live console.
+      if (renameStatus === 200) {
+        expect((await rig.row(id))!.is_deleted).toBe(true);
+      }
+    } else {
+      expect(deleteStatus).toBe(409);
+      expect(renameStatus).toBe(200);
       const row = (await rig.row(id))!;
-      const files = await rig.consolePaths();
-      const mine = files.filter(p => p.includes(`-${round}.sql`));
-      if (row.is_deleted) expect(mine).toEqual([]);
-      else expect(mine).toEqual([row.path]);
-      await expectConverged();
+      expect(row.is_deleted).toBeFalsy();
+      expect(await files()).toEqual([row.path]);
     }
+    await expectConverged();
+  }
+
+  it("DELETE paused after it read the row, a rename completes, DELETE resumes: the renamed file is what it deletes — and it stays deleted", async () => {
+    resetFaults();
+    const c = await rig.save("start", owner);
+    const id = c._id.toString();
+    let renameStatus = 0;
+    interleave.beforeRemoval = async () => {
+      renameStatus = await settle(
+        renameObject(rig.ctx(owner), "console", { ref: id, title: "renamed" }),
+      );
+    };
+    const del = await rig.api("DELETE", `/consoles/${id}`, owner);
+    expect(renameStatus).toBe(200);
+    await expectRaceOutcome(id, del.status, renameStatus);
+    expect(del.status).toBe(200);
+  });
+
+  it("a rename paused after it read the row, a DELETE completes, the rename resumes: the rename fails, the console stays deleted", async () => {
+    resetFaults();
+    const c = await rig.save("start", owner);
+    const id = c._id.toString();
+    let deleteStatus = 0;
+    interleave.beforeRelocation = async () => {
+      deleteStatus = (await rig.api("DELETE", `/consoles/${id}`, owner)).status;
+    };
+    const renameStatus = await settle(
+      renameObject(rig.ctx(owner), "console", { ref: id, title: "renamed" }),
+    );
+    expect(deleteStatus).toBe(200);
+    expect(renameStatus).toBe(404);
+    await expectRaceOutcome(id, deleteStatus, renameStatus);
+  });
+
+  it("a rename paused after its commit (before its row write), a DELETE completes: the moved file is deleted, the rename answers not-found", async () => {
+    resetFaults();
+    const c = await rig.save("start", owner);
+    const id = c._id.toString();
+    let deleteStatus = 0;
+    interleave.afterRelocation = async () => {
+      deleteStatus = (await rig.api("DELETE", `/consoles/${id}`, owner)).status;
+    };
+    const renameStatus = await settle(
+      renameObject(rig.ctx(owner), "console", { ref: id, title: "renamed" }),
+    );
+    expect(deleteStatus).toBe(200);
+    expect(renameStatus).toBe(404);
+    await expectRaceOutcome(id, deleteStatus, renameStatus);
+  });
+
+  it("a console deleted in Mako is never brought back by a file reappearing at its path — that is a new console; a restore brings it back", async () => {
+    resetFaults();
+    const c = await rig.save("start", owner);
+    const id = c._id.toString();
+    await rig.shareWith(c._id, admin.id, "editor");
+    expect((await rig.api("DELETE", `/consoles/${id}`, owner)).status).toBe(
+      200,
+    );
+    await rig.laptop({ writes: { "consoles/start.sql": "SELECT 'start'\n" } });
+    expect((await rig.row(id))!.is_deleted).toBe(true);
+    const fresh = await SavedConsole.findOne({ path: "consoles/start.sql" });
+    expect(fresh?._id.toString()).not.toBe(id);
+    expect(fresh?.sharedWith ?? []).toEqual([]);
+    // Its own restore still works — beside the new holder of the name.
+    expect(
+      (await rig.api("PATCH", `/consoles/${id}/restore`, owner)).status,
+    ).toBe(200);
+    expect((await rig.row(id))!.path).toBe("consoles/start (2).sql");
   });
 
   it("a rename while a sync is running converges", async () => {

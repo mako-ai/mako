@@ -184,8 +184,11 @@ async function renameNotebookNow(input: RenameNotebookInput): Promise<{
       "The notebook was renamed, but its file could not be moved yet (the target name was just taken); it will move on the next save.",
     );
   }
-  // Re-read: the checkpoint just moved `path` on the row.
-  const updated =
-    (await getNotebookIndex(input.workspaceId, input.notebookId)) ?? index;
+  // Re-read: the checkpoint just moved `path` on the row. Gone: a delete
+  // took the notebook while it was being renamed — it is not renamed.
+  const updated = await getNotebookIndex(input.workspaceId, input.notebookId);
+  if (!updated) {
+    throw new RenameError("This notebook was deleted meanwhile.", 404);
+  }
   return { index: updated, doc, commit: checkpoint.commitOid, warnings };
 }

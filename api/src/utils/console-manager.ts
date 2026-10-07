@@ -1737,10 +1737,13 @@ export class ConsoleManager {
     // poke subscribers (other tabs/users update the tab title live). A
     // caller whose own guarded write follows (the editor's save) keeps
     // the revision for that write to bump.
+    // Never onto a row a delete took meanwhile (its file is gone with it):
+    // the rename answers "not found" — a deleted console is not renamed.
     const updated = await SavedConsole.findOneAndUpdate(
       {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
+        is_deleted: { $ne: true },
       },
       options.bumpRevision === false
         ? { $set: updateFields }
@@ -2533,7 +2536,12 @@ export class ConsoleManager {
         await SavedConsole.updateOne(
           { _id: row._id, workspaceId: wid },
           {
-            $set: { is_deleted: true, deletedAt: now, folderId: null },
+            $set: {
+              is_deleted: true,
+              deletedAt: now,
+              deletedVia: "app",
+              folderId: null,
+            },
             ...(segment ? { $addToSet: { historySegments: segment } } : {}),
           },
         );
@@ -3038,43 +3046,77 @@ export class ConsoleManager {
     userId?: string,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(consoleId)) return false;
-    const current = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).select("path name sourceBlobSha");
-    if (!current) return false;
-    // The row keeps its `path` so a restore puts the file back where it was.
-    // A restore ADDS that file again, and git's history of it starts there:
-    // the file's history up to this deletion is kept as an earlier life of
-    // this row (`historySegments`), never found again by path — another
-    // console may take the path meanwhile.
-    let segment: { path: string; until: string } | null = null;
-    if (current.path) {
-      const removed = await commitConsoleRemoval({
-        workspaceId,
-        path: current.path,
-        actorUserId: userId,
-        message: `delete: ${current.path}`,
-      });
-      segment = await consoleDeletionSegment(
-        workspaceId,
-        current.path,
-        removed.unchanged
-          ? { ownBlob: current.sourceBlobSha }
-          : { removalCommit: removed.commitOid },
-      ).catch(() => null);
+    const id = new Types.ObjectId(consoleId);
+    const ws = new Types.ObjectId(workspaceId);
+    // A delete removes the file the row points to WHEN IT COMMITS. Read
+    // once and committed blindly, a rename landing in between moved the
+    // file away: the delete removed nothing, marked the row deleted, the
+    // renamed file survived — and the next sync brought the console back.
+    // So: the removal is a compare-and-swap on the file as it is at main,
+    // the row is marked deleted only while it still points where the
+    // removal looked, and a lost race is decided again from the fresh row
+    // (once; then 409).
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await SavedConsole.findOne({
+        _id: id,
+        workspaceId: ws,
+      }).select("path name sourceBlobSha is_deleted");
+      if (!current) return false;
+      const path = current.path ?? null;
+      // The row keeps its `path` so a restore puts the file back where it
+      // was. A restore ADDS that file again, and git's history of it
+      // starts there: the file's history up to this deletion is kept as an
+      // earlier life of this row (`historySegments`), never found again by
+      // path — another console may take the path meanwhile.
+      let segment: { path: string; until: string } | null = null;
+      if (path && !current.is_deleted) {
+        let removed: Awaited<ReturnType<typeof commitConsoleRemoval>>;
+        try {
+          removed = await commitConsoleRemoval({
+            workspaceId,
+            path,
+            actorUserId: userId,
+            message: `delete: ${path}`,
+            onlyAsItIs: true,
+          });
+        } catch (error) {
+          // The file changed or moved between the read and the commit.
+          if (error instanceof BlobPreconditionError) continue;
+          throw error;
+        }
+        if (removed.absent) {
+          // Not at the row's path: a rename or a push moved (or removed)
+          // it and the index has not caught up. Take the push in and decide
+          // again from where the row says the file is now.
+          if (attempt < 2) {
+            await syncConsolesIndexFromRepo(workspaceId);
+            continue;
+          }
+        } else {
+          segment = await consoleDeletionSegment(
+            workspaceId,
+            path,
+            removed.unchanged
+              ? { ownBlob: current.sourceBlobSha }
+              : { removalCommit: removed.commitOid },
+          ).catch(() => null);
+        }
+      }
+      // Marked deleted only if the row still points where the removal
+      // looked: a rename that moved it meanwhile is decided again.
+      const result = await SavedConsole.updateOne(
+        { _id: id, workspaceId: ws, path: path ?? null },
+        {
+          $set: { is_deleted: true, deletedAt: new Date(), deletedVia: "app" },
+          ...(segment ? { $addToSet: { historySegments: segment } } : {}),
+        },
+      );
+      if (result.matchedCount === 0) continue;
+      return result.modifiedCount > 0;
     }
-    const result = await SavedConsole.updateOne(
-      {
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      {
-        $set: { is_deleted: true, deletedAt: new Date() },
-        ...(segment ? { $addToSet: { historySegments: segment } } : {}),
-      },
+    throw new ConsoleConflictError(
+      "This console was renamed or moved while it was being deleted. Reload and try again.",
     );
-    return result.modifiedCount > 0;
   }
 
   /**
@@ -3128,7 +3170,11 @@ export class ConsoleManager {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: set, $unset: { deletedAt: "" }, $inc: { draftRevision: 1 } },
+      {
+        $set: set,
+        $unset: { deletedAt: "", deletedVia: "" },
+        $inc: { draftRevision: 1 },
+      },
     );
     return result.modifiedCount > 0;
   }

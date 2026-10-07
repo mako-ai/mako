@@ -557,6 +557,13 @@ export interface ISavedConsole extends Document {
   };
   is_deleted?: boolean;
   deletedAt?: Date;
+  /**
+   * Who put it in the trash: `app` (Delete in Mako — its file removed by
+   * that delete's commit) or `git` (a push removed its file). Only a `git`
+   * deletion is undone by the file coming back at its path; an `app` one
+   * by a restore.
+   */
+  deletedVia?: "app" | "git";
   createdAt: Date;
   updatedAt: Date;
   lastExecutedAt?: Date;
@@ -2033,6 +2040,10 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     deletedAt: {
       type: Date,
+    },
+    deletedVia: {
+      type: String,
+      enum: ["app", "git"],
     },
   },
   {

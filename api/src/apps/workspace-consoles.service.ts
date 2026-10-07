@@ -1019,12 +1019,36 @@ export async function commitConsoleRemoval(input: {
   path: string;
   actorUserId?: string | null;
   message: string;
-}): Promise<ConsoleCommitResult> {
+  /**
+   * Remove the file only as it is NOW at main (a compare-and-swap on the
+   * blob read after freshening): a rename or a save that lands it elsewhere
+   * or changes it between the read and the commit refuses the commit
+   * (`BlobPreconditionError`); a file that is not there at all commits
+   * nothing and answers `absent` — the caller decides from the fresh row.
+   */
+  onlyAsItIs?: boolean;
+}): Promise<ConsoleCommitResult & { absent?: boolean }> {
+  if (!input.onlyAsItIs) {
+    return commitConsoleBatch({
+      workspaceId: input.workspaceId,
+      actorUserId: input.actorUserId,
+      mutation: { deletes: [input.path, chartSidecarPath(input.path)] },
+      message: input.message,
+    });
+  }
+  const repoDir = await freshMain(input.workspaceId);
+  const head = await resolveCommit(repoDir, MAIN);
+  const oid = head ? await blobOidAt(repoDir, head, input.path) : null;
+  if (!oid) return { commitOid: head ?? "", unchanged: true, absent: true };
+  const sidecar = chartSidecarPath(input.path);
+  const sidecarOid = head ? await blobOidAt(repoDir, head, sidecar) : null;
   return commitConsoleBatch({
     workspaceId: input.workspaceId,
     actorUserId: input.actorUserId,
-    mutation: { deletes: [input.path, chartSidecarPath(input.path)] },
+    mutation: { deletes: [input.path, sidecar] },
     message: input.message,
+    expectBlobs: { [input.path]: oid, [sidecar]: sidecarOid },
+    alreadyFresh: true,
   });
 }
 
@@ -1823,11 +1847,16 @@ async function syncNow(
 
       const dead = deadByPath.get(entry.path);
       if (dead) {
-        if (!row) {
-          // Nothing live claims the path: the file is back where the
-          // deleted console lived — restore it.
+        if (!row && dead.deletedVia !== "app") {
+          // Nothing live claims the path: the file is back where a push
+          // had removed it — restore it (a push undoes a push).
           row = dead;
-        } else if (!dead._id.equals(row._id)) {
+        } else if (!row || !dead._id.equals(row._id)) {
+          // A console deleted IN MAKO is never brought back by a file at
+          // its old path — its delete committed the removal of its file;
+          // a file there now is someone's new console (or a lost race
+          // that must not resurrect it, shares and all). It comes back
+          // only through a restore, which re-checks who may.
           await SavedConsole.updateOne(
             { _id: dead._id },
             { $unset: { path: "" } },
@@ -1924,6 +1953,7 @@ async function syncNow(
             $inc: { version: 1, draftRevision: 1 },
             $unset: {
               deletedAt: "",
+              deletedVia: "",
               ...scheduleSet.unset,
               ...(mongoOptions ? {} : { mongoOptions: "" }),
             },
@@ -1988,7 +2018,7 @@ async function syncNow(
     const deleted = await SavedConsole.updateOne(
       { _id: row._id, is_deleted: { $ne: true } },
       {
-        $set: { is_deleted: true, deletedAt: new Date() },
+        $set: { is_deleted: true, deletedAt: new Date(), deletedVia: "git" },
         ...(segment ? { $addToSet: { historySegments: segment } } : {}),
       },
     );
