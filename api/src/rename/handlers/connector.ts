@@ -24,6 +24,22 @@ export const connectorRenameHandler: RenameHandler = {
         400,
       );
     }
+    // Its own slug in another spelling (`ws:acme`) is the registry's no-op
+    // answer, the same for every kind — not a 400.
+    const current = await resolveConnector(ctx, request.ref);
+    if (
+      current &&
+      connectorSlugFromRef(request.slug) === current.current.slug
+    ) {
+      return {
+        kind: "connector",
+        id: current.id,
+        before: current.current,
+        after: current.current,
+        aliasesAdded: [],
+        warnings: ["Nothing to change: it already has that name."],
+      };
+    }
     return renameWorkspaceConnector(ctx, {
       from: connectorSlugFromRef(request.ref),
       to: request.slug,
