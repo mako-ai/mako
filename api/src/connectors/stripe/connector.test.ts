@@ -553,6 +553,16 @@ function testMoneyMovementWebhookEvents() {
     "payout.reconciliation_completed",
     "payout.updated",
   ]);
+  // Stripe rejects deprecated event types and fails the whole endpoint
+  // request with them, so they must never be subscribed.
+  for (const deprecated of ["invoiceitem.updated"]) {
+    assert.ok(
+      !connector.getSupportedWebhookEvents().includes(deprecated),
+      `${deprecated} is deprecated by Stripe`,
+    );
+    assert.equal(connector.getWebhookEventMapping(deprecated), null);
+  }
+
   // Polled-only entities subscribe to nothing.
   assert.deepEqual(
     connector.getWebhookEventsForEntities([

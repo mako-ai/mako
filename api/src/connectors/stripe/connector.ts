@@ -1100,7 +1100,8 @@ export class StripeConnector extends BaseConnector {
       "credit_note.voided": { entity: "credit_notes", operation: "upsert" },
       // Invoice items
       "invoiceitem.created": { entity: "invoice_items", operation: "upsert" },
-      "invoiceitem.updated": { entity: "invoice_items", operation: "upsert" },
+      // No `invoiceitem.updated`: Stripe rejects it as deprecated on webhook
+      // endpoints, which fails the whole create/update request.
       "invoiceitem.deleted": { entity: "invoice_items", operation: "delete" },
       // Subscription schedules
       "subscription_schedule.created": {
@@ -1259,7 +1260,6 @@ export class StripeConnector extends BaseConnector {
       "credit_note.voided",
       // Invoice items
       "invoiceitem.created",
-      "invoiceitem.updated",
       "invoiceitem.deleted",
       // Subscription schedules
       "subscription_schedule.created",
