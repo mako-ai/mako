@@ -25,6 +25,9 @@
  * 500/502 from git.
  */
 import { RenameError } from "./types";
+import { isValidFlowSlug } from "../services/flow-config-files";
+import { isValidJobSlug } from "../dbt/dbt-config-files";
+import { unsafeSlugReason } from "../utils/slugify";
 
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
@@ -82,4 +85,25 @@ export function cleanRenameTitle(raw: string, maxLength: number): string {
     throw new RenameError(displayNameTooLong(maxLength));
   }
   return title;
+}
+
+/** Where each kind's file lives — for the slug message. */
+const FILE_DIR = { flow: "flows/", dbt_job: "dbt/jobs/" } as const;
+
+/**
+ * Why `slug` (trimmed) cannot be a flow's or a dbt job's new file name, or
+ * null when it can — the rename services' rule and message, and the one
+ * the rename dialog mirrors (app/src/lib/object-name-rules.ts, pinned by
+ * rename/scenarios/name-rules-parity.test.ts). Whether the name is free is
+ * the service's question, not this one.
+ */
+export function renameSlugError(
+  kind: "flow" | "dbt_job",
+  slug: string,
+): string | null {
+  const valid = kind === "flow" ? isValidFlowSlug(slug) : isValidJobSlug(slug);
+  if (!valid) {
+    return `"${slug}" is not a valid file name: lowercase letters, digits and single dashes, up to 64 characters (it becomes ${FILE_DIR[kind]}${slug}.yml).`;
+  }
+  return unsafeSlugReason(slug);
 }
