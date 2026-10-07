@@ -87,6 +87,26 @@ export function findById<T extends ManagedTreeNode>(
   return null;
 }
 
+/**
+ * The names from the section's root down to node `targetId` (itself
+ * included), read from the tree AS IT IS NOW — never a node's stored
+ * `path`, which an inline rename of it (or of a folder above it) leaves
+ * stale. Null when the node is not in `nodes`.
+ */
+export function namesTrailOf<T extends ManagedTreeNode>(
+  nodes: T[],
+  targetId: string,
+): string[] | null {
+  for (const node of nodes) {
+    if (node.id === targetId) return [node.name];
+    if (node.isDirectory && node.children) {
+      const below = namesTrailOf(node.children as T[], targetId);
+      if (below) return [node.name, ...below];
+    }
+  }
+  return null;
+}
+
 export function findParentArray<T extends ManagedTreeNode>(
   nodes: T[],
   targetId: string,
