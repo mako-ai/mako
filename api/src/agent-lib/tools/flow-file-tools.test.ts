@@ -252,8 +252,10 @@ describe("partial input never reports a phantom teardown", () => {
     expect(byAlias.summary).toContain("rename 1");
     expect(byAlias.notes.some(n => n.includes("Renamed in place"))).toBe(true);
 
-    // Identical content under a new name pairs too; a different definition
-    // with no alias does not, and is reported as today.
+    // Identical content under a new name pairs too; so does the one file
+    // with the same source and destination, edited as well (the same
+    // stream: a move made with an edit, rule 4); a definition that points
+    // somewhere else, with no alias, does not, and is reported as today.
     const identical = await checkFlowFiles({
       workspaceId: WS.toString(),
       files: [{ path: "flows/beta-copy.yml", contents: flowYaml("beta copy") }],
@@ -262,10 +264,30 @@ describe("partial input never reports a phantom teardown", () => {
     expect(identical.wouldRename.map(r => r.via)).toEqual(["identical"]);
     expect(identical.wouldTeardown).toEqual([]);
 
-    const unrelated = await checkFlowFiles({
+    const edited = await checkFlowFiles({
       workspaceId: WS.toString(),
       files: [
         { path: "flows/gamma.yml", contents: flowYaml("gamma", ["leads"]) },
+      ],
+      deletedPaths: ["flows/beta.yml"],
+    });
+    expect(edited.wouldRename).toEqual([
+      { from: "beta", to: "gamma", via: "target" },
+    ]);
+    expect(edited.wouldTeardown).toEqual([]);
+    expect(edited.wouldCreate).toEqual([]);
+
+    const OTHER_DEST = new Types.ObjectId().toString();
+    const unrelated = await checkFlowFiles({
+      workspaceId: WS.toString(),
+      files: [
+        {
+          path: "flows/gamma.yml",
+          contents: flowYaml("gamma", ["leads"]).replace(
+            `  connection_id: ${DEST.toString()}`,
+            `  connection_id: ${OTHER_DEST}`,
+          ),
+        },
       ],
       deletedPaths: ["flows/beta.yml"],
     });
@@ -291,6 +313,26 @@ describe("partial input never reports a phantom teardown", () => {
     expect(ambiguous.wouldRename).toEqual([]);
     expect(ambiguous.wouldTeardown).toEqual(["beta"]);
     expect(ambiguous.notes.some(n => n.includes("will not guess"))).toBe(true);
+  });
+
+  it("reports a file moved into a sub-folder as a PARKED flow, not a teardown (what the push does)", async () => {
+    await seedRepo({ "flows/beta.yml": flowYaml("beta") });
+    await seedRow("beta");
+    const moved = await checkFlowFiles({
+      workspaceId: WS.toString(),
+      files: [{ path: "flows/team/beta.yml", contents: flowYaml("beta") }],
+      deletedPaths: ["flows/beta.yml"],
+    });
+    expect(moved.wouldPark).toEqual([
+      { slug: "beta", movedTo: "flows/team/beta.yml", via: "identical" },
+    ]);
+    expect(moved.wouldTeardown).toEqual([]);
+    expect(moved.summary).toContain("park 1");
+    expect(moved.notes.some(n => n.includes("PARKED"))).toBe(true);
+    // The path itself is still reported: it is not where flows live.
+    expect(moved.problems.some(p => p.path === "flows/team/beta.yml")).toBe(
+      true,
+    );
   });
 
   it("attributes a fileless flow to the repo, not to the caller", async () => {

@@ -189,17 +189,23 @@ Verify: there is no flow-status tool over MCP yet — open the Flows page:
 - Moving the file yourself (`git mv`) is also a rename when the push can
   pair the two files: the new file's `aliases:` names the old slug (the
   explicit way — always add it), or git's rename detection / an otherwise
-  identical definition matches them. Check first: `check_flow_files` with
-  the new file and the old path in `deletedPaths` lists the pairing under
-  `wouldRename`. It sees `aliases:` and identical definitions only — git's
-  similarity is known at push time — so a move with edits and no
-  `aliases:` that it does not list may still be torn down and re-created.
+  identical definition matches them, or — for a move made together with
+  edits — it is the ONE new file reading the same source into the same
+  destination as the ONE vanished flow. Check first: `check_flow_files`
+  with the new file and the old path in `deletedPaths` lists the pairing
+  under `wouldRename`.
+- A flow file moved where the push does not read flows (a sub-folder of
+  `flows/`, a `.yaml`, an upper-case name) is not deleted: the flow is
+  parked — kept with its checkpoints, marked invalid with the reason, its
+  runs paused — until the file is back at `flows/<slug>.yml`.
 - What is still a *different* flow: a moved file without `aliases:` whose
   source (connection, or database) or destination (connection, database,
   schema, table) changed — it is never paired by git similarity or by
   content, so the old stream is torn down and the new one backfills from
-  zero under a new id. An old slug that two new files could claim is also
-  not guessed (torn down, with a warning). With `aliases:` the pairing is
+  zero under a new id. An old slug that two new files could claim (or two
+  vanished flows with one new file's source and destination) is also not
+  guessed (torn down, with a warning). To start a stream over on purpose,
+  delete in one push and add in the next. With `aliases:` the pairing is
   honoured even across a retarget, carrying the old checkpoints onto the
   new target — so rename and retarget in separate pushes.
 - An empty or missing `flows/` directory means "this workspace has not

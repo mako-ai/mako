@@ -5975,3 +5975,44 @@ export const AppWorktree = mongoose.model<IAppWorktree>(
   "AppWorktree",
   AppWorktreeSchema,
 );
+
+/**
+ * An id that once named a flow or a dbt job that has since been deleted.
+ *
+ * A flow or job born from a pushed file gets an id DERIVED from its file
+ * name (`derivedFlowId` / `derivedJobId`), deterministic so that GET/list
+ * and the push sync agree on it before the row exists. Without a record of
+ * deletions, a NEW file pushed at a deleted object's name was handed the
+ * deleted object's id — and with it the old links (`/f/<id>`), the
+ * notification rules keyed by that id, the inbound webhook URL and, for a
+ * job, the run history. A retired id is never handed to another file.
+ */
+export interface IRetiredObjectId extends Document {
+  workspaceId: Types.ObjectId;
+  kind: "flow" | "dbt_job";
+  objectId: Types.ObjectId;
+  /** The slug it had when it was deleted (for the log; not a name). */
+  slug?: string;
+  retiredAt: Date;
+}
+
+const RetiredObjectIdSchema = new Schema<IRetiredObjectId>(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, required: true },
+    kind: { type: String, enum: ["flow", "dbt_job"], required: true },
+    objectId: { type: Schema.Types.ObjectId, required: true },
+    slug: { type: String },
+    retiredAt: { type: Date, required: true },
+  },
+  { collection: "retired_object_ids" },
+);
+
+RetiredObjectIdSchema.index(
+  { workspaceId: 1, kind: 1, objectId: 1 },
+  { unique: true },
+);
+
+export const RetiredObjectId = mongoose.model<IRetiredObjectId>(
+  "RetiredObjectId",
+  RetiredObjectIdSchema,
+);

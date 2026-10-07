@@ -119,6 +119,12 @@ export default defineConfig({
       "src/rename/scenarios/connector-credentials.scenarios.test.ts",
       "src/rename/scenarios/connector-rename.scenarios.test.ts",
       "src/rename/scenarios/skill.scenarios.test.ts",
+      // Flows and dbt jobs: every entry point × operation × role, hostile
+      // names, partial failures, races, cycles and scale.
+      "src/rename/scenarios/flow-rename.scenarios.test.ts",
+      "src/rename/scenarios/flow-rename-hostile.scenarios.test.ts",
+      "src/rename/scenarios/dbt-job-rename.scenarios.test.ts",
+      "src/rename/scenarios/dbt-job-rename-hostile.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

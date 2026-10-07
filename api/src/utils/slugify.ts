@@ -51,3 +51,38 @@ export async function reserveSlug(
     `Could not find a free slug for ${options?.label ?? `"${base}"`}`,
   );
 }
+
+/**
+ * Device names Windows reserves in every directory, with any extension:
+ * `flows/con.yml` cannot be created by a Windows checkout at all (git
+ * refuses or the clone breaks), so a file name a workspace repo hands out
+ * must never be one.
+ */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+
+export function isWindowsReservedName(slug: string): boolean {
+  return WINDOWS_RESERVED.test(slug);
+}
+
+/**
+ * A slug that is also a valid object id (24 hex digits). Lookups take an id
+ * before a name, so such a slug can name ANOTHER object than the one it is
+ * the file of — never hand one out.
+ */
+export function looksLikeObjectId(slug: string): boolean {
+  return /^[0-9a-f]{24}$/i.test(slug);
+}
+
+/**
+ * Why a slug that passes a kind's character rules is still not a name a
+ * file may be given, or null when it may be.
+ */
+export function unsafeSlugReason(slug: string): string | null {
+  if (isWindowsReservedName(slug)) {
+    return `"${slug}" is a device name Windows reserves (a checkout could not create that file); choose another name.`;
+  }
+  if (looksLikeObjectId(slug)) {
+    return `"${slug}" looks like an object id, and ids resolve before names; choose another name.`;
+  }
+  return null;
+}

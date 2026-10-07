@@ -207,11 +207,17 @@ assert.equal(definitionIdentity("- a list\n"), null);
   assert.deepEqual(result.pairs, []);
 }
 {
-  // Git naming a slug that was not added is not a pairing.
+  // Git naming a slug that was not added is not a pairing. (The added file
+  // points elsewhere, so rule 4 cannot pair it either: this is rule 2 alone.)
   const result = pairRenamedSlugs({
     removed: [{ slug: "a", contents: FLOW("A"), target: T }],
     added: [
-      { slug: "b", contents: FLOW("B", "5 5 * * *"), aliases: [], target: T },
+      {
+        slug: "b",
+        contents: FLOW("B", "5 5 * * *"),
+        aliases: [],
+        target: "elsewhere",
+      },
     ],
     gitRenames: new Map([["a", "zzz"]]),
   });
@@ -242,6 +248,80 @@ assert.equal(definitionIdentity("- a list\n"), null);
   });
   assert.deepEqual(result.pairs, []);
   assert.deepEqual(result.ambiguous, []);
+}
+
+// ---- rule 4: the one removed slug and the one added file with one target --
+{
+  // A move made with a real edit (git's similarity is not enough, the
+  // content differs): the same stream, by its source and destination.
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "a", contents: FLOW("A"), target: T }],
+    added: [
+      { slug: "b", contents: FLOW("B", "9 9 * * *"), aliases: [], target: T },
+      { slug: "c", contents: FLOW("C"), aliases: [], target: "elsewhere" },
+    ],
+  });
+  assert.deepEqual(result.pairs, [{ from: "a", to: "b", via: "target" }]);
+  assert.deepEqual(result.ambiguous, []);
+}
+{
+  // Two added files with the removed slug's target: never guessed.
+  const result = pairRenamedSlugs({
+    removed: [{ slug: "a", contents: FLOW("A"), target: T }],
+    added: [
+      { slug: "b", contents: FLOW("B", "9 9 * * *"), aliases: [], target: T },
+      { slug: "c", contents: FLOW("C", "8 8 * * *"), aliases: [], target: T },
+    ],
+  });
+  assert.deepEqual(result.pairs, []);
+  assert.deepEqual(result.ambiguous, [
+    { slug: "a", rule: "target", candidates: ["b", "c"] },
+  ]);
+}
+{
+  // Two removed slugs with one target and one added file: given to neither.
+  const result = pairRenamedSlugs({
+    removed: [
+      { slug: "a", contents: FLOW("A"), target: T },
+      { slug: "b", contents: FLOW("B", "1 1 * * *"), target: T },
+    ],
+    added: [
+      { slug: "c", contents: FLOW("C", "9 9 * * *"), aliases: [], target: T },
+    ],
+  });
+  assert.deepEqual(result.pairs, []);
+  assert.deepEqual(result.ambiguous.map(e => e.slug).sort(), ["a", "b"]);
+}
+{
+  // Never onto one of the removed slug's own old names (a stale tree's
+  // shape), never without the removed file's contents, never across targets.
+  for (const input of [
+    {
+      removed: [{ slug: "b", aliases: ["a"], contents: FLOW("B"), target: T }],
+      added: [
+        { slug: "a", contents: FLOW("A", "7 7 * * *"), aliases: [], target: T },
+      ],
+    },
+    {
+      removed: [{ slug: "a", target: T }],
+      added: [
+        { slug: "b", contents: FLOW("B", "7 7 * * *"), aliases: [], target: T },
+      ],
+    },
+    {
+      removed: [{ slug: "a", contents: FLOW("A"), target: "x" }],
+      added: [
+        {
+          slug: "b",
+          contents: FLOW("B", "7 7 * * *"),
+          aliases: [],
+          target: "y",
+        },
+      ],
+    },
+  ]) {
+    assert.deepEqual(pairRenamedSlugs(input).pairs, []);
+  }
 }
 
 // ---- ambiguity is never guessed --------------------------------------------

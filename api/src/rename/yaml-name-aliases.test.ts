@@ -79,21 +79,79 @@ const FLOW = [
     "name: Foo\naliases: [a, b]  # old names\n",
   );
   const out = setTopLevelAliases(inline, ["a", "b", "c"]);
+  // Inline stays inline, and the author's comment stays with it.
   assert.equal(
     out,
-    FLOW.replace("name: Foo\n", "name: Foo\naliases:\n  - a\n  - b\n  - c\n"),
+    FLOW.replace("name: Foo\n", "name: Foo\naliases: [a, b, c]  # old names\n"),
   );
 }
 {
   const block = FLOW.replace(
     "type: webhook\n",
-    "type: webhook\naliases:\n  - a\n  # kept? no: the stanza is replaced whole\n  - b\n",
+    "type: webhook\naliases:\n  - a\n  # kept: a rename never drops a comment\n  - b\n",
   );
   const out = setTopLevelAliases(block, ["z"]);
   assert.equal(
     out,
-    FLOW.replace("type: webhook\n", "type: webhook\naliases:\n  - z\n"),
+    FLOW.replace(
+      "type: webhook\n",
+      "type: webhook\naliases:\n  # kept: a rename never drops a comment\n  - z\n",
+    ),
   );
+}
+{
+  // Comments on the two owned lines, inside the list and on its items all
+  // survive a rename; a new old name is appended in the list's indentation;
+  // the one taken back (renaming back to it) loses its line.
+  const annotated = [
+    "name: Foo  # shown in the sidebar",
+    "aliases:  # every name it had",
+    "  # the first one",
+    "    - foo-old",
+    "    - foo-older # 2025",
+    "type: webhook",
+    "",
+  ].join("\n");
+  assert.equal(
+    editNameAndAliases(annotated, "Foo 2", ["foo-old", "foo-older", "foo"]),
+    [
+      "name: Foo 2  # shown in the sidebar",
+      "aliases:  # every name it had",
+      "  # the first one",
+      "    - foo-old",
+      "    - foo-older # 2025",
+      "    - foo",
+      "type: webhook",
+      "",
+    ].join("\n"),
+  );
+  assert.equal(
+    editNameAndAliases(annotated, "Foo", ["foo-old", "foo"]),
+    [
+      "name: Foo  # shown in the sidebar",
+      "aliases:  # every name it had",
+      "  # the first one",
+      "    - foo-old",
+      "    - foo",
+      "type: webhook",
+      "",
+    ].join("\n"),
+  );
+  // A quoted name keeps its comment; a `#` inside the quotes is not one.
+  assert.equal(
+    setTopLevelScalar("name: 'a # b'  # note\n", "name", "c"),
+    "name: c  # note\n",
+  );
+  assert.equal(
+    setTopLevelScalar('name: "x \\" # y" # z\n', "name", "c"),
+    "name: c # z\n",
+  );
+  assert.equal(
+    setTopLevelAliases("name: N\naliases: [a] # see [x]\n", ["a", "b"]),
+    "name: N\naliases: [a, b] # see [x]\n",
+  );
+  // An unterminated quote is refused, not guessed.
+  assert.equal(setTopLevelScalar("name: 'open\n", "name", "c"), null);
 }
 {
   const empty = FLOW.replace("name: Foo\n", "name: Foo\naliases: []\n");

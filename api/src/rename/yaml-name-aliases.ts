@@ -58,10 +58,48 @@ export function setTopLevelScalar(
   if (at < 0) return null;
   const rest = lines[at].slice(lines[at].indexOf(":") + 1).trim();
   if (/^[|>&*!{[]/.test(rest)) return null;
+  const comment = trailingComment(rest);
+  if (comment === null) return null;
   const line = scalarLine(key, value);
   if (line === null) return null;
-  lines[at] = line;
+  // The line's own comment (`name: Foo  # shown in the sidebar`) is the
+  // author's, not the rename's: it stays.
+  lines[at] = line + comment;
   return joinLike(contents, lines);
+}
+
+/**
+ * The comment that follows a one-line scalar value (`  # …`, with the
+ * whitespace before it), "" when there is none, or null when the value's
+ * quoting cannot be followed (an unterminated quote) — refused, not
+ * guessed. In a plain scalar a `#` starts a comment only after whitespace;
+ * inside quotes it never does.
+ */
+function trailingComment(rest: string): string | null {
+  const quote = rest[0];
+  if (quote === '"' || quote === "'") {
+    let i = 1;
+    for (; i < rest.length; i++) {
+      if (quote === '"' && rest[i] === "\\") {
+        i++;
+        continue;
+      }
+      if (rest[i] === quote) {
+        if (quote === "'" && rest[i + 1] === "'") {
+          i++;
+          continue;
+        }
+        break;
+      }
+    }
+    if (i >= rest.length) return null;
+    const after = rest.slice(i + 1);
+    const match = after.match(/^\s+#.*$/);
+    if (match) return match[0];
+    return after.trim() === "" ? "" : null;
+  }
+  const at = rest.search(/\s+#/);
+  return at === -1 ? "" : rest.slice(at);
 }
 
 /**
@@ -96,6 +134,13 @@ function blockSequenceEnd(lines: string[], start: number): number | null {
  * `null` for anything else (an anchor, a tag, a mapping, a nested form).
  * Inserted after `name:` when absent, so the two rename-owned keys sit
  * together.
+ *
+ * The file's own shape and words stay: an inline list stays inline with
+ * its trailing comment; a block list keeps its comment lines and the
+ * comments on its items — an item no longer wanted loses its line, a new
+ * one is appended in the list's own indentation. Only a list whose order
+ * the new one cannot be reached from that way is written out whole (and
+ * even then the comment on the `aliases:` line stays).
  */
 export function setTopLevelAliases(
   contents: string,
@@ -114,18 +159,77 @@ export function setTopLevelAliases(
     return joinLike(contents, lines);
   }
   const rest = lines[at].slice(lines[at].indexOf(":") + 1).trim();
-  let end: number;
   if (rest === "" || /^#/.test(rest)) {
     const blockEnd = blockSequenceEnd(lines, at);
     if (blockEnd === null) return null;
-    end = blockEnd;
-  } else if (/^\[.*\]\s*(#.*)?$/.test(rest)) {
-    end = at;
-  } else {
-    return null;
+    if (aliases.length === 0) {
+      lines.splice(at, blockEnd - at + 1);
+      return joinLike(contents, lines);
+    }
+    const edited = editBlockItems(lines.slice(at + 1, blockEnd + 1), aliases);
+    if (edited !== null) {
+      lines.splice(at + 1, blockEnd - at, ...edited);
+      return joinLike(contents, lines);
+    }
+    lines.splice(
+      at,
+      blockEnd - at + 1,
+      lines[at].replace(/\s*$/, ""),
+      ...aliases.map(a => `  - ${a}`),
+    );
+    return joinLike(contents, lines);
   }
-  lines.splice(at, end - at + 1, ...replacement);
+  const inline = rest.match(/^\[([^\]]*)\](\s*#.*)?$/);
+  if (!inline) return null;
+  if (aliases.length === 0) {
+    lines.splice(at, 1);
+    return joinLike(contents, lines);
+  }
+  // Inline stays inline, with its comment.
+  lines[at] = `aliases: [${aliases.join(", ")}]${inline[2] ?? ""}`;
   return joinLike(contents, lines);
+}
+
+/**
+ * A block list's lines (after the `aliases:` line) edited to hold
+ * `aliases`, or null when that cannot be done by dropping items and
+ * appending new ones (an item the editor cannot read, a reordering).
+ */
+function editBlockItems(block: string[], aliases: string[]): string[] | null {
+  const items: Array<{ index: number; value: string }> = [];
+  let indent = "  - ";
+  for (let i = 0; i < block.length; i++) {
+    const m = block[i].match(/^(\s+-\s+)(.*)$/);
+    if (!m) {
+      if (/^\s+-\s*$/.test(block[i])) return null; // an empty item
+      continue; // a comment or blank line: kept as it is
+    }
+    if (items.length === 0) indent = m[1];
+    const raw = m[2];
+    const comment = trailingComment(raw);
+    if (comment === null) return null;
+    let value = raw.slice(0, raw.length - comment.length).trim();
+    if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(value)) return null;
+    items.push({ index: i, value });
+  }
+  const keep = items.filter(item => aliases.includes(item.value));
+  const kept = keep.map(item => item.value);
+  const added = aliases.filter(alias => !kept.includes(alias));
+  if ([...kept, ...added].join("\0") !== aliases.join("\0")) return null;
+  const drop = new Set(
+    items.filter(item => !aliases.includes(item.value)).map(i => i.index),
+  );
+  const out = block.filter((_, i) => !drop.has(i));
+  // New items go after the last item still there (or where the list's
+  // items were), never after trailing comments that belong to the next key.
+  const lastKept = keep.length > 0 ? keep[keep.length - 1].index : -1;
+  const insertAt =
+    lastKept === -1
+      ? out.length
+      : block.slice(0, lastKept + 1).filter((_, i) => !drop.has(i)).length;
+  out.splice(insertAt, 0, ...added.map(alias => `${indent}${alias}`));
+  return out;
 }
 
 /** Re-join with the file's own line ending, keeping a trailing newline. */

@@ -23,7 +23,7 @@ import {
   Flow,
   type IFlow,
 } from "../database/workspace-schema";
-import { reserveSlug, slugifyName } from "../utils/slugify";
+import { reserveSlug, slugifyName, unsafeSlugReason } from "../utils/slugify";
 
 /** The `source → destination` label flows have always shown. */
 export async function deriveFlowDisplayName(
@@ -127,6 +127,9 @@ export async function reserveFlowSlug(
     slugifyFlowName(name),
     async candidate =>
       takenAtMain.has(candidate) ||
+      // A Windows device name or an id lookalike is never a file name
+      // (`unsafeSlugReason`): "CON" becomes `con-2`.
+      unsafeSlugReason(candidate) !== null ||
       // An old name of a renamed flow is taken too: a new flow under it
       // would win every lookup (current beats alias) and strand old links.
       Boolean(

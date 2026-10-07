@@ -104,6 +104,14 @@ export interface CheckFlowFilesResult {
    * push time and can pair an edited-and-moved file this dry-run cannot.
    */
   wouldRename: Array<{ from: string; to: string; via: string }>;
+  /**
+   * Deleted files whose flow moved where the push does not read flows (a
+   * sub-folder of `flows/`, a `.yaml`, a name that is not a slug): the push
+   * PARKS those flows — kept with their checkpoints, marked invalid, runs
+   * paused — rather than tearing them down, until the file is back at
+   * `flows/<slug>.yml`.
+   */
+  wouldPark: Array<{ slug: string; movedTo: string; via: string }>;
   wouldReconfigure: Array<{ slug: string; entities: string[] }>;
   wouldTeardown: string[];
   guard: ReconcilePlan["guard"];
@@ -296,6 +304,41 @@ export async function checkFlowFiles(input: {
     const id = rowIdByDeletedSlug.get(pair.from);
     if (id) renamedRowIdBySlug.set(pair.to, id);
   }
+  // ---- …or moved where the push does not read flows: parked, not removed
+  // (`parkFlowsMovedOutOfPlace` in flow-sync.service.ts, same rules).
+  const pairedFrom = new Set(pairing.pairs.map(pair => pair.from));
+  const isStray = (path: string) =>
+    path.startsWith("flows/") &&
+    /\.ya?ml$/i.test(path) &&
+    slugFromFlowFilePath(path) === null;
+  const strays = new Map<string, string>();
+  for (const stray of baseline.strays) strays.set(stray.path, stray.contents);
+  for (const file of files) {
+    if (isStray(file.path)) strays.set(file.path, file.contents);
+  }
+  const parking = pairRenamedSlugs({
+    removed: removedForPairing.filter(r => !pairedFrom.has(r.slug)),
+    added: [...strays].map(([path, contents]) => {
+      const parsed = parseFlowFile(contents);
+      return {
+        slug: path,
+        contents,
+        aliases: parsed?.aliases ?? [],
+        target: parsed ? flowRenameTarget(parsed) : null,
+      };
+    }),
+  });
+  const wouldPark = parking.pairs.map(pair => ({
+    slug: pair.from,
+    movedTo: pair.to,
+    via: pair.via,
+  }));
+  for (const park of wouldPark) {
+    notes.push(
+      `\`${park.slug}\` would be PARKED, not torn down: its file would be at \`${park.movedTo}\`, where the push does not read flows. The flow keeps its id and checkpoints but stops running until its file is \`flows/<slug>.yml\` again — move it there (rename it with \`rename_object\`).`,
+    );
+  }
+
   for (const entry of pairing.ambiguous) {
     notes.push(
       `\`${entry.slug}\` could be a rename of more than one added file (${entry.candidates.join(", ")}, by ${entry.rule}); the push will not guess and will tear it down. Name the old slug in exactly one file's \`aliases:\`.`,
@@ -360,9 +403,22 @@ export async function checkFlowFiles(input: {
     workspaceId,
     desired: await plannedFrom(baselineEntries),
   });
+  const proposedDesired = await plannedFrom(proposedByPath.entries());
+  for (const park of wouldPark) {
+    // A parked flow stays, with its own definition (the push keeps it).
+    const row = await Flow.findOne({ workspaceId, slug: park.slug });
+    if (row) {
+      proposedDesired.push({
+        slug: park.slug,
+        file: flowToFile(row),
+        flowId: String(row._id),
+        pendingApply: false,
+      });
+    }
+  }
   const proposedPlan = await dryRunFlowReconcile({
     workspaceId,
-    desired: await plannedFrom(proposedByPath.entries()),
+    desired: proposedDesired,
   });
 
   const created = sortedDiff(
@@ -444,6 +500,7 @@ export async function checkFlowFiles(input: {
     `${blocking.length} problem(s)`,
     `create ${created.caused.length}`,
     `rename ${wouldRename.length}`,
+    `park ${wouldPark.length}`,
     `reconfigure ${reconfigureCaused.length}`,
     `teardown ${wouldTeardown.length}`,
   ].join("; ");
@@ -460,6 +517,7 @@ export async function checkFlowFiles(input: {
     overlay,
     wouldCreate: created.caused,
     wouldRename,
+    wouldPark,
     wouldReconfigure: reconfigureCaused,
     wouldTeardown,
     guard: proposedPlan.guard,

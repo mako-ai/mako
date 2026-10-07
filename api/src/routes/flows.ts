@@ -18,6 +18,7 @@ import {
 import {
   commitFlowFile,
   deleteFlowFile,
+  FlowFileConflictError,
 } from "../services/flow-config.service";
 import { Types } from "mongoose";
 import { inngest } from "../inngest";
@@ -32,6 +33,11 @@ import {
   dryRunDbSync,
 } from "../services/destination-writer.service";
 import { teardownFlow } from "../sync-cdc/flow-reconcile";
+import {
+  displayNameProblem,
+  normalizeDisplayName,
+  truncateDisplayName,
+} from "../rename/title-rules";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
 import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
@@ -1180,10 +1186,18 @@ flowRoutes.openapi(
       // field existed Mongoose silently dropped it. Persist it, fall back to
       // the shared derivation, and mint the slug that names the flow's file
       // (RFC #904) — once, here; a later rename never moves it.
-      const requestedName =
-        typeof body.name === "string" && body.name.trim()
-          ? body.name.trim().slice(0, 200)
-          : await deriveFlowDisplayName(flowData as unknown as IFlow);
+      let requestedName: string;
+      if (typeof body.name === "string" && body.name.trim()) {
+        // The rename rules for a name (rename/title-rules.ts).
+        const name = normalizeDisplayName(body.name);
+        const problem = displayNameProblem(name);
+        if (problem) return c.json({ success: false, error: problem }, 400);
+        requestedName = truncateDisplayName(name, 200);
+      } else {
+        requestedName = await deriveFlowDisplayName(
+          flowData as unknown as IFlow,
+        );
+      }
       flowData.name = requestedName;
       // Files at main without a row yet are part of the identity space too.
       flowData.slug = await reserveFlowSlug(
@@ -1402,7 +1416,13 @@ flowRoutes.openapi(
       // via `POST /objects/flow/rename` — which keeps the old slug as an
       // alias so old links keep resolving.
       if (typeof body.name === "string" && body.name.trim()) {
-        flow.name = body.name.trim().slice(0, 200);
+        // The same name rules as a rename (rename/title-rules.ts): a NUL used
+        // to fail the commit as a 502 "check the GitHub connection", and
+        // control or direction characters were written to the file.
+        const name = normalizeDisplayName(body.name);
+        const problem = displayNameProblem(name);
+        if (problem) return c.json({ success: false, error: problem }, 400);
+        flow.name = truncateDisplayName(name, 200);
       }
       if (body.destinationDatabaseName !== undefined) {
         flow.destinationDatabaseName =
@@ -1767,6 +1787,14 @@ flowRoutes.openapi(
       // The repo gate is a precondition, not a failure: 412 with an
       // actionable message rather than a 500 the user cannot act on.
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      // Renamed while the delete was in flight: nothing was deleted or
+      // torn down; the client reloads and retries.
+      if (error instanceof FlowFileConflictError) {
+        return c.json(
+          { success: false, code: "definition_conflict", error: error.message },
+          409,
+        );
+      }
       logger.error("Error deleting flow", { error });
       return c.json(
         {

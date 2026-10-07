@@ -72,6 +72,11 @@ import {
   reserveJobSlug,
   resolveLiveJobRow,
 } from "../../dbt/dbt-config.service";
+import { retireObjectId } from "../../rename/retired-ids";
+import {
+  displayNameProblem,
+  normalizeDisplayName,
+} from "../../rename/title-rules";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
@@ -1287,6 +1292,10 @@ export const createDbtServerTools = (
       }) => {
         try {
           const project = await assertProject(projectId);
+          // The rename rules for a name (rename/title-rules.ts).
+          name = normalizeDisplayName(name);
+          const nameProblem = displayNameProblem(name);
+          if (nameProblem) return { success: false, error: nameProblem };
           const env = environment ?? project.defaultEnvironment;
           const validationError = validateJob(project, {
             environment: env,
@@ -1369,7 +1378,12 @@ export const createDbtServerTools = (
             return { success: false, error: validationError };
           }
 
-          if (updates.name !== undefined) job.name = updates.name;
+          if (updates.name !== undefined) {
+            const name = normalizeDisplayName(updates.name);
+            const nameProblem = displayNameProblem(name);
+            if (nameProblem) return { success: false, error: nameProblem };
+            job.name = name;
+          }
           job.environment = merged.environment;
           job.commands = merged.commands;
           job.schedule = merged.schedule ?? undefined;
@@ -1416,7 +1430,13 @@ export const createDbtServerTools = (
           if (!resolved.ok) return { success: false, error: resolved.error };
           const job = resolved.row;
           const name = job.name;
-          await deleteDbtJobFile(project, job.slug, actingUserId);
+          await deleteDbtJobFile(project, job.slug, actingUserId, job._id);
+          await retireObjectId(
+            project.workspaceId,
+            "dbt_job",
+            job._id,
+            job.slug,
+          );
           await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };

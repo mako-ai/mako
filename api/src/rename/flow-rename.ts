@@ -56,6 +56,9 @@ import {
 } from "../services/flow-sync.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
+import { cleanRenameTitle } from "./title-rules";
+import { retiredIdHolders } from "./retired-ids";
+import { unsafeSlugReason } from "../utils/slugify";
 import {
   RenameError,
   type RenameContext,
@@ -143,9 +146,12 @@ export async function resolveFlowRef(
   const defs = await listFlowDefinitionsAtMain(ctx.workspaceId);
   const gitOnly = (def: (typeof defs)[number], via: ResolvedRef["via"]) => {
     return (async (): Promise<ResolvedRef> => {
-      const rows = await Flow.find({ workspaceId: ctx.workspaceId })
-        .select("_id slug")
-        .lean();
+      const rows = [
+        ...(await Flow.find({ workspaceId: ctx.workspaceId })
+          .select("_id slug")
+          .lean()),
+        ...(await retiredIdHolders(ctx.workspaceId, "flow")),
+      ];
       // The file's row when it has one (an old name found only in a FILE's
       // `aliases:` — the row lost it to a newcomer since gone — still names
       // that row, not a derived id nothing holds); the derived id only for
@@ -169,6 +175,16 @@ export async function resolveFlowRef(
   };
   const currentFile = defs.find(def => def.slug === ref);
   if (currentFile) return gitOnly(currentFile, "current");
+  if (!found && Types.ObjectId.isValid(ref)) {
+    // The id GET/list hands out for a file with no row yet (a tab or a
+    // link made before its push was synced).
+    const byDerivedId = await gitOnlyFlowByDerivedId(
+      ctx.workspaceId,
+      defs,
+      ref,
+    );
+    if (byDerivedId) return gitOnly(byDerivedId, "current");
+  }
   if (found) {
     return {
       kind: "flow",
@@ -179,6 +195,26 @@ export async function resolveFlowRef(
   }
   const byAlias = defs.filter(def => def.parsed?.aliases?.includes(ref));
   return byAlias.length === 1 ? gitOnly(byAlias[0], "alias") : null;
+}
+
+/** The git-only file (no row yet) whose derived id is `id`, if any. */
+async function gitOnlyFlowByDerivedId(
+  workspaceId: string,
+  defs: Awaited<ReturnType<typeof listFlowDefinitionsAtMain>>,
+  id: string,
+) {
+  const rows = [
+    ...(await Flow.find({ workspaceId }).select("_id slug").lean()),
+    ...(await retiredIdHolders(workspaceId, "flow")),
+  ];
+  const rowSlugs = new Set(rows.map(row => row.slug));
+  return (
+    defs.find(
+      def =>
+        !rowSlugs.has(def.slug) &&
+        String(freeDerivedFlowId(workspaceId, def.slug, rows)) === id,
+    ) ?? null
+  );
 }
 
 /**
@@ -194,6 +230,22 @@ export async function renameFlow(
   const { workspaceId } = ctx;
   const found = await findFlowByRef(workspaceId, request.ref);
   if (!found) {
+    // A file at main with no row yet is a flow the list shows (and resolve
+    // finds): say why it cannot be renamed yet rather than "no such flow".
+    const defs = FLOW_SLUG_RE.test(request.ref)
+      ? await listFlowDefinitionsAtMain(workspaceId)
+      : [];
+    const gitOnly =
+      defs.find(def => def.slug === request.ref) ??
+      (Types.ObjectId.isValid(request.ref)
+        ? await gitOnlyFlowByDerivedId(workspaceId, defs, request.ref)
+        : null);
+    if (gitOnly) {
+      throw new RenameError(
+        `Flow "${gitOnly.slug}" exists only in git so far (${gitOnly.path}, not synced yet); it can be renamed once its push is synced.`,
+        409,
+      );
+    }
     throw new RenameError(`No flow answers to "${request.ref}".`, 404);
   }
   const row = found.row;
@@ -217,15 +269,10 @@ export async function renameFlow(
   }
 
   // ---- validate the request against the same rules as creation ----------
-  const title = request.title?.trim();
-  if (title !== undefined) {
-    if (!title) throw new RenameError("The name cannot be empty.");
-    if (title.length > FLOW_NAME_MAX_LENGTH) {
-      throw new RenameError(
-        `The name is longer than ${FLOW_NAME_MAX_LENGTH} characters.`,
-      );
-    }
-  }
+  const title =
+    request.title === undefined
+      ? undefined
+      : cleanRenameTitle(request.title, FLOW_NAME_MAX_LENGTH);
   const newSlug = request.slug?.trim();
   const slugChanged = newSlug !== undefined && newSlug !== oldSlug;
   if (slugChanged) {
@@ -234,6 +281,8 @@ export async function renameFlow(
         `"${newSlug}" is not a valid file name: lowercase letters, digits and single dashes, up to 64 characters (it becomes flows/${newSlug}.yml).`,
       );
     }
+    const unsafe = unsafeSlugReason(newSlug);
+    if (unsafe) throw new RenameError(unsafe);
     // Taken by another flow's current slug OR by an old name it still
     // answers to — an old link must never start opening a different flow.
     const holder = await Flow.findOne({
