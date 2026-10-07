@@ -71,6 +71,28 @@ export interface RewriteResult {
 }
 
 /**
+ * Run a LINE-based rewrite over a file saved with CRLF line endings (a
+ * Windows checkout) as if it were LF, and put the CRLFs back. Without it
+ * every `\r` ended up inside the last token of a line, and the line-shape
+ * patterns (a list item, a key) silently matched nothing. A file that
+ * mixes endings goes through unchanged, so its bytes are never normalized.
+ */
+function crlfSafe<T extends RewriteResult>(
+  text: string,
+  rewrite: (lf: string) => T,
+): T {
+  const crlf = text.split("\r\n").length - 1;
+  if (crlf === 0 || crlf !== text.split("\n").length - 1) {
+    return rewrite(text);
+  }
+  const lf = text.replace(/\r\n/g, "\n");
+  if (lf.includes("\r")) return rewrite(text);
+  const out = rewrite(lf);
+  if (out.count === 0) return { ...out, text };
+  return { ...out, text: out.text.replace(/\n/g, "\r\n") };
+}
+
+/**
  * Rewrite `ref()` calls naming `oldName` to `newName`. `projectName` is the
  * dbt project's `name` (from dbt_project.yml); when given, the two-argument
  * form `ref('<projectName>', 'old')` is rewritten too.
@@ -203,6 +225,14 @@ export function rewriteNodeProperties(
   oldName: string,
   newName: string,
 ): RewriteResult {
+  return crlfSafe(text, lf => rewriteNodePropertiesLf(lf, oldName, newName));
+}
+
+function rewriteNodePropertiesLf(
+  text: string,
+  oldName: string,
+  newName: string,
+): RewriteResult {
   if (oldName === newName) return { text, count: 0 };
   const lines = text.split("\n");
   let inNodeList = false;
@@ -275,6 +305,14 @@ const BLOCK_HEADER_RE = /^[|>][0-9+-]*\s*(#.*)?$/;
  * is left alone and reported only when it actually names the model.
  */
 export function rewriteJobCommands(
+  text: string,
+  oldName: string,
+  newName: string,
+): JobRewriteResult {
+  return crlfSafe(text, lf => rewriteJobCommandsLf(lf, oldName, newName));
+}
+
+function rewriteJobCommandsLf(
   text: string,
   oldName: string,
   newName: string,
@@ -456,6 +494,16 @@ export function selectorsStillNaming(command: string, name: string): string[] {
  * `resourcePath` is project-relative (`models/marts/orders.sql`).
  */
 export function rewriteProjectModelConfig(
+  text: string,
+  resourcePath: string,
+  newName: string,
+): RewriteResult {
+  return crlfSafe(text, lf =>
+    rewriteProjectModelConfigLf(lf, resourcePath, newName),
+  );
+}
+
+function rewriteProjectModelConfigLf(
   text: string,
   resourcePath: string,
   newName: string,
