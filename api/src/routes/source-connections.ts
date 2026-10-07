@@ -678,6 +678,15 @@ sourceConnectionRoutes.openapi(
             if (!exists.ok) {
               return c.json({ success: false, error: exists.reason }, 400);
             }
+          } else if (
+            !isWorkspaceConnectorType(nextType) &&
+            !connectorRegistry.hasConnector(nextType)
+          ) {
+            // A built-in type no connector answers to: refused, like a create.
+            return c.json(
+              { success: false, error: `Unsupported source type: ${nextType}` },
+              400,
+            );
           }
           sourceConnection.type = nextType;
           // Re-pointing a connection at another connector is an explicit

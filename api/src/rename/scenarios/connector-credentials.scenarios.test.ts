@@ -1469,5 +1469,21 @@ describe("re-pointing a connection is the one explicit act", () => {
     expect((await SourceConnection.findById(c).lean())?.type).toBe("ws:zed-v2");
     await pushAndSync({ writes: folder("future", "F") });
     await assertCredentials("a folder later takes that name");
+
+    // A built-in type no connector answers to: refused too; a real one is
+    // an explicit re-point that unbinds it from every workspace connector.
+    for (const type of ["no-such-builtin", "../connectors/workspace"]) {
+      const bad = await req("PUT", `/${c}`, { type });
+      expect([type, bad.status]).toEqual([type, 400]);
+    }
+    expect((await SourceConnection.findById(c).lean())?.type).toBe("ws:zed-v2");
+    const builtin = await req("PUT", `/${c}`, { type: "stripe" });
+    expect(builtin.status).toBe(200);
+    const row2 = await SourceConnection.findById(c).lean();
+    expect([row2?.type, row2?.connectorDefinitionId]).toEqual([
+      "stripe",
+      undefined,
+    ]);
+    expected.delete(c);
   });
 });
