@@ -10,7 +10,17 @@
  * same hostile corpus. Change one, change the other.
  *
  * Dependency-free on purpose: the parity test imports this file from api.
+ * The one exception is apps (at the end): their rules are not copied at all
+ * — they live in @mako/schemas (app-names.ts), which the API's app-paths.ts
+ * uses too, so the "copy" is the same function; the parity test still pins
+ * the answers, so a server change that stops using it is caught.
  */
+import {
+  appNameProblem,
+  appTitleProblem,
+  normalizeAppName,
+} from "@mako/schemas";
+
 export type NamedObjectKind = "flow" | "dbt_job";
 
 /** api/src/rename/flow-rename.ts FLOW_NAME_MAX_LENGTH, dbt-job-rename.ts JOB_NAME_MAX_LENGTH. */
@@ -74,4 +84,28 @@ export function objectSlugError(
     return `"${slug}" looks like an object id, and ids resolve before names; choose another name.`;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Apps: a link (the folder name `/apps/<link>` is made of) and a name
+// ---------------------------------------------------------------------------
+
+export { normalizeAppName };
+
+/**
+ * Why a NEW app link would be refused, or null (server:
+ * app-paths.ts newAppSlugProblem). `raw` as typed; normalized here.
+ */
+export function appLinkError(raw: string): string | null {
+  return appNameProblem(normalizeAppName(raw), "link");
+}
+
+/** Why a new folder-of-apps name would be refused (server: newSegmentProblem). */
+export function appFolderNameError(raw: string): string | null {
+  return appNameProblem(normalizeAppName(raw), "folder");
+}
+
+/** Why an app name (title) would be refused (server: appTitleProblem). */
+export function appNameError(raw: string): string | null {
+  return appTitleProblem(normalizeAppName(raw));
 }

@@ -20,10 +20,10 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  appNameProblem,
-  appTitleProblem,
+  appLinkError,
+  appNameError,
   normalizeAppName,
-} from "@mako/schemas";
+} from "../../lib/object-name-rules";
 
 export interface AppRenameDialogProps {
   open: boolean;
@@ -88,15 +88,15 @@ export function AppRenameDialog({
     }
   }, [open, currentTitle, initialSlug]);
 
-  // The server's rules, in its words (@mako/schemas app-names.ts — the
-  // API checks every rename with the same functions): a link or name it
-  // would refuse is refused here as it is typed, and Rename stays off.
+  // The server's rules, in its words (lib/object-name-rules.ts, pinned to
+  // the API by name-rules-parity.test.ts): a link or name it would refuse
+  // is refused here as it is typed, and Rename stays off.
   const nextTitle = normalizeAppName(title);
   const nextSlug = normalizeAppName(slug);
   const titleChanged = nextTitle !== currentTitle && nextTitle !== "";
   const slugChanged = !linkLocked && nextSlug !== currentSlug;
-  const titleProblem = appTitleProblem(nextTitle);
-  const slugProblem = slugChanged ? appNameProblem(nextSlug, "link") : null;
+  const titleProblem = appNameError(title);
+  const slugProblem = slugChanged ? appLinkError(slug) : null;
   const canSubmit =
     !busy && !titleProblem && !slugProblem && (titleChanged || slugChanged);
 

@@ -16,17 +16,17 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { appNameProblem, normalizeAppName } from "@mako/schemas";
+import { appFolderNameError } from "../../lib/object-name-rules";
 
 /**
  * Why `name` cannot be a new folder name, or null when it can — the
- * server's own rule (`appNameProblem` in @mako/schemas, which the API's
- * app-paths.ts uses too), in the server's words: Unicode letters and digits
+ * server's own rule (lib/object-name-rules.ts appFolderNameError, pinned to
+ * the API by name-rules-parity.test.ts), in the server's words: Unicode letters and digits
  * included ("Café" is a folder here as it is on main), never a Windows
  * device name or an id look-alike.
  */
 export function folderNameProblem(name: string): string | null {
-  return appNameProblem(normalizeAppName(name), "folder");
+  return appFolderNameError(name);
 }
 
 /** {@link folderNameProblem} as a yes/no. */
