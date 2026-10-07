@@ -25,10 +25,19 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { appsGitOriginBase, appsGitOriginUrl } from "./config";
-import type { ChangedFile, GrepMatch, TreeEntry } from "./repository.service";
+import {
+  DEFAULT_BRANCH,
+  type ChangedFile,
+  type GrepMatch,
+  type TreeEntry,
+} from "./repository.service";
 import { mintGitToken } from "./git-token.service";
 import { loggers } from "../logging";
-import { catchUpCarryingDrafts, type CatchUpOutcome } from "./box-catch-up";
+import {
+  catchUpCarryingDrafts,
+  detachedDraftsNotice,
+  type CatchUpOutcome,
+} from "./box-catch-up";
 
 const logger = loggers.api("apps-box-clone");
 
@@ -1131,10 +1140,43 @@ export async function boxPull(
     });
     return null;
   }
-  // Nothing to catch up with (no upstream, or already contains it).
+  const upstream = await boxExec(
+    ctx,
+    `${boxGit(ctx, "rev-parse", "--verify", "-q", "@{u}")} >/dev/null`,
+    { timeoutMs: 30_000 },
+  );
+  if (upstream.exitCode !== 0) {
+    // No branch to follow — a detached HEAD, or a branch without an
+    // upstream: nothing is caught up and nothing is touched, as before.
+    // A detached box whose drafts sit in a folder main renamed is told so.
+    const detached = await detachedDraftsNotice(
+      ctx,
+      boxRoot(ctx),
+      DEFAULT_BRANCH,
+    ).catch(() => null);
+    logger.warn("Apps box pull did not merge", {
+      sessionKey: ctx.sessionKey,
+      said: "no upstream to catch up with (detached HEAD or untracked branch)",
+    });
+    if (!detached) return null;
+    const outcome: CatchUpOutcome = {
+      plain: true,
+      moved: [],
+      carried: [],
+      conflicted: [],
+      keptInPlace: [],
+      stranded: [],
+      failed: "detached HEAD",
+      renames: detached.renames,
+      message: detached.message,
+    };
+    await tellBoxOwner(ctx, detached.message, outcome);
+    return outcome;
+  }
+  // Nothing to catch up with: already contains the upstream.
   const behind = await boxExec(
     ctx,
-    `${boxGit(ctx, "rev-parse", "--verify", "-q", "@{u}")} >/dev/null && ! ${boxGit(ctx, "merge-base", "--is-ancestor", "@{u}", "HEAD")}`,
+    `! ${boxGit(ctx, "merge-base", "--is-ancestor", "@{u}", "HEAD")}`,
     { timeoutMs: 30_000 },
   );
   if (behind.exitCode !== 0) return null;
@@ -1178,7 +1220,11 @@ async function tellBoxOwner(
     draftsBranch: outcome.draftsBranch,
   });
   try {
-    const { patchBoxState } = await import("./box-state.service");
+    const { getBoxState, patchBoxState } = await import("./box-state.service");
+    // Said already (a detached box is re-checked on every pull): once.
+    if ((await getBoxState(ctx.sessionKey))?.notice?.message === message) {
+      return;
+    }
     await patchBoxState({
       workspaceId: ctx.sessionKey.slice(0, colon),
       userId: ctx.sessionKey.slice(colon + 1),
