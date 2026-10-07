@@ -63,6 +63,7 @@ import {
 } from "../dbt/dbt-working-tree.service";
 import {
   mentionsName,
+  projectConfigsLostByMove,
   refNameForDbtPath,
   rewriteJobCommands,
   rewriteNodeProperties,
@@ -402,6 +403,18 @@ export async function renameDbtFile(
   }
   let movedContent = sourceText;
 
+  if (oldModel && newModel) {
+    // A move to another folder: configs keyed by the old path stop applying.
+    const projectYml = await projectText("dbt_project.yml");
+    const lost = projectYml
+      ? projectConfigsLostByMove(projectYml, from, to)
+      : [];
+    if (lost.length > 0) {
+      warnings.push(
+        `dbt_project.yml configures ${from} through ${lost.map(c => `"${c}"`).join(", ")}; at ${to} ${lost.length === 1 ? "that no longer applies" : "those no longer apply"} (materialization, schema, tags…) — move the config or check the model.`,
+      );
+    }
+  }
   if (oldModel && !newModel) {
     warnings.push(
       `'${from}' was the model '${oldModel}'; '${to}' is not a model path, so ref('${oldModel}') calls, selectors and its schema entry were left as they are and will fail to resolve.`,

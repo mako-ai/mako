@@ -551,6 +551,89 @@ function rewriteProjectModelConfigLf(
   return { text: out.join("\n"), count };
 }
 
+/**
+ * The `dbt_project.yml` config blocks that applied to a model (or seed) at
+ * `fromPath` and will NOT apply at `toPath`. Under `models: <project>:`
+ * the keys mirror folders, so a config set on `staging:` (say `+schema`)
+ * or on the model's own key applies by PATH: moving the file to another
+ * folder silently drops it — a table becomes a view, a schema changes —
+ * and no rewrite can move a YAML block safely. Returned as `a > b` chains
+ * for a warning; empty when the folder does not change (a name change is
+ * handled by `rewriteProjectModelConfig`). Only keys that carry a `+config`
+ * directly count, so a folder key that merely nests others is no noise.
+ */
+export function projectConfigsLostByMove(
+  text: string,
+  fromPath: string,
+  toPath: string,
+): string[] {
+  const from = refResourceParts(fromPath);
+  const to = refResourceParts(toPath);
+  if (!from || !to || from.block !== to.block) return [];
+  if (
+    from.dirs.length === to.dirs.length &&
+    from.dirs.every((d, i) => d === to.dirs[i])
+  ) {
+    return [];
+  }
+  const oldPath = [...from.dirs, from.name];
+  const newPath = [...to.dirs, to.name];
+  const isPrefix = (chain: string[], of: string[]) =>
+    chain.length <= of.length && chain.every((k, i) => k === of[i]);
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  let inBlock = false;
+  const stack: Array<{ indent: number; key: string }> = [];
+  const configured = new Map<string, string[]>();
+  for (const line of lines) {
+    const topLevel = /^([A-Za-z_][\w-]*):\s*(#.*)?$/.exec(line);
+    if (topLevel) {
+      inBlock = topLevel[1] === from.block;
+      stack.length = 0;
+      continue;
+    }
+    if (!inBlock || line.trim() === "" || /^\s*#/.test(line)) continue;
+    const key = /^(\s+)(['"]?)([^\s'"#:][^'":]*?)\2:/.exec(line);
+    if (!key) continue;
+    const indent = key[1].length;
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
+    }
+    if (key[3].startsWith("+")) {
+      // A config on the key above it (project level excluded).
+      const chain = stack.slice(1).map(k => k.key);
+      if (chain.length > 0) configured.set(chain.join("\0"), chain);
+      continue;
+    }
+    stack.push({ indent, key: key[3] });
+    // `orders: {+materialized: table}` configures `orders` inline.
+    if (/:\s*\{.*\+/.test(line)) {
+      const chain = stack.slice(1).map(k => k.key);
+      if (chain.length > 0) configured.set(chain.join("\0"), chain);
+    }
+  }
+  const lost: string[] = [];
+  for (const chain of configured.values()) {
+    if (!isPrefix(chain, oldPath)) continue;
+    // The model's own key is renamed along with it (rewriteProjectModelConfig).
+    const after =
+      chain.length === oldPath.length
+        ? [...chain.slice(0, -1), to.name]
+        : chain;
+    if (!isPrefix(after, newPath)) lost.push(chain.join(" > "));
+  }
+  return lost;
+}
+
+/** `models/a/b.sql` → { block: models, dirs: [a], name: b }; null if not ref-able. */
+function refResourceParts(
+  path: string,
+): { block: string; dirs: string[]; name: string } | null {
+  const name = refNameForDbtPath(path);
+  if (!name) return null;
+  const segments = path.split("/");
+  return { block: segments[0], dirs: segments.slice(1, -1), name };
+}
+
 /** Does the text mention the name as a whole word (for "still mentions" warnings)? */
 export function mentionsName(text: string, name: string): boolean {
   return new RegExp(`(?<![\\w])${escapeRegExp(name)}(?![\\w])`).test(text);
