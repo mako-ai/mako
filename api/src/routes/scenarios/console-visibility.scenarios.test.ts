@@ -23,6 +23,8 @@ const who = vi.hoisted(() => ({
   id: "",
   role: "member" as string | null,
   members: [] as Array<{ userId: string }>,
+  /** Every query the (mocked) warehouse was asked to run. */
+  queries: [] as unknown[],
 }));
 // The console's query results are what an export streams: a marker row,
 // so a leak is visible (no real warehouse in this rig).
@@ -31,11 +33,14 @@ vi.mock("../../services/database-connection.service", async importOriginal => {
     await importOriginal<
       typeof import("../../services/database-connection.service")
     >();
-  const result = async () => ({
-    success: true,
-    data: [{ marker: "SECRET-RESULT" }],
-    rowCount: 1,
-  });
+  const result = async (_db: unknown, query: unknown) => {
+    who.queries.push(query);
+    return {
+      success: true,
+      data: [{ marker: "SECRET-RESULT" }],
+      rowCount: 1,
+    };
+  };
   return {
     ...actual,
     databaseConnectionService: new Proxy(actual.databaseConnectionService, {
@@ -700,6 +705,34 @@ describe("reads: nothing of a console reaches someone who cannot open it", () =>
       sha,
     });
     expect([403, 404]).toContain(r.status);
+  });
+
+  it("export runs what execute runs: the committed console, never an unsaved draft", async () => {
+    const w = await world();
+    const draft = await rig.api("PUT", `/consoles/${w.W._id}`, owner, {
+      content: "SELECT 'UNSAVED DRAFT'\n",
+    });
+    expect(draft.status).toBe(200);
+    expect((await rig.row(w.W._id))!.code).toContain("UNSAVED DRAFT");
+    who.queries.length = 0;
+    const exported = await rig.api(
+      "GET",
+      `/consoles/${w.W._id}/export?format=json`,
+      member,
+    );
+    expect(exported.status, JSON.stringify(exported.body)).toBe(200);
+    const executed = await rig.api(
+      "POST",
+      `/consoles/${w.W._id}/execute`,
+      member,
+      {},
+    );
+    expect(executed.status, JSON.stringify(executed.body)).toBe(200);
+    expect(who.queries).toHaveLength(2);
+    for (const q of who.queries) {
+      expect(String(q)).toContain("SECRET-W");
+      expect(String(q)).not.toContain("UNSAVED DRAFT");
+    }
   });
 
   it("a read-only member (workspace viewer role) can read W but never write or re-scope it", async () => {

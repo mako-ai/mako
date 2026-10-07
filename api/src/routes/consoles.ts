@@ -3115,6 +3115,13 @@ consoleRoutes.openapi(
 
       const startTime = Date.now();
 
+      // What execute runs, export runs: the console as committed (its file
+      // at main) — a dashboard built on a saved console must not start
+      // reading someone's unsaved draft. A console with no file yet (a
+      // draft, an unbound workspace) runs its row, as execute does.
+      const liveCode = await liveConsoleCode(workspaceId, consoleId);
+      if (liveCode) savedConsole.code = liveCode.code;
+
       let query: any = savedConsole.code;
       if (
         savedConsole.language === "mongodb" &&
