@@ -1064,6 +1064,8 @@ sourceConnectionRoutes.openapi(
           error.status,
         );
       }
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       logger.error("Connection probe failed", {
         workspaceId,
         connectionId: id,
@@ -1291,6 +1293,8 @@ sourceConnectionRoutes.openapi(
         data: entityData,
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       return c.json(
         {
           success: false,
@@ -1458,6 +1462,10 @@ sourceConnectionRoutes.openapi(
         return c.json({ success: false, error: "Decryption failed" }, 400);
       }
     } catch (error) {
+      // Its connector is gone or its type names another: nothing to reveal
+      // by — say how to re-bind, as every other route does.
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       logger.error("Reveal-secret endpoint error", { error });
       return c.json(
         {

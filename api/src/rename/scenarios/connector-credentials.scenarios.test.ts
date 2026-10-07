@@ -842,6 +842,22 @@ describe("laptop pushes (git endpoint → push sync)", () => {
     expect((await SourceConnection.findById(c1).lean())?.config).toEqual(
       before?.config,
     );
+    // Every route that would decrypt or run it says how to re-bind (409),
+    // and nothing secret is in any answer — the admin's reveal included.
+    auth.role = "admin";
+    for (const [method, url, b] of [
+      ["POST", `/${c1}/test`, undefined],
+      ["GET", `/${c1}/entities`, undefined],
+      ["POST", `/${c1}/probe`, { entity: "widgets" }],
+      ["POST", `/${c1}/reveal-secret`, { field: "apiKey" }],
+    ] as const) {
+      const res = await req(method, url, b);
+      const text = await res.text();
+      expect([url, res.status]).toEqual([url, 409]);
+      expect(JSON.parse(text)).toMatchObject({ code: "connector_binding" });
+      expect(text).not.toContain(expected.get(c1)!.secret);
+    }
+    auth.role = "member";
 
     // git revert: the same folder comes back — a NEW definition.
     await pushAndSync({ writes: folder("acme", "A") });
