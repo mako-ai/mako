@@ -678,6 +678,30 @@ describe("reads: nothing of a console reaches someone who cannot open it", () =>
     expect(asEditor.status).toBe(200);
   });
 
+  it("whoever can open a console reads its history: PW (seen through its workspace folder)", async () => {
+    const w = await world();
+    const content = await rig.api(
+      "GET",
+      `/consoles/content?id=${w.PW._id}`,
+      member,
+    );
+    expect(content.status).toBe(200);
+    const hist = await rig.api("GET", `/consoles/${w.PW._id}/history`, member);
+    expect(hist.status, JSON.stringify(hist.body)).toBe(200);
+    const sha = hist.body.commits![0].oid;
+    const v = await rig.api(
+      "GET",
+      `/consoles/${w.PW._id}/git/file-versions?sha=${sha}`,
+      member,
+    );
+    expect(v.status).toBe(200);
+    // Reading is not writing: no restore for a reader.
+    const r = await rig.api("POST", `/consoles/${w.PW._id}/restore`, member, {
+      sha,
+    });
+    expect([403, 404]).toContain(r.status);
+  });
+
   it("a read-only member (workspace viewer role) can read W but never write or re-scope it", async () => {
     const w = await world();
     const before = await visibility(w.W._id);

@@ -3605,10 +3605,16 @@ async function loadReadableConsole(
   // A console in the trash has no file: its path is free, and whatever
   // holds it now (another console, maybe one private to its owner) is not
   // its history.
+  // Whoever can OPEN it reads its history — a private console filed in a
+  // workspace folder is seen by the workspace through it (GET /content's
+  // rule): its history answered 404 to the very people reading it.
   if (
     !doc ||
     doc.is_deleted ||
-    !ConsoleManager.canRead(doc, user.id, memberRole)
+    !(
+      ConsoleManager.canRead(doc, user.id, memberRole) ||
+      (await consoleManager.canReadWithInheritance(doc, user.id))
+    )
   ) {
     return {
       errorResponse: c.json(
