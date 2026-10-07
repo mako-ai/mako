@@ -226,6 +226,8 @@ async function gitOnlyFlowByDerivedId(
 export async function renameFlow(
   ctx: RenameContext,
   request: RenameRequest,
+  /** Internal: the one retry after the row was brought level with main. */
+  converged = false,
 ): Promise<RenameResult> {
   const { workspaceId } = ctx;
   const found = await findFlowByRef(workspaceId, request.ref);
@@ -308,6 +310,31 @@ export async function renameFlow(
   await freshenBeforeMainWrite(workspaceId);
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) throw new RepoRequiredError();
+  const oldPath = flowFilePath(oldSlug);
+  let contents: string;
+  let oldOid: string;
+  try {
+    const blob = await readBlob(repoDir, head, oldPath);
+    if (blob.isBinary) throw new Error("binary");
+    contents = blob.contents;
+    oldOid = blob.oid; // git's id from the raw bytes, for the CAS below
+  } catch {
+    // The row may be behind its own file: a rename whose commit landed and
+    // whose row update did not (see below) leaves the file under its new
+    // name. Bring the row level the way every read does, then judge again —
+    // so retrying such a rename is safe, and answers with what is there.
+    if (!converged) {
+      await ensureFlowDerivedCache(row);
+      const moved = await Flow.findById(row._id).select("slug").lean();
+      if (moved?.slug && moved.slug !== oldSlug) {
+        return renameFlow(ctx, { ...request, ref: String(row._id) }, true);
+      }
+    }
+    throw new RenameError(
+      `${oldPath} is not at main (the flow's last push may not have synced, or the file was deleted); nothing was renamed.`,
+      409,
+    );
+  }
   if (slugChanged) {
     // A git-only file under the new slug (not synced yet) is taken too.
     try {
@@ -319,20 +346,6 @@ export async function renameFlow(
     } catch (error) {
       if (error instanceof RenameError) throw error;
     }
-  }
-  const oldPath = flowFilePath(oldSlug);
-  let contents: string;
-  let oldOid: string;
-  try {
-    const blob = await readBlob(repoDir, head, oldPath);
-    if (blob.isBinary) throw new Error("binary");
-    contents = blob.contents;
-    oldOid = blob.oid; // git's id from the raw bytes, for the CAS below
-  } catch {
-    throw new RenameError(
-      `${oldPath} is not at main (the flow's last push may not have synced, or the file was deleted); nothing was renamed.`,
-      409,
-    );
   }
   // Never rewrite a file that cannot be read back: the alias has to be
   // added to what is there, and "what is there" is unknown for a file that
@@ -422,34 +435,53 @@ export async function renameFlow(
   // Targeted update, never `save()` (a legacy row that no longer passes the
   // schema must still be renameable); then the derived-cache resync reads
   // the file back so the row's definition is exactly what was committed.
-  await Flow.updateOne(
-    { _id: row._id },
-    {
-      $set: {
-        slug: nextSlug,
-        name: nextName,
-        ...(aliases.length > 0 ? { aliases } : {}),
-        ...(slugChanged
-          ? {
-              lastRenameCommit: commit.commitOid,
-              lastRenameAt: new Date(),
-              // What the push-sync pairs a laptop move against while the
-              // guard holds: the blob this rename started from (it was on
-              // the mirror, so every instance has it) — or, when an earlier
-              // rename of this row has not settled yet, the one THAT
-              // started from.
-              renameFromBlobSha:
-                row.lastRenameCommit && row.renameFromBlobSha
-                  ? row.renameFromBlobSha
-                  : oldOid,
-            }
-          : {}),
-      },
-      ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
-    },
-  );
   const warnings: string[] = [];
-  const fresh = await Flow.findById(row._id);
+  let rowUpdated = true;
+  try {
+    await Flow.updateOne(
+      { _id: row._id },
+      {
+        $set: {
+          slug: nextSlug,
+          name: nextName,
+          ...(aliases.length > 0 ? { aliases } : {}),
+          ...(slugChanged
+            ? {
+                lastRenameCommit: commit.commitOid,
+                lastRenameAt: new Date(),
+                // What the push-sync pairs a laptop move against while the
+                // guard holds: the blob this rename started from (it was on
+                // the mirror, so every instance has it) — or, when an earlier
+                // rename of this row has not settled yet, the one THAT
+                // started from.
+                renameFromBlobSha:
+                  row.lastRenameCommit && row.renameFromBlobSha
+                    ? row.renameFromBlobSha
+                    : oldOid,
+              }
+            : {}),
+        },
+        ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
+      },
+    );
+  } catch (error) {
+    // The commit IS the rename (the file is the store): it happened. The row
+    // is brought level by the next read of this flow (the read paths pair a
+    // row with its moved file) or the push sync the mirror push triggers —
+    // same id, nothing torn down. Say so, rather than report a failure that
+    // invites a retry of something already done (a retry is safe anyway).
+    rowUpdated = false;
+    logger.error("Flow rename committed; its row update failed", {
+      workspaceId,
+      flowId: String(row._id),
+      commit: commit.commitOid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    warnings.push(
+      `The rename is committed (${commit.commitOid.slice(0, 8)}), but the flow's record could not be updated just now; it catches up on the next read or sync, with the same id. Retrying is safe.`,
+    );
+  }
+  const fresh = rowUpdated ? await Flow.findById(row._id) : null;
   if (fresh) {
     const status = await ensureFlowDerivedCache(fresh);
     if (status === "invalid") {

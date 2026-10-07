@@ -299,10 +299,16 @@ async function serviceRename(request: {
   ref: string;
   title?: string;
   slug?: string;
-}): Promise<{ ok: boolean; status?: number; message?: string }> {
+}): Promise<{
+  ok: boolean;
+  status?: number;
+  message?: string;
+  warnings?: string[];
+  commit?: string;
+}> {
   try {
-    await renameObject(ctx(), "dbt_job", request);
-    return { ok: true };
+    const result = await renameObject(ctx(), "dbt_job", request);
+    return { ok: true, warnings: result.warnings, commit: result.commit };
   } catch (error) {
     if (error instanceof RenameError) {
       return { ok: false, status: error.status, message: error.message };
@@ -572,6 +578,27 @@ describe("hostile names", () => {
 // ---- partial failures ------------------------------------------------------
 
 describe("partial failure between the commit and the row", () => {
+  it("the row write fails after the commit: the UI route answers 200 with the warning, and an immediate retry is a safe no-op (no second commit, row level)", async () => {
+    await seedJob("keeper", "Keeper");
+    const row = await seedJob("a", "A");
+    const spy = vi.spyOn(DbtJob, "updateOne").mockImplementationOnce((() => {
+      throw new Error("mongo write failed");
+    }) as never);
+    const first = await restRename({ ref: "a", slug: "b" });
+    spy.mockRestore();
+    expect(first.status).toBe(200);
+    const result = first.json.result as { warnings: string[]; id: string };
+    expect(result.id).toBe(String(row._id));
+    expect(result.warnings.join(" ")).toMatch(/Retrying is safe/);
+    const commits = await commitCountOf(WS);
+    const again = await restRename({ ref: "a", slug: "b" });
+    expect(again.status).toBe(200);
+    expect(await commitCountOf(WS)).toBe(commits);
+    const after = await DbtJob.findById(row._id).lean();
+    expect(after?.slug).toBe("b");
+    expect(after?.aliases).toEqual(["a"]);
+  });
+
   it("the commit lands and the row update throws: the list, GET and the next sync all converge on the same job", async () => {
     await seedJob("keeper", "Keeper");
     const row = await seedJob("a", "A");
@@ -581,8 +608,13 @@ describe("partial failure between the commit and the row", () => {
     }) as never);
     const out = await serviceRename({ ref: "a", slug: "b" });
     spy.mockRestore();
-    expect(out.ok).toBe(false);
-    expect(out.message).toMatch(/mongo write failed/);
+    // The rename DID happen (the file is the store): a success that says
+    // the record catches up, never a failure inviting a retry.
+    expect(out.ok).toBe(true);
+    expect(out.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(out.warnings?.join(" ")).toMatch(
+      /rename is committed.*catches up on the next read or sync.*Retrying is safe/,
+    );
     expect(await pathsAtMain(WS, "dbt/jobs")).toEqual([
       "dbt/jobs/b.yml",
       "dbt/jobs/keeper.yml",

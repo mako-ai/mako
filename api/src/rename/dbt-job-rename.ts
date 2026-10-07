@@ -46,6 +46,7 @@ import {
   ensureJobDerivedCache,
   freeDerivedJobId,
   listJobDefinitionsAtMain,
+  loadLiveJobs,
 } from "../dbt/dbt-config.service";
 import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
@@ -219,6 +220,8 @@ async function gitOnlyJobByDerivedId(
 export async function renameDbtJob(
   ctx: RenameContext,
   request: RenameRequest,
+  /** Internal: the one retry after the row was brought level with main. */
+  converged = false,
 ): Promise<RenameResult> {
   const { workspaceId } = ctx;
   const project = await projectOf(workspaceId);
@@ -307,6 +310,30 @@ export async function renameDbtJob(
   await freshenBeforeMainWrite(workspaceId);
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) throw new RepoRequiredError();
+  const oldPath = jobFilePath(oldSlug);
+  let contents: string;
+  let oldOid: string;
+  try {
+    const blob = await readBlob(repoDir, head, oldPath);
+    if (blob.isBinary) throw new Error("binary");
+    contents = blob.contents;
+    oldOid = blob.oid; // git's id from the raw bytes, for the CAS below
+  } catch {
+    // The row may be behind its own file (a rename committed whose row
+    // update failed, see below): bring it level as the job list does, then
+    // judge again — retrying such a rename is safe.
+    if (!converged) {
+      await loadLiveJobs(project);
+      const moved = await DbtJob.findById(row._id).select("slug").lean();
+      if (moved?.slug && moved.slug !== oldSlug) {
+        return renameDbtJob(ctx, { ...request, ref: String(row._id) }, true);
+      }
+    }
+    throw new RenameError(
+      `${oldPath} is not at main (the job's last push may not have synced, or the file was deleted); nothing was renamed.`,
+      409,
+    );
+  }
   if (slugChanged) {
     try {
       await readBlob(repoDir, head, jobFilePath(newSlug));
@@ -317,20 +344,6 @@ export async function renameDbtJob(
     } catch (error) {
       if (error instanceof RenameError) throw error;
     }
-  }
-  const oldPath = jobFilePath(oldSlug);
-  let contents: string;
-  let oldOid: string;
-  try {
-    const blob = await readBlob(repoDir, head, oldPath);
-    if (blob.isBinary) throw new Error("binary");
-    contents = blob.contents;
-    oldOid = blob.oid; // git's id from the raw bytes, for the CAS below
-  } catch {
-    throw new RenameError(
-      `${oldPath} is not at main (the job's last push may not have synced, or the file was deleted); nothing was renamed.`,
-      409,
-    );
   }
   // A file that does not parse cannot have an alias added to it without
   // guessing at its contents: refuse rather than overwrite.
@@ -407,34 +420,51 @@ export async function renameDbtJob(
     throw error;
   }
 
-  await DbtJob.updateOne(
-    { _id: row._id },
-    {
-      $set: {
-        slug: nextSlug,
-        name: nextName,
-        ...(aliases.length > 0 ? { aliases } : {}),
-        ...(slugChanged
-          ? {
-              lastRenameCommit: commit.commitOid,
-              lastRenameAt: new Date(),
-              // What the push-sync pairs a laptop move against while the
-              // guard holds: the blob this rename started from (it was on
-              // the mirror, so every instance has it) — or, when an earlier
-              // rename of this row has not settled yet, the one THAT
-              // started from.
-              renameFromBlobSha:
-                row.lastRenameCommit && row.renameFromBlobSha
-                  ? row.renameFromBlobSha
-                  : oldOid,
-            }
-          : {}),
-      },
-      ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
-    },
-  );
   const warnings: string[] = [];
-  const fresh = await DbtJob.findById(row._id);
+  let rowUpdated = true;
+  try {
+    await DbtJob.updateOne(
+      { _id: row._id },
+      {
+        $set: {
+          slug: nextSlug,
+          name: nextName,
+          ...(aliases.length > 0 ? { aliases } : {}),
+          ...(slugChanged
+            ? {
+                lastRenameCommit: commit.commitOid,
+                lastRenameAt: new Date(),
+                // What the push-sync pairs a laptop move against while the
+                // guard holds: the blob this rename started from (it was on
+                // the mirror, so every instance has it) — or, when an earlier
+                // rename of this row has not settled yet, the one THAT
+                // started from.
+                renameFromBlobSha:
+                  row.lastRenameCommit && row.renameFromBlobSha
+                    ? row.renameFromBlobSha
+                    : oldOid,
+              }
+            : {}),
+        },
+        ...(aliases.length === 0 ? { $unset: { aliases: 1 } } : {}),
+      },
+    );
+  } catch (error) {
+    // The commit IS the rename: it happened. The next job list (which pairs
+    // a row with its moved file) or push sync brings the row level — same
+    // id, schedule and history. Say so; a retry is safe.
+    rowUpdated = false;
+    logger.error("dbt job rename committed; its row update failed", {
+      workspaceId,
+      jobId: String(row._id),
+      commit: commit.commitOid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    warnings.push(
+      `The rename is committed (${commit.commitOid.slice(0, 8)}), but the job's record could not be updated just now; it catches up on the next read or sync, with the same id. Retrying is safe.`,
+    );
+  }
+  const fresh = rowUpdated ? await DbtJob.findById(row._id) : null;
   if (fresh) {
     try {
       await ensureJobDerivedCache(
