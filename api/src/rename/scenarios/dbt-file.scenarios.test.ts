@@ -18,6 +18,7 @@
  * Real bare repos (APPS_GIT_ROOT in a temp dir) + mongodb-memory-server.
  */
 import fs from "node:fs/promises";
+import yaml from "js-yaml";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -851,6 +852,80 @@ describe("ref / selector / properties / unit_tests / dbt_project rewrites", () =
     expect(await fileAt("models/uses_seed.sql")).toBe(
       "select * from {{ ref('country_codes') }}\n",
     );
+  });
+
+  it.each([
+    "true",
+    "false",
+    "null",
+    "yes",
+    "no",
+    "on",
+    "off",
+    "~",
+    "123",
+    "1e3",
+    "0x1F",
+    "2026-10-06",
+    ".5",
+  ])(
+    "renamed to %s.sql: properties, unit_tests, dbt_project and job selectors read back as that exact string",
+    async name => {
+      await seedProject({
+        "models/schema.yml":
+          "version: 2\nmodels:\n  - name: orders\n    description: d\nunit_tests:\n  - name: t\n    model: orders\n    given: []\n",
+        "jobs/daily.yml":
+          "name: Daily\nenvironment: dev\ncommands:\n  - dbt run --select orders+\nenabled: true\n",
+      });
+      await renameDbtFile(member(), {
+        from: "models/orders.sql",
+        to: `models/${name}.sql`,
+      });
+      const schema = yaml.load((await fileAt("models/schema.yml"))!) as {
+        models: Array<{ name: unknown }>;
+        unit_tests: Array<{ model: unknown }>;
+      };
+      expect(schema.models[0].name).toBe(name);
+      expect(schema.unit_tests[0].model).toBe(name);
+      const project = (await fileAt("dbt_project.yml"))!;
+      expect(project).toContain(`    ${JSON.stringify(name)}:\n`);
+      const job = yaml.load((await fileAt("jobs/daily.yml"))!) as {
+        commands: unknown[];
+      };
+      expect(job.commands).toEqual([`dbt run --select ${name}+`]);
+      expect(await fileAt("models/mart.sql")).toBe(
+        `select * from {{ ref('${name}') }}\n`,
+      );
+    },
+  );
+
+  it("a rewrite that would still not read back as text is refused (409), nothing committed", async () => {
+    await seedProject({
+      // A properties file the line edit cannot keep a string in: the
+      // entry's name sits inside a flow mapping on the item line.
+      "models/schema.yml":
+        "version: 2\nmodels:\n  - name: orders\n    tests: [{name: orders}]\n",
+    });
+    const refs = await import("../../dbt/dbt-ref-rewrite");
+    const spy = vi
+      .spyOn(refs, "rewriteNodeProperties")
+      .mockImplementation((text, oldName, newName) => ({
+        text: text.replace(`- name: ${oldName}`, `- name: ${newName}`),
+        count: 1,
+      }));
+    const commits = await commitsOn();
+    await expect(
+      renameDbtFile(member(), {
+        from: "models/orders.sql",
+        to: "models/true.sql",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("YAML does not read as plain text"),
+    });
+    spy.mockRestore();
+    expect(await commitsOn()).toBe(commits);
+    expect(await fileAt("models/orders.sql")).toBe(ORDERS_SQL);
   });
 
   it("moving a model to another folder says which dbt_project.yml configs stop applying", async () => {

@@ -267,7 +267,7 @@ function rewriteNodePropertiesLf(
       const m = modelRe.exec(line);
       if (!m || line.search(/\S/) !== keyIndent) return line;
       count++;
-      return `${m[1]}${m[2]}${newName}${m[2]}${m[3]}`;
+      return `${m[1]}${yamlScalar(newName, m[2])}${m[3]}`;
     }
     if (!inNodeList) return line;
     const item = /^(\s*)-\s/.exec(line);
@@ -276,7 +276,7 @@ function rewriteNodePropertiesLf(
     const m = nameRe.exec(line);
     if (!m) return line;
     count++;
-    return `${m[1]}${m[2]}${newName}${m[2]}${m[3]}`;
+    return `${m[1]}${yamlScalar(newName, m[2])}${m[3]}`;
   });
   return { text: out.join("\n"), count };
 }
@@ -546,7 +546,7 @@ function rewriteProjectModelConfigLf(
     }
     count++;
     stack[stack.length - 1].key = newName;
-    return `${key[1]}${key[2]}${newName}${key[2]}:${key[4]}`;
+    return `${key[1]}${yamlScalar(newName, key[2])}:${key[4]}`;
   });
   return { text: out.join("\n"), count };
 }
@@ -632,6 +632,82 @@ function refResourceParts(
   if (!name) return null;
   const segments = path.split("/");
   return { block: segments[0], dirs: segments.slice(1, -1), name };
+}
+
+/**
+ * Would a YAML reader take `value`, written bare, as something other than
+ * this exact string? Both readers that matter are asked: js-yaml (YAML 1.2,
+ * what Mako parses with — `1e3` is a number there) and PyYAML (YAML 1.1,
+ * what dbt parses with — `yes`, `on`, `0o17`, `1_000`, `1:30` are not
+ * strings there). Conservative on purpose: anything starting like a number
+ * is quoted, which costs nothing for a name.
+ */
+export function needsYamlQuotes(value: string): boolean {
+  if (value === "" || value !== value.trim()) return true;
+  // YAML 1.1 booleans and nulls (PyYAML), in any case; `~`.
+  if (/^(y|n|yes|no|on|off|true|false|null|~)$/i.test(value)) return true;
+  // Numbers, dates, timestamps, sexagesimals, .5, -1, +1, .inf, .nan.
+  if (/^[-+.]?[0-9]/.test(value) || /^[-+]?\.(inf|nan)$/i.test(value)) {
+    return true;
+  }
+  // Indicators that start or change a node, merge keys, `key: value`
+  // and ` #comment` inside.
+  if (/^[-?:,[\]{}#&*!|>'"%@`<=]/.test(value)) return true;
+  if (/: |:$| #|\t/.test(value)) return true;
+  try {
+    return yaml.load(value) !== value;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * `value` as a YAML scalar that every reader takes as exactly that string:
+ * bare when that is unambiguous, else quoted — in the quotes the author
+ * used (`'` or `"`), or double quotes when the old value was bare. The
+ * old value's quoting never decides whether the new one is safe bare.
+ */
+export function yamlScalar(value: string, quote: string = ""): string {
+  if (quote === "'") return `'${value.replace(/'/g, "''")}'`;
+  if (quote === '"' || needsYamlQuotes(value)) return JSON.stringify(value);
+  return value;
+}
+
+/**
+ * After a rewrite that wrote `newName` as a scalar `scalars` times: does
+ * the YAML still parse, and do exactly that many more STRING scalars equal
+ * `newName` than before? A name a reader takes as a boolean, a number or a
+ * date — the thing quoting prevents — fails this, and the caller refuses
+ * rather than commit it. Keys are covered by quoting (js-yaml stringifies
+ * keys, so a bare `true:` key cannot be told from `"true":` here).
+ */
+export function renamedScalarsAreStrings(
+  before: string,
+  after: string,
+  newName: string,
+  scalars: number,
+): boolean {
+  if (scalars === 0) return true;
+  const count = (text: string): number | null => {
+    let doc: unknown;
+    try {
+      doc = yaml.load(text);
+    } catch {
+      return null;
+    }
+    let n = 0;
+    const walk = (v: unknown): void => {
+      if (v === newName) n++;
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === "object") Object.values(v).forEach(walk);
+    };
+    walk(doc);
+    return n;
+  };
+  const was = count(before);
+  const now = count(after);
+  if (now === null) return false;
+  return was === null ? now >= scalars : now - was === scalars;
 }
 
 /** Does the text mention the name as a whole word (for "still mentions" warnings)? */
