@@ -342,6 +342,13 @@ export async function ensureFlowsDerivedCache(
       changed = true;
     }
   }
+  // Then, as the sync orders it, a file that moved: the row follows it.
+  if (orphaned(defs, rows).length > 0) {
+    if (await rekeyMovedFlowsForRead(workspaceId, repoDir)) {
+      rows = await Flow.find({ workspaceId });
+      changed = true;
+    }
+  }
   if (!flowIndexDrift(defs, rows)) return changed ? "resynced" : "ok";
   const bySlug = new Map<string, IFlow>();
   for (const row of rows) {
@@ -480,6 +487,13 @@ export async function loadLiveFlowById(
         if (fresh) current = fresh;
         def = defs.find(item => item.slug === current.slug);
       }
+    }
+    if (!def && (await rekeyMovedFlowsForRead(workspaceId, repoDir))) {
+      // Its file moved and the row was not re-keyed yet (see
+      // rekeyMovedFlowsForRead): the same flow under its new name.
+      const fresh = await Flow.findById(current._id);
+      if (fresh) current = fresh;
+      def = defs.find(item => item.slug === current.slug);
     }
     if (def && current.lastRenameCommit) {
       // Another file holding the row's new name is not its file (see
@@ -675,6 +689,15 @@ export async function ensureFlowDerivedCache(flow: {
           return ensureFlowDerivedCache(settled);
         }
       }
+    }
+  }
+  if (blob === null && (await rekeyMovedFlowsForRead(workspaceId, repoDir))) {
+    // Its file moved and the row was not re-keyed yet (a crash between a
+    // rename's commit and its row update, a laptop move not synced yet):
+    // judged where the file is now.
+    const moved = await Flow.findById(flow._id);
+    if (moved && moved.slug !== flow.slug) {
+      return ensureFlowDerivedCache(moved);
     }
   }
   if (blob === null) {
@@ -1321,6 +1344,60 @@ async function settleRenameGuards(args: {
     return;
   }
   for (const row of guarded) await settleFlowRenameGuard(row, args);
+}
+
+/**
+ * The READ paths' answer to a row whose file is not at main here while a
+ * file with no row is: the push sync's own pairing (`rekeyRenamedFlows`),
+ * on this tree. A rename whose commit landed but whose row update did not
+ * (a crash or a failed write between the two), or a laptop `git mv` read
+ * before its push sync ran, is then the same flow under its new name — its
+ * own id, its runs not refused — instead of a git-only stand-in with
+ * another id until some later push. Only on a tree verified as the
+ * mirror's main (as the read-path settle step), and it only ever re-keys:
+ * nothing is created or torn down here. True when a row was re-keyed.
+ */
+async function rekeyMovedFlowsForRead(
+  workspaceId: string,
+  repoDir: string,
+): Promise<boolean> {
+  try {
+    const { commit: head, files } = await readFlowFilesAtMain(workspaceId, {
+      freshen: false,
+    });
+    if (!head || files.length === 0) return false;
+    // Nothing to pair (and no mirror round trip) unless a row lacks its file
+    // AND a file lacks its row — a parked or doomed row alone is not a move.
+    const fileSlugs = new Set(
+      files.map(file => slugFromFlowFilePath(file.path)).filter(Boolean),
+    );
+    const rows = await Flow.find({ workspaceId, slug: { $exists: true } })
+      .select("slug")
+      .lean();
+    const rowSlugs = new Set(rows.map(row => row.slug));
+    if (
+      !rows.some(row => row.slug && !fileSlugs.has(row.slug)) ||
+      ![...fileSlugs].some(slug => slug && !rowSlugs.has(slug))
+    ) {
+      return false;
+    }
+    const treeIsCurrent = currentTreeCheck(workspaceId, head);
+    if (!(await treeIsCurrent())) return false;
+    const pairs = await rekeyRenamedFlows({
+      workspaceId,
+      repoDir,
+      head,
+      files,
+      treeIsCurrent,
+    });
+    return pairs.length > 0;
+  } catch (error) {
+    logger.warn("Could not pair a moved flow on a read", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }
 
 /**
