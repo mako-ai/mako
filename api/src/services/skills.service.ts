@@ -303,9 +303,13 @@ export async function renameSkill(
   | { success: false; status: 400 | 404 | 409; error: string }
 > {
   const trimmed = ref.trim();
+  // Every ref `resolve` accepts names the skill here too — an id, the
+  // current name, an alias, or a name only git history knows (a bare
+  // laptop `git mv`) — so an old link that opens the skill can rename it.
   const existing =
     (await findSkillById(workspaceId, trimmed)) ??
-    (await findSkill(workspaceId, trimmed));
+    (await findSkill(workspaceId, trimmed)) ??
+    (await resolveSkillRefThroughHistory(workspaceId, trimmed))?.skill;
   if (!existing) {
     return { success: false, status: 404, error: `skill "${ref}" not found` };
   }
