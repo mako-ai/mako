@@ -77,7 +77,6 @@ import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
 import { findRenamedPath } from "./git-renames";
 import { isUtf8Text } from "../apps/text-bytes";
-import { caseTwinOf } from "../apps/git";
 import {
   RenameError,
   type RenameContext,
@@ -131,8 +130,81 @@ export function isSafeDbtPath(path: string): boolean {
     path.length < 1024 &&
     !path.startsWith("/") &&
     !path.includes("\\") &&
-    !path.split("/").some(seg => seg === "" || seg === ".." || seg === ".git")
+    // Control characters (NUL, newline, tab, DEL): git refuses some, every
+    // checkout mangles the rest.
+    ![...path].some(ch => ch.charCodeAt(0) < 0x20 || ch === "\u007f") &&
+    !path
+      .split("/")
+      .some(seg => seg === "" || seg === "." || seg === ".." || seg === ".git")
   );
+}
+
+/** Windows device names, with or without an extension (`CON`, `aux.sql`). */
+const RESERVED_SEGMENT = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+
+/**
+ * Why a NEW path (a rename's target) would be a file some checkout cannot
+ * hold, or one that cannot be told apart from another by looking at it —
+ * or null when it is fine. Only targets are checked: a file that already
+ * has such a name must stay renamable, that is how it gets fixed.
+ */
+export function unportableDbtPathReason(path: string): string | null {
+  for (const seg of path.split("/")) {
+    if (Buffer.byteLength(seg, "utf8") > 255) {
+      return `"${seg.slice(0, 40)}…" is longer than the 255 bytes a file name may have`;
+    }
+    if (/[<>:"|?*]/.test(seg)) {
+      return `"${seg}" contains a character Windows does not allow in a file name (< > : " | ? *)`;
+    }
+    if (/[ .]$/.test(seg) || /^ /.test(seg)) {
+      return `"${seg}" starts or ends with a space, or ends with a dot — Windows strips those, and the name would change on checkout`;
+    }
+    if (RESERVED_SEGMENT.test(seg)) {
+      return `"${seg}" is a reserved device name on Windows`;
+    }
+    // Zero-width and bidirectional controls: a name that LOOKS like another.
+    if (
+      /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/.test(seg)
+    ) {
+      return `"${seg}" contains an invisible or text-direction character, so it would look like a different name`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The file or folder in `taken` (or above one) that `to` cannot be told
+ * apart from on macOS or Windows: same letters in another case, or the same
+ * text in another Unicode normalization (é as U+00E9 vs e + U+0301 — APFS
+ * and NTFS treat the two as one name). Never a path that IS `to`'s own
+ * prefix (a folder it moves into).
+ */
+function indistinguishableTwinOf(
+  taken: ReadonlySet<string>,
+  to: string,
+): string | undefined {
+  const fold = (p: string) => p.normalize("NFC").toLowerCase();
+  const known = new Map<string, string>();
+  for (const path of taken) {
+    const parts = path.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const prefix = parts.slice(0, i).join("/");
+      if (!known.has(fold(prefix))) known.set(fold(prefix), prefix);
+    }
+  }
+  const exact = new Set(
+    [...taken].flatMap(p =>
+      p.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/")),
+    ),
+  );
+  const segments = to.split("/");
+  for (let i = segments.length; i >= 1; i--) {
+    const prefix = segments.slice(0, i).join("/");
+    if (exact.has(prefix)) continue;
+    const twin = known.get(fold(prefix));
+    if (twin !== undefined) return twin;
+  }
+  return undefined;
 }
 
 export function dbtFileUrl(projectId: string, path: string): string {
@@ -272,6 +344,8 @@ export async function renameDbtFile(
     throw new RenameError("Invalid from/to path", 400);
   }
   if (from === to) throw new RenameError("The new path is the old path", 400);
+  const unportable = unportableDbtPathReason(to);
+  if (unportable) throw new RenameError(`Invalid path: ${unportable}.`, 400);
   assertMayWriteDbt(ctx);
   const project = await findDbtProject(ctx.workspaceId, input.projectId);
   if (!project) throw new RenameError("dbt project not found", 404);
@@ -332,10 +406,10 @@ export async function renameDbtFile(
   // file's OWN case change is a plain git mv: it is not in `others`, and
   // neither is a folder only it was in.
   const others = new Set([...modeByPath.keys()].filter(p => p !== from));
-  const twin = caseTwinOf(others, to);
+  const twin = indistinguishableTwinOf(others, to);
   if (twin) {
     throw new RenameError(
-      `"${twin}" already exists, and "${to}" differs from it only in upper/lower case — a checkout on macOS or Windows cannot tell the two apart.`,
+      `"${twin}" already exists, and "${to}" differs from it only in upper/lower case (or Unicode normalization) — a checkout on macOS or Windows cannot tell the two apart.`,
       409,
     );
   }
