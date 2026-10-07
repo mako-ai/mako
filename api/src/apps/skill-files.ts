@@ -23,6 +23,7 @@
  * repo lives in workspace-skills.service.ts.
  */
 import yaml from "js-yaml";
+import { yamlScalar } from "../rename/yaml-name-aliases";
 
 export const SKILLS_DIR = "skills";
 export const SKILL_FILE_GLOB = `${SKILLS_DIR}/*/SKILL.md`;
@@ -110,9 +111,15 @@ export function editSkillFrontMatter(
   if (close < 0) return null;
   const fm = lines.slice(1, close);
 
+  // Every value written goes through yamlScalar: a name or an old name
+  // like `2026`, `true`, `no`, `null` or `012` written bare is a number, a
+  // boolean or null to a YAML reader — the re-parse below then refused the
+  // edit ("could not be edited in place") and the rename with it.
   if (edit.name !== undefined) {
+    const name = yamlScalar(edit.name);
+    if (name === null) return null;
     const at = fm.findIndex(l => /^name:/.test(l));
-    const line = `name: ${edit.name}`;
+    const line = `name: ${name}`;
     if (at >= 0) fm[at] = line;
     else fm.unshift(line);
   }
@@ -128,7 +135,9 @@ export function editSkillFrontMatter(
       fm.splice(at, end - at);
     }
     if (edit.aliases.length > 0) {
-      fm.push(`aliases: [${edit.aliases.join(", ")}]`);
+      const scalars = edit.aliases.map(alias => yamlScalar(alias));
+      if (scalars.some(scalar => scalar === null)) return null;
+      fm.push(`aliases: [${scalars.join(", ")}]`);
     }
   }
   const result = ["---", ...fm, ...lines.slice(close)].join(nl);

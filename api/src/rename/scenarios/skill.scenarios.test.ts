@@ -28,6 +28,7 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
+import yaml from "js-yaml";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -570,6 +571,45 @@ describe("concurrency and partial failure", () => {
     });
     expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(head);
     expect(await resolveName("fragile")).toBe("fragile");
+  });
+});
+
+// ── Names YAML would read as something else ─────────────────────────
+
+describe("names YAML would read as a number, a date, a boolean or null", () => {
+  it("2026 → (2026-10-06 refused) → true → no → null → 1e3 → 0x1f → 012: the file parses, aliases are exact strings, every old name opens it", async () => {
+    await seedSkill("base");
+    const chain = ["2026", "true", "no", "null", "1e3", "0x1f", "012"];
+    let current = "base";
+    const old: string[] = [];
+    for (const to of chain) {
+      if (to === "true") {
+        // Not a skill name at all (a dash): refused, nothing moves.
+        await expect(rename(current, "2026-10-06")).rejects.toMatchObject({
+          status: 400,
+        });
+      }
+      const r = await rename(current, to);
+      expect(r.after.slug).toBe(to);
+      old.push(current);
+      current = to;
+      const text = (await fileAt(skillFilePath(current)))!;
+      const fm = yaml.load(/^---\n([\s\S]*?)\n---/.exec(text)![1]) as {
+        name: unknown;
+        aliases: unknown[];
+      };
+      expect([to, fm.name]).toEqual([to, to]);
+      expect(fm.aliases.every(a => typeof a === "string")).toBe(true);
+      expect([...fm.aliases].sort()).toEqual([...old].sort());
+      invalidateSkillCatalog(WS);
+      for (const name of old) {
+        expect([name, await resolveName(name)]).toEqual([name, current]);
+      }
+    }
+    expect(await loadSkill(WS, "2026")).toMatchObject({
+      success: true,
+      skill: { name: "012" },
+    });
   });
 });
 
