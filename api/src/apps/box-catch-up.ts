@@ -41,6 +41,20 @@ import {
   type SandboxExecContext,
 } from "./sandbox/provider";
 
+/** Why an untracked draft could not be put back as it was. */
+export type StrandedReason =
+  /** Both its new place and its old place are taken. */
+  | "taken"
+  /** A symbolic link whose target is absolute or leaves the repository. */
+  | "escaping-link"
+  /** A folder on its way is a symbolic link: never written through. */
+  | "linked-folder"
+  /** A nested repository (git records only a pointer) or another entry
+   *  git cannot carry; it is left where it was. */
+  | "unsupported"
+  /** Writing it failed. */
+  | "write-failed";
+
 /** What a catch-up did with the drafts (for the message, and for tests). */
 export interface CatchUpOutcome {
   /** The plain merge ran (no draft was in a renamed folder), as before. */
@@ -55,6 +69,8 @@ export interface CatchUpOutcome {
   keptInPlace: string[];
   /** Untracked drafts on the branch only: both paths are taken. */
   stranded: string[];
+  /** Why each stranded path was not put back (see describe). */
+  strandedWhy?: Record<string, StrandedReason>;
   /** The branch holding every draft, when anything could not be carried. */
   draftsBranch?: string;
   /** The catch-up could not happen (its own merge failed); drafts restored. */
@@ -148,6 +164,28 @@ export function parsePorcelainZ(out: string): StatusEntry[] {
 }
 
 type GitOut = (...args: string[]) => Promise<string>;
+
+/**
+ * Does a symbolic link at `at` (repo-relative) pointing to `target` stay
+ * inside the repository? An absolute target, or a relative one that climbs
+ * above the repo root, does not — it is never recreated. Pure: the target
+ * is judged as text, never followed.
+ */
+export function linkStaysInside(at: string, target: string): boolean {
+  if (!target || target.startsWith("/") || target.includes("\0")) return false;
+  const parts = at.split("/").slice(0, -1);
+  for (const seg of target.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return false;
+      parts.pop();
+    } else {
+      parts.push(seg);
+    }
+  }
+  // Pointing at .git (or into it) is pointing at the repository's guts.
+  return parts[0] !== ".git";
+}
 
 /**
  * Folders main renamed since the box's HEAD forked from `upstream`: old →
@@ -248,7 +286,7 @@ async function moveIgnoredLeftovers(
     if (r.from.split("/").length !== r.to.split("/").length) continue;
     // Only a folder holding nothing git sees (ignored files alone) moves.
     const listed = await exec(
-      `cd ${sh(root)} && [ -d ${sh(r.from)} ] && git ls-files -z --cached --others --exclude-standard -- ${sh(r.from)} | head -c 1 | wc -c`,
+      `cd ${sh(root)} && [ -d ${sh(r.from)} ] && [ ! -L ${sh(r.from)} ] && git ls-files -z --cached --others --exclude-standard -- ${sh(r.from)} | head -c 1 | wc -c`,
     );
     if (listed.exitCode !== 0 || listed.stdout.trim() !== "0") continue;
     const entries = await exec(`cd ${sh(`${root}/${r.from}`)} && ls -A1`);
@@ -256,7 +294,9 @@ async function moveIgnoredLeftovers(
       const src = `${r.from}/${name}`;
       const dst = `${r.to}/${name}`;
       const done = await exec(
-        `cd ${sh(root)} && [ -d ${sh(r.to)} ] && [ ! -e ${sh(dst)} ] && [ ! -L ${sh(dst)} ] && mv ${sh(src)} ${sh(dst)}`,
+        // `mv` moves a link as a link and keeps modes; never INTO a
+        // folder that is itself a link.
+        `cd ${sh(root)} && [ -d ${sh(r.to)} ] && [ ! -L ${sh(r.to)} ] && [ ! -e ${sh(dst)} ] && [ ! -L ${sh(dst)} ] && mv ${sh(src)} ${sh(dst)}`,
       );
       if (done.exitCode === 0) moved.push({ from: src, to: dst });
     }
@@ -350,7 +390,10 @@ export async function catchUpCarryingDrafts(
 
   // 1. Everything, untracked included (.gitignore respected), on a branch.
   await must(await withIndex("read-tree", head), "read-tree");
-  await must(await withIndex("add", "-A"), "add");
+  // --ignore-errors: an entry git cannot snapshot (a nested repository with
+  // no commit yet) must not stop the rest from being saved; it is left
+  // where it is and named (step 5, "unsupported").
+  await withIndex("add", "-A", "--ignore-errors");
   const all = await commitTree(
     await must(await withIndex("write-tree"), "write-tree"),
     "Uncommitted changes, saved while catching up with main",
@@ -358,7 +401,11 @@ export async function catchUpCarryingDrafts(
   await out("update-ref", `refs/heads/${draftsBranch}`, all);
 
   // 2. The tracked drafts alone (edits, deletions, staged new files).
-  const untracked = status.filter(e => e.x === "?").map(e => e.path);
+  // A nested repository shows as `dir/`: it is one entry, named without
+  // the slash.
+  const untracked = status
+    .filter(e => e.x === "?")
+    .map(e => e.path.replace(/\/+$/, ""));
   const staged = status
     .filter(e => e.x === "A" || e.x === "R" || e.x === "C")
     .map(e => e.path);
@@ -443,29 +490,72 @@ export async function catchUpCarryingDrafts(
   }
   await git("reset", "-q");
 
-  // 5. The untracked files: where their folder went, else where they were.
+  // 5. The untracked files: where their folder went, else where they were —
+  // each as what it was. The snapshot's tree says what that is: a file
+  // (100644), an executable (100755), a symbolic link (120000, its blob is
+  // the TARGET, recreated as a link — never written as a file, never
+  // followed), or something git only points at (160000, a nested
+  // repository), which is not moved at all.
   const exists = async (p: string) =>
     (
       await exec(
         `test -e ${sh(`${root}/${p}`)} || test -L ${sh(`${root}/${p}`)}`,
       )
     ).exitCode === 0;
+  outcome.strandedWhy = {};
+  const strand = (p: string, why: StrandedReason) => {
+    outcome.stranded.push(p);
+    outcome.strandedWhy![p] = why;
+  };
   for (const p of untracked) {
+    const [mode, , oid] = (await out("ls-tree", all, "--", p))
+      .split("\t")[0]
+      .trim()
+      .split(/\s+/);
+    if (mode !== "100644" && mode !== "100755" && mode !== "120000") {
+      // Never removed either (`rm -f` refuses a directory): it is where it
+      // was, untouched, and the branch keeps a pointer to it.
+      strand(p, "unsupported");
+      continue;
+    }
     const mapped = mapThroughRenames(p, gone);
     let dest: string | null = null;
     if (mapped && !(await exists(mapped))) dest = mapped;
     else if (!(await exists(p))) dest = p;
     if (!dest) {
-      outcome.stranded.push(p);
+      strand(p, "taken");
+      continue;
+    }
+    // Never write THROUGH a link: a folder on the way to `dest` that is a
+    // symbolic link (main's, or another draft's) could lead out of the box.
+    const parents = dest.split("/").slice(0, -1);
+    const prefixes = parents.map((_, i) => parents.slice(0, i + 1).join("/"));
+    const linked = await exec(
+      `cd ${sh(root)} && for d in ${prefixes.map(sh).join(" ") || "''"}; do [ -n "$d" ] && [ -L "$d" ] && exit 1; done; exit 0`,
+    );
+    if (linked.exitCode !== 0) {
+      strand(p, "linked-folder");
       continue;
     }
     const abs = `${root}/${dest}`;
-    const mode = (await out("ls-tree", all, "--", p)).split(/\s+/)[0];
-    const wrote = await exec(
-      `mkdir -p ${sh(abs.slice(0, abs.lastIndexOf("/")))} && git -C ${sh(root)} cat-file blob ${sh(`${all}:${p}`)} > ${sh(abs)}${mode === "100755" ? ` && chmod +x ${sh(abs)}` : ""}`,
-    );
+    const dir = abs.slice(0, abs.lastIndexOf("/"));
+    let wrote;
+    if (mode === "120000") {
+      const target = await out("cat-file", "blob", oid);
+      if (!linkStaysInside(dest, target)) {
+        strand(p, "escaping-link");
+        continue;
+      }
+      wrote = await exec(
+        `mkdir -p ${sh(dir)} && ln -s ${sh(target)} ${sh(abs)}`,
+      );
+    } else {
+      wrote = await exec(
+        `mkdir -p ${sh(dir)} && git -C ${sh(root)} cat-file blob ${sh(oid)} > ${sh(abs)}${mode === "100755" ? ` && chmod +x ${sh(abs)}` : ""}`,
+      );
+    }
     if (wrote.exitCode !== 0) {
-      outcome.stranded.push(p);
+      strand(p, "write-failed");
       continue;
     }
     if (dest !== p) outcome.moved.push({ from: p, to: dest });
@@ -507,10 +597,26 @@ function describe(
       `${o.keptInPlace.join(", ")} stayed where ${o.keptInPlace.length === 1 ? "it was" : "they were"}: a file with that name already exists in the renamed folder.`,
     );
   }
-  if (o.conflicted.length + o.stranded.length > 0) {
-    const paths = [...o.conflicted, ...o.stranded].join(", ");
+  const why = o.strandedWhy ?? {};
+  const said: Record<StrandedReason, string> = {
+    taken:
+      "a file with that name exists both in the renamed folder and where it was",
+    "escaping-link":
+      "a symbolic link pointing outside the repository, not recreated",
+    "linked-folder":
+      "a folder on its way is a symbolic link, which Mako does not write through",
+    unsupported: "a nested repository or special entry, left where it was",
+    "write-failed": "it could not be written",
+  };
+  const notBack = o.stranded.map(p => `${p} (${said[why[p] ?? "taken"]})`);
+  if (o.conflicted.length > 0) {
+    notBack.unshift(
+      ...o.conflicted.map(p => `${p} (main now has its own version)`),
+    );
+  }
+  if (notBack.length > 0) {
     parts.push(
-      `Not carried over (they conflict with main, which now has its own version): ${paths}. Your versions are saved on the branch ${o.draftsBranch} — in the terminal, \`git show ${o.draftsBranch}:<path>\` prints one, \`git checkout ${o.draftsBranch} -- <path>\` restores it.`,
+      `Not carried over: ${notBack.join(", ")}. Your versions are saved on the branch ${o.draftsBranch} — in the terminal, \`git show ${o.draftsBranch}:<path>\` prints one, \`git checkout ${o.draftsBranch} -- <path>\` restores it.`,
     );
   }
   return parts.length > 0 ? parts.join(" ") : undefined;

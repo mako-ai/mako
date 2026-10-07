@@ -23,7 +23,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Types } from "mongoose";
 import { renameObject } from "../../rename/registry";
-import { loadAppsIndex } from "../app-index.service";
+import { invalidateAppsIndexCache, loadAppsIndex } from "../app-index.service";
 import {
   ensureBox,
   ensureWorktree,
@@ -35,6 +35,11 @@ import {
 import { boxPull, boxRoot } from "../box";
 import { getBoxState } from "../box-state.service";
 import { getSandboxProvider } from "../sandbox/provider";
+import {
+  DEFAULT_BRANCH,
+  commitBlobsOnBranch,
+  repoDirFor,
+} from "../repository.service";
 import { startTestGitServer, type TestGitServer } from "../test-git-server";
 import {
   externalCommit,
@@ -563,5 +568,184 @@ describe("ignored files (node_modules, dist) in a renamed app", () => {
       "src/main.tsx",
       "src/other.ts",
     ]);
+  });
+});
+
+describe("each draft comes back as what it was (Joan's review: a symlink came back as a file)", () => {
+  const lstatOf = (root: string, rel: string) =>
+    fs.lstat(path.join(root, rel)).catch(() => null);
+
+  it("an untracked symlink — to a file, to a folder, dangling — is recreated as a symlink with the same target; an executable keeps its bit", async () => {
+    const box = await myBox();
+    const a = (rel: string) => path.join(box.root, "apps/a", rel);
+    await fs.symlink("src/main.tsx", a("link"));
+    await fs.symlink("src", a("srclink"));
+    await fs.symlink("does-not-exist.ts", a("dangling"));
+    await box.write("apps/a/run.sh", "#!/bin/sh\necho hi\n");
+    await fs.chmod(a("run.sh"), 0o755);
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+
+    const outcome = await boxPull(box.ctx);
+    expect(outcome?.stranded).toEqual([]);
+    for (const [rel, target] of [
+      ["link", "src/main.tsx"],
+      ["srclink", "src"],
+      ["dangling", "does-not-exist.ts"],
+    ]) {
+      const st = await lstatOf(box.root, `apps/acq/${rel}`);
+      expect(st?.isSymbolicLink(), rel).toBe(true);
+      expect(await fs.readlink(path.join(box.root, "apps/acq", rel))).toBe(
+        target,
+      );
+    }
+    // The links resolve as before: to a file, to a folder, to nothing.
+    expect((await fs.stat(path.join(box.root, "apps/acq/link"))).isFile()).toBe(
+      true,
+    );
+    expect(
+      (await fs.stat(path.join(box.root, "apps/acq/srclink"))).isDirectory(),
+    ).toBe(true);
+    await expect(
+      fs.stat(path.join(box.root, "apps/acq/dangling")),
+    ).rejects.toThrow();
+    const run = await lstatOf(box.root, "apps/acq/run.sh");
+    expect(run?.isFile()).toBe(true);
+    expect((run?.mode ?? 0) & 0o111).not.toBe(0);
+    expect(await lstatOf(box.root, "apps/a")).toBeNull();
+    // Faithful, so nothing kept back: no recovery branch.
+    expect(await box.branches()).toEqual([]);
+  });
+
+  it("a tracked symlink retargeted, and a tracked executable edited, are carried as a symlink and an executable", async () => {
+    const box = await myBox();
+    const a = (rel: string) => path.join(box.root, "apps/a", rel);
+    await fs.symlink("src/main.tsx", a("cfg"));
+    await box.write("apps/a/build.sh", "#!/bin/sh\necho one\n");
+    await fs.chmod(a("build.sh"), 0o755);
+    await box.sh(
+      `git -C '${box.root}' add apps/a/cfg apps/a/build.sh && git -C '${box.root}' commit -q -m "link and script" && git -C '${box.root}' push -q origin HEAD`,
+    );
+    // Drafts: retarget the link, edit the script.
+    await fs.unlink(a("cfg"));
+    await fs.symlink("src/other.ts", a("cfg"));
+    await box.write("apps/a/build.sh", "#!/bin/sh\necho two\n");
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+
+    await boxPull(box.ctx);
+    expect(await box.head()).toBe(await headOf(WS));
+    const cfg = await lstatOf(box.root, "apps/acq/cfg");
+    expect(cfg?.isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(path.join(box.root, "apps/acq/cfg"))).toBe(
+      "src/other.ts",
+    );
+    const build = await lstatOf(box.root, "apps/acq/build.sh");
+    expect((build?.mode ?? 0) & 0o111).not.toBe(0);
+    expect(
+      await fs.readFile(path.join(box.root, "apps/acq/build.sh"), "utf8"),
+    ).toBe("#!/bin/sh\necho two\n");
+    expect(await box.status()).toEqual([
+      " M apps/acq/build.sh",
+      " M apps/acq/cfg",
+    ]);
+  });
+
+  it("an absolute or escaping symlink is never recreated nor followed: kept on the recovery branch, and the notice names it", async () => {
+    const box = await myBox();
+    const a = (rel: string) => path.join(box.root, "apps/a", rel);
+    const outside = path.join(env.tmpRoot, "outside-the-box");
+    await fs.mkdir(outside, { recursive: true });
+    await fs.symlink(outside, a("abs"));
+    await fs.symlink("../../../escape", a("up"));
+    await fs.symlink("../../.git/config", a("intogit"));
+    await box.write("apps/a/src/fine.ts", "export {};\n");
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+
+    const outcome = await boxPull(box.ctx);
+    expect(outcome?.stranded.sort()).toEqual([
+      "apps/a/abs",
+      "apps/a/intogit",
+      "apps/a/up",
+    ]);
+    for (const rel of ["abs", "up", "intogit"]) {
+      expect(await lstatOf(box.root, `apps/acq/${rel}`), rel).toBeNull();
+      expect(outcome?.strandedWhy?.[`apps/a/${rel}`]).toBe("escaping-link");
+    }
+    // Nothing was written outside, and the draft that was fine followed.
+    expect(await fs.readdir(outside)).toEqual([]);
+    expect(await box.read("apps/acq/src/fine.ts")).toBe("export {};\n");
+    // The recovery branch keeps them, as links.
+    const [branch] = await box.branches();
+    expect(branch).toMatch(/^mako-drafts\//);
+    expect(
+      (
+        await box.sh(`git -C '${box.root}' ls-tree '${branch}' -- apps/a/abs`)
+      ).split(/\s+/)[0],
+    ).toBe("120000");
+    const notice = await noticeFor();
+    expect(notice).toContain(
+      "apps/a/abs (a symbolic link pointing outside the repository, not recreated)",
+    );
+    expect(notice).toContain(branch);
+  });
+
+  it("a nested repository (git keeps only a pointer to it) is left where it was, untouched, and named", async () => {
+    const box = await myBox();
+    const vendor = path.join(box.root, "apps/a/vendor");
+    await fs.mkdir(vendor, { recursive: true });
+    await run("git", ["init", "-q", vendor]);
+    await fs.writeFile(path.join(vendor, "lib.js"), "module.exports = 1;\n");
+    // One with history (a cloned dependency)…
+    const v = ["-C", vendor, "-c", "user.email=v@v", "-c", "user.name=V"];
+    await run("git", [...v, "add", "-A"]);
+    await run("git", [...v, "commit", "-qm", "vendored"]);
+    // …and one without a commit yet, which git cannot even snapshot.
+    const empty = path.join(box.root, "apps/a/scratch-repo");
+    await fs.mkdir(empty, { recursive: true });
+    await run("git", ["init", "-q", empty]);
+    await fs.writeFile(path.join(empty, "notes.md"), "wip\n");
+    await box.write("apps/a/src/fine.ts", "export {};\n");
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+
+    const outcome = await boxPull(box.ctx);
+    expect(outcome?.strandedWhy?.["apps/a/vendor"]).toBe("unsupported");
+    expect(outcome?.strandedWhy?.["apps/a/scratch-repo"]).toBe("unsupported");
+    expect(await fs.readFile(path.join(vendor, "lib.js"), "utf8")).toBe(
+      "module.exports = 1;\n",
+    );
+    expect(await fs.readFile(path.join(empty, "notes.md"), "utf8")).toBe(
+      "wip\n",
+    );
+    expect(await box.head()).toBe(await headOf(WS));
+    expect(await box.read("apps/acq/src/fine.ts")).toBe("export {};\n");
+    expect(await box.branches()).toHaveLength(1);
+    expect(await noticeFor()).toContain(
+      "apps/a/vendor (a nested repository or special entry, left where it was)",
+    );
+  });
+
+  it("never writes a draft THROUGH a folder that main made a symbolic link", async () => {
+    const box = await myBox();
+    await box.write("apps/a/data/x.txt", "draft\n");
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+    // Main then makes apps/acq/data a link out of the repository.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "apps/acq/data": "../../../outside" },
+        modes: { "apps/acq/data": "120000" },
+      },
+      { message: "data is a link now" },
+    );
+    invalidateAppsIndexCache(WS);
+    const outcome = await boxPull(box.ctx);
+    expect(outcome?.strandedWhy?.["apps/a/data/x.txt"]).toBe("linked-folder");
+    expect((await lstatOf(box.root, "apps/acq/data"))?.isSymbolicLink()).toBe(
+      true,
+    );
+    await expect(
+      fs.readFile(path.join(box.root, "..", "outside", "x.txt")),
+    ).rejects.toThrow();
+    expect(await box.branches()).toHaveLength(1);
   });
 });
