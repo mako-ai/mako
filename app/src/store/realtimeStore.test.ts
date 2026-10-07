@@ -30,6 +30,7 @@ vi.hoisted(() => {
 import { api } from "../api";
 import { useConsoleStore } from "./consoleStore";
 import { useRealtimeStore } from "./realtimeStore";
+import { useConsoleTreeStore } from "./consoleTreeStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
 
 const ID = "6ac5395a545a64d5b321f871";
@@ -89,5 +90,95 @@ describe("revision sync — a laptop rename of a console with unsaved edits", ()
     expect(tab.savedStateHash).toBe(computeConsoleStateHash(SAVED));
     expect(tab.draftRevision).toBe(3);
     expect(tab.remoteUpdate).toMatchObject({ draftRevision: 5 });
+  });
+});
+
+describe("revision sync — a console restored from the trash elsewhere", () => {
+  it("drops the tab's 'deleted' banner and takes the restored name and place", async () => {
+    useConsoleStore.getState().openTab({
+      id: ID,
+      title: "Weekly",
+      content: SAVED,
+      isSaved: true,
+      filePath: "Weekly",
+      access: "workspace",
+      savedStateHash: computeConsoleStateHash(SAVED),
+      draftRevision: 3,
+      version: 2,
+      kind: "console",
+    });
+    useConsoleStore.getState().setRemoteUpdate(ID, {
+      draftRevision: Number.MAX_SAFE_INTEGER,
+      kind: "deleted",
+    });
+    vi.spyOn(api, "POST").mockResolvedValue({
+      data: {
+        success: true,
+        deleted: [],
+        changed: [
+          {
+            id: ID,
+            draftRevision: 4,
+            name: "Weekly (2)",
+            path: "Weekly (2)",
+            access: "workspace",
+            content: SAVED,
+            isSaved: true,
+            version: 2,
+          },
+        ],
+      },
+      response: { ok: true, status: 200 },
+    } as never);
+    useRealtimeStore.setState({ workspaceId: "ws" });
+
+    await useRealtimeStore.getState().syncRevisions();
+
+    const tab = useConsoleStore.getState().tabs[ID];
+    expect(tab.remoteUpdate ?? null).toBeNull();
+    expect(tab.title).toBe("Weekly (2)");
+    expect(tab.filePath).toBe("Weekly (2)");
+    expect(tab.draftRevision).toBe(4);
+  });
+});
+
+describe("console.deleted — a console trashed in THIS window", () => {
+  it("raises 'Moved to trash' here, and 'deleted elsewhere' for another window's delete", async () => {
+    const { markDeletedHere } = await import("./lib/console-local-deletes");
+    const { dispatchRealtimeEvent } = await import("./lib/realtime-channel");
+    const { remoteUpdateMessage } = await import(
+      "../lib/console-remote-update"
+    );
+    useConsoleTreeStore.setState({
+      fetchTree: vi.fn(async () => undefined),
+    } as never);
+    useRealtimeStore.setState({ workspaceId: "ws" });
+    for (const id of [ID, "6ac5395a545a64d5b321f872"]) {
+      useConsoleStore.getState().openTab(
+        {
+          id,
+          title: "Weekly",
+          content: SAVED,
+          isSaved: true,
+          filePath: "Weekly",
+          kind: "console",
+        },
+        { replacePristine: false },
+      );
+    }
+    markDeletedHere(ID);
+    const ctx = { workspaceId: "ws" } as never;
+    dispatchRealtimeEvent({ type: "console.deleted", consoleId: ID }, ctx);
+    dispatchRealtimeEvent(
+      { type: "console.deleted", consoleId: "6ac5395a545a64d5b321f872" },
+      ctx,
+    );
+    const tabs = useConsoleStore.getState().tabs;
+    expect(remoteUpdateMessage(tabs[ID].remoteUpdate!, "u1")).toBe(
+      "Moved to trash.",
+    );
+    expect(
+      remoteUpdateMessage(tabs["6ac5395a545a64d5b321f872"].remoteUpdate!, "u1"),
+    ).toBe("This console was deleted elsewhere.");
   });
 });

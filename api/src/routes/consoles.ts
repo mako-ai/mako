@@ -1255,7 +1255,11 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: consolePathTakenMessage(error.path, c.get("user")?.id),
+            error: consolePathTakenMessage(
+              error.takenAs ?? error.path,
+              c.get("user")?.id,
+              error.path,
+            ),
           },
           409,
         );
@@ -1644,7 +1648,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: consolePathTakenMessage(taken, c.get("user")?.id),
+                error: consolePathTakenMessage(
+                  taken,
+                  c.get("user")?.id,
+                  wanted,
+                ),
               },
               409,
             );
@@ -1672,7 +1680,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: consolePathTakenMessage(error.path, c.get("user")?.id),
+                error: consolePathTakenMessage(
+                  error.takenAs ?? error.path,
+                  c.get("user")?.id,
+                  error.path,
+                ),
               },
               409,
             );
@@ -1821,7 +1833,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             return c.json(
               {
                 success: false,
-                error: consolePathTakenMessage(error.path, c.get("user")?.id),
+                error: consolePathTakenMessage(
+                  error.takenAs ?? error.path,
+                  c.get("user")?.id,
+                  error.path,
+                ),
               },
               409,
             );
@@ -1996,7 +2012,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       return c.json(
         {
           success: false,
-          error: consolePathTakenMessage(error.path, c.get("user")?.id),
+          error: consolePathTakenMessage(
+            error.takenAs ?? error.path,
+            c.get("user")?.id,
+            error.path,
+          ),
         },
         409,
       );
@@ -2330,7 +2350,11 @@ consoleRoutes.openapi(
         return c.json(
           {
             success: false,
-            error: consolePathTakenMessage(error.path, c.get("user")?.id),
+            error: consolePathTakenMessage(
+              error.takenAs ?? error.path,
+              c.get("user")?.id,
+              error.path,
+            ),
           },
           409,
         );
@@ -2435,7 +2459,26 @@ consoleRoutes.openapi(
       );
 
       if (success) {
-        return c.json({ success: true, message: "Console restored" });
+        // Where it is now (a taken name brings it back as "name (2)"): the
+        // caller says so, and every open tab — another window's, one
+        // reloaded later — is told the console is back (its revision
+        // moved), so it drops the "deleted" banner and takes the name.
+        const location = await locationOfConsole(workspaceId, consoleId);
+        if (location) {
+          publishRealtimeEvent(workspaceId, {
+            type: "console.updated",
+            consoleId,
+            draftRevision: location.draftRevision,
+            name: location.name,
+            updatedBy: user.id,
+            origin: "save",
+          });
+        }
+        return c.json({
+          success: true,
+          message: "Console restored",
+          ...(location ? { console: location } : {}),
+        });
       } else {
         return c.json({ success: false, error: "Console not found" }, 404);
       }

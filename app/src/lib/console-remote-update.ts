@@ -15,6 +15,10 @@ export function remoteUpdateMessage(
   currentUserId?: string | null,
 ): string {
   const by = remoteUpdate.updatedBy;
+  // Trashed in this very window: say what happened, not "elsewhere".
+  if (remoteUpdate.kind === "deleted" && remoteUpdate.here) {
+    return "Moved to trash.";
+  }
   // A push (a laptop clone, GitHub) is no "other window", even when the
   // person pushed it themselves — the e2e's own laptop push read "updated
   // in another window".

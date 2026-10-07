@@ -146,6 +146,18 @@ export function relocationScope(input: {
   };
 }
 
+/**
+ * The "name taken" sentence for a dialog: it names the EXISTING console —
+ * a case twin ("alpha four" typed next to "Alpha Four") used to be
+ * refused in the typed name's words — and says why a case twin counts.
+ */
+export function consoleNameTakenMessage(typed: string, existing: string) {
+  const caseOnly = typed !== existing;
+  return caseOnly
+    ? `A console named “${existing}” already exists here — names that differ only in upper/lower case count as the same. Choose another name.`
+    : `A console named “${existing}” already exists here. Choose another name.`;
+}
+
 /** What the editor's "Rename / Move…" sends to the server. */
 export type RenameMoveRequest =
   /** PATCH /:id/rename — the console keeps its folder, wherever it is. */
@@ -342,4 +354,17 @@ export function treeMoveNotice(input: {
     folders: (input.folderPath ?? "").split("/").filter(Boolean),
     name: input.renamedTo ?? input.name,
   });
+}
+
+/**
+ * The snackbar after undoing a delete (Cmd+Z in the explorer): it said
+ * nothing, even when the console came back under another name.
+ */
+export function consoleRestoredNotice(
+  name: string,
+  restoredAs?: string,
+): string {
+  return restoredAs && restoredAs !== name
+    ? `Restored as '${restoredAs}'`
+    : `Restored '${name}'`;
 }

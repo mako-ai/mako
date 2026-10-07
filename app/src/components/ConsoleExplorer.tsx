@@ -40,7 +40,11 @@ import {
 } from "../store/consoleStore";
 import { filterTree, findById } from "../store/lib/tree-helpers";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
-import { consoleCopiedNotice, treeMoveNotice } from "../lib/console-relocation";
+import {
+  consoleCopiedNotice,
+  consoleRestoredNotice,
+  treeMoveNotice,
+} from "../lib/console-relocation";
 import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
@@ -123,7 +127,7 @@ function ConsoleExplorer(
   const [notice, setNotice] = useState<string | null>(null);
 
   const [undoStack, setUndoStack] = useState<
-    Array<{ type: "delete"; id: string; isDirectory: boolean }>
+    Array<{ type: "delete"; id: string; isDirectory: boolean; name: string }>
   >([]);
 
   const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
@@ -502,7 +506,12 @@ function ConsoleExplorer(
     if (success) {
       setUndoStack(prev => [
         ...prev,
-        { type: "delete", id: itemId, isDirectory: item.isDirectory },
+        {
+          type: "delete",
+          id: itemId,
+          isDirectory: item.isDirectory,
+          name: item.name,
+        },
       ]);
     }
   };
@@ -512,9 +521,11 @@ function ConsoleExplorer(
     const last = undoStack[undoStack.length - 1];
     if (last.type === "delete" && !last.isDirectory) {
       const restoreConsole = useConsoleTreeStore.getState().restoreConsole;
-      const success = await restoreConsole(currentWorkspace.id, last.id);
-      if (success) {
+      const restored = await restoreConsole(currentWorkspace.id, last.id);
+      if (restored) {
         setUndoStack(prev => prev.slice(0, -1));
+        // Say so — and under which name, when its own was taken meanwhile.
+        setNotice(consoleRestoredNotice(last.name, restored.name));
       }
     }
   };

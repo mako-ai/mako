@@ -186,6 +186,12 @@ export function isChartSidecarPath(path: string): boolean {
 export function consolePathTakenMessage(
   path: string,
   actorUserId?: string | null,
+  /**
+   * The path that was asked for, when it is not `path` itself: a name that
+   * differs from the existing one only in letter case. The message names
+   * the EXISTING console and says why it counts.
+   */
+  wantedPath?: string | null,
 ): string {
   const consolePath = isChartSidecarPath(path)
     ? `${path.slice(0, -CHART_SUFFIX.length)}.sql`
@@ -200,7 +206,14 @@ export function consolePathTakenMessage(
         : !actorUserId || location.ownerId === actorUserId
           ? "My Consoles"
           : "its owner's consoles";
-  return `A console named '${location.name}' already exists in ${where}.`;
+  const wanted = wantedPath ? parseConsoleRepoPath(wantedPath) : null;
+  const caseOnly =
+    wanted !== null &&
+    wanted.name !== location.name &&
+    wanted.name.toLowerCase() === location.name.toLowerCase();
+  return caseOnly
+    ? `A console named '${location.name}' already exists in ${where} — names that differ only in upper/lower case count as the same.`
+    : `A console named '${location.name}' already exists in ${where}.`;
 }
 
 /**

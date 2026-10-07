@@ -255,16 +255,76 @@ describe("a rename or a move answers where the console is now", () => {
     expect(row.path).toBe(
       `users/${OWNER}/consoles/Team Drafts/Secret Margin v2.sql`,
     );
-    // Moving it to the root (an explicit null) is still a move — and one
-    // that keeps it private, so the editor may make it.
+    // Moving it — even to its owner's root (an explicit null) — is not a
+    // shared editor's call: renamed where it is, never moved.
     const root = await req(
       "PATCH",
       `/${c._id}/move`,
       { folderId: null },
       EDITOR,
     );
-    expect(root.status).toBe(200);
-    expect(root.body.data).toMatchObject({ path: "Secret Margin v2" });
+    expect(root.status).toBe(403);
+    expect(root.body.error).toContain("you can rename it where it is");
+    const after = (await SavedConsole.findById(c._id))!;
+    expect(after.folderId?.toString()).toBe(drafts._id.toString());
+    expect(after.path).toBe(
+      `users/${OWNER}/consoles/Team Drafts/Secret Margin v2.sql`,
+    );
+  });
+
+  it("a move never files a console into another member's private folder — for anyone; the owner moves within their own tree", async () => {
+    const drafts = await manager.createFolder(
+      "Team Drafts",
+      WS,
+      OWNER,
+      undefined,
+      false,
+      "private",
+    );
+    const c = await save(
+      "Q",
+      "SELECT 1\n",
+      OWNER,
+      "private",
+      drafts._id.toString(),
+    );
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { sharedWith: [{ userId: EDITOR, role: "editor" }] } },
+    );
+    const editors = await manager.createFolder(
+      "Mine",
+      WS,
+      EDITOR,
+      undefined,
+      false,
+      "private",
+    );
+    const before = await consolePaths();
+    for (const [who, role] of [
+      [EDITOR, "member"],
+      [OWNER, "member"],
+      [new Types.ObjectId().toString(), "admin"],
+    ] as const) {
+      const r = await req(
+        "PATCH",
+        `/${c._id}/move`,
+        { folderId: editors._id.toString() },
+        who,
+        role,
+      );
+      expect(r.status).toBe(403);
+    }
+    expect(await consolePaths()).toEqual(before);
+    expect((await SavedConsole.findById(c._id))?.folderId?.toString()).toBe(
+      drafts._id.toString(),
+    );
+    // The owner moves it within their own tree.
+    const ok = await req("PATCH", `/${c._id}/move`, { folderId: null }, OWNER);
+    expect(ok.status).toBe(200);
+    expect((await SavedConsole.findById(c._id))?.path).toBe(
+      `users/${OWNER}/consoles/Q.sql`,
+    );
   });
 
   it("an admin's name-only Rename / Move of a console shared with them is PATCH /rename: it stays in its owner's folder", async () => {
@@ -396,11 +456,20 @@ describe("names that differ only in letter case are one name (one file on macOS 
     ]) {
       const r = await req("PATCH", `/${c._id}/rename`, { name }, OWNER);
       expect(r.status).toBe(409);
+      // The EXISTING console is named, and a case twin is said to be one.
       expect(r.body.error).toContain(
         "A console named 'Typed Name Keep' already exists",
       );
+      if (name === "Typed Name Keep") {
+        expect(r.body.error).not.toContain("upper/lower case");
+      } else {
+        expect(r.body.error).toContain(
+          "names that differ only in upper/lower case count as the same",
+        );
+      }
       const moved = await req("PATCH", `/${c._id}/move`, { name }, OWNER);
       expect(moved.status).toBe(409);
+      expect(moved.body.error).toContain("'Typed Name Keep'");
     }
     expect(await consolePaths()).toEqual(before);
     expect((await SavedConsole.findById(c._id))?.name).toBe("other");
@@ -457,6 +526,95 @@ describe("names that differ only in letter case are one name (one file on macOS 
     );
     const files = (await consolePaths()).map(p => p.toLowerCase());
     expect(new Set(files).size).toBe(files.length);
+  });
+});
+
+describe("a console in the trash holds no name", () => {
+  it("a first save (Save dialog, and a draft's) under a trashed console's name goes through; the trashed one comes back as 'name (2)'", async () => {
+    const w = await save("Weekly", "SELECT 'old'\n", OWNER, "workspace");
+    expect((await req("DELETE", `/${w._id}`, {}, OWNER)).status).toBe(200);
+
+    // The Save dialog's first save: POST with the new console's id.
+    const fresh = new Types.ObjectId().toString();
+    const post = await req(
+      "POST",
+      "",
+      {
+        id: fresh,
+        path: "Weekly",
+        content: "SELECT 'new'\n",
+        access: "workspace",
+        isPrivate: false,
+      },
+      OWNER,
+    );
+    expect(post.status).toBe(201);
+    expect((await SavedConsole.findById(fresh))?.path).toBe(
+      "consoles/Weekly.sql",
+    );
+
+    // A draft's first save under another trashed name.
+    const m = await save("Monthly", "SELECT 'm'\n", OWNER, "workspace");
+    expect((await req("DELETE", `/${m._id}`, {}, OWNER)).status).toBe(200);
+    const draft = await SavedConsole.create({
+      workspaceId: new Types.ObjectId(WS),
+      name: "Untitled",
+      code: "SELECT 'draft'",
+      language: "sql",
+      isSaved: false,
+      access: "workspace",
+      isPrivate: false,
+      owner_id: OWNER,
+      createdBy: OWNER,
+    });
+    const put = await req(
+      "PUT",
+      `/${draft._id}`,
+      {
+        content: "SELECT 'draft'\n",
+        path: "Monthly",
+        isSaved: true,
+        access: "workspace",
+      },
+      OWNER,
+    );
+    expect(put.status).toBe(200);
+    expect((await SavedConsole.findById(draft._id))?.path).toBe(
+      "consoles/Monthly.sql",
+    );
+
+    // Restoring the trashed one does not take the name back — and says
+    // where it is now.
+    const revisionInTrash = (await SavedConsole.findById(w._id))!.draftRevision;
+    const restored = await req("PATCH", `/${w._id}/restore`, {}, OWNER);
+    expect(restored.status).toBe(200);
+    expect(restored.body.console).toMatchObject({
+      id: w._id.toString(),
+      name: "Weekly (2)",
+      path: "Weekly (2)",
+    });
+    expect((await SavedConsole.findById(w._id))?.path).toBe(
+      "consoles/Weekly (2).sql",
+    );
+    expect(await fileAt("consoles/Weekly.sql")).toContain("'new'");
+
+    // A tab open on it elsewhere (or reloaded) is told it is back: the
+    // revision sync lists it as changed — with its new name — not deleted.
+    const sync = await req(
+      "POST",
+      "/revisions-sync",
+      { revisions: { [w._id.toString()]: revisionInTrash } },
+      OWNER,
+    );
+    expect(sync.status).toBe(200);
+    expect(sync.body.changed).toEqual([
+      expect.objectContaining({
+        id: w._id.toString(),
+        name: "Weekly (2)",
+        path: "Weekly (2)",
+      }),
+    ]);
+    expect((sync.body as { deleted?: string[] }).deleted).toEqual([]);
   });
 });
 

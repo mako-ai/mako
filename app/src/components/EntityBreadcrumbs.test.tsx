@@ -64,4 +64,17 @@ describe("EntityBreadcrumbs — a console that failed to load", () => {
     render(<EntityBreadcrumbs tabId={id} />);
     expect(screen.getByText("Unsaved console")).toBeTruthy();
   });
+
+  it("a console that has not loaded yet reads 'Loading…', not 'Unsaved console'", () => {
+    const id = useConsoleStore.getState().openTab({
+      id: "6ac5395a545a64d5b321f873",
+      title: "y",
+      content: "loading...",
+      isSaved: true,
+      kind: "console",
+    });
+    render(<EntityBreadcrumbs tabId={id} />);
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.queryByText("Unsaved console")).toBeNull();
+  });
 });

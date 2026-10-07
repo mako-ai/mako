@@ -4,7 +4,9 @@ import {
   consoleNameProblem,
   consoleNameTakenBy,
   consoleCopiedNotice,
+  consoleNameTakenMessage,
   consolePlacement,
+  consoleRestoredNotice,
   consoleSavedNotice,
   consoleSectionLabel,
   renameMoveNotice,
@@ -391,5 +393,26 @@ describe("Save a Copy and the tree's Move to… say where", () => {
     expect(
       treeMoveNotice({ moved: false, name: "Alpha", section: "my" }),
     ).toBeNull();
+  });
+});
+
+describe("names taken and restores, in words", () => {
+  it("a case twin names the EXISTING console and says why it counts", () => {
+    expect(consoleNameTakenMessage("alpha four", "Alpha Four")).toBe(
+      "A console named “Alpha Four” already exists here — names that differ only in upper/lower case count as the same. Choose another name.",
+    );
+    expect(consoleNameTakenMessage("Alpha Four", "Alpha Four")).toBe(
+      "A console named “Alpha Four” already exists here. Choose another name.",
+    );
+  });
+
+  it("an undone delete says it is back — under which name", () => {
+    expect(consoleRestoredNotice("Weekly", "Weekly")).toBe("Restored 'Weekly'");
+    expect(consoleRestoredNotice("Weekly", undefined)).toBe(
+      "Restored 'Weekly'",
+    );
+    expect(consoleRestoredNotice("Weekly", "Weekly (2)")).toBe(
+      "Restored as 'Weekly (2)'",
+    );
   });
 });

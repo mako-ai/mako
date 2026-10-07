@@ -1,6 +1,10 @@
 import { api, unwrapBody, ApiError, toErrorMessage } from "../api";
 import type { ConsoleContentResponse, ConsoleLocation } from "../lib/api-types";
 import {
+  markDeletedHere,
+  unmarkDeletedHere,
+} from "./lib/console-local-deletes";
+import {
   createResourceTreeStore,
   type ResourceTreeEntry,
   type TreeAccessLevel,
@@ -77,8 +81,14 @@ export interface ConsoleTreeExtra {
     workspaceId: string,
     consoleId: string,
   ) => Promise<{ id: string; name: string; path: string } | null>;
-  /** Undo a soft delete; refetches the tree on success. */
-  restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
+  /**
+   * Undo a soft delete; refetches the tree on success. Resolves to the
+   * name it came back under ("name (2)" when its name was taken), or null.
+   */
+  restoreConsole: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<{ name?: string } | null>;
 }
 
 const base = "/api/workspaces/{workspaceId}/consoles" as const;
@@ -287,14 +297,23 @@ export const useConsoleTreeStore = createResourceTreeStore<
       void retargetOpenTabsUnder(workspaceId, inside);
       return res;
     },
-    deleteItem: async (workspaceId, id) =>
-      ok(
-        unwrapBody(
-          await api.DELETE(`${base}/{id}`, {
-            params: { path: { workspaceId, id } },
-          }),
-        ) as { success: boolean },
-      ),
+    deleteItem: async (workspaceId, id) => {
+      // The deletion this window makes is announced back to it: its banner
+      // says "Moved to trash", not "deleted elsewhere".
+      markDeletedHere(id);
+      try {
+        return ok(
+          unwrapBody(
+            await api.DELETE(`${base}/{id}`, {
+              params: { path: { workspaceId, id } },
+            }),
+          ) as { success: boolean },
+        );
+      } catch (error) {
+        unmarkDeletedHere(id);
+        throw error;
+      }
+    },
     deleteFolder: async (workspaceId, id) =>
       ok(
         unwrapBody(
@@ -463,11 +482,12 @@ export const useConsoleTreeStore = createResourceTreeStore<
           await api.PATCH(`${base}/{id}/restore`, {
             params: { path: { workspaceId, id: consoleId } },
           }),
-        ) as { success: boolean };
-        if (res.success) await get().refresh(workspaceId);
-        return res.success;
+        ) as { success: boolean; console?: ConsoleLocation };
+        if (!res.success) return null;
+        await get().refresh(workspaceId);
+        return { name: res.console?.name };
       } catch {
-        return false;
+        return null;
       }
     },
   }),

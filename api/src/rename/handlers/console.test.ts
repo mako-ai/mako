@@ -421,20 +421,30 @@ describe("rename", () => {
       { _id: secret._id },
       { $set: { sharedWith: [{ userId: OTHER, role: "editor" }] } },
     );
+    // Nor move it at all — even within the owner's own tree: a shared
+    // editor renames it where it is.
     await expect(
       renameObject(other, "console", {
         ref: secret._id.toString(),
         slug: `users/${OWNER}/consoles/Team/secret.sql`,
       }),
-    ).resolves.toMatchObject({
-      after: { path: `users/${OWNER}/consoles/Team/secret.sql` },
-    });
+    ).rejects.toMatchObject({ status: 403 });
+    const kept = (await SavedConsole.findById(secret._id))!;
+    expect(kept.path).toBe(`users/${OWNER}/consoles/secret.sql`);
     expect(
       await manager.canReadWithInheritance(
-        (await SavedConsole.findById(secret._id))!,
+        kept,
         new Types.ObjectId().toString(),
       ),
     ).toBe(false);
+    await expect(
+      renameObject(other, "console", {
+        ref: secret._id.toString(),
+        slug: "secret-2",
+      }),
+    ).resolves.toMatchObject({
+      after: { path: `users/${OWNER}/consoles/secret-2.sql` },
+    });
   });
 
   it("a full path without its extension is the console's file type, never a folder called 'consoles'", async () => {

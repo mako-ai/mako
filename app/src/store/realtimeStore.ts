@@ -15,6 +15,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
+import { takeDeletedHere } from "./lib/console-local-deletes";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import {
@@ -251,10 +252,11 @@ export const useRealtimeStore = create<RealtimeStore>()(
       }
       rememberWriter(event.consoleId, undefined, event.via);
       const consoleStore = useConsoleStore.getState();
+      const here = takeDeletedHere(event.consoleId);
       if (consoleStore.tabs[event.consoleId]) {
         consoleStore.setRemoteUpdate(event.consoleId, {
           draftRevision: Number.MAX_SAFE_INTEGER,
-          ...lastWriter(event.consoleId),
+          ...(here ? { here: true as const } : lastWriter(event.consoleId)),
           kind: "deleted",
         });
       }

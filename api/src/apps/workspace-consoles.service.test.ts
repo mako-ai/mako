@@ -43,6 +43,7 @@ import {
 import { runGit } from "./git";
 import {
   adoptWorkspaceConsoles,
+  commitConsoleRelocation,
   commitConsoleState,
   consoleCommitChanges,
   consoleFileVersions,
@@ -665,17 +666,37 @@ describe("write-through", () => {
       { access: "private", language: "sql", folderId: team._id.toString() },
     );
     expect(mine.path).toBe(`users/${EDITOR}/consoles/Team/x.sql`);
-    // The editor files the owner's console into their own private folder
-    // (same effective visibility: allowed)…
-    expect(
-      await manager.moveConsole(
+    // Filing the owner's console into the editor's private folder is
+    // refused now (a shared editor does not move it, and a private folder
+    // takes only its owner's consoles)…
+    await expect(
+      manager.moveConsole(
         theirs._id.toString(),
         WS,
         team._id.toString(),
         undefined,
         EDITOR,
       ),
-    ).toBe(true);
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    // …but rows filed that way before still exist: built here as they were.
+    const before = (await SavedConsole.findById(theirs._id))!;
+    const filed = await commitConsoleRelocation({
+      workspaceId: WS,
+      fromPath: before.path!,
+      toPath: `users/${USER}/consoles/Team/x.sql`,
+      message: "legacy: filed in another member's folder",
+      sourceBlobSha: before.sourceBlobSha,
+    });
+    await SavedConsole.updateOne(
+      { _id: theirs._id },
+      {
+        $set: {
+          folderId: team._id,
+          path: filed!.path,
+          sourceBlobSha: filed!.sourceBlobSha,
+        },
+      },
+    );
     expect((await SavedConsole.findById(theirs._id))?.path).toBe(
       `users/${USER}/consoles/Team/x.sql`,
     );
@@ -790,8 +811,8 @@ describe("write-through", () => {
     const row = await SavedConsole.findById(c._id);
     expect(row?.folderId).toBeFalsy();
     expect(await manager.canReadWithInheritance(row!, OTHER)).toBe(false);
-    // The editor may still rename it within its scope, and file it into a
-    // private folder of their own (still private).
+    // The editor may still rename it where it is — but not move it, not
+    // even into a private folder of their own (another member's folder).
     expect(
       await manager.renameConsole(c._id.toString(), "secret-2", WS, EDITOR),
     ).toBe(true);
@@ -803,15 +824,16 @@ describe("write-through", () => {
       false,
       "private",
     );
-    expect(
-      await manager.moveConsole(
+    await expect(
+      manager.moveConsole(
         c._id.toString(),
         WS,
         own._id.toString(),
         undefined,
         EDITOR,
       ),
-    ).toBe(true);
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    expect((await SavedConsole.findById(c._id))?.folderId).toBeFalsy();
     expect(
       await manager.canReadWithInheritance(
         (await SavedConsole.findById(c._id))!,

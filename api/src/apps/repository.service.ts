@@ -322,6 +322,11 @@ export class BlobPreconditionError extends Error {
     readonly path: string,
     readonly expected: string | null,
     readonly actual: string | null,
+    /**
+     * A path that must be absent was free, but a file beside it differing
+     * only in letter case is in the way (`foldCase`): that file.
+     */
+    readonly takenAs?: string,
   ) {
     super(
       `${path} changed on ${DEFAULT_BRANCH} since it was read (expected ${expected ?? "absent"}, found ${actual ?? "absent"})`,
@@ -586,6 +591,7 @@ export async function commitBlobsOnBranch(
             rel,
             null,
             await blobOidAt(repoDir, head, variant),
+            variant,
           );
         }
       }

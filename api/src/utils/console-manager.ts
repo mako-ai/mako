@@ -162,6 +162,7 @@ function folderIdForLive(
 function liveConsoleToRow(
   live: LiveConsole,
   folderId: Types.ObjectId | undefined,
+  workspaceId: string,
 ): ISavedConsole {
   const loc = live.location;
   const access: ConsoleAccessLevel =
@@ -180,6 +181,10 @@ function liveConsoleToRow(
       : undefined;
   return {
     _id: live.id,
+    // A console with no row yet (pushed, not indexed — or a file the index
+    // cannot hold, like one in a folder named " ") is read through this
+    // shape too: it must say whose workspace it is in.
+    workspaceId: live.row?.workspaceId ?? new Types.ObjectId(workspaceId),
     name: loc.name,
     code: live.parsed.code,
     language: loc.language,
@@ -251,8 +256,10 @@ export class ConsolePathTakenError extends ConsoleConflictError {
     readonly path: string,
     /** Who asked: a private root is "My Consoles" only to its owner. */
     actorUserId?: string | null,
+    /** What was asked for, when only its letter case differs from `path`. */
+    wantedPath?: string | null,
   ) {
-    super(consolePathTakenMessage(path, actorUserId));
+    super(consolePathTakenMessage(path, actorUserId, wantedPath));
     this.name = "ConsolePathTakenError";
   }
 }
@@ -557,7 +564,7 @@ export class ConsoleManager {
         loadedFolders,
       );
       const consoles = live.map(item =>
-        liveConsoleToRow(item, folderIdForLive(item, folders)),
+        liveConsoleToRow(item, folderIdForLive(item, folders), workspaceId),
       );
 
       const visibleConsoles = userId
@@ -603,7 +610,7 @@ export class ConsoleManager {
       }).sort({ updatedAt: -1 }),
     ]);
     const saved = live.map(item =>
-      liveConsoleToRow(item, folderIdForLive(item, folders)),
+      liveConsoleToRow(item, folderIdForLive(item, folders), workspaceId),
     );
     const all = [...saved, ...drafts];
     const visible = userId
@@ -741,7 +748,7 @@ export class ConsoleManager {
         loadedFolders,
       );
       const consoles = live.map(item =>
-        liveConsoleToRow(item, folderIdForLive(item, folders)),
+        liveConsoleToRow(item, folderIdForLive(item, folders), workspaceId),
       );
 
       const folderById = new Map<string, IConsoleFolder>();
@@ -929,7 +936,11 @@ export class ConsoleManager {
       const folders = await ConsoleFolder.find({
         workspaceId: new Types.ObjectId(workspaceId),
       });
-      const row = liveConsoleToRow(live, folderIdForLive(live, folders));
+      const row = liveConsoleToRow(
+        live,
+        folderIdForLive(live, folders),
+        workspaceId,
+      );
       const displayPath = live.location.folderSegments.length
         ? `${live.location.folderSegments.join("/")}/${live.location.name}`
         : live.location.name;
@@ -1535,6 +1546,55 @@ export class ConsoleManager {
     }
   }
 
+  /**
+   * Where a console may be filed, on every route that moves it:
+   * - a private console shared with someone is renamed by them where it is
+   *   — moving it (even to its owner's root) is its owner's or an admin's
+   *   call (the editor's dialog says so; the API let a shared editor move
+   *   it out of its owner's folder);
+   * - for anyone, a private folder takes only its owner's own private
+   *   consoles — a console's file lives in its owner's tree, so filing it
+   *   in another member's folder left the file in one tree and the row in
+   *   another's folder.
+   */
+  private async assertMayFile(
+    current: ISavedConsole,
+    change: { folderId?: string | null; access?: ConsoleAccessLevel },
+    visibleBefore: ConsoleAccessLevel,
+    actor: { userId?: string; isAdmin?: boolean },
+  ): Promise<void> {
+    if (change.folderId === undefined) return;
+    const from = current.folderId?.toString() ?? null;
+    const to = change.folderId ?? null;
+    if (from === to) return;
+    if (visibleBefore === "private" && !mayChangeVisibility(current, actor)) {
+      throw new ConsoleScopeError(
+        "Only the console's owner or a workspace admin can move it — you can rename it where it is.",
+      );
+    }
+    if (!to) return;
+    const folder = await ConsoleFolder.findOne({
+      _id: new Types.ObjectId(to),
+      workspaceId: current.workspaceId,
+    })
+      .select("access isPrivate ownerId")
+      .lean<Pick<IConsoleFolder, "access" | "isPrivate" | "ownerId"> | null>();
+    if (!folder) {
+      throw new ConsoleConflictError(
+        "That folder no longer exists. Reload and choose another.",
+      );
+    }
+    const folderAccess =
+      folder.access || (folder.isPrivate ? "private" : "workspace");
+    if (folderAccess !== "private") return;
+    const ownerId = (current.owner_id || current.createdBy)?.toString();
+    if (folder.ownerId?.toString() !== ownerId) {
+      throw new ConsoleScopeError(
+        "A console can only be filed in its owner's own folders or in a Workspace folder.",
+      );
+    }
+  }
+
   private async relocateConsoleOnce(
     consoleId: string,
     workspaceId: string,
@@ -1592,6 +1652,7 @@ export class ConsoleManager {
     ) {
       throw new ConsoleScopeError();
     }
+    await this.assertMayFile(current, change, visibleBefore, options);
 
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
     if (change.name !== undefined) {
@@ -1659,7 +1720,11 @@ export class ConsoleManager {
             error.path === toPath ||
             error.path === chartSidecarPath(toPath)
           ) {
-            throw new ConsolePathTakenError(error.path, options.userId);
+            throw new ConsolePathTakenError(
+              error.takenAs ?? error.path,
+              options.userId,
+              error.path,
+            );
           }
           return "drift";
         }
@@ -1919,7 +1984,7 @@ export class ConsoleManager {
     ]);
     if (def) throw new ConsolePathTakenError(path, actorUserId);
     const taken = variant ?? row?.path;
-    if (taken) throw new ConsolePathTakenError(taken, actorUserId);
+    if (taken) throw new ConsolePathTakenError(taken, actorUserId, path);
   }
 
   /**
@@ -2463,6 +2528,9 @@ export class ConsoleManager {
         name: consoleName,
         workspaceId: new Types.ObjectId(workspaceId),
         isSaved: true, // Only match saved consoles, not drafts
+        // A console in the trash holds no name: its file is gone, nothing
+        // shows there, and a restore picks "name (2)" when it is taken.
+        is_deleted: { $ne: true },
       };
 
       if (folderId) {
@@ -2592,6 +2660,15 @@ export class ConsoleManager {
   ): Promise<string | undefined> {
     if (folderParts.length === 0) {
       return undefined;
+    }
+    // A directory name a folder record cannot hold (blank, or padded with
+    // spaces — a laptop can push one) is refused in words, never a 500
+    // from the folder's validation.
+    const bad = folderParts.find(name => !storableFolderName(name));
+    if (bad !== undefined) {
+      throw new ConsoleConflictError(
+        `Mako cannot save into the folder “${bad}”: a folder name cannot be blank or start or end with a space. Rename that folder in the repository, or save a copy elsewhere.`,
+      );
     }
     const id = await ensureFolderChain(folderParts, workspaceId, scope);
     return id?.toString();
@@ -2899,12 +2976,16 @@ export class ConsoleManager {
       set.path = committed.path;
       set.sourceBlobSha = committed.sourceBlobSha;
     }
+    // The revision moves: an open tab (another window, a reload) pulls
+    // the restored console — its name ("name (2)"), its place — through
+    // the revision sync, and drops its "deleted" banner. Without the bump
+    // the sync saw nothing new and the tab stayed on the old name.
     const result = await SavedConsole.updateOne(
       {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: set, $unset: { deletedAt: "" } },
+      { $set: set, $unset: { deletedAt: "" }, $inc: { draftRevision: 1 } },
     );
     return result.modifiedCount > 0;
   }

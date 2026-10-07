@@ -185,7 +185,13 @@ describe("a name that differs only in letter case is taken (one file on macOS / 
       access: "workspace",
     });
     expect(fresh.status).toBe(409);
-    expect(fresh.body.error).toContain("already exists");
+    // The existing console's name, not the typed one, and why it counts.
+    expect(fresh.body.error).toContain(
+      "A console named 'report' already exists",
+    );
+    expect(fresh.body.error).toContain(
+      "names that differ only in upper/lower case count as the same",
+    );
     const draft = await SavedConsole.create({
       workspaceId: new Types.ObjectId(WS),
       name: "Untitled",
@@ -204,6 +210,7 @@ describe("a name that differs only in letter case is taken (one file on macOS / 
       access: "workspace",
     });
     expect(r.status).toBe(409);
+    expect(r.body.error).toContain("A console named 'report' already exists");
     expect(await fileAt("consoles/Report.sql")).toBeNull();
     expect(await fileAt("consoles/REPORT.sql")).toBeNull();
     expect(await fileAt("consoles/report.sql")).toBe(LAPTOP);
