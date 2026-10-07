@@ -270,7 +270,9 @@ export async function deleteFlowFile(
     }
   }
   if (oid === null) {
-    const movedTo = head ? await fileListingAlias(repoDir, head, slug) : null;
+    const movedTo = head
+      ? await fileListingAlias(repoDir, head, workspaceId, slug)
+      : null;
     if (movedTo) {
       throw new FlowFileConflictError(
         `the flow was renamed (its file is now ${movedTo}) while it was being deleted; nothing was deleted — reload and retry`,
@@ -300,11 +302,20 @@ export async function deleteFlowFile(
 async function fileListingAlias(
   repoDir: string,
   head: string,
+  workspaceId: string,
   slug: string,
 ): Promise<string | null> {
+  // A file some row already owns is that row's (an old name it kept in its
+  // file), not this flow moved.
+  const owned = new Set(
+    (await Flow.find({ workspaceId }).select("slug").lean()).map(r => r.slug),
+  );
   const paths = (await listTree(repoDir, head))
     .map(entry => entry.path)
-    .filter(p => slugFromFlowFilePath(p) !== null);
+    .filter(p => {
+      const fileSlug = slugFromFlowFilePath(p);
+      return fileSlug !== null && !owned.has(fileSlug);
+    });
   if (paths.length === 0) return null;
   for (const [p, buf] of await readBlobsBatch(repoDir, head, paths)) {
     if (parseFlowFile(buf.toString("utf8"))?.aliases?.includes(slug)) {

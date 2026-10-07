@@ -277,12 +277,12 @@ export async function renameFlow(
   const slugChanged = newSlug !== undefined && newSlug !== oldSlug;
   if (slugChanged) {
     if (!isValidFlowSlug(newSlug)) {
-      const unsafe = unsafeSlugReason(newSlug);
-      if (unsafe) throw new RenameError(unsafe);
       throw new RenameError(
         `"${newSlug}" is not a valid file name: lowercase letters, digits and single dashes, up to 64 characters (it becomes flows/${newSlug}.yml).`,
       );
     }
+    const unsafe = unsafeSlugReason(newSlug);
+    if (unsafe) throw new RenameError(unsafe);
     // Taken by another flow's current slug OR by an old name it still
     // answers to — an old link must never start opening a different flow.
     const holder = await Flow.findOne({

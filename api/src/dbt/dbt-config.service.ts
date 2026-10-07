@@ -1491,7 +1491,7 @@ export async function deleteDbtJobFile(
     oid = null;
   }
   if (oid === null) {
-    const movedTo = await jobFileListingAlias(repoDir, live);
+    const movedTo = await jobFileListingAlias(repoDir, workspaceId, live);
     if (movedTo) {
       throw new DbtConfigConflictError(
         `the job was renamed (its file is now ${movedTo}) while it was being deleted; nothing was deleted — reload and retry`,
@@ -1520,10 +1520,22 @@ export async function deleteDbtJobFile(
 /** A job file at main listing `slug` among its old names, if any. */
 async function jobFileListingAlias(
   repoDir: string,
+  workspaceId: string,
   slug: string,
 ): Promise<string | null> {
+  // A file some job row already owns is that job's, not this one moved.
+  const owned = new Set(
+    (
+      await DbtJob.find({ workspaceId: new Types.ObjectId(workspaceId) })
+        .select("slug")
+        .lean()
+    ).map(r => r.slug),
+  );
   const paths = (await globTree(repoDir, MAIN, "dbt/jobs/*.yml", 1000)).filter(
-    p => slugFromJobFilePath(p) !== null,
+    p => {
+      const fileSlug = slugFromJobFilePath(p);
+      return fileSlug !== null && !owned.has(fileSlug);
+    },
   );
   if (paths.length === 0) return null;
   for (const [p, buf] of await readBlobsBatch(repoDir, MAIN, paths)) {
