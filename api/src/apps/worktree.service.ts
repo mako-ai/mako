@@ -127,6 +127,8 @@ import {
   parseAppRepoPath,
   appTreeRoot,
   isSafeSegment,
+  newSegmentProblem,
+  normalizeName,
   parseAppFolderPath,
   parseAppManifest,
   setManifestTitle,
@@ -760,7 +762,9 @@ export interface AppFolderTarget {
 
 /** Parse a folder path (`apps/Sales`, `users/<id>/apps`) into a target. */
 export function folderTargetFromPath(folderPath: string): AppFolderTarget {
-  const parsed = parseAppFolderPath(folderPath.replace(/\/+$/, ""));
+  const parsed = parseAppFolderPath(
+    folderPath.trim().normalize("NFC").replace(/\/+$/, ""),
+  );
   if (!parsed) {
     throw new AppFolderError(
       `Not an app folder: ${JSON.stringify(folderPath)} (expected apps/… or users/<id>/apps/…)`,
@@ -810,7 +814,10 @@ async function uniqueSlug(
   }
   // Free in git AND in a case-insensitive checkout: with the folder chain
   // clear, a twin can only be of the slug itself.
+  // …and a name a new app may take at all: never a Windows device name
+  // (`Con` → `con-2`) nor one that reads as an id.
   const free = (slug: string) => {
+    if (newSegmentProblem(slug)) return false;
     const at = appRepoPath({ ...target, slug });
     return !taken.has(at) && !caseTwinOf(taken, at);
   };
@@ -950,22 +957,22 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
   project: IAppProject;
   takenOver: SupersededAlias[];
 }> {
-  const title = input.title.trim() || "Untitled app";
+  const title = normalizeName(input.title) || "Untitled app";
   // Git first (#956): do not init a local-only repo that then lets consoles,
   // dbt, and prompt writes skip the 412. A GitHub binding (or a test that
   // already seeded the bare repo) is required.
   const repoDir = await requireWorkspaceRepo(input.workspaceId);
   const mirror = await resolveMirrorTarget(input.workspaceId);
-  const target: AppFolderTarget = input.folder ?? {
-    scope: "workspace",
-    folderSegments: [],
-  };
+  const target: AppFolderTarget = normalizedTarget(
+    input.folder ?? { scope: "workspace", folderSegments: [] },
+  );
   if (target.scope === "private") {
     target.ownerId = target.ownerId ?? input.userId;
     if (!target.ownerId) {
       throw new Error("A personal app needs a signed-in owner");
     }
   }
+  assertNewFolderNames(target, await loadAppsIndex(input.workspaceId));
   const slug =
     input.slug ?? (await uniqueSlug(input.workspaceId, title, target));
   const appPath = appRepoPath({ ...target, slug });
@@ -1118,6 +1125,44 @@ function folderPathOf(target: AppFolderTarget): string {
     appTreeRoot(target.scope, target.ownerId),
     ...target.folderSegments,
   ].join("/");
+}
+
+/** A target as it will be stored: every folder name in NFC (normalizeName). */
+function normalizedTarget<T extends AppFolderTarget>(target: T): T {
+  return {
+    ...target,
+    folderSegments: target.folderSegments.map(seg => seg.normalize("NFC")),
+  };
+}
+
+/**
+ * Refuse a folder chain whose NEW folders — the ones the commit would
+ * create — carry a name {@link newSegmentProblem} forbids. A folder that
+ * already exists (listed, or the parent of an app) is not being named now:
+ * an old `con` folder pushed from a laptop stays usable, and an app can be
+ * moved out of it.
+ */
+function assertNewFolderNames(
+  target: AppFolderTarget,
+  snapshot: {
+    folders: readonly string[];
+    apps: ReadonlyArray<{ path: string }>;
+  },
+): void {
+  let at = folderPathOf({ ...target, folderSegments: [] });
+  for (const seg of target.folderSegments) {
+    at = `${at}/${seg}`;
+    const exists =
+      snapshot.folders.includes(at) ||
+      snapshot.apps.some(app => app.path.startsWith(`${at}/`));
+    if (exists) continue;
+    const problem = newSegmentProblem(seg);
+    if (problem) {
+      throw new AppFolderError(
+        `Invalid folder name: ${JSON.stringify(seg)} — ${problem}`,
+      );
+    }
+  }
 }
 
 /** Is `candidate` the app itself or something inside it? */
@@ -1552,7 +1597,8 @@ export async function renameProject(
   }
   const currentTitle = project.title ?? location.slug;
   const titleChanges = title !== undefined && title !== currentTitle;
-  const slug = change.slug?.trim() ?? location.slug;
+  const slug =
+    change.slug === undefined ? location.slug : normalizeName(change.slug);
   if (slug !== location.slug) {
     const { to, commit, aliasesAdded, superseded } = await moveProjectWith(
       project,
@@ -1648,8 +1694,20 @@ async function moveProjectWith(
   const workspaceId = project.workspaceId.toString();
   const repoDir = await requireWorkspaceRepo(workspaceId);
   const from = appRootFor(project);
-  const slug = target.slug ?? project.slug ?? from.split("/").pop() ?? "app";
-  if (!isSafeSegment(slug)) {
+  const currentSlug = from.split("/").pop() ?? "app";
+  const slug = normalizeName(target.slug ?? currentSlug);
+  target = normalizedTarget(target);
+  // Every folder name must be one git and a URL take (a 400, not a crash
+  // in appRepoPath); a NEW app name must also be one a person may choose.
+  folderPathOf(target);
+  if (slug !== currentSlug) {
+    const problem = newSegmentProblem(slug);
+    if (problem) {
+      throw new AppFolderError(
+        `Invalid app folder name: ${JSON.stringify(slug)} — ${problem}`,
+      );
+    }
+  } else if (!isSafeSegment(slug)) {
     throw new AppFolderError(
       `Invalid app folder name: ${JSON.stringify(slug)}`,
     );
@@ -1660,6 +1718,7 @@ async function moveProjectWith(
   if (!snapshot.apps.some(a => a.path === from)) {
     throw new AppFolderError(`App folder ${from} is not on main`, 404);
   }
+  assertNewFolderNames(target, snapshot);
   const taken = await occupiedPaths(workspaceId);
   if (taken.has(to)) throw occupiedPathError(to, snapshot);
   const twin = caseTwinOf(await occupiedAfterLeaving(repoDir, taken, from), to);
@@ -1737,11 +1796,13 @@ export async function createAppFolder(
     throw new AppFolderError("A folder needs a name");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  target = normalizedTarget(target);
   const folderPath = folderPathOf(target);
   const snapshot = await loadAppsIndex(workspaceId);
   if (snapshot.folders.includes(folderPath)) {
     throw new AppFolderError(`${folderPath} already exists`, 409);
   }
+  assertNewFolderNames(target, snapshot);
   const taken = await occupiedPaths(workspaceId);
   const twin = caseTwinOf(taken, folderPath);
   if (twin) throw caseTwinError(twin, folderPath, snapshot, taken);
@@ -1775,6 +1836,7 @@ export async function moveAppFolder(
     throw new AppFolderError("The tree roots cannot be moved");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  to = normalizedTarget(to);
   const fromPath = folderPathOf(from);
   const toPath = folderPathOf(to);
   if (fromPath === toPath) return { from: fromPath, to: toPath, apps: 0 };
@@ -1785,6 +1847,7 @@ export async function moveAppFolder(
   if (!snapshot.folders.includes(fromPath)) {
     throw new AppFolderError(`Folder ${fromPath} not found`, 404);
   }
+  assertNewFolderNames(to, snapshot);
   const taken = await occupiedPaths(workspaceId);
   if (taken.has(toPath)) {
     throw new AppFolderError(`${toPath} already exists`, 409);

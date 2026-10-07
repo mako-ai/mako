@@ -40,10 +40,18 @@ export function appRootOf(app: Pick<AppMeta, "id" | "slug" | "path">): string {
 /**
  * What an app's URL uses: its slug when it sits at the top of the workspace
  * tree (`/apps/report`, readable and stable), its id otherwise — a nested
- * folder name may be shared by another app, and an id never is.
+ * folder name may be shared by another app, and an id never is. A folder
+ * name that looks like an id (24 hex; Mako never gives one, a laptop might)
+ * is not a link either: every resolver reads it as an id first, so it
+ * would open another app, or none. Mirrors `appUrlFor` in
+ * api/src/rename/handlers/app.ts.
  */
 export function appUrlRef(app: Pick<AppMeta, "id" | "slug" | "path">): string {
-  return app.slug && appRootOf(app) === `apps/${app.slug}` ? app.slug : app.id;
+  return app.slug &&
+    appRootOf(app) === `apps/${app.slug}` &&
+    !/^[0-9a-f]{24}$/i.test(app.slug)
+    ? app.slug
+    : app.id;
 }
 
 /**

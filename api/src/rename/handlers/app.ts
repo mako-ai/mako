@@ -20,7 +20,9 @@ import {
 } from "../../apps/app-index.service";
 import {
   APPS_DIR,
-  isSafeSegment,
+  isAppId,
+  newSegmentProblem,
+  normalizeName,
   parseAppRepoPath,
 } from "../../apps/app-paths";
 import { authorizeAppMove } from "../../apps/app-authorization";
@@ -45,10 +47,16 @@ import {
  * The in-app link for an app, as the client builds it (`appUrlRef` in
  * app/src/store/appsStore.ts): the slug for a top-level app of the
  * workspace tree, the id for everything else — a nested folder name may be
- * shared by another app, an id never is.
+ * shared by another app, an id never is (and a top-level name that looks
+ * like an id would be read as one).
  */
 export function appUrlFor(app: Pick<AppIndexRow, "appId" | "path" | "slug">) {
-  const ref = app.path === `${APPS_DIR}/${app.slug}` ? app.slug : app.appId;
+  // A folder name that looks like an id (pushed from a laptop; Mako never
+  // gives one) would be read as an id — another app's, or none.
+  const ref =
+    app.path === `${APPS_DIR}/${app.slug}` && !isAppId(app.slug)
+      ? app.slug
+      : app.appId;
   return `/apps/${encodeURIComponent(ref)}`;
 }
 
@@ -130,11 +138,14 @@ export const appRenameHandler: RenameHandler = {
     const from = appRootFor(project);
     const source = parseAppRepoPath(from);
     if (!source) throw new RenameError(`Not an app path: ${from}`, 404);
-    const slug = request.slug?.trim();
+    // Trimmed and in NFC, as every app name is stored (normalizeName).
+    const slug =
+      request.slug === undefined ? undefined : normalizeName(request.slug);
     if (slug !== undefined && slug !== source.slug) {
-      if (!isSafeSegment(slug)) {
+      const problem = newSegmentProblem(slug);
+      if (problem) {
         throw new RenameError(
-          `Invalid app folder name: ${JSON.stringify(slug)}`,
+          `Invalid app folder name: ${JSON.stringify(slug)} — ${problem}`,
         );
       }
       // A slug change moves the folder: the move rules apply, as they do
