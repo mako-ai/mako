@@ -152,7 +152,12 @@ export function resolveAppRefVia<T extends RefApp>(
   apps: readonly T[],
   ref: string,
 ): { app: T; via: "current" | "alias" } | null {
-  const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  // NFC, as every app name is stored: `é` typed as e + U+0301 is `é`.
+  const clean = ref
+    .trim()
+    .normalize("NFC")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
   if (!clean) return null;
   const current = (app: T | undefined) =>
     app ? { app, via: "current" as const } : null;

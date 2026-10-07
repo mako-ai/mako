@@ -131,6 +131,15 @@ describe("resolveAppRef", () => {
     expect(resolveAppRef(list, "")).toBeNull();
     expect(resolveAppRef(list, "nope")).toBeNull();
   });
+
+  it("reads a name typed in NFD as the NFC name it is stored under, as the server does", () => {
+    const withCafe = [
+      ...list,
+      { id: "6aaaed797eb3d8d53c497fc8", slug: "café", path: "apps/café" },
+    ];
+    expect(resolveAppRef(withCafe, "cafe\u0301")?.path).toBe("apps/café");
+    expect(resolveAppRef(withCafe, "apps/cafe\u0301")?.path).toBe("apps/café");
+  });
 });
 
 describe("resolveAppRef aliases (the server's findAppInSnapshot, mirrored)", () => {

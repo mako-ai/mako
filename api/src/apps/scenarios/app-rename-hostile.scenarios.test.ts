@@ -204,7 +204,14 @@ describe("hostile slugs", () => {
     const nfd = "café";
     expect(nfd).not.toBe("café");
     expect(nfd.normalize("NFC")).toBe("café");
-    // apps/café exists (NFC): the NFD spelling is the same name.
+    // apps/café exists (NFC): the NFD spelling is the same name — to a
+    // resolver too.
+    expect((await resolveObjectRef(admin, "app", nfd))?.current.path).toBe(
+      "apps/café",
+    );
+    expect((await resolveProjectRef(WS, `apps/${nfd}`))?.path).toBe(
+      "apps/café",
+    );
     await expectRefused({ ref: "a", slug: nfd }, 409);
     await expectRefused({ ref: "a", slug: "CAFÉ" }, 409);
     // Free, the NFD spelling lands as NFC.

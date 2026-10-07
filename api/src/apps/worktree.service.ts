@@ -3871,7 +3871,7 @@ export async function resolveProjectRef(
   options: { fetchOnMiss?: boolean } = {},
 ): Promise<IAppProject | null> {
   const ws = new Types.ObjectId(workspaceId);
-  const clean = ref.trim().replace(/^\/+/, "");
+  const clean = ref.trim().normalize("NFC").replace(/^\/+/, "");
   const found = await resolveAppRefVia(workspaceId, clean, options);
   const fromFolder = async (folder: AppIndexRow): Promise<IAppProject> => {
     const row = await AppProject.findOne({

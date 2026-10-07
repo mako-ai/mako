@@ -1883,7 +1883,13 @@ export function findAppInSnapshotVia(
   snapshot: AppsIndexSnapshot,
   ref: string,
 ): { app: AppIndexRow; via: "current" | "alias" } | null {
-  const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  // NFC, as every app name is stored (normalizeName): `é` typed as
+  // e + U+0301 is the same name as `é`.
+  const clean = ref
+    .trim()
+    .normalize("NFC")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
   if (!clean) return null;
   const apps = snapshot.apps;
   const current = (app: AppIndexRow | undefined | null) =>
