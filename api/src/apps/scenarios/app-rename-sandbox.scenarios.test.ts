@@ -22,10 +22,12 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Types } from "mongoose";
 import { renameObject } from "../../rename/registry";
+import { loadAppsIndex } from "../app-index.service";
 import {
   ensureBox,
   ensureWorktree,
   forgetBoxCaches,
+  listFiles,
   resolveProjectRef,
   sessionKeyFor,
 } from "../worktree.service";
@@ -342,5 +344,186 @@ describe("my drafts when another member renames the app", () => {
       "export const fresh = true;\n",
     );
     expect(await fileAt(WS, "apps/c/src/new.ts")).toBeNull();
+  });
+});
+
+/**
+ * Everything about a working copy a person could notice: HEAD, the index
+ * entry by entry (staged or not, modes, conflict stages), status, and every
+ * file's bytes and mode outside .git — ignored files included.
+ */
+async function snapshotOf(box: Awaited<ReturnType<typeof myBox>>) {
+  const r = box.root;
+  return {
+    head: await box.head(),
+    index: await box.sh(`git -C '${r}' ls-files -s`),
+    status: await box.status(),
+    staged: await box.sh(`git -C '${r}' diff --cached`),
+    unstaged: await box.sh(`git -C '${r}' diff`),
+    files: await box.sh(
+      `cd '${r}' && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort | while read -r f; do printf '%s %s ' "$f" "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")"; shasum -a 256 < "$f"; done`,
+    ),
+  };
+}
+
+describe("the paths a catch-up rarely takes", () => {
+  it("(a) the catch-up's own merge of main fails (my local commits conflict): my tree is restored byte for byte — tracked, staged, untracked — and I am told", async () => {
+    const box = await myBox();
+    // A local commit, never pushed, that main will contradict.
+    await box.write(
+      "apps/x/src/main.tsx",
+      "export const x = 'local commit';\n",
+    );
+    await box.sh(`git -C '${box.root}' commit -q -am "local work"`);
+    await externalCommit(WS, {
+      "apps/x/src/main.tsx": "export const x = 'main';\n",
+    });
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+    // Drafts of every kind, in the renamed app and outside it.
+    await box.write("apps/a/src/main.tsx", MAIN_TSX.replace("line 2", "MINE"));
+    await box.write("apps/a/src/other.ts", "export const other = 'staged';\n");
+    await box.write("apps/a/src/staged-new.ts", "export const sn = 1;\n");
+    await box.sh(
+      `git -C '${box.root}' add apps/a/src/other.ts apps/a/src/staged-new.ts`,
+    );
+    // Staged, then edited again: index and work tree differ.
+    await box.write(
+      "apps/a/src/other.ts",
+      "export const other = 'after staging';\n",
+    );
+    await box.write("apps/a/src/new.ts", "export const fresh = true;\n");
+    await box.write("apps/a/run.sh", "#!/bin/sh\necho hi\n");
+    await box.sh(`chmod +x '${box.root}/apps/a/run.sh'`);
+    await box.write("apps/x/notes.md", "outside the renamed app\n");
+    await box.write(
+      "apps/a/node_modules/pkg/index.js",
+      "module.exports = 1;\n",
+    );
+    const before = await snapshotOf(box);
+
+    const outcome = await boxPull(box.ctx);
+    expect(outcome?.failed).toMatch(/conflict/i);
+    expect(await snapshotOf(box)).toEqual(before);
+    await expectNoMarkers(box.root);
+    // …and also saved on a branch, which the message names.
+    expect(outcome?.draftsBranch).toMatch(/^mako-drafts\//);
+    expect(await box.branches()).toEqual([outcome?.draftsBranch]);
+    const notice = await noticeFor();
+    expect(notice).toMatch(
+      /could not catch up with main \(apps\/a → apps\/acq\)/,
+    );
+    expect(notice).toMatch(/untouched/);
+    expect(notice).toContain(outcome?.draftsBranch);
+  });
+
+  it("(b) a detached HEAD: never caught up, never touched (as before); told once when main renamed a folder my drafts are in; switching back to the branch brings them along", async () => {
+    const box = await myBox();
+    await box.sh(`git -C '${box.root}' checkout -q --detach HEAD`);
+    await box.write("apps/a/src/main.tsx", MAIN_TSX.replace("line 2", "MINE"));
+    await box.write("apps/a/src/new.ts", "export const fresh = true;\n");
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+    const before = await snapshotOf(box);
+
+    const outcome = await boxPull(box.ctx);
+    expect(outcome).toMatchObject({ plain: true, failed: "detached HEAD" });
+    expect(await snapshotOf(box)).toEqual(before);
+    const notice = await getBoxState(sessionKeyFor(WS, ME));
+    expect(notice?.notice?.message).toMatch(
+      /detached commit, not a branch, so it was not caught up with main — which renamed apps\/a → apps\/acq\. Your 2 uncommitted changes there are untouched/,
+    );
+    expect(notice?.notice?.message).toContain("git switch main");
+    // The next pull says nothing new.
+    const at = notice?.notice?.at;
+    await boxPull(box.ctx);
+    expect((await getBoxState(sessionKeyFor(WS, ME)))?.notice?.at).toBe(at);
+    // The advice works: back on main, the next catch-up carries them.
+    await box.sh(`git -C '${box.root}' switch -q main`);
+    const carried = await boxPull(box.ctx);
+    expect(carried?.plain).toBe(false);
+    expect(await box.head()).toBe(await headOf(WS));
+    expect(await box.read("apps/acq/src/main.tsx")).toBe(
+      MAIN_TSX.replace("line 2", "MINE"),
+    );
+    expect(await box.read("apps/acq/src/new.ts")).toBe(
+      "export const fresh = true;\n",
+    );
+  });
+
+  it("(b) a detached HEAD with nothing in a renamed folder: as before, silently", async () => {
+    const box = await myBox();
+    await box.sh(`git -C '${box.root}' checkout -q --detach HEAD`);
+    await box.write("apps/x/src/main.tsx", "export const x = 2;\n");
+    await renameObject(other, "app", { ref: "a", slug: "acq" });
+    const before = await snapshotOf(box);
+    expect(await boxPull(box.ctx)).toBeNull();
+    expect(await snapshotOf(box)).toEqual(before);
+    expect(await noticeFor()).toBeUndefined();
+  });
+});
+
+describe("ignored files (node_modules, dist) in a renamed app", () => {
+  it("follow a rename — with drafts or without — so no husk of the old app is left and the dev server needs no reinstall", async () => {
+    for (const dirty of [false, true]) {
+      await resetWorkspace(env, WS, {
+        "apps/a/mako.json": manifest("A"),
+        "apps/a/src/main.tsx": MAIN_TSX,
+      });
+      forgetBoxCaches(sessionKeyFor(WS, ME));
+      const box = await myBox();
+      await box.write("apps/a/node_modules/vite/index.js", "export {};\n");
+      await box.write("apps/a/dist/index.html", "<html></html>\n");
+      if (dirty) {
+        await box.write(
+          "apps/a/src/main.tsx",
+          MAIN_TSX.replace("line 2", "MINE"),
+        );
+      }
+      await renameObject(other, "app", { ref: "a", slug: "acq" });
+      const outcome = await boxPull(box.ctx);
+      expect(outcome?.plain, `dirty=${dirty}`).toBe(!dirty);
+      expect(await box.read("apps/acq/node_modules/vite/index.js")).toBe(
+        "export {};\n",
+      );
+      expect(await box.read("apps/acq/dist/index.html")).toBe(
+        "<html></html>\n",
+      );
+      await expect(fs.stat(path.join(box.root, "apps/a"))).rejects.toThrow();
+      expect(await box.status()).toEqual(
+        dirty ? [" M apps/acq/src/main.tsx"] : [],
+      );
+    }
+  });
+
+  it("left behind after a move to another depth, they confuse nothing: no phantom app in the index or the list, the app's files are its own", async () => {
+    const box = await myBox();
+    await box.write("apps/a/node_modules/vite/index.js", "export {};\n");
+    const project = (await resolveProjectRef(WS, "a"))!;
+    const { moveProject } = await import("../worktree.service");
+    await moveProject(
+      project,
+      { scope: "workspace", folderSegments: ["Team"] },
+      { userId: OTHER, role: "admin" },
+    );
+    await boxPull(box.ctx);
+    // The ignored-only husk stays (relative links would not survive the
+    // depth change; nothing is ever deleted)…
+    expect(await box.read("apps/a/node_modules/vite/index.js")).toBe(
+      "export {};\n",
+    );
+    expect(await box.status()).toEqual([]);
+    // …and is invisible: git sees nothing there, so neither does Mako.
+    const snapshot = await loadAppsIndex(WS);
+    expect(snapshot.apps.map(a => a.path).sort()).toEqual([
+      "apps/Team/a",
+      "apps/x",
+    ]);
+    expect(snapshot.folders).toEqual(["apps/Team"]);
+    const moved = (await resolveProjectRef(WS, "apps/Team/a"))!;
+    const { entries } = await listFiles(moved, ME);
+    expect(entries.map(e => e.path).sort()).toEqual([
+      "mako.json",
+      "src/main.tsx",
+      "src/other.ts",
+    ]);
   });
 });

@@ -59,6 +59,10 @@ export interface CatchUpOutcome {
   draftsBranch?: string;
   /** The catch-up could not happen (its own merge failed); drafts restored. */
   failed?: string;
+  /** The folder renames on main the drafts sat in. */
+  renames?: Array<{ from: string; to: string }>;
+  /** Ignored leftovers (node_modules, dist…) moved along: from → to. */
+  ignoredMoved?: Array<{ from: string; to: string }>;
   /** What to tell the person, when anything beyond "caught up" happened. */
   message?: string;
 }
@@ -143,6 +147,125 @@ export function parsePorcelainZ(out: string): StatusEntry[] {
   return entries;
 }
 
+type GitOut = (...args: string[]) => Promise<string>;
+
+/**
+ * Folders main renamed since the box's HEAD forked from `upstream`: old →
+ * new. Only folders that are GONE upstream count: a file merely moved out
+ * of a folder that stays is not a folder rename.
+ */
+async function goneFolders(
+  out: GitOut,
+  upstream: string,
+): Promise<Array<{ from: string; to: string }>> {
+  const base = (await out("merge-base", "HEAD", upstream)).trim();
+  const renames = folderRenames(
+    await out("diff", "-M", "--name-status", "-z", base, upstream),
+  );
+  const gone: Array<{ from: string; to: string }> = [];
+  for (const r of renames) {
+    const there = await out("ls-tree", "--name-only", upstream, "--", r.from);
+    if (!there.trim()) gone.push(r);
+  }
+  return gone;
+}
+
+const draftInRenamed = (
+  e: StatusEntry,
+  gone: ReadonlyArray<{ from: string; to: string }>,
+) => [e.path, e.from].some(p => p && mapThroughRenames(p, gone));
+
+/**
+ * A box on a DETACHED HEAD (a `git checkout <sha>` in the terminal) has no
+ * branch, so it follows nothing: it is never caught up, and its working
+ * copy is never touched — exactly as before. What is new is the person
+ * hearing about it when it matters: main renamed a folder their
+ * uncommitted work sits in, so the work will not follow on its own. Null
+ * when the box is not detached, or nothing of theirs is affected.
+ */
+export async function detachedDraftsNotice(
+  ctx: SandboxExecContext,
+  root: string,
+  defaultBranch: string,
+): Promise<{
+  message: string;
+  renames: Array<{ from: string; to: string }>;
+} | null> {
+  const provider = getSandboxProvider();
+  const git = (...args: string[]) =>
+    provider.exec(ctx, ["git", "-C", sh(root), ...args.map(sh)].join(" "), {
+      timeoutMs: 60_000,
+    });
+  const out: GitOut = async (...args) => {
+    const r = await git(...args);
+    if (r.exitCode !== 0) throw new Error((r.stderr || r.stdout).trim());
+    return r.stdout;
+  };
+  if ((await git("symbolic-ref", "-q", "HEAD")).exitCode === 0) return null;
+  const upstream = `refs/remotes/origin/${defaultBranch}`;
+  if ((await git("rev-parse", "--verify", "-q", upstream)).exitCode !== 0) {
+    return null;
+  }
+  if (
+    (await git("merge-base", "--is-ancestor", upstream, "HEAD")).exitCode === 0
+  ) {
+    return null;
+  }
+  const status = parsePorcelainZ(
+    await out("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+  );
+  if (status.length === 0) return null;
+  const gone = await goneFolders(out, upstream);
+  const affected = status.filter(e => draftInRenamed(e, gone));
+  if (affected.length === 0) return null;
+  const moves = gone.map(r => `${r.from} → ${r.to}`).join(", ");
+  return {
+    renames: gone,
+    message: `Your sandbox is on a detached commit, not a branch, so it was not caught up with ${defaultBranch} — which renamed ${moves}. Your ${affected.length} uncommitted change${affected.length === 1 ? "" : "s"} there ${affected.length === 1 ? "is" : "are"} untouched, still at the old path. To bring ${affected.length === 1 ? "it" : "them"} along, switch back to a branch (\`git switch ${defaultBranch}\`, or the branch you were on): the next catch-up carries ${affected.length === 1 ? "it" : "them"} across the rename. If git refuses the switch, nothing is changed.`,
+  };
+}
+
+type Exec = (
+  command: string,
+) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+
+/**
+ * What git never tracks — node_modules, dist, caches — stays in a folder
+ * main renamed: git moves only what it tracks. Moved along when the folder
+ * only changed its name (same depth, so relative links inside
+ * node_modules still hold) and the new folder has none of it yet: the
+ * app's dev server boots without a reinstall, and no ignored-only husk of
+ * the old app is left behind. Anything else stays where it is (the next
+ * dev boot installs afresh); nothing is ever deleted.
+ */
+async function moveIgnoredLeftovers(
+  exec: Exec,
+  root: string,
+  gone: ReadonlyArray<{ from: string; to: string }>,
+): Promise<Array<{ from: string; to: string }>> {
+  const moved: Array<{ from: string; to: string }> = [];
+  for (const r of gone) {
+    if (r.from.split("/").length !== r.to.split("/").length) continue;
+    // Only a folder holding nothing git sees (ignored files alone) moves.
+    const listed = await exec(
+      `cd ${sh(root)} && [ -d ${sh(r.from)} ] && git ls-files -z --cached --others --exclude-standard -- ${sh(r.from)} | head -c 1 | wc -c`,
+    );
+    if (listed.exitCode !== 0 || listed.stdout.trim() !== "0") continue;
+    const entries = await exec(`cd ${sh(`${root}/${r.from}`)} && ls -A1`);
+    for (const name of entries.stdout.split("\n").filter(Boolean)) {
+      const src = `${r.from}/${name}`;
+      const dst = `${r.to}/${name}`;
+      const done = await exec(
+        `cd ${sh(root)} && [ -d ${sh(r.to)} ] && [ ! -e ${sh(dst)} ] && [ ! -L ${sh(dst)} ] && mv ${sh(src)} ${sh(dst)}`,
+      );
+      if (done.exitCode === 0) moved.push({ from: src, to: dst });
+    }
+    // The husk, if nothing is left in it — never a recursive delete.
+    await exec(`cd ${sh(root)} && rmdir ${sh(r.from)} 2>/dev/null; true`);
+  }
+  return moved;
+}
+
 /**
  * Catch the box up with its upstream, carrying the owner's drafts across
  * any folder rename (see the module doc). Assumes the fetch has happened.
@@ -172,10 +295,15 @@ export async function catchUpCarryingDrafts(
     stranded: [],
   };
 
+  const gone = await goneFolders(out, "@{u}");
   const plainMerge = async () => {
     outcome.plain = true;
     const r = await git("merge", "--no-edit", "@{u}");
-    if (r.exitCode !== 0) outcome.failed = (r.stderr || r.stdout).trim();
+    if (r.exitCode !== 0) {
+      outcome.failed = (r.stderr || r.stdout).trim();
+      return outcome;
+    }
+    outcome.ignoredMoved = await moveIgnoredLeftovers(exec, root, gone);
     return outcome;
   };
 
@@ -183,20 +311,7 @@ export async function catchUpCarryingDrafts(
     await out("status", "--porcelain=v1", "-z", "--untracked-files=all"),
   );
   if (status.length === 0) return plainMerge();
-  const base = (await out("merge-base", "HEAD", "@{u}")).trim();
-  const renames = folderRenames(
-    await out("diff", "-M", "--name-status", "-z", base, "@{u}"),
-  );
-  // Only folders that are GONE upstream count as renamed: a file merely
-  // moved out of a folder that stays is not a folder rename.
-  const gone: Array<{ from: string; to: string }> = [];
-  for (const r of renames) {
-    const there = await out("ls-tree", "--name-only", "@{u}", "--", r.from);
-    if (!there.trim()) gone.push(r);
-  }
-  const touched = (e: StatusEntry) =>
-    [e.path, e.from].some(p => p && mapThroughRenames(p, gone));
-  if (!status.some(touched)) return plainMerge();
+  if (!status.some(e => draftInRenamed(e, gone))) return plainMerge();
 
   const head = (await out("rev-parse", "HEAD")).trim();
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
@@ -205,10 +320,6 @@ export async function catchUpCarryingDrafts(
     await out("rev-parse", "--git-path", "mako-drafts-index")
   ).trim();
   const tmpIndex = gitPath.startsWith("/") ? gitPath : `${root}/${gitPath}`;
-  const withIndex = (...args: string[]) =>
-    exec(
-      `GIT_INDEX_FILE=${sh(tmpIndex)} git -C ${sh(root)} ${args.map(sh).join(" ")}`,
-    );
   const must = async (
     r: { exitCode: number; stdout: string; stderr: string },
     what: string,
@@ -218,6 +329,19 @@ export async function catchUpCarryingDrafts(
     }
     return r.stdout.trim();
   };
+  // The person's index as it is — what is staged stays staged if the
+  // catch-up has to be undone (restoreOriginal).
+  const indexAt = (await out("rev-parse", "--git-path", "index")).trim();
+  const index = indexAt.startsWith("/") ? indexAt : `${root}/${indexAt}`;
+  const indexBackup = `${tmpIndex}.original`;
+  await must(
+    await exec(`cp -p ${sh(index)} ${sh(indexBackup)}`),
+    "saving the index",
+  );
+  const withIndex = (...args: string[]) =>
+    exec(
+      `GIT_INDEX_FILE=${sh(tmpIndex)} git -C ${sh(root)} ${args.map(sh).join(" ")}`,
+    );
   const commitTree = async (tree: string, message: string) =>
     must(
       await git("commit-tree", tree, "-p", head, "-m", message),
@@ -251,12 +375,22 @@ export async function catchUpCarryingDrafts(
   const draftPaths = status.filter(e => e.x !== "?").map(e => e.path);
 
   const restoreOriginal = async (reason: string) => {
-    // Back to exactly where the person was: their tree, unstaged.
+    // Back to exactly where the person was, byte for byte: HEAD, every
+    // file (untracked ones included — they are in `all`), and the index as
+    // it was (what was staged stays staged; untracked stays untracked).
     await git("merge", "--abort");
     await git("reset", "-q", "--hard", all);
     await git("reset", "-q", head);
+    await must(
+      await exec(`cp -p ${sh(indexBackup)} ${sh(index)}`),
+      "restoring the index",
+    );
+    await git("update-index", "-q", "--refresh");
+    await exec(`rm -f ${sh(indexBackup)}`);
     outcome.failed = reason;
     outcome.draftsBranch = draftsBranch;
+    outcome.renames = gone;
+    outcome.message = describe(outcome, gone);
     return outcome;
   };
 
@@ -338,12 +472,17 @@ export async function catchUpCarryingDrafts(
     else if (mapped) outcome.keptInPlace.push(p);
   }
 
+  // 6. What git never tracks follows the folder too (moveIgnoredLeftovers).
+  outcome.ignoredMoved = await moveIgnoredLeftovers(exec, root, gone);
+  await exec(`rm -f ${sh(indexBackup)}`);
+
   const lost = outcome.conflicted.length + outcome.stranded.length;
   if (lost === 0) {
     await git("branch", "-D", draftsBranch);
   } else {
     outcome.draftsBranch = draftsBranch;
   }
+  outcome.renames = gone;
   outcome.message = describe(outcome, gone);
   return outcome;
 }
