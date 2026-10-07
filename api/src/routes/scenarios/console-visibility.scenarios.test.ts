@@ -548,6 +548,69 @@ describe("folders: who sees what is in them", () => {
   });
 });
 
+describe("deleting a folder", () => {
+  it("never deletes another member's console: refused with nothing changed", async () => {
+    const w = await world();
+    const before = {
+      PW: await visibility(w.PW._id),
+      files: await rig.consolePaths(),
+    };
+    const commits = await rig.commitCount();
+    // The editor owns the workspace folder "Team" — which holds the
+    // owner's private PW (seen by the workspace through it).
+    const r = await rig.api("DELETE", `/consoles/folders/${w.team}`, editor);
+    expect(r.status, JSON.stringify(r.body)).toBe(403);
+    expect(await visibility(w.PW._id)).toEqual(before.PW);
+    expect(await rig.consolePaths()).toEqual(before.files);
+    expect(await rig.commitCount()).toBe(commits);
+    expect(await ConsoleFolder.findById(w.team)).not.toBeNull();
+  });
+
+  it("deleting one's own folder puts its consoles in the trash — restorable, never gone", async () => {
+    const box = await rig.manager.createFolder(
+      "Scratch",
+      rig.ws,
+      owner.id,
+      undefined,
+      false,
+      "workspace",
+    );
+    const a = await rig.save("a", owner, {
+      folderId: box._id.toString(),
+      code: "SELECT 'keep me'\n",
+    });
+    await rig.shareWith(a._id, editor.id, "editor");
+    const commits = await rig.commitCount();
+    const r = await rig.api("DELETE", `/consoles/folders/${box._id}`, owner);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(await rig.commitCount()).toBe(commits + 1);
+    expect(await rig.fileAt("consoles/Scratch/a.sql")).toBeNull();
+    const trashed = (await rig.row(a._id))!;
+    expect(trashed.is_deleted).toBe(true);
+    expect(trashed.sharedWith?.length).toBe(1);
+    // Restored: back (at its scope's root — the folder is gone), its
+    // content and its history before the delete intact.
+    const restore = await rig.api("PATCH", `/consoles/${a._id}/restore`, owner);
+    expect(restore.status, JSON.stringify(restore.body)).toBe(200);
+    const back = (await rig.row(a._id))!;
+    expect(back.is_deleted).toBeFalsy();
+    expect(back.path).toBe("consoles/a.sql");
+    expect(await rig.fileAt("consoles/a.sql")).toBe("SELECT 'keep me'\n");
+    expect((await rig.history(a._id)).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("a workspace admin may delete a folder holding others' consoles — into the trash", async () => {
+    const w = await world();
+    const r = await rig.api("DELETE", `/consoles/folders/${w.team}`, admin);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const pw = (await rig.row(w.PW._id))!;
+    expect(pw.is_deleted).toBe(true);
+    expect(
+      (await rig.api("PATCH", `/consoles/${w.PW._id}/restore`, owner)).status,
+    ).toBe(200);
+  });
+});
+
 describe("reads: nothing of a console reaches someone who cannot open it", () => {
   it("content, history, diffs, details, results, collaborators, the tree and resolve — all closed on P", async () => {
     const w = await world();

@@ -3912,6 +3912,7 @@ const consoleFolderBackend: FolderBackend = {
       folderId,
       ctx.workspaceId,
       ctx.userId,
+      isWorkspaceAdminRole(ctx.role),
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
     return { ok: true };

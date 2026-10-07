@@ -2502,21 +2502,65 @@ export class ConsoleManager {
   }
 
   /**
-   * Delete a folder from database
+   * Delete a folder and its subfolders. Its consoles go to the TRASH (as
+   * DELETE /:id puts one there) — restorable, with their shares, schedule
+   * and the history up to the delete — never erased: a folder delete used
+   * to hard-delete every row under it, other members' (private ones filed
+   * in a workspace folder included) as much as the actor's own.
+   *
+   * Every console under it must be one the actor may delete on its own:
+   * its owner's, or any for a workspace admin (or a workspace API key);
+   * otherwise nothing changes (`ConsoleScopeError`). The files leave main
+   * in one commit; the folder records go after.
    */
   async deleteFolder(
     folderId: string,
     workspaceId: string,
     userId?: string,
+    isAdmin = false,
   ): Promise<boolean> {
     try {
+      const wid = new Types.ObjectId(workspaceId);
+      const root = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: wid,
+      }).select("_id");
+      if (!root) return false;
+      const folderIds: Types.ObjectId[] = [];
+      const queue = [root._id];
+      const seen = new Set<string>();
+      while (queue.length > 0) {
+        const id = queue.shift() as Types.ObjectId;
+        if (seen.has(id.toString())) continue;
+        seen.add(id.toString());
+        folderIds.push(id);
+        const children = await ConsoleFolder.find({
+          workspaceId: wid,
+          parentId: id,
+        }).select("_id");
+        queue.push(...children.map(c => c._id));
+      }
+      const rows = await SavedConsole.find({
+        workspaceId: wid,
+        folderId: { $in: folderIds },
+      });
+      const live = rows.filter(r => !r.is_deleted);
+      if (
+        userId &&
+        !isAdmin &&
+        live.some(r => (r.owner_id || r.createdBy)?.toString() !== userId)
+      ) {
+        throw new ConsoleScopeError(
+          "This folder holds consoles of other members — only they or a workspace admin can delete those. Move them out first, or ask an admin.",
+        );
+      }
       // Git first: every file under the folder goes in one commit.
-      const rows = await this.consolesUnderFolder(folderId, workspaceId);
-      const paths = rows
-        .map(r => r.path)
-        .filter((p): p is string => Boolean(p));
+      const paths = live
+        .filter(r => r.isSaved !== false && r.path)
+        .map(r => r.path as string);
+      let removal: string | undefined;
       if (paths.length > 0) {
-        await commitConsoleBatch({
+        const committed = await commitConsoleBatch({
           workspaceId,
           actorUserId: userId,
           mutation: {
@@ -2524,35 +2568,46 @@ export class ConsoleManager {
           },
           message: `delete folder (${paths.length} console${paths.length === 1 ? "" : "s"})`,
         });
+        if (!committed.unchanged) removal = committed.commitOid;
       }
-      // Delete all consoles in the folder
-      await SavedConsole.deleteMany({
-        folderId: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      // Delete all child folders recursively
-      const childFolders = await ConsoleFolder.find({
-        parentId: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      for (const childFolder of childFolders) {
-        await this.deleteFolder(childFolder._id.toString(), workspaceId);
+      // Into the trash, out of the folder (a restore brings each back at
+      // its scope's root: its folder is gone).
+      const now = new Date();
+      for (const row of live) {
+        const segment =
+          row.path && removal
+            ? await consoleDeletionSegment(workspaceId, row.path, {
+                removalCommit: removal,
+              }).catch(() => null)
+            : null;
+        await SavedConsole.updateOne(
+          { _id: row._id, workspaceId: wid },
+          {
+            $set: { is_deleted: true, deletedAt: now, folderId: null },
+            ...(segment ? { $addToSet: { historySegments: segment } } : {}),
+          },
+        );
+        publishRealtimeEvent(workspaceId, {
+          type: "console.deleted",
+          consoleId: row._id.toString(),
+        });
       }
-
-      // Delete the folder itself
-      const result = await ConsoleFolder.deleteOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
+      // Rows already in the trash leave the folder too.
+      await SavedConsole.updateMany(
+        { workspaceId: wid, folderId: { $in: folderIds }, is_deleted: true },
+        { $set: { folderId: null } },
+      );
+      const result = await ConsoleFolder.deleteMany({
+        _id: { $in: folderIds },
+        workspaceId: wid,
       });
-
       return result.deletedCount > 0;
     } catch (error) {
       if (
         error instanceof RepoRequiredError ||
         error instanceof BlobPreconditionError ||
-        error instanceof ConsoleConflictError
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleScopeError
       ) {
         throw error;
       }
