@@ -1133,6 +1133,61 @@ export function syncAppsIndexFromRepo(
   });
 }
 
+/**
+ * Commits this instance put on main that are not durable yet: a lifecycle
+ * commit (rename, move, create, delete…) is on the local main while its
+ * push to the workspace's mirror is in flight, and is rolled back if that
+ * push fails. Until the push lands, a read must not index it — the list
+ * would show a rename that may never happen, and a rollback would leave
+ * the rows (and the project row's path) describing it. Workspace → shas.
+ */
+const notYetDurable = new Map<string, Set<string>>();
+
+/**
+ * Keep `sha` out of the index until the returned release is called (once
+ * the mirror has it, or main was rolled back from it). Reads meanwhile are
+ * served from the rows as they are.
+ */
+export function holdBackCommit(workspaceId: string, sha: string): () => void {
+  const held = notYetDurable.get(workspaceId) ?? new Set<string>();
+  held.add(sha);
+  notYetDurable.set(workspaceId, held);
+  return () => {
+    held.delete(sha);
+    if (held.size === 0 && notYetDurable.get(workspaceId) === held) {
+      notYetDurable.delete(workspaceId);
+    }
+  };
+}
+
+/**
+ * A commit that main was rolled back from (its durable push failed) must
+ * not stay indexed. While it was main, a read on this instance may have
+ * synced the index to it — and the "never rebuild backwards" rule below
+ * then keeps serving it, because the commit is still in the object store
+ * and main is its parent: the rename (or create) that never happened would
+ * stay in the list, its row relocated, until main moved on. Rebuild from
+ * main when the index describes `sha`, after any sync in flight (the
+ * serialization guarantees that one has landed first).
+ */
+export function forgetRolledBackCommit(
+  workspaceId: string,
+  sha: string,
+): Promise<void> {
+  return serialized(workspaceId, async () => {
+    invalidateAppsIndexCache(workspaceId);
+    const head = await AppIndexHead.findOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).lean();
+    if (head?.sha !== sha) return;
+    logger.warn("Apps index: rebuilding past a rolled-back commit", {
+      workspaceId,
+      sha,
+    });
+    await syncNow(workspaceId, { force: true });
+  });
+}
+
 async function syncNow(
   workspaceId: string,
   options: { force?: boolean },
@@ -1143,6 +1198,12 @@ async function syncNow(
   if (!sha) return null;
   const ws = new Types.ObjectId(workspaceId);
   const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
+  // Main is a commit whose durable push is still in flight: serve the
+  // index as it is (never cached under that sha) until it lands.
+  if (head && !options.force && notYetDurable.get(workspaceId)?.has(sha)) {
+    const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+    return { sha: head.sha, apps: rows.map(rowToIndex), folders: head.folders };
+  }
   if (head?.schemaVersion === INDEX_SCHEMA_VERSION && !options.force) {
     if (head.sha === sha) {
       // A history scan that failed when these rows were built is retried

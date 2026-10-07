@@ -109,6 +109,8 @@ import {
   aliasForOldPath,
   aliasMatchesRef,
   aliasesForMoves,
+  forgetRolledBackCommit,
+  holdBackCommit,
   invalidateAppsIndexCache,
   loadAppsIndex,
   readIndexedAppsAt,
@@ -879,15 +881,25 @@ export async function commitFilesOnBranch(
   mutation:
     | LifecycleMutation
     | ((head: string) => Promise<LifecycleMutation | null>),
-  options: { message: string; author?: GitAuthor },
+  options: {
+    message: string;
+    author?: GitAuthor;
+    /**
+     * Called with the new commit right before main is swapped to it; the
+     * function it returns is called if the swap is lost. (Lifecycle
+     * commits hold themselves back from the index until durable.)
+     */
+    beforeSwap?: (commitOid: string) => () => void;
+  },
 ): Promise<{ commitOid: string; previousHead: string; unchanged?: true }> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
     if (!head) throw new Error(`Branch ${branch} is missing`);
     const change =
       typeof mutation === "function" ? await mutation(head) : mutation;
-    if (!change)
+    if (!change) {
       return { commitOid: head, previousHead: head, unchanged: true };
+    }
     await fs.mkdir(appsSessionsRoot(), { recursive: true });
     const tmp = await fs.mkdtemp(path.join(appsSessionsRoot(), "lifecycle-"));
     try {
@@ -942,13 +954,18 @@ export async function commitFilesOnBranch(
         message: options.message,
         author: options.author,
       });
+      const undo = options.beforeSwap?.(commitOid);
       const swapped = await updateRefCas(
         repoDir,
         `refs/heads/${branch}`,
         commitOid,
         head,
-      );
+      ).catch((error: unknown) => {
+        undo?.();
+        throw error;
+      });
       if (swapped) return { commitOid, previousHead: head };
+      undo?.();
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
@@ -1051,6 +1068,7 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
   // id goes into the manifest: that is the app's identity from here on,
   // whatever folder it is later filed under.
   let scaffoldCommit: { commitOid: string; previousHead: string } | null = null;
+  let releaseScaffold: (() => void) | undefined;
   try {
     const scaffold = createAppsScaffold({
       title: project.title,
@@ -1083,6 +1101,13 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
         return { writes: prefixed };
       },
       {
+        // Not durable until the mirror has it: no read indexes it before.
+        ...(mirror
+          ? {
+              beforeSwap: (oid: string) =>
+                (releaseScaffold = holdBackCommit(input.workspaceId, oid)),
+            }
+          : {}),
         message: `Create app "${title}" (${appPath})`,
         // The person who created it, as for a rename or move; the
         // committer stays Mako, and nobody behind the call (a workspace
@@ -1105,7 +1130,9 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
     if (mirror) {
       await mirrorPushNow(input.workspaceId);
     }
+    releaseScaffold?.();
   } catch (error) {
+    releaseScaffold?.();
     await AppProject.deleteOne({
       _id: project._id,
       workspaceId: project.workspaceId,
@@ -1124,6 +1151,11 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
         projectId: project._id.toString(),
         commit: scaffoldCommit.commitOid,
       });
+    } else {
+      await forgetRolledBackCommit(
+        input.workspaceId,
+        scaffoldCommit.commitOid,
+      ).catch(() => undefined);
     }
     logger.error("Apps creation aborted: durable push failed", {
       projectId: project._id.toString(),
@@ -1552,15 +1584,26 @@ async function commitOnMainDurably(
   // push this instance has not seen would make the result unmirrorable.
   await freshenBeforeMainWrite(workspaceId);
   invalidateAppsIndexCache(workspaceId);
+  // Not durable until the mirror has it: no read indexes it before then.
+  let release: (() => void) | undefined;
   const commit = await commitFilesOnBranch(
     repoDir,
     DEFAULT_BRANCH,
     typeof mutation === "function" ? () => mutation() : mutation,
-    options,
+    {
+      ...options,
+      ...(mirror
+        ? {
+            beforeSwap: (oid: string) =>
+              (release = holdBackCommit(workspaceId, oid)),
+          }
+        : {}),
+    },
   );
   if (commit.unchanged) return { commitOid: commit.commitOid, unchanged: true };
   try {
     if (mirror) await mirrorPushNow(workspaceId);
+    release?.();
   } catch (error) {
     // The CAS returns false (it does not throw) when main moved on
     // meanwhile; the commit then stays on a local tip the mirror never got.
@@ -1570,11 +1613,16 @@ async function commitOnMainDurably(
       commit.previousHead,
       commit.commitOid,
     ).catch(() => false);
+    release?.();
     if (!rolledBack) {
       logger.warn("Apps lifecycle commit rollback skipped: main moved on", {
         workspaceId,
         commit: commit.commitOid,
       });
+    } else {
+      await forgetRolledBackCommit(workspaceId, commit.commitOid).catch(
+        () => undefined,
+      );
     }
     throw new Error(
       `Could not store the change durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,

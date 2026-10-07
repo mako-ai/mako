@@ -280,6 +280,70 @@ describe("partial failure", () => {
       });
       expect(await resolveObjectRef(admin, "app", "a2")).toBeNull();
     });
+
+    it("a read while the push is in flight does not index the doomed commit, and nothing of the rename is left after", async () => {
+      await refuseNextPush(2);
+      const before = await headOf(WS);
+      const renaming = renameObject(admin, "app", {
+        ref: "a",
+        slug: "a2",
+      }).catch((error: unknown) => error);
+      // While the push hangs, another request reads the list: it sees the
+      // local commit and indexes it.
+      for (let i = 0; i < 100 && (await headOf(WS)) === before; i++) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(await headOf(WS)).not.toBe(before);
+      invalidateAppsIndexCache(WS);
+      // Not durable yet: the read still sees the app where the mirror has it.
+      expect(
+        (await loadAppsIndex(WS, { freshen: false })).apps.find(
+          a => a.appId === A_ID,
+        )?.path,
+      ).toBe("apps/a");
+      expect(await renaming).toMatchObject({
+        message: expect.stringMatching(/durably/),
+      });
+      expect(await headOf(WS)).toBe(before);
+      // The rename never happened: the index, the row and every resolver
+      // say so.
+      invalidateAppsIndexCache(WS);
+      const snapshot = await loadAppsIndex(WS, { freshen: false });
+      expect(snapshot.apps.find(a => a.appId === A_ID)?.path).toBe("apps/a");
+      expect(await AppProject.findById(A_ID).lean()).toMatchObject({
+        path: "apps/a",
+      });
+      expect(await resolveObjectRef(admin, "app", "a2")).toBeNull();
+      expect((await resolveProjectRef(WS, A_ID))?.path).toBe("apps/a");
+    });
+
+    it("a create whose push is refused, read meanwhile, is not left in the list", async () => {
+      await refuseNextPush(2);
+      const before = await headOf(WS);
+      const creating = createProjectWith({
+        workspaceId: WS,
+        title: "Doomed",
+        userId: ADMIN,
+      }).catch((error: unknown) => error);
+      for (let i = 0; i < 100 && (await headOf(WS)) === before; i++) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      // Not durable yet: a read meanwhile does not list it.
+      invalidateAppsIndexCache(WS);
+      expect(
+        (await loadAppsIndex(WS, { freshen: false })).apps.some(
+          a => a.path === "apps/doomed",
+        ),
+      ).toBe(false);
+      expect(await creating).toMatchObject({
+        message: expect.stringMatching(/durably/),
+      });
+      invalidateAppsIndexCache(WS);
+      const snapshot = await loadAppsIndex(WS, { freshen: false });
+      expect(snapshot.apps.some(a => a.path === "apps/doomed")).toBe(false);
+      expect(await resolveObjectRef(admin, "app", "doomed")).toBeNull();
+      expect(await AppProject.countDocuments({ title: "Doomed" })).toBe(0);
+    });
   });
 });
 
