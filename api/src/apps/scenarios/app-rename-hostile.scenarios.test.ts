@@ -24,6 +24,7 @@ import {
   invalidateAppsIndexCache,
   loadAppsIndex,
 } from "../app-index.service";
+import { parseAppManifest } from "../app-paths";
 import {
   createAppFolder,
   createProjectWith,
@@ -258,6 +259,52 @@ describe("hostile slugs", () => {
   });
 });
 
+describe("hostile titles", () => {
+  it.each([
+    ["empty", ""],
+    ["whitespace only", "  \n\t "],
+    ["zero-width only", "​​"],
+    ["NUL", "Report\u0000"],
+    ["control characters", "Rep\u0007ort"],
+    ["a newline", "Report\nInjected: header"],
+    ["10000 chars", "x".repeat(10_000)],
+  ])("%s: refused (400), nothing written", async (_label, title) => {
+    await expectRefused({ ref: "a", title });
+  });
+
+  it("emoji, RTL and an NFD title are kept (NFD normalized to NFC), and only mako.json changes", async () => {
+    for (const title of ["📊 Report", "تقرير المبيعات", "Café stats"]) {
+      const result = await renameObject(admin, "app", { ref: "a", title });
+      const written = parseAppManifest(
+        await fileAt(WS, "apps/a/mako.json"),
+        "a",
+      ).title;
+      expect(written).toBe(title.normalize("NFC"));
+      expect(result.after.title).toBe(title.normalize("NFC"));
+    }
+  });
+
+  it("an app whose mako.json (pushed from a laptop) has a NUL in its title can still be renamed and moved", async () => {
+    await externalCommit(WS, {
+      "apps/n/mako.json": `${JSON.stringify({ title: "Bad\u0000name" })}\n`,
+    });
+    const id = (await resolveObjectRef(admin, "app", "n"))!.id;
+    await renameObject(admin, "app", { ref: "n", slug: "n2" });
+    await renameObject(admin, "app", { ref: id, title: "Good name" });
+    expect(await resolveObjectRef(admin, "app", "n")).toMatchObject({
+      id,
+      via: "alias",
+      current: { path: "apps/n2", title: "Good name" },
+    });
+  });
+
+  it("a title made of path tricks never becomes a path", async () => {
+    await renameObject(admin, "app", { ref: "a", title: "../../users/x" });
+    expect(await fileAt(WS, "apps/a/mako.json")).toContain("../../users/x");
+    expect((await allPaths()).some(p => p.startsWith("users/"))).toBe(false);
+  });
+});
+
 describe("hostile names elsewhere: a new app, a folder, a ref", () => {
   it("a new app's title never yields a reserved, id-like or empty folder name", async () => {
     for (const title of ["CON", "nul", D_ID, "📊", "../../etc", "   x   "]) {
@@ -273,6 +320,14 @@ describe("hostile names elsewhere: a new app, a folder, a ref", () => {
       );
       expect(/^[0-9a-f]{24}$/i.test(slug), slug).toBe(false);
     }
+  });
+
+  it("a new app's title with a NUL is refused cleanly, and leaves no row behind", async () => {
+    const before = await headOf(WS);
+    await expect(
+      createProjectWith({ workspaceId: WS, title: "Bad\u0000", userId: ADMIN }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(await commitsSince(WS, before)).toBe(0);
   });
 
   it("folder names: traversal, reserved and id-like are refused; nothing outside apps/", async () => {

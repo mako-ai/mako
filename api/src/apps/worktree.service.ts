@@ -124,6 +124,7 @@ import {
   FOLDER_KEEP_FILE,
   addManifestAliases,
   appRepoPath,
+  appTitleProblem,
   parseAppRepoPath,
   appTreeRoot,
   isSafeSegment,
@@ -957,7 +958,13 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
   project: IAppProject;
   takenOver: SupersededAlias[];
 }> {
-  const title = normalizeName(input.title) || "Untitled app";
+  // An empty (or invisible) name is "Untitled app", as it always was; a
+  // name with control characters, or an essay, is refused before anything
+  // is written (a NUL cannot even reach the commit message).
+  const typed = normalizeName(input.title);
+  const title = typed.replace(/[\s\p{Cf}]/gu, "") ? typed : "Untitled app";
+  const titleProblem = appTitleProblem(title);
+  if (titleProblem) throw new AppFolderError(titleProblem);
   // Git first (#956): do not init a local-only repo that then lets consoles,
   // dbt, and prompt writes skip the 412. A GitHub binding (or a test that
   // already seeded the bare repo) is required.
@@ -1591,9 +1598,11 @@ export async function renameProject(
   const from = appRootFor(project);
   const location = parseAppRepoPath(from);
   if (!location) throw new AppFolderError(`Not an app path: ${from}`, 404);
-  const title = change.title?.trim();
-  if (change.title !== undefined && !title) {
-    throw new AppFolderError("An app needs a name");
+  const title =
+    change.title === undefined ? undefined : normalizeName(change.title);
+  if (title !== undefined) {
+    const problem = appTitleProblem(title);
+    if (problem) throw new AppFolderError(problem);
   }
   const currentTitle = project.title ?? location.slug;
   const titleChanges = title !== undefined && title !== currentTitle;

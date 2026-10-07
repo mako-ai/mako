@@ -95,6 +95,28 @@ export function newSegmentProblem(segment: string): string | null {
   return null;
 }
 
+/** The longest app name (title) a rename or create accepts. */
+export const MAX_APP_TITLE_LENGTH = 1000;
+
+/**
+ * Why `title` (already {@link normalizeName}d) cannot be an app's name, or
+ * null when it can. A title is display text in a JSON manifest, so almost
+ * anything goes — but not control characters (a NUL cannot even reach a
+ * commit message; a line break turns a one-line name into a header), not
+ * a name that is empty once invisible characters are set aside, and not
+ * an essay.
+ */
+export function appTitleProblem(title: string): string | null {
+  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(title)) {
+    return "An app name cannot contain control characters (line breaks, tabs, NUL)";
+  }
+  if (!title.replace(/[\s\p{Cf}]/gu, "")) return "An app needs a name";
+  if (title.length > MAX_APP_TITLE_LENGTH) {
+    return `An app name is at most ${MAX_APP_TITLE_LENGTH} characters`;
+  }
+  return null;
+}
+
 /** Root folder of a tree: `apps` or `users/<id>/apps`. */
 export function appTreeRoot(scope: AppScope, ownerId?: string): string {
   if (scope === "workspace") return APPS_DIR;
