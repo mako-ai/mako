@@ -62,6 +62,11 @@ import {
 } from "./dbt-config-files";
 import { parseDbtCommands } from "./commands";
 import { unsafeSlugReason } from "../utils/slugify";
+import {
+  isRetiredObjectId,
+  retireObjectId,
+  retiredIdHolders,
+} from "../rename/retired-ids";
 import { applyJobScheduleChange } from "./dbt-run.service";
 import {
   currentTreeCheck,
@@ -688,6 +693,8 @@ function joinLiveJobs(
   rows: IDbtJob[],
   /** Rows whose new name another job's file holds (`foreignHeldJobIds`). */
   foreignHeld: ReadonlySet<string> = new Set(),
+  /** Everything holding an id: the rows and the retired ids. */
+  idHolders: Array<{ _id: Types.ObjectId; slug?: string }> = rows,
 ): LiveJob[] {
   const bySlug = new Map(
     rows
@@ -715,7 +722,7 @@ function joinLiveJobs(
       row,
       id:
         row?._id ??
-        freeDerivedJobId(project.workspaceId.toString(), def.slug, rows),
+        freeDerivedJobId(project.workspaceId.toString(), def.slug, idHolders),
     };
   });
 }
@@ -785,7 +792,10 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
       });
     }
   }
-  return joinLiveJobs(project, defs, rows, foreignHeld);
+  return joinLiveJobs(project, defs, rows, foreignHeld, [
+    ...rows,
+    ...(await retiredIdHolders(workspaceId, "dbt_job")),
+  ]);
 }
 
 /**
@@ -822,8 +832,10 @@ export async function loadLiveJobById(
   jobId: string,
 ): Promise<LiveJob | null> {
   if (!Types.ObjectId.isValid(jobId)) return null;
-  const live = await loadLiveJobs(project);
   const workspaceId = project.workspaceId.toString();
+  // A deleted job's id names nothing, whatever now has its old name.
+  if (await isRetiredObjectId(workspaceId, "dbt_job", jobId)) return null;
+  const live = await loadLiveJobs(project);
   return (
     live.find(job => job.id.toString() === jobId) ??
     // A tab opened on a git-only file before its push was synced holds
@@ -1654,9 +1666,12 @@ async function syncDbtConfigNow(
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  const idRows = await DbtJob.find({ projectId: project._id })
-    .select("_id slug")
-    .lean();
+  const idRows = [
+    ...(await DbtJob.find({ projectId: project._id })
+      .select("_id slug")
+      .lean()),
+    ...(await retiredIdHolders(workspaceId, "dbt_job")),
+  ];
   try {
     await rekeyRenamedJobs({
       workspaceId,
@@ -1913,6 +1928,7 @@ async function syncDbtConfigNow(
   }
   for (const doc of sweepable) {
     if (parked.has(doc._id.toString())) continue;
+    await retireObjectId(workspaceId, "dbt_job", doc._id, doc.slug);
     await DbtJob.deleteOne({ _id: doc._id });
     logger.info("dbt job removed (file deleted on main)", {
       workspaceId,

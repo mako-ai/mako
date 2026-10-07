@@ -71,6 +71,7 @@ import {
   reserveJobSlug,
   resolveLiveJobRow,
 } from "../dbt/dbt-config.service";
+import { retireObjectId } from "../rename/retired-ids";
 import {
   DBT_PREVIEW_DEFAULT_LIMIT,
   DBT_PREVIEW_MAX_LIMIT,
@@ -1063,6 +1064,12 @@ dbtRoutes.delete(
       }
       const doomed = resolved.row;
       await deleteDbtJobFile(project, doomed.slug, getUserId(c), doomed._id);
+      await retireObjectId(
+        project.workspaceId,
+        "dbt_job",
+        doomed._id,
+        doomed.slug,
+      );
       await DbtJob.deleteOne({ _id: doomed._id });
       publishDbtEvent(c, {
         type: "dbt.job.updated",

@@ -57,6 +57,7 @@ import {
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
 import { cleanRenameTitle } from "./title-rules";
+import { retiredIdHolders } from "./retired-ids";
 import { unsafeSlugReason } from "../utils/slugify";
 import {
   RenameError,
@@ -145,9 +146,12 @@ export async function resolveFlowRef(
   const defs = await listFlowDefinitionsAtMain(ctx.workspaceId);
   const gitOnly = (def: (typeof defs)[number], via: ResolvedRef["via"]) => {
     return (async (): Promise<ResolvedRef> => {
-      const rows = await Flow.find({ workspaceId: ctx.workspaceId })
-        .select("_id slug")
-        .lean();
+      const rows = [
+        ...(await Flow.find({ workspaceId: ctx.workspaceId })
+          .select("_id slug")
+          .lean()),
+        ...(await retiredIdHolders(ctx.workspaceId, "flow")),
+      ];
       // The file's row when it has one (an old name found only in a FILE's
       // `aliases:` — the row lost it to a newcomer since gone — still names
       // that row, not a derived id nothing holds); the derived id only for
@@ -199,7 +203,10 @@ async function gitOnlyFlowByDerivedId(
   defs: Awaited<ReturnType<typeof listFlowDefinitionsAtMain>>,
   id: string,
 ) {
-  const rows = await Flow.find({ workspaceId }).select("_id slug").lean();
+  const rows = [
+    ...(await Flow.find({ workspaceId }).select("_id slug").lean()),
+    ...(await retiredIdHolders(workspaceId, "flow")),
+  ];
   const rowSlugs = new Set(rows.map(row => row.slug));
   return (
     defs.find(

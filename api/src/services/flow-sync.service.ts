@@ -68,6 +68,7 @@ import {
   reconcileFlowsFromRepo,
   type DesiredFlow,
 } from "../sync-cdc/flow-reconcile";
+import { isRetiredObjectId, retiredIdHolders } from "../rename/retired-ids";
 import {
   currentTreeCheck,
   detectGitRenames,
@@ -367,6 +368,8 @@ function joinLiveFlows(
   rows: IFlow[],
   /** Rows whose new name another file holds (`foreignHeldFlowIds`). */
   foreignHeld: ReadonlySet<string> = new Set(),
+  /** Everything holding an id: the rows and the retired ids. */
+  idHolders: Array<{ _id: Types.ObjectId; slug?: string }> = rows,
 ): LiveFlow[] {
   const bySlug = new Map<string, IFlow>();
   for (const row of rows) {
@@ -392,7 +395,7 @@ function joinLiveFlows(
     return {
       def,
       row,
-      id: row?._id ?? freeDerivedFlowId(workspaceId, def.slug, rows),
+      id: row?._id ?? freeDerivedFlowId(workspaceId, def.slug, idHolders),
     };
   });
 }
@@ -413,6 +416,7 @@ export async function loadLiveFlows(workspaceId: string): Promise<LiveFlow[]> {
     defs,
     rows,
     await foreignHeldFlowIds(workspaceId, defs, rows),
+    [...rows, ...(await retiredIdHolders(workspaceId, "flow"))],
   );
 }
 
@@ -537,6 +541,8 @@ export async function loadLiveFlowById(
     return { def, row: current, id: current._id };
   }
 
+  // A deleted flow's id names nothing, whatever now has its old name.
+  if (await isRetiredObjectId(workspaceId, "flow", flowId)) return null;
   const live = await loadLiveFlows(workspaceId);
   return (
     live.find(item => item.id.toString() === flowId) ??
@@ -2077,7 +2083,10 @@ export async function syncFlowsFromRepo(
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  const idRows = await Flow.find({ workspaceId }).select("_id slug").lean();
+  const idRows = [
+    ...(await Flow.find({ workspaceId }).select("_id slug").lean()),
+    ...(await retiredIdHolders(workspaceId, "flow")),
+  ];
   try {
     await rekeyRenamedFlows({
       workspaceId,

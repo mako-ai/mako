@@ -53,6 +53,7 @@ import { publishRealtimeEvent } from "../services/realtime.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
 import { cleanRenameTitle } from "./title-rules";
+import { retiredIdHolders } from "./retired-ids";
 import { unsafeSlugReason } from "../utils/slugify";
 import {
   RenameError,
@@ -143,9 +144,12 @@ export async function resolveDbtJobRef(
     def: (typeof defs)[number],
     via: ResolvedRef["via"],
   ): Promise<ResolvedRef> => {
-    const rows = await DbtJob.find({ projectId: project._id })
-      .select("_id slug")
-      .lean();
+    const rows = [
+      ...(await DbtJob.find({ projectId: project._id })
+        .select("_id slug")
+        .lean()),
+      ...(await retiredIdHolders(ctx.workspaceId, "dbt_job")),
+    ];
     // The file's row when it has one (see flow-rename.ts); the derived id
     // only for a file not yet synced.
     const id = String(
@@ -189,11 +193,14 @@ async function gitOnlyJobByDerivedId(
   defs: Awaited<ReturnType<typeof listJobDefinitionsAtMain>>,
   id: string,
 ) {
-  const rows = await DbtJob.find({ projectId: project._id })
-    .select("_id slug")
-    .lean();
-  const rowSlugs = new Set(rows.map(row => row.slug));
   const workspaceId = project.workspaceId.toString();
+  const rows = [
+    ...(await DbtJob.find({ projectId: project._id })
+      .select("_id slug")
+      .lean()),
+    ...(await retiredIdHolders(workspaceId, "dbt_job")),
+  ];
+  const rowSlugs = new Set(rows.map(row => row.slug));
   return (
     defs.find(
       def =>

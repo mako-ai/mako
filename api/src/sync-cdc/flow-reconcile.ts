@@ -40,6 +40,7 @@ import {
   type IFlow,
 } from "../database/workspace-schema";
 import { inngest } from "../inngest/client";
+import { retireObjectId } from "../rename/retired-ids";
 import { loggers } from "../logging";
 import {
   TreeNotVerifiedError,
@@ -178,6 +179,10 @@ export async function teardownFlow(flow: IFlow): Promise<{
       CdcEntityState.deleteMany(childFilter),
       CdcStateTransition.deleteMany(childFilter),
     ]);
+  // The id never names another flow (see IRetiredObjectId): a file pushed
+  // later at this flow's name gets an id of its own, not this one's links,
+  // notification rules and webhook URL.
+  await retireObjectId(workspaceOid, "flow", flowOid, flow.slug);
   await Flow.deleteOne({ _id: flowOid, workspaceId: workspaceOid });
 
   const counts = {

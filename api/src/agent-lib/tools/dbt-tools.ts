@@ -72,6 +72,7 @@ import {
   reserveJobSlug,
   resolveLiveJobRow,
 } from "../../dbt/dbt-config.service";
+import { retireObjectId } from "../../rename/retired-ids";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
@@ -1417,6 +1418,12 @@ export const createDbtServerTools = (
           const job = resolved.row;
           const name = job.name;
           await deleteDbtJobFile(project, job.slug, actingUserId, job._id);
+          await retireObjectId(
+            project.workspaceId,
+            "dbt_job",
+            job._id,
+            job.slug,
+          );
           await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };
