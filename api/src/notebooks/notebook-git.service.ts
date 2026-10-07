@@ -36,18 +36,21 @@ import {
 } from "../apps/cloud-repo.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
+import { createSerializer } from "../apps/serialized";
 import {
   BlobPreconditionError,
   DEFAULT_BRANCH,
   blobOid,
+  blobOidAt,
   commitBlobsOnBranch,
   diffNameStatus,
   listTree,
-  log as repoLog,
+  logFollow,
   readBlob,
+  readBlobsBatch,
   resolveCommit,
   type ChangedFile,
-  type CommitInfo,
+  type FollowedCommit,
 } from "../apps/repository.service";
 import { EMPTY_TREE } from "../apps/git";
 import { publishRealtimeEvent } from "../services/realtime.service";
@@ -96,37 +99,52 @@ async function uniqueNotebookPath(
   reserved: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const base = slugifyNotebookName(index.name);
-  let slug = base;
+  const scope = { access: index.access, ownerId: index.ownerId };
+  const candidates = [notebookRepoPath(base, scope)];
   for (let i = 2; i < 100; i++) {
-    const wanted = notebookRepoPath(slug, {
-      access: index.access,
-      ownerId: index.ownerId,
-    });
-    const clash =
-      reserved.has(wanted) ||
-      (await NotebookIndex.findOne({
+    candidates.push(notebookRepoPath(`${base}-${i}`, scope));
+  }
+  // Past 98 namesakes — "Untitled notebook" is every new notebook's name —
+  // a suffix from the notebook's own id is free by construction. Without
+  // it the 100th namesake could never be checkpointed (no file, no
+  // history) and a rename onto the name failed with a 500.
+  const own = index.notebookId.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  candidates.push(notebookRepoPath(`${base}-${own.slice(0, 12)}`, scope));
+  candidates.push(notebookRepoPath(`${base}-${own}`, scope));
+  // One index query and one batched read for every candidate (it was one
+  // query and one git process per candidate tried: quadratic in the
+  // number of namesakes).
+  const claimed = new Set(
+    (
+      await NotebookIndex.find({
         workspaceId: index.workspaceId,
-        path: wanted,
+        path: { $in: candidates },
         notebookId: { $ne: index.notebookId },
-      }).select("_id"));
-    if (!clash && !(await foreignFileAt(repoDir, wanted, index.notebookId))) {
-      return wanted;
+      })
+        .select("path")
+        .lean<Array<{ path?: string }>>()
+    ).map(r => r.path),
+  );
+  const head = await resolveCommit(repoDir, MAIN_REF);
+  const atMain = head
+    ? await readBlobsBatch(repoDir, head, candidates).catch(
+        () => new Map<string, Buffer>(),
+      )
+    : new Map<string, Buffer>();
+  for (const wanted of candidates) {
+    if (reserved.has(wanted) || claimed.has(wanted)) continue;
+    // A file at main that is not this notebook's (a laptop-made notebook
+    // the index does not know yet) must not be overwritten.
+    const buf = atMain.get(wanted);
+    if (buf) {
+      if (buf.includes(0)) continue;
+      if (parseNotebookFile(buf.toString("utf8"))?.id !== index.notebookId) {
+        continue;
+      }
     }
-    slug = `${base}-${i}`;
+    return wanted;
   }
   throw new Error(`No free path for notebook "${index.name}"`);
-}
-
-/** Is there a file at `path` on main that is not notebook `notebookId`'s? */
-async function foreignFileAt(
-  repoDir: string,
-  path: string,
-  notebookId: string,
-): Promise<boolean> {
-  const blob = await readBlob(repoDir, MAIN_REF, path).catch(() => null);
-  if (!blob) return false;
-  if (blob.isBinary) return true;
-  return parseNotebookFile(blob.contents)?.id !== notebookId;
 }
 
 /**
@@ -169,7 +187,25 @@ async function checkpointPathFor(
  * reconciling the path (rename/access moves the file in the same commit).
  * No-op when the serialized source is byte-identical to the last checkpoint.
  */
-export async function checkpointNotebook(
+export function checkpointNotebook(
+  workspaceId: string,
+  notebookId: string,
+  actorUserId?: string,
+): ReturnType<typeof checkpointNotebookNow> {
+  // One checkpoint at a time per workspace: two renames of one notebook
+  // checkpointing at once each moved the file from the same old path to
+  // their own new one — the delete of the old path is no CAS — and left
+  // TWO files carrying one notebook id. Serialized, the second reads the
+  // first's result (and the old-path expectation below holds the line
+  // across instances).
+  return serializedCheckpoints(workspaceId, () =>
+    checkpointNotebookNow(workspaceId, notebookId, actorUserId),
+  );
+}
+
+const serializedCheckpoints = createSerializer();
+
+async function checkpointNotebookNow(
   workspaceId: string,
   notebookId: string,
   actorUserId?: string,
@@ -227,6 +263,15 @@ export async function checkpointNotebook(
   // (a laptop push) is not overwritten; the next checkpoint picks the
   // next free name.
   const newPath = wantedPath !== index.path;
+  // A move also expects the file it moves FROM to be the one read now: a
+  // checkpoint on another instance that moved it meanwhile refuses this
+  // one (`target_taken`, retried from the fresh index) instead of leaving
+  // a second copy behind.
+  const expectBlobs: Record<string, string | null> = {};
+  if (newPath) expectBlobs[wantedPath] = null;
+  if (deletes?.length && index.path) {
+    expectBlobs[index.path] = await blobOidAt(repoDir, MAIN_REF, index.path);
+  }
   let result: Awaited<ReturnType<typeof commitBlobsOnBranch>>;
   try {
     result = await commitBlobsOnBranch(
@@ -238,7 +283,7 @@ export async function checkpointNotebook(
           ? `notebook: move to ${wantedPath}`
           : `notebook: checkpoint "${index.name}"`,
         author: actorUserId ? await authorForUser(actorUserId) : undefined,
-        expectBlobs: newPath ? { [wantedPath]: null } : undefined,
+        expectBlobs: Object.keys(expectBlobs).length ? expectBlobs : undefined,
       },
     );
   } catch (error) {
@@ -558,19 +603,61 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
 // (apps.md §24) — one component, three content kinds.
 // ---------------------------------------------------------------------------
 
-/** Commits that touched this notebook's file (moves included via its path). */
+/**
+ * This notebook's own commits, newest first — ACROSS its renames (a rename
+ * is a checkpoint that moves the file; `git log --follow` carries the
+ * history through it, and through a laptop `git mv`). Each says where the
+ * file was in that commit. The walk ends at the file's creation: never the
+ * notebook that held its name before (deleted, or renamed away — a reused
+ * name), nor a file it was copied from (`parseFollowLog`). Read by PATH
+ * alone, a renamed notebook's history started at the rename, and a new
+ * notebook at an old name listed — and diffed, and restored — the old
+ * one's commits.
+ */
 export async function notebookHistory(
   index: Pick<INotebookIndex, "workspaceId" | "path">,
   limit = 50,
-): Promise<CommitInfo[]> {
+): Promise<FollowedCommit[]> {
   if (!index.path) return [];
   const repoDir = await boundRepoDirIfExists(index.workspaceId.toString());
   if (repoDir == null) return [];
   if (!(await resolveCommit(repoDir, MAIN_REF))) return [];
-  return repoLog(repoDir, MAIN_REF, limit, index.path);
+  return logFollow(repoDir, MAIN_REF, limit, index.path);
 }
 
-/** What one commit did to this notebook's file. */
+/**
+ * A commit or path the notebook history routes may not read through this
+ * notebook: not one of its own commits, or not its file at that commit.
+ */
+export class NotThisNotebookError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotThisNotebookError";
+  }
+}
+
+/** This notebook's entry for commit `oid` in its own history, or null. */
+async function notebookPathsAt(
+  repoDir: string,
+  index: Pick<INotebookIndex, "path">,
+  oid: string,
+): Promise<FollowedCommit | null> {
+  if (!index.path) return null;
+  const lineage = await logFollow(repoDir, MAIN_REF, 200, index.path);
+  return lineage.find(c => c.oid === oid) ?? null;
+}
+
+/** A `.deepnote` text that is ANOTHER notebook's (it carries another id). */
+function carriesOtherNotebook(
+  contents: string | null | undefined,
+  notebookId: string,
+): boolean {
+  if (!contents) return false;
+  const id = parseNotebookFile(contents)?.id;
+  return Boolean(id) && id !== notebookId;
+}
+
+/** What one commit did to this notebook's file (under the name it had then). */
 export async function notebookCommitChanges(
   index: Pick<INotebookIndex, "workspaceId" | "path">,
   sha: string,
@@ -580,14 +667,25 @@ export async function notebookCommitChanges(
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
+  const at = await notebookPathsAt(repoDir, index, oid);
+  if (!at) return { sha: oid, parent, files: [] };
   const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
-  const mine = new Set(index.path ? [index.path] : []);
+  const mine = new Set(
+    [at.path, at.previousPath].filter((p): p is string => Boolean(p)),
+  );
   return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
 }
 
-/** A repo path before and after one commit (null = absent on that side). */
+/**
+ * This notebook's file before and after one of ITS commits (null = absent
+ * on that side). `relPath` must be the name the file had in that commit
+ * (or the name it moved from, on the commit that moved it) — never any
+ * other repo path: this route used to read ANY file at any commit for
+ * anyone who could open one notebook (a member's private console, another
+ * member's private notebook). Throws `NotThisNotebookError` otherwise.
+ */
 export async function notebookFileVersions(
-  index: Pick<INotebookIndex, "workspaceId">,
+  index: Pick<INotebookIndex, "workspaceId" | "path" | "notebookId">,
   sha: string,
   relPath: string,
 ): Promise<{ before: string | null; after: string | null; binary: boolean }> {
@@ -596,19 +694,46 @@ export async function notebookFileVersions(
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
-  const read = async (ref: string | null) => {
-    if (!ref) return null;
+  const at = await notebookPathsAt(repoDir, index, oid);
+  let paths: { beforePath: string | null; afterPath: string | null } | null =
+    null;
+  if (at) {
+    const before = at.created ? null : (at.previousPath ?? at.path);
+    if (relPath === at.path) paths = { beforePath: before, afterPath: at.path };
+    else if (at.previousPath && relPath === at.previousPath) {
+      paths = { beforePath: at.previousPath, afterPath: null };
+    }
+  } else if (
+    index.path &&
+    relPath === index.path &&
+    oid === (await resolveCommit(repoDir, MAIN_REF))
+  ) {
+    // The head did not touch this notebook: its file as it is now.
+    paths = { beforePath: relPath, afterPath: relPath };
+  }
+  if (!paths) {
+    throw new NotThisNotebookError("Path is not this notebook at that commit");
+  }
+  const read = async (ref: string | null, rel: string | null) => {
+    if (!ref || !rel) return null;
     try {
-      return await readBlob(repoDir, ref, relPath);
+      return await readBlob(repoDir, ref, rel);
     } catch {
       return null;
     }
   };
-  const [before, after] = await Promise.all([read(parent), read(oid)]);
+  const [beforeBlob, afterBlob] = await Promise.all([
+    read(parent, paths.beforePath),
+    read(oid, paths.afterPath),
+  ]);
+  const text = (b: Awaited<ReturnType<typeof read>>) =>
+    b && !b.isBinary && !carriesOtherNotebook(b.contents, index.notebookId)
+      ? b.contents
+      : null;
   return {
-    before: before?.isBinary ? null : (before?.contents ?? null),
-    after: after?.isBinary ? null : (after?.contents ?? null),
-    binary: Boolean(before?.isBinary || after?.isBinary),
+    before: text(beforeBlob),
+    after: text(afterBlob),
+    binary: Boolean(beforeBlob?.isBinary || afterBlob?.isBinary),
   };
 }
 
@@ -636,29 +761,27 @@ export async function restoreNotebookTo(
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
 
-  let at = index.path;
-  let blob = await readBlob(repoDir, oid, at).catch(() => null);
-  if (!blob) {
-    // The notebook lived elsewhere at that commit (rename / access flip):
-    // fall back to the notebook file this commit actually touched.
-    const changes = await diffNameStatus(
-      repoDir,
-      (await resolveCommit(repoDir, `${oid}^`)) ?? EMPTY_TREE,
-      oid,
+  // Only one of ITS OWN commits, read under the name the file had then
+  // (it may have moved since). The fallback this replaced — "the notebook
+  // file this commit touched" — restored ANOTHER notebook's file (a
+  // member's private one, by the sha of its checkpoint) into this one.
+  const then = await notebookPathsAt(repoDir, index, oid);
+  if (!then) {
+    throw new NotThisNotebookError(
+      "That commit is not in this notebook's history",
     );
-    const candidate = changes.find(
-      f => isNotebookRepoPath(f.path) && f.status !== "deleted",
-    );
-    if (candidate) {
-      at = candidate.path;
-      blob = await readBlob(repoDir, oid, at).catch(() => null);
-    }
   }
+  const blob = await readBlob(repoDir, oid, then.path).catch(() => null);
   if (!blob || blob.isBinary) {
     throw new Error("That commit has no readable version of this notebook");
   }
   const parsed = parseNotebookFile(blob.contents);
   if (!parsed) throw new Error("That version is not a valid .deepnote file");
+  if (parsed.id && parsed.id !== notebookId) {
+    throw new NotThisNotebookError(
+      "That commit is not in this notebook's history",
+    );
+  }
 
   const updated = await getNotebookStore().update(workspaceId, notebookId, {
     name: parsed.name,

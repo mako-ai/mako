@@ -39,6 +39,7 @@ import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { RepoRequiredError } from "../apps/config";
 import {
+  NotThisNotebookError,
   notebookCommitChanges,
   notebookFileVersions,
   notebookHistory,
@@ -437,8 +438,19 @@ notebookRoutes.openapi(
     const loaded = await loadReadableNotebook(c, "read");
     if ("errorResponse" in loaded) return loaded.errorResponse;
     const { sha, path: relPath } = c.req.valid("query");
-    const versions = await notebookFileVersions(loaded.index, sha, relPath);
-    return c.json({ success: true as const, versions });
+    try {
+      const versions = await notebookFileVersions(loaded.index, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      // Only this notebook's own file, at one of its own commits.
+      if (error instanceof NotThisNotebookError) {
+        return c.json(
+          { success: false, error: "Path is not this notebook" },
+          403,
+        );
+      }
+      throw error;
+    }
   },
 );
 
@@ -478,6 +490,9 @@ notebookRoutes.openapi(
           { success: false, code: error.code, error: error.message },
           error.status as 412,
         );
+      }
+      if (error instanceof NotThisNotebookError) {
+        return c.json({ success: false, error: error.message }, 404);
       }
       logger.error("Notebook restore failed", { error });
       return c.json(

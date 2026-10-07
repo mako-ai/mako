@@ -653,7 +653,16 @@ sourceConnectionRoutes.openapi(
 
       // Update only fields that have changed
       if (body.name !== undefined && body.name !== currentValues.name) {
-        sourceConnection.name = body.name;
+        // A blank name is a clear 400 (the rename's rule) — it used to
+        // reach the schema's `required` as a 500.
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        if (!name) {
+          return c.json(
+            { success: false, error: "A connection needs a name." },
+            400,
+          );
+        }
+        sourceConnection.name = name;
         hasChanges = true;
       }
       if (

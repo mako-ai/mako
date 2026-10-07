@@ -1003,7 +1003,16 @@ app.openapi(
 
       const updateFields: Record<string, unknown> = {};
       if (body.title !== undefined) {
-        updateFields.title = body.title;
+        // A blank title is a clear 400 (the create route's rule, and the
+        // rename's) — it used to reach the schema's `required` as a 500.
+        const title = typeof body.title === "string" ? body.title.trim() : "";
+        if (!title) {
+          return c.json(
+            { success: false, error: "A dashboard needs a title." },
+            400,
+          );
+        }
+        updateFields.title = title;
       }
       if (body.description !== undefined) {
         updateFields.description = body.description;
@@ -1278,6 +1287,22 @@ app.openapi(
         );
       }
       const validatedBody = validation.data as Record<string, unknown>;
+
+      // A blank title is a clear 400 here too: the schema's string accepts
+      // "" and the partial update stored a dashboard with no title.
+      if (validatedBody.title !== undefined) {
+        const title =
+          typeof validatedBody.title === "string"
+            ? validatedBody.title.trim()
+            : "";
+        if (!title) {
+          return c.json(
+            { success: false, error: "A dashboard needs a title." },
+            400,
+          );
+        }
+        validatedBody.title = title;
+      }
 
       if (validatedBody.dataSources !== undefined) {
         const normalizedDataSources = await normalizeDashboardDataSources(

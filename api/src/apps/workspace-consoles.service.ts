@@ -85,9 +85,14 @@ import {
   CONSOLES_DIR,
   CONSOLES_README,
   CONSOLES_README_PATH,
+  ConsoleNameError,
+  MAX_CONSOLE_NAME_LENGTH,
   USERS_DIR,
   chartSidecarPath,
+  consoleNameProblem,
   consoleRepoPath,
+  foldConsolePath,
+  normalizeConsoleName,
   parseChartSpec,
   parseConsoleFile,
   parseConsoleRepoPath,
@@ -697,6 +702,43 @@ export async function loadLiveConsoleById(
   const live = await loadLiveConsoles(workspaceId);
   const match = live.find(item => item.id.toString() === consoleId);
   return match ? { live: match } : null;
+}
+
+/**
+ * The index row of a console addressed by its id — indexing it first when
+ * the id is the one a file at main with no row yet is listed under (its
+ * derived id: pushed, not synced — the tree hands that id out). Every
+ * route that acts on a console by id (rename, move, delete, duplicate,
+ * sharing, a draft autosave) loads through this, so a git-only console is
+ * the same console everywhere: a rename from the tree does not 404, and a
+ * draft typed into it is never a second row holding its id while the file
+ * is re-listed under another.
+ *
+ * The on-demand sync runs WITHOUT an actor (as `findRow` in the rename
+ * handler does): indexing makes nobody the owner of a pushed file. Null
+ * when there is no row and no such file — or a file the index cannot hold
+ * (a folder no record can be named after), which stays read-only.
+ */
+export async function consoleRowForId(
+  workspaceId: string,
+  consoleId: string,
+): Promise<ISavedConsole | null> {
+  if (!Types.ObjectId.isValid(consoleId)) return null;
+  const ws = new Types.ObjectId(workspaceId);
+  const id = new Types.ObjectId(consoleId);
+  const row = await SavedConsole.findOne({ _id: id, workspaceId: ws });
+  if (row) return row;
+  const live = (await loadLiveConsoles(workspaceId)).find(
+    item => !item.row && item.id.equals(id),
+  );
+  if (!live) return null;
+  await syncConsolesIndexFromRepo(workspaceId);
+  return SavedConsole.findOne({
+    _id: id,
+    workspaceId: ws,
+    path: live.path,
+    is_deleted: { $ne: true },
+  });
 }
 
 /**
@@ -1449,7 +1491,137 @@ export async function consoleCaseVariantAtMain(
 ): Promise<string | null> {
   const repoDir = await boundRepoDirIfExists(workspaceId);
   if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return null;
-  return caseVariantOf(repoDir, MAIN, path, new Set(ownPath ? [ownPath] : []));
+  const sameDir = await caseVariantOf(
+    repoDir,
+    MAIN,
+    path,
+    new Set(ownPath ? [ownPath] : []),
+  );
+  if (sameDir) return sameDir;
+  // Across directories and Unicode normal forms too: `consoles/team/x.sql`
+  // beside `consoles/Team/x.sql` (a folder twin a laptop pushed), or an
+  // NFD `café` beside the NFC one Mako writes — one file on macOS and
+  // Windows, which the same-directory, byte-wise check above cannot see.
+  const fold = foldConsolePath(path);
+  const own = ownPath ? foldConsolePath(ownPath) : null;
+  for (const def of await listConsoleDefinitionsAtMain(workspaceId)) {
+    if (def.path === path || def.path === ownPath) continue;
+    const folded = foldConsolePath(def.path);
+    if (folded === fold && folded !== own) return def.path;
+  }
+  return null;
+}
+
+/**
+ * A folder twin: a folder in `scope` under the same parent whose name
+ * differs from a NEW folder's only in letter case or Unicode form (one
+ * directory on macOS and Windows). Refused like a console's case twin.
+ */
+export class ConsoleFolderTwinError extends Error {
+  readonly status = 409 as const;
+  constructor(
+    readonly existing: string,
+    wanted: string,
+  ) {
+    super(
+      `A folder named '${existing}' already exists there — '${wanted}' differs only in upper/lower case, and they count as the same.`,
+    );
+    this.name = "ConsoleFolderTwinError";
+  }
+}
+
+/**
+ * The name of the folder beside which `name` would be a twin: a sibling
+ * (same parent, same scope) whose name differs only in letter case or
+ * Unicode form — or null. `ignoreFolderId` is the folder being renamed.
+ */
+export async function folderTwinOf(
+  workspaceId: string,
+  parentId: Types.ObjectId | string | null | undefined,
+  scope: { access: ConsoleAccessLevel; ownerId?: string },
+  name: string,
+  ignoreFolderId?: Types.ObjectId | string,
+): Promise<string | null> {
+  const ws = new Types.ObjectId(workspaceId);
+  const scopeFilter =
+    scope.access === "private"
+      ? {
+          ownerId: scope.ownerId,
+          $or: [{ access: "private" }, { isPrivate: true }],
+        }
+      : { $nor: [{ access: "private" }, { isPrivate: true }] };
+  const parentFilter = parentId
+    ? { parentId: new Types.ObjectId(parentId.toString()) }
+    : { $or: [{ parentId: null }, { parentId: { $exists: false } }] };
+  const siblings = await ConsoleFolder.find({
+    workspaceId: ws,
+    $and: [parentFilter, scopeFilter],
+  })
+    .select("_id name")
+    .lean<Array<{ _id: Types.ObjectId; name: string }>>();
+  const fold = foldConsolePath(name);
+  const twin = siblings.find(
+    f =>
+      (!ignoreFolderId || !f._id.equals(ignoreFolderId.toString())) &&
+      f.name !== name &&
+      foldConsolePath(f.name) === fold,
+  );
+  return twin?.name ?? null;
+}
+
+/**
+ * Before a person's request creates folders (a move to `Team/x`, a first
+ * save into `A/B/x`, "New folder"): the chain `segments` in `scope`, as it
+ * will be found or created, may only create folders whose names are
+ * folder names (`consoleNameProblem` → `ConsoleNameError`) and that are
+ * no twin of a sibling (`ConsoleFolderTwinError`). Folders that already
+ * exist under their exact name are taken as they are. Returns the
+ * segments normalized (`normalizeConsoleName`), to create the chain with.
+ * The index sync does not ask: a pushed directory is what it is.
+ */
+export async function checkNewFolderChain(
+  segments: string[],
+  workspaceId: string,
+  scope: { access: ConsoleAccessLevel; ownerId?: string },
+): Promise<string[]> {
+  const names = segments.map(normalizeConsoleName);
+  const ws = new Types.ObjectId(workspaceId);
+  const scopeFilter =
+    scope.access === "private"
+      ? {
+          ownerId: scope.ownerId,
+          $or: [{ access: "private" }, { isPrivate: true }],
+        }
+      : { $nor: [{ access: "private" }, { isPrivate: true }] };
+  let parentId: Types.ObjectId | undefined;
+  for (let i = 0; i < names.length; i++) {
+    const parentFilter = parentId
+      ? { parentId }
+      : { $or: [{ parentId: null }, { parentId: { $exists: false } }] };
+    const siblings = await ConsoleFolder.find({
+      workspaceId: ws,
+      $and: [parentFilter, scopeFilter],
+    })
+      .select("_id name")
+      .lean<Array<{ _id: Types.ObjectId; name: string }>>();
+    const others = siblings;
+    const exact = others.find(f => f.name === names[i]);
+    if (exact) {
+      parentId = exact._id;
+      continue;
+    }
+    // From here on every segment is a folder this request would create.
+    for (const name of names.slice(i)) {
+      const problem = consoleNameProblem(name, "folder");
+      if (problem) throw new ConsoleNameError(problem);
+    }
+    const twin = others.find(
+      f => foldConsolePath(f.name) === foldConsolePath(names[i]),
+    );
+    if (twin) throw new ConsoleFolderTwinError(twin.name, names[i]);
+    break;
+  }
+  return names;
 }
 
 /** The newest sync queued per workspace, while it is still pending. */
@@ -1564,11 +1736,56 @@ async function syncNow(
       [CONSOLES_DIR, USERS_DIR],
     );
     for (const o of liveOrphans) {
-      const to = renamed.get(o.path as string);
-      if (!to || !sameConsoleOwner(o.path as string, to)) continue;
+      let from = o.path as string;
+      let to = renamed.get(from);
+      // One push can carry several moves of one file (`git mv a b`,
+      // commit, `git mv b c`, commit): the commit that removed `a` pairs
+      // it with `b`, which is gone too. Follow the chain to where the
+      // file is at head — bounded, every hop inside one ownership
+      // boundary — or the row was torn down and `c` minted anew (shares,
+      // schedule and history lost) for an ordinary rename-twice.
+      for (let hop = 0; to && !byPath.has(to) && hop < 16; hop++) {
+        if (!sameConsoleOwner(from, to)) break;
+        from = to;
+        to = (
+          await detectRenamedPaths(
+            repoDir,
+            head,
+            [from],
+            [CONSOLES_DIR, USERS_DIR],
+          )
+        ).get(from);
+      }
+      if (
+        !to ||
+        !byPath.has(to) ||
+        !sameConsoleOwner(from, to) ||
+        !sameConsoleOwner(o.path as string, to)
+      ) {
+        continue;
+      }
       orphanByNewPath.set(to, orphanByNewPath.has(to) ? null : o);
     }
   }
+
+  // Every file the loop below may read, in ONE `git cat-file --batch`
+  // (a file whose row already holds its blob is skipped there): a process
+  // per file made a push of a thousand new consoles take minutes to index.
+  const toRead: string[] = [];
+  for (const e of consoleEntries) {
+    if (liveByPath.get(e.path)?.sourceBlobSha === e.oid) continue;
+    toRead.push(e.path);
+    const sidecar = byPath.get(chartSidecarPath(e.path));
+    if (sidecar) toRead.push(sidecar.path);
+  }
+  const prefetched = await readBlobsBatch(repoDir, head, toRead).catch(
+    () => new Map<string, Buffer>(),
+  );
+  const readFile = async (rel: string): Promise<string | null> => {
+    const buf = prefetched.get(rel);
+    if (buf) return isBinaryBuffer(buf) ? null : buf.toString("utf8");
+    return readAt(repoDir, rel);
+  };
 
   for (const entry of consoleEntries) {
     // One file's failure is that file's problem: a folder-name validation
@@ -1626,12 +1843,12 @@ async function syncNow(
         else if (row.path === entry.path) stats.updated++;
       }
 
-      const contents = await readAt(repoDir, entry.path);
+      const contents = await readFile(entry.path);
       // Unreadable files are not healed from Mongo. Skip; GET/list omits them.
       if (contents === null) continue;
       const parsed = parseConsoleFile(contents, location.language);
       const chartSpec = sidecar
-        ? parseChartSpec((await readAt(repoDir, sidecar.path)) ?? "")
+        ? parseChartSpec((await readFile(sidecar.path)) ?? "")
         : undefined;
       const access: ConsoleAccessLevel =
         location.scope === "private" ? "private" : "workspace";
@@ -1639,13 +1856,18 @@ async function syncNow(
         location.scope === "private" && location.ownerId
           ? location.ownerId
           : (row?.owner_id ?? row?.createdBy ?? actor);
+      // The folder the row is in, when the file is still in it (see
+      // `folderStillHolding`); else the folder chain of the file's path.
       // A folder that first appears from git belongs to whoever pushed it
       // (the console's owner), so they can rename or delete it later.
-      const folderId = await ensureFolderChain(
-        location.folderSegments,
-        workspaceId,
-        { access, ownerId },
-      );
+      const folderId =
+        (row
+          ? await folderStillHolding(row, location, ownerId, workspaceId)
+          : undefined) ??
+        (await ensureFolderChain(location.folderSegments, workspaceId, {
+          access,
+          ownerId,
+        }));
 
       const set: Record<string, unknown> = {
         path: entry.path,
@@ -1798,6 +2020,52 @@ async function syncNow(
     logger.info("Console index synced from repo", { workspaceId, ...stats });
   }
   return stats;
+}
+
+/**
+ * The row's folder, when the file at `location` is still in it: the
+ * folder's chain of names is the file's directory chain, and it is a
+ * folder the console may be filed in (a workspace folder, or its owner's
+ * own private one). A sync must not re-home such a row: a PRIVATE console
+ * filed in a WORKSPACE folder — seen by the workspace through it — has
+ * its file under its owner's private root, and the scoped chain of that
+ * path is the owner's private namesake, so a mere content edit pushed from
+ * a laptop used to hide it from the workspace behind its owner's back (a
+ * visibility change only its owner or an admin may make). A file that
+ * moved folders is filed by its path, as before.
+ */
+async function folderStillHolding(
+  row: Pick<ISavedConsole, "folderId">,
+  location: ConsoleRepoLocation,
+  ownerId: string,
+  workspaceId: string,
+): Promise<Types.ObjectId | undefined> {
+  if (!row.folderId) return undefined;
+  const segments = await folderSegmentsFor(row.folderId, workspaceId);
+  const wanted = location.folderSegments;
+  if (
+    segments.length !== wanted.length ||
+    segments.some((name, i) => name !== wanted[i])
+  ) {
+    return undefined;
+  }
+  const folder = await ConsoleFolder.findOne({
+    _id: row.folderId,
+    workspaceId: new Types.ObjectId(workspaceId),
+  })
+    .select("access isPrivate ownerId")
+    .lean<{
+      access?: ConsoleAccessLevel;
+      isPrivate?: boolean;
+      ownerId?: string;
+    } | null>();
+  if (!folder) return undefined;
+  const folderAccess =
+    folder.access ?? (folder.isPrivate ? "private" : "workspace");
+  if (folderAccess === "private" && folder.ownerId?.toString() !== ownerId) {
+    return undefined;
+  }
+  return row.folderId;
 }
 
 async function sidecarMatches(
@@ -2157,21 +2425,38 @@ export function uniquePath(
   // Ignoring letter case: "Report" and "report" in one folder are one file
   // on macOS / Windows. The console's own file is not in the way (a
   // case-only rename of it is the same file).
+  // …and Unicode normal form (a laptop can push an NFD name; Mako writes
+  // NFC): one file on macOS too.
   const takenFolded = new Set(
-    [...taken].filter(p => p !== ownPath).map(p => p.toLowerCase()),
+    [...taken].filter(p => p !== ownPath).map(foldConsolePath),
   );
   const free = (p: string) =>
-    p === ownPath || !takenFolded.has(p.toLowerCase());
+    p === ownPath || !takenFolded.has(foldConsolePath(p));
   if (free(wanted)) return wanted;
   const location = parseConsoleRepoPath(wanted);
   if (!location) return wanted;
-  for (let i = 2; ; i++) {
+  for (let i = 2; i < 100_000; i++) {
+    // The suffix must survive the file name's length limit: appended to a
+    // name already at the limit, " (2)" was cut off again, every candidate
+    // was the taken path itself, and this loop never ended (a restore or a
+    // second duplicate of a 120-character name spun the server).
+    const suffix = ` (${i})`;
+    let stem = "";
+    for (const ch of location.name) {
+      // Whole code points: never half an emoji.
+      if (stem.length + ch.length > MAX_CONSOLE_NAME_LENGTH - suffix.length) {
+        break;
+      }
+      stem += ch;
+    }
+    stem = stem.trimEnd();
     const candidate = consoleRepoPath({
       ...location,
-      name: `${location.name} (${i})`,
+      name: `${stem}${suffix}`,
     });
     if (free(candidate)) return candidate;
   }
+  throw new Error(`No free name for ${wanted}`);
 }
 
 async function stampRow(
@@ -2248,8 +2533,27 @@ export async function projectSavedConsole(input: {
   for (const [key, value] of Object.entries(input.set)) {
     if (value !== undefined) desired[key] = value;
   }
-  const row = desired as unknown as RowLike;
   const previousPath = input.current?.path ?? input.previousPath ?? null;
+  // A name the console's file does not have yet — its first save, or a
+  // row whose name drifted from its file — is judged as a new name and
+  // stored normalized (the name IS the file name). A save under the name
+  // its file already has (a laptop-made console) is not judged.
+  const name = String(desired.name ?? "");
+  if (
+    !previousPath ||
+    parseConsoleRepoPath(previousPath)?.name !== desired.name
+  ) {
+    const language = rowLanguage(desired as Pick<RowLike, "language">);
+    const clean = normalizeConsoleName(name);
+    const problem = consoleNameProblem(clean, "console", language);
+    if (problem) throw new ConsoleNameError(problem);
+    if (clean !== name) {
+      desired.name = clean;
+      if (input.set.name !== undefined) input.set.name = clean;
+      else if (input.onInsert?.name !== undefined) input.onInsert.name = clean;
+    }
+  }
+  const row = desired as unknown as RowLike;
   const committed = await commitConsoleState({
     row,
     previousPath,
