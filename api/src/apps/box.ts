@@ -28,6 +28,7 @@ import { appsGitOriginBase, appsGitOriginUrl } from "./config";
 import type { ChangedFile, GrepMatch, TreeEntry } from "./repository.service";
 import { mintGitToken } from "./git-token.service";
 import { loggers } from "../logging";
+import { catchUpCarryingDrafts, type CatchUpOutcome } from "./box-catch-up";
 
 const logger = loggers.api("apps-box-clone");
 
@@ -1104,35 +1105,98 @@ export async function healBoxOrigin(ctx: SandboxExecContext): Promise<void> {
  * A conflict is left in the working copy rather than resolved on the user's
  * behalf: it is a real conflict in a real checkout, and it is fixable there.
  */
-export async function boxPull(ctx: SandboxExecContext): Promise<void> {
-  // The merge may legitimately refuse (uncommitted work in the way, or a
-  // real conflict) — that is the user's to resolve in their checkout, not
-  // ours to force. But refusing SILENTLY cost a debugging session when a
-  // stale box kept lacking an app that main had for days: log what git said
-  // so "the box is behind and won't catch up" has a trail.
-  let result = await boxExec(
-    ctx,
-    [
-      boxGit(ctx, "fetch", "-q", "origin"),
-      `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
-    ].join(" && "),
-    { timeoutMs: 180_000 },
-  );
-  if (result.exitCode !== 0 && isUnreachableOrigin(result.stderr)) {
+export async function boxPull(
+  ctx: SandboxExecContext,
+): Promise<CatchUpOutcome | null> {
+  // The merge may legitimately refuse (a real conflict between the box's
+  // own commits and main) — that is the user's to resolve in their
+  // checkout, not ours to force. But refusing SILENTLY cost a debugging
+  // session when a stale box kept lacking an app that main had for days:
+  // log what git said so "the box is behind and won't catch up" has a
+  // trail. Uncommitted work is carried across a rename on main
+  // (box-catch-up.ts) instead of blocking the catch-up or being stranded.
+  let fetched = await boxExec(ctx, boxGit(ctx, "fetch", "-q", "origin"), {
+    timeoutMs: 180_000,
+  });
+  if (fetched.exitCode !== 0 && isUnreachableOrigin(fetched.stderr)) {
     await healBoxOrigin(ctx);
-    result = await boxExec(
-      ctx,
-      [
-        boxGit(ctx, "fetch", "-q", "origin"),
-        `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
-      ].join(" && "),
-      { timeoutMs: 180_000 },
-    );
+    fetched = await boxExec(ctx, boxGit(ctx, "fetch", "-q", "origin"), {
+      timeoutMs: 180_000,
+    });
   }
-  if (result.exitCode !== 0) {
+  if (fetched.exitCode !== 0) {
     logger.warn("Apps box pull did not merge", {
       sessionKey: ctx.sessionKey,
-      said: (result.stderr || result.stdout).slice(-400),
+      said: (fetched.stderr || fetched.stdout).slice(-400),
+    });
+    return null;
+  }
+  // Nothing to catch up with (no upstream, or already contains it).
+  const behind = await boxExec(
+    ctx,
+    `${boxGit(ctx, "rev-parse", "--verify", "-q", "@{u}")} >/dev/null && ! ${boxGit(ctx, "merge-base", "--is-ancestor", "@{u}", "HEAD")}`,
+    { timeoutMs: 30_000 },
+  );
+  if (behind.exitCode !== 0) return null;
+  let outcome: CatchUpOutcome;
+  try {
+    outcome = await catchUpCarryingDrafts(ctx, boxRoot(ctx));
+  } catch (error) {
+    logger.warn("Apps box pull did not merge", {
+      sessionKey: ctx.sessionKey,
+      said: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+  if (outcome.failed) {
+    logger.warn("Apps box pull did not merge", {
+      sessionKey: ctx.sessionKey,
+      said: outcome.failed.slice(-400),
+    });
+  }
+  if (outcome.message) await tellBoxOwner(ctx, outcome.message, outcome);
+  return outcome;
+}
+
+/**
+ * Say what a catch-up did with someone's uncommitted work, on the channel
+ * their open tabs already listen to (the box state, fanned out live).
+ */
+async function tellBoxOwner(
+  ctx: SandboxExecContext,
+  message: string,
+  outcome: CatchUpOutcome,
+): Promise<void> {
+  const colon = ctx.sessionKey.indexOf(":");
+  if (colon < 0) return;
+  logger.info("Apps box catch-up carried uncommitted work", {
+    sessionKey: ctx.sessionKey,
+    moved: outcome.moved.length,
+    carried: outcome.carried.length,
+    conflicted: outcome.conflicted,
+    stranded: outcome.stranded,
+    draftsBranch: outcome.draftsBranch,
+  });
+  try {
+    const { patchBoxState } = await import("./box-state.service");
+    await patchBoxState({
+      workspaceId: ctx.sessionKey.slice(0, colon),
+      userId: ctx.sessionKey.slice(colon + 1),
+      patch: {
+        notice: {
+          at: Date.now(),
+          message,
+          ...(outcome.draftsBranch
+            ? { draftsBranch: outcome.draftsBranch }
+            : {}),
+        },
+      },
+      source: "catch-up",
+    });
+  } catch (error) {
+    logger.warn("Apps box catch-up notice not delivered", {
+      sessionKey: ctx.sessionKey,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 }

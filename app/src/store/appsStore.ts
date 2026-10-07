@@ -206,6 +206,11 @@ export interface AppsBoxState {
   status?: "online" | "offline";
   /** Open terminal session ids. */
   terminals?: string[] | null;
+  /**
+   * What a catch-up did with this person's uncommitted work (it followed a
+   * rename on main, or was saved on a `mako-drafts/…` branch). Shown once.
+   */
+  notice?: { at: number; message: string; draftsBranch?: string } | null;
   updatedAt: number;
 }
 
@@ -632,6 +637,8 @@ interface AppsStore {
   boxStatus?: "online" | "offline";
   boxSandboxId?: string | null;
   boxTerminals: string[];
+  /** When the last box notice shown was raised (each is shown once). */
+  boxNoticeAt: number;
   fetchRunningDevApps: (workspaceId: string) => Promise<void>;
   /** Deep sandbox stats (a live exec with a 1s CPU sample); null if no box. */
   fetchSandboxStats: (
@@ -728,6 +735,7 @@ export const useAppsStore = create<AppsStore>()(
       boxStatus: undefined,
       boxSandboxId: null,
       boxTerminals: [],
+      boxNoticeAt: 0,
       currentUserId: null,
       branchesByApp: {},
       terminalByApp: {},
@@ -2108,6 +2116,12 @@ export const useAppsStore = create<AppsStore>()(
           if (state.status) s.boxStatus = state.status;
           if (state.sandboxId !== undefined) s.boxSandboxId = state.sandboxId;
           if (state.terminals != null) s.boxTerminals = state.terminals;
+          // The sandbox caught up with main while this person had
+          // uncommitted work: say what became of it, once.
+          if (state.notice && state.notice.at > s.boxNoticeAt) {
+            s.boxNoticeAt = state.notice.at;
+            s.error = state.notice.message;
+          }
         });
         if (state.status === "offline") {
           // The box is gone — every dev-server URL now points at a dead sandbox.
