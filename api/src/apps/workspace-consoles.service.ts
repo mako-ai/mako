@@ -700,6 +700,43 @@ export async function loadLiveConsoleById(
 }
 
 /**
+ * The index row of a console addressed by its id — indexing it first when
+ * the id is the one a file at main with no row yet is listed under (its
+ * derived id: pushed, not synced — the tree hands that id out). Every
+ * route that acts on a console by id (rename, move, delete, duplicate,
+ * sharing, a draft autosave) loads through this, so a git-only console is
+ * the same console everywhere: a rename from the tree does not 404, and a
+ * draft typed into it is never a second row holding its id while the file
+ * is re-listed under another.
+ *
+ * The on-demand sync runs WITHOUT an actor (as `findRow` in the rename
+ * handler does): indexing makes nobody the owner of a pushed file. Null
+ * when there is no row and no such file — or a file the index cannot hold
+ * (a folder no record can be named after), which stays read-only.
+ */
+export async function consoleRowForId(
+  workspaceId: string,
+  consoleId: string,
+): Promise<ISavedConsole | null> {
+  if (!Types.ObjectId.isValid(consoleId)) return null;
+  const ws = new Types.ObjectId(workspaceId);
+  const id = new Types.ObjectId(consoleId);
+  const row = await SavedConsole.findOne({ _id: id, workspaceId: ws });
+  if (row) return row;
+  const live = (await loadLiveConsoles(workspaceId)).find(
+    item => !item.row && item.id.equals(id),
+  );
+  if (!live) return null;
+  await syncConsolesIndexFromRepo(workspaceId);
+  return SavedConsole.findOne({
+    _id: id,
+    workspaceId: ws,
+    path: live.path,
+    is_deleted: { $ne: true },
+  });
+}
+
+/**
  * `${workspaceId}:${consoleId}` → the main sha a heal already found
  * nothing at. A row that stays stale (the deletion pass soft-deletes it on
  * the next sync, but a sync that found nothing to do leaves it) must not

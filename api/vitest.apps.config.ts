@@ -110,6 +110,11 @@ export default defineConfig({
       "src/rename/handlers/notebook.test.ts",
       "src/rename/handlers/dashboard.test.ts",
       "src/rename/handlers/connection.test.ts",
+      // Exhaustive scenario suites (graceful rename, #1037): consoles,
+      // notebooks, dashboards and connections against the real routes,
+      // services, git and Mongo — the matrix of entry points × operations ×
+      // roles, hostile names, partial failures, races and scale.
+      "src/routes/scenarios/console-rename.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

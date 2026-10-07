@@ -1,5 +1,4 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { workspaceResourceLoader } from "./lib/load-resource";
 import type { Context } from "hono";
 import {
   ConsoleManager,
@@ -62,6 +61,7 @@ import {
   commitConsoleState,
   consoleCaseVariantAtMain,
   consoleCommitChanges,
+  consoleRowForId,
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
@@ -267,7 +267,14 @@ async function locationOfConsole(
 }
 
 // ── Sharing (collaborators + general access) ──
-const loadConsoleById = workspaceResourceLoader(SavedConsole);
+// A console listed under its derived id (pushed, not yet indexed) is
+// indexed on demand, like every other route that acts on a console by id.
+const loadConsoleById = async (c: AuthenticatedContext) => {
+  const workspaceId = c.req.param("workspaceId");
+  const id = c.req.param("id");
+  if (!workspaceId || !id || !Types.ObjectId.isValid(workspaceId)) return null;
+  return consoleRowForId(workspaceId, id);
+};
 
 registerCollaboratorRoutes(consoleRoutes, {
   resourceName: "Console",
@@ -1888,7 +1895,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // draft-revision-checked: a stale tab gets 409 draft_conflict instead
       // of overwriting a newer draft (another tab, another user, or the
       // agent). Clients without the field keep legacy last-write-wins.
-      if (existingById?.isSaved) {
+      //
+      // A draft typed into a console that exists only in git (opened under
+      // its derived id, no row yet) is THAT console's working copy: index
+      // the file first. Upserted as a fresh row, the draft took the
+      // console's id as a private "Untitled" of the typist's, and the file
+      // was re-listed under another id — the open tab, its links and the
+      // next save no longer pointed at the console in the tree.
+      const draftTarget =
+        existingById ??
+        (liveFile ? await consoleRowForId(workspaceId, pathOrId) : null);
+      if (draftTarget?.isSaved) {
         // A saved console's name and access are where its file is and who
         // reads it: an autosave (a stale tab's title included) never
         // renames or re-scopes it in the index behind the file's back —
@@ -1897,17 +1914,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         delete setFields.name;
         delete setFields.access;
         delete setFields.isPrivate;
-      } else if (existingById && body.access !== undefined) {
+      } else if (draftTarget && body.access !== undefined) {
         // A draft has no file, but who may see it is still the visibility
         // rule's (its owner or an admin).
         try {
           const moved = await consoleManager.relocateForSave(
-            existingById,
+            draftTarget,
             { access: body.access },
             user.id,
             { isAdmin: isAdminPut },
           );
-          const placed = placedFields(moved?.row ?? existingById);
+          const placed = placedFields(moved?.row ?? draftTarget);
           setFields.access = placed.access;
           setFields.isPrivate = placed.isPrivate;
         } catch (error) {
@@ -1937,7 +1954,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       const { filter: draftFilter, guardActive: useDraftGuard } =
         buildConsoleWriteGuard({
           baseFilter: idFilter,
-          docExists: existingById !== null,
+          docExists: draftTarget !== null,
           // Draft autosaves are deliberately NOT version-guarded (that
           // counter belongs to explicit saves).
           expectedDraftRevision,
@@ -2088,10 +2105,9 @@ consoleRoutes.openapi(
         memberRename?.role === "owner" || memberRename?.role === "admin";
 
       if (Types.ObjectId.isValid(consoleId)) {
-        const existing = await SavedConsole.findOne({
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        // A console the tree lists under its derived id (pushed, not yet
+        // indexed) is indexed here, so its rename is not a 404.
+        const existing = await consoleRowForId(workspaceId, consoleId);
         if (
           existing &&
           !ConsoleManager.canWrite(
@@ -2199,10 +2215,7 @@ consoleRoutes.openapi(
       }
 
       if (Types.ObjectId.isValid(consoleId)) {
-        const existing = await SavedConsole.findOne({
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        const existing = await consoleRowForId(workspaceId, consoleId);
         if (existing) {
           const ownerId = existing.owner_id || existing.createdBy;
           if (ownerId !== user.id) {
@@ -2305,12 +2318,7 @@ consoleRoutes.openapi(
 
       // A copy is a read: of a console the caller can see, never of
       // another member's private one by its id.
-      const original = Types.ObjectId.isValid(consoleId)
-        ? await SavedConsole.findOne({
-            _id: new Types.ObjectId(consoleId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          })
-        : null;
+      const original = await consoleRowForId(workspaceId, consoleId);
       if (
         !original ||
         !(await consoleManager.canReadWithInheritance(original, user.id))
@@ -3528,10 +3536,7 @@ async function loadReadableConsole(
       ),
     };
   }
-  const doc = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const doc = await consoleRowForId(workspaceId, consoleId);
   const memberRole = (c as AuthenticatedContext).get("memberRole");
   // A console in the trash has no file: its path is free, and whatever
   // holds it now (another console, maybe one private to its owner) is not
@@ -3843,10 +3848,8 @@ const consoleFolderBackend: FolderBackend = {
 
   moveItem: async (ctx, { itemId, folderId, access, name }) => {
     if (Types.ObjectId.isValid(itemId)) {
-      const existing = await SavedConsole.findOne({
-        _id: new Types.ObjectId(itemId),
-        workspaceId: new Types.ObjectId(ctx.workspaceId),
-      });
+      // Indexed on demand: a console listed under its derived id moves too.
+      const existing = await consoleRowForId(ctx.workspaceId, itemId);
       if (
         existing &&
         !ConsoleManager.canWrite(
