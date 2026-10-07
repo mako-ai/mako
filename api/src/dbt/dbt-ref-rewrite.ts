@@ -557,8 +557,8 @@ function rewriteProjectModelConfigLf(
  * the keys mirror folders, so a config set on `staging:` (say `+schema`)
  * or on the model's own key applies by PATH: moving the file to another
  * folder silently drops it — a table becomes a view, a schema changes —
- * and no rewrite can move a YAML block safely. Returned as `a > b` chains
- * for a warning; empty when the folder does not change (a name change is
+ * and no rewrite can move a YAML block safely. Returned as key chains
+ * under `<block>: <project>:` (`["marts"]`, `["orders"]`) for a warning; empty when the folder does not change (a name change is
  * handled by `rewriteProjectModelConfig`). Only keys that carry a `+config`
  * directly count, so a folder key that merely nests others is no noise.
  */
@@ -566,7 +566,7 @@ export function projectConfigsLostByMove(
   text: string,
   fromPath: string,
   toPath: string,
-): string[] {
+): string[][] {
   const from = refResourceParts(fromPath);
   const to = refResourceParts(toPath);
   if (!from || !to || from.block !== to.block) return [];
@@ -611,7 +611,7 @@ export function projectConfigsLostByMove(
       if (chain.length > 0) configured.set(chain.join("\0"), chain);
     }
   }
-  const lost: string[] = [];
+  const lost: string[][] = [];
   for (const chain of configured.values()) {
     if (!isPrefix(chain, oldPath)) continue;
     // The model's own key is renamed along with it (rewriteProjectModelConfig).
@@ -619,7 +619,7 @@ export function projectConfigsLostByMove(
       chain.length === oldPath.length
         ? [...chain.slice(0, -1), to.name]
         : chain;
-    if (!isPrefix(after, newPath)) lost.push(chain.join(" > "));
+    if (!isPrefix(after, newPath)) lost.push(chain);
   }
   return lost;
 }
