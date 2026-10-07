@@ -582,6 +582,55 @@ describe("partial failure", () => {
   });
 });
 
+describe("scale", () => {
+  it("120 notebooks share the default name: each gets its own file, a rename onto it still works — bounded", async () => {
+    const ids: string[] = [];
+    let t = Date.now();
+    for (let i = 0; i < 120; i++) {
+      const doc = await getNotebookStore().create(WS, {});
+      await NotebookIndex.create({
+        workspaceId: new Types.ObjectId(WS),
+        notebookId: doc.id,
+        name: doc.name,
+        ownerId: OWNER,
+        access: "workspace",
+        updatedAt: new Date(),
+      });
+      ids.push(doc.id);
+    }
+    const seedMs = Date.now() - t;
+    t = Date.now();
+    let slowest = 0;
+    for (const id of ids) {
+      const one = Date.now();
+      const result = await checkpointNotebook(WS, id, OWNER);
+      slowest = Math.max(slowest, Date.now() - one);
+      expect(result.committed, id).toBe(true);
+    }
+    const checkpointMs = Date.now() - t;
+    const paths = await notebookPaths();
+    expect(paths).toHaveLength(120);
+    expect(new Set(paths).size).toBe(120);
+    const other = await seed("Elsewhere");
+    t = Date.now();
+    expect(
+      await status(
+        renameObject(ctx(OWNER), "notebook", {
+          ref: other,
+          title: "Untitled notebook",
+        }),
+      ),
+    ).toBe(200);
+    const renameMs = Date.now() - t;
+    expect(await notebookPaths()).toHaveLength(121);
+    console.info(
+      `[scale] 120 namesake notebooks: seed ${seedMs} ms, 120 checkpoints ${checkpointMs} ms (slowest ${slowest} ms), rename onto the name ${renameMs} ms`,
+    );
+    expect(slowest).toBeLessThan(10_000);
+    expect(renameMs).toBeLessThan(10_000);
+  }, 300_000);
+});
+
 describe("links and isolation", () => {
   it("/n/<id> never changes; an id of another workspace never resolves or renames here", async () => {
     const id = await seed("Here");

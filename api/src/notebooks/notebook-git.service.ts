@@ -47,6 +47,7 @@ import {
   listTree,
   logFollow,
   readBlob,
+  readBlobsBatch,
   resolveCommit,
   type ChangedFile,
   type FollowedCommit,
@@ -98,37 +99,52 @@ async function uniqueNotebookPath(
   reserved: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const base = slugifyNotebookName(index.name);
-  let slug = base;
+  const scope = { access: index.access, ownerId: index.ownerId };
+  const candidates = [notebookRepoPath(base, scope)];
   for (let i = 2; i < 100; i++) {
-    const wanted = notebookRepoPath(slug, {
-      access: index.access,
-      ownerId: index.ownerId,
-    });
-    const clash =
-      reserved.has(wanted) ||
-      (await NotebookIndex.findOne({
+    candidates.push(notebookRepoPath(`${base}-${i}`, scope));
+  }
+  // Past 98 namesakes — "Untitled notebook" is every new notebook's name —
+  // a suffix from the notebook's own id is free by construction. Without
+  // it the 100th namesake could never be checkpointed (no file, no
+  // history) and a rename onto the name failed with a 500.
+  const own = index.notebookId.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  candidates.push(notebookRepoPath(`${base}-${own.slice(0, 12)}`, scope));
+  candidates.push(notebookRepoPath(`${base}-${own}`, scope));
+  // One index query and one batched read for every candidate (it was one
+  // query and one git process per candidate tried: quadratic in the
+  // number of namesakes).
+  const claimed = new Set(
+    (
+      await NotebookIndex.find({
         workspaceId: index.workspaceId,
-        path: wanted,
+        path: { $in: candidates },
         notebookId: { $ne: index.notebookId },
-      }).select("_id"));
-    if (!clash && !(await foreignFileAt(repoDir, wanted, index.notebookId))) {
-      return wanted;
+      })
+        .select("path")
+        .lean<Array<{ path?: string }>>()
+    ).map(r => r.path),
+  );
+  const head = await resolveCommit(repoDir, MAIN_REF);
+  const atMain = head
+    ? await readBlobsBatch(repoDir, head, candidates).catch(
+        () => new Map<string, Buffer>(),
+      )
+    : new Map<string, Buffer>();
+  for (const wanted of candidates) {
+    if (reserved.has(wanted) || claimed.has(wanted)) continue;
+    // A file at main that is not this notebook's (a laptop-made notebook
+    // the index does not know yet) must not be overwritten.
+    const buf = atMain.get(wanted);
+    if (buf) {
+      if (buf.includes(0)) continue;
+      if (parseNotebookFile(buf.toString("utf8"))?.id !== index.notebookId) {
+        continue;
+      }
     }
-    slug = `${base}-${i}`;
+    return wanted;
   }
   throw new Error(`No free path for notebook "${index.name}"`);
-}
-
-/** Is there a file at `path` on main that is not notebook `notebookId`'s? */
-async function foreignFileAt(
-  repoDir: string,
-  path: string,
-  notebookId: string,
-): Promise<boolean> {
-  const blob = await readBlob(repoDir, MAIN_REF, path).catch(() => null);
-  if (!blob) return false;
-  if (blob.isBinary) return true;
-  return parseNotebookFile(blob.contents)?.id !== notebookId;
 }
 
 /**
