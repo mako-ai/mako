@@ -40,6 +40,7 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
+import yaml from "js-yaml";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -217,12 +218,14 @@ import {
   commitBlobsOnBranch,
   initRepo,
   listTree,
+  readBlob,
   repoDirFor,
   repoExists,
   resolveCommit,
 } from "../../apps/repository.service";
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import { syncConnectorsFromRepo } from "../../connectors/workspace/reconcile.service";
+import { parseConnectorFile } from "../../connectors/workspace/connector-file";
 import { sourceConnectionRoutes } from "../../routes/source-connections";
 import { objectRoutes } from "../../routes/objects";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
@@ -1438,6 +1441,51 @@ describe("the stamping migration on realistic data", () => {
     await assertCredentials("ws2 after the migration");
     WS = ws1;
     WS_ID.value = ws1;
+  });
+});
+
+describe("slugs YAML would read as a boolean or null", () => {
+  it("acme → true → no → null → yes → off → y: connector.yaml parses, aliases are exact strings, old names resolve, credentials stay bound", async () => {
+    await pushAndSync({ writes: folder("acme", "A") });
+    const A = await defId("acme");
+    await createConnection("ws:acme", A);
+    await legacyConnection("ws:acme", A);
+    // Digit-led names are not connector slugs at all: refused, nothing moves.
+    for (const bad of ["2026", "2026-10-06", "012", "0x1f", "1e3"]) {
+      await expect(rename("acme", bad)).rejects.toMatchObject({ status: 400 });
+    }
+    const chain = ["true", "no", "null", "yes", "off", "y"];
+    let current = "acme";
+    const old: string[] = [];
+    for (const to of chain) {
+      const r = await rename(current, to);
+      expect(r.id).toBe(A);
+      old.push(current);
+      current = to;
+      const text = (
+        await readBlob(
+          repoDirFor(WS),
+          MAIN,
+          `connectors/${current}/connector.yaml`,
+        )
+      ).contents;
+      const doc = yaml.load(text) as { aliases: unknown[] };
+      expect(doc.aliases.every(a => typeof a === "string")).toBe(true);
+      expect([...doc.aliases].sort()).toEqual([...old].sort());
+      expect(parseConnectorFile(text)).toMatchObject({ ok: true });
+      for (const name of old) {
+        expect([
+          name,
+          (await resolveObjectRef(ctx(), "connector", name))?.id,
+        ]).toEqual([name, A]);
+      }
+      await assertCredentials(`renamed to ${to}`);
+    }
+    // A laptop push after all that: the yaml still parses, nothing re-runs
+    // spec (the aliases are not code), the row keeps its id.
+    await pushAndSync({ writes: { "README.md": "# touched\n" } });
+    expect(await defId("y")).toBe(A);
+    await assertCredentials("after a later push");
   });
 });
 

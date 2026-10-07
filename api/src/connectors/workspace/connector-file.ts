@@ -7,6 +7,7 @@
  * from them.
  */
 import yaml from "js-yaml";
+import { yamlScalar } from "../../rename/yaml-name-aliases";
 
 /** The runtimes that exist. Only `node` runs today; the rest are named so a
  * folder declaring one gets a straight answer instead of a parse error. */
@@ -176,6 +177,11 @@ export function withConnectorAlias(
     ? doc.aliases.filter((a): a is string => typeof a === "string")
     : null;
   if (existing && existing.includes(alias)) return contents;
+  // The old slug as a scalar every reader takes back as that string: a
+  // slug like `true`, `no` or `null` written bare is a boolean / null, the
+  // re-parse below refused it, and the rename answered 409.
+  const item = yamlScalar(alias);
+  if (item === null) return null;
   const nl = contents.includes("\r\n") ? "\r\n" : "\n";
   if (existing === null) {
     if (doc.aliases !== undefined) return null; // present but not a list
@@ -185,7 +191,7 @@ export function withConnectorAlias(
     // lines and nothing else) gives back these exact bytes, and the identity
     // hash does not move. Appending `\n` to a file that had none was a byte
     // the strip could not remove: every rename looked like new code.
-    const block = `aliases:${nl}  - ${alias}`;
+    const block = `aliases:${nl}  - ${item}`;
     return checkedAliasEdit(
       contents,
       contents === "" || contents.endsWith(nl)
@@ -200,8 +206,7 @@ export function withConnectorAlias(
   const flow = /^(aliases:\s*\[)(.*)(\]\s*(?:#.*)?)$/.exec(lines[keyAt]);
   if (flow) {
     const inner = flow[2].trim();
-    lines[keyAt] =
-      `${flow[1]}${inner ? `${inner}, ${alias}` : alias}${flow[3]}`;
+    lines[keyAt] = `${flow[1]}${inner ? `${inner}, ${item}` : item}${flow[3]}`;
     return checkedAliasEdit(contents, lines.join(nl), alias);
   }
   // Block list: items follow the key, each `<indent>- value` — the indent
@@ -215,7 +220,7 @@ export function withConnectorAlias(
     last = i;
   }
   if (indent === null) return null; // `aliases:` with items we could not see
-  lines.splice(last + 1, 0, `${indent}- ${alias}`);
+  lines.splice(last + 1, 0, `${indent}- ${item}`);
   return checkedAliasEdit(contents, lines.join(nl), alias);
 }
 

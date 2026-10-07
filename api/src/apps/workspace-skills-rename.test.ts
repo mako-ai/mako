@@ -206,7 +206,8 @@ describe("front matter is edited in place, never re-serialized", () => {
         name: "n",
         aliases: ["o"],
       }),
-    ).toBe("---\nname: n\ndescription: d\naliases: [o]\n---\nbody\n");
+      // `n` is a YAML 1.1 boolean: written quoted (yamlScalar), still `n`.
+    ).toBe("---\nname: 'n'\ndescription: d\naliases: [o]\n---\nbody\n");
     expect(
       editSkillFrontMatter("no front matter\n", { aliases: ["o"] }),
     ).toBeNull();
