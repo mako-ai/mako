@@ -378,7 +378,9 @@ describe("round 2: a save racing a rename; files edited in place", () => {
       slug: "nightly",
     });
     expect(await fileAt(jobFilePath("nightly"))).toBe(
-      jobYaml.replace("name: N\n", "name: Nightly\naliases:\n  - n\n"),
+      // `n` is a YAML 1.1 boolean: the old name is written quoted, so every
+      // reader takes it back as the string "n".
+      jobYaml.replace("name: N\n", "name: Nightly\naliases:\n  - 'n'\n"),
     );
     expect(
       (await DbtJob.findOne({ projectId: project._id, slug: "nightly" }))?.name,

@@ -22,12 +22,46 @@ import yaml from "js-yaml";
 
 const NEWLINE = /\r?\n/;
 
-/** `name: <value>` as js-yaml would write it (quoted when it must be). */
+/**
+ * One string as a one-line YAML scalar that every reader takes back as THE
+ * SAME STRING. A valid slug such as `2026`, `2026-10-06`, `true`, `1e3`,
+ * `0x1F`, `012` or `.5` written plain is a number, a timestamp or a boolean
+ * to a YAML parser — the rename's own re-parse then refused its output
+ * ("could not be edited in place", 409), and a laptop tool reading YAML 1.1
+ * adds `yes`/`no`/`on`/`off` to the list. js-yaml quotes every one of
+ * those (YAML 1.1 and 1.2 core: booleans incl. yes/no/on/off, null/~,
+ * ints/floats/hex/octal/binary/exponents, dates and timestamps,
+ * .inf/.nan, sexagesimals); the result is also loaded back and compared,
+ * and a value that does not survive is written JSON-quoted (double-quoted
+ * YAML). Null when the value cannot be one line (a block scalar).
+ */
+export function yamlScalar(value: string): string | null {
+  const dumped = yaml.dump(value, { lineWidth: -1 }).trimEnd();
+  if (dumped.includes("\n")) return null;
+  let back: unknown;
+  try {
+    back = yaml.load(dumped);
+  } catch {
+    back = undefined;
+  }
+  return back === value ? dumped : JSON.stringify(value);
+}
+
+/** `name: <value>`, quoted when it must be (see yamlScalar). */
 function scalarLine(key: string, value: string): string | null {
-  const dumped = yaml.dump({ [key]: value }, { lineWidth: -1 }).trimEnd();
-  // A value js-yaml must fold onto several lines (block scalar) is outside
-  // what this edits.
-  return dumped.includes("\n") ? null : dumped;
+  const scalar = yamlScalar(value);
+  return scalar === null ? null : `${key}: ${scalar}`;
+}
+
+/** Every alias as a scalar, or null when one cannot be written on a line. */
+function aliasScalars(aliases: string[]): string[] | null {
+  const out: string[] = [];
+  for (const alias of aliases) {
+    const scalar = yamlScalar(alias);
+    if (scalar === null) return null;
+    out.push(scalar);
+  }
+  return out;
 }
 
 /** Index of the single top-level `key:` line, or -1 (none) / -2 (several). */
@@ -149,8 +183,11 @@ export function setTopLevelAliases(
   const lines = contents.split(NEWLINE);
   const at = findTopLevelKey(lines, "aliases");
   if (at === -2) return null;
+  // Each alias written as a string scalar (`- '2026'`, never `- 2026`).
+  const scalars = aliasScalars(aliases);
+  if (scalars === null) return null;
   const replacement =
-    aliases.length === 0 ? [] : ["aliases:", ...aliases.map(a => `  - ${a}`)];
+    scalars.length === 0 ? [] : ["aliases:", ...scalars.map(a => `  - ${a}`)];
   if (at === -1) {
     if (replacement.length === 0) return contents;
     const nameAt = findTopLevelKey(lines, "name");
@@ -175,7 +212,7 @@ export function setTopLevelAliases(
       at,
       blockEnd - at + 1,
       lines[at].replace(/\s*$/, ""),
-      ...aliases.map(a => `  - ${a}`),
+      ...scalars.map(a => `  - ${a}`),
     );
     return joinLike(contents, lines);
   }
@@ -186,7 +223,7 @@ export function setTopLevelAliases(
     return joinLike(contents, lines);
   }
   // Inline stays inline, with its comment.
-  lines[at] = `aliases: [${aliases.join(", ")}]${inline[2] ?? ""}`;
+  lines[at] = `aliases: [${scalars.join(", ")}]${inline[2] ?? ""}`;
   return joinLike(contents, lines);
 }
 
@@ -228,7 +265,9 @@ function editBlockItems(block: string[], aliases: string[]): string[] | null {
     lastKept === -1
       ? out.length
       : block.slice(0, lastKept + 1).filter((_, i) => !drop.has(i)).length;
-  out.splice(insertAt, 0, ...added.map(alias => `${indent}${alias}`));
+  const addedScalars = aliasScalars(added);
+  if (addedScalars === null) return null;
+  out.splice(insertAt, 0, ...addedScalars.map(alias => `${indent}${alias}`));
   return out;
 }
 
