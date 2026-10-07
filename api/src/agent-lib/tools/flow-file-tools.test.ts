@@ -252,8 +252,10 @@ describe("partial input never reports a phantom teardown", () => {
     expect(byAlias.summary).toContain("rename 1");
     expect(byAlias.notes.some(n => n.includes("Renamed in place"))).toBe(true);
 
-    // Identical content under a new name pairs too; a different definition
-    // with no alias does not, and is reported as today.
+    // Identical content under a new name pairs too; so does the one file
+    // with the same source and destination, edited as well (the same
+    // stream: a move made with an edit, rule 4); a definition that points
+    // somewhere else, with no alias, does not, and is reported as today.
     const identical = await checkFlowFiles({
       workspaceId: WS.toString(),
       files: [{ path: "flows/beta-copy.yml", contents: flowYaml("beta copy") }],
@@ -262,10 +264,30 @@ describe("partial input never reports a phantom teardown", () => {
     expect(identical.wouldRename.map(r => r.via)).toEqual(["identical"]);
     expect(identical.wouldTeardown).toEqual([]);
 
-    const unrelated = await checkFlowFiles({
+    const edited = await checkFlowFiles({
       workspaceId: WS.toString(),
       files: [
         { path: "flows/gamma.yml", contents: flowYaml("gamma", ["leads"]) },
+      ],
+      deletedPaths: ["flows/beta.yml"],
+    });
+    expect(edited.wouldRename).toEqual([
+      { from: "beta", to: "gamma", via: "target" },
+    ]);
+    expect(edited.wouldTeardown).toEqual([]);
+    expect(edited.wouldCreate).toEqual([]);
+
+    const OTHER_DEST = new Types.ObjectId().toString();
+    const unrelated = await checkFlowFiles({
+      workspaceId: WS.toString(),
+      files: [
+        {
+          path: "flows/gamma.yml",
+          contents: flowYaml("gamma", ["leads"]).replace(
+            `  connection_id: ${DEST.toString()}`,
+            `  connection_id: ${OTHER_DEST}`,
+          ),
+        },
       ],
       deletedPaths: ["flows/beta.yml"],
     });

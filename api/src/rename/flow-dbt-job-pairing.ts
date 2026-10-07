@@ -21,6 +21,17 @@
  *     edit made in the same commit as the move does not defeat it.
  *  3. IDENTICAL — the definitions are the same apart from `name:` and
  *     `aliases:`. Covers a tree moved without git's help (a copy + delete).
+ *  4. TARGET — the one removed slug and the one added file that point at
+ *     the same thing (a flow's source + destination, a job's environment +
+ *     commands), when NEITHER side has another candidate with that target.
+ *     A move made together with a real edit (a new entity, a cron, a
+ *     comment) falls under git's similarity threshold, and without this
+ *     rule it read as "the stream was deleted and a new one created into
+ *     the same destination": a teardown, a re-backfill into the tables the
+ *     old stream filled, a new webhook URL. Two streams cannot both own one
+ *     source and destination, so a one-to-one match on the target is the
+ *     same stream; anything less certain (two candidates either way) is
+ *     ambiguous and, like every rule here, never guessed.
  *
  * A rule that yields TWO candidates is ambiguous, and an ambiguous pairing
  * is never guessed: the removed slug is left to the reactor's existing
@@ -79,7 +90,7 @@ export interface AddedSlug {
   target?: string | null;
 }
 
-export type PairingRule = "alias" | "git" | "identical";
+export type PairingRule = "alias" | "git" | "identical" | "target";
 
 export interface SlugRenamePair {
   from: string;
@@ -223,6 +234,23 @@ export function pairRenamedSlugs(input: {
             )
             .map(a => a.slug);
         })(),
+      ],
+      [
+        "target",
+        // One-to-one or nothing: two added files with this target are
+        // ambiguous here, and two removed slugs claiming one added file are
+        // given to neither (the claims step below). Never onto one of the
+        // removed slug's OWN old names: an edited file under an old name is
+        // what a tree read before a rename looks like (see rule 1), so a
+        // move back is left to the content rules. And only for a removed
+        // slug whose last file is known — its target was read from it.
+        r.contents === undefined
+          ? []
+          : added
+              .filter(
+                a => sameTarget(r, a) && !(r.aliases ?? []).includes(a.slug),
+              )
+              .map(a => a.slug),
       ],
     ];
     let decided = false;

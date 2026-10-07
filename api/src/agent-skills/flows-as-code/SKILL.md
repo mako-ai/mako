@@ -198,8 +198,10 @@ Verify: there is no flow-status tool over MCP yet — open the Flows page:
   source (connection, or database) or destination (connection, database,
   schema, table) changed — it is never paired by git similarity or by
   content, so the old stream is torn down and the new one backfills from
-  zero under a new id. An old slug that two new files could claim is also
-  not guessed (torn down, with a warning). With `aliases:` the pairing is
+  zero under a new id. An old slug that two new files could claim (or two
+  vanished flows with one new file's source and destination) is also not
+  guessed (torn down, with a warning). To start a stream over on purpose,
+  delete in one push and add in the next. With `aliases:` the pairing is
   honoured even across a retarget, carrying the old checkpoints onto the
   new target — so rename and retarget in separate pushes.
 - An empty or missing `flows/` directory means "this workspace has not
