@@ -301,6 +301,7 @@ export const BALANCE_TRANSACTION_SCHEMA: Record<string, ConnectorFieldSchema> =
     ...COMMON_STRIPE_SCHEMA,
     amount: i(),
     available_on: ts(),
+    balance_type: s(),
     currency: s(),
     description: s(),
     exchange_rate: n(),
