@@ -73,6 +73,10 @@ import {
 } from "../dbt/dbt-config.service";
 import { retireObjectId } from "../rename/retired-ids";
 import {
+  displayNameProblem,
+  normalizeDisplayName,
+} from "../rename/title-rules";
+import {
   DBT_PREVIEW_DEFAULT_LIMIT,
   DBT_PREVIEW_MAX_LIMIT,
   parseDbtShowPreview,
@@ -953,6 +957,10 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     if (!parsed.success) {
       return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid job");
     }
+    // The rename rules for a name (rename/title-rules.ts).
+    parsed.data.name = normalizeDisplayName(parsed.data.name);
+    const nameProblem = displayNameProblem(parsed.data.name);
+    if (nameProblem) return badRequest(c, nameProblem);
     const validationError = validateJobBody(project, parsed.data);
     if (validationError) return badRequest(c, validationError);
 
@@ -1006,6 +1014,12 @@ dbtRoutes.patch(
       const parsed = jobSchema.partial().safeParse(await c.req.json());
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid job");
+      }
+      if (parsed.data.name !== undefined) {
+        // The rename rules for a name (rename/title-rules.ts).
+        parsed.data.name = normalizeDisplayName(parsed.data.name);
+        const nameProblem = displayNameProblem(parsed.data.name);
+        if (nameProblem) return badRequest(c, nameProblem);
       }
       const merged = {
         name: parsed.data.name ?? job.name,

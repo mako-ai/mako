@@ -74,6 +74,10 @@ import {
 } from "../../dbt/dbt-config.service";
 import { retireObjectId } from "../../rename/retired-ids";
 import {
+  displayNameProblem,
+  normalizeDisplayName,
+} from "../../rename/title-rules";
+import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
 } from "../../dbt/adapter-map";
@@ -1288,6 +1292,10 @@ export const createDbtServerTools = (
       }) => {
         try {
           const project = await assertProject(projectId);
+          // The rename rules for a name (rename/title-rules.ts).
+          name = normalizeDisplayName(name);
+          const nameProblem = displayNameProblem(name);
+          if (nameProblem) return { success: false, error: nameProblem };
           const env = environment ?? project.defaultEnvironment;
           const validationError = validateJob(project, {
             environment: env,
@@ -1370,7 +1378,12 @@ export const createDbtServerTools = (
             return { success: false, error: validationError };
           }
 
-          if (updates.name !== undefined) job.name = updates.name;
+          if (updates.name !== undefined) {
+            const name = normalizeDisplayName(updates.name);
+            const nameProblem = displayNameProblem(name);
+            if (nameProblem) return { success: false, error: nameProblem };
+            job.name = name;
+          }
           job.environment = merged.environment;
           job.commands = merged.commands;
           job.schedule = merged.schedule ?? undefined;
