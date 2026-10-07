@@ -1106,6 +1106,15 @@ export function DbtExplorer() {
                           onClick={() =>
                             focusDbtJobTab(activeProject._id, job._id, job.name)
                           }
+                          // Right-click opens the same actions as the kebab
+                          // (Open, Rename…, Delete) — it used to open nothing.
+                          onContextMenu={e => {
+                            e.preventDefault();
+                            setKebabMenu({
+                              anchorEl: e.currentTarget,
+                              node: jobNode,
+                            });
+                          }}
                           onKeyDown={e => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
