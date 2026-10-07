@@ -164,6 +164,11 @@ export async function resolveDbtJobRef(
   };
   const currentFile = defs.find(def => def.slug === ref);
   if (currentFile) return gitOnly(currentFile, "current");
+  if (!found && Types.ObjectId.isValid(ref)) {
+    // The id GET/list hands out for a job file with no row yet.
+    const byDerivedId = await gitOnlyJobByDerivedId(project, defs, ref);
+    if (byDerivedId) return gitOnly(byDerivedId, "current");
+  }
   if (found) {
     return {
       kind: "dbt_job",
@@ -174,6 +179,26 @@ export async function resolveDbtJobRef(
   }
   const byAlias = defs.filter(def => def.parsed?.aliases?.includes(ref));
   return byAlias.length === 1 ? gitOnly(byAlias[0], "alias") : null;
+}
+
+/** The git-only job file (no row yet) whose derived id is `id`, if any. */
+async function gitOnlyJobByDerivedId(
+  project: IDbtProject,
+  defs: Awaited<ReturnType<typeof listJobDefinitionsAtMain>>,
+  id: string,
+) {
+  const rows = await DbtJob.find({ projectId: project._id })
+    .select("_id slug")
+    .lean();
+  const rowSlugs = new Set(rows.map(row => row.slug));
+  const workspaceId = project.workspaceId.toString();
+  return (
+    defs.find(
+      def =>
+        !rowSlugs.has(def.slug) &&
+        String(freeDerivedJobId(workspaceId, def.slug, rows)) === id,
+    ) ?? null
+  );
 }
 
 /**
@@ -193,6 +218,22 @@ export async function renameDbtJob(
   }
   const found = await findJobByRef(project, request.ref);
   if (!found) {
+    // A job file at main with no row yet: the list shows it — say why it
+    // cannot be renamed yet rather than "no such job".
+    const defs = JOB_SLUG_RE.test(request.ref)
+      ? await listJobDefinitionsAtMain(workspaceId)
+      : [];
+    const gitOnly =
+      defs.find(def => def.slug === request.ref) ??
+      (Types.ObjectId.isValid(request.ref)
+        ? await gitOnlyJobByDerivedId(project, defs, request.ref)
+        : null);
+    if (gitOnly) {
+      throw new RenameError(
+        `Job "${gitOnly.slug}" exists only in git so far (${gitOnly.path}, not synced yet); it can be renamed once its push is synced.`,
+        409,
+      );
+    }
     throw new RenameError(`No dbt job answers to "${request.ref}".`, 404);
   }
   const row = found.row;

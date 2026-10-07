@@ -169,6 +169,16 @@ export async function resolveFlowRef(
   };
   const currentFile = defs.find(def => def.slug === ref);
   if (currentFile) return gitOnly(currentFile, "current");
+  if (!found && Types.ObjectId.isValid(ref)) {
+    // The id GET/list hands out for a file with no row yet (a tab or a
+    // link made before its push was synced).
+    const byDerivedId = await gitOnlyFlowByDerivedId(
+      ctx.workspaceId,
+      defs,
+      ref,
+    );
+    if (byDerivedId) return gitOnly(byDerivedId, "current");
+  }
   if (found) {
     return {
       kind: "flow",
@@ -179,6 +189,23 @@ export async function resolveFlowRef(
   }
   const byAlias = defs.filter(def => def.parsed?.aliases?.includes(ref));
   return byAlias.length === 1 ? gitOnly(byAlias[0], "alias") : null;
+}
+
+/** The git-only file (no row yet) whose derived id is `id`, if any. */
+async function gitOnlyFlowByDerivedId(
+  workspaceId: string,
+  defs: Awaited<ReturnType<typeof listFlowDefinitionsAtMain>>,
+  id: string,
+) {
+  const rows = await Flow.find({ workspaceId }).select("_id slug").lean();
+  const rowSlugs = new Set(rows.map(row => row.slug));
+  return (
+    defs.find(
+      def =>
+        !rowSlugs.has(def.slug) &&
+        String(freeDerivedFlowId(workspaceId, def.slug, rows)) === id,
+    ) ?? null
+  );
 }
 
 /**
@@ -194,6 +221,22 @@ export async function renameFlow(
   const { workspaceId } = ctx;
   const found = await findFlowByRef(workspaceId, request.ref);
   if (!found) {
+    // A file at main with no row yet is a flow the list shows (and resolve
+    // finds): say why it cannot be renamed yet rather than "no such flow".
+    const defs = FLOW_SLUG_RE.test(request.ref)
+      ? await listFlowDefinitionsAtMain(workspaceId)
+      : [];
+    const gitOnly =
+      defs.find(def => def.slug === request.ref) ??
+      (Types.ObjectId.isValid(request.ref)
+        ? await gitOnlyFlowByDerivedId(workspaceId, defs, request.ref)
+        : null);
+    if (gitOnly) {
+      throw new RenameError(
+        `Flow "${gitOnly.slug}" exists only in git so far (${gitOnly.path}, not synced yet); it can be renamed once its push is synced.`,
+        409,
+      );
+    }
     throw new RenameError(`No flow answers to "${request.ref}".`, 404);
   }
   const row = found.row;
