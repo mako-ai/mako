@@ -42,6 +42,7 @@ import {
   ConsoleNameError,
   chartSidecarPath,
   cleanConsoleName,
+  cleanDerivedConsoleName,
   consolePathTakenMessage,
   normalizeConsoleName,
   parseConsoleRepoPath,
@@ -1645,12 +1646,12 @@ export class ConsoleManager {
     // (spelled however) is no change; a legacy name is never re-judged.
     if (change.name !== undefined) {
       const same = normalizeConsoleName(change.name) === current.name;
-      change = {
-        ...change,
-        name: same
-          ? undefined
-          : cleanConsoleName(change.name, "console", current.language),
-      };
+      const clean = same
+        ? undefined
+        : cleanConsoleName(change.name, "console", current.language);
+      // "Q1: revenue" for a console already called "Q1 - revenue" is no
+      // change either.
+      change = { ...change, name: clean === current.name ? undefined : clean };
     }
 
     // Who can see it is the row's access AND its folder chain (a private
@@ -3244,7 +3245,9 @@ export class ConsoleManager {
       connectionId: original.connectionId,
       databaseName: original.databaseName,
       databaseId: original.databaseId,
-      name: `${original.name} copy`,
+      // A derived name, cleaned like a typed one where it can be (a
+      // console a laptop named "a:b" is copied as "a - b copy").
+      name: cleanDerivedConsoleName(`${original.name} copy`, original.language),
       description: original.description,
       code: original.code,
       language: original.language,

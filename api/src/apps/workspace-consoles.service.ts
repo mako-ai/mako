@@ -85,11 +85,10 @@ import {
   CONSOLES_DIR,
   CONSOLES_README,
   CONSOLES_README_PATH,
-  ConsoleNameError,
   MAX_CONSOLE_NAME_LENGTH,
+  cleanConsoleName,
   USERS_DIR,
   chartSidecarPath,
-  consoleNameProblem,
   consoleRepoPath,
   foldConsolePath,
   normalizeConsoleName,
@@ -1604,18 +1603,24 @@ export async function checkNewFolderChain(
     })
       .select("_id name")
       .lean<Array<{ _id: Types.ObjectId; name: string }>>();
-    const others = siblings;
-    const exact = others.find(f => f.name === names[i]);
+    // A folder that exists under the name as typed (a laptop-made "a:b"
+    // too) is taken as it is…
+    let exact = siblings.find(f => f.name === names[i]);
+    if (!exact) {
+      // …else the name as it would be created ("Q1: x" → "Q1 - x"), which
+      // may exist already.
+      names[i] = cleanConsoleName(names[i], "folder");
+      exact = siblings.find(f => f.name === names[i]);
+    }
     if (exact) {
       parentId = exact._id;
       continue;
     }
     // From here on every segment is a folder this request would create.
-    for (const name of names.slice(i)) {
-      const problem = consoleNameProblem(name, "folder");
-      if (problem) throw new ConsoleNameError(problem);
+    for (let j = i + 1; j < names.length; j++) {
+      names[j] = cleanConsoleName(names[j], "folder");
     }
-    const twin = others.find(
+    const twin = siblings.find(
       f => foldConsolePath(f.name) === foldConsolePath(names[i]),
     );
     if (twin) throw new ConsoleFolderTwinError(twin.name, names[i]);
@@ -2544,9 +2549,9 @@ export async function projectSavedConsole(input: {
     parseConsoleRepoPath(previousPath)?.name !== desired.name
   ) {
     const language = rowLanguage(desired as Pick<RowLike, "language">);
-    const clean = normalizeConsoleName(name);
-    const problem = consoleNameProblem(clean, "console", language);
-    if (problem) throw new ConsoleNameError(problem);
+    // Normalized, characters no file name carries given a stand-in, the
+    // rest refused (ConsoleNameError).
+    const clean = cleanConsoleName(name, "console", language);
     if (clean !== name) {
       desired.name = clean;
       if (input.set.name !== undefined) input.set.name = clean;

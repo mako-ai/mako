@@ -475,13 +475,19 @@ describe("rename", () => {
     expect(await ConsoleFolder.countDocuments({ workspaceId: WS })).toBe(2);
   });
 
-  it("refuses a title with a slash, a foreign extension, a taken path; a no-op succeeds", async () => {
+  it("a slash in a title is a stand-in; refuses a foreign extension, a taken path; a no-op succeeds", async () => {
     const a = await seed("a");
     await seed("b");
     const id = a._id.toString();
+    // A "/" in a TITLE is a character of the name ("A/B test"), given a
+    // stand-in — never a folder: `slug` is what moves a console.
+    const c = await seed("c");
     await expect(
-      renameObject(owner, "console", { ref: id, title: "Team/a" }),
-    ).rejects.toMatchObject({ status: 400 });
+      renameObject(owner, "console", {
+        ref: c._id.toString(),
+        title: "Team/c",
+      }),
+    ).resolves.toMatchObject({ after: { path: "consoles/Team-c.sql" } });
     await expect(
       renameObject(owner, "console", { ref: id, slug: "a.js" }),
     ).rejects.toMatchObject({ status: 400 });

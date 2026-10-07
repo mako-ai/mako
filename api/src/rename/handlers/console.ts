@@ -231,11 +231,9 @@ function targetFor(
   if (title !== undefined) {
     const clean = normalizeConsoleName(title);
     if (!clean) throw new RenameError("Give a non-empty title.");
-    if (clean.includes("/")) {
-      throw new RenameError(
-        "A title is the file name; use `slug` (a path) to move a console into a folder.",
-      );
-    }
+    // A title is the file name: a "/" in it ("A/B test") is a character of
+    // the name, given a stand-in like every other a file name cannot carry
+    // (`cleanConsoleName`) — `slug` moves a console into a folder.
     if (slug !== undefined && target.name !== clean) {
       throw new RenameError("`title` and the file name in `slug` disagree.");
     }
@@ -276,13 +274,44 @@ export const consoleRenameHandler: RenameHandler = {
     );
     const target = targetFor(row, currentSegments, request.title, request.slug);
     const current = rowScope(row);
-    // A new name is judged before anything is created for it.
+    // A new name is judged — and cleaned: characters no file name can
+    // carry get a visible stand-in — before anything is created for it.
     if (target.name !== row.name) {
       try {
-        cleanConsoleName(target.name, "console", target.language);
+        target.name = cleanConsoleName(target.name, "console", target.language);
       } catch (error) {
         if (error instanceof ConsoleNameError) {
           throw new RenameError(error.message, 400);
+        }
+        throw error;
+      }
+    }
+
+    // Folders this would create are named like any folder (cleaned the
+    // same way) and are no case twin of a folder already there.
+    const chainScope = {
+      access: (target.scope === "private"
+        ? "private"
+        : "workspace") as ConsoleAccessLevel,
+      ownerId: target.ownerId ?? (row.owner_id || row.createdBy),
+    };
+    if (
+      target.folderSegments.join("/") !== currentSegments.join("/") ||
+      target.scope !== current.scope ||
+      target.ownerId !== current.ownerId
+    ) {
+      try {
+        target.folderSegments = await checkNewFolderChain(
+          target.folderSegments,
+          ctx.workspaceId,
+          chainScope,
+        );
+      } catch (error) {
+        if (error instanceof ConsoleNameError) {
+          throw new RenameError(error.message, 400);
+        }
+        if (error instanceof ConsoleFolderTwinError) {
+          throw new RenameError(error.message, 409);
         }
         throw error;
       }
@@ -352,32 +381,13 @@ export const consoleRenameHandler: RenameHandler = {
       access !== undefined;
     let folderId: string | null | undefined;
     if (folderChanged) {
-      const scope = {
-        access: (target.scope === "private"
-          ? "private"
-          : "workspace") as ConsoleAccessLevel,
-        ownerId: target.ownerId ?? (row.owner_id || row.createdBy),
-      };
-      // Folders this creates are named like any folder and are no case
-      // twin of a folder already there.
-      try {
-        await checkNewFolderChain(
-          target.folderSegments,
-          ctx.workspaceId,
-          scope,
-        );
-      } catch (error) {
-        if (error instanceof ConsoleNameError) {
-          throw new RenameError(error.message, 400);
-        }
-        if (error instanceof ConsoleFolderTwinError) {
-          throw new RenameError(error.message, 409);
-        }
-        throw error;
-      }
       folderId =
         (
-          await ensureFolderChain(target.folderSegments, ctx.workspaceId, scope)
+          await ensureFolderChain(
+            target.folderSegments,
+            ctx.workspaceId,
+            chainScope,
+          )
         )?.toString() ?? null;
     }
 

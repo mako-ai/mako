@@ -1884,7 +1884,14 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.remoteUpdate = null;
               }
             });
-            return { success: true, path: cleanPath, version: newVersion };
+            // The place and name the server SAVED it under (a name may
+            // have been cleaned: "Q1: revenue" → "Q1 - revenue").
+            return {
+              success: true,
+              path: res.console?.path ?? cleanPath,
+              name: res.console?.name,
+              version: newVersion,
+            };
           }
           return {
             success: false,

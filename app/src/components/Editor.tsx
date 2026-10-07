@@ -1516,11 +1516,14 @@ function Editor({
         return false;
       }
 
+      // Where and under which name the server saved it: a name may have
+      // been cleaned ("Q1: revenue" is saved as "Q1 - revenue").
+      const savedPath = result.path ?? savePath;
       if (result.success) {
         if (!keepPlace) {
-          // A first save placed it: title = canonical leaf name.
-          updateFilePath(tabId, savePath);
-          updateTitle(tabId, consoleLeafName(savePath));
+          // A first save placed it: title = the saved leaf name.
+          updateFilePath(tabId, savedPath);
+          updateTitle(tabId, result.name ?? consoleLeafName(savedPath));
           updateAccess(tabId, currentTab?.access);
         }
         updateDirty(tabId, true);
@@ -1547,7 +1550,7 @@ function Editor({
             access: saved?.access,
             ownerId: saved?.owner_id,
             currentUserId: user?.id,
-            filePath: (keepPlace ? saved?.filePath : undefined) ?? savePath,
+            filePath: (keepPlace ? saved?.filePath : undefined) ?? savedPath,
             name: saved?.title,
           }),
         );
@@ -1558,7 +1561,7 @@ function Editor({
         if (!currentTab?.filePath) {
           useConsoleTreeStore
             .getState()
-            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
+            .addConsole(currentWorkspace.id, savedPath ?? "", tabId);
         }
 
         if (currentTab?.metadata?.openScheduleOnSave) {
@@ -1917,10 +1920,11 @@ function Editor({
 
       if (result.success) {
         const tabId = pendingSaveData.tabId;
+        const savedPath = result.path ?? pendingSaveData.path;
 
-        // Update the tab properties
-        updateFilePath(tabId, pendingSaveData.path);
-        updateTitle(tabId, consoleLeafName(pendingSaveData.path));
+        // Update the tab properties — as the server saved it.
+        updateFilePath(tabId, savedPath);
+        updateTitle(tabId, result.name ?? consoleLeafName(savedPath));
         updateAccess(tabId, pendingSaveData.access);
         updateDirty(tabId, true);
 
@@ -1936,9 +1940,9 @@ function Editor({
         // Update console tree
         useConsoleTreeStore
           .getState()
-          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
+          .addConsole(currentWorkspace.id, savedPath, tabId);
 
-        setSnackbarMessage(`Console saved at '${pendingSaveData.path}'`);
+        setSnackbarMessage(`Console saved at '${savedPath}'`);
         setSnackbarOpen(true);
 
         trackEvent("console_saved", {
@@ -2022,6 +2026,13 @@ function Editor({
         return;
       }
 
+      // The name the server saved it under (a name may have been cleaned:
+      // "Q1: revenue" → "Q1 - revenue") — the tab, the tree and the notice
+      // say that one.
+      const savedName: string =
+        typeof result.data?.name === "string" ? result.data.name : savePath;
+      const savedPath: string =
+        typeof result.data?.path === "string" ? result.data.path : savePath;
       if (result.success) {
         if (mode === "save-as-copy") {
           // Do NOT mutate the source tab. Just refresh the tree so the copy
@@ -2044,15 +2055,15 @@ function Editor({
           setSnackbarMessage(
             consoleCopiedNotice({
               section: section === "workspace" ? "Workspace" : "My Consoles",
-              path: folder?.path ? `${folder.path}/${savePath}` : savePath,
-              name: savePath,
+              path: folder?.path ? `${folder.path}/${savedName}` : savedName,
+              name: savedName,
             }),
           );
           setSnackbarOpen(true);
         } else {
           // "new" — first-time save of a draft; update the originating tab.
-          updateFilePath(targetId, savePath);
-          updateTitle(targetId, consoleLeafName(savePath));
+          updateFilePath(targetId, savedPath);
+          updateTitle(targetId, savedName);
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -2072,7 +2083,7 @@ function Editor({
             is_new: true,
           });
 
-          setSnackbarMessage(`Console saved as '${savePath}'`);
+          setSnackbarMessage(`Console saved as '${savedName}'`);
           setSnackbarOpen(true);
         }
 

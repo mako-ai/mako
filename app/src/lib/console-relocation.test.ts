@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ConsoleEntry } from "../store/consoleTreeStore";
 import {
+  consoleNameAsSaved,
   consoleNameProblem,
+  consoleNameSavedAsNotice,
   consoleNameTakenBy,
   consoleCopiedNotice,
   consoleNameTakenMessage,
@@ -218,10 +220,35 @@ describe("renameMoveRequest — a name-only change never moves the console", () 
 });
 
 describe("consoleNameProblem — the name field is a name, the folder has its picker", () => {
-  it("refuses a slash and an empty name", () => {
-    expect(consoleNameProblem("New Folder/Revenue (copy)")).toMatch(/“\/”/);
+  it("refuses only what no name can be; characters a file cannot carry get a stand-in", () => {
     expect(consoleNameProblem("   ")).toBeTruthy();
-    expect(consoleNameProblem("Revenue per Day")).toBeNull();
+    expect(consoleNameProblem("???")).toMatch(/name/);
+    expect(consoleNameProblem("..")).toMatch(/dot/);
+    expect(consoleNameProblem("trailing.")).toMatch(/dot/);
+    expect(consoleNameProblem("CON")).toMatch(/reserved/);
+    expect(consoleNameProblem("x".repeat(121))).toMatch(/120/);
+    expect(consoleNameProblem(`${"x".repeat(119)}:`)).toMatch(/120/);
+    for (const ok of [
+      "Revenue per Day",
+      "Q1: revenue",
+      "A/B test",
+      "What? why",
+    ]) {
+      expect(consoleNameProblem(ok), ok).toBeNull();
+    }
+  });
+
+  it("says what a name will be saved as — the server's stand-ins", () => {
+    expect(consoleNameAsSaved("Q1: revenue")).toBe("Q1 - revenue");
+    expect(consoleNameAsSaved("A/B test")).toBe("A-B test");
+    expect(consoleNameAsSaved("What? why")).toBe("What why");
+    expect(consoleNameAsSaved('say "hi" <now>')).toBe("say 'hi' (now)");
+    expect(consoleNameAsSaved("a\\b|c*d")).toBe("a-b-c-d");
+    expect(consoleNameAsSaved("cafe\u0301")).toBe("caf\u00e9");
+    expect(consoleNameSavedAsNotice("Q1: revenue")).toBe(
+      "Will be saved as “Q1 - revenue”.",
+    );
+    expect(consoleNameSavedAsNotice("Revenue")).toBeNull();
   });
 });
 

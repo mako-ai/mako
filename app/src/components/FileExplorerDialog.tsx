@@ -19,7 +19,9 @@ import {
 } from "../store/consoleTreeStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
+  consoleNameAsSaved,
   consoleNameProblem,
+  consoleNameSavedAsNotice,
   consoleNameTakenBy,
   consoleNameTakenMessage,
 } from "../lib/console-relocation";
@@ -176,32 +178,48 @@ export default function FileExplorerDialog({
   // by renaming onto it destroyed it, and the server refuses it anyway.
   // A locked location may be a folder this person cannot see (the
   // owner's): the tree cannot judge a clash there — the server does.
+  // The name as the server will SAVE it: characters no file name can carry
+  // get a visible stand-in ("Q1: revenue" → "Q1 - revenue", "A/B test" →
+  // "A-B test") — said under the field, judged and sent as such.
+  const savedName = trimmedName ? consoleNameAsSaved(trimmedName) : "";
   const clash =
-    showNameField && trimmedName && !locationLockedReason
-      ? findExistingConsole(trimmedName, selectedFolderId)
+    showNameField && savedName && !locationLockedReason
+      ? findExistingConsole(savedName, selectedFolderId)
       : null;
   const nameProblem = !showNameField
     ? null
     : mode === "move" && !trimmedName
       ? null
       : (consoleNameProblem(consoleName) ??
-        (clash ? consoleNameTakenMessage(trimmedName, clash.name) : null));
+        (clash ? consoleNameTakenMessage(savedName, clash.name) : null));
+  const nameNotice =
+    showNameField && !nameProblem && trimmedName
+      ? consoleNameSavedAsNotice(trimmedName)
+      : null;
+  const folderProblem =
+    mode === "new-folder" && folderName.trim()
+      ? consoleNameProblem(folderName, "folder")
+      : null;
+  const folderNotice =
+    mode === "new-folder" && !folderProblem && folderName.trim()
+      ? consoleNameSavedAsNotice(folderName)
+      : null;
 
   const handleConfirm = () => {
     if (mode === "save") {
       if (!trimmedName || nameProblem) return;
-      onSave?.(trimmedName, selectedFolderId, selectedSection);
+      onSave?.(savedName, selectedFolderId, selectedSection);
     } else if (mode === "move") {
       if (nameProblem) return;
-      const nameChanged = trimmedName && trimmedName !== itemName;
+      const nameChanged = trimmedName && savedName !== itemName;
       onMove?.(
         selectedFolderId,
-        nameChanged ? trimmedName : undefined,
+        nameChanged ? savedName : undefined,
         selectedSection,
       );
     } else if (mode === "new-folder") {
-      if (!folderName.trim()) return;
-      onNewFolder?.(selectedFolderId, folderName.trim());
+      if (!folderName.trim() || folderProblem) return;
+      onNewFolder?.(selectedFolderId, consoleNameAsSaved(folderName));
     }
   };
 
@@ -243,7 +261,7 @@ export default function FileExplorerDialog({
     mode === "save"
       ? !trimmedName || !!nameProblem || isSaving
       : mode === "new-folder"
-        ? !folderName.trim()
+        ? !folderName.trim() || !!folderProblem
         : !!nameProblem;
 
   return (
@@ -294,7 +312,7 @@ export default function FileExplorerDialog({
               }
             }}
             error={!!nameProblem}
-            helperText={nameProblem ?? undefined}
+            helperText={nameProblem ?? nameNotice ?? undefined}
             autoComplete="off"
             spellCheck={false}
           />
@@ -311,6 +329,8 @@ export default function FileExplorerDialog({
             onKeyDown={e => {
               if (e.key === "Enter" && folderName.trim()) handleConfirm();
             }}
+            error={!!folderProblem}
+            helperText={folderProblem ?? folderNotice ?? undefined}
             autoComplete="off"
             spellCheck={false}
           />
