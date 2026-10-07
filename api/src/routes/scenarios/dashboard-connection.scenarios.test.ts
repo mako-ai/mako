@@ -73,6 +73,11 @@ import { dashboardRoutes } from "../dashboards";
 import { sourceConnectionRoutes } from "../source-connections";
 import { workspaceDatabaseRoutes } from "../workspace-databases";
 import { objectRoutes } from "../objects";
+import {
+  capabilityGrantsFromScopes,
+  resolveWorkspaceApiKeyScopes,
+} from "../../auth/api-key-scopes";
+import { missingInputConditionalGrant } from "../../agent-lib/capabilities/runtime";
 
 const WS = new Types.ObjectId().toString();
 const WS2 = new Types.ObjectId().toString();
@@ -562,5 +567,32 @@ describe("connections", () => {
       ),
     ).toBe(404);
     expect((await SourceConnection.findById(foreign))!.name).toBe("Foreign");
+  });
+});
+
+describe("an MCP key with `mcp query:read` only", () => {
+  it("passes rename_object's gate for consoles, notebooks, dashboards and connections — and not for dbt jobs, skills or connectors", () => {
+    // What such a key holds: no scope maps to a grant; the implicit
+    // headless-authoring grants external MCP always has (no git or
+    // warehouse write among them).
+    const grants = new Set([
+      ...capabilityGrantsFromScopes(
+        resolveWorkspaceApiKeyScopes(["mcp", "query:read"]),
+      ),
+      "artifact-write" as const,
+      "schedule-write" as const,
+    ]);
+    for (const kind of ["console", "notebook", "dashboard", "connection"]) {
+      expect(
+        missingInputConditionalGrant("rename_object", { kind }, grants),
+        kind,
+      ).toBeNull();
+    }
+    for (const kind of ["dbt_job", "skill", "connector"]) {
+      expect(
+        missingInputConditionalGrant("rename_object", { kind }, grants),
+        kind,
+      ).not.toBeNull();
+    }
   });
 });

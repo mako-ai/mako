@@ -429,6 +429,118 @@ describe("names other consoles held", () => {
   });
 });
 
+describe("trash, reuse and restore: each life's history is its own", () => {
+  it("A trashed, B born at A's name, A restored beside it: neither reads the other's commits or file", async () => {
+    const a = await rig.save("x", owner, { code: "SELECT 'A-SECRET v1'\n" });
+    await rig.api("PUT", `/consoles/${a._id}`, owner, {
+      content: "SELECT 'A-SECRET v2'\n",
+      isSaved: true,
+    });
+    const aBefore = await rig.history(a._id);
+    expect((await rig.api("DELETE", `/consoles/${a._id}`, owner)).status).toBe(
+      200,
+    );
+    const b = await rig.save("x", owner, { code: "SELECT 'B v1'\n" });
+    await rig.api("PUT", `/consoles/${b._id}`, owner, {
+      content: "SELECT 'B v2'\n",
+      isSaved: true,
+    });
+    expect(
+      (await rig.api("PATCH", `/consoles/${a._id}/restore`, owner)).status,
+    ).toBe(200);
+    expect((await rig.row(a._id))!.path).toBe("consoles/x (2).sql");
+    const aAfter = await rig.history(a._id);
+    const bHistory = await rig.history(b._id);
+    // A's history is its earlier life plus the restore — never B's.
+    for (const oid of aBefore) expect(aAfter).toContain(oid);
+    expect(aAfter.filter(oid => bHistory.includes(oid))).toEqual([]);
+    expect(bHistory.filter(oid => aAfter.includes(oid))).toEqual([]);
+    // B's diffs never show A's text, A's never B's.
+    for (const sha of bHistory) {
+      const v = await rig.api(
+        "GET",
+        `/consoles/${a._id}/git/file-versions?sha=${sha}&path=consoles%2Fx.sql`,
+        owner,
+      );
+      expect(JSON.stringify(v.body)).not.toContain("B v");
+    }
+    for (const sha of aBefore) {
+      const v = await rig.api(
+        "GET",
+        `/consoles/${b._id}/git/file-versions?sha=${sha}&path=consoles%2Fx.sql`,
+        owner,
+      );
+      expect(JSON.stringify(v.body)).not.toContain("A-SECRET");
+      // …nor restores it.
+      const r = await rig.api("POST", `/consoles/${b._id}/restore`, owner, {
+        sha,
+      });
+      expect(r.status).toBe(404);
+    }
+    // A restores its own pre-trash version from its earlier life.
+    const own = await rig.api("POST", `/consoles/${a._id}/restore`, owner, {
+      sha: aBefore[aBefore.length - 1],
+    });
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(await rig.fileAt("consoles/x (2).sql")).toBe(
+      "SELECT 'A-SECRET v1'\n",
+    );
+    expect(await rig.fileAt("consoles/x.sql")).toBe("SELECT 'B v2'\n");
+  });
+});
+
+describe("folder renames and moves", () => {
+  it("move every file as committed — no console's draft reaches main; ids, shares kept", async () => {
+    const team = await folderChain(["Team"], owner);
+    const a = await attached("a", team);
+    const b = await rig.save("b", owner, { folderId: team });
+    await rig.api("PUT", `/consoles/${a._id}`, owner, {
+      content: "SELECT 'DRAFT a'\n",
+    });
+    const commits = await rig.commitCount();
+    const r = await rig.api(
+      "PATCH",
+      `/consoles/folders/${team}/rename`,
+      owner,
+      {
+        name: "Squad",
+      },
+    );
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(await rig.commitCount()).toBe(commits + 1);
+    expect(await rig.consolePaths()).toEqual([
+      "consoles/Squad/a.sql",
+      "consoles/Squad/b.sql",
+    ]);
+    expect(await rig.fileAt("consoles/Squad/a.sql")).toBe("SELECT 'a'\n");
+    expect((await rig.row(a._id))!.code).toBe("SELECT 'DRAFT a'\n");
+    expect((await rig.row(a._id))!.sharedWith?.length).toBe(1);
+    // …and a move under another folder: one commit, same ids.
+    const parent = await folderChain(["Parent"], owner);
+    const m = await rig.api("PATCH", `/consoles/folders/${team}/move`, owner, {
+      parentId: parent,
+    });
+    expect(m.status, JSON.stringify(m.body)).toBe(200);
+    expect(await rig.consolePaths()).toEqual([
+      "consoles/Parent/Squad/a.sql",
+      "consoles/Parent/Squad/b.sql",
+    ]);
+    expect((await rig.row(b._id))!.path).toBe("consoles/Parent/Squad/b.sql");
+    expect(await rig.fileAt("consoles/Parent/Squad/a.sql")).toBe(
+      "SELECT 'a'\n",
+    );
+    // A folder rename onto a sibling's name in another case is a twin.
+    await folderChain(["Other"], owner);
+    const twin = await rig.api(
+      "PATCH",
+      `/consoles/folders/${parent}/rename`,
+      owner,
+      { name: "other" },
+    );
+    expect(twin.status).toBe(409);
+  });
+});
+
 describe("duplicate", () => {
   it("a copy is a new console: its own id, private, no shares, no inherited history", async () => {
     const original = await attached("report");
@@ -579,6 +691,12 @@ describe("a console that was never indexed (pushed, not synced)", () => {
     expect(await rig.consolePaths()).toEqual(["consoles/fresh-2.sql"]);
     const row = await SavedConsole.findOne({ path: "consoles/fresh-2.sql" });
     expect(row?._id.toString()).toBe(derived);
+    // …and moves from there (PATCH /:id/move by the same id).
+    const moved = await rig.api("PATCH", `/consoles/${derived}/move`, admin, {
+      name: "fresh-3",
+    });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect(await rig.consolePaths()).toEqual(["consoles/fresh-3.sql"]);
 
     await rig.laptop(
       { writes: { "consoles/other.sql": "SELECT 'other'\n" } },

@@ -30,6 +30,23 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { Hono } from "hono";
 
 const who = vi.hoisted(() => ({ id: "", role: "member" as string | null }));
+const faults = vi.hoisted(() => ({ failCommits: 0 }));
+vi.mock("../../apps/repository.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../apps/repository.service")>();
+  return {
+    ...actual,
+    commitBlobsOnBranch: async (
+      ...args: Parameters<typeof actual.commitBlobsOnBranch>
+    ) => {
+      if (faults.failCommits > 0) {
+        faults.failCommits -= 1;
+        throw new Error("injected: git commit failed");
+      }
+      return actual.commitBlobsOnBranch(...args);
+    },
+  };
+});
 
 vi.mock("../../auth/unified-auth.middleware", () => ({
   unifiedAuthMiddleware: async (
@@ -537,6 +554,31 @@ describe("laptop push", () => {
     // The next checkpoint keeps the laptop's path (the name did not change).
     await checkpointNotebook(WS, id, OWNER);
     expect((await index(id))?.path).toBe("notebooks/moved-on-laptop.deepnote");
+  });
+});
+
+describe("partial failure", () => {
+  it("the checkpoint commit throws after the rename was stored: the link still answers, the next checkpoint converges", async () => {
+    const id = await seed("Before");
+    faults.failCommits = 1;
+    expect(
+      await status(
+        renameObject(ctx(OWNER), "notebook", { ref: id, title: "After" }),
+      ),
+    ).toBe(500);
+    faults.failCommits = 0;
+    // The name is stored; the file has not moved yet.
+    expect((await index(id))?.name).toBe("After");
+    expect(await notebookPaths()).toEqual(["notebooks/before.deepnote"]);
+    expect((await resolveObjectRef(ctx(OWNER), "notebook", id))?.id).toBe(id);
+    expect((await api("GET", `/notebooks/${id}`, OWNER)).status).toBe(200);
+    // The next checkpoint (any edit, the debounce, a flush) moves it.
+    await checkpointNotebook(WS, id, OWNER);
+    expect(await notebookPaths()).toEqual(["notebooks/after.deepnote"]);
+    expect((await index(id))?.path).toBe("notebooks/after.deepnote");
+    expect(
+      parseNotebookFile((await fileAt("notebooks/after.deepnote"))!)?.name,
+    ).toBe("After");
   });
 });
 
