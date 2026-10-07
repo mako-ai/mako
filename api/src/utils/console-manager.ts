@@ -973,57 +973,6 @@ export class ConsoleManager {
   }
 
   /**
-   * Update access level for a console.
-   * Only the owner can change access.
-   */
-  async updateConsoleAccess(
-    consoleId: string,
-    workspaceId: string,
-    userId: string,
-    access: ConsoleAccessLevel,
-  ): Promise<ISavedConsole | null> {
-    try {
-      const savedConsole = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      if (!savedConsole) return null;
-
-      const ownerId = (
-        savedConsole.owner_id || savedConsole.createdBy
-      )?.toString();
-      if (ownerId !== userId) return null;
-
-      savedConsole.access = access;
-      savedConsole.isPrivate = access === "private";
-      savedConsole.updatedAt = new Date();
-      if (savedConsole.isSaved) {
-        const committed = await commitConsoleState({
-          row: savedConsole,
-          previousPath: savedConsole.path,
-          actorUserId: userId,
-          message: `access ${access}: ${savedConsole.name}`,
-        });
-        savedConsole.path = committed.path;
-        savedConsole.sourceBlobSha = committed.sourceBlobSha;
-      }
-      await savedConsole.save();
-      return savedConsole;
-    } catch (error) {
-      if (
-        error instanceof RepoRequiredError ||
-        error instanceof BlobPreconditionError ||
-        error instanceof ConsoleConflictError
-      ) {
-        throw error;
-      }
-      logger.error("Error updating console access", { error });
-      return null;
-    }
-  }
-
-  /**
    * Update access level for a folder.
    * Propagates to child folders and consoles owned by the same user.
    */

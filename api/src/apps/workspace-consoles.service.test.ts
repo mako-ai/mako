@@ -261,14 +261,17 @@ describe("write-through", () => {
     expect(paths).toContain("consoles/Team/b.sql");
     expect(paths).not.toContain("consoles/b.sql");
 
+    // A re-scope goes through the one relocation (the sharing dialog and
+    // "Move to…" both do).
     expect(
-      await manager.updateConsoleAccess(
+      await manager.moveConsole(
         saved._id.toString(),
         WS,
-        USER,
+        undefined,
         "private",
+        USER,
       ),
-    ).not.toBeNull();
+    ).toBe(true);
     paths = await treePaths();
     expect(paths).toContain(`users/${USER}/consoles/Team/b.sql`);
     expect(paths).not.toContain("consoles/Team/b.sql");
@@ -290,7 +293,6 @@ describe("write-through", () => {
       expect.arrayContaining([
         "rename: b",
         "move: b",
-        "access private: b",
         "delete: users/" + USER + "/consoles/Team/b.sql",
         "restore: b",
       ]),
