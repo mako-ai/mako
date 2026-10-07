@@ -293,3 +293,86 @@ export function appRenameRights(
         linkReason: "Only workspace editors can change this app's link.",
       };
 }
+
+// ---------------------------------------------------------------------------
+// Where this person may file an app — the server's rules (app-authorization)
+// ---------------------------------------------------------------------------
+
+export interface MovableApp {
+  id: string;
+  path?: string;
+  slug?: string;
+  owner_id?: string;
+}
+
+const PERSONAL_ROOT = /^users\/([^/]+)\/apps(\/|$)/;
+
+/**
+ * Why this person may NOT file `app` into the folder `dest` (`apps/…` or
+ * `users/<id>/apps/…`), or null when they may — the rules the move route
+ * applies (api/src/apps/app-authorization.ts authorizeAppMove), so a drop
+ * the server would refuse is never sent:
+ *
+ *  - a personal tree is its owner's, both ways: only they file into it,
+ *    only they take an app out of it;
+ *  - the Workspace tree is organised by editing members (owner, admin,
+ *    member), never a viewer;
+ *  - filing an app INTO a personal tree makes it that person's private
+ *    app: only its owner may, or a workspace owner/admin — not an editor
+ *    it is merely shared with, nor a member on a shared workspace app.
+ */
+export function appMoveRefusal(
+  app: MovableApp,
+  dest: string,
+  viewer: { userId?: string; role?: string },
+): string | null {
+  const { userId, role } = viewer;
+  const into = PERSONAL_ROOT.exec(dest);
+  const from = PERSONAL_ROOT.exec(appPathOf(app));
+  if (into) {
+    if (!userId) return "Personal folders need a signed-in user.";
+    if (into[1] !== userId) {
+      return "You can only file things into your own personal folders.";
+    }
+  } else if (!(role && EDITING_ROLES.has(role))) {
+    return "Only workspace editors can reorganise the Workspace tree.";
+  }
+  if (from) {
+    if (!userId || from[1] !== userId) {
+      return "Only the owner can move an app out of their personal folder.";
+    }
+    return null;
+  }
+  if (!(role && EDITING_ROLES.has(role))) {
+    return "Only workspace editors can reorganise the Workspace tree.";
+  }
+  if (
+    into &&
+    role !== "owner" &&
+    role !== "admin" &&
+    !(userId && app.owner_id === userId)
+  ) {
+    return "Only the app's owner or a workspace admin can move it into a personal folder: it would become private to you.";
+  }
+  return null;
+}
+
+/**
+ * {@link appMoveRefusal} for a folder move: the first app inside `folder`
+ * the move would refuse, as its refusal (or null). Moving a folder files
+ * every app in it at the destination.
+ */
+export function folderMoveRefusal(
+  apps: readonly MovableApp[],
+  folder: string,
+  dest: string,
+  viewer: { userId?: string; role?: string },
+): string | null {
+  for (const app of apps) {
+    const at = appPathOf(app);
+    if (!at.startsWith(`${folder}/`)) continue;
+    const refusal = appMoveRefusal(app, dest, viewer);
+    if (refusal) return `${at}: ${refusal}`;
+  }
+  return null;
+}
