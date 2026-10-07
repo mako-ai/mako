@@ -1676,13 +1676,18 @@ async function syncNow(
         location.scope === "private" && location.ownerId
           ? location.ownerId
           : (row?.owner_id ?? row?.createdBy ?? actor);
+      // The folder the row is in, when the file is still in it (see
+      // `folderStillHolding`); else the folder chain of the file's path.
       // A folder that first appears from git belongs to whoever pushed it
       // (the console's owner), so they can rename or delete it later.
-      const folderId = await ensureFolderChain(
-        location.folderSegments,
-        workspaceId,
-        { access, ownerId },
-      );
+      const folderId =
+        (row
+          ? await folderStillHolding(row, location, ownerId, workspaceId)
+          : undefined) ??
+        (await ensureFolderChain(location.folderSegments, workspaceId, {
+          access,
+          ownerId,
+        }));
 
       const set: Record<string, unknown> = {
         path: entry.path,
@@ -1835,6 +1840,52 @@ async function syncNow(
     logger.info("Console index synced from repo", { workspaceId, ...stats });
   }
   return stats;
+}
+
+/**
+ * The row's folder, when the file at `location` is still in it: the
+ * folder's chain of names is the file's directory chain, and it is a
+ * folder the console may be filed in (a workspace folder, or its owner's
+ * own private one). A sync must not re-home such a row: a PRIVATE console
+ * filed in a WORKSPACE folder — seen by the workspace through it — has
+ * its file under its owner's private root, and the scoped chain of that
+ * path is the owner's private namesake, so a mere content edit pushed from
+ * a laptop used to hide it from the workspace behind its owner's back (a
+ * visibility change only its owner or an admin may make). A file that
+ * moved folders is filed by its path, as before.
+ */
+async function folderStillHolding(
+  row: Pick<ISavedConsole, "folderId">,
+  location: ConsoleRepoLocation,
+  ownerId: string,
+  workspaceId: string,
+): Promise<Types.ObjectId | undefined> {
+  if (!row.folderId) return undefined;
+  const segments = await folderSegmentsFor(row.folderId, workspaceId);
+  const wanted = location.folderSegments;
+  if (
+    segments.length !== wanted.length ||
+    segments.some((name, i) => name !== wanted[i])
+  ) {
+    return undefined;
+  }
+  const folder = await ConsoleFolder.findOne({
+    _id: row.folderId,
+    workspaceId: new Types.ObjectId(workspaceId),
+  })
+    .select("access isPrivate ownerId")
+    .lean<{
+      access?: ConsoleAccessLevel;
+      isPrivate?: boolean;
+      ownerId?: string;
+    } | null>();
+  if (!folder) return undefined;
+  const folderAccess =
+    folder.access ?? (folder.isPrivate ? "private" : "workspace");
+  if (folderAccess === "private" && folder.ownerId?.toString() !== ownerId) {
+    return undefined;
+  }
+  return row.folderId;
 }
 
 async function sidecarMatches(
