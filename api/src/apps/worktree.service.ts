@@ -117,6 +117,7 @@ import {
   syncAppsIndexFromRepo,
   type AppIndexRow,
   type AppSchedule,
+  type AppsIndexSnapshot,
 } from "./app-index.service";
 import {
   APP_MANIFEST,
@@ -836,13 +837,6 @@ async function uniqueSlug(
 /** How far uniqueSlug counts (`report-2` … `report-1000`) before it gives up. */
 const MAX_SLUG_SUFFIX = 1000;
 
-/**
- * Commit a mutation (writes, prefix deletions and/or directory moves)
- * directly onto a branch of the bare repo via a throwaway clone. Used for app
- * lifecycle commits (scaffold, move, delete) and by the v1→v2 migrator —
- * actor worktrees are not involved. Moves run first, then deletions, then
- * writes, so a write can land inside a just-moved folder.
- */
 /** Remove `dir` and its parents while they are empty, never `root`. */
 async function removeEmptyDirsUp(dir: string, root: string): Promise<void> {
   let current = dir;
@@ -856,28 +850,65 @@ async function removeEmptyDirsUp(dir: string, root: string): Promise<void> {
   }
 }
 
+/** What one lifecycle commit changes (see {@link commitFilesOnBranch}). */
+export interface LifecycleMutation {
+  writes?: Record<string, string>;
+  deletePrefixes?: string[];
+  moves?: Array<{ from: string; to: string }>;
+}
+
+/**
+ * Commit a mutation (writes, prefix deletions and/or directory moves)
+ * directly onto a branch of the bare repo via a throwaway clone. Used for app
+ * lifecycle commits (scaffold, move, delete) and by the v1→v2 migrator —
+ * actor worktrees are not involved. Moves run first, then deletions, then
+ * writes, so a write can land inside a just-moved folder.
+ *
+ * The ref is swapped compare-and-set, and a lost swap is retried on the new
+ * head. A change DECIDED from what main held — a manifest to rewrite, a
+ * folder to move, a path to fill — must therefore be a function: it is
+ * re-run against each head it is about to land on (and may throw when that
+ * head no longer allows it, or return null when there is nothing left to
+ * do). Re-applying a change computed from an older head would write a
+ * stale manifest over a save that landed in between, bring back an app
+ * deleted in between, or move a folder that is no longer there.
+ */
 export async function commitFilesOnBranch(
   repoDir: string,
   branch: string,
-  mutation: {
-    writes?: Record<string, string>;
-    deletePrefixes?: string[];
-    moves?: Array<{ from: string; to: string }>;
-  },
+  mutation:
+    | LifecycleMutation
+    | ((head: string) => Promise<LifecycleMutation | null>),
   options: { message: string; author?: GitAuthor },
-): Promise<{ commitOid: string; previousHead: string }> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+): Promise<{ commitOid: string; previousHead: string; unchanged?: true }> {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
     if (!head) throw new Error(`Branch ${branch} is missing`);
+    const change =
+      typeof mutation === "function" ? await mutation(head) : mutation;
+    if (!change)
+      return { commitOid: head, previousHead: head, unchanged: true };
     await fs.mkdir(appsSessionsRoot(), { recursive: true });
     const tmp = await fs.mkdtemp(path.join(appsSessionsRoot(), "lifecycle-"));
     try {
       await runGit(["clone", "--branch", branch, repoDir, tmp], {
         timeoutMs: 120_000,
       });
-      for (const [i, move] of (mutation.moves ?? []).entries()) {
+      // The tree must be built from `head` itself: the clone takes the
+      // branch as it is NOW, which a writer may have moved since.
+      await runGit(["-C", tmp, "reset", "-q", "--hard", head]);
+      for (const [i, move] of (change.moves ?? []).entries()) {
         const from = path.join(tmp, assertSafeRelPath(move.from));
         const to = path.join(tmp, assertSafeRelPath(move.to));
+        // A static change cannot re-check itself: never let the file
+        // system's ENOENT / ENOTEMPTY (with this clone's path in it) be
+        // the answer, nor a move merge one folder into another.
+        if (!(await pathExists(from))) {
+          throw new AppFolderError(
+            `${move.from} is no longer on ${branch}: it was moved or deleted meanwhile`,
+            409,
+          );
+        }
         // Through a parking name, with the folders it empties removed
         // first: on a case-insensitive disk (macOS) `apps/Team/x` IS
         // `apps/team/x` while `team` still exists, and a direct rename
@@ -885,16 +916,21 @@ export async function commitFilesOnBranch(
         const parked = path.join(tmp, `.mako-move-${i}`);
         await fs.rename(from, parked);
         await removeEmptyDirsUp(path.dirname(from), tmp);
+        // Only now, with the source out of the way: on such a disk the
+        // target "exists" while it is the source in another case.
+        if (await pathExists(to)) {
+          throw new AppFolderError(`${move.to} already exists`, 409);
+        }
         await fs.mkdir(path.dirname(to), { recursive: true });
         await fs.rename(parked, to);
       }
-      for (const prefix of mutation.deletePrefixes ?? []) {
+      for (const prefix of change.deletePrefixes ?? []) {
         await fs.rm(path.join(tmp, assertSafeRelPath(prefix)), {
           recursive: true,
           force: true,
         });
       }
-      for (const [rel, contents] of Object.entries(mutation.writes ?? {})) {
+      for (const [rel, contents] of Object.entries(change.writes ?? {})) {
         const abs = path.join(tmp, assertSafeRelPath(rel));
         await fs.mkdir(path.dirname(abs), { recursive: true });
         await fs.writeFile(abs, contents, "utf8");
@@ -919,6 +955,13 @@ export async function commitFilesOnBranch(
   }
   throw new WorktreeConflictError(
     `Branch ${branch} kept advancing during a lifecycle commit; retry.`,
+  );
+}
+
+async function pathExists(abs: string): Promise<boolean> {
+  return fs.lstat(abs).then(
+    () => true,
+    () => false,
   );
 }
 
@@ -1021,7 +1064,24 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
     scaffoldCommit = await commitFilesOnBranch(
       repoDir,
       DEFAULT_BRANCH,
-      { writes: prefixed },
+      // Re-checked on every head the commit is about to land on: an app or
+      // folder that appeared at this path meanwhile (a laptop push, another
+      // instance) must never get a scaffold written into it.
+      async () => {
+        const now = await loadAppsIndex(input.workspaceId, { freshen: false });
+        const there = new Set([...now.folders, ...now.apps.map(a => a.path)]);
+        if (
+          there.has(appPath) ||
+          caseTwinOf(there, appPath) ||
+          now.apps.some(a => isWithin(appPath, a.path))
+        ) {
+          throw new AppFolderError(
+            `${appPath} was taken meanwhile; create the app again`,
+            409,
+          );
+        }
+        return { writes: prefixed };
+      },
       {
         message: `Create app "${title}" (${appPath})`,
         // The person who created it, as for a rename or move; the
@@ -1088,15 +1148,31 @@ export async function createProjectWith(input: CreateProjectInput): Promise<{
 export async function deleteProject(project: IAppProject): Promise<void> {
   // §10 monorepo: deleting an app is a COMMIT removing its folder — the
   // workspace repo (and other apps, worktrees, history) are untouched.
-  const repoDir = await repoForWorkspace(project.workspaceId.toString());
+  const workspaceId = project.workspaceId.toString();
+  const repoDir = await repoForWorkspace(workspaceId);
   if (await repoExists(repoDir)) {
+    const id = project._id.toString();
     await commitFilesOnBranch(
       repoDir,
       project.defaultBranch || DEFAULT_BRANCH,
-      { deletePrefixes: [appRootFor(project)] },
+      // The app where it is on the head the commit lands on (by id): a
+      // rename that landed meanwhile must not leave it alive at its new
+      // name — nor may the delete take out ANOTHER app that has since
+      // arrived at this one's old folder.
+      async () => {
+        const now = await loadAppsIndex(workspaceId, { freshen: false });
+        const at = now.apps.find(a => a.appId === id)?.path;
+        if (at) return { deletePrefixes: [at] };
+        const stale = appRootFor(project);
+        return now.apps.some(
+          a => isWithin(a.path, stale) || isWithin(stale, a.path),
+        )
+          ? null
+          : { deletePrefixes: [stale] };
+      },
       { message: `Delete app "${project.title}" (${appRootFor(project)})` },
     );
-    queueMirrorPush(project.workspaceId.toString());
+    queueMirrorPush(workspaceId);
   }
   await AppProject.deleteOne({
     _id: project._id,
@@ -1175,6 +1251,27 @@ function assertNewFolderNames(
 /** Is `candidate` the app itself or something inside it? */
 function isWithin(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(`${root}/`);
+}
+
+/**
+ * The app (by id) is still at `from` in `snapshot` — or the refusal that
+ * says where it went: moved (409, from there) or gone (404). A path match
+ * alone is not enough: another app may have arrived at the old folder.
+ */
+function assertStillAt(
+  snapshot: AppsIndexSnapshot,
+  appId: string,
+  from: string,
+): void {
+  const now = snapshot.apps.find(a => a.appId === appId);
+  if (now?.path === from) return;
+  if (now) {
+    throw new AppFolderError(
+      `The app was moved to ${now.path} meanwhile; try again from there`,
+      409,
+    );
+  }
+  throw new AppFolderError(`App folder ${from} is not on main`, 404);
 }
 
 /**
@@ -1434,8 +1531,6 @@ async function moveWritesUnder(
  * received would be a commit that never happened. Rolled back on failure,
  * as createProject does.
  */
-type MainMutation = Parameters<typeof commitFilesOnBranch>[2];
-
 async function commitOnMainDurably(
   workspaceId: string,
   repoDir: string,
@@ -1443,11 +1538,15 @@ async function commitOnMainDurably(
    * The change, or a function computing it. A function runs AFTER the
    * freshen below, so anything it reads from main (a manifest to stamp, a
    * package.json to rewrite) is the mirror's current content, not a copy
-   * a laptop push has since replaced.
+   * a laptop push has since replaced — and it runs again on every head
+   * the commit is retried on (commitFilesOnBranch), so a change decided
+   * from main is never applied to a main it was not decided from. It
+   * re-checks what it relies on (the app is still there, the target is
+   * still free) and returns null when nothing is left to do.
    */
-  mutation: MainMutation | (() => Promise<MainMutation>),
+  mutation: LifecycleMutation | (() => Promise<LifecycleMutation | null>),
   options: { message: string; author?: GitAuthor },
-): Promise<{ commitOid: string }> {
+): Promise<{ commitOid: string; unchanged?: true }> {
   const mirror = await resolveMirrorTarget(workspaceId);
   // Commit onto the mirror's main, not a stale local copy of it — a laptop
   // push this instance has not seen would make the result unmirrorable.
@@ -1456,9 +1555,10 @@ async function commitOnMainDurably(
   const commit = await commitFilesOnBranch(
     repoDir,
     DEFAULT_BRANCH,
-    typeof mutation === "function" ? await mutation() : mutation,
+    typeof mutation === "function" ? () => mutation() : mutation,
     options,
   );
+  if (commit.unchanged) return { commitOid: commit.commitOid, unchanged: true };
   try {
     if (mirror) await mirrorPushNow(workspaceId);
   } catch (error) {
@@ -1646,10 +1746,14 @@ export async function renameProject(
     workspaceId,
     repoDir,
     async () => {
-      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
-      if (!fresh.apps.some(a => a.path === from)) {
-        throw new AppFolderError(`App folder ${from} is not on main`, 404);
-      }
+      // Re-run on every head the commit is about to land on: the manifest
+      // is read from THAT head, so a save or push in between is kept, and
+      // an app deleted or moved in between is not written back.
+      assertStillAt(
+        await loadAppsIndex(workspaceId, { freshen: false }),
+        project._id.toString(),
+        from,
+      );
       let contents: string | null;
       try {
         contents = (await readBlob(repoDir, DEFAULT_BRANCH, manifestPath))
@@ -1723,20 +1827,27 @@ async function moveProjectWith(
   }
   const to = appRepoPath({ ...target, slug });
   if (to === from) return { from, to, aliasesAdded: [], superseded: [] };
+  const appId = project._id.toString();
+  /** Everything a move relies on, against the index at hand. */
+  const checkMove = async (snapshot: AppsIndexSnapshot) => {
+    assertStillAt(snapshot, appId, from);
+    const taken = await occupiedPaths(workspaceId);
+    if (taken.has(to)) throw occupiedPathError(to, snapshot);
+    const twin = caseTwinOf(
+      await occupiedAfterLeaving(repoDir, taken, from),
+      to,
+    );
+    if (twin) throw caseTwinError(twin, to, snapshot, taken);
+    // Never file an app inside another app: the outer one would swallow it.
+    const parent = snapshot.apps.find(a => isWithin(to, a.path));
+    if (parent) {
+      throw new AppFolderError(`${parent.path} is an app, not a folder`, 409);
+    }
+  };
   const snapshot = await loadAppsIndex(workspaceId);
-  if (!snapshot.apps.some(a => a.path === from)) {
-    throw new AppFolderError(`App folder ${from} is not on main`, 404);
-  }
+  assertStillAt(snapshot, appId, from);
   assertNewFolderNames(target, snapshot);
-  const taken = await occupiedPaths(workspaceId);
-  if (taken.has(to)) throw occupiedPathError(to, snapshot);
-  const twin = caseTwinOf(await occupiedAfterLeaving(repoDir, taken, from), to);
-  if (twin) throw caseTwinError(twin, to, snapshot, taken);
-  // Never file an app inside another app: the outer one would swallow it.
-  const parent = snapshot.apps.find(a => isWithin(to, a.path));
-  if (parent) {
-    throw new AppFolderError(`${parent.path} is an app, not a folder`, 409);
-  }
+  await checkMove(snapshot);
   const moves = [{ from, to }];
   const aliasesAdded =
     aliasesForMoves(snapshot.apps, moves).get(from)?.add ?? [];
@@ -1745,12 +1856,11 @@ async function moveProjectWith(
     workspaceId,
     repoDir,
     async () => {
-      // Re-check against the freshened main: the folder may have moved or
-      // gone in a push this instance had not seen a moment ago.
-      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
-      if (!fresh.apps.some(a => a.path === from)) {
-        throw new AppFolderError(`App folder ${from} is not on main`, 404);
-      }
+      // Re-checked on every head the commit is about to land on (the
+      // freshened main, then each one a retry meets): the app may have
+      // moved or gone, and the target may have been taken, by a push or
+      // another instance a moment ago.
+      await checkMove(await loadAppsIndex(workspaceId, { freshen: false }));
       const planned = await moveWritesUnder(
         workspaceId,
         repoDir,
@@ -1824,7 +1934,18 @@ export async function createAppFolder(
   await commitOnMainDurably(
     workspaceId,
     repoDir,
-    { writes: { [`${folderPath}/${FOLDER_KEEP_FILE}`]: "" } },
+    // Re-checked on the head it lands on: an app pushed to this very path
+    // meanwhile must not get a `.gitkeep` written into it.
+    async () => {
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      const app = fresh.apps.find(
+        a => a.path === folderPath || isWithin(folderPath, a.path),
+      );
+      if (app) {
+        throw new AppFolderError(`${app.path} is an app, not a folder`, 409);
+      }
+      return { writes: { [`${folderPath}/${FOLDER_KEEP_FILE}`]: "" } };
+    },
     { message: `Create folder ${folderPath}`, author: options.author },
   );
   pokeApp(workspaceId, null, "lifecycle", options.userId);
@@ -1876,9 +1997,22 @@ export async function moveAppFolder(
     workspaceId,
     repoDir,
     async () => {
+      // Re-checked on every head the commit is about to land on.
       const fresh = await loadAppsIndex(workspaceId, { freshen: false });
       if (!fresh.folders.includes(fromPath)) {
         throw new AppFolderError(`Folder ${fromPath} not found`, 404);
+      }
+      const takenNow = await occupiedPaths(workspaceId);
+      if (takenNow.has(toPath)) {
+        throw new AppFolderError(`${toPath} already exists`, 409);
+      }
+      const twinNow = caseTwinOf(
+        await occupiedAfterLeaving(repoDir, takenNow, fromPath),
+        toPath,
+      );
+      if (twinNow) throw caseTwinError(twinNow, toPath, fresh, takenNow);
+      if (fresh.apps.some(a => isWithin(toPath, a.path))) {
+        throw new AppFolderError(`${toPath} is inside an app`, 409);
       }
       return {
         moves,
@@ -1916,7 +2050,19 @@ export async function deleteAppFolder(
   await commitOnMainDurably(
     workspaceId,
     repoDir,
-    { deletePrefixes: [folderPath] },
+    // Re-checked on the head it lands on: an app moved INTO the folder
+    // meanwhile would otherwise be deleted with it.
+    async () => {
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      const now = fresh.apps.filter(a => isWithin(a.path, folderPath));
+      if (now.length > 0) {
+        throw new AppFolderError(
+          `${folderPath} still holds ${now.length} app(s); move or delete them first`,
+          409,
+        );
+      }
+      return { deletePrefixes: [folderPath] };
+    },
     { message: `Delete folder ${folderPath}`, author: options.author },
   );
   pokeApp(workspaceId, null, "lifecycle", options.userId);
@@ -1932,31 +2078,45 @@ export async function stampAppId(
   options: { userId?: string; author?: GitAuthor } = {},
 ): Promise<void> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
-  let contents: string | null = null;
-  try {
-    contents = (
-      await readBlob(repoDir, DEFAULT_BRANCH, `${app.path}/${APP_MANIFEST}`)
-    ).contents;
-  } catch {
-    contents = null;
-  }
-  let stamped = stampManifestId(contents, app.appId);
-  // A copy keeps its source's `aliases` too, and a name two apps claim
-  // resolves to neither: with an id of its own the copy gives them up.
-  if (stamped !== null && app.duplicateOf) {
-    stamped = stripManifestAliases(stamped);
-  }
-  if (stamped === null) {
-    throw new AppFolderError(
-      `${app.path}/${APP_MANIFEST} is not valid JSON; fix it before stamping an id`,
-    );
-  }
-  // Already carries this id: nothing to write, no empty commit to push.
-  if (stamped === contents) return;
+  /** The stamped manifest at main as it is now; null when already stamped. */
+  const stampNow = async (): Promise<LifecycleMutation | null> => {
+    let contents: string | null = null;
+    try {
+      contents = (
+        await readBlob(repoDir, DEFAULT_BRANCH, `${app.path}/${APP_MANIFEST}`)
+      ).contents;
+    } catch {
+      contents = null;
+    }
+    let stamped = stampManifestId(contents, app.appId);
+    // A copy keeps its source's `aliases` too, and a name two apps claim
+    // resolves to neither: with an id of its own the copy gives them up.
+    if (stamped !== null && app.duplicateOf) {
+      stamped = stripManifestAliases(stamped);
+    }
+    if (stamped === null) {
+      throw new AppFolderError(
+        `${app.path}/${APP_MANIFEST} is not valid JSON; fix it before stamping an id`,
+      );
+    }
+    // Already carries this id: nothing to write, no empty commit to push.
+    if (stamped === contents) return null;
+    return { writes: { [`${app.path}/${APP_MANIFEST}`]: stamped } };
+  };
+  if (!(await stampNow())) return;
   await commitOnMainDurably(
     workspaceId,
     repoDir,
-    { writes: { [`${app.path}/${APP_MANIFEST}`]: stamped } },
+    // Re-read on every head the commit lands on: a save of the manifest in
+    // between is stamped, not overwritten; a folder that moved or went in
+    // between is not written back.
+    async () => {
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      if (!fresh.apps.some(a => a.path === app.path)) {
+        throw new AppFolderError(`App folder ${app.path} is not on main`, 404);
+      }
+      return stampNow();
+    },
     { message: `Stamp app id for ${app.path}`, author: options.author },
   );
   pokeApp(workspaceId, app.appId, "lifecycle", options.userId);
