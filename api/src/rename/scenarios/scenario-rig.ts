@@ -358,5 +358,18 @@ export const HOSTILE_TITLES: ReadonlyArray<
     "- [x]: {y} # z & *a !b %c @d `e",
   ],
   ["looks like an id", "0123456789abcdef01234567", "0123456789abcdef01234567"],
+  // Scalars YAML would read back as something other than a string.
+  ["YAML true", "true", "true"],
+  ["YAML null", "null", "null"],
+  ["YAML tilde", "~", "~"],
+  ["YAML number", "123", "123"],
+  ["YAML float", "1e3", "1e3"],
+  ["YAML hex", "0x1F", "0x1F"],
+  ["YAML date", "2026-10-07", "2026-10-07"],
+  ["YAML 1.1 boolean", "yes", "yes"],
+  ["YAML document marker", "---", "---"],
+  ["YAML end marker", "...", "..."],
+  ["leading hash", "# not a comment", "# not a comment"],
+  ["leading dash", "- not a list", "- not a list"],
   ["quotes", `it's "quoted"`, `it's "quoted"`],
 ];

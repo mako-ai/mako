@@ -127,6 +127,7 @@ import {
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import {
   derivedFlowId,
+  ensureFlowDerivedCache,
   loadLiveFlowById,
   loadLiveFlows,
   resetFreshenOnMissThrottle,
@@ -1038,6 +1039,9 @@ describe("entry point: laptop git mv + push", () => {
     expect(parked.slug).toBe("a");
     const parkedRow = await Flow.findById(row._id);
     expect(parkedRow?.definitionInvalid?.reason).toMatch(/flows\/team\/a\.yml/);
+    // Its schedule is paused while parked; its runs are refused, not failed.
+    expect(parkedRow?.backfillSchedule?.enabled).toBe(false);
+    expect(await ensureFlowDerivedCache(parkedRow!)).toBe("missing");
     await expectNoTeardownNoDuplicate();
     // Back where flows live: the same stream again.
     await l.mv("flows/team/a.yml", "flows/a.yml");
@@ -1045,6 +1049,8 @@ describe("entry point: laptop git mv + push", () => {
     await pushAndSync(l);
     const back = await Flow.findById(row._id);
     expect(back?.definitionInvalid?.reason).toBeUndefined();
+    expect(back?.backfillSchedule?.enabled).toBe(true);
+    expect(back?.backfillSchedule?.cron).toBe("0 3 * * *");
     await expectSameStream(before);
     await expectNoTeardownNoDuplicate();
   });
