@@ -43,13 +43,12 @@ import {
   notebookCommitChanges,
   notebookFileVersions,
   notebookHistory,
-  removeNotebookFile,
+  removeNotebookIndexAndFile,
   restoreNotebookTo,
   scheduleNotebookCheckpoint,
 } from "../notebooks/notebook-git.service";
 import {
   createNotebookIndex,
-  deleteNotebookIndex,
   getNotebookIndex,
   updateNotebookIndex,
 } from "../services/notebook-index.service";
@@ -735,20 +734,13 @@ notebookRoutes.openapi(
       );
     }
 
-    const doomedIndex = await NotebookIndex.findOne({
-      workspaceId: new Types.ObjectId(ws),
-      notebookId: id,
-    }).select("path name");
     const ok = await getNotebookStore().remove(ws, id);
     if (!ok) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }
-    await deleteNotebookIndex(ws, id);
-    if (doomedIndex) {
-      await removeNotebookFile(ws, doomedIndex, editorUserId(c)).catch(
-        () => undefined,
-      );
-    }
+    // The index row and the file where it is NOW (a rename landing in the
+    // meantime moved it) — in the checkpoint queue.
+    await removeNotebookIndexAndFile(ws, id, editorUserId(c));
     publishTreeUpdated(ws);
     return c.json({ success: true });
   },
