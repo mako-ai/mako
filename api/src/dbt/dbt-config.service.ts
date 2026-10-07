@@ -1576,6 +1576,17 @@ async function syncDbtConfigNow(
   const jobPaths = entries
     .map(e => e.path)
     .filter(p => slugFromJobFilePath(p) !== null);
+  // YAML under dbt/jobs/ that is not a job file the sync reads (a
+  // sub-folder, a `.yaml`, a name that is not a slug): never a job of its
+  // own, read only to park a job whose file was moved there.
+  const strayJobPaths = entries
+    .map(e => e.path)
+    .filter(
+      p =>
+        p.startsWith("dbt/jobs/") &&
+        /\.ya?ml$/i.test(p) &&
+        slugFromJobFilePath(p) === null,
+    );
   // No dbt config in the repo at all → not adopted; leave Mongo alone.
   const hasEnvFile = entries.some(e => e.path === DBT_ENVIRONMENTS_PATH);
   if (jobPaths.length === 0 && !hasEnvFile) return;
@@ -1874,6 +1885,7 @@ async function syncDbtConfigNow(
     projectId: project._id,
     slug: { $exists: true, $nin: [...seenSlugs] },
   }).select("slug name lastRenameCommit lastRenameAt");
+  const sweepable: typeof stale = [];
   for (const doc of stale) {
     if (await jobRenameGuardActive(repoDir, head, doc)) {
       logger.info("dbt job renamed during this sync; not sweeping it", {
@@ -1882,6 +1894,25 @@ async function syncDbtConfigNow(
       });
       continue;
     }
+    sweepable.push(doc);
+  }
+  let parked = new Set<string>();
+  try {
+    parked = await parkJobsMovedOutOfPlace({
+      workspaceId,
+      repoDir,
+      head,
+      jobIds: sweepable.map(doc => doc._id),
+      strayPaths: strayJobPaths,
+    });
+  } catch (error) {
+    logger.warn("Could not check for job files moved out of place", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  for (const doc of sweepable) {
+    if (parked.has(doc._id.toString())) continue;
     await DbtJob.deleteOne({ _id: doc._id });
     logger.info("dbt job removed (file deleted on main)", {
       workspaceId,
@@ -1931,6 +1962,100 @@ async function syncDbtConfigNow(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/**
+ * Jobs the sweep is about to delete whose file is still in the tree, moved
+ * where the sync does not read it (`dbt/jobs/nightly/a.yml`, `.yaml`, a
+ * name that is not a slug) — see `parkFlowsMovedOutOfPlace`. Deleting the
+ * row would lose the job's id (its URL, the run history's owner, the
+ * scheduler's claim) for a file move. It is PARKED instead: kept, switched
+ * off (`enabled: false`, no next run — the scheduler must not run a job
+ * whose file is not where jobs live) and marked invalid with the reason; a
+ * push that puts the file back applies it again (schedule included).
+ * Paired by the rename rules. Returns the ids parked.
+ */
+async function parkJobsMovedOutOfPlace(args: {
+  workspaceId: string;
+  repoDir: string;
+  head: string;
+  jobIds: Types.ObjectId[];
+  strayPaths: string[];
+}): Promise<Set<string>> {
+  const { workspaceId, repoDir, head, jobIds, strayPaths } = args;
+  const parkedIds = new Set<string>();
+  if (jobIds.length === 0 || strayPaths.length === 0) return parkedIds;
+  const rows = await DbtJob.find({ _id: { $in: jobIds } });
+  const blobs = await readBlobsBatch(repoDir, head, strayPaths);
+  const strays = [...blobs.entries()].map(([path, buf]) => ({
+    path,
+    contents: buf.toString("utf8"),
+    oid: blobOid(buf),
+  }));
+  const removed: RemovedSlug[] = [];
+  const baseOids: Array<string | undefined> = [];
+  for (const row of rows) {
+    const base = await pairingBaseBlob(repoDir, head, row);
+    baseOids.push(base?.oid);
+    const contents = base?.contents ?? serializeJobFile(jobToFile(row));
+    const parsed = parseJobFile(contents);
+    removed.push({
+      slug: row.slug as string,
+      aliases: row.aliases ?? [],
+      contents,
+      target: parsed ? jobRenameTarget(parsed) : null,
+    });
+  }
+  const added = strays.map(stray => {
+    const parsed = parseJobFile(stray.contents);
+    return {
+      slug: stray.path,
+      contents: stray.contents,
+      aliases: parsed?.aliases ?? [],
+      target: parsed ? jobRenameTarget(parsed) : null,
+    };
+  });
+  const gitRenames = new Map<string, string>();
+  for (const [from, to] of await detectGitRenames(
+    repoDir,
+    rows.map((row, i) => ({
+      path: jobFilePath(row.slug as string),
+      oid: baseOids[i],
+    })),
+    strays.map(stray => ({ path: stray.path, oid: stray.oid })),
+  )) {
+    const fromSlug = slugFromJobFilePath(from);
+    if (fromSlug) gitRenames.set(fromSlug, to);
+  }
+  const pairing = pairRenamedSlugs({ removed, added, gitRenames });
+  for (const pair of pairing.pairs) {
+    const row = rows.find(r => r.slug === pair.from);
+    if (!row) continue;
+    logger.warn(
+      "dbt job file moved out of place; parking the job, not deleting it",
+      {
+        workspaceId,
+        jobId: row._id.toString(),
+        slug: row.slug,
+        movedTo: pair.to,
+        via: pair.via,
+      },
+    );
+    const definitionInvalid = {
+      reason: `its file was moved to ${pair.to}, where it is not read as a job: a job file must be dbt/jobs/<slug>.yml (lowercase letters, digits and dashes, directly in dbt/jobs/). Move it back, or to a valid name, to resume.`,
+      at: new Date(),
+      path: pair.to,
+    };
+    await DbtJob.updateOne(
+      { _id: row._id },
+      {
+        $set: { definitionInvalid, enabled: false },
+        $unset: { "scheduledRun.nextAt": "" },
+      },
+    );
+    parkedIds.add(row._id.toString());
+  }
+  return parkedIds;
 }
 
 /**

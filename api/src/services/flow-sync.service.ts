@@ -1732,6 +1732,23 @@ export interface FlowFilesAtMain {
    * decoded, and a row holding that sha could never save again).
    */
   files: Array<{ path: string; contents: string; oid: string }>;
+  /**
+   * YAML under `flows/` that is NOT a flow file the sync reads — in a
+   * sub-folder (`flows/team/a.yml`), a `.yaml`, a name that is not a slug
+   * (`flows/A.yml`). Never a flow of its own; read only so a flow whose file
+   * was moved there is recognised and parked rather than torn down
+   * (`parkFlowsMovedOutOfPlace`).
+   */
+  strays: Array<{ path: string; contents: string; oid: string }>;
+}
+
+/** A YAML file under `flows/` the sync does not read as a flow. */
+function isStrayFlowPath(path: string): boolean {
+  return (
+    path.startsWith("flows/") &&
+    /\.ya?ml$/i.test(path) &&
+    slugFromFlowFilePath(path) === null
+  );
 }
 
 /**
@@ -1759,7 +1776,7 @@ export async function readFlowFilesAtMain(
   workspaceId: string,
   options: { freshen: boolean },
 ): Promise<FlowFilesAtMain> {
-  const none: FlowFilesAtMain = { commit: null, files: [] };
+  const none: FlowFilesAtMain = { commit: null, files: [], strays: [] };
 
   if (!(await getWorkspaceRepo(workspaceId))) return none;
   if (options.freshen) {
@@ -1772,20 +1789,124 @@ export async function readFlowFilesAtMain(
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) return none;
 
-  const paths = (await listTree(repoDir, head))
-    .map(e => e.path)
-    .filter(p => slugFromFlowFilePath(p) !== null);
-  if (paths.length === 0) return { commit: head, files: [] };
-
-  const blobs = await readBlobsBatch(repoDir, head, paths);
+  const tree = (await listTree(repoDir, head)).map(e => e.path);
+  const paths = tree.filter(p => slugFromFlowFilePath(p) !== null);
+  const strayPaths = tree.filter(isStrayFlowPath);
+  const read = async (list: string[]) =>
+    list.length === 0
+      ? []
+      : [...(await readBlobsBatch(repoDir, head, list)).entries()].map(
+          ([path, buf]) => ({
+            path,
+            contents: buf.toString("utf8"),
+            oid: blobOid(buf),
+          }),
+        );
   return {
     commit: head,
-    files: [...blobs.entries()].map(([path, buf]) => ({
-      path,
-      contents: buf.toString("utf8"),
-      oid: blobOid(buf),
-    })),
+    files: await read(paths),
+    strays: await read(strayPaths),
   };
+}
+
+/**
+ * Rows about to be torn down (their file is not in this tree) whose file is
+ * still there — moved somewhere the sync does not read: `flows/team/a.yml`,
+ * `flows/a.yaml`, `flows/A.yml`. A person organising files into folders, or
+ * an editor that saved `.yaml`, would otherwise lose the stream: teardown,
+ * checkpoints disposed, a re-backfill when it is moved back. Such a row is
+ * PARKED instead: kept for the reconciler (its own definition stands in),
+ * marked invalid with the reason — which pauses its schedules, and the run
+ * paths refuse it while its file is not at `flows/<slug>.yml` — and resumes
+ * when the file is back (or moved to a valid name: the rename pairing
+ * re-keys it then). Paired by the rename rules (the file's `aliases:`, git
+ * similarity, identical content, the one file with its source and
+ * destination); a stray file nothing pairs with is ignored, as before.
+ */
+async function parkFlowsMovedOutOfPlace(args: {
+  workspaceId: string;
+  repoDir: string;
+  head: string;
+  strays: Array<{ path: string; contents: string; oid: string }>;
+  fileSlugs: ReadonlySet<string>;
+  desired: DesiredFlow[];
+}): Promise<void> {
+  const { workspaceId, repoDir, head, strays, fileSlugs, desired } = args;
+  if (strays.length === 0) return;
+  const desiredIds = new Set(desired.map(d => d.flowId));
+  const rows = (
+    await Flow.find({ workspaceId, slug: { $exists: true } })
+  ).filter(
+    row =>
+      row.slug && !fileSlugs.has(row.slug) && !desiredIds.has(String(row._id)),
+  );
+  if (rows.length === 0) return;
+  const removed: RemovedSlug[] = [];
+  const baseOids: Array<string | undefined> = [];
+  for (const row of rows) {
+    const base = await pairingBaseBlob(repoDir, head, row);
+    baseOids.push(base?.oid);
+    let contents = base?.contents ?? null;
+    if (contents === null) {
+      try {
+        contents = serializeFlowFile(flowToFile(row));
+      } catch {
+        contents = null;
+      }
+    }
+    const parsed = contents === null ? null : parseFlowFile(contents);
+    removed.push({
+      slug: row.slug as string,
+      aliases: row.aliases ?? [],
+      contents: contents ?? undefined,
+      target: parsed ? flowRenameTarget(parsed) : null,
+    });
+  }
+  // The stray's PATH stands in for a slug: it is an identifier here, never
+  // a name anything resolves.
+  const added = strays.map(stray => {
+    const parsed = parseFlowFile(stray.contents);
+    return {
+      slug: stray.path,
+      contents: stray.contents,
+      aliases: parsed?.aliases ?? [],
+      target: parsed ? flowRenameTarget(parsed) : null,
+    };
+  });
+  const gitRenames = new Map<string, string>();
+  for (const [from, to] of await detectGitRenames(
+    repoDir,
+    rows.map((row, i) => ({
+      path: flowFilePath(row.slug as string),
+      oid: baseOids[i],
+    })),
+    strays.map(stray => ({ path: stray.path, oid: stray.oid })),
+  )) {
+    const fromSlug = slugFromFlowFilePath(from);
+    if (fromSlug) gitRenames.set(fromSlug, to);
+  }
+  const pairing = pairRenamedSlugs({ removed, added, gitRenames });
+  for (const pair of pairing.pairs) {
+    const row = rows.find(r => r.slug === pair.from);
+    if (!row) continue;
+    const reason = `its file was moved to ${pair.to}, where it is not read as a flow: a flow file must be flows/<slug>.yml (lowercase letters, digits and dashes, directly in flows/). Move it back, or to a valid name, to resume.`;
+    logger.warn(
+      "Flow file moved out of place; parking the flow, not tearing it down",
+      {
+        workspaceId,
+        flowId: String(row._id),
+        slug: row.slug,
+        movedTo: pair.to,
+        via: pair.via,
+      },
+    );
+    await markFlowInvalid(row, reason, pair.to);
+    desired.push({
+      slug: row.slug as string,
+      file: flowToFile(row),
+      flowId: String(row._id),
+    });
+  }
 }
 
 /**
@@ -1817,7 +1938,11 @@ export async function syncFlowsFromRepo(
   // A reconcile that DELETES must be judged against the mirror's main, never
   // this instance's cache: `ensureLocalRepo` returns early once the directory
   // exists and never refreshes it.
-  const { commit: head, files } = await readFlowFilesAtMain(workspaceId, {
+  const {
+    commit: head,
+    files,
+    strays,
+  } = await readFlowFilesAtMain(workspaceId, {
     freshen: true,
   });
   if (!head) return empty;
@@ -2195,6 +2320,24 @@ export async function syncFlowsFromRepo(
       slug: row.slug,
       file: flowToFile(row),
       flowId: String(row._id),
+    });
+  }
+
+  // A flow whose file was moved where the sync does not read it (a
+  // sub-folder, a `.yaml`, a name that is not a slug) is not a deleted flow.
+  try {
+    await parkFlowsMovedOutOfPlace({
+      workspaceId,
+      repoDir,
+      head,
+      strays,
+      fileSlugs,
+      desired,
+    });
+  } catch (error) {
+    logger.warn("Could not check for flow files moved out of place", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 
