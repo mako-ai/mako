@@ -16,6 +16,7 @@ import {
   AppIndexEntry,
   AppIndexHead,
   AppProject,
+  AppWorktree,
   WorkspaceMember,
 } from "../../database/workspace-schema";
 import {
@@ -102,6 +103,13 @@ export async function resetWorkspace(
   await WorkspaceMember.deleteMany({ workspaceId });
   await unbindTestWorkspaceRepo(workspaceId);
   invalidateAppsIndexCache();
+  // A sandbox session cloned from the previous repo would push a history
+  // the new one does not share: every test starts with no sessions.
+  await AppWorktree.deleteMany({ workspaceId });
+  await fs.rm(path.join(env.tmpRoot, "sessions"), {
+    recursive: true,
+    force: true,
+  });
   await fs.rm(repoDirFor(workspaceId), { recursive: true, force: true });
   await initRepo(repoDirFor(workspaceId), files);
   await bindTestWorkspaceRepo(workspaceId);

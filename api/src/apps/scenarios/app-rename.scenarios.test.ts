@@ -41,12 +41,17 @@ import {
   createProjectWith,
   deleteProject,
   ensureProjectRow,
+  ensureWorktree,
+  execInWorktree,
   moveProject,
+  readSessionFile,
   projectHistory,
   resolveProjectRef,
   scopeOf,
+  writeFile,
 } from "../worktree.service";
 import { renameObject, resolveObjectRef } from "../../rename/registry";
+import { startTestGitServer, type TestGitServer } from "../test-git-server";
 import { createRenameTools } from "../../agent-lib/tools/rename-tools";
 import { createAppsTools } from "../../agent-lib/tools/apps-tools";
 import {
@@ -66,10 +71,19 @@ import {
 } from "./app-scenario-harness";
 
 let env: ScenarioEnv;
+// Mako's own git endpoint on a real port: the sandbox clones from it and
+// pushes to it, so a `git mv` made there arrives the way a terminal's does
+// — receive-pack, then the push hook (notifyRepoPushed).
+let gitServer: TestGitServer;
 beforeAll(async () => {
   env = await startScenarioEnv("app-rename-scenarios");
+  process.env.SESSION_SECRET =
+    process.env.SESSION_SECRET || "test-secret-for-git-tokens";
+  gitServer = await startTestGitServer();
+  process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
 });
 afterAll(async () => {
+  await gitServer?.close();
   await env.stop();
 });
 
@@ -733,6 +747,45 @@ describe("operations", () => {
       path: "apps/Sales/CH/billing",
       url: `/apps/${B_ID}`,
       oldNames: ["apps/Sales/CH/b"],
+    });
+  });
+
+  it("never commits a draft: unsaved work in the renamer's sandbox stays a draft, out of the rename commit", async () => {
+    const project = (await resolveProjectRef(WS, "a"))!;
+    const handle = await ensureWorktree(project, ADMIN);
+    await writeFile(handle, "src/draft.ts", "export const draft = true;\n");
+    const before = await headOf(WS);
+    await renameObject(admin, "app", { ref: "a", slug: "acq" });
+    const touched = await changedPaths(WS, before);
+    expect(touched.some(p => p.includes("draft"))).toBe(false);
+    expect(await fileAt(WS, "apps/acq/src/draft.ts")).toBeNull();
+    expect(await fileAt(WS, "apps/a/src/draft.ts")).toBeNull();
+    // The draft is still there, uncommitted, where it was written.
+    expect(await readSessionFile(handle, "src/draft.ts")).toBe(
+      "export const draft = true;\n",
+    );
+  });
+
+  it("a `git mv` in the sandbox's terminal, pushed through Mako's git endpoint, keeps the id and the old link", async () => {
+    const A_ID = await idOf("a");
+    await attachState(A_ID);
+    const state = await stateOf(A_ID);
+    const project = (await resolveProjectRef(WS, "a"))!;
+    const handle = await ensureWorktree(project, ADMIN);
+    const before = await headOf(WS);
+    const out = await execInWorktree(
+      handle,
+      'cd .. && git mv a a-terminal && git commit -q -m "mv a in the terminal"',
+    );
+    expect(out.exitCode, out.stderr).toBe(0);
+    // execInWorktree pushes what the command committed; the endpoint's
+    // push hook syncs the index.
+    expect(await commitsSince(WS, before)).toBe(1);
+    await expectIdentity(A_ID, {
+      path: "apps/a-terminal",
+      url: "/apps/a-terminal",
+      oldNames: ["a"],
+      state,
     });
   });
 
