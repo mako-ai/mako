@@ -118,6 +118,7 @@ export default defineConfig({
       "src/routes/scenarios/console-visibility.scenarios.test.ts",
       "src/routes/scenarios/console-hostile.scenarios.test.ts",
       "src/routes/scenarios/console-robustness.scenarios.test.ts",
+      "src/routes/scenarios/notebook.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
