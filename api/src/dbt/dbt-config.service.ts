@@ -39,7 +39,6 @@ import {
   repoDirFor,
   blobOid,
   commitBlobsOnBranch,
-  globTree,
   listTree,
   readBlobsBatch,
   readBlob,
@@ -465,31 +464,35 @@ export async function listJobDefinitionsAtMain(
 ): Promise<JobDefinitionAtMain[]> {
   if (!(await getWorkspaceRepo(workspaceId))) return [];
   const repoDir = await boundRepoDirIfExists(workspaceId);
-  if (repoDir == null || !(await resolveCommit(repoDir, MAIN))) return [];
-  const paths = await globTree(repoDir, MAIN, "dbt/jobs/*.yml", 1000);
+  const head = repoDir == null ? null : await resolveCommit(repoDir, MAIN);
+  if (repoDir == null || !head) return [];
+  // Every job file, in ONE git process. One `git show` per file cost ~10 ms
+  // each — ten seconds for a list (or a resolve of an old name) at 1,000
+  // jobs — and the old 1,000-file glob cap silently dropped every job past
+  // it from the list.
+  const paths = (await listTree(repoDir, head))
+    .map(entry => entry.path)
+    .filter(p => slugFromJobFilePath(p) !== null)
+    .sort();
+  const blobs = await readBlobsBatch(repoDir, head, paths);
   const definitions: JobDefinitionAtMain[] = [];
-  for (const path of paths.sort()) {
-    const slug = slugFromJobFilePath(path);
-    if (!slug) continue;
-    try {
-      const blob = await readBlob(repoDir, MAIN, path);
-      definitions.push({
-        path,
-        slug,
-        // Git's id from the raw bytes: a file that is not valid UTF-8 hashes
-        // differently once decoded, and a row storing that sha could never
-        // pass the write-through's compare-and-swap again.
-        oid: blob.oid,
-        parsed: blob.isBinary ? null : parseJobFile(blob.contents),
-      });
-    } catch (error) {
-      logger.warn("Unreadable dbt job file at main", {
-        workspaceId,
-        path,
-        error,
-      });
+  for (const path of paths) {
+    const slug = slugFromJobFilePath(path) as string;
+    const buf = blobs.get(path);
+    if (!buf) {
+      logger.warn("Unreadable dbt job file at main", { workspaceId, path });
       definitions.push({ path, slug, oid: "unreadable", parsed: null });
+      continue;
     }
+    definitions.push({
+      path,
+      slug,
+      // Git's id from the raw bytes: a file that is not valid UTF-8 hashes
+      // differently once decoded, and a row storing that sha could never
+      // pass the write-through's compare-and-swap again.
+      oid: blobOid(buf),
+      parsed: buf.includes(0) ? null : parseJobFile(buf.toString("utf8")),
+    });
   }
   return definitions;
 }
@@ -1531,12 +1534,12 @@ async function jobFileListingAlias(
         .lean()
     ).map(r => r.slug),
   );
-  const paths = (await globTree(repoDir, MAIN, "dbt/jobs/*.yml", 1000)).filter(
-    p => {
+  const paths = (await listTree(repoDir, MAIN))
+    .map(entry => entry.path)
+    .filter(p => {
       const fileSlug = slugFromJobFilePath(p);
       return fileSlug !== null && !owned.has(fileSlug);
-    },
-  );
+    });
   if (paths.length === 0) return null;
   for (const [p, buf] of await readBlobsBatch(repoDir, MAIN, paths)) {
     if (parseJobFile(buf.toString("utf8"))?.aliases?.includes(slug)) return p;
