@@ -44,7 +44,7 @@ vi.mock("../../inngest", () => ({
 }));
 
 import { ConsoleFolder, SavedConsole } from "../../database/workspace-schema";
-import { parseConsoleRepoPath } from "../../apps/console-files";
+import { parseConsoleRepoPath, safeSegment } from "../../apps/console-files";
 import { syncConsolesIndexFromRepo } from "../../apps/workspace-consoles.service";
 import { renameObject } from "../../rename/registry";
 import { RenameError } from "../../rename/types";
@@ -425,6 +425,15 @@ describe("one name, however it is spelled", () => {
     expect(back.path).not.toBe(`consoles/${name}.sql`);
     expect(parseConsoleRepoPath(back.path!)!.name).toBe(back.name);
     expect(back.name.endsWith(" (2)")).toBe(true);
+  });
+
+  it("a file name is cut on a code point: never half an emoji in a path", () => {
+    // A name over the limit can still reach the file-name rule (a row
+    // older than the rule, a derived name): its cut must keep emoji whole.
+    const name = `${LONG(119)}📊📊`;
+    const segment = safeSegment(name);
+    expect(segment).toBe(LONG(119));
+    expect(safeSegment(`${LONG(118)}📊📊`)).toBe(`${LONG(118)}📊`);
   });
 
   it("a duplicate of a console with a name at the length limit is named as its file", async () => {

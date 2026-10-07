@@ -129,11 +129,15 @@ export function safeSegment(name: string): string {
     .trim()
     .replace(/^\.+/, "")
     .replace(/\.+$/, "")
-    .trim()
-    .slice(0, 120)
     .trim();
-  if (!cleaned || cleaned === ".git") return "untitled";
-  return cleaned;
+  // Bounded in UTF-16 units, cut on a code point: half an emoji (a lone
+  // surrogate) reaches git as U+FFFD, and the path Mako recorded would
+  // never match the file again.
+  let bounded = cleaned.slice(0, 120);
+  if (/[\uD800-\uDBFF]$/.test(bounded)) bounded = bounded.slice(0, -1);
+  const result = bounded.trim();
+  if (!result || result === ".git") return "untitled";
+  return result;
 }
 
 /** The longest console or folder name: one segment of its repo path. */
