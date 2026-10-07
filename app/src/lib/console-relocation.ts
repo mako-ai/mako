@@ -203,13 +203,79 @@ export function renameMoveRequest(input: {
   return input.renamedTo ? { route: "rename", name: input.renamedTo } : null;
 }
 
-/** A console name typed into a dialog: why it cannot be used, or null. */
-export function consoleNameProblem(name: string): string | null {
-  if (!name.trim()) return "Give the console a name.";
-  if (name.includes("/")) {
-    return "A name cannot contain “/” — choose the folder below.";
+/**
+ * Each character no file name can carry on every OS, and the visible
+ * stand-in the server saves instead (api `cleanConsoleName` — keep the two
+ * in step): "Q1: revenue" is saved as "Q1 - revenue", "A/B test" as
+ * "A-B test".
+ */
+const FORBIDDEN_STAND_INS: Readonly<Record<string, string>> = {
+  ":": " - ",
+  "/": "-",
+  "\\": "-",
+  "|": "-",
+  "*": "-",
+  "?": "",
+  '"': "'",
+  "<": "(",
+  ">": ")",
+};
+
+/** Zero-width spaces/joiners, the word joiner and a BOM. */
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF]/g;
+
+function normalizeName(name: string): string {
+  return name
+    .normalize("NFC")
+    .replace(INVISIBLE, "")
+    .replace(/[\p{Cc}\s]+/gu, " ")
+    .trim();
+}
+
+/** A console or folder name as the server will save it. */
+export function consoleNameAsSaved(name: string): string {
+  return normalizeName(
+    normalizeName(name).replace(
+      /[\\/:*?"<>|]/g,
+      ch => FORBIDDEN_STAND_INS[ch] ?? "-",
+    ),
+  );
+}
+
+const RESERVED_ON_WINDOWS = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i;
+
+/**
+ * A console (or folder) name typed into a dialog: why it cannot be used,
+ * or null — judged on the name as it will be SAVED (`consoleNameAsSaved`),
+ * by the rules the server refuses with (empty, a leading or trailing dot,
+ * a reserved device name, over 120 characters), so the dialog says it
+ * inline instead of the save failing.
+ */
+export function consoleNameProblem(
+  name: string,
+  kind: "console" | "folder" = "console",
+): string | null {
+  const what = kind === "console" ? "console" : "folder";
+  const saved = consoleNameAsSaved(name);
+  if (!saved) return `Give the ${what} a name.`;
+  if (saved.length > 120) {
+    return `A ${what} name can be at most 120 characters (this one has ${saved.length}).`;
+  }
+  if (saved.startsWith(".")) return `A ${what} name cannot start with a dot.`;
+  if (saved.endsWith(".")) return `A ${what} name cannot end with a dot.`;
+  if (RESERVED_ON_WINDOWS.test(saved)) {
+    return `“${saved.split(".")[0]}” is a reserved file name on Windows — choose another.`;
   }
   return null;
+}
+
+/**
+ * What to tell a person about the name they typed, when it will be saved
+ * differently ("Saved as “Q1 - revenue”"), or null.
+ */
+export function consoleNameSavedAsNotice(name: string): string | null {
+  const saved = consoleNameAsSaved(name);
+  return saved && saved !== name.trim() ? `Will be saved as “${saved}”.` : null;
 }
 
 /** The explorer section a console is listed under. */

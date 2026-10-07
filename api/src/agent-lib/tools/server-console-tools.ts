@@ -14,6 +14,10 @@
  * applyModification used by Monaco.
  */
 import { tool } from "ai";
+import {
+  cleanDerivedConsoleName,
+  splitConsoleFileName,
+} from "../../apps/console-files";
 import { Types } from "mongoose";
 import {
   modifyConsoleSchema,
@@ -96,9 +100,16 @@ const RUN_PREVIEW_MAX_ROWS = 50;
  * shows `name` verbatim as the title/breadcrumb leaf/tree row.
  */
 function leafConsoleName(raw: string | undefined): string {
-  const value = raw ?? "";
-  const parts = value.split("/").filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : value;
+  const value = (raw ?? "").trim();
+  // A repo path ("consoles/Team/report.sql") names its file: its leaf,
+  // without the extension. Anything else IS the title — "A/B test" and
+  // "Q1: revenue" are names people and agents type; the characters a file
+  // name cannot carry get a visible stand-in (cleanDerivedConsoleName).
+  if (/^(consoles|users\/[^/]+\/consoles)\//.test(value)) {
+    const leaf = value.split("/").filter(Boolean).pop() ?? "";
+    return splitConsoleFileName(leaf)?.name ?? leaf;
+  }
+  return value ? cleanDerivedConsoleName(value) : value;
 }
 
 const consoleManager = new ConsoleManager();

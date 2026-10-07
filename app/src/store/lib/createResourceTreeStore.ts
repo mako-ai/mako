@@ -72,7 +72,12 @@ export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
     name: string,
     parentId: string | null | undefined,
     access: TreeAccessLevel,
-  ) => Promise<{ id: string } | null | undefined>;
+  ) => Promise<{ id: string; name?: string } | null | undefined>;
+  /**
+   * Rename endpoints may answer `{ savedName }`: the name the server stored,
+   * when it differs from the one typed (a console's "Q1: revenue" is saved
+   * as "Q1 - revenue") — the tree then shows that one.
+   */
   renameItem: (
     workspaceId: string,
     id: string,
@@ -502,7 +507,13 @@ export function createResourceTreeStore<
               workspaceId,
               tempId,
             );
-            if (node) node.id = realId;
+            if (!node) return;
+            node.id = realId;
+            // The name the server gave it (a cleaned one, maybe).
+            if (created?.name && created.name !== node.name) {
+              node.name = created.name;
+              node.path = created.name;
+            }
           });
           return realId;
         } catch {
@@ -519,9 +530,24 @@ export function createResourceTreeStore<
           resortIn(state as Sections, workspaceId, itemId);
         });
         try {
-          await (isDirectory
+          const result = await (isDirectory
             ? endpoints.renameFolder(workspaceId, itemId, name)
             : endpoints.renameItem(workspaceId, itemId, name));
+          // The name the server stored, when it is not the one typed.
+          const savedName = (result as { savedName?: unknown } | null)
+            ?.savedName;
+          if (typeof savedName === "string" && savedName !== name) {
+            set(state => {
+              const node = findInAnySection(
+                state as Sections,
+                workspaceId,
+                itemId,
+              );
+              if (!node) return;
+              node.name = savedName;
+              resortIn(state as Sections, workspaceId, itemId);
+            });
+          }
           return true;
         } catch (err: unknown) {
           await get().refresh(workspaceId);

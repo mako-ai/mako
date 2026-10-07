@@ -759,7 +759,8 @@ describe("the agent's modify_console title", () => {
       consoleId: c._id.toString(),
       action: "replace",
       content: "SELECT 'agent'\n",
-      title: "Q1: revenue",
+      // No name at all once cleaned: a reserved device name.
+      title: "CON",
     });
     expect(bad.success).toBe(false);
     expect(await rig.commitCount()).toBe(commits);

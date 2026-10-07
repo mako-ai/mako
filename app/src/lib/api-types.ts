@@ -82,6 +82,8 @@ export interface ConsoleVersionConflict {
 export interface ConsoleSaveResponse {
   success: boolean;
   path?: string;
+  /** The name it was saved under (see `console`). */
+  name?: string;
   error?: string;
   /** Machine-readable failure code (e.g. "github_required", apps.md §17). */
   code?: string;
@@ -99,6 +101,11 @@ export interface ConsoleSaveResponse {
   };
   /** Concurrent-edit conflict: the console changed since this client loaded it. */
   versionConflict?: ConsoleVersionConflict;
+  /**
+   * The console as saved: its name and its `Folder/name` place — the name
+   * may have been cleaned ("Q1: revenue" is saved as "Q1 - revenue").
+   */
+  console?: { id: string; name?: string; path?: string };
   /** Stale draft autosave: the draft changed since this tab last synced. */
   draftConflict?: {
     currentDraftRevision: number;

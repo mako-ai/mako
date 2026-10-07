@@ -218,15 +218,64 @@ export class ConsoleNameError extends Error {
 }
 
 /** `normalizeConsoleName`, refusing (`ConsoleNameError`) what cannot be one. */
+/**
+ * The stand-in for each character a file name cannot carry on every OS —
+ * visible and stable, so "Q1: revenue" is saved as "Q1 - revenue", not
+ * refused: these are titles people and agents really type.
+ */
+const FORBIDDEN_STAND_INS: Readonly<Record<string, string>> = {
+  ":": " - ",
+  "/": "-",
+  "\\": "-",
+  "|": "-",
+  "*": "-",
+  "?": "",
+  '"': "'",
+  "<": "(",
+  ">": ")",
+};
+
+/** Each of `\ / : * ? " < > |` replaced by its stand-in. */
+export function replaceForbiddenNameChars(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, ch => FORBIDDEN_STAND_INS[ch] ?? "-");
+}
+
+/**
+ * A NEW console or folder name as it will be stored and filed: normalized
+ * (`normalizeConsoleName`), each character no file name can carry replaced
+ * by a visible stand-in (`replaceForbiddenNameChars`), then judged — what
+ * is still no name (empty, `..`/a leading dot, a trailing dot, a reserved
+ * device name, over 120 characters, `.mongodb` at the end of a JavaScript
+ * console's) is refused with `ConsoleNameError` (a 400). Callers run their
+ * twin/collision checks on the result, and answer with it.
+ */
 export function cleanConsoleName(
   name: string,
   kind: "console" | "folder",
   language?: ConsoleLanguage,
 ): string {
-  const clean = normalizeConsoleName(name);
+  const clean = normalizeConsoleName(
+    replaceForbiddenNameChars(normalizeConsoleName(name)),
+  );
   const problem = consoleNameProblem(clean, kind, language);
   if (problem) throw new ConsoleNameError(problem);
   return clean;
+}
+
+/**
+ * `cleanConsoleName` for a name Mako DERIVES (a duplicate's "<name> copy"):
+ * the cleaned name when there is one, else the name as it is — a derived
+ * name is never refused (the file-name rule bounds it).
+ */
+export function cleanDerivedConsoleName(
+  name: string,
+  language?: ConsoleLanguage,
+): string {
+  try {
+    return cleanConsoleName(name, "console", language);
+  } catch {
+    return name;
+  }
 }
 
 /**

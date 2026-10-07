@@ -1,5 +1,6 @@
 import { api, unwrapBody, ApiError, toErrorMessage } from "../api";
 import type { ConsoleContentResponse, ConsoleLocation } from "../lib/api-types";
+import { consoleNameAsSaved } from "../lib/console-relocation";
 import {
   markDeletedHere,
   unmarkDeletedHere,
@@ -118,6 +119,10 @@ async function retargetOpenTab(
       location.id,
     );
     if (node && node.path !== location.path) node.path = location.path;
+    // …and its name: the one the server saved (a cleaned one, maybe).
+    if (node && location.name && node.name !== location.name) {
+      node.name = location.name;
+    }
   });
   const { useConsoleStore } = await import("./consoleStore");
   useConsoleStore.getState().retargetConsoleTab(location.id, location);
@@ -277,12 +282,15 @@ export const useConsoleTreeStore = createResourceTreeStore<
         unwrapBody(
           await api.PATCH(`${base}/{id}/rename`, {
             params: { path: { workspaceId, id } },
-            body: { name },
+            // A name typed in the tree is a NAME: "A/B test" is not a move
+            // into a folder "A" (this route reads a "/" as one) — its "/"
+            // gets the stand-in the server gives every such character.
+            body: { name: consoleNameAsSaved(name) },
           }),
         ) as { success: boolean; console?: ConsoleLocation },
       );
       await retargetOpenTab(workspaceId, res.console);
-      return res;
+      return { ...res, savedName: res.console?.name };
     },
     renameFolder: async (workspaceId, id, name) => {
       const inside = consoleIdsUnder(findNode(workspaceId, id));
@@ -292,10 +300,10 @@ export const useConsoleTreeStore = createResourceTreeStore<
             params: { path: { workspaceId, id } },
             body: { name },
           }),
-        ) as { success: boolean },
+        ) as { success: boolean; data?: { name?: string } },
       );
       void retargetOpenTabsUnder(workspaceId, inside);
-      return res;
+      return { ...res, savedName: res.data?.name };
     },
     deleteItem: async (workspaceId, id) => {
       // The deletion this window makes is announced back to it: its banner

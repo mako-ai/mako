@@ -1245,7 +1245,13 @@ consoleRoutes.openapi(
           message: "Console created successfully",
           data: {
             id: savedConsole._id.toString(),
-            path: consolePath,
+            // Where it was saved, under the name it was saved as ("Q1:
+            // revenue" is saved as "Q1 - revenue"): the editor names its
+            // tab and the tree from this, never from what it asked for.
+            path:
+              (await consoleManager.consoleLocation(savedConsole)).path ??
+              consolePath,
+            name: savedConsole.name,
             content,
             connectionId: targetConnectionId,
             databaseName,
@@ -1758,7 +1764,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           draftRevision: result.draftRevision ?? 1,
           console: {
             id: result._id.toString(),
+            // The name and place it was saved under (a name may have been
+            // cleaned: "Q1: revenue" → "Q1 - revenue").
             name: result.name,
+            path: (await consoleManager.consoleLocation(result)).path,
           },
         });
       }
@@ -1914,7 +1923,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           draftRevision: result.draftRevision ?? 1,
           console: {
             id: result._id.toString(),
+            // The name and place it was saved under (a name may have been
+            // cleaned: "Q1: revenue" → "Q1 - revenue").
             name: result.name,
+            path: (await consoleManager.consoleLocation(result)).path,
           },
         });
       }
@@ -3103,6 +3115,13 @@ consoleRoutes.openapi(
 
       const startTime = Date.now();
 
+      // What execute runs, export runs: the console as committed (its file
+      // at main) — a dashboard built on a saved console must not start
+      // reading someone's unsaved draft. A console with no file yet (a
+      // draft, an unbound workspace) runs its row, as execute does.
+      const liveCode = await liveConsoleCode(workspaceId, consoleId);
+      if (liveCode) savedConsole.code = liveCode.code;
+
       let query: any = savedConsole.code;
       if (
         savedConsole.language === "mongodb" &&
@@ -3908,7 +3927,11 @@ const consoleFolderBackend: FolderBackend = {
       ctx.userId,
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
-    return { ok: true };
+    // The name it got ("Q1: x" → "Q1 - x"): the tree shows this one.
+    const renamed = await ConsoleFolder.findById(folderId)
+      .select("name")
+      .lean<{ name?: string } | null>();
+    return { ok: true, data: { name: renamed?.name ?? name } };
   },
 
   deleteFolder: async (ctx, { folderId }) => {

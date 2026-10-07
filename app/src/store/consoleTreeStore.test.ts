@@ -336,6 +336,62 @@ describe("consoleTreeStore — an open tab follows every rename and move", () =>
   });
 });
 
+describe("consoleTreeStore — the tree shows the name the server SAVED", () => {
+  it("a console renamed 'A/B: test' is sent as a NAME (no folder) and shown as saved", async () => {
+    seed([file("a", "old")]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({
+        success: true,
+        console: {
+          id: "a",
+          name: "A-B - test",
+          path: "A-B - test",
+          folderId: null,
+          access: "private",
+          draftRevision: 2,
+          isSaved: true,
+        },
+      }),
+    );
+    await expect(
+      useConsoleTreeStore.getState().renameItem(WID, "a", "A/B: test", false),
+    ).resolves.toBe(true);
+    // The "/" never reached the route that reads it as a folder.
+    expect(http.PATCH).toHaveBeenCalledWith(
+      "/api/workspaces/{workspaceId}/consoles/{id}/rename",
+      {
+        params: { path: { workspaceId: WID, id: "a" } },
+        body: { name: "A-B - test" },
+      },
+    );
+    expect(useConsoleTreeStore.getState().myItems[WID][0].name).toBe(
+      "A-B - test",
+    );
+  });
+
+  it("a folder rename and a new folder take the server's name", async () => {
+    seed([folder("f", "old")]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({ success: true, data: { name: "Team - EMEA" } }),
+    );
+    await useConsoleTreeStore
+      .getState()
+      .renameItem(WID, "f", "Team: EMEA", true);
+    expect(useConsoleTreeStore.getState().myItems[WID][0].name).toBe(
+      "Team - EMEA",
+    );
+    http.POST.mockResolvedValueOnce(
+      ok({ success: true, data: { id: "g", name: "Q1 - plans" } }),
+    );
+    await useConsoleTreeStore
+      .getState()
+      .createFolder(WID, "Q1: plans", null, "private");
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toContain(
+      "Q1 - plans",
+    );
+  });
+});
+
 describe("consoleTreeStore extras", () => {
   it("applyRemoteRename patches the node in place without a request", () => {
     seed([], [folder("f", "shared", [file("a", "alpha"), file("b", "bravo")])]);

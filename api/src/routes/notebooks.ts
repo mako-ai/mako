@@ -613,6 +613,15 @@ notebookRoutes.openapi(
         name: doc.name,
         updatedAt: new Date(doc.updatedAt),
       });
+      // The index follows the store: a rename that wrote the name after
+      // this save must not be overwritten by this older one.
+      const latest = await store.get(ws, id);
+      if (latest && latest.name !== doc.name) {
+        await updateNotebookIndex(ws, id, {
+          name: latest.name,
+          updatedAt: new Date(latest.updatedAt),
+        });
+      }
       publishTreeUpdated(ws);
     } else {
       await updateNotebookIndex(ws, id, {

@@ -710,4 +710,81 @@ describe("links and isolation", () => {
     expect(await notebookPaths()).toEqual([row.path]);
     expect(parseNotebookFile((await fileAt(row.path!))!)?.name).toBe(row.name);
   });
+
+  it("concurrent renames (agent, REST, the explorer) never leave the store and the index disagreeing", async () => {
+    const id = await seed("Racer");
+    for (let round = 0; round < 3; round++) {
+      const codes = await Promise.all([
+        status(
+          renameObject(ctx(OWNER), "notebook", {
+            ref: id,
+            title: `Agent ${round}`,
+          }),
+        ),
+        api("POST", "/objects/notebook/rename", OWNER, "member", {
+          ref: id,
+          title: `Rest ${round}`,
+        }).then(r => r.status),
+        api("PATCH", `/notebooks/${id}`, OWNER, "member", {
+          name: `Tree ${round}`,
+        }).then(r => r.status),
+      ]);
+      for (const code of codes) expect([200, 409]).toContain(code);
+      const doc = await getNotebookStore().get(WS, id);
+      const row = (await index(id))!;
+      expect(row.name).toBe(doc?.name);
+      expect(parseNotebookFile((await fileAt(row.path!))!)?.name).toBe(
+        row.name,
+      );
+      expect(await notebookPaths()).toEqual([row.path]);
+    }
+  });
+
+  it("another instance writing the name between the read and the write: refused (409), nothing of this rename applied", async () => {
+    const id = await seed("Before");
+    const store = getNotebookStore();
+    const realUpdate = store.update.bind(store);
+    const spy = vi
+      .spyOn(store, "update")
+      .mockImplementationOnce(async (ws, nb, patch, options) => {
+        // The other instance lands first.
+        await realUpdate(ws, nb, { name: "Elsewhere" });
+        return realUpdate(ws, nb, patch, options);
+      });
+    expect(
+      await status(
+        renameObject(ctx(OWNER), "notebook", { ref: id, title: "Mine" }),
+      ),
+    ).toBe(409);
+    spy.mockRestore();
+    expect((await store.get(WS, id))?.name).toBe("Elsewhere");
+    expect((await index(id))?.name).not.toBe("Mine");
+  });
+
+  it("a name written by another instance after this rename's store write wins in the index too", async () => {
+    const id = await seed("Before");
+    const store = getNotebookStore();
+    const realUpdate = store.update.bind(store);
+    const spy = vi
+      .spyOn(store, "update")
+      .mockImplementationOnce(async (ws, nb, patch, options) => {
+        const mine = await realUpdate(ws, nb, patch, options);
+        // The other instance's rename lands right after ours (its own
+        // index write is the one that got lost or ran before ours).
+        await realUpdate(ws, nb, { name: "Later" });
+        return mine;
+      });
+    expect(
+      await status(
+        renameObject(ctx(OWNER), "notebook", { ref: id, title: "Mine" }),
+      ),
+    ).toBe(200);
+    spy.mockRestore();
+    expect((await store.get(WS, id))?.name).toBe("Later");
+    expect((await index(id))?.name).toBe("Later");
+    await checkpointNotebook(WS, id, OWNER);
+    expect(
+      parseNotebookFile((await fileAt((await index(id))!.path!))!)?.name,
+    ).toBe("Later");
+  });
 });

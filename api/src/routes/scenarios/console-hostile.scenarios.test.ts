@@ -8,7 +8,9 @@
  * Every entry point that names a console (rename_object title and slug,
  * the explorer's rename and Move-to name, a first save's path, POST /,
  * the folder routes) must answer either a clear 400/409 — nothing
- * changed — or a safe normalization, and then the invariants hold:
+ * changed — or a safe normalization (the characters no file name can carry
+ * on every OS, `\ / : * ? " < > |`, get a visible stand-in: "Q1: revenue"
+ * is saved as "Q1 - revenue"), and then the invariants hold:
  * the row's name IS its file's name (a sync never renames it later), the
  * file is inside the console tree of its scope, the language its
  * extension says, and no two consoles a checkout cannot tell apart
@@ -47,6 +49,7 @@ import { ConsoleFolder, SavedConsole } from "../../database/workspace-schema";
 import { parseConsoleRepoPath, safeSegment } from "../../apps/console-files";
 import { syncConsolesIndexFromRepo } from "../../apps/workspace-consoles.service";
 import { renameObject } from "../../rename/registry";
+import { createServerConsoleTools } from "../../agent-lib/tools/server-console-tools";
 import { RenameError } from "../../rename/types";
 import { createConsoleRig } from "./console-scenario-rig";
 
@@ -81,13 +84,17 @@ const NAMES: Array<[label: string, input: string, becomes: string | null]> = [
   ["leading dot", ".hidden", null],
   [".git", ".git", null],
   ["trailing dot", "trailing.", null],
-  ["backslash", "a\\b", null],
-  ["colon", "Q1: revenue", null],
-  ["star", "a*b", null],
-  ["question mark", "why?", null],
-  ["double quote", 'say "hi"', null],
-  ["angle brackets", "<b>", null],
-  ["pipe", "a|b", null],
+  ["backslash", "a\\b", "a-b"],
+  ["colon", "Q1: revenue", "Q1 - revenue"],
+  ["colon, no space", "ws:x", "ws - x"],
+  ["id-ish with colon", "binding:x", "binding - x"],
+  ["star", "a*b", "a-b"],
+  ["question mark", "What? why", "What why"],
+  ["only forbidden characters", "???", null],
+  ["at the limit once cleaned", `${LONG(119)}:`, null],
+  ["double quote", 'say "hi"', "say 'hi'"],
+  ["angle brackets", "<b>", "(b)"],
+  ["pipe", "a|b", "a-b"],
   ["reserved CON", "CON", null],
   ["reserved nul (any case)", "nul", null],
   ["reserved COM1 with extension", "COM1.backup", null],
@@ -259,6 +266,166 @@ describe.each(NAMES)("%s", (_label, input, becomes) => {
       expect(folder?.name).toBe(becomes);
       await expectSound(id, "start");
     }
+  });
+});
+
+describe("titles people type: characters a file name cannot carry get a visible stand-in, on every path", () => {
+  it("rename_object, the objects route, the explorer's rename and Move-to: the answer names what it was saved as", async () => {
+    const a = await rig.save("a", owner);
+    const r1 = await renameObject(rig.ctx(owner), "console", {
+      ref: a._id.toString(),
+      title: "A/B test",
+    });
+    expect(r1.after).toMatchObject({
+      title: "A-B test",
+      path: "consoles/A-B test.sql",
+    });
+    const r2 = await rig.api("POST", "/objects/console/rename", owner, {
+      ref: a._id.toString(),
+      title: "Q1: revenue?",
+    });
+    expect(r2.status).toBe(200);
+    expect((r2.body.result as { after: { title: string } }).after.title).toBe(
+      "Q1 - revenue",
+    );
+    const r3 = await rig.api("PATCH", `/consoles/${a._id}/rename`, owner, {
+      name: 'say "hi" <now>',
+    });
+    expect(r3.status).toBe(200);
+    expect(r3.body.console).toMatchObject({ name: "say 'hi' (now)" });
+    const r4 = await rig.api("PATCH", `/consoles/${a._id}/move`, owner, {
+      name: "A/B: final",
+    });
+    expect(r4.status).toBe(200);
+    expect(r4.body.data).toMatchObject({ name: "A-B - final" });
+    await expectSound(a._id.toString(), "A-B - final");
+    // The same name typed again is no change; another console's cleaned
+    // name is taken.
+    const commits = await rig.commitCount();
+    await renameObject(rig.ctx(owner), "console", {
+      ref: a._id.toString(),
+      title: "A/B: final",
+    });
+    expect(await rig.commitCount()).toBe(commits);
+    const b = await rig.save("b", owner);
+    await expect(
+      renameObject(rig.ctx(owner), "console", {
+        ref: b._id.toString(),
+        title: "A|B - final",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("a first save (PUT with a path, PUT with a title) and POST /: saved and answered under the cleaned name", async () => {
+    const id = new Types.ObjectId().toString();
+    const put = await rig.api("PUT", `/consoles/${id}`, owner, {
+      content: "SELECT 1\n",
+      isSaved: true,
+      path: "Reports/Q1: revenue",
+      access: "workspace",
+    });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    expect(put.body.console).toMatchObject({
+      name: "Q1 - revenue",
+      path: "Reports/Q1 - revenue",
+    });
+    await expectSound(id, "Q1 - revenue");
+    const titled = await rig.api("PUT", `/consoles/${id}`, owner, {
+      content: "SELECT 1\n",
+      isSaved: true,
+      title: "What? why",
+    });
+    expect(titled.status, JSON.stringify(titled.body)).toBe(200);
+    expect(titled.body.console).toMatchObject({
+      name: "What why",
+      path: "Reports/What why",
+    });
+    const post = await rig.api("POST", "/consoles", owner, {
+      path: "Q2: costs",
+      content: "SELECT 2\n",
+      access: "workspace",
+    });
+    expect(post.status, JSON.stringify(post.body)).toBe(201);
+    expect(post.body.data).toMatchObject({
+      name: "Q2 - costs",
+      path: "Q2 - costs",
+    });
+    await expectSound((post.body.data as { id: string }).id, "Q2 - costs");
+  });
+
+  it("folders: New folder, a folder rename and a moving slug clean the same way", async () => {
+    const f = await rig.api("POST", "/consoles/folders", owner, {
+      name: "Team: EMEA",
+      access: "workspace",
+    });
+    expect(f.status).toBe(201);
+    expect(f.body.data).toMatchObject({ name: "Team - EMEA" });
+    const fid = (f.body.data as { id: string }).id;
+    const r = await rig.api("PATCH", `/consoles/folders/${fid}/rename`, owner, {
+      name: "Team: APAC?",
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data).toMatchObject({ name: "Team - APAC" });
+    const c = await rig.save("x", owner);
+    const moved = await renameObject(rig.ctx(owner), "console", {
+      ref: c._id.toString(),
+      slug: "Team: APAC/x",
+    });
+    // Into the folder that name became — not a second one.
+    expect(moved.after.path).toBe("consoles/Team - APAC/x.sql");
+    expect(await ConsoleFolder.countDocuments({ workspaceId: rig.ws })).toBe(1);
+  });
+
+  it("the agent's create_console and modify_console titles, and a duplicate of a laptop-made name", async () => {
+    const tools = createServerConsoleTools({
+      workspaceId: rig.ws,
+      userId: owner.id,
+    });
+    const exec = (name: string, input: Record<string, unknown>) =>
+      (
+        tools[name as keyof typeof tools] as unknown as {
+          execute: (i: unknown, o: unknown) => Promise<Record<string, unknown>>;
+        }
+      ).execute(input, { toolCallId: "t", messages: [] });
+    const created = await exec("create_console", {
+      title: "A/B test: churn",
+      content: "SELECT 1",
+    });
+    expect(created.success, JSON.stringify(created)).toBe(true);
+    const draftId = String(created.consoleId);
+    expect((await rig.row(draftId))!.name).toBe("A-B test - churn");
+    const saved = await rig.api("PUT", `/consoles/${draftId}`, owner, {
+      content: "SELECT 1\n",
+      isSaved: true,
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect((await rig.row(draftId))!.path).toBe(
+      `users/${owner.id}/consoles/A-B test - churn.sql`,
+    );
+    const modified = await exec("modify_console", {
+      consoleId: draftId,
+      action: "replace",
+      content: "SELECT 2",
+      title: "Q1: churn",
+    });
+    expect(modified.success, JSON.stringify(modified)).toBe(true);
+    expect((await rig.row(draftId))!.path).toBe(
+      `users/${owner.id}/consoles/Q1 - churn.sql`,
+    );
+    // A console a laptop named "a:b" keeps its name; its copy is cleaned.
+    await rig.laptop(
+      { writes: { "consoles/a:b.sql": "SELECT 'laptop'\n" } },
+      { pusher: owner.id },
+    );
+    const laptopRow = await SavedConsole.findOne({ path: "consoles/a:b.sql" });
+    expect(laptopRow?.name).toBe("a:b");
+    const dup = await rig.api(
+      "POST",
+      `/consoles/${laptopRow!._id}/duplicate`,
+      owner,
+    );
+    expect(dup.status).toBe(201);
+    expect((dup.body.data as { name: string }).name).toBe("a - b copy");
   });
 });
 
