@@ -139,6 +139,7 @@ import {
   parseAppRepoPath,
   appTreeRoot,
   isSafeSegment,
+  newAppSlugProblem,
   newSegmentProblem,
   normalizeName,
   parseAppFolderPath,
@@ -827,9 +828,10 @@ async function uniqueSlug(
   // Free in git AND in a case-insensitive checkout: with the folder chain
   // clear, a twin can only be of the slug itself.
   // …and a name a new app may take at all: never a Windows device name
-  // (`Con` → `con-2`) nor one that reads as an id.
+  // (`Con` → `con-2`), one that reads as an id, or one of the apps API's
+  // own route names (`Link` → `link-2`).
   const free = (slug: string) => {
-    if (newSegmentProblem(slug)) return false;
+    if (newAppSlugProblem(slug)) return false;
     const at = appRepoPath({ ...target, slug });
     return !taken.has(at) && !caseTwinOf(taken, at);
   };
@@ -1875,7 +1877,7 @@ async function moveProjectWith(
   // in appRepoPath); a NEW app name must also be one a person may choose.
   folderPathOf(target);
   if (slug !== currentSlug) {
-    const problem = newSegmentProblem(slug);
+    const problem = newAppSlugProblem(slug);
     if (problem) {
       throw new AppFolderError(
         `Invalid app folder name: ${JSON.stringify(slug)} — ${problem}`,

@@ -247,7 +247,6 @@ describe("hostile slugs", () => {
       "skills",
       "dbt",
       "connectors",
-      "folders",
     ]) {
       await renameObject(admin, "app", { ref: id, slug });
       expect(await fileAt(WS, `apps/${slug}/mako.json`), slug).not.toBeNull();

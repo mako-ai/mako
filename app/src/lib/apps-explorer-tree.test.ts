@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   APP_FOLDER_ENTITY,
+  appMoveRefusal,
   appRenameRights,
   buildAppTree,
   folderNodeId,
+  folderMoveRefusal,
   folderPathFromNodeId,
   parentPathOf,
   resolveAppRef,
@@ -337,5 +339,87 @@ describe("appRenameRights (the rename route's rules, mirrored)", () => {
       kind: "title",
       linkReason: "Only workspace editors can change this app's link.",
     });
+  });
+});
+
+describe("appMoveRefusal — the server's move rules, so a refused drop is never sent", () => {
+  const me = "u1";
+  const mine = { id: "1", path: "apps/mine", owner_id: me };
+  const theirs = { id: "2", path: "apps/theirs", owner_id: "u2" };
+  const shared = { id: "3", path: "apps/shared" }; // folder-only, no owner
+  const personalOfU2 = { id: "4", path: "users/u2/apps/p", owner_id: "u2" };
+  const myPersonal = { id: "5", path: `users/${me}/apps/p`, owner_id: me };
+
+  it("into my personal folder: only an app I own — or as a workspace owner/admin", () => {
+    expect(
+      appMoveRefusal(mine, `users/${me}/apps`, { userId: me, role: "member" }),
+    ).toBeNull();
+    for (const app of [theirs, shared]) {
+      expect(
+        appMoveRefusal(app, `users/${me}/apps`, { userId: me, role: "member" }),
+      ).toMatch(/owner or a workspace admin/);
+      expect(
+        appMoveRefusal(app, `users/${me}/apps/Sub`, {
+          userId: me,
+          role: "admin",
+        }),
+      ).toBeNull();
+      expect(
+        appMoveRefusal(app, `users/${me}/apps`, { userId: me, role: "owner" }),
+      ).toBeNull();
+    }
+  });
+
+  it("never into someone else's personal folder, never out of someone else's", () => {
+    expect(
+      appMoveRefusal(mine, "users/u2/apps", { userId: me, role: "admin" }),
+    ).toMatch(/your own personal folders/);
+    expect(
+      appMoveRefusal(personalOfU2, "apps", { userId: me, role: "admin" }),
+    ).toMatch(/Only the owner/);
+    expect(
+      appMoveRefusal(myPersonal, "apps/Sales", { userId: me, role: "member" }),
+    ).toBeNull();
+    expect(
+      appMoveRefusal(myPersonal, "apps", { userId: me, role: "viewer" }),
+    ).toMatch(/editors/);
+  });
+
+  it("the Workspace tree is organised by editing members, never a viewer", () => {
+    expect(
+      appMoveRefusal(theirs, "apps/Sales", { userId: me, role: "member" }),
+    ).toBeNull();
+    expect(
+      appMoveRefusal(theirs, "apps/Sales", { userId: me, role: "viewer" }),
+    ).toMatch(/editors/);
+    expect(appMoveRefusal(theirs, "apps/Sales", { userId: me })).toMatch(
+      /editors/,
+    );
+    expect(appMoveRefusal(mine, `users/${me}/apps`, {})).toMatch(/signed-in/);
+  });
+
+  it("a folder move answers for every app it carries", () => {
+    const apps = [
+      { id: "6", path: "apps/Team/a", owner_id: me },
+      { id: "7", path: "apps/Team/b", owner_id: "u2" },
+    ];
+    expect(
+      folderMoveRefusal(apps, "apps/Team", `users/${me}/apps`, {
+        userId: me,
+        role: "member",
+      }),
+    ).toMatch(/^apps\/Team\/b: .*owner or a workspace admin/);
+    expect(
+      folderMoveRefusal(apps, "apps/Team", "apps/Ops", {
+        userId: me,
+        role: "member",
+      }),
+    ).toBeNull();
+    expect(
+      folderMoveRefusal(apps, "apps/Team", `users/${me}/apps`, {
+        userId: me,
+        role: "admin",
+      }),
+    ).toBeNull();
   });
 });

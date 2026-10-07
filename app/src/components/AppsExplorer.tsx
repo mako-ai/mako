@@ -89,11 +89,13 @@ import {
 import { APP_DIR_SEP, APP_FILE_SEP } from "../lib/explorer-reveal";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import {
+  appMoveRefusal,
   appRenameRights,
   type AppRenameRights,
   basenameOf,
   buildAppTree,
   folderNodeId,
+  folderMoveRefusal,
   folderPathFromNodeId,
   parentPathOf,
 } from "../lib/apps-explorer-tree";
@@ -549,6 +551,21 @@ export default function AppsExplorer() {
     [canOrganize, personalRoot, setError],
   );
 
+  /**
+   * Why the server would refuse filing this app into `dest` for this
+   * person (appMoveRefusal — the move route's rules), so the drop is not
+   * sent at all. The server's 403 stays the backstop.
+   */
+  const moveRefusal = useCallback(
+    (appId: string, dest: string): string | null => {
+      const app = appById.get(appId);
+      return app
+        ? appMoveRefusal(app, dest, { userId, role: currentWorkspace?.role })
+        : null;
+    },
+    [appById, userId, currentWorkspace?.role],
+  );
+
   const handleToggleStar = useCallback(
     (appId: string, parentId: string | null = null) => {
       if (!workspaceId) return;
@@ -597,6 +614,11 @@ export default function AppsExplorer() {
           folderOfApp(dragged.appId) !== root &&
           !isSharedWithMe(dragged.appId)
         ) {
+          const refusal = moveRefusal(dragged.appId, root);
+          if (refusal) {
+            setError(refusal);
+            return true;
+          }
           void moveApp(workspaceId, dragged.appId, root).then(moved =>
             showLinkWarnings(moved?.warnings),
           );
@@ -604,6 +626,14 @@ export default function AppsExplorer() {
       } else if (dragged.kind === "folder") {
         const to = `${root}/${basenameOf(dragged.folderPath)}`;
         if (to !== dragged.folderPath && mayWriteTo(dragged.folderPath)) {
+          const refusal = folderMoveRefusal(apps, dragged.folderPath, root, {
+            userId,
+            role: currentWorkspace?.role,
+          });
+          if (refusal) {
+            setError(refusal);
+            return true;
+          }
           void moveAppFolder(workspaceId, dragged.folderPath, to);
         }
       }
@@ -621,6 +651,11 @@ export default function AppsExplorer() {
       moveAppFolder,
       isSharedWithMe,
       showLinkWarnings,
+      moveRefusal,
+      apps,
+      userId,
+      currentWorkspace?.role,
+      setError,
     ],
   );
 
@@ -675,6 +710,11 @@ export default function AppsExplorer() {
         if (!mayWriteTo(destPath)) return;
         const from = folderOfApp(dragged.appId);
         if (from && !mayWriteTo(from)) return;
+        const refusal = moveRefusal(dragged.appId, destPath);
+        if (refusal) {
+          setError(refusal);
+          return;
+        }
         void moveApp(workspaceId, dragged.appId, destPath).then(moved =>
           showLinkWarnings(moved?.warnings),
         );
@@ -685,6 +725,14 @@ export default function AppsExplorer() {
         if (destPath.startsWith(`${dragged.folderPath}/`)) return;
         const to = `${destPath}/${basenameOf(dragged.folderPath)}`;
         if (!mayWriteTo(destPath) || !mayWriteTo(dragged.folderPath)) return;
+        const refusal = folderMoveRefusal(apps, dragged.folderPath, destPath, {
+          userId,
+          role: currentWorkspace?.role,
+        });
+        if (refusal) {
+          setError(refusal);
+          return;
+        }
         void moveAppFolder(workspaceId, dragged.folderPath, to);
         return;
       }
@@ -705,6 +753,11 @@ export default function AppsExplorer() {
       moveFavourite,
       toggleFavourite,
       showLinkWarnings,
+      moveRefusal,
+      apps,
+      userId,
+      currentWorkspace?.role,
+      setError,
     ],
   );
 
