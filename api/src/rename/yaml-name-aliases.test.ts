@@ -7,6 +7,7 @@
  * Run: npx tsx src/rename/yaml-name-aliases.test.ts
  */
 import assert from "node:assert/strict";
+import yaml from "js-yaml";
 
 import { parseJobFile } from "../dbt/dbt-config-files";
 import { parseFlowFileResult } from "../services/flow-config-files";
@@ -14,6 +15,7 @@ import {
   editNameAndAliases,
   setTopLevelAliases,
   setTopLevelScalar,
+  yamlScalar,
 } from "./yaml-name-aliases";
 
 const FLOW = [
@@ -173,7 +175,8 @@ const FLOW = [
   const out = editNameAndAliases(crlf, "X", ["y"]);
   assert.ok(out);
   assert.ok(!/[^\r]\n/.test(out), "no bare LF introduced");
-  assert.ok(out.includes("name: X\r\naliases:\r\n  - y\r\n"));
+  // (`y` is a YAML 1.1 boolean, so it is written quoted.)
+  assert.ok(out.includes("name: X\r\naliases:\r\n  - 'y'\r\n"));
 }
 
 // ---- refusals: never guess ---------------------------------------------------
@@ -236,6 +239,128 @@ assert.equal(
   const parsed = parseJobFile(out);
   assert.equal(parsed?.name, "Nightly");
   assert.deepEqual(parsed?.aliases, ["n-old"]);
+}
+
+// ---- every scalar written comes back as the SAME STRING ----------------
+// Valid slugs that a YAML parser reads as something else when plain
+// (review on #1037: `2026`, `2026-10-06`, `true` came back as a number, a
+// timestamp and a boolean, and the rename refused its own output).
+{
+  const tricky = [
+    "2026",
+    "2026-10-06",
+    "true",
+    "false",
+    "no",
+    "yes",
+    "on",
+    "off",
+    "y",
+    "n",
+    "null",
+    "1e3",
+    "0x1f",
+    "012",
+    "0o12",
+    "0b101",
+    "1-000",
+    "1_000",
+    ".5",
+    "-1",
+    "+1",
+    ".inf",
+    ".nan",
+    "190:20:30",
+    "2026-10-06t10:00:00z",
+    "plain-slug",
+  ];
+  for (const value of tricky) {
+    const scalar = yamlScalar(value);
+    assert.ok(scalar !== null, value);
+    assert.equal(
+      yaml.load(`v: ${scalar}`) &&
+        (yaml.load(`v: ${scalar}`) as { v: unknown }).v,
+      value,
+      value,
+    );
+    assert.equal(
+      (yaml.load(`[${scalar}]`) as unknown[])[0],
+      value,
+      `${value} in a flow list`,
+    );
+  }
+  // YAML 1.1 readers too: booleans, null and numbers are quoted, a slug is not.
+  for (const value of [
+    "yes",
+    "no",
+    "on",
+    "off",
+    "y",
+    "n",
+    "true",
+    "null",
+    "2026",
+    "012",
+  ]) {
+    assert.match(yamlScalar(value) ?? "", /^['"]/, value);
+  }
+  assert.equal(yamlScalar("plain-slug"), "plain-slug");
+
+  // Every emission path: insertion, block replacement, block append, inline.
+  const slugs = [
+    "2026",
+    "2026-10-06",
+    "true",
+    "no",
+    "null",
+    "1e3",
+    "0x1f",
+    "012",
+  ];
+  const checks: Array<[string, string]> = [
+    ["insert", FLOW],
+    [
+      "inline",
+      FLOW.replace("name: Foo\n", "name: Foo\naliases: [first] # old\n"),
+    ],
+    ["block", FLOW.replace("name: Foo\n", "name: Foo\naliases:\n  - first\n")],
+    ["empty inline", FLOW.replace("name: Foo\n", "name: Foo\naliases: []\n")],
+  ];
+  for (const [label, file] of checks) {
+    const wanted =
+      label === "inline" || label === "block" ? ["first", ...slugs] : slugs;
+    const out = editNameAndAliases(file, "2026-10-06", wanted);
+    assert.ok(out, label);
+    const parsed = parseFlowFileResult(out);
+    assert.ok(parsed.ok, `${label}: ${parsed.ok ? "" : parsed.reason}`);
+    assert.equal(parsed.file.name, "2026-10-06", label);
+    assert.deepEqual(parsed.file.aliases, wanted, label);
+    // …and the same through the job parser.
+    const job = editNameAndAliases(
+      "name: Nightly\nenvironment: prod\ncommands:\n  - build\n",
+      "true",
+      wanted,
+    );
+    assert.ok(job, `${label} job`);
+    assert.deepEqual(parseJobFile(job)?.aliases, wanted, `${label} job`);
+    assert.equal(parseJobFile(job)?.name, "true", `${label} job`);
+  }
+  // The block that cannot be appended to in place is written whole — quoted.
+  const reordered = editNameAndAliases(
+    FLOW.replace("name: Foo\n", "name: Foo\naliases:\n  - b\n  - a\n"),
+    "Foo",
+    ["a", "2026", "b"],
+  );
+  assert.ok(reordered);
+  assert.deepEqual(
+    (
+      parseFlowFileResult(reordered) as {
+        ok: true;
+        file: { aliases?: string[] };
+      }
+    ).file.aliases,
+    ["a", "2026", "b"],
+  );
 }
 
 console.log("yaml name/aliases edits: all assertions passed");

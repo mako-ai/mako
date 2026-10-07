@@ -572,6 +572,84 @@ describe("a name past the cap", () => {
   });
 });
 
+describe("YAML-typed names", () => {
+  it("slugs and names YAML would read as numbers, dates, booleans or null round-trip as strings (review on #1037)", async () => {
+    const row = await seedFlow("start", "Start");
+    const before = await streamState(row._id);
+    const chain = [
+      "2026",
+      "2026-10-06",
+      "true",
+      "no",
+      "null",
+      "1e3",
+      "0x1f",
+      "012",
+    ];
+    let current = "start";
+    const old: string[] = [];
+    for (const slug of chain) {
+      const out = await serviceRename({ ref: current, slug, title: slug });
+      expect(out, `${current} → ${slug}`).toMatchObject({ ok: true });
+      old.push(current);
+      current = slug;
+      const text =
+        (await fileAtMain(WS, ((slug: string) => `flows/${slug}.yml`)(slug))) ??
+        "";
+      const parsed = parseFlowFile(text);
+      expect(parsed, `${slug}: file re-parses`).not.toBeNull();
+      expect(parsed?.name).toBe(slug);
+      expect(parsed?.aliases).toEqual(old);
+      for (const alias of parsed?.aliases ?? []) {
+        expect(typeof alias).toBe("string");
+      }
+      const live = await Flow.findById(row._id).lean();
+      expect(live?.slug).toBe(slug);
+      expect(live?.name).toBe(slug);
+      expect(live?.aliases).toEqual(old);
+    }
+    for (const ref of old) {
+      expect((await resolveFlowRef({ workspaceId: WS }, ref))?.id, ref).toBe(
+        before.id,
+      );
+    }
+    // Names that are not slugs but YAML-typed all the same.
+    for (const title of [
+      ".5",
+      "1e3",
+      "0x1F",
+      "yes",
+      "off",
+      "~",
+      "2026-10-06T10:00:00Z",
+    ]) {
+      expect((await serviceRename({ ref: current, title })).ok, title).toBe(
+        true,
+      );
+      expect(
+        parseFlowFile(
+          (await fileAtMain(
+            WS,
+            ((slug: string) => `flows/${slug}.yml`)(current),
+          )) ?? "",
+        )?.name,
+      ).toBe(title);
+    }
+    // `.5` is no file name at all: refused with the reason, nothing written.
+    expect(await serviceRename({ ref: current, slug: ".5" })).toMatchObject({
+      ok: false,
+      status: 400,
+    });
+    await syncFlowsFromRepo(WS, OWNER);
+    const settled = await expectSameStream(before);
+    expect(settled.slug).toBe("012");
+    expect(settled.aliases).toEqual(old);
+    expect(
+      (await Flow.findById(row._id).lean())?.definitionInvalid?.reason,
+    ).toBeUndefined();
+  });
+});
+
 describe("hostile slugs", () => {
   it("every hostile slug is refused with a 400 (never a 500, never a path outside flows/, never a commit)", async () => {
     const row = await seedFlow("target", "Target");
