@@ -341,6 +341,12 @@ export function addManifestAliases(
   contents: string | null | undefined,
   add: readonly string[],
   drop: readonly string[] = [],
+  /**
+   * Keep only the newest this many (the list is oldest first). A name
+   * older than the index serves (MAX_ALIASES_PER_APP) opens nothing, and
+   * a list that grows on every rename forever is a file nobody reads.
+   */
+  max = Infinity,
 ): string | null {
   let raw: Record<string, unknown>;
   try {
@@ -353,9 +359,10 @@ export function addManifestAliases(
     return null;
   }
   const current = parseAppAliases(raw.aliases);
-  const next = parseAppAliases([...current.aliases, ...add]).aliases.filter(
+  const all = parseAppAliases([...current.aliases, ...add]).aliases.filter(
     a => !drop.includes(a),
   );
+  const next = all.length > max ? all.slice(all.length - max) : all;
   const unchanged =
     current.rejected.length === 0 &&
     next.length === current.aliases.length &&

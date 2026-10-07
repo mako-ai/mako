@@ -988,15 +988,29 @@ export function aliasForOldPath(path: string): string {
  * names NEWEST FIRST and the sources come newest first too, so the cap
  * keeps the names people most recently used (a manifest's `aliases` are
  * appended over time — pass them reversed).
+ *
+ * "Once" is by what a name answers to (aliasMatchesRef): `x` and `apps/x`
+ * are one name, kept in the spelling seen first. `ownPath` drops anything
+ * that names the app's CURRENT place — a hand-written manifest may list it,
+ * and an app's current name is not one of its old ones.
  */
 export function mergeAliases(
   sources: ReadonlyArray<readonly string[]>,
   drop: readonly string[] = [],
+  ownPath?: string,
 ): string[] {
-  const merged = parseAppAliases(sources.flat()).aliases.filter(
-    alias => !drop.includes(alias),
-  );
-  return merged.slice(0, MAX_ALIASES_PER_APP);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const alias of parseAppAliases(sources.flat()).aliases) {
+    if (drop.includes(alias)) continue;
+    if (ownPath && aliasMatchesRef(alias, ownPath)) continue;
+    const key = nameKey(alias);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(alias);
+    if (out.length >= MAX_ALIASES_PER_APP) break;
+  }
+  return out;
 }
 
 /** Is the commit in this repo's object store? */
@@ -1089,10 +1103,11 @@ function rowToIndex(
     hasManifestId: row.hasManifestId,
     duplicateOf: row.duplicateOf ?? undefined,
     aliases: withoutSuperseded(
-      mergeAliases([
-        [...(row.aliases ?? [])].reverse(),
-        row.indexAliases ?? [],
-      ]),
+      mergeAliases(
+        [[...(row.aliases ?? [])].reverse(), row.indexAliases ?? []],
+        [],
+        row.path,
+      ),
       row.supersededAliases ?? [],
     ),
     schedules: (row.schedules ?? []).map(s => ({
@@ -1487,10 +1502,11 @@ async function syncNow(
     supersededByPath.set(row.path, superseded);
     if (row.duplicateOf) continue;
     row.aliases = withoutSuperseded(
-      mergeAliases([
-        [...row.aliases].reverse(),
-        indexAliasesByPath.get(row.path) ?? [],
-      ]),
+      mergeAliases(
+        [[...row.aliases].reverse(), indexAliasesByPath.get(row.path) ?? []],
+        [],
+        row.path,
+      ),
       superseded,
     );
   }

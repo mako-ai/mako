@@ -106,6 +106,7 @@ import {
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
 import {
+  MAX_ALIASES_PER_APP,
   aliasForOldPath,
   aliasMatchesRef,
   aliasesForMoves,
@@ -1510,7 +1511,12 @@ async function moveWritesUnder(
     }
     const plan = plans.get(app.path);
     if (plan && plan.add.length > 0) {
-      manifest = addManifestAliases(manifest, plan.add, plan.drop);
+      manifest = addManifestAliases(
+        manifest,
+        plan.add,
+        plan.drop,
+        MAX_ALIASES_PER_APP,
+      );
       if (manifest === null) throw unparseable(app);
       for (const name of plan.add) {
         for (const other of snapshot.apps) {

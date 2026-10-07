@@ -41,6 +41,7 @@ import {
   externalCommit,
   fileAt,
   headOf,
+  indexed,
   manifest,
   newId,
   resetWorkspace,
@@ -397,6 +398,101 @@ describe("hostile names elsewhere: a new app, a folder, a ref", () => {
       expect(await resolveObjectRef(admin, "app", ref), ref).toBeNull();
       expect(await resolveProjectRef(WS, ref), ref.slice(0, 40)).toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cycles and chains
+// ---------------------------------------------------------------------------
+
+describe("cycles and chains", () => {
+  it("a → b → a, then c → a: c sits at a, the first app keeps b and its link to b", async () => {
+    const A_ID = (await resolveObjectRef(admin, "app", "a"))!.id;
+    await renameObject(admin, "app", { ref: "a", slug: "b" });
+    await renameObject(admin, "app", { ref: "b", slug: "a" });
+    await renameObject(admin, "app", { ref: "a", slug: "a-final" });
+    const C_ID = newId();
+    await externalCommit(WS, { "apps/c/mako.json": manifest("C", C_ID) });
+    const takeover = await renameObject(admin, "app", { ref: "c", slug: "a" });
+    expect(takeover.warnings).toEqual([
+      '/apps/a used to open "A" (apps/a-final); it now opens "C".',
+    ]);
+    expect(await resolveObjectRef(admin, "app", "a")).toMatchObject({
+      id: C_ID,
+      via: "current",
+    });
+    expect((await resolveObjectRef(admin, "app", "b"))?.id).toBe(A_ID);
+    expect((await resolveObjectRef(admin, "app", "c"))?.id).toBe(C_ID);
+    // Nothing lists its own name as an alias.
+    for (const id of [A_ID, C_ID]) {
+      const row = (await indexed(WS, id))!;
+      expect(row.aliases).not.toContain(row.slug);
+      expect(row.aliases).not.toContain(row.path);
+    }
+  });
+
+  it("more renames than the alias cap: the newest names answer, the oldest stop, the manifest stays bounded", async () => {
+    const A_ID = (await resolveObjectRef(admin, "app", "a"))!.id;
+    const total = MAX_ALIASES_PER_APP + 6;
+    let current = "a";
+    for (let i = 1; i <= total; i++) {
+      const next = `a-${i}`;
+      await renameObject(admin, "app", { ref: current, slug: next });
+      current = next;
+    }
+    const row = (await indexed(WS, A_ID))!;
+    expect(row.aliases.length).toBe(MAX_ALIASES_PER_APP);
+    expect(row.aliases[0]).toBe(`a-${total - 1}`);
+    expect((await resolveObjectRef(admin, "app", `a-${total - 1}`))?.id).toBe(
+      A_ID,
+    );
+    expect(
+      (await resolveObjectRef(admin, "app", `a-${total - MAX_ALIASES_PER_APP}`))
+        ?.id,
+    ).toBe(A_ID);
+    // The oldest names are past the cap: they open nothing (never another app).
+    expect(await resolveObjectRef(admin, "app", "a")).toBeNull();
+    const written = parseAppManifest(
+      await fileAt(WS, `apps/${current}/mako.json`),
+      current,
+    );
+    expect(written.aliases.length).toBeLessThanOrEqual(MAX_ALIASES_PER_APP);
+    expect(written.aliases.at(-1)).toBe(`a-${total - 1}`);
+  }, 120_000);
+
+  it("an alias equal to the app's own current name (hand-written) is harmless and not listed", async () => {
+    const X_ID = newId();
+    await externalCommit(WS, {
+      "apps/x/mako.json": manifest("X", X_ID, {
+        aliases: ["x", "apps/x", "old-x"],
+      }),
+    });
+    expect(await resolveObjectRef(admin, "app", "x")).toMatchObject({
+      id: X_ID,
+      via: "current",
+    });
+    expect((await indexed(WS, X_ID))?.aliases).toEqual(["old-x"]);
+    // Renaming away: "x" is an old name now, listed once (x ≡ apps/x).
+    await renameObject(admin, "app", { ref: "x", slug: "y" });
+    expect(
+      parseAppManifest(await fileAt(WS, "apps/y/mako.json"), "y").aliases,
+    ).toEqual(expect.arrayContaining(["x", "old-x"]));
+    const listed = (await indexed(WS, X_ID))!.aliases;
+    expect(listed.length).toBe(2);
+    expect(listed).toContain("old-x");
+    expect(listed.filter(a => a === "x" || a === "apps/x").length).toBe(1);
+    expect(await resolveObjectRef(admin, "app", "x")).toMatchObject({
+      id: X_ID,
+      via: "alias",
+    });
+  });
+
+  it("an alias that names ANOTHER app's current name never shadows it", async () => {
+    await externalCommit(WS, {
+      "apps/x/mako.json": manifest("X", newId(), { aliases: ["d", "a"] }),
+    });
+    expect((await resolveObjectRef(admin, "app", "d"))?.id).toBe(D_ID);
+    expect((await resolveObjectRef(admin, "app", "a"))?.via).toBe("current");
   });
 });
 
