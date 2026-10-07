@@ -88,6 +88,12 @@ export interface ProvisionWebhookOptions {
   enabledEntities?: string[];
 }
 
+export interface UpdateWebhookSubscriptionOptions
+  extends ProvisionWebhookOptions {
+  /** Id stored from an earlier provisioning, when known. */
+  providerWebhookId?: string;
+}
+
 export interface ProvisionWebhookResult {
   providerWebhookId: string;
   endpointUrl: string;
@@ -408,6 +414,27 @@ export abstract class BaseConnector {
     _options: ProvisionWebhookOptions,
   ): Promise<ProvisionWebhookResult> {
     throw new Error("Webhook provisioning not supported by this connector");
+  }
+
+  /**
+   * Whether `updateWebhookSubscription` can retarget an existing
+   * provider-side subscription's events in place.
+   */
+  supportsWebhookSubscriptionUpdate(): boolean {
+    return false;
+  }
+
+  /**
+   * Update the provider-side subscription that delivers to
+   * `options.endpointUrl` so it carries the events for
+   * `options.enabledEntities`. Keeps its signing secret: the result has no
+   * `signingSecret`. Resolves to `null` when no such subscription exists, so
+   * the caller creates one instead.
+   */
+  async updateWebhookSubscription(
+    _options: UpdateWebhookSubscriptionOptions,
+  ): Promise<ProvisionWebhookResult | null> {
+    return null;
   }
 
   /**

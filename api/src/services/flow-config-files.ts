@@ -17,6 +17,7 @@
  * | `backfillSchedule.lastRunAt` | scheduler claim state |
  * | `webhookConfig.secret` | a credential |
  * | `webhookConfig.endpoint` | inbound URL identity; Mongo-side, must survive a rename |
+ * | `webhookConfig.providerWebhookId` | provider-side subscription id; Mongo-side, like the endpoint |
  * | `webhookConfig.lastReceivedAt` / `totalReceived` | counters |
  * | `syncState`, `streamState`, `backfillState`, `lastRunAt`, … | run state |
  *

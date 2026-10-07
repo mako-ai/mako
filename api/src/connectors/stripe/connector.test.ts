@@ -572,6 +572,113 @@ function testMoneyMovementWebhookEvents() {
   }
 }
 
+function stubWebhookEndpoints(
+  connector: StripeConnector,
+  endpoints: Array<{ id: string; url: string; status: string }>,
+) {
+  const updates: Array<{ id: string; params: Record<string, unknown> }> = [];
+  (connector as any).stripe = {
+    webhookEndpoints: {
+      list: () => ({ autoPagingToArray: async () => endpoints }),
+      update: async (id: string, params: Record<string, unknown>) => {
+        updates.push({ id, params });
+        return { id, url: endpoints.find(e => e.id === id)?.url };
+      },
+    },
+  };
+  return updates;
+}
+
+async function testUpdateWebhookSubscriptionRetargetsInPlace() {
+  const connector = createConnector();
+  assert.equal(connector.supportsWebhookSubscriptionUpdate(), true);
+
+  const url = "https://mako.example/api/webhooks/ws/flow";
+  const updates = stubWebhookEndpoints(connector, [
+    {
+      id: "we_other",
+      url: "https://elsewhere.example/hook",
+      status: "enabled",
+    },
+    { id: "we_flow", url, status: "enabled" },
+  ]);
+
+  const result = await connector.updateWebhookSubscription({
+    endpointUrl: url,
+    enabledEntities: ["payouts", "disputes"],
+  });
+
+  assert.deepEqual(result, { providerWebhookId: "we_flow", endpointUrl: url });
+  assert.equal(updates.length, 1, "only the flow's endpoint is touched");
+  assert.equal(updates[0].id, "we_flow");
+  assert.equal(updates[0].params.disabled, false);
+  const events = (updates[0].params.enabled_events as string[]).slice().sort();
+  assert.ok(events.includes("payout.paid"));
+  assert.ok(events.includes("charge.dispute.closed"));
+  assert.ok(!events.includes("invoice.paid"), "unselected entity excluded");
+  // Signing secrets are never re-issued by an update.
+  assert.equal((result as any).signingSecret, undefined);
+}
+
+async function testUpdateWebhookSubscriptionHandlesDuplicates() {
+  const connector = createConnector();
+  const url = "https://mako.example/api/webhooks/ws/flow";
+  const updates = stubWebhookEndpoints(connector, [
+    { id: "we_stale", url, status: "disabled" },
+    { id: "we_live", url, status: "enabled" },
+  ]);
+
+  const result = await connector.updateWebhookSubscription({
+    endpointUrl: url,
+    enabledEntities: ["invoices"],
+  });
+
+  // Without a stored id, the endpoint Stripe still delivers to wins.
+  assert.equal(result?.providerWebhookId, "we_live");
+  assert.deepEqual(updates.map(update => update.id).sort(), [
+    "we_live",
+    "we_stale",
+  ]);
+  assert.equal(
+    updates.find(update => update.id === "we_stale")?.params.disabled,
+    undefined,
+    "a stale duplicate is not re-enabled",
+  );
+
+  // A stored id overrides the health heuristic.
+  const pinned = stubWebhookEndpoints(connector, [
+    { id: "we_stale", url, status: "disabled" },
+    { id: "we_live", url, status: "enabled" },
+  ]);
+  const pinnedResult = await connector.updateWebhookSubscription({
+    endpointUrl: url,
+    enabledEntities: ["invoices"],
+    providerWebhookId: "we_stale",
+  });
+  assert.equal(pinnedResult?.providerWebhookId, "we_stale");
+  assert.equal(
+    pinned.find(update => update.id === "we_stale")?.params.disabled,
+    false,
+  );
+}
+
+async function testUpdateWebhookSubscriptionReturnsNullWithoutMatch() {
+  const connector = createConnector();
+  const updates = stubWebhookEndpoints(connector, [
+    {
+      id: "we_other",
+      url: "https://elsewhere.example/hook",
+      status: "enabled",
+    },
+  ]);
+  const result = await connector.updateWebhookSubscription({
+    endpointUrl: "https://mako.example/api/webhooks/ws/flow",
+    enabledEntities: ["invoices"],
+  });
+  assert.equal(result, null);
+  assert.equal(updates.length, 0);
+}
+
 async function main() {
   testConfigValidationRequiresApiKey();
   testAvailableEntitiesIncludeModernEntities();
@@ -595,6 +702,9 @@ async function main() {
   await testPayoutBalanceTransactionsCarryPayoutId();
   await testCustomerBalanceTransactionsIgnoreSince();
   testMoneyMovementWebhookEvents();
+  await testUpdateWebhookSubscriptionRetargetsInPlace();
+  await testUpdateWebhookSubscriptionHandlesDuplicates();
+  await testUpdateWebhookSubscriptionReturnsNullWithoutMatch();
 }
 
 main().catch((error: unknown) => {

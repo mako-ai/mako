@@ -11,6 +11,7 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  UpdateWebhookSubscriptionOptions,
   type WebhookCapabilities,
   type IncrementalCapabilities,
   type ConnectorEntitySchema,
@@ -975,27 +976,7 @@ export class StripeConnector extends BaseConnector {
     options: ProvisionWebhookOptions,
   ): Promise<ProvisionWebhookResult> {
     const stripe = this.getStripeClient();
-
-    const requestedEvents = Array.isArray(options.events)
-      ? options.events
-          .map(event => event.trim())
-          .filter((event): event is string => event.length > 0)
-      : [];
-
-    const supported = new Set(this.getSupportedWebhookEvents());
-    const effectiveEvents = (
-      requestedEvents.length > 0
-        ? requestedEvents
-        : this.getWebhookEventsForEntities(options.enabledEntities ?? [])
-    ).filter(event => supported.has(event));
-
-    if (effectiveEvents.length === 0) {
-      throw new Error(
-        requestedEvents.length > 0
-          ? `No valid Stripe webhook events configured. Unsupported events: ${requestedEvents.join(", ")}`
-          : "No webhook events resolved for the selected entities",
-      );
-    }
+    const effectiveEvents = this.resolveProvisionEvents(options);
 
     try {
       const endpoint = await stripe.webhookEndpoints.create({
@@ -1022,6 +1003,104 @@ export class StripeConnector extends BaseConnector {
             : String(error);
       throw new Error(
         `Failed to create Stripe webhook subscription: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * Events a provisioned endpoint should carry: the explicitly requested
+   * ones, else those of the flow's enabled entities, restricted to events
+   * this connector understands.
+   */
+  private resolveProvisionEvents(options: ProvisionWebhookOptions): string[] {
+    const requestedEvents = Array.isArray(options.events)
+      ? options.events
+          .map(event => event.trim())
+          .filter((event): event is string => event.length > 0)
+      : [];
+
+    const supported = new Set(this.getSupportedWebhookEvents());
+    const effectiveEvents = (
+      requestedEvents.length > 0
+        ? requestedEvents
+        : this.getWebhookEventsForEntities(options.enabledEntities ?? [])
+    ).filter(event => supported.has(event));
+
+    if (effectiveEvents.length === 0) {
+      throw new Error(
+        requestedEvents.length > 0
+          ? `No valid Stripe webhook events configured. Unsupported events: ${requestedEvents.join(", ")}`
+          : "No webhook events resolved for the selected entities",
+      );
+    }
+    return effectiveEvents;
+  }
+
+  supportsWebhookSubscriptionUpdate(): boolean {
+    return true;
+  }
+
+  /**
+   * Retarget the Stripe endpoint(s) that POST to `endpointUrl` to the events
+   * of the flow's current entities, keeping their signing secret.
+   *
+   * Every endpoint on that URL is updated, not just one: flows provisioned
+   * before ids were stored may have duplicates from earlier re-provisioning,
+   * and Stripe never reveals a secret after creation, so there is no way to
+   * tell which duplicate the flow's stored secret belongs to.
+   */
+  async updateWebhookSubscription(
+    options: UpdateWebhookSubscriptionOptions,
+  ): Promise<ProvisionWebhookResult | null> {
+    const stripe = this.getStripeClient();
+    const effectiveEvents = this.resolveProvisionEvents(options);
+
+    try {
+      const endpoints = (
+        await stripe.webhookEndpoints
+          .list({ limit: 100 })
+          .autoPagingToArray({ limit: 1000 })
+      ).filter(endpoint => endpoint.url === options.endpointUrl);
+
+      if (endpoints.length === 0) {
+        return null;
+      }
+
+      // Without a stored id, prefer an endpoint Stripe still considers
+      // healthy: duplicates whose secret the flow no longer holds fail every
+      // delivery and end up disabled by Stripe.
+      const primary =
+        endpoints.find(endpoint => endpoint.id === options.providerWebhookId) ??
+        endpoints.find(endpoint => endpoint.status === "enabled") ??
+        endpoints[0];
+
+      for (const endpoint of endpoints) {
+        await stripe.webhookEndpoints.update(endpoint.id, {
+          enabled_events:
+            effectiveEvents as Stripe.WebhookEndpointUpdateParams.EnabledEvent[],
+          // Re-enable only the endpoint the flow is bound to: provisioning is
+          // an explicit request to receive its events again.
+          ...(endpoint.id === primary.id && { disabled: false }),
+        });
+      }
+
+      if (endpoints.length > 1) {
+        logger.warn("Multiple Stripe webhook endpoints share one flow URL", {
+          endpointIds: endpoints.map(endpoint => endpoint.id),
+          keptId: primary.id,
+        });
+      }
+
+      return { providerWebhookId: primary.id, endpointUrl: primary.url };
+    } catch (error) {
+      const message =
+        error instanceof Stripe.errors.StripeError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      throw new Error(
+        `Failed to update Stripe webhook subscription: ${message}`,
       );
     }
   }

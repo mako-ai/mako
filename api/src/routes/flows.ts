@@ -47,6 +47,11 @@ import { syncMachineService } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
 import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/normalization";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
+import type { ProvisionWebhookResult } from "../connectors/base/BaseConnector";
+import {
+  flowEntitySignature,
+  syncFlowWebhookSubscription,
+} from "../services/flow-webhook-subscription.service";
 import {
   computeEntityPendingBacklog,
   computeEntitySeqGap,
@@ -1361,6 +1366,9 @@ flowRoutes.openapi(
 
       // Find and validate flow
       const flow = await findFlow(workspaceId, flowId);
+      // Entities before this edit: a change re-targets the provider-side
+      // webhook subscription after save (see flow-webhook-subscription).
+      const entitySignatureBefore = flow ? flowEntitySignature(flow) : "";
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -1663,6 +1671,25 @@ flowRoutes.openapi(
         if (failed) return failed;
       }
       await flow.save();
+
+      // Enabling or disabling an entity changes which provider events the
+      // flow needs. Best-effort: a provider failure surfaces as a warning,
+      // never as a failed save.
+      if (
+        flow.type === "webhook" &&
+        flowEntitySignature(flow) !== entitySignatureBefore
+      ) {
+        const webhookSync = await syncFlowWebhookSubscription(flow);
+        if (webhookSync.status === "failed") {
+          syncConfigWarnings.push(
+            `Saved, but the provider webhook subscription could not be updated for the new entities: ${webhookSync.error}. Re-provision the webhook from the Triggers step.`,
+          );
+        } else if (webhookSync.status === "not_found") {
+          syncConfigWarnings.push(
+            "Saved, but no provider webhook subscription points at this flow's URL. Re-provision the webhook from the Triggers step so new entities receive events.",
+          );
+        }
+      }
 
       // Populate references for response based on source type
       if (flow.sourceType !== "database" && flow.dataSourceId) {
@@ -3215,12 +3242,34 @@ flowRoutes.openapi(
 
       const { entities: enabledEntities } = resolveConfiguredEntities(flow);
 
-      const created = await connector.createWebhookSubscription({
-        endpointUrl: endpoint,
-        verifySsl: body.verifySsl !== false,
-        events: requestedEvents,
-        enabledEntities,
-      });
+      // Re-provisioning an already-provisioned flow updates its existing
+      // subscription in place (same URL, same signing secret) instead of
+      // creating a second endpoint that would POST with a secret the flow no
+      // longer holds. `recreate: true` forces a fresh endpoint, e.g. when the
+      // stored secret is known to be wrong.
+      const existingSecret = flow.webhookConfig?.secret;
+      let created: ProvisionWebhookResult | null = null;
+      if (
+        existingSecret &&
+        body.recreate !== true &&
+        connector.supportsWebhookSubscriptionUpdate()
+      ) {
+        created = await connector.updateWebhookSubscription({
+          endpointUrl: endpoint,
+          verifySsl: body.verifySsl !== false,
+          events: requestedEvents,
+          enabledEntities,
+          providerWebhookId: flow.webhookConfig?.providerWebhookId,
+        });
+      }
+      if (!created) {
+        created = await connector.createWebhookSubscription({
+          endpointUrl: endpoint,
+          verifySsl: body.verifySsl !== false,
+          events: requestedEvents,
+          enabledEntities,
+        });
+      }
 
       if (!flow.webhookConfig) {
         flow.webhookConfig = {
@@ -3241,13 +3290,14 @@ flowRoutes.openapi(
       if (created.signingSecret) {
         webhookConfig.secret = created.signingSecret;
       }
+      webhookConfig.providerWebhookId = created.providerWebhookId;
       {
         const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
         if (failed) return failed;
       }
       await flow.save();
 
-      if (!created.signingSecret) {
+      if (!webhookConfig.secret) {
         // Some providers create the endpoint but omit the signing secret from
         // the API response (e.g. Stripe restricted keys, rk_…). Without it the
         // flow can't verify incoming webhooks, so surface an actionable error
@@ -3275,7 +3325,7 @@ flowRoutes.openapi(
         data: {
           endpoint,
           providerWebhookId: created.providerWebhookId,
-          webhookSecret: created.signingSecret || null,
+          webhookSecret: webhookConfig.secret || null,
           connectorType: connectorSource.type,
         },
       });
