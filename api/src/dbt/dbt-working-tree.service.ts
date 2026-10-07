@@ -175,6 +175,8 @@ async function commitDbtMutation(
   mutation: DbtMutation,
   message: string,
   expectBlobs?: Record<string, string | null>,
+  /** The `dbt/` tree oid the mutation was decided from (`null` = absent). */
+  expectTree?: string | null,
 ): Promise<WriteWorkingFileResult> {
   const workspaceId = project.workspaceId.toString();
   // Production: the workspace's own repo is the only durable store (§17).
@@ -214,11 +216,19 @@ async function commitDbtMutation(
     {
       message,
       author,
-      expectBlobs: expectBlobs
-        ? Object.fromEntries(
-            Object.entries(expectBlobs).map(([p, oid]) => [repoPath(p), oid]),
-          )
-        : undefined,
+      expectBlobs:
+        expectBlobs || expectTree !== undefined
+          ? {
+              ...Object.fromEntries(
+                Object.entries(expectBlobs ?? {}).map(([p, oid]) => [
+                  repoPath(p),
+                  oid,
+                ]),
+              ),
+              // Checked last: a named file that changed is the clearer refusal.
+              ...(expectTree !== undefined ? { [DBT_ROOT]: expectTree } : {}),
+            }
+          : undefined,
     },
   );
   if (!result.unchanged) queueMirrorPush(workspaceId);
@@ -239,13 +249,31 @@ export async function commitDbtChanges(
   mutation: DbtMutation,
   message: string,
   expectBlobs?: Record<string, string | null>,
+  options: {
+    /**
+     * Pin the WHOLE `dbt/` tree to the oid the caller read it at: any
+     * change anywhere in the project (a save, an added or deleted file)
+     * refuses the commit with `BlobPreconditionError` (path `dbt`). For a
+     * mutation decided from every file of the project — a rename that
+     * rewrote refs after reading them all — this is "CAS on every file it
+     * read" in one check, however many files there are.
+     */
+    expectTree?: string | null;
+  } = {},
 ): Promise<WriteWorkingFileResult> {
   for (const path of Object.keys(mutation.writes ?? {})) {
     assertSafeDbtPath(path);
   }
   for (const path of mutation.deletes ?? []) assertSafeDbtPath(path);
   for (const entry of mutation.entries ?? []) assertSafeDbtPath(entry.path);
-  return commitDbtMutation(project, userId, mutation, message, expectBlobs);
+  return commitDbtMutation(
+    project,
+    userId,
+    mutation,
+    message,
+    expectBlobs,
+    options.expectTree,
+  );
 }
 
 /** Commit a batch of files in one commit (scaffold, imports). */
