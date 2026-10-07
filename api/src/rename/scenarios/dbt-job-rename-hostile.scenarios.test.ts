@@ -968,30 +968,43 @@ describe("cycles and chains", () => {
     );
   });
 
-  it("a 20-rename chain: every old name resolves; bounded time", async () => {
+  it("a 30-rename chain: the newest 24 old names resolve; older ones resolve to nothing, in the row and in the file", async () => {
     const row = await seedJob("n0", "N");
     const before = await jobState(row._id);
     const { ms } = await timed(async () => {
-      for (let i = 1; i <= 20; i++) {
+      for (let i = 1; i <= 30; i++) {
         expect(
           (await serviceRename({ ref: `n${i - 1}`, slug: `n${i}` })).ok,
         ).toBe(true);
       }
     });
-    recordTiming("dbt job: 20 chained renames", ms);
+    recordTiming("dbt job: 30 chained renames", ms);
+    const kept = Array.from({ length: 24 }, (_, i) => `n${i + 6}`);
+    expect((await expectSameJob(before)).aliases).toEqual(kept);
+    expect(
+      parseJobFile((await fileAtMain(WS, jobFilePath("n30"))) ?? "")?.aliases,
+    ).toEqual(kept);
     const resolved = await timed(async () => {
-      for (let i = 0; i <= 20; i++) {
-        expect(
-          (await resolveDbtJobRef({ workspaceId: WS }, `n${i}`))?.id,
-          `n${i}`,
-        ).toBe(before.id);
+      for (let i = 0; i <= 30; i++) {
+        const r = await resolveDbtJobRef({ workspaceId: WS }, `n${i}`);
+        expect(r?.id ?? null, `n${i}`).toBe(i < 6 ? null : before.id);
       }
     });
-    recordTiming("dbt job: resolve 21 names of a 20-alias chain", resolved.ms);
+    recordTiming("dbt job: resolve 31 names of a 30-rename chain", resolved.ms);
     expect(resolved.ms).toBeLessThan(10_000);
-    expect((await expectSameJob(before)).aliases).toHaveLength(20);
     await syncDbtConfigFromRepo(WS);
-    await expectSameJob(before);
+    expect((await expectSameJob(before)).aliases).toEqual(kept);
+    // A dropped name is free for a new job, and then names only that job.
+    await push({ [jobFilePath("n0")]: jobYaml("New n0", "new-n0") });
+    await syncDbtConfigFromRepo(WS);
+    const newcomer = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "n0",
+    });
+    expect(String(newcomer!._id)).not.toBe(before.id);
+    expect((await resolveDbtJobRef({ workspaceId: WS }, "n0"))?.id).toBe(
+      String(newcomer!._id),
+    );
   }, 300_000);
 });
 

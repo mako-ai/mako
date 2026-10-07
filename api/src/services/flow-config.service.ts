@@ -116,7 +116,7 @@ export async function commitFlowFile(
   // what main lists and keep it.
   const fromMain = await flowAliasesAtMain(workspaceId, flow.slug);
   const projected = flowToFile(flow);
-  const aliases = mergedAliases(projected.aliases, fromMain, flow.slug);
+  const aliases = mergedAliases(fromMain, projected.aliases, flow.slug);
   const contents = serializeFlowFile({
     ...projected,
     ...(aliases.length > 0 ? { aliases } : {}),
