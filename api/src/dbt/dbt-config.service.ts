@@ -1447,18 +1447,77 @@ export async function commitDbtJobFile(
   }
 }
 
+/**
+ * Remove a deleted job's file. With `jobId`, the file removed is the job's
+ * CURRENT one, read after the freshen that precedes every main write and
+ * under a compare-and-swap: a rename landing while the delete was in flight
+ * otherwise left the renamed file at main while the caller dropped the row
+ * — and the next push sync recreated the deleted job, under a new id, on
+ * its schedule. A row whose file is not at main while another job file
+ * names its slug in `aliases:` (a rename committed, its row update not yet)
+ * is refused with {@link DbtConfigConflictError}; nothing is deleted.
+ */
 export async function deleteDbtJobFile(
   project: Pick<IDbtProject, "workspaceId">,
   slug: string | undefined,
   actorUserId?: string,
+  jobId?: Types.ObjectId | string,
 ): Promise<void> {
   if (!slug) return;
-  await commitConfig(
-    project.workspaceId.toString(),
-    { deletes: [jobFilePath(slug)] },
-    `dbt: delete job ${slug}`,
-    actorUserId ? await authorForUser(actorUserId) : undefined,
+  const workspaceId = project.workspaceId.toString();
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
+  const current = jobId
+    ? await DbtJob.findById(jobId).select("slug").lean()
+    : null;
+  const live = current?.slug ?? slug;
+  const path = jobFilePath(live);
+  let oid: string | null = null;
+  try {
+    oid = (await readBlob(repoDir, MAIN, path)).oid;
+  } catch {
+    oid = null;
+  }
+  if (oid === null) {
+    const movedTo = await jobFileListingAlias(repoDir, live);
+    if (movedTo) {
+      throw new DbtConfigConflictError(
+        `the job was renamed (its file is now ${movedTo}) while it was being deleted; nothing was deleted — reload and retry`,
+      );
+    }
+    return; // No file to remove.
+  }
+  try {
+    await commitDbtConfig(
+      workspaceId,
+      { deletes: [path] },
+      `dbt: delete job ${live}`,
+      actorUserId ? await authorForUser(actorUserId) : undefined,
+      { [path]: oid },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new DbtConfigConflictError(
+        `${error.path} changed while the job was being deleted (a rename or another edit landed first); nothing was deleted — reload and retry`,
+      );
+    }
+    throw error;
+  }
+}
+
+/** A job file at main listing `slug` among its old names, if any. */
+async function jobFileListingAlias(
+  repoDir: string,
+  slug: string,
+): Promise<string | null> {
+  const paths = (await globTree(repoDir, MAIN, "dbt/jobs/*.yml", 1000)).filter(
+    p => slugFromJobFilePath(p) !== null,
   );
+  if (paths.length === 0) return null;
+  for (const [p, buf] of await readBlobsBatch(repoDir, MAIN, paths)) {
+    if (parseJobFile(buf.toString("utf8"))?.aliases?.includes(slug)) return p;
+  }
+  return null;
 }
 
 export async function commitDbtEnvironmentsFile(

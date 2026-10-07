@@ -1062,7 +1062,7 @@ dbtRoutes.delete(
         );
       }
       const doomed = resolved.row;
-      await deleteDbtJobFile(project, doomed.slug, getUserId(c));
+      await deleteDbtJobFile(project, doomed.slug, getUserId(c), doomed._id);
       await DbtJob.deleteOne({ _id: doomed._id });
       publishDbtEvent(c, {
         type: "dbt.job.updated",

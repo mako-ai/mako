@@ -1416,7 +1416,7 @@ export const createDbtServerTools = (
           if (!resolved.ok) return { success: false, error: resolved.error };
           const job = resolved.row;
           const name = job.name;
-          await deleteDbtJobFile(project, job.slug, actingUserId);
+          await deleteDbtJobFile(project, job.slug, actingUserId, job._id);
           await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };

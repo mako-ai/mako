@@ -18,6 +18,7 @@ import {
 import {
   commitFlowFile,
   deleteFlowFile,
+  FlowFileConflictError,
 } from "../services/flow-config.service";
 import { Types } from "mongoose";
 import { inngest } from "../inngest";
@@ -1767,6 +1768,14 @@ flowRoutes.openapi(
       // The repo gate is a precondition, not a failure: 412 with an
       // actionable message rather than a 500 the user cannot act on.
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      // Renamed while the delete was in flight: nothing was deleted or
+      // torn down; the client reloads and retries.
+      if (error instanceof FlowFileConflictError) {
+        return c.json(
+          { success: false, code: "definition_conflict", error: error.message },
+          409,
+        );
+      }
       logger.error("Error deleting flow", { error });
       return c.json(
         {

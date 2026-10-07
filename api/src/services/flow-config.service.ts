@@ -26,7 +26,9 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
+  listTree,
   readBlob,
+  readBlobsBatch,
   repoDirFor,
   resolveCommit,
   type GitAuthor,
@@ -37,6 +39,7 @@ import {
   flowToFile,
   parseFlowFile,
   serializeFlowFile,
+  slugFromFlowFilePath,
 } from "./flow-config-files";
 import { mergedAliases } from "../rename/flow-dbt-job-pairing";
 
@@ -215,18 +218,100 @@ async function flowAliasesAtMain(
   }
 }
 
-/** Remove a deleted flow's file. Throws {@link RepoRequiredError} without a repo. */
+/**
+ * A delete that would remove the wrong file, or none while the flow's file
+ * lives on under another name: the flow was renamed while the delete was in
+ * flight. The route answers 409 (reload and retry) and tears nothing down.
+ */
+export class FlowFileConflictError extends Error {
+  readonly status = 409;
+  constructor(message: string) {
+    super(message);
+    this.name = "FlowFileConflictError";
+  }
+}
+
+/**
+ * Remove a deleted flow's file. Throws {@link RepoRequiredError} without a
+ * repo, {@link FlowFileConflictError} when a rename got in the way.
+ *
+ * The row in the caller's hand may predate a rename that landed while the
+ * request was in flight. Deleting `flows/<that old slug>.yml` was then a
+ * no-op, the caller tore the stream down, and the renamed file — still at
+ * main with no row — came back on the next push sync as a NEW flow: a
+ * deleted stream resurrected under a new id, re-backfilling into the same
+ * destination. So the file deleted is the row's CURRENT one, read after the
+ * freshen that precedes every main write, under a compare-and-swap; and a
+ * row whose file is not at main while another file names its slug in
+ * `aliases:` (a rename committed, its row update not yet) is refused.
+ */
 export async function deleteFlowFile(
-  flow: Pick<IFlow, "workspaceId" | "slug" | "name">,
+  flow: Pick<IFlow, "workspaceId" | "slug" | "name"> & {
+    _id?: IFlow["_id"];
+  },
   actorUserId?: string,
 ): Promise<void> {
   if (!flow.slug) return;
-  await commitConfig(
-    flow.workspaceId.toString(),
-    { deletes: [flowFilePath(flow.slug)] },
-    `flow: delete "${flow.name ?? flow.slug}" (${flow.slug})`,
-    actorUserId ? await authorForUser(actorUserId) : undefined,
-  );
+  const workspaceId = flow.workspaceId.toString();
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
+  const current = flow._id
+    ? await Flow.findById(flow._id).select("slug").lean()
+    : null;
+  const slug = current?.slug ?? flow.slug;
+  const path = flowFilePath(slug);
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  let oid: string | null = null;
+  if (head) {
+    try {
+      oid = (await readBlob(repoDir, head, path)).oid;
+    } catch {
+      oid = null;
+    }
+  }
+  if (oid === null) {
+    const movedTo = head ? await fileListingAlias(repoDir, head, slug) : null;
+    if (movedTo) {
+      throw new FlowFileConflictError(
+        `the flow was renamed (its file is now ${movedTo}) while it was being deleted; nothing was deleted — reload and retry`,
+      );
+    }
+    return; // No file to remove (a row whose file is already gone).
+  }
+  try {
+    await commitFlowConfig(
+      workspaceId,
+      { deletes: [path] },
+      `flow: delete "${flow.name ?? slug}" (${slug})`,
+      actorUserId ? await authorForUser(actorUserId) : undefined,
+      { [path]: oid },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new FlowFileConflictError(
+        `${error.path} changed while the flow was being deleted (a rename or another edit landed first); nothing was deleted — reload and retry`,
+      );
+    }
+    throw error;
+  }
+}
+
+/** A flow file at `head` (with no row of its own) listing `slug` as an old name. */
+async function fileListingAlias(
+  repoDir: string,
+  head: string,
+  slug: string,
+): Promise<string | null> {
+  const paths = (await listTree(repoDir, head))
+    .map(entry => entry.path)
+    .filter(p => slugFromFlowFilePath(p) !== null);
+  if (paths.length === 0) return null;
+  for (const [p, buf] of await readBlobsBatch(repoDir, head, paths)) {
+    if (parseFlowFile(buf.toString("utf8"))?.aliases?.includes(slug)) {
+      return p;
+    }
+  }
+  return null;
 }
 
 /**
