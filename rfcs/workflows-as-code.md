@@ -292,6 +292,24 @@ enrichLead.task({
 
 Separately, and first if convenient: rename Flows to Sync in the UI.
 
+## 9a. Spike results (local, Hatchet Lite, SDK 1.36.0, 2026-10-07)
+
+| Check | Result |
+|---|---|
+| Create a tenant and a token by API | Works. Log in as a Hatchet service user, `POST /api/v1/tenants`, then `POST /api/v1/tenants/:id/api-tokens`. The default retention is 720 h. |
+| Redeploy while a task runs (SIGTERM) | Works. The old worker stops taking tasks, finishes the running one (27 s here), then exits. Nothing is retried. |
+| Crash while a task runs (SIGKILL) | Works. About 27 s later Hatchet reassigns the task to the new worker. It costs one retry from the task's budget, so a task needs `retries >= 1` to survive a crash. |
+| Commit of each task | Works with two reads. The run's task events (`ASSIGNED`) carry the worker id, and the worker list carries the `git_sha` label. A crash shows as `REASSIGNED`. |
+| Still to check on GKE | gVisor plus network policy, slot use by durable agent loops, run-list speed at 10k runs |
+
+Two SDK features simplify the plan:
+
+- **`inputValidator` (zod)** gives each workflow an input schema. The Run
+  dialog and `workflow_run` can show the expected fields, with no Mako code.
+- **`workflow.mcpTool("claude" | "openai")`** turns a Hatchet task into an
+  agent tool, so each tool call runs as a durable, visible Hatchet task. This
+  could replace most of `lib/agent.ts`; to try during step 2.
+
 ## 10. Later, only when real use asks
 
 Scale to zero (KEDA on Hatchet's Task Stats API), customer npm dependencies,
