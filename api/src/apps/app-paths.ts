@@ -15,6 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import { Types } from "mongoose";
+import { appNameProblem, isSafeAppSegment } from "@mako/schemas";
 
 export const APPS_DIR = "apps";
 export const USERS_DIR = "users";
@@ -34,120 +35,36 @@ export interface AppRepoLocation {
   slug: string;
 }
 
-// Unicode letters and digits: `apps/café` is a folder people already have,
-// and dropping it from discovery left it published but unlisted. Slashes,
-// control characters and leading dots stay out.
-const SEGMENT_RE = /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u;
+// The naming rules themselves live in @mako/schemas (app-names.ts), shared
+// with the client's rename and folder dialogs so both refuse the same names
+// in the same words. Re-exported here under the names the API uses.
+export {
+  MAX_APP_TITLE_LENGTH,
+  RESERVED_APP_SLUGS,
+  appTitleProblem,
+  isSafeAppSegment as isSafeSegment,
+  isWindowsDeviceName,
+  normalizeAppName as normalizeName,
+} from "@mako/schemas";
+
 const USER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
-/** A folder or app name git and every URL are happy with. */
-export function isSafeSegment(segment: string): boolean {
-  return (
-    SEGMENT_RE.test(segment) &&
-    segment !== "." &&
-    segment !== ".." &&
-    !segment.endsWith(".") &&
-    !segment.endsWith(" ") &&
-    segment.length <= 100
-  );
-}
-
 /**
- * A name as a person typed it, as it will be stored: trimmed, and in NFC —
- * `é` typed as `e` + U+0301 (macOS input, some keyboards) is the same name
- * as `é`, and git must never hold the two as different folders a checkout
- * then cannot tell apart.
- */
-export function normalizeName(name: string): string {
-  return name.trim().normalize("NFC");
-}
-
-// A Windows device name, alone or with any extension (`con`, `NUL.json`):
-// git for Windows refuses to check out a path with one, so a single such
-// folder makes the WHOLE workspace repo unusable there.
-const WINDOWS_DEVICE_RE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
-
-/** Is `segment` a Windows reserved device name (see above)? */
-export function isWindowsDeviceName(segment: string): boolean {
-  return WINDOWS_DEVICE_RE.test(segment);
-}
-
-/**
- * Why `segment` cannot be a NEW app or folder name, or null when it can.
- * Stricter than {@link isSafeSegment}, which is what discovery accepts —
- * an existing folder pushed from a laptop keeps being listed, moved and
- * renamed away from; only a name someone is choosing now is held to this:
- *
- *  - a Windows device name (`con`, `aux.txt`): no Windows checkout;
- *  - 24 hex characters: every resolver reads `/apps/<that>` as an app id
- *    first, so the link would open another app (or none).
+ * Why `segment` cannot be a NEW folder name, or null when it can (the
+ * shared rule: a Windows device name, an id look-alike, characters git or
+ * a URL would choke on). An existing folder pushed from a laptop is held
+ * to isSafeSegment only, so it keeps working.
  */
 export function newSegmentProblem(segment: string): string | null {
-  if (!isSafeSegment(segment)) {
-    return "use letters, digits, spaces, dots, dashes and underscores (at most 100), starting with a letter or digit";
-  }
-  if (isWindowsDeviceName(segment)) {
-    return "it is a reserved device name on Windows, where a checkout of the repo would fail";
-  }
-  if (isAppId(segment)) {
-    return "it looks like an app id, and its link would be read as one";
-  }
-  return null;
+  return appNameProblem(segment, "folder");
 }
 
 /**
- * The literal first segments the apps router serves under
- * `/api/workspaces/:ws/apps/` (`GET /apps/status-probe`, `DELETE
- * /apps/folders`, …). Every route there also takes an app ref
- * (`/apps/{id}`), so an app named like one of these could not be
- * addressed by its name on those routes. Kept equal to the router by
- * app-rename-routes.scenarios.test.ts, which derives the list from it.
- */
-export const RESERVED_APP_SLUGS: readonly string[] = [
-  "folders",
-  "github-installations",
-  "github-repos",
-  "github-status",
-  "github-sync-url",
-  "link",
-  "status-probe",
-  "unlink",
-];
-
-/**
- * Why `slug` cannot be a NEW app's folder name, or null when it can:
- * {@link newSegmentProblem}, plus the router's own words
- * ({@link RESERVED_APP_SLUGS}).
+ * Why `slug` cannot be a NEW app link (its folder name), or null when it
+ * can: the folder rules, plus the words the apps API keeps for itself.
  */
 export function newAppSlugProblem(slug: string): string | null {
-  const problem = newSegmentProblem(slug);
-  if (problem) return problem;
-  if (RESERVED_APP_SLUGS.includes(slug.toLowerCase())) {
-    return `the apps API uses /apps/${slug.toLowerCase()} for itself`;
-  }
-  return null;
-}
-
-/** The longest app name (title) a rename or create accepts. */
-export const MAX_APP_TITLE_LENGTH = 1000;
-
-/**
- * Why `title` (already {@link normalizeName}d) cannot be an app's name, or
- * null when it can. A title is display text in a JSON manifest, so almost
- * anything goes — but not control characters (a NUL cannot even reach a
- * commit message; a line break turns a one-line name into a header), not
- * a name that is empty once invisible characters are set aside, and not
- * an essay.
- */
-export function appTitleProblem(title: string): string | null {
-  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(title)) {
-    return "An app name cannot contain control characters (line breaks, tabs, NUL)";
-  }
-  if (!title.replace(/[\s\p{Cf}]/gu, "")) return "An app needs a name";
-  if (title.length > MAX_APP_TITLE_LENGTH) {
-    return `An app name is at most ${MAX_APP_TITLE_LENGTH} characters`;
-  }
-  return null;
+  return appNameProblem(slug, "link");
 }
 
 /** Root folder of a tree: `apps` or `users/<id>/apps`. */
@@ -184,7 +101,7 @@ export function parseAppRepoPath(path: string): AppRepoLocation | null {
   } else {
     return null;
   }
-  if (rest.length === 0 || rest.some(s => !isSafeSegment(s))) return null;
+  if (rest.length === 0 || rest.some(s => !isSafeAppSegment(s))) return null;
   const slug = rest[rest.length - 1];
   return { scope, ownerId, folderSegments: rest.slice(0, -1), slug };
 }
@@ -192,8 +109,10 @@ export function parseAppRepoPath(path: string): AppRepoLocation | null {
 /** Inverse of {@link parseAppRepoPath}. */
 export function appRepoPath(location: AppRepoLocation): string {
   for (const seg of [...location.folderSegments, location.slug]) {
-    if (!isSafeSegment(seg)) {
-      throw new Error(`Invalid folder name: ${JSON.stringify(seg)}`);
+    if (!isSafeAppSegment(seg)) {
+      throw new Error(
+        appNameProblem(seg, "folder") ?? `"${seg}" can't be a folder name.`,
+      );
     }
   }
   return [

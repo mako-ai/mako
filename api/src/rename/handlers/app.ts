@@ -144,9 +144,7 @@ export const appRenameHandler: RenameHandler = {
     if (slug !== undefined && slug !== source.slug) {
       const problem = newAppSlugProblem(slug);
       if (problem) {
-        throw new RenameError(
-          `Invalid app folder name: ${JSON.stringify(slug)} — ${problem}`,
-        );
+        throw new RenameError(problem);
       }
       // A slug change moves the folder: the move rules apply, as they do
       // for app_move_app with `name`.

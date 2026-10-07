@@ -411,6 +411,6 @@ describe("rename", () => {
     ).rejects.toMatchObject({ status: 404 });
     await expect(
       renameObject(editor, "app", { ref: "a", slug: "../y" }),
-    ).rejects.toThrow(/Invalid app folder name/);
+    ).rejects.toThrow("Start the link with a letter or a number.");
   });
 });

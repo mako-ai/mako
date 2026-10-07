@@ -242,9 +242,18 @@ describe("the explorer's rename: POST /objects/app/rename", () => {
     await expectRefused(
       () => rename({ ref: "a", slug: "CON" }),
       400,
-      /Windows/,
+      /^Not allowed on Windows: CON — pick another link\.$/,
     );
-    await expectRefused(() => rename({ ref: "a", slug: D_ID }), 400, /app id/);
+    await expectRefused(
+      () => rename({ ref: "a", title: "x\u0000y" }),
+      400,
+      /^A name can't contain line breaks, tabs or other control characters\.$/,
+    );
+    await expectRefused(
+      () => rename({ ref: "a", slug: D_ID }),
+      400,
+      /^This looks like an app id, so it can't be a link — pick another\.$/,
+    );
     await expectRefused(() => rename({ ref: "a", slug: "../x" }), 400);
     await expectRefused(
       () => rename({ ref: "a", slug: "d" }),
@@ -523,7 +532,7 @@ describe("the apps router's own words are not app names", () => {
       await expectRefused(
         () => rename({ ref: "a", slug }),
         400,
-        /apps API uses/,
+        /^This link is reserved by Mako — pick another\.$/,
       );
     }
     await expectRefused(() => rename({ ref: "a", slug: "Folders" }), 400);

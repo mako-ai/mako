@@ -19,7 +19,11 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { isValidFolderName } from "./AppFolderDialogs";
+import {
+  appLinkError,
+  appNameError,
+  normalizeAppName,
+} from "../../lib/object-name-rules";
 
 export interface AppRenameDialogProps {
   open: boolean;
@@ -84,20 +88,26 @@ export function AppRenameDialog({
     }
   }, [open, currentTitle, initialSlug]);
 
-  const titleChanged = title.trim() !== currentTitle && title.trim() !== "";
-  const slugChanged = !linkLocked && slug.trim() !== currentSlug;
-  const slugValid = !slugChanged || isValidFolderName(slug);
-  const titleValid = title.trim() !== "";
+  // The server's rules, in its words (lib/object-name-rules.ts, pinned to
+  // the API by name-rules-parity.test.ts): a link or name it would refuse
+  // is refused here as it is typed, and Rename stays off.
+  const nextTitle = normalizeAppName(title);
+  const nextSlug = normalizeAppName(slug);
+  const titleChanged = nextTitle !== currentTitle && nextTitle !== "";
+  const slugChanged = !linkLocked && nextSlug !== currentSlug;
+  const titleProblem = appNameError(title);
+  const slugProblem = slugChanged ? appLinkError(slug) : null;
   const canSubmit =
-    !busy && titleValid && slugValid && (titleChanged || slugChanged);
+    !busy && !titleProblem && !slugProblem && (titleChanged || slugChanged);
 
   const submit = () => {
     if (!canSubmit) return;
     void onConfirm({
-      ...(titleChanged ? { title: title.trim() } : {}),
-      ...(slugChanged ? { slug: slug.trim() } : {}),
+      ...(titleChanged ? { title: nextTitle } : {}),
+      ...(slugChanged ? { slug: nextSlug } : {}),
     });
   };
+  const oldLink = slugIsLink ? `/apps/${currentSlug}` : "The old link";
 
   return (
     <Dialog
@@ -118,8 +128,8 @@ export function AppRenameDialog({
           onKeyDown={e => {
             if (e.key === "Enter") submit();
           }}
-          error={!titleValid}
-          helperText={!titleValid ? "An app needs a name." : " "}
+          error={!!titleProblem}
+          helperText={titleProblem ?? " "}
           disabled={busy}
         />
         <TextField
@@ -131,31 +141,30 @@ export function AppRenameDialog({
           onKeyDown={e => {
             if (e.key === "Enter") submit();
           }}
-          error={!slugValid}
+          error={!!slugProblem}
           helperText={
             linkLockedReason ??
-            (!slugValid
-              ? "Letters, numbers, spaces, dots, dashes and underscores; must start with a letter or number."
-              : slugIsLink
-                ? `/apps/${slug.trim() || currentSlug}`
-                : "The folder name in the workspace repo; the link uses the app's id.")
+            slugProblem ??
+            (slugIsLink
+              ? `/apps/${nextSlug || currentSlug}`
+              : "The app's folder name. Its link uses the app's id, so the link itself does not change.")
           }
           disabled={busy || linkLocked}
           slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
         />
         <Typography variant="caption" color="text.secondary">
-          {slugChanged
-            ? "The previous name is kept as an alias of this app, so its old link keeps opening it. If another app used that name before, that app stops answering to it — you'll be told."
-            : [
-                linkLocked
-                  ? "Only the name can change here."
-                  : "Changing the link renames the app's folder; the previous name is kept as an alias.",
-                published
-                  ? "A change rewrites mako.json, which republishes the app once."
-                  : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
+          {[
+            linkLocked
+              ? "Only the name can change here."
+              : slugChanged
+                ? `${oldLink} keeps working: it will still open this app. If another app used that name before, that app stops answering to it — you'll be told.`
+                : `If you change the link, ${slugIsLink ? `the old one (${oldLink})` : "the old one"} keeps working — it will still open this app.`,
+            published
+              ? "A change rewrites mako.json, which republishes the app once."
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
         </Typography>
         {error && (
           <Typography

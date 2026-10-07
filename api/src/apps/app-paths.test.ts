@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import * as schemas from "@mako/schemas";
 import {
+  RESERVED_APP_SLUGS,
   addManifestAliases,
   appKeyOf,
+  appTitleProblem,
   appRepoPath,
   derivedAppId,
   isSafeSegment,
+  newAppSlugProblem,
+  newSegmentProblem,
   parseAppAliases,
   parseAppFolderPath,
   parseAppManifest,
@@ -242,5 +247,42 @@ assert.deepEqual(
 const noAliases = '{"title":"X"}';
 assert.equal(stripManifestAliases(noAliases), noAliases);
 assert.equal(stripManifestAliases("{oops"), null);
+
+// The naming rules are the client's too (@mako/schemas app-names.ts): the
+// rename dialog refuses, as it is typed, exactly what the server refuses,
+// in the same words. Same functions, same list — not copies.
+assert.equal(RESERVED_APP_SLUGS, schemas.RESERVED_APP_SLUGS);
+assert.equal(newAppSlugProblem("link"), schemas.appNameProblem("link", "link"));
+assert.equal(
+  newAppSlugProblem("link"),
+  "This link is reserved by Mako — pick another.",
+);
+assert.equal(
+  newAppSlugProblem("CON"),
+  "Not allowed on Windows: CON — pick another link.",
+);
+assert.equal(
+  newSegmentProblem("aux"),
+  "Not allowed on Windows: aux — pick another folder name.",
+);
+assert.equal(newSegmentProblem("link"), null);
+assert.equal(
+  appTitleProblem("a\nb"),
+  "A name can't contain line breaks, tabs or other control characters.",
+);
+for (const name of [
+  "",
+  "x".repeat(101),
+  "a/b",
+  ".x",
+  "x.",
+  "0123456789abcdef01234567",
+]) {
+  assert.ok(newAppSlugProblem(name), `refused: ${JSON.stringify(name)}`);
+  assert.doesNotMatch(
+    newAppSlugProblem(name) ?? "",
+    /app folder name|apps API/,
+  );
+}
 
 console.log("app-paths.test.ts: ok");
