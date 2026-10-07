@@ -27,11 +27,18 @@ import os from "node:os";
 import path from "node:path";
 import { Types } from "mongoose";
 import {
+  AppIndexEntry,
   AppProject,
   AppWorktree,
   type IAppProject,
   type IAppWorktree,
 } from "../database/workspace-schema";
+import {
+  APP_HISTORY_SCAN_MAX_COMMITS,
+  aliasFolders,
+  appHistory,
+  type AppHistoryCommit,
+} from "./app-history";
 import { User } from "../database/schema";
 import { loggers } from "../logging";
 import {
@@ -2984,12 +2991,68 @@ export async function projectHistory(
     );
     if (exists) target = `refs/heads/${ref}`;
   }
+  // An app's own history: across its renames (it did not start at the
+  // last one), and never a previous occupant's of the folder it is in.
+  if (view === "app" && scope.root && parseAppRepoPath(scope.root)) {
+    const previous = await previousRootsOf(scope);
+    return (await appHistory(repoDir, target, scope.root, previous, limit)).map(
+      ({ oid, author, timestamp, subject }) => ({
+        oid,
+        author,
+        timestamp,
+        subject,
+      }),
+    );
+  }
   return repoLog(
     repoDir,
     target,
     limit,
     view === "repo" ? undefined : (scope.root ?? undefined),
   );
+}
+
+/**
+ * Folders an app had before its current one, as the index knows them (its
+ * manifest's aliases and the ones the index learned, superseded included —
+ * a name the app lost is still where its older commits are).
+ */
+async function previousRootsOf(scope: RepoScope): Promise<string[]> {
+  if (!scope.projectId || !scope.root) return [];
+  const row = await AppIndexEntry.findOne({
+    workspaceId: new Types.ObjectId(scope.workspaceId),
+    appId: scope.projectId.toString(),
+  })
+    .select("aliases indexAliases supersededAliases")
+    .lean();
+  if (!row) return [];
+  return aliasFolders([
+    ...(row.aliases ?? []),
+    ...(row.indexAliases ?? []),
+    ...(row.supersededAliases ?? []),
+  ]).filter(folder => folder !== scope.root);
+}
+
+/**
+ * Where the app was in `sha` (and before it, for the commit that moved
+ * it), when that is not where it is now: the commit is in its history
+ * from before a rename. Null when the app's current folder is the answer.
+ */
+async function rootsAt(
+  repoDir: string,
+  scope: RepoScope,
+  sha: string,
+): Promise<AppHistoryCommit | null> {
+  const previous = await previousRootsOf(scope);
+  if (!scope.root || previous.length === 0) return null;
+  const history = await appHistory(
+    repoDir,
+    `refs/heads/${scope.defaultBranch}`,
+    scope.root,
+    previous,
+    APP_HISTORY_SCAN_MAX_COMMITS,
+  );
+  return history.find(c => c.oid === sha) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -3051,7 +3114,11 @@ export async function commitChanges(
   if (view === "repo" || scope.root == null) {
     return { sha: oid, parent, files: all };
   }
-  const root = scope.root;
+  // A commit from before a rename: the app's files were in its old folder.
+  const root =
+    (all.some(f => f.path.startsWith(`${scope.root}/`))
+      ? null
+      : (await rootsAt(repoDir, scope, oid))?.root) ?? scope.root;
   const files = all
     .filter(f => f.path.startsWith(`${root}/`))
     .map(f => ({ ...f, path: f.path.slice(root.length + 1) }));
@@ -3069,16 +3136,23 @@ export async function commitFileVersions(
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
   const safe = assertSafeRelPath(relPath);
-  const full = scope.root ? `${scope.root}/${safe}` : safe;
-  const read = async (ref: string | null) => {
+  // A commit from before a rename reads the app's old folder — and the
+  // commit that moved it reads the old folder before and the new after.
+  const at = scope.root ? await rootsAt(repoDir, scope, oid) : null;
+  const afterRoot = at?.root ?? scope.root;
+  const beforeRoot = at?.previousRoot ?? afterRoot;
+  const read = async (ref: string | null, root: string | null) => {
     if (!ref) return null;
     try {
-      return await readBlob(repoDir, ref, full);
+      return await readBlob(repoDir, ref, root ? `${root}/${safe}` : safe);
     } catch {
       return null;
     }
   };
-  const [before, after] = await Promise.all([read(parent), read(oid)]);
+  const [before, after] = await Promise.all([
+    read(parent, beforeRoot),
+    read(oid, afterRoot),
+  ]);
   return {
     before: before?.isBinary ? null : (before?.contents ?? null),
     after: after?.isBinary ? null : (after?.contents ?? null),

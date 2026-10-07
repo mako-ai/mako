@@ -36,11 +36,15 @@ import {
 } from "../app-index.service";
 import { parseAppManifest } from "../app-paths";
 import {
+  commitChanges,
+  commitFileVersions,
   createProjectWith,
   deleteProject,
   ensureProjectRow,
   moveProject,
+  projectHistory,
   resolveProjectRef,
+  scopeOf,
 } from "../worktree.service";
 import { renameObject, resolveObjectRef } from "../../rename/registry";
 import { createRenameTools } from "../../agent-lib/tools/rename-tools";
@@ -353,6 +357,20 @@ describe("the real-world anchor: apps/traffic-performance, once apps/seller-medi
       url: "/apps/traffic",
       oldNames: ["traffic-performance", "seller-media-buying-3"],
     });
+  });
+  it("keeps its whole history: its own commits under every name, none of the deleted apps' that had them first", async () => {
+    await replay(true);
+    const project = (await resolveProjectRef(WS, ANCHOR))!;
+    const subjects = (await projectHistory(scopeOf(project), 50)).map(
+      c => c.subject,
+    );
+    expect(subjects).toEqual([
+      "rename: Seller Media Buying → Traffic Performance",
+      'Move app "Seller Media Buying" (apps/seller-media-buying-3 → apps/traffic-performance)',
+      "Revert slug rename",
+      "reclaim the slug",
+      "Create app (…-3)",
+    ]);
   });
 });
 
@@ -734,5 +752,100 @@ describe("operations", () => {
       expect(result.commit).toBeUndefined();
     }
     expect(await commitsSince(WS, before)).toBe(0);
+  });
+});
+
+describe("history follows the app across renames", () => {
+  async function edit(rel: string, contents: string, message: string) {
+    await externalCommit(WS, { [rel]: contents }, [], message);
+  }
+
+  it("keeps the commits from before a UI rename, and opens them from the app's old folder", async () => {
+    await edit("apps/a/src/main.tsx", "export const a = 2;\n", "edit a");
+    const A_ID = await idOf("a");
+    await renameObject(admin, "app", { ref: "a", slug: "acq" });
+    await edit("apps/acq/src/main.tsx", "export const a = 3;\n", "edit acq");
+    const project = (await resolveProjectRef(WS, A_ID))!;
+    const history = await projectHistory(scopeOf(project), 50);
+    expect(history.map(c => c.subject).slice(0, 3)).toEqual([
+      "edit acq",
+      'Move app "A" (apps/a → apps/acq)',
+      "edit a",
+    ]);
+    const old = history.find(c => c.subject === "edit a")!;
+    // "View changes" on it: the app's own file, app-relative.
+    expect((await commitChanges(scopeOf(project), old.oid)).files).toEqual([
+      { path: "src/main.tsx", status: "modified" },
+    ]);
+    expect(
+      await commitFileVersions(scopeOf(project), old.oid, "src/main.tsx"),
+    ).toMatchObject({
+      before: "export const a = 1;\n",
+      after: "export const a = 2;\n",
+    });
+    // The move itself: the old folder before, the new one after.
+    const move = history.find(c => c.subject.startsWith("Move app"))!;
+    expect(
+      await commitFileVersions(scopeOf(project), move.oid, "src/main.tsx"),
+    ).toMatchObject({
+      before: "export const a = 2;\n",
+      after: "export const a = 2;\n",
+    });
+  });
+
+  it("follows a laptop git mv that also edited a tiny manifest (git pairs nothing)", async () => {
+    const T = newId();
+    const tiny = (title: string) => `${JSON.stringify({ id: T, title })}\n`;
+    await edit("apps/t/mako.json", tiny("T"), "create t");
+    await edit("apps/t/mako.json", tiny("T, edited"), "edit t");
+    await externalCommit(
+      WS,
+      { "apps/t2/mako.json": tiny("T2 renamed on the way") },
+      ["apps/t/mako.json"],
+      "laptop: mv t t2 and retitle",
+    );
+    const project = (await resolveProjectRef(WS, T))!;
+    expect(project.path).toBe("apps/t2");
+    expect(
+      (await projectHistory(scopeOf(project), 50)).map(c => c.subject),
+    ).toEqual(["laptop: mv t t2 and retitle", "edit t", "create t"]);
+  });
+
+  it("never shows another app's commits under an old name — neither the newcomer's in the renamed app, nor the reverse", async () => {
+    await edit("apps/d/src/main.tsx", "export const d = 2;\n", "edit d before");
+    await renameObject(admin, "app", { ref: "d", slug: "delta" });
+    const NEW = newId();
+    await edit("apps/d/mako.json", manifest("New D", NEW), "a new app at d");
+    await edit("apps/d/x.ts", "export {};\n", "edit the new d");
+    const renamed = (await resolveProjectRef(WS, D_ID))!;
+    const own = (await projectHistory(scopeOf(renamed), 50)).map(
+      c => c.subject,
+    );
+    expect(own).toContain("edit d before");
+    expect(own).not.toContain("a new app at d");
+    expect(own).not.toContain("edit the new d");
+    const newcomer = (await resolveProjectRef(WS, NEW))!;
+    const theirs = (await projectHistory(scopeOf(newcomer), 50)).map(
+      c => c.subject,
+    );
+    expect(theirs).toEqual(["edit the new d", "a new app at d"]);
+  });
+
+  it("stops at the app's creation: a deleted app that held the name before is not its past", async () => {
+    await edit("apps/p/mako.json", manifest("Old P", newId()), "old p");
+    await edit("apps/p/x.ts", "export {};\n", "edit old p");
+    await externalCommit(
+      WS,
+      {},
+      ["apps/p/mako.json", "apps/p/x.ts"],
+      "delete old p",
+    );
+    const P = newId();
+    await edit("apps/p/mako.json", manifest("New P", P), "new p");
+    await renameObject(admin, "app", { ref: "p", slug: "p2" });
+    const project = (await resolveProjectRef(WS, P))!;
+    expect(
+      (await projectHistory(scopeOf(project), 50)).map(c => c.subject),
+    ).toEqual(['Move app "New P" (apps/p → apps/p2)', "new p"]);
   });
 });
