@@ -18,6 +18,8 @@ import {
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { NotebookManager } from "../utils/notebook-manager";
 import { getNotebookStore } from "../notebooks/store";
+import { NotebookVersionConflictError } from "../notebooks/store/types";
+import { createSerializer } from "../apps/serialized";
 import { checkpointNotebook } from "../notebooks/notebook-git.service";
 import type { NotebookDoc } from "../notebooks/types";
 import { RenameError } from "./types";
@@ -66,7 +68,23 @@ export interface RenameNotebookInput {
   clientId?: string;
 }
 
-export async function renameNotebook(input: RenameNotebookInput): Promise<{
+/**
+ * One rename at a time per workspace on this instance: two renames of one
+ * notebook interleaving their store write and their index write left the
+ * store saying one name and the index (the tree, the file) the other, for
+ * good. Across instances the store write is a compare-and-swap on the
+ * version just read (the loser answers 409), and the index follows the
+ * store after the write (below).
+ */
+const serializedRenames = createSerializer();
+
+export function renameNotebook(
+  input: RenameNotebookInput,
+): ReturnType<typeof renameNotebookNow> {
+  return serializedRenames(input.workspaceId, () => renameNotebookNow(input));
+}
+
+async function renameNotebookNow(input: RenameNotebookInput): Promise<{
   index: INotebookIndex;
   doc: NotebookDoc;
   /** The checkpoint commit that moved the file, when a repo is bound. */
@@ -92,17 +110,43 @@ export async function renameNotebook(input: RenameNotebookInput): Promise<{
     throw new RenameError("You cannot rename this notebook", 403);
   }
 
-  const doc = await getNotebookStore().update(
-    input.workspaceId,
-    input.notebookId,
-    { name },
-  );
+  const store = getNotebookStore();
+  const current = await store.get(input.workspaceId, input.notebookId);
+  if (!current) throw new RenameError("Notebook not found", 404);
+  let doc: NotebookDoc | null;
+  try {
+    doc = await store.update(
+      input.workspaceId,
+      input.notebookId,
+      { name },
+      { expectedVersion: current.version },
+    );
+  } catch (error) {
+    if (error instanceof NotebookVersionConflictError) {
+      throw new RenameError(
+        "The notebook changed while it was being renamed (another rename or a save). Reload and try again.",
+        409,
+      );
+    }
+    throw error;
+  }
   if (!doc) throw new RenameError("Notebook not found", 404);
 
   await updateNotebookIndex(input.workspaceId, input.notebookId, {
     name: doc.name,
     updatedAt: new Date(doc.updatedAt),
   });
+  // The index follows the store: a later write of the name (another
+  // instance's rename, an editor save) that landed between the two writes
+  // above must not be overwritten by this older one.
+  const latest = await store.get(input.workspaceId, input.notebookId);
+  if (latest && latest.name !== doc.name) {
+    await updateNotebookIndex(input.workspaceId, input.notebookId, {
+      name: latest.name,
+      updatedAt: new Date(latest.updatedAt),
+    });
+    doc = latest;
+  }
   publishRealtimeEvent(input.workspaceId, { type: "notebook.tree.updated" });
   publishRealtimeEvent(input.workspaceId, {
     type: "notebook.updated",
