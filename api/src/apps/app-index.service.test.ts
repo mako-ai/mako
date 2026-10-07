@@ -591,7 +591,7 @@ describe("moves", () => {
         folderSegments: ["Empty"],
         slug: "../x",
       }),
-    ).rejects.toThrow(/Invalid/);
+    ).rejects.toThrow("Start the link with a letter or a number.");
   });
 });
 

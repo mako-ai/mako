@@ -16,23 +16,22 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { appNameProblem, normalizeAppName } from "@mako/schemas";
 
 /**
- * A name git and a URL are both happy with — the server's `isSafeSegment`
- * rule (app-paths.ts), Unicode letters and digits included, so "Café" is a
- * folder here as it is on main.
+ * Why `name` cannot be a new folder name, or null when it can — the
+ * server's own rule (`appNameProblem` in @mako/schemas, which the API's
+ * app-paths.ts uses too), in the server's words: Unicode letters and digits
+ * included ("Café" is a folder here as it is on main), never a Windows
+ * device name or an id look-alike.
  */
+export function folderNameProblem(name: string): string | null {
+  return appNameProblem(normalizeAppName(name), "folder");
+}
+
+/** {@link folderNameProblem} as a yes/no. */
 export function isValidFolderName(name: string): boolean {
-  const n = name.trim();
-  return (
-    n.length > 0 &&
-    n.length <= 100 &&
-    /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u.test(n) &&
-    n !== "." &&
-    n !== ".." &&
-    !n.endsWith(".") &&
-    !n.endsWith(" ")
-  );
+  return folderNameProblem(name) === null;
 }
 
 interface FolderNameDialogProps {
@@ -61,7 +60,8 @@ export function FolderNameDialog({
   useEffect(() => {
     if (open) setName(initialName);
   }, [open, initialName]);
-  const valid = isValidFolderName(name);
+  const problem = folderNameProblem(name);
+  const valid = problem === null;
   const submit = () => {
     if (!valid || busy) return;
     void onConfirm(name.trim());
@@ -86,11 +86,7 @@ export function FolderNameDialog({
             if (e.key === "Enter") submit();
           }}
           error={name.length > 0 && !valid}
-          helperText={
-            name.length > 0 && !valid
-              ? "Letters, numbers, spaces, dots, dashes and underscores; must start with a letter or number."
-              : " "
-          }
+          helperText={name.length > 0 && problem ? problem : " "}
           disabled={busy}
         />
         <Typography variant="caption" color="text.secondary">

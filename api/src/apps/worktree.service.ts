@@ -1243,7 +1243,9 @@ export class AppFolderError extends Error {
 function folderPathOf(target: AppFolderTarget): string {
   for (const seg of target.folderSegments) {
     if (!isSafeSegment(seg)) {
-      throw new AppFolderError(`Invalid folder name: ${JSON.stringify(seg)}`);
+      throw new AppFolderError(
+        newSegmentProblem(seg) ?? `"${seg}" can't be a folder name.`,
+      );
     }
   }
   return [
@@ -1283,9 +1285,7 @@ function assertNewFolderNames(
     if (exists) continue;
     const problem = newSegmentProblem(seg);
     if (problem) {
-      throw new AppFolderError(
-        `Invalid folder name: ${JSON.stringify(seg)} — ${problem}`,
-      );
+      throw new AppFolderError(problem);
     }
   }
 }
@@ -1879,13 +1879,11 @@ async function moveProjectWith(
   if (slug !== currentSlug) {
     const problem = newAppSlugProblem(slug);
     if (problem) {
-      throw new AppFolderError(
-        `Invalid app folder name: ${JSON.stringify(slug)} — ${problem}`,
-      );
+      throw new AppFolderError(problem);
     }
   } else if (!isSafeSegment(slug)) {
     throw new AppFolderError(
-      `Invalid app folder name: ${JSON.stringify(slug)}`,
+      newAppSlugProblem(slug) ?? `"${slug}" can't be a link.`,
     );
   }
   const to = appRepoPath({ ...target, slug });
