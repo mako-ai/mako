@@ -68,6 +68,13 @@ vi.mock("../../services/auto-join.service", () => ({
 vi.mock("../../inngest", () => ({
   inngest: { send: async () => ({}), createFunction: () => ({}) },
 }));
+// GET /apps refreshes the repo's agent template in the background, as a
+// commit of its own: real, but not part of any scenario here, and it would
+// land in the middle of the next one's "nothing was committed".
+vi.mock("../workspace-template", async importOriginal => ({
+  ...(await importOriginal<typeof import("../workspace-template")>()),
+  ensureWorkspaceTemplateSoon: () => undefined,
+}));
 
 import { AppProject } from "../../database/workspace-schema";
 import { ensureProjectRow, resolveProjectRef } from "../worktree.service";
