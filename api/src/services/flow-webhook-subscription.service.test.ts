@@ -111,23 +111,64 @@ async function testSkipsFlowsThatWereNeverProvisioned() {
   assert.equal(calls.length, 0);
 }
 
-async function testUpdatesWithEnabledEntitiesAndPersistsNewId() {
+function stubCommit(result: { ok: boolean; sourceBlobSha?: string }) {
+  const commits: Array<{ providerWebhookId?: string; message?: string }> = [];
+  const deps = {
+    commitFlowFile: (async (flow: any, _actor?: string, message?: string) => {
+      // Snapshot what would be serialized into flows/<slug>.yml.
+      commits.push({
+        providerWebhookId: flow.webhookConfig?.providerWebhookId,
+        message,
+      });
+      return { changed: result.ok, ...result };
+    }) as any,
+  };
+  return { commits, deps };
+}
+
+async function testNewIdIsCommittedToTheFlowFileThenIndexed() {
   const { calls, persisted } = stubProvider(async () => ({
     providerWebhookId: "we_new",
     endpointUrl: ENDPOINT,
   }));
+  const { commits, deps } = stubCommit({ ok: true, sourceBlobSha: "sha_1" });
 
-  const result = await syncFlowWebhookSubscription(webhookFlow());
+  const flow = webhookFlow();
+  const result = await syncFlowWebhookSubscription(flow, deps);
 
   assert.deepEqual(result, { status: "updated", providerWebhookId: "we_new" });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].endpointUrl, ENDPOINT);
   assert.equal(calls[0].providerWebhookId, "we_old");
   assert.deepEqual(calls[0].enabledEntities, ["invoices", "payouts"]);
+  // The file is the source of truth: committed first, with the new id…
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0].providerWebhookId, "we_new");
+  assert.match(commits[0].message ?? "", /we_new/);
+  // …then mirrored into the index with the committed blob sha.
   assert.equal(persisted.length, 1);
   assert.deepEqual((persisted[0] as unknown[])[1], {
-    $set: { "webhookConfig.providerWebhookId": "we_new" },
+    $set: {
+      "webhookConfig.providerWebhookId": "we_new",
+      sourceBlobSha: "sha_1",
+    },
   });
+}
+
+async function testFailedCommitLeavesIndexUntouched() {
+  const { persisted } = stubProvider(async () => ({
+    providerWebhookId: "we_new",
+    endpointUrl: ENDPOINT,
+  }));
+  const { commits, deps } = stubCommit({ ok: false });
+
+  const flow = webhookFlow();
+  const result = await syncFlowWebhookSubscription(flow, deps);
+
+  assert.equal(result.status, "updated");
+  assert.equal(commits.length, 1);
+  assert.equal(persisted.length, 0, "no index write without a commit");
+  assert.equal(flow.webhookConfig.providerWebhookId, "we_old");
 }
 
 async function testUnchangedIdIsNotRewritten() {
@@ -135,8 +176,10 @@ async function testUnchangedIdIsNotRewritten() {
     providerWebhookId: "we_old",
     endpointUrl: ENDPOINT,
   }));
-  const result = await syncFlowWebhookSubscription(webhookFlow());
+  const { commits, deps } = stubCommit({ ok: true });
+  const result = await syncFlowWebhookSubscription(webhookFlow(), deps);
   assert.equal(result.status, "updated");
+  assert.equal(commits.length, 0);
   assert.equal(persisted.length, 0);
 }
 
@@ -165,7 +208,8 @@ async function testReportsMissingSubscriptionAndProviderErrors() {
 async function main() {
   testEntitySignatureIgnoresOrderAndDisabled();
   await testSkipsFlowsThatWereNeverProvisioned();
-  await testUpdatesWithEnabledEntitiesAndPersistsNewId();
+  await testNewIdIsCommittedToTheFlowFileThenIndexed();
+  await testFailedCommitLeavesIndexUntouched();
   await testUnchangedIdIsNotRewritten();
   await testReportsMissingSubscriptionAndProviderErrors();
 }

@@ -7,6 +7,10 @@
  * event list: the new entity only ever gets created-anchor polls, and its
  * updates are silently lost.
  *
+ * The subscription id it settles on is definition, so it is recorded the way
+ * every definition change is: committed to `flows/<slug>.yml`
+ * (`webhook.provider_webhook_id`), then mirrored into the Mongo index.
+ *
  * Best-effort by design: a provider outage or a revoked key must not fail a
  * flow save or a repo push. Every outcome is returned and logged.
  */
@@ -15,10 +19,11 @@ import { Types } from "mongoose";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
-
-export { flowEntitySignature } from "../sync-cdc/entity-selection";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
+import { commitFlowFile } from "./flow-config.service";
+
+export { flowEntitySignature } from "../sync-cdc/entity-selection";
 
 const logger = loggers.api("flow-webhook-subscription");
 
@@ -28,13 +33,15 @@ export type FlowWebhookSubscriptionSyncResult =
   | { status: "not_found" }
   | { status: "failed"; error: string };
 
-type FlowLike = Pick<
-  IFlow,
-  "_id" | "type" | "dataSourceId" | "webhookConfig" | "entityFilter"
-> & { entityLayouts?: IFlow["entityLayouts"] };
+export interface FlowWebhookSubscriptionDeps {
+  commitFlowFile: typeof commitFlowFile;
+}
+
+const defaultDeps: FlowWebhookSubscriptionDeps = { commitFlowFile };
 
 export async function syncFlowWebhookSubscription(
-  flow: FlowLike,
+  flow: IFlow,
+  deps: FlowWebhookSubscriptionDeps = defaultDeps,
 ): Promise<FlowWebhookSubscriptionSyncResult> {
   const webhook = flow.webhookConfig;
   if (flow.type !== "webhook") {
@@ -79,14 +86,7 @@ export async function syncFlowWebhookSubscription(
     }
 
     if (updated.providerWebhookId !== webhook.providerWebhookId) {
-      await Flow.updateOne(
-        { _id: new Types.ObjectId(String(flow._id)) },
-        {
-          $set: {
-            "webhookConfig.providerWebhookId": updated.providerWebhookId,
-          },
-        },
-      );
+      await recordProviderWebhookId(flow, updated.providerWebhookId, deps);
     }
     logger.info("Provider webhook subscription synced to flow entities", {
       flowId: String(flow._id),
@@ -102,4 +102,47 @@ export async function syncFlowWebhookSubscription(
     });
     return { status: "failed", error: message };
   }
+}
+
+/**
+ * Commit the id to the flow file first; only a committed definition reaches
+ * the Mongo index. A failed commit leaves both untouched — the provider is
+ * already updated, and the next sync finds the endpoint by URL again.
+ */
+async function recordProviderWebhookId(
+  flow: IFlow,
+  providerWebhookId: string,
+  deps: FlowWebhookSubscriptionDeps,
+): Promise<void> {
+  const previous = flow.webhookConfig?.providerWebhookId;
+  if (flow.webhookConfig) {
+    flow.webhookConfig.providerWebhookId = providerWebhookId;
+  }
+  const committed = await deps.commitFlowFile(
+    flow,
+    undefined,
+    `flow: "${flow.name ?? flow.slug}" (${flow.slug}): webhook subscription ${providerWebhookId}`,
+  );
+  if (!committed.ok) {
+    if (flow.webhookConfig) {
+      flow.webhookConfig.providerWebhookId = previous;
+    }
+    logger.warn("Provider webhook id not committed to the flow file", {
+      flowId: String(flow._id),
+      providerWebhookId,
+      error: committed.error,
+    });
+    return;
+  }
+  await Flow.updateOne(
+    { _id: new Types.ObjectId(String(flow._id)) },
+    {
+      $set: {
+        "webhookConfig.providerWebhookId": providerWebhookId,
+        ...(committed.sourceBlobSha
+          ? { sourceBlobSha: committed.sourceBlobSha }
+          : {}),
+      },
+    },
+  );
 }

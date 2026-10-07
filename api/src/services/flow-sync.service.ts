@@ -576,14 +576,17 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     entities: file.backfillSchedule?.entities,
   } as IFlow["backfillSchedule"];
 
-  // Enabled-ness only. The endpoint is inbound URL identity minted once in
-  // Mongo (17 of 31 production flows have external systems POSTing to it) and
-  // the secret is a credential; neither is in the file and neither may be
-  // touched from here.
+  // Enabled-ness and the provider subscription id. The endpoint is inbound
+  // URL identity minted once in Mongo (17 of 31 production flows have
+  // external systems POSTing to it) and the secret is a credential; neither
+  // is in the file and neither may be touched from here.
   if (file.type === "webhook") {
     doc.webhookConfig = {
       ...(doc.webhookConfig ?? {}),
       enabled: file.webhookEnabled !== false,
+      // The provider subscription id is definition, not identity: the file
+      // owns it.
+      providerWebhookId: file.webhookProviderId,
     } as IFlow["webhookConfig"];
   }
 

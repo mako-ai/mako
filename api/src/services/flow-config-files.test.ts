@@ -63,6 +63,8 @@ function flowWithTraps(): IFlow {
       // TRAPS: identity + credential + counters
       endpoint: "https://app.mako.ai/api/webhooks/TRAP-ENDPOINT-ID",
       secret: "whsec_TRAP_SECRET_VALUE",
+      // Definition, not a trap: the provider subscription id is in the file.
+      providerWebhookId: "we_1Provider",
       lastReceivedAt: new Date("2026-08-31T10:00:00Z"),
       totalReceived: 4321,
     },
@@ -164,8 +166,12 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   ]) {
     assert.ok(yamlText.includes(needle), `expected ${needle} in:\n${yamlText}`);
   }
-  // A webhook flow records only whether delivery is enabled.
-  assert.match(yamlText, /webhook:\n\s+enabled: true/);
+  // A webhook flow records whether delivery is enabled and which provider
+  // subscription delivers to it — never the endpoint or the secret.
+  assert.match(
+    yamlText,
+    /webhook:\n\s+enabled: true\n\s+provider_webhook_id: we_1Provider/,
+  );
 }
 
 // ── round-trip ──
@@ -195,6 +201,7 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   assert.equal(parsed.incremental?.trackingColumn, "updated_at");
   assert.equal(parsed.pagination?.keysetDirection, "asc");
   assert.equal(parsed.webhookEnabled, true);
+  assert.equal(parsed.webhookProviderId, "we_1Provider");
   // Pass-through blobs are snake_case in the file and camelCase back in
   // memory, so the file reads consistently and the row shape is preserved.
   assert.deepEqual(parsed.destination.table?.partitioning, {
