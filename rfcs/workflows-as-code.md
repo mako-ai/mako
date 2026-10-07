@@ -20,6 +20,26 @@ This is the dbt pattern applied to code. dbt models live in `dbt/` and dbt
 runs them; workflows live in `workflows/` and Hatchet runs them. Mako adds
 discovery, deploys, run inspection and operations.
 
+### 1.1 Words used in the UI
+
+Two terms come up on every screen. Both describe where a workflow's code
+comes from.
+
+- **Live.** The code on `main`. It runs for real: schedules fire, it reads
+  and writes real data, and agents and the API trigger it. "Live 8fc2ad1"
+  means the code at commit `8fc2ad1` is what runs now.
+- **Branch test.** The code on the branch you are editing, before it is
+  merged. Clicking Run on it executes your unmerged changes once, so you can
+  check them. Schedules never fire for a branch test, and it cannot change
+  what runs live.
+- **Version** (the history list). Every merge to `main` builds a new
+  version. The history shows each one with its commit, when it went live,
+  and its build error if it failed. Engineers would call these deployments;
+  the UI says versions.
+
+In short: you edit on a branch, try it with a branch test, merge, and it
+becomes the new live version.
+
 ## 2. What v4 changes from v3
 
 v3 had the right boundary but left the parts that are specific to Mako
@@ -32,11 +52,12 @@ open. Each item below was ambiguous or wrong in v3:
 | 3 | Sandbox execution is "not V1" | Workers run in a **per-workspace E2B box**, as workspace connectors do | Workflow code is untrusted tenant code. It never runs in the API process. This reuses existing infra and adds no new sandbox feature. |
 | 4 | `db.customers.findMany(...)` | Data access goes through **`@makoai/workflows`**: `mako.query()` and `mako.ai` | Tenant code has no database client or credentials today. Something has to give it data. |
 | 5 | `ctx.taskOutput(task)` | `await ctx.parentOutput(task)` | `taskOutput` does not exist in Hatchet's TypeScript SDK. |
-| 6 | Three environments: local, staging, production | Two axes: **Mako's deployments** (local, staging, prod, each with its own Hatchet) and **per-workspace lanes** (`prod` and `dev`) | v3 mixed the two. A customer workspace needs a safe place to try a branch. |
+| 6 | Three environments: local, staging, production | Two separate things: **Mako's own environments** (local, staging, prod, each with its own Hatchet) and, per workspace, **Live** and **Branch test** (§1.1, §8) | v3 mixed the two. A customer needs a safe place to try a branch before it runs for real. |
 | 7 | Git SHA "associated with every run" | The SHA comes from the **worker label** of the worker that ran the task | Cron runs are started by Hatchet, so Mako cannot stamp them at trigger time. |
 | 8 | 800–1,500 LOC | **About 3,800 LOC** with tests (§12) | The UI alone is roughly 1,400. Build, worker box, tenancy and the SDK are the rest. |
 | 9 | "Open raw execution in Hatchet" | Staff and self-hosters only | Customers have no Hatchet login and should not get one. |
 | 10 | Not addressed | **Coding agents** get three MCP tools and a skill | The definition of done says an agent can add a workflow. It also has to see the run. |
+| 11 | Not addressed | **Flows is renamed Sync** in the UI, with a new icon | "Flows" next to "Workflows" in the rail reads as the same thing twice. Sync says what it does: move data from a source to a destination. |
 
 ## 3. Decisions
 
@@ -53,9 +74,10 @@ yes from Jonas before the spike starts.
 | Deploy | Push to `main`, then Mako builds, typechecks and rolls the worker. A failed build leaves the previous worker running. |
 | Version | Git commit SHA. No Mako version table. |
 | Execution state | Hatchet only. Mako stores **deployments** (which SHA is live), never runs. |
-| Tenancy | One Hatchet tenant per workspace per lane: `ws_<id>_prod` and `ws_<id>_dev`. |
+| Tenancy | One Hatchet tenant per workspace for Live (`ws_<id>_prod`) and one for branch tests (`ws_<id>_dev`). See §1.1 and §8. |
 | Data and AI access | Through the Mako API via `@makoai/workflows`, with a short-lived scoped token. Read by default; writes only to connections the workspace allows. **confirm** |
-| UI | A new "Workflows" rail section, built like Transforms (dbt): explorer tree, workflow tab, run tab, all-runs tab. |
+| UI | A new "Workflows" rail section, built like Transforms (dbt): explorer tree, workflow tab, run tab, all-runs tab. Icon: lucide `Workflow`. |
+| Flows | Renamed **Sync** in the UI (rail, tabs, breadcrumbs, command palette, docs). Icon changes from `ArrowLeftRight` to lucide `RefreshCcwDot`. The repo folder `flows/`, the API routes and the Mongo collections keep their names. Ships before Workflows. |
 
 ## 4. The workflow file
 
@@ -166,7 +188,7 @@ Mako adds exactly one collection, and it holds deployments, not runs.
 ```
 edit workflows/*.ts  (IDE, terminal or agent; on a session branch)
         │
-        ├─ dev lane:  `mako workflows dev` in the session box
+        ├─ branch test: `mako workflows dev` in the session box
         │             → worker on ws_<id>_dev, namespace = session id
         │             → "Run on branch" from the workflow tab
         ▼
@@ -207,24 +229,37 @@ pin a run's remaining tasks to the worker that started it (worker affinity
 on `git_sha`) is spike question S3. If it cannot, mixed runs are allowed and
 shown, and this section records that.
 
-## 8. Tenancy and environments
+## 8. Live, branch tests and Mako's own environments
 
-Two axes that v3 merged:
+v3 merged two unrelated things. They are separate here.
 
-**Mako's own deployments.** Local, staging and production each run their own
-Hatchet with its own Postgres. Their state never mixes. Locally, `pnpm dev`
-starts Hatchet Lite in docker-compose next to the notebook kernel.
+**Mako's own environments.** This is about how Mako itself is hosted, and
+customers never see it. Local, staging and production Mako each run their
+own Hatchet with its own Postgres, and their state never mixes. Locally,
+`pnpm dev` starts Hatchet Lite in docker-compose next to the notebook kernel.
 
-**Per-workspace lanes.** Inside one Hatchet, each workspace gets two tenants:
+**Live and Branch test, per workspace.** This is what customers see (§1.1).
+Inside one Hatchet, each workspace gets two tenants:
 
-| Lane | Tenant | Code from | Who triggers | Schedules |
-|---|---|---|---|---|
-| `prod` | `ws_<id>_prod` | `main`, built by Mako | Cron, UI, API, agents | On |
-| `dev` | `ws_<id>_dev` | A session branch, live in the session box | UI and agents in that session | Off |
+| UI name | Tenant | Code from | Runs on | Who can start it | Schedules |
+|---|---|---|---|---|---|
+| Live | `ws_<id>_prod` | `main`, built by Mako on merge | The workspace's workflow box | Cron, UI, API, agents | Fire |
+| Branch test | `ws_<id>_dev` | The branch open in your session, unmerged | Your session box, while it is open | You and your agent, from that session | Never fire |
 
-Dev workers set Hatchet's client `namespace` to the session id. Two people
-on the same workspace can then register the same workflow name without
-overwriting each other, and nothing on a branch can change what prod runs.
+A typical day:
+
+1. You or your agent edit `workflows/customer-health.workflow.ts` on the
+   branch `jonas/score-v2`.
+2. The session box starts a test worker for that branch
+   (`mako workflows dev`, started automatically when the session opens a
+   `workflows/` file).
+3. In the Run dialog you pick "My branch" and click Run. The run appears
+   under "Branch test" in the explorer with your branch name.
+4. It works, so you merge. Mako builds the new version, and it becomes live.
+
+Test workers set Hatchet's client `namespace` to the session id. Two people
+on the same workspace can then test the same workflow name at once without
+overwriting each other, and nothing on a branch can change what runs live.
 
 ## 9. Security model
 
@@ -237,7 +272,7 @@ connectors (`rfcs/connectors-as-code.md` §6.4).
 | Query connections through Mako | Hold database credentials | `mako.query` is proxied. The box holds a token, not a password. |
 | Write to allowed connections | Write anywhere else | `writableConnections` is checked server-side per call |
 | Use a token scoped to `workflows:runtime` for this workspace, valid 1 hour and refreshed by the box supervisor | Push to the repo, call MCP tools or reach another workspace | The box never clones (it receives the bundle), so it never gets the `mgt_` git token |
-| See its own workspace's runs | See another tenant's runs | One Hatchet tenant per workspace and lane |
+| See its own workspace's runs | See another tenant's runs | One Hatchet tenant per workspace, Live and branch test apart |
 | Run until its `executionTimeout` | Run forever | Hatchet enforces the timeout. The box has CPU and memory limits. |
 
 ## 10. Product, V1
@@ -248,11 +283,11 @@ in the companion artifact.
 
 | Surface | What it shows | Built from |
 |---|---|---|
-| **Rail + explorer** | "Workflows" rail item. Tree of workflows from the live manifest, with last-run status dot and schedule. Deployment banner at the top: live SHA, worker online or offline, failed build. | `ExplorerShell`, `ResourceTree`, `FlowsExplorer` |
+| **Rail + explorer** | "Workflows" rail item. Two groups: **Live** (workflows from `main`, with last-run status and schedule) and **Branch test** (only while your session has unmerged changes). A banner at the top shows the live version, whether its worker is online, and a failed build. "Version history" lists every merge. | `ExplorerShell`, `ResourceTree`, `FlowsExplorer` |
 | **Workflow tab** | Header (name, file, SHA, schedule, next fire), DAG from the manifest, recent runs with a duration chart, Run button. | `DbtJobView` |
 | **Run tab** | The main screen. Status header, waterfall of tasks with every attempt, step panel with Input, Output, Logs, Attempts and Metadata. AI steps render model and tool lines as cards. Cancel, Replay, Replay from step. | `DbtRunHistory` |
-| **All runs tab** | Filterable table across workflows: workflow, status, lane, trigger, SHA, time range. | `DbtRunsView` |
-| **Trigger dialog** | JSON input editor, prefilled from the last run's input, with lane picker. | New |
+| **All runs tab** | Filterable table across workflows: workflow, status, Live or branch test, trigger, SHA, time range. | `DbtRunsView` |
+| **Trigger dialog** | JSON input editor, prefilled from the last run's input, with a choice between the live version and your branch. | New |
 | **Chat card** | A run the agent started, live, like `DbtRunCard`. | `DbtRunCard` |
 
 Not in V1: editing in a form, a visual builder, approvals, a human inbox.
@@ -263,7 +298,7 @@ Three tools, all in the **deferred** tier (`DEFERRED_BUILTIN_TOOL_DOMAINS`),
 so the tier-policy test passes:
 
 - `workflow_list` returns the manifest and the live deployment.
-- `workflow_trigger` takes a name, input and lane, and returns a run id.
+- `workflow_trigger` takes a name, input and `live` or `branch`, and returns a run id.
 - `workflow_get_run` returns the run with steps, errors and the tail of each
   task's log.
 
@@ -280,8 +315,8 @@ the workspace's tenant token.
 | Route | Does |
 |---|---|
 | `GET /` | Manifest plus live deployment |
-| `GET /deployments` | Deployment history with build logs |
-| `GET /runs?workflow&status&lane&since&until&cursor` | Proxies Hatchet run list |
+| `GET /versions` | Version history (one per merge to `main`) with build logs |
+| `GET /runs?workflow&status&target&since&until&cursor` | Proxies Hatchet run list |
 | `GET /runs/:runId` | Run, tasks and attempts, with SHA per task |
 | `GET /runs/:runId/tasks/:taskId/logs` | Proxies task logs |
 | `POST /:name/trigger` | Starts a run. Adds `additionalMetadata` `{ triggeredBy, trigger: "manual" \| "agent" \| "api" }`. |
@@ -338,7 +373,7 @@ One week, before M1. Each question has a pass condition.
 | **M0** spike | §13 answers | The plan holds |
 | **M1** runs | Tenants, build, workflow box, `@makoai/workflows` query, sequential example, `GET /runs` | Push to main runs a workflow |
 | **M2** see it | Rail, explorer, workflow tab, run tab, all runs | Every step is inspectable |
-| **M3** operate it | Trigger, cancel, replay, cron example, AI example, MCP tools, skill, chat card, dev lane | An agent can write, run and debug a workflow end to end |
+| **M3** operate it | Trigger, cancel, replay, cron example, AI example, MCP tools, skill, chat card, branch tests | An agent can write, run and debug a workflow end to end |
 
 ## 15. First examples
 
@@ -353,7 +388,7 @@ workspace-template examples:
 
 | Need | Use |
 |---|---|
-| Move data from a source to a destination, on a schedule or by CDC | **Flows** (declarative YAML, Inngest) |
+| Move data from a source to a destination, on a schedule or by CDC | **Sync**, formerly Flows (declarative YAML, Inngest) |
 | Transform data in the warehouse | **dbt** |
 | Refresh an app's data on a schedule | **App bindings** with `-- schedule:` |
 | Multi-step logic in code: call APIs and models, branch, retry, combine data | **Workflows** |
@@ -377,11 +412,11 @@ self-hosted customer workers.
 3. Hatchet runs it on the workspace's worker. Cron workflows fire without
    Mako involvement.
 4. The explorer lists it with its live SHA and schedule.
-5. The all-runs tab lists every run, filterable by workflow, status, lane and time.
+5. The all-runs tab lists every run, filterable by workflow, status, Live or branch test, and time.
 6. The run tab shows every task and attempt: status, timing, input, output,
    logs, retries and error, with the SHA that ran it.
 7. Trigger, cancel and replay work from the UI and from the MCP tools.
-8. The same workflow runs on a session branch in the dev lane without
+8. The same workflow runs as a branch test on a session branch without
    touching prod.
 9. Mako's database holds no run state: `workflow_deployments` is the only
    new collection.
