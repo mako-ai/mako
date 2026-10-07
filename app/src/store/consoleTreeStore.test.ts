@@ -367,6 +367,81 @@ describe("consoleTreeStore — the tree shows the name the server SAVED", () => 
     expect(useConsoleTreeStore.getState().myItems[WID][0].name).toBe(
       "A-B - test",
     );
+    // …and says so, as the dialogs do.
+    expect(useConsoleTreeStore.getState().actionNotice[WID]).toBe(
+      "Saved as “A-B - test”",
+    );
+  });
+
+  it("a name saved as typed says nothing more", async () => {
+    seed([file("a", "old")]);
+    useConsoleTreeStore.setState({ actionNotice: {} });
+    http.PATCH.mockResolvedValueOnce(
+      ok({
+        success: true,
+        console: {
+          id: "a",
+          name: "plain",
+          path: "plain",
+          folderId: null,
+          access: "private",
+          draftRevision: 2,
+          isSaved: true,
+        },
+      }),
+    );
+    await useConsoleTreeStore.getState().renameItem(WID, "a", "plain", false);
+    expect(useConsoleTreeStore.getState().actionNotice[WID] ?? null).toBeNull();
+  });
+
+  it("a folder rename rewrites the paths of everything under it", async () => {
+    seed([
+      folder("f", "New Folder", [
+        { ...file("a", "Revenue"), path: "New Folder/Revenue" },
+        {
+          ...folder("g", "Deep", [
+            { ...file("b", "Deeper"), path: "New Folder/Deep/Deeper" },
+          ]),
+          path: "New Folder/Deep",
+        },
+      ]),
+    ]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({ success: true, data: { name: "Fold2" } }),
+    );
+    http.GET.mockResolvedValue(ok({ success: false }));
+    await useConsoleTreeStore.getState().renameItem(WID, "f", "Fold2", true);
+    const f = useConsoleTreeStore.getState().myItems[WID][0];
+    const byId = (id: string) =>
+      [
+        f,
+        ...(f.children ?? []),
+        ...(f.children ?? []).flatMap(c => c.children ?? []),
+      ].find(n => n.id === id);
+    expect(f.path).toBe("Fold2");
+    expect(byId("g")?.path).toBe("Fold2/Deep");
+    expect(byId("b")?.path).toBe("Fold2/Deep/Deeper");
+    expect(byId("a")?.path).toBe("Fold2/Revenue");
+    http.GET.mockReset();
+  });
+
+  it("a deleted folder stays gone even when a refetch during the delete listed it", async () => {
+    seed([folder("f", "Fold2", [file("a", "x")]), file("c", "keep")]);
+    http.DELETE.mockImplementationOnce(async () => {
+      // A tree refetch (another event) answered while the delete ran.
+      useConsoleTreeStore.setState(state => ({
+        myItems: {
+          [WID]: [folder("f", "Fold2", []), ...state.myItems[WID]],
+        },
+      }));
+      return ok({ success: true });
+    });
+    await expect(
+      useConsoleTreeStore.getState().deleteItem(WID, "f", true),
+    ).resolves.toBe(true);
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
+      "keep",
+    ]);
   });
 
   it("a folder rename and a new folder take the server's name", async () => {

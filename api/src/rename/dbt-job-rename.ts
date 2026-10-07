@@ -37,7 +37,6 @@ import {
 } from "../database/workspace-schema";
 import {
   JOB_SLUG_RE,
-  isValidJobSlug,
   jobFilePath,
   parseJobFile,
 } from "../dbt/dbt-config-files";
@@ -53,9 +52,8 @@ import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
-import { cleanRenameTitle } from "./title-rules";
+import { cleanRenameTitle, renameSlugError } from "./title-rules";
 import { retiredIdHolders } from "./retired-ids";
-import { unsafeSlugReason } from "../utils/slugify";
 import {
   RenameError,
   type RenameContext,
@@ -281,13 +279,8 @@ export async function renameDbtJob(
   const newSlug = request.slug?.trim();
   const slugChanged = newSlug !== undefined && newSlug !== oldSlug;
   if (slugChanged) {
-    if (!isValidJobSlug(newSlug)) {
-      throw new RenameError(
-        `"${newSlug}" is not a valid file name: lowercase letters, digits and single dashes, up to 64 characters (it becomes dbt/jobs/${newSlug}.yml).`,
-      );
-    }
-    const unsafe = unsafeSlugReason(newSlug);
-    if (unsafe) throw new RenameError(unsafe);
+    const slugProblem = renameSlugError("dbt_job", newSlug);
+    if (slugProblem) throw new RenameError(slugProblem);
     const holder = await DbtJob.findOne({
       projectId: project._id,
       _id: { $ne: row._id },

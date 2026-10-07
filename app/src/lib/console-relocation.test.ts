@@ -6,6 +6,7 @@ import {
   consoleNameSavedAsNotice,
   consoleNameTakenBy,
   consoleCopiedNotice,
+  consoleDeleteConfirmText,
   consoleNameTakenMessage,
   consolePlacement,
   consoleRestoredNotice,
@@ -441,5 +442,22 @@ describe("names taken and restores, in words", () => {
     expect(consoleRestoredNotice("Weekly", "Weekly (2)")).toBe(
       "Restored as 'Weekly (2)'",
     );
+  });
+});
+
+describe("consoleDeleteConfirmText — says what a delete does", () => {
+  it("consoles go to the trash and can be restored; never 'permanently'", () => {
+    const folder = consoleDeleteConfirmText({
+      name: "Fold2",
+      isDirectory: true,
+    });
+    expect(folder).toMatch(/Fold2/);
+    expect(folder).toMatch(/trash/);
+    expect(folder).toMatch(/restored/);
+    expect(folder).toMatch(/another member's console/);
+    expect(folder).not.toMatch(/permanent/i);
+    const one = consoleDeleteConfirmText({ name: "x", isDirectory: false });
+    expect(one).toMatch(/trash/);
+    expect(one).not.toMatch(/permanent/i);
   });
 });

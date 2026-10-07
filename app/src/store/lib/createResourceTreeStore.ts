@@ -106,6 +106,13 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
   actionError: Record<string, string | null>;
   /** The refusal was shown: forget it. */
   clearActionError: (workspaceId: string) => void;
+  /**
+   * What the last inline rename did when it is not what was typed — the
+   * server saved another name ("a/b" → "a-b": `Saved as “a-b”`), the
+   * dialogs' feedback for the tree. Per workspace; null when nothing to say.
+   */
+  actionNotice: Record<string, string | null>;
+  clearActionNotice: (workspaceId: string) => void;
 
   fetchTree: (workspaceId: string) => Promise<void>;
   refresh: (workspaceId: string) => Promise<void>;
@@ -336,10 +343,17 @@ export function createResourceTreeStore<
       loading: {},
       error: {},
       actionError: {},
+      actionNotice: {},
 
       clearActionError: workspaceId => {
         set(state => {
           state.actionError[workspaceId] = null;
+        });
+      },
+
+      clearActionNotice: workspaceId => {
+        set(state => {
+          state.actionNotice[workspaceId] = null;
         });
       },
 
@@ -543,9 +557,12 @@ export function createResourceTreeStore<
                 workspaceId,
                 itemId,
               );
-              if (!node) return;
-              node.name = savedName;
-              resortIn(state as Sections, workspaceId, itemId);
+              if (node) {
+                node.name = savedName;
+                resortIn(state as Sections, workspaceId, itemId);
+              }
+              // Said, as the dialogs say it: the name is not what was typed.
+              state.actionNotice[workspaceId] = `Saved as “${savedName}”`;
             });
           }
           return true;
@@ -580,6 +597,13 @@ export function createResourceTreeStore<
           await (isDirectory
             ? endpoints.deleteFolder(workspaceId, itemId)
             : endpoints.deleteItem(workspaceId, itemId));
+          // Gone for good: a tree refetch that answered while the delete
+          // was still running (other events trigger them) may have put it
+          // back — the deleted folder sat there, "Empty", until a manual
+          // refresh.
+          set(state => {
+            removeFromAnySection(state as Sections, workspaceId, itemId);
+          });
           return true;
         } catch {
           await get().refresh(workspaceId);

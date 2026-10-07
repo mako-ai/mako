@@ -867,6 +867,19 @@ describe("ref / selector / properties / unit_tests / dbt_project rewrites", () =
       to: "models/stg_orders.sql",
     });
     expect(stg.warnings.join("\n")).toMatch(/dbt_project\.yml.*staging/);
+    // One plain sentence (what to do), then the precise key as detail.
+    const [plain, detail] = stg.warnings
+      .find(w => w.startsWith("dbt_project.yml config"))!
+      .split("\n");
+    expect(plain).toBe(
+      "dbt_project.yml config for models/staging (materialization, schema, tags…) no longer applies at its new place, models/stg_orders.sql. Move that config or check the model.",
+    );
+    expect(detail).toBe(
+      "Detail: models.analytics.staging applied to models/staging/stg_orders.sql; it is now models/stg_orders.sql.",
+    );
+    expect(moved.warnings.join("\n")).toContain(
+      "Detail: models.analytics.orders applied to models/orders.sql; it is now models/marts/orders.sql.",
+    );
     // A move within the same configured folder warns about nothing.
     await seedDbtGitTree(WS, { "models/staging/stg_a.sql": "select 1\n" });
     const same = await renameDbtFile(member(), {
@@ -1086,6 +1099,33 @@ describe("hostile names: a clear 400 (or a safe normalization), never a 500, nev
       .map(e => e.path)
       .filter(p => !p.startsWith("dbt/") && p !== "README.md");
     expect(outside).toEqual([]);
+  });
+
+  it("path refusals are plain sentences, not 'Invalid from/to path'", async () => {
+    await seedProject();
+    for (const [to, said] of [
+      ["../staging/x.sql", "must stay inside the dbt project"],
+      ["models/../../x.sql", "must stay inside the dbt project"],
+      ["models//x.sql", "give the path from the project root"],
+      ["models\\x.sql", "separate folders with /"],
+      [".git/x", "can't be inside .git"],
+    ] as const) {
+      const res = await req("POST", `/dbt/projects/${PID}/files/rename`, {
+        from: "models/orders.sql",
+        to,
+      });
+      const body = (await res.json()) as { error: string };
+      expect([to, res.status]).toEqual([to, 400]);
+      expect(body.error.startsWith(`The new path "${to}" `)).toBe(true);
+      expect(body.error).toContain(said);
+      expect(body.error).not.toMatch(/Invalid from\/to path/);
+    }
+    // A leading slash is the project root, not an error.
+    const ok = await req("POST", `/dbt/projects/${PID}/files/rename`, {
+      from: "/models/orders.sql",
+      to: "/models/staging/orders.sql",
+    });
+    expect(ok.status).toBe(200);
   });
 
   it("the dbt route refuses the same names (400), never 500", async () => {

@@ -14,6 +14,7 @@ import {
   findParentArray,
   findTargetArray,
   insertAlphabetically,
+  namesTrailOf,
   removeById,
 } from "./lib/tree-helpers";
 
@@ -148,6 +149,35 @@ function findNode(workspaceId: string, id: string): ConsoleEntry | null {
     findIn(state.workspaceItems[workspaceId], id) ??
     findIn(state.sharedItems[workspaceId], id)
   );
+}
+
+/**
+ * A folder renamed: its row and every row under it carry a `path` (what a
+ * click opens a tab with, what a notice names) — rewritten from the tree's
+ * names with the folder's new one. Left as they were, a console opened
+ * from the renamed folder got its old place, and "Move to…" into it said
+ * "Moved to New Folder" after it had become "Fold2".
+ */
+function repathFolder(workspaceId: string, folderId: string, name: string) {
+  useConsoleTreeStore.setState(state => {
+    for (const section of [
+      state.myItems[workspaceId],
+      state.workspaceItems[workspaceId],
+      state.sharedItems[workspaceId],
+    ]) {
+      if (!section) continue;
+      const trail = namesTrailOf(section, folderId);
+      const node = findIn(section, folderId);
+      if (!trail || !node) continue;
+      const repath = (n: ConsoleEntry, parent: string) => {
+        n.path = parent ? `${parent}/${n.name}` : n.name;
+        for (const child of n.children ?? []) repath(child, n.path);
+      };
+      node.name = name;
+      repath(node, trail.slice(0, -1).join("/"));
+      return;
+    }
+  });
 }
 
 /** Every console id under a folder node (any depth). */
@@ -302,6 +332,7 @@ export const useConsoleTreeStore = createResourceTreeStore<
           }),
         ) as { success: boolean; data?: { name?: string } },
       );
+      repathFolder(workspaceId, id, res.data?.name ?? name);
       void retargetOpenTabsUnder(workspaceId, inside);
       return { ...res, savedName: res.data?.name };
     },

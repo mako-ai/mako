@@ -834,10 +834,14 @@ dbtRoutes.post(
       };
       const from = typeof body.from === "string" ? body.from : "";
       const to = typeof body.to === "string" ? body.to : "";
-      if (!isSafeDbtPath(from) || !isSafeDbtPath(to)) {
-        return badRequest(c, "Invalid from/to path");
+      if (!from.trim() || !to.trim()) {
+        return badRequest(
+          c,
+          "Give the file's current path (from) and its new path (to).",
+        );
       }
-      // The one rename service (api/src/rename/dbt-file.ts): one commit
+      // The paths are validated — and refusals explained in plain words —
+      // by the one rename service (api/src/rename/dbt-file.ts): one commit
       // carrying the move and, for a model, the ref()/selector rewrites;
       // it pokes open windows itself (the old tab retargets to `to`).
       const result = await renameDbtFile(

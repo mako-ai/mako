@@ -25,6 +25,15 @@ const who = vi.hoisted(() => ({
   members: [] as Array<{ userId: string }>,
   /** Every query the (mocked) warehouse was asked to run. */
   queries: [] as unknown[],
+  /** Realtime events, with whether the folder records were gone then. */
+  events: [] as Array<{ type?: string; foldersGone: boolean }>,
+  foldersGone: false,
+}));
+vi.mock("../../services/realtime.service", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../services/realtime.service")>()),
+  publishRealtimeEvent: (_ws: string, event: { type?: string }) => {
+    who.events.push({ type: event.type, foldersGone: who.foldersGone });
+  },
 }));
 // The console's query results are what an export streams: a marker row,
 // so a leak is visible (no real warehouse in this rig).
@@ -586,8 +595,29 @@ describe("deleting a folder", () => {
     });
     await rig.shareWith(a._id, editor.id, "editor");
     const commits = await rig.commitCount();
+    // Every window refetches the tree on `console.deleted`: those events
+    // go out only once the folder records are gone (a refetch in between
+    // listed the deleted folder, empty, until a manual refresh).
+    who.events.length = 0;
+    who.foldersGone = false;
+    const realDeleteMany = ConsoleFolder.deleteMany.bind(ConsoleFolder);
+    const spy = vi.spyOn(ConsoleFolder, "deleteMany").mockImplementation(((
+      ...args: Parameters<typeof realDeleteMany>
+    ) => {
+      const q = realDeleteMany(...args);
+      return q.then(res => {
+        who.foldersGone = true;
+        return res;
+      });
+    }) as unknown as typeof ConsoleFolder.deleteMany);
     const r = await rig.api("DELETE", `/consoles/folders/${box._id}`, owner);
+    spy.mockRestore();
     expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const deletedEvents = who.events.filter(e => e.type === "console.deleted");
+    expect(deletedEvents.length).toBe(1);
+    for (const e of deletedEvents) expect(e.foldersGone).toBe(true);
+    const tree = await rig.api("GET", "/consoles", owner);
+    expect(JSON.stringify(tree.body)).not.toContain("Scratch");
     expect(await rig.commitCount()).toBe(commits + 1);
     expect(await rig.fileAt("consoles/Scratch/a.sql")).toBeNull();
     const trashed = (await rig.row(a._id))!;
