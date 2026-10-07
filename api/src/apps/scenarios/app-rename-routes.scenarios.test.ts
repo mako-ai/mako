@@ -74,6 +74,7 @@ import { ensureProjectRow, resolveProjectRef } from "../worktree.service";
 import { appsRoutes } from "../../routes/apps";
 import { objectRoutes } from "../../routes/objects";
 import { buildMakoMcpServer } from "../../mcp/mako-mcp-server";
+import { createAppsTools } from "../../agent-lib/tools/apps-tools";
 import { StatelessMcpTransport } from "../../mcp/stateless-transport";
 import {
   commitsSince,
@@ -395,6 +396,91 @@ describe("the move dialog: POST /apps/{id}/move", () => {
       403,
       /read-only/,
     );
+  });
+});
+
+describe("filing an app into a personal folder (it becomes private to the mover)", () => {
+  const EDITOR = new Types.ObjectId().toString();
+  const W_ID = newId();
+
+  beforeEach(async () => {
+    // P is OWNER's private app, shared with EDITOR as an editor; W is a
+    // workspace app OWNER owns that every member may edit.
+    await AppProject.updateOne(
+      { _id: new Types.ObjectId(P_ID) },
+      { $set: { sharedWith: [{ userId: EDITOR, role: "editor" }] } },
+    );
+    await externalCommit(WS, {
+      "apps/Team/w/mako.json": manifest("W", W_ID),
+    });
+    const w = (await resolveProjectRef(WS, W_ID))!;
+    await ensureProjectRow(w, OWNER);
+    await AppProject.updateOne(
+      { _id: w._id },
+      { $set: { access: "workspace", workspaceRole: "editor" } },
+    );
+  });
+
+  it("an editor it is only shared with cannot take it over — not by the move dialog, the agent tool, or a folder move", async () => {
+    as(EDITOR, "member");
+    await expectRefused(
+      () =>
+        call("POST", `/apps/${P_ID}/move`, {
+          folder: `users/${EDITOR}/apps`,
+        }),
+      403,
+      /owner or a workspace admin/,
+    );
+    const tools = createAppsTools({ workspaceId: WS, userId: EDITOR });
+    const viaTool = (await tools.app_move_app.execute!(
+      { appId: P_ID, folder: `users/${EDITOR}/apps` },
+      { toolCallId: "t", messages: [] },
+    )) as { success: boolean; error?: string };
+    expect(viaTool).toMatchObject({
+      success: false,
+      error: expect.stringMatching(/owner or a workspace admin/),
+    });
+    // A member may edit W (workspaceRole editor), not privatize it.
+    await expectRefused(
+      () =>
+        call("POST", `/apps/${W_ID}/move`, {
+          folder: `users/${EDITOR}/apps`,
+        }),
+      403,
+    );
+    await expectRefused(
+      () =>
+        call("PATCH", "/apps/folders", {
+          path: "apps/Team",
+          to: `users/${EDITOR}/apps/Team`,
+        }),
+      403,
+    );
+    expect(await AppProject.findById(P_ID).lean()).toMatchObject({
+      owner_id: OWNER,
+      access: "private",
+      path: "apps/p",
+    });
+    // Editing what it is shared for still works: a title, a link.
+    expect((await rename({ ref: P_ID, slug: "p-renamed" })).status).toBe(200);
+  });
+
+  it("its owner — or a workspace admin — may", async () => {
+    as(OWNER, "member");
+    const mine = await call("POST", `/apps/${P_ID}/move`, {
+      folder: `users/${OWNER}/apps`,
+    });
+    expect(mine.status).toBe(200);
+    expect(await AppProject.findById(P_ID).lean()).toMatchObject({
+      owner_id: OWNER,
+      access: "private",
+      path: `users/${OWNER}/apps/p`,
+    });
+    as(ADMIN, "admin");
+    const admin = await call("POST", `/apps/${W_ID}/move`, {
+      folder: `users/${ADMIN}/apps`,
+    });
+    expect(admin.status).toBe(200);
   });
 });
 

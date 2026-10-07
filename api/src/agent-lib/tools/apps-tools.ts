@@ -1093,6 +1093,7 @@ export function createAppsTools({
             target,
             userId,
             await memberRole(),
+            loaded.project,
           );
           if (denied) return { success: false, error: denied };
           const moved = await moveProject(

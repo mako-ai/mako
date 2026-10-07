@@ -16,6 +16,7 @@ import type { AppFolderTarget } from "./worktree.service";
 import type { AppRepoLocation } from "./app-paths";
 import {
   canWriteResource,
+  resolveResourceRole,
   type ShareableResourceLike,
 } from "../utils/resource-acl";
 
@@ -52,12 +53,22 @@ export function authorizeFolderTarget(
  * Authorize moving an app FROM `source` TO `target`. The target rule above,
  * plus: leaving the workspace tree needs an editing role, and leaving a
  * personal tree is the owner's call alone.
+ *
+ * With the `app` given (its state row, or its synthesized shape), one more:
+ * filing it INTO a personal tree makes it that person's private app — the
+ * sync re-owns it — which is a change of who may see it and who owns it.
+ * Only its owner makes that change, or a workspace owner/admin (the rule
+ * for every resource's visibility). Without it, an editor the app is
+ * merely shared with could take it over — and then unshare its owner —
+ * by moving it into their own folder, and any member could hide a shared
+ * workspace app from everyone else.
  */
 export function authorizeAppMove(
   source: AppRepoLocation | null,
   target: AppFolderTarget,
   userId: string | undefined,
   role: string | undefined,
+  app?: ShareableResourceLike,
 ): string | null {
   const denied = authorizeFolderTarget(target, userId, role);
   if (denied) return denied;
@@ -67,7 +78,27 @@ export function authorizeAppMove(
   if (source?.scope === "private" && (!userId || source.ownerId !== userId)) {
     return "Only the owner can move an app out of their personal folder";
   }
+  if (app && target.scope === "private" && source?.scope !== "private") {
+    return canTakePrivate(app, userId, role);
+  }
   return null;
+}
+
+/**
+ * May the caller file `app` into their personal tree (making it their
+ * private app)? Its owner, or a workspace owner/admin. Returns the refusal,
+ * or null. See {@link authorizeAppMove}.
+ */
+export function canTakePrivate(
+  app: ShareableResourceLike,
+  userId: string | undefined,
+  role: string | undefined,
+): string | null {
+  if (role === "owner" || role === "admin") return null;
+  if (userId && resolveResourceRole(app, userId, role) === "owner") {
+    return null;
+  }
+  return "Only the app's owner or a workspace admin can move it into a personal folder: it would become private to you";
 }
 
 /**

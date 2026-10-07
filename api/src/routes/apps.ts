@@ -100,6 +100,7 @@ import { parseAppRepoPath } from "../apps/app-paths";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
+  canTakePrivate,
   canWriteApp,
 } from "../apps/app-authorization";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
@@ -1001,6 +1002,24 @@ appsRoutes.openapi(
             403,
           );
         }
+        // Into a personal tree, every app inside becomes the caller's
+        // private app: theirs to take only (authorizeAppMove).
+        if (target.scope === "private" && from.scope !== "private") {
+          const rowById = new Map(rows.map(r => [r._id.toString(), r]));
+          for (const app of inside) {
+            const taken = canTakePrivate(
+              rowById.get(app.appId) ?? projectFromIndexRow(workspaceId, app),
+              userId,
+              role,
+            );
+            if (taken) {
+              return c.json(
+                { success: false, error: `${app.path}: ${taken}` },
+                403,
+              );
+            }
+          }
+        }
       }
       const moved = await moveAppFolder(workspaceId, from, target, { userId });
       return c.json({ success: true as const, ...moved }, 200);
@@ -1085,7 +1104,13 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
       const target = folderTargetFromPath(folder);
       const source = parseAppRepoPath(appRootFor(loaded.project));
-      const denied = authorizeAppMove(source, target, userId, role);
+      const denied = authorizeAppMove(
+        source,
+        target,
+        userId,
+        role,
+        loaded.project,
+      );
       if (denied) return c.json({ success: false, error: denied }, 403);
       const moved = await moveProject(
         loaded.project,
