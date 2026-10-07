@@ -114,6 +114,14 @@ async function reconcile(
 
   const rows = await ConnectorDefinition.find({ workspaceId });
   const rowBySlug = new Map(rows.map(row => [row.slug, row]));
+  // Names each row had given up BEFORE this pass. A fold below honours a
+  // yaml that lists a deleted slug only when that row had not already had
+  // it taken away (a stale template copy); a claim retired during THIS
+  // pass — because another folder in the same push listed it too — is a
+  // second statement, which makes the fold ambiguous, not void.
+  const retiredAtStart = new Map(
+    rows.map(row => [String(row._id), new Set(row.retiredAliases ?? [])]),
+  );
 
   const result: ConnectorSyncResult = { ...EMPTY, renamed: [], skipped: [] };
   const seen = new Set<string>();
@@ -366,6 +374,20 @@ async function reconcile(
   }
 
   const stale = rows.filter(row => !seen.has(row.slug));
+  /**
+   * The live rows whose yaml lists `name` in THIS push and had not given
+   * it up before the pass began (a template copy that listed it while it
+   * was live had it retired then, and is no statement).
+   */
+  const heirsOf = (name: string, deleted: string) => {
+    const heirs: IConnectorDefinition[] = [];
+    for (const [heir, aliases] of fileAliasesBySlug) {
+      if (heir === deleted || !aliases.includes(name)) continue;
+      const r = rowBySlug.get(heir);
+      if (r && !retiredAtStart.get(String(r._id))?.has(name)) heirs.push(r);
+    }
+    return heirs;
+  };
   if (stale.length > 0) {
     // An explicit fold in ONE push: `connectors/x/` deleted while exactly
     // one live folder's yaml now says `aliases: [x]`. That line is the
@@ -376,14 +398,7 @@ async function reconcile(
       // An heir says `aliases: [x]` NOW and never had x taken from it: a
       // yaml that listed x while x was live (a stale template copy) was
       // already dropped and retired for that row, and is no statement.
-      const heirs = [...fileAliasesBySlug]
-        .filter(
-          ([heir, aliases]) => heir !== row.slug && aliases.includes(row.slug),
-        )
-        .map(([heir]) => rowBySlug.get(heir))
-        .filter(
-          r => r !== undefined && !(r.retiredAliases ?? []).includes(row.slug),
-        );
+      const heirs = heirsOf(row.slug, row.slug);
       if (heirs.length !== 1 || !heirs[0]) continue;
       const heir = heirs[0];
       const folded = await SourceConnection.updateMany(
@@ -429,15 +444,11 @@ async function reconcile(
       // Its slug AND every alias it answered to: a connection typed by any
       // of them was created for the deleted code.
       for (const name of [row.slug, ...(row.aliases ?? [])]) {
-        const heirIds = [...fileAliasesBySlug]
-          .filter(
-            ([heir, aliases]) => heir !== row.slug && aliases.includes(name),
-          )
-          .map(([heir]) => rowBySlug.get(heir))
-          .filter(
-            r => r !== undefined && !(r.retiredAliases ?? []).includes(name),
-          )
-          .map(r => r!._id);
+        // Only a SOLE heir keeps the name; two folders claiming it in one
+        // push is ambiguous, and an ambiguous old name answers to nobody.
+        const heirs = heirsOf(name, row.slug);
+        const sole = heirs.length === 1 ? heirs[0] : undefined;
+        const heirIds = sole ? [sole._id] : [];
         const retired = await ConnectorDefinition.updateMany(
           { workspaceId, aliases: name, _id: { $nin: [row._id, ...heirIds] } },
           {
