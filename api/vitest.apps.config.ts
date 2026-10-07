@@ -113,6 +113,7 @@ export default defineConfig({
       // Exhaustive rename scenarios (#1037), one file per area: credentials
       // of workspace connectors, connector renames, skills.
       "src/rename/scenarios/connector-credentials.scenarios.test.ts",
+      "src/rename/scenarios/connector-rename.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
