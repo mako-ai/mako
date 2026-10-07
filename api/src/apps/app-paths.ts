@@ -95,6 +95,39 @@ export function newSegmentProblem(segment: string): string | null {
   return null;
 }
 
+/**
+ * The literal first segments the apps router serves under
+ * `/api/workspaces/:ws/apps/` (`GET /apps/status-probe`, `DELETE
+ * /apps/folders`, …). Every route there also takes an app ref
+ * (`/apps/{id}`), so an app named like one of these could not be
+ * addressed by its name on those routes. Kept equal to the router by
+ * app-rename-routes.scenarios.test.ts, which derives the list from it.
+ */
+export const RESERVED_APP_SLUGS: readonly string[] = [
+  "folders",
+  "github-installations",
+  "github-repos",
+  "github-status",
+  "github-sync-url",
+  "link",
+  "status-probe",
+  "unlink",
+];
+
+/**
+ * Why `slug` cannot be a NEW app's folder name, or null when it can:
+ * {@link newSegmentProblem}, plus the router's own words
+ * ({@link RESERVED_APP_SLUGS}).
+ */
+export function newAppSlugProblem(slug: string): string | null {
+  const problem = newSegmentProblem(slug);
+  if (problem) return problem;
+  if (RESERVED_APP_SLUGS.includes(slug.toLowerCase())) {
+    return `the apps API uses /apps/${slug.toLowerCase()} for itself`;
+  }
+  return null;
+}
+
 /** The longest app name (title) a rename or create accepts. */
 export const MAX_APP_TITLE_LENGTH = 1000;
 

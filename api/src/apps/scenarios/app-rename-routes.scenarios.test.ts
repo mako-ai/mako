@@ -77,6 +77,7 @@ vi.mock("../workspace-template", async importOriginal => ({
 }));
 
 import { AppProject } from "../../database/workspace-schema";
+import { RESERVED_APP_SLUGS } from "../app-paths";
 import { ensureProjectRow, resolveProjectRef } from "../worktree.service";
 import { appsRoutes } from "../../routes/apps";
 import { objectRoutes } from "../../routes/objects";
@@ -504,6 +505,40 @@ describe("GET /apps", () => {
     expect(forOwner.some(a => a.path === `users/${OWNER}/apps/mine`)).toBe(
       true,
     );
+  });
+});
+
+describe("the apps router's own words are not app names", () => {
+  it("RESERVED_APP_SLUGS is exactly the literal first segments the router serves", () => {
+    const literal = new Set(
+      appsRoutes.routes
+        .map(route => route.path.split("/")[1] ?? "")
+        .filter(seg => seg && !seg.startsWith(":") && !seg.includes("*")),
+    );
+    expect([...literal].sort()).toEqual([...RESERVED_APP_SLUGS].sort());
+  });
+
+  it("refuses them as a new slug (400) and counts past them on create; an app already named so keeps working", async () => {
+    for (const slug of RESERVED_APP_SLUGS) {
+      await expectRefused(
+        () => rename({ ref: "a", slug }),
+        400,
+        /apps API uses/,
+      );
+    }
+    await expectRefused(() => rename({ ref: "a", slug: "Folders" }), 400);
+    const created = await call("POST", "/apps", { title: "Link" });
+    expect(created.json.app).toMatchObject({ path: "apps/link-2" });
+    // Pushed from a laptop before the rule: listed, opened by id, renamed away.
+    await externalCommit(WS, {
+      "apps/status-probe/mako.json": manifest("Probe"),
+    });
+    const id = (await list()).find(a => a.path === "apps/status-probe")!.id;
+    expect((await call("GET", `/apps/${id}`)).status).toBe(200);
+    expect((await rename({ ref: id, slug: "probe" })).status).toBe(200);
+    expect((await resolve("status-probe")).json).toMatchObject({
+      resolved: { id, via: "alias" },
+    });
   });
 });
 

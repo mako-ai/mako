@@ -21,7 +21,7 @@ import {
 import {
   APPS_DIR,
   isAppId,
-  newSegmentProblem,
+  newAppSlugProblem,
   normalizeName,
   parseAppRepoPath,
 } from "../../apps/app-paths";
@@ -142,7 +142,7 @@ export const appRenameHandler: RenameHandler = {
     const slug =
       request.slug === undefined ? undefined : normalizeName(request.slug);
     if (slug !== undefined && slug !== source.slug) {
-      const problem = newSegmentProblem(slug);
+      const problem = newAppSlugProblem(slug);
       if (problem) {
         throw new RenameError(
           `Invalid app folder name: ${JSON.stringify(slug)} — ${problem}`,
