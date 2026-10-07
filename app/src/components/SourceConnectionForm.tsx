@@ -32,7 +32,10 @@ import {
 
 // Zustand stores
 import { useSourceConnectionStore } from "../store/sourceConnectionStore";
-import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
+import {
+  cachedConnectorSchema,
+  useConnectorCatalogStore,
+} from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 
 export interface ConnectorFieldSchema {
@@ -238,19 +241,29 @@ function SourceConnectionForm({
       setSchema(null);
       return;
     }
-    if (schemas[selectedType]) {
-      setSchema(schemas[selectedType]);
+    const cached = cachedConnectorSchema(schemas, selectedType);
+    if (cached) {
+      // The schema is here (cached, or a request that answered meanwhile):
+      // whatever an earlier attempt said, there is nothing failing now.
+      setSchema(cached);
+      setSchemaError(null);
+      setSchemaLoading(false);
       const currentValues = form.getValues();
-      schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
+      cached.fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
           form.setValue(field.name, []);
         }
       });
+      // A workspace connector's form is checked against the server once.
+      void fetchSchema(selectedType);
       return;
     }
     setSchemaLoading(true);
     setSchemaError(null);
+    let current = true;
     fetchSchema(selectedType).then(res => {
+      // A newer selection (or the schema arriving) owns the outcome now.
+      if (!current) return;
       if (res) {
         setSchema(res);
         const defaults = generateDefaultValues(res);
@@ -265,6 +278,9 @@ function SourceConnectionForm({
       }
       setSchemaLoading(false);
     });
+    return () => {
+      current = false;
+    };
   }, [selectedType, schemas, fetchSchema, form]);
 
   // Reveal a stored secret: the SERVER reads the ciphertext from its own
