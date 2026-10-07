@@ -3005,6 +3005,18 @@ consoleRoutes.openapi(
         | "csv";
       const limit = parseInt(c.req.query("limit") || "500000", 10);
 
+      // An export RUNS the console: the same bar as POST /:id/execute — an
+      // API key needs query access, and a person must be able to open the
+      // console. Without these any member exported (ran, and read the
+      // results and the name of) another member's private console by id.
+      const apiKey = c.get("apiKey");
+      if (apiKey && restQueryAccessFromStoredScopes(apiKey.scopes) === "none") {
+        return c.json(
+          { success: false, error: "API key does not have query access" },
+          403,
+        );
+      }
+
       if (!Types.ObjectId.isValid(consoleId)) {
         return c.json({ success: false, error: "Invalid console ID" }, 400);
       }
@@ -3015,6 +3027,14 @@ consoleRoutes.openapi(
       });
 
       if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const user = c.get("user");
+      if (
+        user &&
+        !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+      ) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
 
