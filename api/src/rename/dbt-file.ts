@@ -119,7 +119,8 @@ export function parseDbtFileRef(ref: string): DbtFileRef | null {
   return { path: normalizePath(clean) };
 }
 
-function normalizePath(path: string): string {
+/** `/dbt/models/a.sql`, `dbt/models/a.sql` → `models/a.sql` (project-relative). */
+export function normalizePath(path: string): string {
   const p = path.replace(/^\/+/, "");
   return p.startsWith(`${DBT_ROOT}/`) ? p.slice(DBT_ROOT.length + 1) : p;
 }

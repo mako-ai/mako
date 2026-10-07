@@ -3,7 +3,12 @@
  * The work is in ../dbt-file.ts (shared with `POST /dbt/projects/:id/files/rename`).
  */
 import { RenameError, type RenameHandler } from "../types";
-import { parseDbtFileRef, renameDbtFile, resolveDbtFile } from "../dbt-file";
+import {
+  normalizePath,
+  parseDbtFileRef,
+  renameDbtFile,
+  resolveDbtFile,
+} from "../dbt-file";
 
 export const dbtFileRenameHandler: RenameHandler = {
   kind: "dbt_file",
@@ -25,6 +30,14 @@ export const dbtFileRenameHandler: RenameHandler = {
     let to: string;
     const slug = request.slug?.trim();
     const title = request.title?.trim();
+    if (slug && title && slug.slice(slug.lastIndexOf("/") + 1) !== title) {
+      // A file has one name: a title that disagrees with the slug's file
+      // name would be dropped without a word — refuse instead of guessing.
+      throw new RenameError(
+        "A dbt file has one name: give the new path as slug (title, if given, must be its file name).",
+        400,
+      );
+    }
     if (slug) {
       to = slug;
     } else if (title) {
@@ -45,6 +58,18 @@ export const dbtFileRenameHandler: RenameHandler = {
         "Give a new title (file name) or slug (path).",
         400,
       );
+    }
+    if (resolved && normalizePath(to) === parsed.path) {
+      // Its own path in another spelling (`dbt/…`, a leading slash): the
+      // registry's no-op answer for every kind, not a 400.
+      return {
+        kind: "dbt_file",
+        id: resolved.id,
+        before: resolved.current,
+        after: resolved.current,
+        aliasesAdded: [],
+        warnings: ["Nothing to change: it already has that name."],
+      };
     }
     const updateRefs = request.options?.updateRefs;
     return renameDbtFile(ctx, {
