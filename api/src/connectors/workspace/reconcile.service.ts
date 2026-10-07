@@ -156,7 +156,19 @@ async function reconcile(
     // keep their own definition (type fixed), unbound ones are pinned
     // closed. A push cannot refuse (the UI rename does, with 409).
     await prepareSlugTakeover(workspaceId, to, String(row._id));
+    // Its own connections FIRST, then the row: a pass that dies in between
+    // leaves them bound by id to a row that still says `from` (they keep
+    // running it) and the next pass re-keys it — the other order would
+    // strand the legacy ones typed ws:<from> for good.
+    await migrateSourceConnectionType(workspaceId, from, to, {
+      definitionId: String(row._id),
+      includeUnstamped: true,
+    });
     row.slug = to;
+    // The commit where `connectors/<to>/` exists: a row re-keyed to the new
+    // slug but still pinned to a commit before the move would have its
+    // credentials run against a folder that is not there.
+    row.sha = commit;
     // Git detected this rename (the file may carry no alias): remembered
     // apart from the file's list so a later file edit cannot drop it.
     row.detectedAliases = [
@@ -170,12 +182,6 @@ async function reconcile(
     await row.save();
     rowBySlug.delete(from);
     rowBySlug.set(to, row);
-    // Its own connections: bound to this row, or legacy ones typed by the
-    // slug it held until now (bound by this move).
-    await migrateSourceConnectionType(workspaceId, from, to, {
-      definitionId: String(row._id),
-      includeUnstamped: true,
-    });
     result.renamed.push({ from, to });
   }
 
