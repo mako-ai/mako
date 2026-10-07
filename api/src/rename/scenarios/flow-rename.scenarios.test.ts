@@ -773,6 +773,40 @@ describe("operations through the UI route", () => {
     });
   });
 
+  it("nothing but the two owned values changes: comments on name:/aliases:, inside the alias list and on its items survive title + slug renames", async () => {
+    const annotated = flowYaml("Close", "close").replace(
+      "name: Close\n",
+      [
+        "name: Close  # shown in the sidebar",
+        "aliases:  # every name it had",
+        "  # from the 2025 migration",
+        "  - close-legacy # v1",
+        "",
+      ].join("\n"),
+    );
+    await push({ "flows/close.yml": annotated });
+    await syncFlowsFromRepo(WS, OWNER);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close" });
+    const out = await renameVia("rest", {
+      ref: "close",
+      title: "Close CRM",
+      slug: "close-crm",
+    });
+    expect(out.error).toBeUndefined();
+    expect(await fileAtMain(WS, "flows/close-crm.yml")).toBe(
+      annotated
+        .replace("name: Close  #", "name: Close CRM  #")
+        .replace(
+          "  - close-legacy # v1\n",
+          "  - close-legacy # v1\n  - close\n",
+        ),
+    );
+    expect((await Flow.findById(row!._id))?.aliases).toEqual([
+      "close-legacy",
+      "close",
+    ]);
+  });
+
   it("delete, then recreate at the old name: the new flow is a new id; the old id is gone, the old name names the new flow", async () => {
     // (Not the only flow: an EMPTY flows/ is read as "not adopted", never
     // as "everything deleted" — that guard is by design.)
