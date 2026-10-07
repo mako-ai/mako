@@ -651,7 +651,15 @@ export async function commitTree(
 ): Promise<string> {
   const args = ["-C", repoDir, "commit-tree", input.treeOid];
   for (const p of input.parents) args.push("-p", p);
-  args.push("-m", input.message || "(no message)");
+  // Messages carry user text (a console's or a notebook's name): a NUL
+  // cannot travel in a process argument (spawn throws — a 500 on a save),
+  // and other control characters have no business in a commit message.
+  // Line breaks and tabs stay.
+  const message = Array.from(input.message || "", ch => {
+    const code = ch.charCodeAt(0);
+    return (code < 32 && ch !== "\n" && ch !== "\t") || code === 127 ? " " : ch;
+  }).join("");
+  args.push("-m", message.trim() ? message : "(no message)");
   const { stdout } = await runGit(args, { env: authorEnv(input.author) });
   return stdout.trim();
 }
