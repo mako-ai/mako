@@ -1,4 +1,4 @@
-import { Db } from "mongodb";
+import { Db, ObjectId } from "mongodb";
 import { loggers } from "../logging";
 
 const log = loggers.migration();
@@ -33,9 +33,23 @@ export async function up(db: Db): Promise<void> {
   let unresolved = 0;
   for await (const row of cursor) {
     const slug = String(row.type).slice("ws:".length);
-    const definition = row.workspaceId
-      ? await definitions.findOne({ workspaceId: row.workspaceId, slug })
-      : null;
+    // An old writer may have stored the workspace id as a string; the
+    // definitions carry an ObjectId. Matched in both forms — an unstamped
+    // row is exactly what a newcomer at its slug must not inherit.
+    const workspaceIds: unknown[] = row.workspaceId ? [row.workspaceId] : [];
+    if (
+      typeof row.workspaceId === "string" &&
+      ObjectId.isValid(row.workspaceId)
+    ) {
+      workspaceIds.push(new ObjectId(row.workspaceId));
+    }
+    const definition =
+      workspaceIds.length > 0
+        ? await definitions.findOne({
+            workspaceId: { $in: workspaceIds },
+            slug,
+          })
+        : null;
     if (!definition) {
       unresolved++;
       log.warn(

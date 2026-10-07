@@ -66,6 +66,7 @@ import {
 import {
   CONNECTOR_RENAME_SIMILARITY,
   migrateSourceConnectionType,
+  retypeBoundElsewhere,
   syncConnectorsFromRepo,
 } from "../connectors/workspace/reconcile.service";
 import {
@@ -222,12 +223,18 @@ export async function renameWorkspaceConnector(
       409,
     );
   }
-  // Connections typed ws:<to> with no connector behind them belong to a
-  // DELETED connector; renaming into the slug would hand their
-  // credentials to this code. Refuse until they are gone or re-pointed.
+  // Connections typed ws:<to> bound to another LIVE connector are that
+  // connector's (by id): their cosmetic type is fixed first, so taking the
+  // name does not make them refuse. What is left typed ws:<to> — bound to
+  // nothing, or to a DELETED connector — was saved for something that is
+  // no longer there; renaming into the slug would hand those credentials
+  // to this code. Refuse until they are gone or re-pointed. (This
+  // connector's OWN connections with a stale type are fine.)
+  await retypeBoundElsewhere(ctx.workspaceId, to, String(row._id));
   const orphans = await SourceConnection.countDocuments({
     workspaceId: wsId,
     type: `${WORKSPACE_TYPE_PREFIX}${to}`,
+    connectorDefinitionId: { $ne: row._id },
   });
   if (orphans > 0) {
     throw new RenameError(

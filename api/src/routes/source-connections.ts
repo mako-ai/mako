@@ -669,6 +669,16 @@ sourceConnectionRoutes.openapi(
             ? await canonicalConnectorType(body.type, workspaceId)
             : body.type;
         if (nextType !== currentValues.type) {
+          // Re-pointed at a workspace connector: one that exists and runs,
+          // the same bar as a create. Accepting a name nothing answers
+          // would leave an UNBOUND credential waiting there for whichever
+          // folder takes that name next.
+          if (isWorkspaceConnectorType(nextType) && workspaceId) {
+            const exists = await connectorTypeExists(nextType, workspaceId);
+            if (!exists.ok) {
+              return c.json({ success: false, error: exists.reason }, 400);
+            }
+          }
           sourceConnection.type = nextType;
           // Re-pointing a connection at another connector is an explicit
           // act: bind it to that definition (or unbind for a built-in).

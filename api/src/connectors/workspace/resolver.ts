@@ -120,6 +120,16 @@ export class ConnectorBindingError extends Error {
   }
 }
 
+/**
+ * The stamp of a connection that is bound to NO definition on purpose: a
+ * pre-stamp (legacy) connection typed by a slug that a NEW definition is
+ * taking over (reconcile.service `pinUnboundConnections`). It was saved
+ * for whatever held that name before, never for the newcomer, so it must
+ * not start resolving by current slug — it waits for a person to re-bind
+ * it. No ObjectId Mongo mints is all zeros (the timestamp is part of it).
+ */
+export const UNBOUND_CONNECTOR_DEFINITION_ID = "000000000000000000000000";
+
 export type ConnectionBindingResolution =
   | { ok: true; row: IConnectorDefinition; via: "stamp" | "current" }
   | { ok: false; problem: ConnectionBindingProblem; message: string };
@@ -150,6 +160,17 @@ export async function resolveConnectionBinding(
     binding.connectorDefinitionId == null
       ? null
       : String(binding.connectorDefinitionId);
+  if (stamp === UNBOUND_CONNECTOR_DEFINITION_ID) {
+    return {
+      ok: false,
+      problem: "definition-gone",
+      message:
+        `This connection was saved before connections were bound to their connector by id, for whatever was called "${slug}" then — ` +
+        `and a different connector has since taken that name, so its credential is not handed to it on its own. ` +
+        `If ${CONNECTORS_DIR}/${slug}/ is the connector this credential is for, re-bind it: open the connection, keep "${slug}" selected and save — ` +
+        `or PUT the connection with {"type": "${WORKSPACE_PREFIX}${slug}"}. Otherwise delete the connection.`,
+    };
+  }
   if (stamp) {
     const row = /^[0-9a-f]{24}$/.test(stamp)
       ? await ConnectorDefinition.findOne({ workspaceId, _id: stamp })

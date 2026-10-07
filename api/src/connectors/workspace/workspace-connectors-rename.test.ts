@@ -971,9 +971,13 @@ describe("reconcile detects a rename instead of deleting", () => {
     });
     expect(rows.map(r => r.aliases)).toEqual([[], []]);
     expect(rows.map(r => r.retiredAliases)).toEqual([["acme"], ["acme"]]);
-    // The live `acme` now answers to it — ws:acme runs the NEW connector,
-    // which is what `conn` typed ws:acme is (it was created for nobody else).
+    // The live `acme` now answers to the NAME. `conn` — unbound, saved for
+    // whatever `acme` was before — is not handed to the newcomer: it was
+    // pinned closed when the newcomer took the name, until a person
+    // re-binds it.
     expect((await findConnectorDefinitionRow(WS, "acme"))?.via).toBe("current");
+    const pinned = (await SourceConnection.findById(conn))!;
+    expect(await findConnectorDefinitionFor(WS, pinned)).toBeNull();
   }, 120_000);
 
   it("the class, closed: a copy or a restore of the renamed connector never adopts a deleted connector's bound connection", async () => {

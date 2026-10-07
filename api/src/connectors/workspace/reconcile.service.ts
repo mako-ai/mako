@@ -13,6 +13,7 @@
  * is only ever set later, by an actual connection test against an actual data
  * source. Claiming more at push time would be a lie the UI would repeat.
  */
+import { Types } from "mongoose";
 import {
   ConnectorDefinition,
   SourceConnection,
@@ -30,6 +31,7 @@ import {
 import {
   CONNECTORS_DIR,
   DEFAULT_ENTRY,
+  UNBOUND_CONNECTOR_DEFINITION_ID,
   findConnectorDefinitionFor,
   listConnectorFoldersAtMain,
   ensureConnectorRuntime,
@@ -142,18 +144,10 @@ async function reconcile(
     // must stop, and ITS connections typed ws:<to> move to its current
     // slug first — never over to this connector's code.
     await releaseAliasClaim(workspaceId, to, String(row._id), rowBySlug);
-    const orphans = await SourceConnection.countDocuments({
-      workspaceId,
-      type: `${WORKSPACE_TYPE_PREFIX}${to}`,
-    });
-    if (orphans > 0) {
-      // Connections of a connector that was deleted under this slug: a
-      // push cannot refuse (the UI rename does, with 409), so say it.
-      logger.warn(
-        "A moved workspace connector took a slug that still has connections of a deleted connector",
-        { workspaceId, from, to, connections: orphans },
-      );
-    }
+    // Connections still typed ws:<to> are not this connector's: bound ones
+    // keep their own definition (type fixed), unbound ones are pinned
+    // closed. A push cannot refuse (the UI rename does, with 409).
+    await prepareSlugTakeover(workspaceId, to, String(row._id));
     row.slug = to;
     // Git detected this rename (the file may carry no alias): remembered
     // apart from the file's list so a later file edit cannot drop it.
@@ -327,6 +321,7 @@ async function reconcile(
         result.updated++;
       } else {
         await releaseAliasClaim(workspaceId, slug, undefined, rowBySlug);
+        await prepareSlugTakeover(workspaceId, slug);
         const created = await ConnectorDefinition.create({
           workspaceId,
           slug,
@@ -809,20 +804,23 @@ async function releaseAliasClaim(
         ...(exceptId ? { _id: { $ne: exceptId } } : {}),
       });
   if (claimants.length > 1) {
-    // Nobody can say whose connections those are: left typed ws:<slug>,
-    // which resolves to nothing once the claims are retired below.
+    // Nobody can say whose UNBOUND connections those are: left typed
+    // ws:<slug>, and pinned closed before the newcomer takes the name
+    // (prepareSlugTakeover). Bound ones are each claimant's by id.
     logger.warn(
-      "A slug taken by a new connector was claimed by several connectors; their connections were left unresolvable",
+      "A slug taken by a new connector was claimed by several connectors; their unbound connections were left unresolvable",
       { workspaceId, slug, claimants: claimants.map(c => c.slug) },
     );
   }
   for (const claimant of claimants) {
-    const moved =
-      claimants.length === 1
-        ? await migrateSourceConnectionType(workspaceId, slug, claimant.slug, {
-            definitionId: String(claimant._id),
-          })
-        : 0;
+    // Only connections BOUND to this claimant (by id — never a guess, so
+    // however many claimants there are): their type is made to match.
+    const moved = await migrateSourceConnectionType(
+      workspaceId,
+      slug,
+      claimant.slug,
+      { definitionId: String(claimant._id) },
+    );
     claimant.aliases = (claimant.aliases ?? []).filter(a => a !== slug);
     claimant.detectedAliases = (claimant.detectedAliases ?? []).filter(
       a => a !== slug,
@@ -848,6 +846,98 @@ async function releaseAliasClaim(
   }
 }
 
+/**
+ * A definition is about to take `slug` as its LIVE name (a new folder, a
+ * folder moved there, a rename). Every connection still typed `ws:<slug>`
+ * was saved for something else — the connector that held the name before,
+ * or nothing — so before the name changes hands:
+ *
+ *  - one BOUND to another definition that still exists keeps it: its type
+ *    (cosmetic for a bound connection) is moved to that definition's
+ *    current slug, so the newcomer's name does not make it refuse;
+ *  - one bound to a definition that is gone stays as it is (it already
+ *    fails closed, and only a person re-binds it);
+ *  - one bound to NOTHING (a pre-stamp connection) is pinned closed with
+ *    {@link UNBOUND_CONNECTOR_DEFINITION_ID}: it resolves by current slug
+ *    only, and the current slug is about to be the newcomer's.
+ */
+export async function prepareSlugTakeover(
+  workspaceId: string,
+  slug: string,
+  /** The definition taking the name, when it already has a row. */
+  takerId?: string,
+): Promise<void> {
+  await retypeBoundElsewhere(workspaceId, slug, takerId);
+  await pinUnboundConnections(workspaceId, slug);
+}
+
+/**
+ * Connections typed `ws:<slug>` but bound to another LIVE definition get
+ * that definition's current slug as their type. Returns how many moved.
+ */
+export async function retypeBoundElsewhere(
+  workspaceId: string,
+  slug: string,
+  takerId?: string,
+): Promise<number> {
+  const type = `${WORKSPACE_TYPE_PREFIX}${slug}`;
+  const boundTo = await SourceConnection.distinct("connectorDefinitionId", {
+    workspaceId,
+    type,
+    connectorDefinitionId: { $exists: true, $ne: null },
+  });
+  const ids = boundTo
+    .map(id => String(id))
+    .filter(id => id !== takerId && id !== UNBOUND_CONNECTOR_DEFINITION_ID);
+  if (ids.length === 0) return 0;
+  const owners = await ConnectorDefinition.find({
+    workspaceId,
+    _id: { $in: ids },
+  });
+  let moved = 0;
+  for (const owner of owners) {
+    if (owner.slug === slug) continue;
+    moved += await migrateSourceConnectionType(workspaceId, slug, owner.slug, {
+      definitionId: String(owner._id),
+    });
+  }
+  return moved;
+}
+
+/** Pin unbound connections typed `ws:<slug>` closed. Returns how many. */
+export async function pinUnboundConnections(
+  workspaceId: string,
+  slug: string,
+): Promise<number> {
+  // Raw collection, both id forms: a row an old writer stored with a
+  // string workspace id is exactly the kind no migration could stamp, and
+  // the model's cast would never match it.
+  const result = await SourceConnection.collection.updateMany(
+    {
+      workspaceId: { $in: [new Types.ObjectId(workspaceId), workspaceId] },
+      type: `${WORKSPACE_TYPE_PREFIX}${slug}`,
+      $or: [
+        { connectorDefinitionId: { $exists: false } },
+        { connectorDefinitionId: null },
+      ],
+    },
+    {
+      $set: {
+        connectorDefinitionId: new Types.ObjectId(
+          UNBOUND_CONNECTOR_DEFINITION_ID,
+        ),
+      },
+    },
+  );
+  if (result.modifiedCount > 0) {
+    logger.warn(
+      "A connector took a name that unbound (pre-stamp) connections still carry; they were pinned closed until a person re-binds them",
+      { workspaceId, slug, connections: result.modifiedCount },
+    );
+  }
+  return result.modifiedCount;
+}
+
 async function block(
   workspaceId: string,
   slug: string,
@@ -863,6 +953,7 @@ async function block(
     return;
   }
   await releaseAliasClaim(workspaceId, slug, undefined, rowBySlug);
+  await prepareSlugTakeover(workspaceId, slug);
   await ConnectorDefinition.create({
     workspaceId,
     slug,
