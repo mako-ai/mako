@@ -221,7 +221,7 @@ export async function detachedDraftsNotice(
   const moves = gone.map(r => `${r.from} → ${r.to}`).join(", ");
   return {
     renames: gone,
-    message: `Your sandbox is on a detached commit, not a branch, so it was not caught up with ${defaultBranch} — which renamed ${moves}. Your ${affected.length} uncommitted change${affected.length === 1 ? "" : "s"} there ${affected.length === 1 ? "is" : "are"} untouched, still at the old path. To bring ${affected.length === 1 ? "it" : "them"} along, switch back to a branch (\`git switch ${defaultBranch}\`, or the branch you were on): the next catch-up carries ${affected.length === 1 ? "it" : "them"} across the rename. If git refuses the switch, nothing is changed.`,
+    message: `Your sandbox is on a detached commit, not a branch, so it was not caught up with ${defaultBranch} — which renamed ${moves}. Your ${affected.length} uncommitted change${affected.length === 1 ? "" : "s"} there ${affected.length === 1 ? "is" : "are"} untouched, still at the old path. To bring ${affected.length === 1 ? "it" : "them"} along, check out a branch again (\`git checkout ${defaultBranch}\`, or the branch you were on): the next catch-up carries ${affected.length === 1 ? "it" : "them"} across the rename. If git refuses, nothing is changed.`,
   };
 }
 
