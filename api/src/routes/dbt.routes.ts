@@ -72,10 +72,8 @@ import {
   resolveLiveJobRow,
 } from "../dbt/dbt-config.service";
 import { retireObjectId } from "../rename/retired-ids";
-import {
-  displayNameProblem,
-  normalizeDisplayName,
-} from "../rename/title-rules";
+import { displayNameError, normalizeDisplayName } from "../rename/title-rules";
+import { JOB_NAME_MAX_LENGTH } from "../rename/dbt-job-rename";
 import {
   DBT_PREVIEW_DEFAULT_LIMIT,
   DBT_PREVIEW_MAX_LIMIT,
@@ -872,7 +870,9 @@ dbtRoutes.post(
 // ---------------------------------------------------------------------------
 
 const jobSchema = z.object({
-  name: z.string().min(1).max(128),
+  // Empty and too long are the name rule's (rename/title-rules.ts), with
+  // the same message as a rename; this bound only stops absurd bodies.
+  name: z.string().max(100_000),
   environment: z.string().min(1),
   commands: z.array(z.string().min(1)).min(1).max(10),
   schedule: z
@@ -959,7 +959,7 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     }
     // The rename rules for a name (rename/title-rules.ts).
     parsed.data.name = normalizeDisplayName(parsed.data.name);
-    const nameProblem = displayNameProblem(parsed.data.name);
+    const nameProblem = displayNameError(parsed.data.name, JOB_NAME_MAX_LENGTH);
     if (nameProblem) return badRequest(c, nameProblem);
     const validationError = validateJobBody(project, parsed.data);
     if (validationError) return badRequest(c, validationError);
@@ -1018,7 +1018,10 @@ dbtRoutes.patch(
       if (parsed.data.name !== undefined) {
         // The rename rules for a name (rename/title-rules.ts).
         parsed.data.name = normalizeDisplayName(parsed.data.name);
-        const nameProblem = displayNameProblem(parsed.data.name);
+        const nameProblem = displayNameError(
+          parsed.data.name,
+          JOB_NAME_MAX_LENGTH,
+        );
         if (nameProblem) return badRequest(c, nameProblem);
       }
       const merged = {

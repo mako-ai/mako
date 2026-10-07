@@ -397,6 +397,17 @@ assert.deepEqual(mergedAliases(["a", "b"], ["b", "c", "x"], "x"), [
   "c",
 ]);
 assert.deepEqual(mergedAliases(undefined, undefined, "x"), []);
+{
+  // Capped at the newest 24 (rename/alias-cap.ts): the file's oldest go
+  // first; what only the row holds is newer and stays.
+  const file = Array.from({ length: 30 }, (_, i) => `a${i}`);
+  const merged = mergedAliases(file, ["moved"], "current");
+  assert.equal(merged.length, 24);
+  assert.deepEqual(merged, [...file.slice(7), "moved"]);
+  assert.ok(
+    !mergedAliases([...file, "current"], [], "current").includes("current"),
+  );
+}
 assert.deepEqual(mergedAliases(["", "a"], [], undefined), ["a"]);
 
 // ---- git -M over two synthetic trees, against a real repo -----------------

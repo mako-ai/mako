@@ -37,9 +37,8 @@ export function normalizeDisplayName(raw: string): string {
 }
 
 /**
- * Why a (normalised) name may not be written, or null when it may. Length
- * is the caller's: some paths refuse a long name, others have always
- * truncated it.
+ * Why a (normalised) name's CHARACTERS may not be written, or null when
+ * they may (`displayNameError` adds the length rule).
  */
 export function displayNameProblem(name: string): string | null {
   if (!name || !name.replace(INVISIBLE, "")) {
@@ -54,12 +53,24 @@ export function displayNameProblem(name: string): string | null {
   return null;
 }
 
-/** At most `max` UTF-16 units, never cutting a surrogate pair in half. */
-export function truncateDisplayName(name: string, max: number): string {
-  if (name.length <= max) return name;
-  const cut = name.slice(0, max);
-  const last = cut.charCodeAt(cut.length - 1);
-  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+/** The same 400 message a rename gives for a name past `maxLength`. */
+export function displayNameTooLong(maxLength: number): string {
+  return `The name is longer than ${maxLength} characters.`;
+}
+
+/**
+ * Every rule at once — characters and length — for the paths that answer
+ * with a message rather than throw: the problem, or null. Nothing is ever
+ * cut short: a name too long is refused with the rename's own message.
+ */
+export function displayNameError(
+  name: string,
+  maxLength: number,
+): string | null {
+  return (
+    displayNameProblem(name) ??
+    (name.length > maxLength ? displayNameTooLong(maxLength) : null)
+  );
 }
 
 /** The rename services' rule: normalised, valid, within `maxLength` — or a 400. */
@@ -68,7 +79,7 @@ export function cleanRenameTitle(raw: string, maxLength: number): string {
   const problem = displayNameProblem(title);
   if (problem) throw new RenameError(problem);
   if (title.length > maxLength) {
-    throw new RenameError(`The name is longer than ${maxLength} characters.`);
+    throw new RenameError(displayNameTooLong(maxLength));
   }
   return title;
 }

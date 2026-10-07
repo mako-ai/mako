@@ -50,6 +50,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 
 import { runGit } from "../apps/git";
+import { capAliases } from "./alias-cap";
 import {
   TreeNotVerifiedError,
   assertTreeAtMirrorMain,
@@ -146,23 +147,27 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Union of a row's aliases and a file's, deduplicated, never containing the
- * current slug. Aliases only ever grow: the file's are unioned onto the
- * row's rather than replacing them, because a laptop rename the sync
- * re-keyed in place is recorded on the row alone (the file did not carry
- * it) and the next file edit must not forget it.
+ * Two oldest-first alias lists as one, deduplicated, never containing the
+ * current slug, capped at the newest MAX_ALIASES (rename/alias-cap.ts).
+ *
+ * Callers pass the FILE's list first and the row's second: the file is the
+ * record (in rename order), and what only the row holds is newer — a laptop
+ * rename the sync re-keyed in place is recorded on the row alone, and the
+ * next file edit must not forget it. So the cap drops the oldest names
+ * first, and a name the cap dropped from the row is not brought back as
+ * if it were the newest.
  */
 export function mergedAliases(
-  rowAliases: string[] | undefined,
-  fileAliases: string[] | undefined,
+  first: string[] | undefined,
+  then: string[] | undefined,
   currentSlug: string | undefined,
 ): string[] {
   const out: string[] = [];
-  for (const alias of [...(rowAliases ?? []), ...(fileAliases ?? [])]) {
+  for (const alias of [...(first ?? []), ...(then ?? [])]) {
     if (!alias || alias === currentSlug || out.includes(alias)) continue;
     out.push(alias);
   }
-  return out;
+  return capAliases(out);
 }
 
 /**

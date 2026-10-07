@@ -299,10 +299,16 @@ async function serviceRename(request: {
   ref: string;
   title?: string;
   slug?: string;
-}): Promise<{ ok: boolean; status?: number; message?: string }> {
+}): Promise<{
+  ok: boolean;
+  status?: number;
+  message?: string;
+  warnings?: string[];
+  commit?: string;
+}> {
   try {
-    await renameObject(ctx(), "dbt_job", request);
-    return { ok: true };
+    const result = await renameObject(ctx(), "dbt_job", request);
+    return { ok: true, warnings: result.warnings, commit: result.commit };
   } catch (error) {
     if (error instanceof RenameError) {
       return { ok: false, status: error.status, message: error.message };
@@ -558,6 +564,78 @@ describe("hostile names", () => {
     await expectSameJob(before);
   }, 300_000);
 
+  it("a name past the cap is refused with ONE 400 message on every path that writes a job name", async () => {
+    const row = await seedJob("target", "Target");
+    const message = "The name is longer than 128 characters.";
+    const { createDbtServerTools } = await import(
+      "../../agent-lib/tools/dbt-tools"
+    );
+    const tools = createDbtServerTools(WS, OWNER, { chatId: "scenario" });
+    auth.user = { id: OWNER };
+    for (const name of ["x".repeat(129), "x".repeat(1000), "x".repeat(10000)]) {
+      if (name.length <= 1000) {
+        const viaRest = await restRename({ ref: "target", title: name });
+        expect(viaRest.status).toBe(400);
+        expect(viaRest.json.error).toBe(message);
+      }
+      expect(await serviceRename({ ref: "target", title: name })).toMatchObject(
+        { ok: false, status: 400, message },
+      );
+      const patch = await app.request(
+        `/api/workspaces/${WS}/dbt/projects/${project._id}/jobs/${row._id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+      );
+      expect(patch.status).toBe(400);
+      expect(((await patch.json()) as { error: string }).error).toBe(message);
+      const create = await app.request(
+        `/api/workspaces/${WS}/dbt/projects/${project._id}/jobs`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            environment: "prod",
+            commands: ["build --select tag:long"],
+          }),
+        },
+      );
+      expect(create.status).toBe(400);
+      expect(((await create.json()) as { error: string }).error).toBe(message);
+      for (const [toolName, input] of [
+        [
+          "dbt_update_job",
+          { projectId: String(project._id), jobId: String(row._id), name },
+        ],
+        [
+          "dbt_create_job",
+          {
+            projectId: String(project._id),
+            name,
+            commands: ["build --select tag:long"],
+          },
+        ],
+      ] as const) {
+        const tool = tools[toolName];
+        const schema = tool.inputSchema as unknown as {
+          safeParse: (v: unknown) => { success: boolean; data?: unknown };
+        };
+        const parsed = schema.safeParse(input);
+        expect(parsed.success, toolName).toBe(true);
+        const out = (await tool.execute!(parsed.data as never, {
+          toolCallId: "t",
+          messages: [],
+        })) as { success: boolean; error?: string };
+        expect(out, toolName).toEqual({ success: false, error: message });
+      }
+    }
+    expect((await DbtJob.findById(row._id))?.name).toBe("Target");
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+  });
+
   it("an NFD title on an NFC-named job is a no-op", async () => {
     const row = await seedJob("cafe", "Caf\u00E9 build");
     const commits = await commitCountOf(WS);
@@ -572,6 +650,27 @@ describe("hostile names", () => {
 // ---- partial failures ------------------------------------------------------
 
 describe("partial failure between the commit and the row", () => {
+  it("the row write fails after the commit: the UI route answers 200 with the warning, and an immediate retry is a safe no-op (no second commit, row level)", async () => {
+    await seedJob("keeper", "Keeper");
+    const row = await seedJob("a", "A");
+    const spy = vi.spyOn(DbtJob, "updateOne").mockImplementationOnce((() => {
+      throw new Error("mongo write failed");
+    }) as never);
+    const first = await restRename({ ref: "a", slug: "b" });
+    spy.mockRestore();
+    expect(first.status).toBe(200);
+    const result = first.json.result as { warnings: string[]; id: string };
+    expect(result.id).toBe(String(row._id));
+    expect(result.warnings.join(" ")).toMatch(/Retrying is safe/);
+    const commits = await commitCountOf(WS);
+    const again = await restRename({ ref: "a", slug: "b" });
+    expect(again.status).toBe(200);
+    expect(await commitCountOf(WS)).toBe(commits);
+    const after = await DbtJob.findById(row._id).lean();
+    expect(after?.slug).toBe("b");
+    expect(after?.aliases).toEqual(["a"]);
+  });
+
   it("the commit lands and the row update throws: the list, GET and the next sync all converge on the same job", async () => {
     await seedJob("keeper", "Keeper");
     const row = await seedJob("a", "A");
@@ -581,8 +680,13 @@ describe("partial failure between the commit and the row", () => {
     }) as never);
     const out = await serviceRename({ ref: "a", slug: "b" });
     spy.mockRestore();
-    expect(out.ok).toBe(false);
-    expect(out.message).toMatch(/mongo write failed/);
+    // The rename DID happen (the file is the store): a success that says
+    // the record catches up, never a failure inviting a retry.
+    expect(out.ok).toBe(true);
+    expect(out.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(out.warnings?.join(" ")).toMatch(
+      /rename is committed.*catches up on the next read or sync.*Retrying is safe/,
+    );
     expect(await pathsAtMain(WS, "dbt/jobs")).toEqual([
       "dbt/jobs/b.yml",
       "dbt/jobs/keeper.yml",
@@ -864,30 +968,43 @@ describe("cycles and chains", () => {
     );
   });
 
-  it("a 20-rename chain: every old name resolves; bounded time", async () => {
+  it("a 30-rename chain: the newest 24 old names resolve; older ones resolve to nothing, in the row and in the file", async () => {
     const row = await seedJob("n0", "N");
     const before = await jobState(row._id);
     const { ms } = await timed(async () => {
-      for (let i = 1; i <= 20; i++) {
+      for (let i = 1; i <= 30; i++) {
         expect(
           (await serviceRename({ ref: `n${i - 1}`, slug: `n${i}` })).ok,
         ).toBe(true);
       }
     });
-    recordTiming("dbt job: 20 chained renames", ms);
+    recordTiming("dbt job: 30 chained renames", ms);
+    const kept = Array.from({ length: 24 }, (_, i) => `n${i + 6}`);
+    expect((await expectSameJob(before)).aliases).toEqual(kept);
+    expect(
+      parseJobFile((await fileAtMain(WS, jobFilePath("n30"))) ?? "")?.aliases,
+    ).toEqual(kept);
     const resolved = await timed(async () => {
-      for (let i = 0; i <= 20; i++) {
-        expect(
-          (await resolveDbtJobRef({ workspaceId: WS }, `n${i}`))?.id,
-          `n${i}`,
-        ).toBe(before.id);
+      for (let i = 0; i <= 30; i++) {
+        const r = await resolveDbtJobRef({ workspaceId: WS }, `n${i}`);
+        expect(r?.id ?? null, `n${i}`).toBe(i < 6 ? null : before.id);
       }
     });
-    recordTiming("dbt job: resolve 21 names of a 20-alias chain", resolved.ms);
+    recordTiming("dbt job: resolve 31 names of a 30-rename chain", resolved.ms);
     expect(resolved.ms).toBeLessThan(10_000);
-    expect((await expectSameJob(before)).aliases).toHaveLength(20);
     await syncDbtConfigFromRepo(WS);
-    await expectSameJob(before);
+    expect((await expectSameJob(before)).aliases).toEqual(kept);
+    // A dropped name is free for a new job, and then names only that job.
+    await push({ [jobFilePath("n0")]: jobYaml("New n0", "new-n0") });
+    await syncDbtConfigFromRepo(WS);
+    const newcomer = await DbtJob.findOne({
+      projectId: project._id,
+      slug: "n0",
+    });
+    expect(String(newcomer!._id)).not.toBe(before.id);
+    expect((await resolveDbtJobRef({ workspaceId: WS }, "n0"))?.id).toBe(
+      String(newcomer!._id),
+    );
   }, 300_000);
 });
 

@@ -36,6 +36,7 @@ import yaml from "js-yaml";
 // be exercised without booting the git/mongo stack.
 import type { IFlow } from "../database/workspace-schema";
 import { slugifyName } from "../utils/slugify";
+import { capAliases } from "../rename/alias-cap";
 
 export const FLOWS_DIR = "flows";
 
@@ -433,7 +434,9 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
         reason: `\`aliases:\` entry ${JSON.stringify(bad)} is not a slug (lowercase letters, digits and dashes)`,
       };
     }
-    const unique = [...new Set(doc.aliases as string[])];
+    // Only the newest MAX_ALIASES count (rename/alias-cap.ts): an older
+    // name in a hand-written file resolves to nothing, as a dropped one.
+    const unique = capAliases([...new Set(doc.aliases as string[])]);
     if (unique.length > 0) aliases = unique;
   }
 

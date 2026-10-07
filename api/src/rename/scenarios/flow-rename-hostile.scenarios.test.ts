@@ -370,10 +370,16 @@ async function serviceRename(request: {
   ref: string;
   title?: string;
   slug?: string;
-}): Promise<{ ok: boolean; status?: number; message?: string }> {
+}): Promise<{
+  ok: boolean;
+  status?: number;
+  message?: string;
+  warnings?: string[];
+  commit?: string;
+}> {
   try {
-    await renameObject(ctx(), "flow", request);
-    return { ok: true };
+    const result = await renameObject(ctx(), "flow", request);
+    return { ok: true, warnings: result.warnings, commit: result.commit };
   } catch (error) {
     if (error instanceof RenameError) {
       return { ok: false, status: error.status, message: error.message };
@@ -500,9 +506,7 @@ describe("hostile titles through the editor's own name field (PUT /flows/:id)", 
     const failures: string[] = [];
     for (const [label, title, rule] of HOSTILE_TITLES) {
       if (!title.trim()) continue; // the editor ignores an empty name
-      // The editor has always cut a long name at 200 characters rather
-      // than refusing it: a safe normalization, kept.
-      const expected = /^\d+ chars$/.test(label) ? "x".repeat(200) : rule;
+      const expected = rule;
       const commits = await commitCountOf(WS);
       auth.user = { id: OWNER };
       const res = await flowsApp.request(
@@ -531,6 +535,40 @@ describe("hostile titles through the editor's own name field (PUT /flows/:id)", 
     expect(failures).toEqual([]);
     await expectSameStream(before);
     await expectNoTeardownNoDuplicate();
+  });
+});
+
+describe("a name past the cap", () => {
+  it("is refused with ONE 400 message on every path that writes a flow name — never cut short", async () => {
+    const row = await seedFlow("target", "Target");
+    const message = "The name is longer than 200 characters.";
+    auth.user = { id: OWNER };
+    for (const title of ["x".repeat(201), "x".repeat(1000)]) {
+      const viaRest = await restRename({ ref: "target", title });
+      expect(viaRest.status).toBe(400);
+      expect(viaRest.json.error).toBe(message);
+      expect(await serviceRename({ ref: "target", title })).toMatchObject({
+        ok: false,
+        status: 400,
+        message,
+      });
+      const put = await flowsApp.request(
+        `/api/workspaces/${WS}/flows/${row._id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: title }),
+        },
+      );
+      expect(put.status).toBe(400);
+      expect(((await put.json()) as { error: string }).error).toBe(message);
+    }
+    // Exactly at the cap is fine, everywhere.
+    const atCap = "y".repeat(200);
+    expect((await serviceRename({ ref: "target", title: atCap })).ok).toBe(
+      true,
+    );
+    expect((await Flow.findById(row._id))?.name).toBe(atCap);
   });
 });
 
@@ -617,6 +655,27 @@ describe("hostile slugs", () => {
 // ---- partial failures ------------------------------------------------------
 
 describe("partial failure between the commit and the row", () => {
+  it("the row write fails after the commit: the UI route answers 200 with the warning, and an immediate retry is a safe no-op (no second commit, row level)", async () => {
+    await seedFlow("keeper", "Keeper");
+    const row = await seedFlow("a", "A");
+    const spy = vi.spyOn(Flow, "updateOne").mockImplementationOnce((() => {
+      throw new Error("mongo write failed");
+    }) as never);
+    const first = await restRename({ ref: "a", slug: "b" });
+    spy.mockRestore();
+    expect(first.status).toBe(200);
+    const result = first.json.result as { warnings: string[]; id: string };
+    expect(result.id).toBe(String(row._id));
+    expect(result.warnings.join(" ")).toMatch(/Retrying is safe/);
+    const commits = await commitCountOf(WS);
+    const again = await restRename({ ref: "a", slug: "b" });
+    expect(again.status).toBe(200);
+    expect(await commitCountOf(WS)).toBe(commits);
+    const after = await Flow.findById(row._id).lean();
+    expect(after?.slug).toBe("b");
+    expect(after?.aliases).toEqual(["a"]);
+  });
+
   it("git commit succeeds, the Mongo update throws: the caller is told, and the next READ and the next sync converge (same id, no teardown, no duplicate)", async () => {
     await seedFlow("keeper", "Keeper");
     const row = await seedFlow("a", "A");
@@ -626,9 +685,13 @@ describe("partial failure between the commit and the row", () => {
     }) as never);
     const out = await serviceRename({ ref: "a", slug: "b" });
     spy.mockRestore();
-    // The rename DID happen (the file is the store): the answer says so.
-    expect(out.ok).toBe(false);
-    expect(out.message).toMatch(/mongo write failed/);
+    // The rename DID happen (the file is the store): a success that says
+    // the record catches up, never a failure inviting a retry.
+    expect(out.ok).toBe(true);
+    expect(out.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(out.warnings?.join(" ")).toMatch(
+      /rename is committed.*catches up on the next read or sync.*Retrying is safe/,
+    );
     expect(await pathsAtMain(WS, "flows")).toEqual([
       "flows/b.yml",
       "flows/keeper.yml",
@@ -942,7 +1005,7 @@ describe("cycles and chains", () => {
     });
   });
 
-  it("a long chain (30 renames): every old name resolves to the one flow; the time stays bounded", async () => {
+  it("a 30-rename chain: the newest 24 old names resolve; older ones resolve to NOTHING (never another flow), in the row and in the file", async () => {
     const row = await seedFlow("n0", "N");
     const before = await streamState(row._id);
     const { ms } = await timed(async () => {
@@ -952,22 +1015,82 @@ describe("cycles and chains", () => {
       }
     });
     recordTiming("flow: 30 chained renames (service, one commit each)", ms);
+    const kept = Array.from({ length: 24 }, (_, i) => `n${i + 6}`);
     const after = await expectSameStream(before);
-    expect(after.aliases).toHaveLength(30);
+    expect(after.slug).toBe("n30");
+    expect(after.aliases).toEqual(kept);
+    expect(
+      parseFlowFile((await fileAtMain(WS, "flows/n30.yml")) ?? "")?.aliases,
+    ).toEqual(kept);
     const resolveAll = await timed(async () => {
       for (let i = 0; i <= 30; i++) {
-        expect(
-          (await resolveFlowRef({ workspaceId: WS }, `n${i}`))?.id,
-          `n${i}`,
-        ).toBe(before.id);
+        const resolved = await resolveFlowRef({ workspaceId: WS }, `n${i}`);
+        expect(resolved?.id ?? null, `n${i}`).toBe(i < 6 ? null : before.id);
       }
     });
-    recordTiming("flow: resolve 31 names of a 30-alias chain", resolveAll.ms);
+    recordTiming("flow: resolve 31 names of a 30-rename chain", resolveAll.ms);
     expect(resolveAll.ms).toBeLessThan(10_000);
     await syncFlowsFromRepo(WS, OWNER);
-    await expectSameStream(before);
+    expect((await expectSameStream(before)).aliases).toEqual(kept);
+    // A dropped name is free: a new flow may take it, and then it names
+    // that flow — the old one never answers to it again.
+    await push({ "flows/n0.yml": flowYaml("New n0", "new-n0") });
+    await syncFlowsFromRepo(WS, OWNER);
+    const newcomer = await Flow.findOne({ workspaceId: WS, slug: "n0" });
+    expect(String(newcomer!._id)).not.toBe(before.id);
+    expect((await resolveFlowRef({ workspaceId: WS }, "n0"))?.id).toBe(
+      String(newcomer!._id),
+    );
+    // Renaming back to a kept old name: the current name is never an alias.
+    expect((await serviceRename({ ref: "n30", slug: "n10" })).ok).toBe(true);
+    const back = await expectSameStream(before);
+    expect(back.aliases).not.toContain("n10");
+    expect(back.aliases).toHaveLength(24);
+    expect(back.aliases[back.aliases.length - 1]).toBe("n30");
     await expectNoTeardownNoDuplicate();
   }, 300_000);
+
+  it("a hand-written file listing 30 old names, and a laptop move of a flow at the cap: never past 24, the oldest dropped", async () => {
+    const names = Array.from({ length: 30 }, (_, i) => `old-${i}`);
+    await push({
+      "flows/many.yml": flowYaml(
+        "Many",
+        "many",
+        `aliases: [${names.join(", ")}]`,
+      ),
+    });
+    await syncFlowsFromRepo(WS, OWNER);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "many" });
+    expect(row?.aliases).toEqual(names.slice(6));
+    expect(await resolveFlowRef({ workspaceId: WS }, "old-0")).toBeNull();
+    expect((await resolveFlowRef({ workspaceId: WS }, "old-6"))?.id).toBe(
+      String(row!._id),
+    );
+    const l = await Laptop.clone(WS, path.join(tmpRoot, "laptops"));
+    await l.mv("flows/many.yml", "flows/many-2.yml");
+    await l.commit("move at the cap");
+    expect((await l.push()).ok).toBe(true);
+    await syncFlowsFromRepo(WS, OWNER);
+    const moved = await Flow.findById(row!._id);
+    expect(moved?.slug).toBe("many-2");
+    expect(moved?.aliases).toHaveLength(24);
+    expect(moved?.aliases?.[23]).toBe("many");
+    expect(moved?.aliases).not.toContain("old-6");
+    // The laptop's file still lists it, so until the file is next written
+    // the name can only lead back to this same flow — never another one…
+    expect(
+      (await resolveFlowRef({ workspaceId: WS }, "old-6"))?.id ?? null,
+    ).toBe(String(row!._id));
+    // …and the next write (any rename) brings the file to the cap too.
+    expect((await serviceRename({ ref: "many-2", title: "Many!" })).ok).toBe(
+      true,
+    );
+    expect(
+      parseFlowFile((await fileAtMain(WS, "flows/many-2.yml")) ?? "")?.aliases,
+    ).toEqual([...names.slice(7), "many"]);
+    expect(await resolveFlowRef({ workspaceId: WS }, "old-6")).toBeNull();
+    expect(await resolveFlowRef({ workspaceId: WS }, "old-0")).toBeNull();
+  });
 
   it("an alias equal to the flow's own current slug is never recorded as one", async () => {
     await push({ "flows/a.yml": flowYaml("A", "a", "aliases: [a, legacy]") });

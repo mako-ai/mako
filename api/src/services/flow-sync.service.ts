@@ -69,6 +69,7 @@ import {
   type DesiredFlow,
 } from "../sync-cdc/flow-reconcile";
 import { isRetiredObjectId, retiredIdHolders } from "../rename/retired-ids";
+import { MAX_ALIASES, capAliases } from "../rename/alias-cap";
 import { publishRealtimeEvent } from "./realtime.service";
 import {
   currentTreeCheck,
@@ -843,7 +844,7 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
   doc.type = file.type;
   // Aliases only ever grow (see `mergedAliases`); the row's own slug is
   // never one of them.
-  const aliases = mergedAliases(doc.aliases, file.aliases, doc.slug);
+  const aliases = mergedAliases(file.aliases, doc.aliases, doc.slug);
   if (aliases.length > 0 || doc.aliases?.length) {
     doc.aliases = aliases.length > 0 ? aliases : undefined;
   }
@@ -998,10 +999,18 @@ export async function rekeyFlowSlug(
       // unlanded rename started from no longer describes anything.
       ...(commit ? { $unset: { renameFromBlobSha: 1 } } : {}),
     },
+    { new: true },
   )
-    .select("workspaceId")
+    .select("workspaceId aliases")
     .lean();
   if (!moved) return;
+  // At most MAX_ALIASES old names, the newest (rename/alias-cap.ts).
+  if ((moved.aliases?.length ?? 0) > MAX_ALIASES) {
+    await Flow.updateOne(
+      { _id: flowId },
+      { $set: { aliases: capAliases(moved.aliases ?? []) } },
+    );
+  }
   // Current always wins (as for a new flow at the name, see the sync): a
   // row that held `to` as an OLD name stops answering to it. Otherwise it
   // kept it on the row, and once this flow moved on, `to` resolved to that
@@ -1534,7 +1543,18 @@ async function reacquireFileAliases(
     if (free.length === 0) continue;
     await Flow.updateOne(
       { _id: row._id },
-      { $addToSet: { aliases: { $each: free } } },
+      // Within the cap (mergedAliases): never past MAX_ALIASES.
+      {
+        $set: {
+          aliases: mergedAliases(
+            wanted.filter(
+              a => free.includes(a) || (row.aliases ?? []).includes(a),
+            ),
+            row.aliases,
+            slug,
+          ),
+        },
+      },
     );
     logger.info("Flow re-acquired aliases its file lists", {
       workspaceId,

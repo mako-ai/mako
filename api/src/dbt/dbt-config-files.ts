@@ -15,6 +15,7 @@
 import yaml from "js-yaml";
 
 import { slugifyName } from "../utils/slugify";
+import { capAliases } from "../rename/alias-cap";
 
 export const DBT_JOBS_DIR = "dbt/jobs";
 export const DBT_ENVIRONMENTS_PATH = "dbt/environments.yml";
@@ -124,7 +125,8 @@ export function parseJobFile(contents: string): DbtJobFile | null {
     ) {
       return null;
     }
-    const unique = [...new Set(doc.aliases as string[])];
+    // Only the newest MAX_ALIASES count (rename/alias-cap.ts).
+    const unique = capAliases([...new Set(doc.aliases as string[])]);
     if (unique.length > 0) aliases = unique;
   }
   let schedule: DbtJobFile["schedule"] = null;

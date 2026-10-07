@@ -61,6 +61,7 @@ import {
 } from "./dbt-config-files";
 import { parseDbtCommands } from "./commands";
 import { unsafeSlugReason } from "../utils/slugify";
+import { MAX_ALIASES, capAliases } from "../rename/alias-cap";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   isRetiredObjectId,
@@ -657,7 +658,7 @@ export async function ensureJobDerivedCache(
   const { kept: aliases } = await dropJobAliasesClaimedElsewhere(
     row.projectId,
     row._id,
-    mergedAliases(row.aliases, file.aliases, row.slug),
+    mergedAliases(file.aliases, row.aliases, row.slug),
   );
   await DbtJob.updateOne(
     { _id: row._id },
@@ -1004,7 +1005,7 @@ export function liveJobToPlain(
           };
     return base;
   }
-  const aliases = mergedAliases(live.row?.aliases, file.aliases, live.def.slug);
+  const aliases = mergedAliases(file.aliases, live.row?.aliases, live.def.slug);
   Object.assign(base, {
     name: file.name,
     environment: file.environment,
@@ -1274,10 +1275,18 @@ export async function rekeyJobSlug(
       // A new guard is a move the tree already holds (see rekeyFlowSlug).
       ...(commit ? { $unset: { renameFromBlobSha: 1 } } : {}),
     },
+    { new: true },
   )
-    .select("projectId")
+    .select("projectId aliases")
     .lean();
   if (!moved) return;
+  // At most MAX_ALIASES old names, the newest (rename/alias-cap.ts).
+  if ((moved.aliases?.length ?? 0) > MAX_ALIASES) {
+    await DbtJob.updateOne(
+      { _id: jobId },
+      { $set: { aliases: capAliases(moved.aliases ?? []) } },
+    );
+  }
   // Current always wins (see rekeyFlowSlug): another job stops answering
   // to the name this one now holds.
   await DbtJob.updateMany(
@@ -1473,8 +1482,8 @@ export async function commitDbtJobFile(
   // newcomer is gone the old name must answer to this job again.
   const projected = jobToFile(job);
   const aliases = mergedAliases(
-    projected.aliases,
     await jobAliasesAtMain(repoDir, job.slug),
+    projected.aliases,
     job.slug,
   );
   const contents = serializeJobFile({
@@ -1941,7 +1950,7 @@ async function syncDbtConfigNow(
     const merged = await dropJobAliasesClaimedElsewhere(
       project._id,
       doc._id,
-      mergedAliases(doc.aliases, parsed.aliases, slug),
+      mergedAliases(parsed.aliases, doc.aliases, slug),
     );
     if (merged.dropped.length > 0) {
       logger.warn("dbt job file lists aliases another job already claims", {
@@ -2081,7 +2090,18 @@ async function syncDbtConfigNow(
       if (kept.length === 0) continue;
       await DbtJob.updateOne(
         { _id: row._id },
-        { $addToSet: { aliases: { $each: kept } } },
+        // Within the cap (mergedAliases): never past MAX_ALIASES.
+        {
+          $set: {
+            aliases: mergedAliases(
+              wanted.filter(
+                a => kept.includes(a) || (row.aliases ?? []).includes(a),
+              ),
+              row.aliases,
+              slug,
+            ),
+          },
+        },
       );
       logger.info("dbt job re-acquired aliases its file lists", {
         workspaceId,
