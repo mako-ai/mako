@@ -115,6 +115,8 @@ export default defineConfig({
       // cycles and scale — real git, real Mongo, real routes.
       "src/rename/scenarios/flow-rename.scenarios.test.ts",
       "src/rename/scenarios/flow-rename-hostile.scenarios.test.ts",
+      "src/rename/scenarios/dbt-job-rename.scenarios.test.ts",
+      "src/rename/scenarios/dbt-job-rename-hostile.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

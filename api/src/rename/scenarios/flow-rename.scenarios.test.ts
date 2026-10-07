@@ -305,11 +305,19 @@ async function streamState(id: Types.ObjectId | string): Promise<StreamState> {
  * The stream survived: same id, same runtime, same webhook URL and secret,
  * the scheduler's claim kept. Name/slug/aliases are the caller's to check.
  */
+function webhookPath(endpoint: string | undefined): string | undefined {
+  return endpoint === undefined
+    ? undefined
+    : new URL(endpoint, "http://host.invalid").pathname;
+}
+
 async function expectSameStream(before: StreamState): Promise<StreamState> {
   const after = await streamState(before.id);
   expect(after.id).toBe(before.id);
   expect(after.runtime).toEqual(before.runtime);
-  expect(after.endpoint).toBe(before.endpoint);
+  // The inbound identity is the path (/api/webhooks/<ws>/<flow id>); the
+  // host is the deployment's, and GET/PUT re-derive it from the request.
+  expect(webhookPath(after.endpoint)).toBe(webhookPath(before.endpoint));
   expect(after.endpoint).toContain(`/api/webhooks/${WS}/${before.id}`);
   expect(after.secret).toBe(before.secret);
   expect(after.backfillLastRunAt).toBe(before.backfillLastRunAt);
@@ -690,6 +698,11 @@ describe.each(ENTRIES)("entry point: %s", entry => {
     );
     const noop = await renameVia(entry, { ref: "git-only", slug: "git-only" });
     expect(noop.ok).toBe(true);
+    // The id the list hands out for it resolves to it too.
+    const listed = (await loadLiveFlows(WS)).find(
+      l => l.def.slug === "git-only",
+    );
+    expect(await resolves(String(listed!.id))).toBe(String(listed!.id));
     await expectNoTeardownNoDuplicate();
   });
 
@@ -1024,6 +1037,48 @@ describe("entry point: laptop git mv + push", () => {
     expect((await Flow.findById(orig!._id))?.aliases).toEqual(["legacy"]);
     expect(await resolves("legacy")).toBe(String(orig!._id));
     await expectNoTeardownNoDuplicate();
+  });
+
+  it("rename + retarget in one commit: with `aliases:` the author's word is honoured (same stream); without, it is another stream — the old one is not handed over", async () => {
+    await seedFlow("keeper", "Keeper");
+    const a = await seedFlow("a", "A");
+    const beforeA = await streamState(a._id);
+    const l = await laptop();
+    await l.mv("flows/a.yml", "flows/a-eu.yml");
+    await l.write(
+      "flows/a-eu.yml",
+      (await l.read("flows/a-eu.yml"))
+        .replace("schema: raw_a", "schema: raw_a_eu")
+        .replace("name: A", "name: A EU\naliases: [a]"),
+    );
+    await l.commit("move + retarget, with the old name");
+    await pushAndSync(l);
+    expect(await expectSameStream(beforeA)).toMatchObject({ slug: "a-eu" });
+    // Without `aliases:`, a different destination is a different stream:
+    // never paired by content, so the old row is not handed to it.
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    const b = await seedFlow("b", "B");
+    const beforeB = await streamState(b._id);
+    await l.pull();
+    await l.mv("flows/b.yml", "flows/b-eu.yml");
+    await l.write(
+      "flows/b-eu.yml",
+      (await l.read("flows/b-eu.yml")).replace(
+        "schema: raw_b",
+        "schema: raw_b_eu",
+      ),
+    );
+    await l.commit("move + retarget, no old name");
+    const pushed = await l.push();
+    expect(pushed.ok).toBe(true);
+    const result = await syncFlowsFromRepo(WS, EDITOR);
+    const bEu = await Flow.findOne({ workspaceId: WS, slug: "b-eu" });
+    expect(String(bEu!._id)).not.toBe(beforeB.id);
+    expect(await CdcEntityState.countDocuments({ flowId: bEu!._id })).toBe(0);
+    // The old stream's removal is the reconciler's (here deferred behind
+    // the unverifiable mirror: the row and its state are kept, untouched).
+    expect(result.deferred).toEqual(["b"]);
+    expect(await expectSameStream(beforeB)).toMatchObject({ slug: "b" });
   });
 
   it("a push that touches no flow changes nothing (no-op)", async () => {

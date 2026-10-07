@@ -311,11 +311,19 @@ async function streamState(id: Types.ObjectId | string) {
 }
 type StreamState = Awaited<ReturnType<typeof streamState>>;
 
+function webhookPath(endpoint: string | undefined): string | undefined {
+  return endpoint === undefined
+    ? undefined
+    : new URL(endpoint, "http://host.invalid").pathname;
+}
+
 async function expectSameStream(before: StreamState): Promise<StreamState> {
   const after = await streamState(before.id);
   expect(after.id).toBe(before.id);
   expect(after.runtime).toEqual(before.runtime);
-  expect(after.endpoint).toBe(before.endpoint);
+  // The inbound identity is the path (/api/webhooks/<ws>/<flow id>); the
+  // host is the deployment's, and GET/PUT re-derive it from the request.
+  expect(webhookPath(after.endpoint)).toBe(webhookPath(before.endpoint));
   expect(after.secret).toBe(before.secret);
   expect(after.backfillLastRunAt).toBe(before.backfillLastRunAt);
   return after;
@@ -482,6 +490,47 @@ describe("hostile titles", () => {
     expect(out.ok).toBe(true);
     expect(await commitCountOf(WS)).toBe(commits);
     expect((await Flow.findById(row._id))!.name).toBe("Caf\u00E9 sync");
+  });
+});
+
+describe("hostile titles through the editor's own name field (PUT /flows/:id)", () => {
+  it("the same rules as a rename: a clear 400 for what a rename refuses, NFC for what it normalizes — never a 500", async () => {
+    const row = await seedFlow("target", "Target");
+    const before = await streamState(row._id);
+    const failures: string[] = [];
+    for (const [label, title, rule] of HOSTILE_TITLES) {
+      if (!title.trim()) continue; // the editor ignores an empty name
+      // The editor has always cut a long name at 200 characters rather
+      // than refusing it: a safe normalization, kept.
+      const expected = /^\d+ chars$/.test(label) ? "x".repeat(200) : rule;
+      const commits = await commitCountOf(WS);
+      auth.user = { id: OWNER };
+      const res = await flowsApp.request(
+        `/api/workspaces/${WS}/flows/${row._id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: title }),
+        },
+      );
+      const body = (await res.json()) as { error?: string };
+      const stored = (await Flow.findById(row._id))!.name;
+      if (expected === "refused") {
+        if (res.status !== 400) {
+          failures.push(`${label}: ${res.status} ${body.error ?? ""}`);
+        }
+        if ((await commitCountOf(WS)) !== commits) {
+          failures.push(`${label}: committed`);
+        }
+      } else if (res.status !== 200) {
+        failures.push(`${label}: refused ${res.status} ${body.error ?? ""}`);
+      } else if (stored !== expected) {
+        failures.push(`${label}: stored ${JSON.stringify(stored)}`);
+      }
+    }
+    expect(failures).toEqual([]);
+    await expectSameStream(before);
+    await expectNoTeardownNoDuplicate();
   });
 });
 
