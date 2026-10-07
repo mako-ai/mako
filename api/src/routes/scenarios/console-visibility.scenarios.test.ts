@@ -634,6 +634,48 @@ describe("deleting a folder", () => {
     expect((await rig.history(a._id)).length).toBeGreaterThanOrEqual(3);
   });
 
+  it("the explorer's Undo of a folder delete (as the client runs it) brings the folder and its console back where they were", async () => {
+    const box = await rig.manager.createFolder(
+      "Scratch",
+      rig.ws,
+      owner.id,
+      undefined,
+      false,
+      "workspace",
+    );
+    const a = await rig.save("a", owner, {
+      folderId: box._id.toString(),
+      code: "SELECT 'keep me'\n",
+    });
+    const before = await rig.history(a._id);
+    expect(
+      (await rig.api("DELETE", `/consoles/folders/${box._id}`, owner)).status,
+    ).toBe(200);
+    // restoreFolder: recreate the folder, restore, move back in by name.
+    const f = await rig.api("POST", "/consoles/folders", owner, {
+      name: "Scratch",
+      access: "workspace",
+    });
+    expect(f.status).toBe(201);
+    const folderId = (f.body.data as { id: string }).id;
+    expect(
+      (await rig.api("PATCH", `/consoles/${a._id}/restore`, owner)).status,
+    ).toBe(200);
+    const moved = await rig.api("PATCH", `/consoles/${a._id}/move`, owner, {
+      folderId,
+      name: "a",
+    });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    const row = (await rig.row(a._id))!;
+    expect(row.path).toBe("consoles/Scratch/a.sql");
+    expect(row.folderId?.toString()).toBe(folderId);
+    expect(await rig.fileAt("consoles/Scratch/a.sql")).toBe(
+      "SELECT 'keep me'\n",
+    );
+    const after = await rig.history(a._id);
+    for (const oid of before) expect(after).toContain(oid);
+  });
+
   it("a workspace admin may delete a folder holding others' consoles — into the trash", async () => {
     const w = await world();
     const r = await rig.api("DELETE", `/consoles/folders/${w.team}`, admin);

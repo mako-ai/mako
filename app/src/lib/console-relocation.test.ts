@@ -7,6 +7,8 @@ import {
   consoleNameTakenBy,
   consoleCopiedNotice,
   consoleDeleteConfirmText,
+  consoleFolderRestoredNotice,
+  consoleFolderTrashedNotice,
   consoleNameTakenMessage,
   consolePlacement,
   consoleRestoredNotice,
@@ -445,19 +447,46 @@ describe("names taken and restores, in words", () => {
   });
 });
 
-describe("consoleDeleteConfirmText — says what a delete does", () => {
-  it("consoles go to the trash and can be restored; never 'permanently'", () => {
+describe("consoleDeleteConfirmText — says what a delete does, promises only what the UI can do", () => {
+  it("consoles go to the trash and the delete can be undone; never 'permanently', never a restore the UI has no way to make", () => {
     const folder = consoleDeleteConfirmText({
       name: "Fold2",
       isDirectory: true,
     });
     expect(folder).toMatch(/Fold2/);
     expect(folder).toMatch(/trash/);
-    expect(folder).toMatch(/restored/);
+    expect(folder).toMatch(/undo this right after/);
     expect(folder).toMatch(/another member's console/);
-    expect(folder).not.toMatch(/permanent/i);
+    expect(folder).not.toMatch(/permanent|restored/i);
     const one = consoleDeleteConfirmText({ name: "x", isDirectory: false });
     expect(one).toMatch(/trash/);
-    expect(one).not.toMatch(/permanent/i);
+    expect(one).not.toMatch(/permanent|restored/i);
+  });
+
+  it("the folder toasts say what went and what came back", () => {
+    const tree = {
+      isDirectory: true,
+      children: [
+        { isDirectory: false },
+        { isDirectory: true, children: [{ isDirectory: false }] },
+      ],
+    };
+    expect(consoleFolderTrashedNotice("F", tree)).toBe(
+      "Deleted folder “F” — 2 consoles moved to trash",
+    );
+    expect(
+      consoleFolderTrashedNotice("E", { isDirectory: true, children: [] }),
+    ).toBe("Deleted folder “E”");
+    expect(
+      consoleFolderRestoredNotice("F", {
+        restored: 3,
+        failed: 1,
+        atRoot: 1,
+        folderRecreated: true,
+        section: "My Consoles",
+      }),
+    ).toBe(
+      "Restored folder “F” and 2 consoles; 1 console came back to the root of My Consoles; 1 console could not be restored",
+    );
   });
 });

@@ -91,6 +91,25 @@ export interface ConsoleTreeExtra {
     workspaceId: string,
     consoleId: string,
   ) => Promise<{ name?: string } | null>;
+  /**
+   * Undo a folder delete: recreate the folder (and its subfolders) where
+   * it was, from the tree's snapshot of it taken before the delete, and
+   * bring each of its consoles back from the trash into it under its own
+   * name. When the folder cannot be recreated (a twin took its name, the
+   * parent is not this person's to write…) its consoles still come back —
+   * at the root of the section (`atRoot`). `failed` counts consoles that
+   * could not be restored at all.
+   */
+  restoreFolder: (
+    workspaceId: string,
+    snapshot: ConsoleEntry,
+    placement: { parentId: string | null; section: "my" | "workspace" },
+  ) => Promise<{
+    restored: number;
+    failed: number;
+    atRoot: number;
+    folderRecreated: boolean;
+  }>;
 }
 
 const base = "/api/workspaces/{workspaceId}/consoles" as const;
@@ -528,6 +547,98 @@ export const useConsoleTreeStore = createResourceTreeStore<
       } catch {
         return null;
       }
+    },
+
+    restoreFolder: async (workspaceId, snapshot, placement) => {
+      const outcome = {
+        restored: 0,
+        failed: 0,
+        atRoot: 0,
+        folderRecreated: false,
+      };
+      const access =
+        placement.section === "workspace" ? "workspace" : "private";
+      const createFolder = async (
+        name: string,
+        parentId: string | null,
+      ): Promise<string | null> => {
+        try {
+          const res = unwrapBody(
+            await api.POST(`${base}/folders`, {
+              params: { path: { workspaceId } },
+              body: { name, parentId: parentId || undefined, access },
+            }),
+          ) as { success: boolean; data?: { id: string } };
+          return res.success ? (res.data?.id ?? null) : null;
+        } catch {
+          return null;
+        }
+      };
+      // Out of the trash (it comes back at its scope's root: its folder is
+      // gone), then into the recreated folder under its own name — one
+      // commit each.
+      const bringBack = async (node: ConsoleEntry, folderId: string | null) => {
+        try {
+          const restored = unwrapBody(
+            await api.PATCH(`${base}/{id}/restore`, {
+              params: { path: { workspaceId, id: node.id } },
+            }),
+          ) as { success: boolean };
+          if (!restored.success) throw new Error("not restored");
+        } catch {
+          outcome.failed++;
+          return;
+        }
+        outcome.restored++;
+        if (!folderId) {
+          outcome.atRoot++;
+          return;
+        }
+        try {
+          const moved = unwrapBody(
+            await api.PATCH(`${base}/{id}/move`, {
+              params: { path: { workspaceId, id: node.id } },
+              body: { folderId, name: node.name },
+            }),
+          ) as { success: boolean };
+          if (!moved.success) outcome.atRoot++;
+        } catch {
+          outcome.atRoot++;
+        }
+      };
+      const walk = async (folder: ConsoleEntry, parentId: string | null) => {
+        const folderId = await createFolder(folder.name, parentId);
+        if (folder === snapshot) outcome.folderRecreated = folderId !== null;
+        for (const child of folder.children ?? []) {
+          if (child.isDirectory) {
+            // A subfolder whose parent could not be recreated is not made
+            // at the root on its own: its consoles come back to the root.
+            if (folderId) await walk(child, folderId);
+            else await walkConsolesOnly(child);
+          } else {
+            await bringBack(child, folderId);
+          }
+        }
+      };
+      const walkConsolesOnly = async (folder: ConsoleEntry) => {
+        for (const child of folder.children ?? []) {
+          if (child.isDirectory) await walkConsolesOnly(child);
+          else await bringBack(child, null);
+        }
+      };
+      // Its old parent, when it is still in the tree; else the root.
+      const parentStillThere =
+        placement.parentId !== null &&
+        findIn(
+          [
+            ...(get().myItems[workspaceId] ?? []),
+            ...(get().workspaceItems[workspaceId] ?? []),
+          ],
+          placement.parentId,
+        ) !== null;
+      await walk(snapshot, parentStillThere ? placement.parentId : null);
+      await get().refresh(workspaceId);
+      return outcome;
     },
   }),
 });

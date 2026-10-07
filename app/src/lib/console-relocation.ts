@@ -436,16 +436,82 @@ export function consoleRestoredNotice(
 }
 
 /**
- * What deleting a console or a folder does, in the confirm dialog's words:
- * consoles go to the TRASH (restorable) — a folder delete too, which the
- * server refuses when the folder holds another member's console and the
- * person is no workspace admin.
+ * What deleting a console or a folder does, in the confirm dialog's words
+ * — promising only what the UI can do: its consoles go to the trash, and
+ * the toast's Undo (or Ctrl+Z) brings them back; the trash has no view.
+ * A folder delete is refused by the server when the folder holds another
+ * member's console and the person is no workspace admin.
  */
 export function consoleDeleteConfirmText(target: {
   name: string;
   isDirectory: boolean;
 }): string {
   return target.isDirectory
-    ? `Delete the folder “${target.name}” and its subfolders? The consoles in it move to the trash, where they can be restored. A folder that holds another member's console can only be deleted by them or a workspace admin.`
-    : `Move “${target.name}” to the trash? It can be restored from there.`;
+    ? `Delete the folder “${target.name}” and its subfolders? The consoles in it move to the trash — you can undo this right after. A folder that holds another member's console can only be deleted by them or a workspace admin.`
+    : `Move “${target.name}” to the trash? You can undo this right after.`;
+}
+
+/** Every console under a folder snapshot (any depth). */
+function countConsoles(node: {
+  isDirectory?: boolean;
+  children?: unknown[];
+}): number {
+  let n = 0;
+  for (const child of (node.children ?? []) as Array<{
+    isDirectory?: boolean;
+    children?: unknown[];
+  }>) {
+    n += child.isDirectory ? countConsoles(child) : 1;
+  }
+  return n;
+}
+
+const consoles = (n: number) => `${n} console${n === 1 ? "" : "s"}`;
+
+/** The toast after a folder delete (with its Undo). */
+export function consoleFolderTrashedNotice(
+  name: string,
+  snapshot?: { isDirectory?: boolean; children?: unknown[] },
+): string {
+  const n = snapshot ? countConsoles(snapshot) : 0;
+  return n > 0
+    ? `Deleted folder “${name}” — ${consoles(n)} moved to trash`
+    : `Deleted folder “${name}”`;
+}
+
+/** The toast after undoing a folder delete: what came back, and where. */
+export function consoleFolderRestoredNotice(
+  name: string,
+  outcome: {
+    restored: number;
+    failed: number;
+    atRoot: number;
+    folderRecreated: boolean;
+    section: "My Consoles" | "Workspace";
+  },
+): string {
+  const parts: string[] = [];
+  if (outcome.folderRecreated) {
+    const inside = outcome.restored - outcome.atRoot;
+    parts.push(
+      inside > 0
+        ? `Restored folder “${name}” and ${consoles(inside)}`
+        : `Restored folder “${name}”`,
+    );
+    if (outcome.atRoot > 0) {
+      parts.push(
+        `${consoles(outcome.atRoot)} came back to the root of ${outcome.section}`,
+      );
+    }
+  } else if (outcome.restored > 0) {
+    parts.push(
+      `The folder “${name}” could not be recreated — ${consoles(outcome.restored)} restored to the root of ${outcome.section}`,
+    );
+  } else {
+    parts.push(`The folder “${name}” could not be recreated`);
+  }
+  if (outcome.failed > 0) {
+    parts.push(`${consoles(outcome.failed)} could not be restored`);
+  }
+  return parts.join("; ");
 }
