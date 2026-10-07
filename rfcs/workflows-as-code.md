@@ -1,77 +1,99 @@
 # RFC: Workflows as code — native Hatchet workflows in the workspace repo
 
-**Status:** proposal v4. Refines issue #761 (v3); nothing in v3's intent changes.
-**Continues:** RFC #904 (flows as code), `rfcs/connectors-as-code.md` (tenant
-code in a workspace box), `apps.md` §4.9 (scheduled jobs), §19 (branch policy),
-§20/§23 (dbt in the repo).
+**Status:** proposal v5, the build plan for the first working version.
+Supersedes v3 (issue #761) and v4.
+**Continues:** RFC #904 (flows as code), `rfcs/connectors-as-code.md`
+(tenant code isolation), `deploy/notebook-kernels/` (gVisor on GKE).
 **Mockups:** https://claude.ai/artifact/4ivqohdXB3zwBGKMH4SzFG
 
 ## 1. Summary
 
 A workflow is a TypeScript file in the workspace repo, under `workflows/`,
-written against Hatchet's own SDK. When it reaches `main`, Mako builds it,
-runs it on a worker in the workspace's E2B box, and shows every run and
-every step in the IDE. Hatchet executes; Mako never keeps execution state.
+written against Hatchet's own SDK. When it reaches `main`, Mako builds it and
+runs it on a Hatchet worker in a sandboxed pod on GKE. The Workflows section of
+the IDE lists runs, shows what happened in each task, and starts runs.
+Hatchet executes; Mako stores no execution state.
 
 > **Mako Workflows is the Git-native development and operations experience
 > for native Hatchet workflows.**
 
-This is the dbt pattern applied to code. dbt models live in `dbt/` and dbt
-runs them; workflows live in `workflows/` and Hatchet runs them. Mako adds
-discovery, deploys, run inspection and operations.
+## 2. The first working version
 
-### 1.1 V1 is deliberately small
+The first working version is done when this demo works end to end, on staging,
+for a workspace with the feature flag on:
 
-V1 runs only what is on `main`. There are no branch tests, no version
-history screen and no dashboards. The UI has three things, modeled on
-Hatchet's own dashboard: a **runs list**, a **run page**, and a **Run
-button**. Everything else waits until real use asks for it (§17).
+1. A coding agent, connected to Mako's MCP server, writes three workflows into
+   `workflows/`: a sequential one, a scheduled one and an AI agent one. It
+   merges to `main`.
+2. Within five minutes, the Workflows section shows the three names, and the
+   footer shows the new commit as live.
+3. The scheduled workflow fires on its own.
+4. Clicking Run on the sequential one, with JSON input, opens a run page. Each
+   task shows its input, output and logs.
+5. The AI workflow calls a model and Mako MCP tools. Each model turn and tool
+   call appears as its own task on the run page.
+6. Killing the worker pod mid-run does not lose the run: Hatchet retries the
+   task on the new pod.
+7. A merge with a type error shows "Build failed" in the footer, and the
+   previous commit keeps running.
+8. Cancel and Replay work from the UI and from the agent.
+9. A second workspace sees none of the first one's runs.
 
-## 2. What v4 changes from v3
-
-v3 had the right boundary but left the parts that are specific to Mako
-open. Each item below was ambiguous or wrong in v3:
-
-| # | v3 said | v4 says | Why |
-|---|---|---|---|
-| 1 | Workflows live in "the normal repository" | They live in the **workspace repo**, `workflows/` | Mako is multi-tenant. The v3 file layout (`routes/…/page.tsx`, `db.customers`) read like a single Next.js app. |
-| 2 | "CI builds worker, deploy worker" | **Push to `main` is the deploy.** Mako builds and rolls the worker. | Workspaces have no CI of their own. Apps and dbt already deploy on push to main. |
-| 3 | Sandbox execution is "not V1" | Workers run in a **per-workspace E2B box**, as workspace connectors do | Workflow code is untrusted tenant code. It never runs in the API process. This reuses existing infra and adds no new sandbox feature. |
-| 4 | `db.customers.findMany(...)` | Data access goes through **`@makoai/workflows`**: `mako.query()` and `mako.ai` | Tenant code has no database client or credentials today. Something has to give it data. |
-| 5 | `ctx.taskOutput(task)` | `await ctx.parentOutput(task)` | `taskOutput` does not exist in Hatchet's TypeScript SDK. |
-| 6 | Three environments: local, staging, production | Two separate things: **Mako's own environments** (local, staging, prod, each with its own Hatchet) and, per workspace, what is on `main` (§8) | v3 mixed the two. Customers only ever see their workspace's runs. |
-| 7 | Git SHA "associated with every run" | The SHA comes from the **worker label** of the worker that ran the task | Cron runs are started by Hatchet, so Mako cannot stamp them at trigger time. |
-| 8 | 800–1,500 LOC | **About 3,000 LOC** with tests (§12) | The UI is about 850. Build, worker box, tenancy and the SDK are the rest. |
-| 9 | "Open raw execution in Hatchet" | Staff and self-hosters only | Customers have no Hatchet login and should not get one. |
-| 10 | A Processes page, a Runs explorer and a rich run page | **Three surfaces only**: runs list, run page, Run button (§10) | Hatchet's own dashboard proves this is enough to operate workflows. Anything more waits for real use. |
-| 11 | Not addressed | **Coding agents** get three MCP tools and a skill | The definition of done says an agent can add a workflow. It also has to see the run. |
-| 12 | Not addressed | **Flows is renamed Sync** in the UI, with a new icon | "Flows" next to "Workflows" in the rail reads as the same thing twice. Sync says what it does: move data from a source to a destination. |
+Everything in this document serves that demo. Anything else is listed in §15
+or §16.
 
 ## 3. Decisions
 
-The left column is what this RFC decides. Rows marked **confirm** need a
-yes from Jonas before the spike starts.
+| Question             | Decision                                                                                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Who writes workflows | Workspace members and their coding agents, in the workspace repo.                                                                                                                                            |
+| Engine               | Hatchet v1, self-hosted by Mako on GKE. One engine for tenant workflows. Inngest stays Mako's internal job runner.                                                                                           |
+| Programming model    | Native Hatchet TypeScript. No DSL and no wrapper around `workflow()` or `task()`.                                                                                                                            |
+| Where code lives     | `workflows/*.workflow.ts`, plus `workflows/index.ts` exporting the list.                                                                                                                                     |
+| Where code runs      | A Hatchet worker in a pod on the existing GKE cluster, under gVisor, one Deployment per workspace. This is how Hatchet recommends running workers, and how Mako already runs notebook kernels.               |
+| Deploy               | Push to `main`. Mako builds in a sandboxed Kubernetes Job, then rolls the workspace's Deployment. A failed build changes nothing.                                                                            |
+| Version              | The Git commit SHA. No version table and no version screen.                                                                                                                                                  |
+| Execution state      | Hatchet only. Mako stores which commit is deployed, never runs.                                                                                                                                              |
+| Tenancy              | One Hatchet tenant per workspace.                                                                                                                                                                            |
+| Data access          | Mako's MCP server, with a workspace API key the worker holds. Reads by default. Writes need the existing `query:write` scope **and** a connection an admin flagged `allowAgentWrites`. No new data endpoint. |
+| Model access         | Through a Mako pass-through to the Vercel AI Gateway, billed to the workspace. Mako's gateway key never enters the pod.                                                                                      |
+| Dependencies         | First version: only what the runtime image ships (`@hatchet-dev/typescript-sdk`, `@makoai/workflows`, `ai`, `zod`). Third-party packages come later (§15).                                                   |
+| UI                   | Three surfaces, modeled on Hatchet's dashboard: runs list, run page, Run button.                                                                                                                             |
+| Branch tests         | Not in the first version. Developers test locally with Hatchet Lite.                                                                                                                                         |
+| Hatchet MCP server   | Not used in the product. The community server needs raw tenant tokens and knows nothing about workspaces. Fine for staff debugging.                                                                          |
+| Rollout              | Behind a per-workspace feature flag, staff-enabled.                                                                                                                                                          |
+| Naming               | Flows is renamed **Sync** in the UI, with lucide `RefreshCcwDot`. Workflows uses lucide `Workflow`. Separate PR.                                                                                             |
 
-| Question | Decision |
-|---|---|
-| Who writes workflows | Workspace members and their coding agents, in the workspace repo. **confirm** |
-| Engine | Hatchet v1, self-hosted by Mako, MIT-licensed. One engine for tenant code. Inngest stays Mako's internal job runner and is not exposed. |
-| Programming model | Native Hatchet TypeScript. No DSL, compiler or wrapper around `workflow()`/`task()`. |
-| Where code lives | `workflows/*.workflow.ts`, one workflow per file, plus `workflows/index.ts` exporting the list. |
-| Where code runs | A long-lived Hatchet worker in a per-workspace E2B "workflow box". Never in the API process. |
-| Deploy | Push to `main`, then Mako builds, typechecks and rolls the worker. A failed build leaves the previous worker running. |
-| Version | Git commit SHA. No Mako version table. |
-| Execution state | Hatchet only. Mako stores **deployments** (which SHA is live), never runs. |
-| Tenancy | One Hatchet tenant per workspace (`ws_<id>`). |
-| Branch tests | **Not in V1.** Only `main` runs. Developers test locally with Hatchet Lite until real use shows a hosted branch test is needed. |
-| Data and AI access | Through the Mako API via `@makoai/workflows`, with a short-lived scoped token. Read by default; writes only to connections the workspace allows. **confirm** |
-| UI | A "Workflows" rail section with three surfaces: runs list, run page, Run button. Modeled on Hatchet's dashboard. Icon: lucide `Workflow`. |
-| Flows | Renamed **Sync** in the UI (rail, tabs, breadcrumbs, command palette, docs). Icon changes from `ArrowLeftRight` to lucide `RefreshCcwDot`. The repo folder `flows/`, the API routes and the Mongo collections keep their names. Ships before Workflows. |
+## 4. Where everything runs
 
-## 4. The workflow file
+```
+┌─────────────── Cloud Run (exists) ────────────────┐
+│ Mako API                                          │
+│  · push hook → starts the deploy (Inngest)        │
+│  · /workflows routes: runs list, run page, Run    │
+│  · /api/mcp: data tools for workflows and agents  │
+│  · AI gateway pass-through for workflow models    │
+└───────────────┬───────────────────────────────────┘
+                │ Kubernetes API (private, as kernels do)
+┌───────────────▼────── GKE cluster (exists) ───────────────────────┐
+│ namespace hatchet  (NEW)                                          │
+│   Hatchet engine + API (Helm)  ── Cloud SQL Postgres (NEW)        │
+│                                                                   │
+│ namespace mako-workflows  (NEW, gVisor node pool, egress locked)  │
+│   Job  wf-build-<ws>-<sha>    builds the bundle, then exits       │
+│   Deployment  wf-<ws>         1 pod: Hatchet worker at <sha>      │
+└───────────────────────────────────────────────────────────────────┘
+```
 
-A workflow is plain Hatchet. The only Mako import is the helper package,
-which also exports a preconfigured Hatchet client.
+| State                                         | Lives in                                                |
+| --------------------------------------------- | ------------------------------------------------------- |
+| Workflow code, schedules, retries, timeouts   | Git, `workflows/`                                       |
+| Runs, tasks, attempts, inputs, outputs, logs  | Hatchet (its Postgres)                                  |
+| Which commit is deployed, build log, manifest | Mongo, `workflow_deployments` (new)                     |
+| Hatchet tenant id and token, worker API key   | Mongo, encrypted, and a Kubernetes Secret per workspace |
+| Built bundles                                 | Mako's artifact store, keyed by workspace and SHA       |
+
+## 5. The workflow file
 
 ```ts
 // workflows/customer-health.workflow.ts
@@ -81,322 +103,287 @@ type Input = { customerIds: string[] };
 
 export const customerHealth = hatchet.workflow<Input>({
   name: "customer-health",
-  on: { cron: "0 8 * * *" },           // optional; Hatchet owns the schedule
+  on: { cron: "0 8 * * *" },
 });
 
 const fetchCustomers = customerHealth.task({
   name: "fetch-customers",
   retries: 3,
-  fn: async (input) =>
-    mako.query("warehouse", {
-      sql: "select * from customers where id = any($1)",
-      params: [input.customerIds],
-    }),
-});
-
-const scoreCustomers = customerHealth.task({
-  name: "score-customers",
-  parents: [fetchCustomers],
-  retries: 2,
-  fn: async (_input, ctx) => {
-    const customers = await ctx.parentOutput(fetchCustomers);
-    return customers.rows.map(scoreCustomerHealth);
-  },
+  fn: async input =>
+    mako.query(
+      "warehouse",
+      "select id, plan, mrr from customers where id = any($1)",
+      [input.customerIds],
+    ),
 });
 
 customerHealth.task({
-  name: "store-results",
-  parents: [scoreCustomers],
+  name: "score-customers",
+  parents: [fetchCustomers],
   fn: async (_input, ctx) => {
-    const scores = await ctx.parentOutput(scoreCustomers);
-    await mako.write("warehouse", { table: "customer_health", rows: scores, mode: "upsert", key: ["customer_id"] });
-    return { updated: scores.length };
+    const { rows } = await ctx.parentOutput(fetchCustomers);
+    return rows.map(c => ({
+      id: c.id,
+      score: c.mrr > 1000 ? "healthy" : "watch",
+    }));
   },
 });
 ```
 
-An AI step is ordinary code inside a task:
+```ts
+// workflows/index.ts — the one list the worker registers and the build reads
+export const workflows = [customerHealth, enrichLead, dailyDigest];
+```
+
+Rules the build enforces: `workflows/index.ts` exists and exports
+`workflows`; it typechecks; it imports only the packages in §3.
+
+## 6. `@makoai/workflows`
+
+A small package, shipped in the runtime image. It wires credentials from the
+pod's environment and adds nothing to Hatchet's semantics.
+
+| Export                                 | What it does                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `hatchet`                              | `Hatchet.init()` with the workspace's tenant token.                                                    |
+| `mako.query(connection, sql, params?)` | Calls Mako MCP `sql_execute_query`. Writes succeed only under the double gate in §3.                   |
+| `mako.tools()`                         | Mako MCP tools as AI SDK tools, for agent steps.                                                       |
+| `mako.model(id)`                       | An AI SDK model through Mako's gateway pass-through, e.g. `mako.model("anthropic/claude-sonnet-5-5")`. |
+
+About 250 lines. If it ever needs to know about tasks, retries or ordering, it
+has gone too far.
+
+## 7. Agent steps
+
+An agent step is code inside a task. It runs in the same worker pod, calls
+models through `mako.model()`, and gets tools from `mako.tools()` plus any
+TypeScript function in the workflow.
+
+**Small, read-only agents** run the whole loop in one task:
 
 ```ts
-const investigate = enrichLead.task({
-  name: "investigate-lead",
-  parents: [loadLead],
-  retries: 2,
+const research = enrichLead.task({
+  name: "research-lead",
   executionTimeout: "5m",
-  fn: async (_input, ctx) => {
+  retries: 1,
+  fn: async (_i, ctx) => {
     const lead = await ctx.parentOutput(loadLead);
-    return mako.ai.generate({
-      model: "anthropic/claude-sonnet-5-5",
-      instructions: "Research this company and summarize useful sales context.",
-      input: lead,
-      tools: ["web_search"],
-      log: ctx,                          // writes structured model/tool lines to ctx.log
+    const { text } = await generateText({
+      model: mako.model("anthropic/claude-sonnet-5-5"),
+      tools: await mako.tools(),
+      stopWhen: stepCountIs(8),
+      prompt: `Research ${lead.company} and summarize sales context.`,
     });
+    return { summary: text };
   },
 });
 ```
 
-The registry is the one list both the worker and Mako read:
+**Agents that write data or run longer** use Hatchet's durable pattern. A
+durable task runs the loop, and each model turn and tool call is a child task.
+Hatchet checkpoints each one, so a crash at turn 7 resumes at turn 7 without
+repeating tool calls or tokens. Each turn also shows as its own task on the run
+page, so no separate trace view is needed.
 
-```ts
-// workflows/index.ts
-export const workflows = [customerHealth, enrichLead, nightlyImport];
-```
+This pattern ships as a copyable file in the workspace template,
+`workflows/lib/agent.ts`, about 80 lines of plain Hatchet code. It is user
+code, not a Mako API.
 
-### 4.1 `@makoai/workflows`
+**Guardrails for every agent step:** a turn limit, an `executionTimeout`, and
+a worker API key that is read-only unless an admin opts the key in to
+`query:write`. Each model call logs its token usage to the task log.
 
-The package is small on purpose. It is shipped in the workflow box's
-template, like `@makoai/connector-sdk` in the sync box.
+Mako's in-product chat agent is not available as a workflow step. It is built
+around a live chat stream, and wrapping it would turn the Mako API into a
+second long-running executor.
 
-| Export | What it is |
-|---|---|
-| `hatchet` | `Hatchet.init()` configured from the box's environment (tenant token, namespace). |
-| `mako.query(conn, { sql, params })` | Read-only query through the existing notebook read path (`POST /api/workspaces/:id/notebook/read`). Row, byte and time budgets apply. |
-| `mako.write(conn, { table, rows, mode, key })` | Batched insert or upsert. Refused unless the connection is in `workflows/mako.workflows.json` `writableConnections`. New endpoint. |
-| `mako.ai.generate(...)` | Calls the AI gateway through Mako, billed to the workspace. When given `ctx`, it emits one structured log line per model call and tool call. |
-| `mako.secret(name)` | Reads a value from the workspace env vault (`apps/env.service.ts`). |
+## 8. Deploy pipeline
 
-It does not wrap, extend or replace any Hatchet API. If a helper starts
-needing to know about tasks, retries or ordering, it has gone too far.
+Triggered by `notifyRepoPushed` → `syncRepoBackedResources` →
+`syncWorkflowsFromRepo(workspaceId, sha)`, only for `main`, only when the flag
+is on and something under `workflows/` changed.
 
-## 5. Where everything lives
+| Step | Where   | What happens                                                                                                                                                                                                                                                                             |
+| ---- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | API     | Insert `workflow_deployments` `{ sha, status: "building" }`. Send Inngest event `workflows/deploy.requested`.                                                                                                                                                                            |
+| 2    | Inngest | Export `workflows/` at `sha` from the bare repo as a tarball to the artifact store.                                                                                                                                                                                                      |
+| 3    | GKE Job | `wf-build-<ws>-<sha>` on the gVisor pool, runtime image in build mode. It downloads the source, runs `tsc --noEmit` and `esbuild`, imports `index.ts` to write `manifest.json` (workflow names, crons, task names), and uploads the bundle and manifest. No network beyond the Mako API. |
+| 4    | Inngest | On failure: `status: "failed"`, build log saved, stop. The live pod is untouched.                                                                                                                                                                                                        |
+| 5    | Inngest | First deploy only: create the Hatchet tenant and token, mint the worker API key, write the Kubernetes Secret.                                                                                                                                                                            |
+| 6    | Inngest | Apply Deployment `wf-<ws>` with `GIT_SHA=<sha>`. The pod fetches its bundle from the Mako API at start, then starts the worker with label `git_sha=<sha>`.                                                                                                                               |
+| 7    | Inngest | Wait for the rollout and for the worker to register in Hatchet. Then `status: "live"`, and the previous deployment becomes `replaced`.                                                                                                                                                   |
 
-| Thing | Lives in | Written by |
-|---|---|---|
-| Workflow code, schedule, retries, timeouts | Git: `workflows/` | Members and agents |
-| Writable connections, worker size | Git: `workflows/mako.workflows.json` | Members and agents |
-| Run, task and attempt state, inputs, outputs, logs | Hatchet (its Postgres) | Hatchet |
-| Which SHA is live, build log, manifest | Mongo: `workflow_deployments` | Mako |
-| Hatchet tenant tokens | Mongo, encrypted (AES-256-CBC) | Mako |
-| Secrets used by workflow code | Workspace env vault | Members |
+**Rollouts.** A standard rolling update: the new pod starts, the old pod gets
+SIGTERM, and the worker stops taking tasks and finishes the ones it holds,
+within a 30-minute grace period. A task cut off by the grace period is retried
+by Hatchet on the new pod.
 
-Mako adds exactly one collection, and it holds deployments, not runs.
-
-## 6. Lifecycle
-
-```
-edit workflows/*.ts  (IDE, terminal or agent)
-        ▼
-merge to main
-        ▼
-notifyRepoPushed → syncRepoBackedResources → syncWorkflowsFromRepo
-        ▼
-build in the workflow box at that SHA
-  pnpm install --frozen-lockfile · tsc --noEmit · esbuild bundle
-  · import workflows/index.ts → manifest.json
-        ▼
-  failed? → deployment = failed, old worker keeps running, UI shows the error
-        ▼
-start new worker (label git_sha=<sha>) on tenant ws_<id>
-        ▼
-registered → deployment = live → drain the previous worker
-        ▼
-Mako shows the new SHA on every workflow
-```
-
-The manifest is produced by importing the registry, not by parsing source.
-For each workflow it records name, file, cron and task names. That is
-enough to list workflows that have never run.
-
-## 7. Versions and deploys
-
-- **A workflow's version is the SHA of the live deployment.**
-- **A run's version is the SHA on the worker label** of the worker that ran
-  its first task. Mako reads it from Hatchet's task metadata and caches
-  nothing.
-- A run whose tasks ran on two SHAs is shown as mixed, with the SHA per step.
-- **Rollback** is a revert commit on `main`. There is no other path, so
-  history stays in Git.
-
-The previous worker drains: it stops taking new tasks and exits once its
-in-flight tasks finish or a 30-minute ceiling passes. Whether Hatchet can
-pin a run's remaining tasks to the worker that started it (worker affinity
-on `git_sha`) is spike question S3. If it cannot, mixed runs are allowed and
-shown, and this section records that.
-
-## 8. Environments
-
-v3 merged two unrelated things.
-
-**Mako's own environments.** How Mako itself is hosted; customers never see
-it. Local, staging and production Mako each run their own Hatchet with its
-own Postgres, and their state never mixes. Locally, `pnpm dev` starts
-Hatchet Lite in docker-compose next to the notebook kernel.
-
-**Per workspace.** One Hatchet tenant, `ws_<id>`, running the code on
-`main`. That is the only thing a customer sees. Testing a change before
-merging is done locally against Hatchet Lite in V1; a hosted way to test a
-branch is listed under §17.
+**Rollback** is a revert commit on `main`.
 
 ## 9. Security model
 
-Workflow code is untrusted tenant code, held to the same bar as workspace
-connectors (`rfcs/connectors-as-code.md` §6.4).
+| Workflow code can                    | It cannot                                | Because                                                                                                                              |
+| ------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Run arbitrary TypeScript             | Escape to the node or reach other pods   | gVisor runtime, one pod per workspace, and the notebook-kernel network policy: deny RFC1918 and the metadata server, allow HTTPS out |
+| Reach Hatchet                        | Reach anything else inside the cluster   | One extra egress rule: the `hatchet` namespace on the gRPC port only                                                                 |
+| Read workspace data through Mako MCP | Hold database credentials                | Data goes through MCP with the worker API key                                                                                        |
+| Write to flagged connections         | Write anywhere else                      | `query:write` scope on the key **and** `allowAgentWrites` on the connection, both existing                                           |
+| Call models                          | See Mako's gateway key                   | The pass-through injects the key server-side                                                                                         |
+| See its workspace's runs             | See any other workspace                  | One Hatchet tenant per workspace                                                                                                     |
+| Run until `executionTimeout`         | Exhaust the node                         | Pod CPU and memory limits; Hatchet enforces timeouts                                                                                 |
+| Become live from `main`              | Become live from a branch or an API call | Only the push hook on `main` deploys                                                                                                 |
 
-| The workflow can | It cannot | Because |
-|---|---|---|
-| Run its own code and reach the internet | Run in, or reach the environment of, the API process | It runs in the workspace's E2B workflow box |
-| Query connections through Mako | Hold database credentials | `mako.query` is proxied. The box holds a token, not a password. |
-| Write to allowed connections | Write anywhere else | `writableConnections` is checked server-side per call |
-| Use a token scoped to `workflows:runtime` for this workspace, valid 1 hour and refreshed by the box supervisor | Push to the repo, call MCP tools or reach another workspace | The box never clones (it receives the bundle), so it never gets the `mgt_` git token |
-| See its own workspace's runs | See another tenant's runs | One Hatchet tenant per workspace |
-| Run until its `executionTimeout` | Run forever | Hatchet enforces the timeout. The box has CPU and memory limits. |
+The build Job runs untrusted code (the TypeScript compiler imports
+`index.ts`), so it uses the same pool and network policy as the worker.
 
-## 10. Product, V1
+## 10. UI
 
-Strict minimum, modeled on Hatchet's dashboard. Three surfaces, all in one
-"Workflows" rail section. Mockups are in the companion artifact.
+Three surfaces in a "Workflows" rail section. See the mockups.
 
-| Surface | What it shows |
-|---|---|
-| **Runs list** | The default view. A table of runs: status, workflow, started, duration. Two filters: workflow and status. The explorer on the left lists workflow names; clicking one filters the table. A one-line footer in the explorer shows the live commit, and turns red when the last build failed. |
-| **Run page** | Header with status, commit, duration, and Cancel or Replay. Below it, the tasks in order, each with status, duration and a bar on a shared timeline. Clicking a task opens three tabs: Input, Output (with the error and attempt count when it failed) and Logs. |
-| **Run button** | On the runs list, filtered to one workflow. Opens a JSON input box and starts a run. |
+| Surface    | What it shows                                                                                                                                                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Runs list  | Table of runs: status, workflow, started, duration. Filters: workflow, status. The explorer lists workflow names, and clicking one filters the table and shows its Run button. A footer shows the live commit, or "Build failed" with the error. |
+| Run page   | Status, started, duration, commit, and Cancel or Replay. Tasks in order with a timeline bar. Clicking a task opens Input, Output (error and attempt count on top) and Logs.                                                                      |
+| Run button | JSON input box, prefilled from the last run. Run opens the new run's page.                                                                                                                                                                       |
 
-Not in V1 UI: a per-workflow overview page, DAG drawing, charts, version
-history, branch tests, an AI trace view, a chat run card, form editing, a
-visual builder, approvals, a human inbox.
+## 11. API and MCP tools
 
-### 10.1 Agent and MCP surface
+Mounted at `/api/workspaces/:id/workflows`, behind auth, then workspace
+context, then the feature flag.
 
-Three tools, all in the **deferred** tier (`DEFERRED_BUILTIN_TOOL_DOMAINS`),
-so the tier-policy test passes:
+| Route                                                  | Does                                                                                                          |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `GET /`                                                | Workflows from the live manifest, plus the latest deployment (live commit, or the failed build and its error) |
+| `GET /runs?workflow&status&cursor`                     | Hatchet run list                                                                                              |
+| `GET /runs/:runId`                                     | Run with tasks, attempts and the `git_sha` of each task's worker                                              |
+| `GET /runs/:runId/tasks/:taskId/logs`                  | Task logs                                                                                                     |
+| `POST /:name/run`                                      | Start a run with JSON input. Adds `additionalMetadata` `{ trigger, triggeredBy }`.                            |
+| `POST /runs/:runId/cancel`, `POST /runs/:runId/replay` | Hatchet cancel and replay                                                                                     |
+| `GET /runtime/bundle/:sha`                             | The pod fetches its bundle. Worker API key only.                                                              |
+| `ALL /runtime/ai-gateway/*`                            | Pass-through to the Vercel AI Gateway. Worker API key only.                                                   |
 
-- `workflow_list` returns the manifest and the live deployment.
-- `workflow_trigger` takes a name and input, and returns a run id.
-- `workflow_get_run` returns the run with steps, errors and the tail of each
-  task's log.
+The worker API key gets a new scope, `workflows:runtime`, which only the two
+`/runtime` routes accept. Run `pnpm openapi:sync` after the routes land.
 
-A system skill, `api/src/agent-skills/workflows/`, teaches the file
-conventions and `@makoai/workflows`. Writing the files uses the existing
-repo tools.
+**MCP tools**, all in the **deferred** tier so the tier-policy test passes:
+`workflow_list`, `workflow_run` (name and input, returns a run id), and
+`workflow_get_run` (tasks, errors, and the tail of each task's log). There is
+also a system skill, `api/src/agent-skills/workflows/`, covering the file
+rules, `@makoai/workflows`, and the agent pattern.
 
-## 11. API
+## 12. Infrastructure to add
 
-All routes are mounted at `/api/workspaces/:id/workflows`, behind auth then
-workspace context. Run routes are thin proxies to Hatchet's REST API, using
-the workspace's tenant token.
+| Piece              | Where                                      | Notes                                                                                                                                                                       |
+| ------------------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hatchet            | `deploy/workflows/hatchet/`                | Official Helm chart in namespace `hatchet`, Cloud SQL Postgres, internal gRPC Service. A staff-only dashboard behind IAP.                                                   |
+| Namespace and pool | `deploy/workflows/k8s/`                    | `mako-workflows` namespace on the existing gVisor node pool, `RuntimeClass` reused.                                                                                         |
+| Network policy     | `deploy/workflows/k8s/network-policy.yaml` | A copy of the kernel policy plus egress to `hatchet` on gRPC.                                                                                                               |
+| Runtime image      | `deploy/workflows/runtime/`                | Node 20, the pinned packages from §3, an entrypoint with `build` and `run` modes. Built by `build-and-deploy.sh` like the kernel image.                                     |
+| Local              | `docker-compose.yml`                       | Hatchet Lite next to the notebook kernel. `pnpm dev` runs the worker as a local process with no Kubernetes (`WORKFLOWS_RUNTIME=local`, refused when `NODE_ENV=production`). |
 
-| Route | Does |
-|---|---|
-| `GET /` | Manifest plus live deployment |
-| `GET /runs?workflow&status&cursor` | Proxies Hatchet run list |
-| `GET /runs/:runId` | Run, tasks and attempts, with SHA per task |
-| `GET /runs/:runId/tasks/:taskId/logs` | Proxies task logs |
-| `POST /:name/trigger` | Starts a run. Adds `additionalMetadata` `{ triggeredBy, trigger: "manual" \| "agent" \| "api" }`. |
-| `POST /runs/:runId/cancel` and `/replay` | Hatchet cancel and replay |
-| `POST /runtime/query`, `/runtime/write`, `/runtime/ai` | `@makoai/workflows` backend, `workflows:runtime` scope only |
-
-`pnpm openapi:sync` regenerates the client after these land.
-
-## 12. Implementation footprint
-
-Real paths, following the dbt and flows layout:
+## 13. Code footprint
 
 ```
 api/src/workflows/
-  hatchet-admin.service.ts      tenant provisioning, tokens        ~250
-  workflow-sync.service.ts      push hook → build → deployment     ~350
-  workflow-box.ts               E2B box, worker supervisor, drain  ~400
-  workflow-runs.service.ts      Hatchet REST proxy, SHA mapping    ~300
-  runtime.service.ts            query / write / ai for the SDK     ~250
-api/src/routes/workflows.routes.ts                                  ~200
-api/src/agent-skills/workflows/  +  3 MCP tools                     ~250
-packages/workflows-sdk/          @makoai/workflows                  ~200
+  hatchet-admin.service.ts     tenant + token provisioning           ~200
+  hatchet-client.ts            per-tenant client cache                ~80
+  workflow-sync.service.ts     push hook → deployment row            ~150
+  k8s-deployer.ts              build Job, Deployment, Secret, rollout ~350
+  local-runtime.ts             dev worker as a local process          ~100
+  workflow-runs.service.ts     list / get / logs / run / cancel       ~300
+api/src/inngest/functions/workflows-deploy.ts                         ~200
+api/src/routes/workflows.routes.ts  (+ runtime routes)                ~250
+api/src/database/workspace-schema.ts  WorkflowDeployment model         ~60
+api/src/agent-lib/tools/workflow-tools.ts + skill                     ~250
+packages/workflows-sdk/            @makoai/workflows                  ~250
+deploy/workflows/                  runtime entrypoint, manifests      ~300
 app/src/components/workflows/
-  WorkflowsExplorer.tsx  WorkflowRunsView.tsx
-  WorkflowRunView.tsx    TriggerDialog.tsx                          ~700
-app/src/store/workflowStore.ts, rail, tab kinds, icons              ~150
+  WorkflowsExplorer  WorkflowRunsView  WorkflowRunView  RunDialog     ~700
+app/src/store/workflowStore.ts, rail, tab kinds, icons                ~150
+workspace template: 3 examples + workflows/lib/agent.ts               ~250
+tests                                                                 ~700
 ```
 
-About **3,000 LOC** with tests. Plus one Mongo model,
-`WorkflowDeployment` (`workspaceId`, `sha`, `status`, `buildLog`,
-`manifest`, `workerBoxId`, `startedAt`, `endedAt`).
+About **4,000 lines**, roughly 3,300 of them code.
 
 **Stop rule:** if the work needs a run table, a scheduler, a queue, a retry
 loop or a log store in Mako, stop and simplify. Each of those is Hatchet's.
 
-## 13. Spike: answer these first
+## 14. Build plan
 
-One week, before M1. Each question has a pass condition.
+### Phase 0: spike (throwaway branch)
 
-| # | Question | Pass |
-|---|---|---|
-| S1 | Does Hatchet run self-hosted on our infra (Cloud Run or GKE, Cloud SQL Postgres), with tenants created by API? | A script creates a tenant and token, and a worker registers against it. |
-| S2 | Does a long-lived worker in an E2B box stay connected across box pause and resume? | 24 h soak, no lost tasks. If not, keep the box running and measure cost per workspace. |
-| S3 | What happens to an in-flight DAG run when a new SHA's worker registers? | Documented behaviour, and whether `desiredWorkerLabels` on `git_sha` pins the rest of the run. |
-| S4 | Can the run list filter by workflow, status and time in one call fast enough for the UI? | p95 < 300 ms for 10k runs in a tenant. |
-| S5 | Retention and log size limits | Known numbers, written into the docs page. |
+| #   | Check                                                                                 | Pass                                                                              |
+| --- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| S1  | Hatchet Helm on the staging cluster with Cloud SQL. Create a tenant and token by API. | A script prints a token, and a worker registers with it.                          |
+| S2  | A worker under gVisor with the locked-down network policy plus the Hatchet rule.      | It connects, runs tasks, and survives a pod kill without losing the task.         |
+| S3  | A rolling update while a 5-minute task runs.                                          | The task finishes on the old pod, or is retried on the new one. Write down which. |
+| S4  | Durable task with `spawnChild` per turn. Does the waiting parent hold a worker slot?  | Known, and slot counts set for it.                                                |
+| S5  | Run list through the REST API for one tenant, filtered by workflow and status.        | p95 under 300 ms at 10k runs.                                                     |
+| S6  | Licence check of Hatchet and its Helm chart.                                          | Recorded in this RFC.                                                             |
 
-## 14. Milestones
+The spike also produces the runtime image and Helm values that PR 1 cleans up.
 
-| Milestone | Ships | Proves |
-|---|---|---|
-| **M0** spike | §13 answers | The plan holds |
-| **M1** runs | Tenants, build, workflow box, `@makoai/workflows` query, sequential example, `GET /runs` | Push to main runs a workflow |
-| **M2** see it | Rail, runs list, run page | Every step is inspectable |
-| **M3** operate it | Run button, cancel, replay, cron example, AI example, MCP tools, skill | An agent can write, run and debug a workflow end to end |
+### Phase 1: first working version, six PRs
 
-## 15. First examples
+Each PR merges on its own and leaves `main` working.
 
-Not DSAR, which mixes too many concerns. Three small ones, shipped as
-workspace-template examples:
+| PR                      | Contents                                                                                                                                           | Done when                                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **1. Infra**            | `deploy/workflows/` (Hatchet Helm values, namespace, network policy, runtime image), Hatchet Lite in docker-compose                                | Hatchet runs on staging, and a hand-applied worker registers                                     |
+| **2. SDK and template** | `packages/workflows-sdk`, the three examples, `workflows/lib/agent.ts`, the `workflows:runtime` scope, `/runtime/ai-gateway` and `/runtime/bundle` | The examples run locally against Hatchet Lite with `WORKFLOWS_RUNTIME=local`                     |
+| **3. Deploy pipeline**  | `WorkflowDeployment` model, `workflow-sync.service`, `hatchet-admin.service`, `k8s-deployer`, the Inngest function, the feature flag               | Merging `workflows/` on staging builds and rolls a worker. A bad commit leaves the old one live. |
+| **4. Runs API**         | `workflow-runs.service`, `workflows.routes`, `openapi:sync`                                                                                        | `curl` lists runs, shows a run, starts, cancels and replays                                      |
+| **5. UI**               | Rail entry, explorer, runs list, run page, Run dialog                                                                                              | Demo steps 2 to 4, 7 and 8 work in the browser                                                   |
+| **6. Agent surface**    | Three MCP tools, the skill, tier classification, docs page                                                                                         | Demo steps 1 and 5 work from Claude Code against staging                                         |
 
-1. **Sequential:** trigger → fetch → transform → store.
-2. **Scheduled:** cron → fetch → compute → store.
-3. **AI:** trigger → load context → model with tools → persist.
+Demo steps 6 and 9 are covered by tests in PR 3 (pod kill) and PR 4 (tenant
+isolation), and then run by hand on staging.
 
-## 16. How this relates to what exists
+**Separately:** rename Flows to Sync in the UI. It is independent and can ship
+first.
 
-| Need | Use |
-|---|---|
-| Move data from a source to a destination, on a schedule or by CDC | **Sync**, formerly Flows (declarative YAML, Inngest) |
-| Transform data in the warehouse | **dbt** |
-| Refresh an app's data on a schedule | **App bindings** with `-- schedule:` |
-| Multi-step logic in code: call APIs and models, branch, retry, combine data | **Workflows** |
+## 15. Later phases
 
-`apps.md` §4.9 "scheduled jobs in mako.json" is superseded by this RFC.
+Ordered by expected need. Each starts only when real use asks for it.
 
-## 17. Explicitly not V1
+1. **Scale to zero.** KEDA on Hatchet's Task Stats API, as Hatchet documents.
+   It matters once many workspaces have workflows that run rarely.
+2. **Third-party npm packages.** Install from the workspace lockfile inside
+   the build Job, with `--ignore-scripts`, cached per lockfile hash.
+3. **Secrets.** Workspace env-vault values injected as environment variables
+   into the worker.
+4. **Failure notifications.** Reuse the Sync run-notification service.
+5. **Branch tests.** Run a session branch's code before merging, on a
+   separate tenant with namespaced workflow names.
+6. **Richer run page.** Version history, per-workflow overview, charts, the
+   chat run card.
 
-Visual editor, workflow DSL, YAML or JSON workflow format, dry run or service
-virtualization, approvals, human task inbox, DSAR code, custom scheduler,
-queue, retry engine, execution database or log backend, Temporal or Inngest
-adapters, customer access to the Hatchet dashboard, Python workflows,
-self-hosted customer workers.
+## 16. Not in scope
 
-Also deferred until real use asks for them: hosted branch tests (running a
-session branch's code before merging), a version history screen, a
-per-workflow overview page with DAG and charts, an AI trace view, a chat
-run card, failure notifications.
+Visual editor, workflow DSL, YAML or JSON workflow format, dry runs,
+approvals, human task inbox, DSAR, custom scheduler, queue, retry engine,
+execution database or log store, Temporal or Inngest adapters, customer
+access to the Hatchet dashboard, Python workflows, customer-hosted workers,
+Mako's chat agent as a step.
 
-## 18. Definition of done
+## 17. How this relates to what exists
 
-1. A member or coding agent adds `workflows/<name>.workflow.ts` and lists it
-   in `workflows/index.ts`.
-2. It merges to `main`. Mako builds it, and a failed typecheck shows in the
-   explorer footer while the old worker keeps running.
-3. Hatchet runs it on the workspace's worker. Cron workflows fire without
-   Mako involvement.
-4. The explorer lists it, and the footer shows the live commit.
-5. The runs list shows every run, filterable by workflow and status.
-6. The run page shows every task: status, timing, input, output, logs,
-   attempts and error, with the commit that ran it.
-7. Run, cancel and replay work from the UI and from the MCP tools.
-8. Mako's database holds no run state: `workflow_deployments` is the only
-   new collection.
+| Need                                                                        | Use                                                  |
+| --------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Move data from a source to a destination, on a schedule or by CDC           | **Sync**, formerly Flows (declarative YAML, Inngest) |
+| Transform data in the warehouse                                             | **dbt**                                              |
+| Refresh an app's data on a schedule                                         | **App bindings** with `-- schedule:`                 |
+| Multi-step logic in code: call APIs and models, branch, retry, combine data | **Workflows**                                        |
 
-## 19. Open questions
+`apps.md` §4.9 "scheduled jobs in mako.json" is superseded.
 
-1. **Cost of always-on boxes.** One box per workspace with workflows on `main`
-   costs money while idle. Options after S2: pause when the tenant queue is
-   empty for N minutes and resume on a Hatchet queue signal, or a shared
-   worker pool per region with stronger isolation work. V1 keeps one box.
-2. **Pricing and quotas.** Per run, per task-second, or included?
-3. **Third-party npm dependencies.** V1 installs from the workspace
-   lockfile during the build. Should an allowlist exist?
-4. **Notifications on failure.** Reuse `flow-run-notification.service.ts`
-   by polling Hatchet, or use Hatchet's own alerting? Probably M4.
-5. **Inngest vs Hatchet for tenant code.** This RFC assumes Hatchet for
-   per-tenant isolation, MIT licence and Postgres-only operation. Confirm
-   that Inngest's self-hosting and licence do not change the call.
+## 18. Open questions
+
+1. **Pricing and quotas.** Per run, per task-second, or included? Model usage
+   is already metered by the gateway.
+2. **Cold start under scale to zero** (Phase 2). Pod start plus image pull
+   under gVisor is probably 10 to 30 seconds. Is that acceptable for
+   on-demand runs, or do active workspaces keep one warm pod?
+3. **Retention.** How long Hatchet keeps runs and logs, and what we promise
+   customers. Set after S5.
