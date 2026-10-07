@@ -29,7 +29,7 @@ vi.hoisted(() => {
   });
 });
 
-import { appUrlRef, appUrlSlug } from "./appsStore";
+import { appUrlRef, appUrlSlug, useAppsStore } from "./appsStore";
 
 const ID = "6aa30149273767efe9ee382a";
 
@@ -53,6 +53,42 @@ describe("appUrlRef", () => {
     expect(appUrlRef({ id: ID, slug: upper, path: `apps/${upper}` })).toBe(ID);
     expect(appUrlSlug({ id: ID, slug: other, path: `apps/${other}` })).toBe(
       undefined,
+    );
+  });
+});
+
+describe("a sandbox catch-up notice", () => {
+  it("is shown once to the box's owner — never to a teammate, never twice", () => {
+    const store = useAppsStore.getState();
+    store.setCurrentUserId("me");
+    const notice = {
+      at: 1_000,
+      message:
+        "Not carried over (they conflict with main…): apps/a/src/main.tsx. Your versions are saved on the branch mako-drafts/20261007T120000",
+      draftsBranch: "mako-drafts/20261007T120000",
+    };
+    const state = {
+      branch: "main",
+      changes: null,
+      devServers: null,
+      notice,
+      updatedAt: 1,
+    };
+    store.applyBoxState("teammate", state);
+    expect(useAppsStore.getState().error).toBeNull();
+    store.applyBoxState("me", state);
+    expect(useAppsStore.getState().error).toBe(notice.message);
+    useAppsStore.setState({ error: null });
+    // The same snapshot again (a heartbeat): not shown twice.
+    store.applyBoxState("me", { ...state, updatedAt: 2 });
+    expect(useAppsStore.getState().error).toBeNull();
+    // A newer notice is.
+    store.applyBoxState("me", {
+      ...state,
+      notice: { at: 2_000, message: "Your 2 uncommitted changes followed it." },
+    });
+    expect(useAppsStore.getState().error).toBe(
+      "Your 2 uncommitted changes followed it.",
     );
   });
 });
