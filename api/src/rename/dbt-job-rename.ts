@@ -67,7 +67,7 @@ import {
 const logger = loggers.api("dbt-job-rename");
 
 /** Same cap `jobApplyFailure` enforces on a file's `name:`. */
-const JOB_NAME_MAX_LENGTH = 128;
+export const JOB_NAME_MAX_LENGTH = 128;
 
 /** The in-app route for a job — `tab-routing.ts` `dbt-job`. */
 export function dbtJobUrl(projectId: string, jobId: string): string {

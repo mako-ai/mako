@@ -33,11 +33,8 @@ import {
   dryRunDbSync,
 } from "../services/destination-writer.service";
 import { teardownFlow } from "../sync-cdc/flow-reconcile";
-import {
-  displayNameProblem,
-  normalizeDisplayName,
-  truncateDisplayName,
-} from "../rename/title-rules";
+import { displayNameError, normalizeDisplayName } from "../rename/title-rules";
+import { FLOW_NAME_MAX_LENGTH } from "../rename/flow-rename";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
 import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
@@ -1190,9 +1187,9 @@ flowRoutes.openapi(
       if (typeof body.name === "string" && body.name.trim()) {
         // The rename rules for a name (rename/title-rules.ts).
         const name = normalizeDisplayName(body.name);
-        const problem = displayNameProblem(name);
+        const problem = displayNameError(name, FLOW_NAME_MAX_LENGTH);
         if (problem) return c.json({ success: false, error: problem }, 400);
-        requestedName = truncateDisplayName(name, 200);
+        requestedName = name;
       } else {
         requestedName = await deriveFlowDisplayName(
           flowData as unknown as IFlow,
@@ -1420,9 +1417,9 @@ flowRoutes.openapi(
         // to fail the commit as a 502 "check the GitHub connection", and
         // control or direction characters were written to the file.
         const name = normalizeDisplayName(body.name);
-        const problem = displayNameProblem(name);
+        const problem = displayNameError(name, FLOW_NAME_MAX_LENGTH);
         if (problem) return c.json({ success: false, error: problem }, 400);
-        flow.name = truncateDisplayName(name, 200);
+        flow.name = name;
       }
       if (body.destinationDatabaseName !== undefined) {
         flow.destinationDatabaseName =

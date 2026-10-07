@@ -564,6 +564,78 @@ describe("hostile names", () => {
     await expectSameJob(before);
   }, 300_000);
 
+  it("a name past the cap is refused with ONE 400 message on every path that writes a job name", async () => {
+    const row = await seedJob("target", "Target");
+    const message = "The name is longer than 128 characters.";
+    const { createDbtServerTools } = await import(
+      "../../agent-lib/tools/dbt-tools"
+    );
+    const tools = createDbtServerTools(WS, OWNER, { chatId: "scenario" });
+    auth.user = { id: OWNER };
+    for (const name of ["x".repeat(129), "x".repeat(1000), "x".repeat(10000)]) {
+      if (name.length <= 1000) {
+        const viaRest = await restRename({ ref: "target", title: name });
+        expect(viaRest.status).toBe(400);
+        expect(viaRest.json.error).toBe(message);
+      }
+      expect(await serviceRename({ ref: "target", title: name })).toMatchObject(
+        { ok: false, status: 400, message },
+      );
+      const patch = await app.request(
+        `/api/workspaces/${WS}/dbt/projects/${project._id}/jobs/${row._id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+      );
+      expect(patch.status).toBe(400);
+      expect(((await patch.json()) as { error: string }).error).toBe(message);
+      const create = await app.request(
+        `/api/workspaces/${WS}/dbt/projects/${project._id}/jobs`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            environment: "prod",
+            commands: ["build --select tag:long"],
+          }),
+        },
+      );
+      expect(create.status).toBe(400);
+      expect(((await create.json()) as { error: string }).error).toBe(message);
+      for (const [toolName, input] of [
+        [
+          "dbt_update_job",
+          { projectId: String(project._id), jobId: String(row._id), name },
+        ],
+        [
+          "dbt_create_job",
+          {
+            projectId: String(project._id),
+            name,
+            commands: ["build --select tag:long"],
+          },
+        ],
+      ] as const) {
+        const tool = tools[toolName];
+        const schema = tool.inputSchema as unknown as {
+          safeParse: (v: unknown) => { success: boolean; data?: unknown };
+        };
+        const parsed = schema.safeParse(input);
+        expect(parsed.success, toolName).toBe(true);
+        const out = (await tool.execute!(parsed.data as never, {
+          toolCallId: "t",
+          messages: [],
+        })) as { success: boolean; error?: string };
+        expect(out, toolName).toEqual({ success: false, error: message });
+      }
+    }
+    expect((await DbtJob.findById(row._id))?.name).toBe("Target");
+    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+  });
+
   it("an NFD title on an NFC-named job is a no-op", async () => {
     const row = await seedJob("cafe", "Caf\u00E9 build");
     const commits = await commitCountOf(WS);

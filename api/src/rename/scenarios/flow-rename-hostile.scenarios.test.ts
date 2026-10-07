@@ -506,9 +506,7 @@ describe("hostile titles through the editor's own name field (PUT /flows/:id)", 
     const failures: string[] = [];
     for (const [label, title, rule] of HOSTILE_TITLES) {
       if (!title.trim()) continue; // the editor ignores an empty name
-      // The editor has always cut a long name at 200 characters rather
-      // than refusing it: a safe normalization, kept.
-      const expected = /^\d+ chars$/.test(label) ? "x".repeat(200) : rule;
+      const expected = rule;
       const commits = await commitCountOf(WS);
       auth.user = { id: OWNER };
       const res = await flowsApp.request(
@@ -537,6 +535,40 @@ describe("hostile titles through the editor's own name field (PUT /flows/:id)", 
     expect(failures).toEqual([]);
     await expectSameStream(before);
     await expectNoTeardownNoDuplicate();
+  });
+});
+
+describe("a name past the cap", () => {
+  it("is refused with ONE 400 message on every path that writes a flow name — never cut short", async () => {
+    const row = await seedFlow("target", "Target");
+    const message = "The name is longer than 200 characters.";
+    auth.user = { id: OWNER };
+    for (const title of ["x".repeat(201), "x".repeat(1000)]) {
+      const viaRest = await restRename({ ref: "target", title });
+      expect(viaRest.status).toBe(400);
+      expect(viaRest.json.error).toBe(message);
+      expect(await serviceRename({ ref: "target", title })).toMatchObject({
+        ok: false,
+        status: 400,
+        message,
+      });
+      const put = await flowsApp.request(
+        `/api/workspaces/${WS}/flows/${row._id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: title }),
+        },
+      );
+      expect(put.status).toBe(400);
+      expect(((await put.json()) as { error: string }).error).toBe(message);
+    }
+    // Exactly at the cap is fine, everywhere.
+    const atCap = "y".repeat(200);
+    expect((await serviceRename({ ref: "target", title: atCap })).ok).toBe(
+      true,
+    );
+    expect((await Flow.findById(row._id))?.name).toBe(atCap);
   });
 });
 

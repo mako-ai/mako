@@ -74,9 +74,10 @@ import {
 } from "../../dbt/dbt-config.service";
 import { retireObjectId } from "../../rename/retired-ids";
 import {
-  displayNameProblem,
+  displayNameError,
   normalizeDisplayName,
 } from "../../rename/title-rules";
+import { JOB_NAME_MAX_LENGTH } from "../../rename/dbt-job-rename";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
@@ -1264,7 +1265,11 @@ export const createDbtServerTools = (
         "schedule only when the user asks for a recurring run.",
       inputSchema: z.object({
         projectId: projectIdField,
-        name: z.string().min(1).max(128),
+        // Empty / too long: the name rule's message (rename/title-rules.ts).
+        name: z
+          .string()
+          .max(100_000)
+          .describe("Display name, up to 128 characters"),
         commands: z
           .array(z.string().min(1))
           .min(1)
@@ -1294,7 +1299,7 @@ export const createDbtServerTools = (
           const project = await assertProject(projectId);
           // The rename rules for a name (rename/title-rules.ts).
           name = normalizeDisplayName(name);
-          const nameProblem = displayNameProblem(name);
+          const nameProblem = displayNameError(name, JOB_NAME_MAX_LENGTH);
           if (nameProblem) return { success: false, error: nameProblem };
           const env = environment ?? project.defaultEnvironment;
           const validationError = validateJob(project, {
@@ -1344,7 +1349,11 @@ export const createDbtServerTools = (
       inputSchema: z.object({
         projectId: projectIdField,
         jobId: z.string().describe("dbt job ID (from read_dbt_project_tree)"),
-        name: z.string().min(1).max(128).optional(),
+        name: z
+          .string()
+          .max(100_000)
+          .optional()
+          .describe("Display name, up to 128 characters"),
         commands: z.array(z.string().min(1)).min(1).max(10).optional(),
         environment: z.string().optional(),
         schedule: z
@@ -1380,7 +1389,7 @@ export const createDbtServerTools = (
 
           if (updates.name !== undefined) {
             const name = normalizeDisplayName(updates.name);
-            const nameProblem = displayNameProblem(name);
+            const nameProblem = displayNameError(name, JOB_NAME_MAX_LENGTH);
             if (nameProblem) return { success: false, error: nameProblem };
             job.name = name;
           }

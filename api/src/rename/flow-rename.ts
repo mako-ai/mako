@@ -69,7 +69,8 @@ import {
 
 const logger = loggers.api("flow-rename");
 
-const FLOW_NAME_MAX_LENGTH = 200;
+/** A flow's display name: the same cap on every path that writes one. */
+export const FLOW_NAME_MAX_LENGTH = 200;
 
 /** The in-app route for a flow — `tab-routing.ts` `flow-editor`. */
 export function flowUrl(flowId: string): string {
