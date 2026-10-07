@@ -1167,7 +1167,7 @@ export async function rekeyJobSlug(
 ): Promise<void> {
   const recordOldAsAlias = options.recordOldAsAlias ?? true;
   await DbtJob.updateOne({ _id: jobId }, { $pull: { aliases: to } });
-  await DbtJob.updateOne(
+  const moved = await DbtJob.findOneAndUpdate(
     { _id: jobId, slug: from },
     {
       $set: {
@@ -1180,6 +1180,15 @@ export async function rekeyJobSlug(
       // A new guard is a move the tree already holds (see rekeyFlowSlug).
       ...(commit ? { $unset: { renameFromBlobSha: 1 } } : {}),
     },
+  )
+    .select("projectId")
+    .lean();
+  if (!moved) return;
+  // Current always wins (see rekeyFlowSlug): another job stops answering
+  // to the name this one now holds.
+  await DbtJob.updateMany(
+    { projectId: moved.projectId, _id: { $ne: jobId }, aliases: to },
+    { $pull: { aliases: to } },
   );
 }
 

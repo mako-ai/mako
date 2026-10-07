@@ -954,7 +954,7 @@ export async function rekeyFlowSlug(
 ): Promise<void> {
   const recordOldAsAlias = options.recordOldAsAlias ?? true;
   await Flow.updateOne({ _id: flowId }, { $pull: { aliases: to } });
-  await Flow.updateOne(
+  const moved = await Flow.findOneAndUpdate(
     { _id: flowId, slug: from },
     {
       $set: {
@@ -968,6 +968,17 @@ export async function rekeyFlowSlug(
       // unlanded rename started from no longer describes anything.
       ...(commit ? { $unset: { renameFromBlobSha: 1 } } : {}),
     },
+  )
+    .select("workspaceId")
+    .lean();
+  if (!moved) return;
+  // Current always wins (as for a new flow at the name, see the sync): a
+  // row that held `to` as an OLD name stops answering to it. Otherwise it
+  // kept it on the row, and once this flow moved on, `to` resolved to that
+  // older flow behind the newer one's back — or to neither.
+  await Flow.updateMany(
+    { workspaceId: moved.workspaceId, _id: { $ne: flowId }, aliases: to },
+    { $pull: { aliases: to } },
   );
 }
 
