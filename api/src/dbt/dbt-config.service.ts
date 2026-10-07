@@ -1525,13 +1525,32 @@ export async function commitDbtJobFile(
   // the row claiming a sha for a file that was never written, and the
   // push-sync short-circuits on a matching sha. For a not-yet-persisted
   // document (`new DbtJob`), the caller saves after this returns.
+  //
+  // The sha is stamped WITH the definition it describes. Stamped alone, a
+  // caller that died before its own write (the auto-disable after repeated
+  // failures commits `enabled: false`, then updates the row) left a row
+  // whose sha said "level with the file" and whose fields did not — the
+  // file said disabled, the scheduler kept running the job, and no sync or
+  // read ever re-applied the file, because the shas matched.
   if (written && (job.sourceBlobSha !== sha || job.lastSeenBlobSha !== sha)) {
     job.sourceBlobSha = sha;
     job.lastSeenBlobSha = sha;
     if (!job.isNew) {
       await DbtJob.updateOne(
         { _id: job._id },
-        { $set: { sourceBlobSha: sha, lastSeenBlobSha: sha } },
+        {
+          $set: {
+            sourceBlobSha: sha,
+            lastSeenBlobSha: sha,
+            name: projected.name,
+            environment: projected.environment,
+            commands: projected.commands,
+            enabled: projected.enabled,
+            deferToProduction: projected.deferToProduction,
+            ...(projected.schedule ? { schedule: projected.schedule } : {}),
+          },
+          ...(projected.schedule ? {} : { $unset: { schedule: 1 } }),
+        },
       );
     }
   }
