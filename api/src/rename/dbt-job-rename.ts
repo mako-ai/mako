@@ -52,6 +52,8 @@ import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
+import { cleanRenameTitle } from "./title-rules";
+import { unsafeSlugReason } from "../utils/slugify";
 import {
   RenameError,
   type RenameContext,
@@ -262,15 +264,10 @@ export async function renameDbtJob(
     }
   }
 
-  const title = request.title?.trim();
-  if (title !== undefined) {
-    if (!title) throw new RenameError("The name cannot be empty.");
-    if (title.length > JOB_NAME_MAX_LENGTH) {
-      throw new RenameError(
-        `The name is longer than ${JOB_NAME_MAX_LENGTH} characters.`,
-      );
-    }
-  }
+  const title =
+    request.title === undefined
+      ? undefined
+      : cleanRenameTitle(request.title, JOB_NAME_MAX_LENGTH);
   const newSlug = request.slug?.trim();
   const slugChanged = newSlug !== undefined && newSlug !== oldSlug;
   if (slugChanged) {
@@ -279,6 +276,8 @@ export async function renameDbtJob(
         `"${newSlug}" is not a valid file name: lowercase letters, digits and single dashes, up to 64 characters (it becomes dbt/jobs/${newSlug}.yml).`,
       );
     }
+    const unsafe = unsafeSlugReason(newSlug);
+    if (unsafe) throw new RenameError(unsafe);
     const holder = await DbtJob.findOne({
       projectId: project._id,
       _id: { $ne: row._id },

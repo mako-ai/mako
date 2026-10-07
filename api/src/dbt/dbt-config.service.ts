@@ -61,6 +61,7 @@ import {
   type DbtJobFile,
 } from "./dbt-config-files";
 import { parseDbtCommands } from "./commands";
+import { unsafeSlugReason } from "../utils/slugify";
 import { applyJobScheduleChange } from "./dbt-run.service";
 import {
   currentTreeCheck,
@@ -1136,6 +1137,8 @@ export async function reserveJobSlug(
     // win every lookup (current beats alias) and strand the old links.
     const taken =
       takenAtMain.has(slug) ||
+      // Never a Windows device name or an id lookalike (`unsafeSlugReason`).
+      unsafeSlugReason(slug) !== null ||
       Boolean(
         await DbtJob.exists({
           projectId,

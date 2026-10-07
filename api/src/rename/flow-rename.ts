@@ -56,6 +56,8 @@ import {
 } from "../services/flow-sync.service";
 import { mergedAliases } from "./flow-dbt-job-pairing";
 import { editNameAndAliases } from "./yaml-name-aliases";
+import { cleanRenameTitle } from "./title-rules";
+import { unsafeSlugReason } from "../utils/slugify";
 import {
   RenameError,
   type RenameContext,
@@ -260,19 +262,16 @@ export async function renameFlow(
   }
 
   // ---- validate the request against the same rules as creation ----------
-  const title = request.title?.trim();
-  if (title !== undefined) {
-    if (!title) throw new RenameError("The name cannot be empty.");
-    if (title.length > FLOW_NAME_MAX_LENGTH) {
-      throw new RenameError(
-        `The name is longer than ${FLOW_NAME_MAX_LENGTH} characters.`,
-      );
-    }
-  }
+  const title =
+    request.title === undefined
+      ? undefined
+      : cleanRenameTitle(request.title, FLOW_NAME_MAX_LENGTH);
   const newSlug = request.slug?.trim();
   const slugChanged = newSlug !== undefined && newSlug !== oldSlug;
   if (slugChanged) {
     if (!isValidFlowSlug(newSlug)) {
+      const unsafe = unsafeSlugReason(newSlug);
+      if (unsafe) throw new RenameError(unsafe);
       throw new RenameError(
         `"${newSlug}" is not a valid file name: lowercase letters, digits and single dashes, up to 64 characters (it becomes flows/${newSlug}.yml).`,
       );
