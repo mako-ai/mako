@@ -38,7 +38,71 @@ const STRIPE_ENTITIES = [
   "plans",
   "prices",
   "payment_intents",
+  // Money movement: what Stripe actually settled, kept and paid out. Needed to
+  // reconcile cash collected → fees → payouts → bank, and to date refunds and
+  // credit notes when they happen rather than on the original invoice.
+  "balance_transactions",
+  "payouts",
+  "payout_balance_transactions",
+  "refunds",
+  "credit_notes",
+  "customer_balance_transactions",
+  // Billing detail behind MRR movements (one-off items, scheduled plan
+  // changes, discounts) and the self-serve checkout funnel.
+  "invoice_items",
+  "subscription_schedules",
+  "coupons",
+  "promotion_codes",
+  "checkout_sessions",
+  "setup_intents",
+  "early_fraud_warnings",
 ] as const;
+
+type StripeEntity = (typeof STRIPE_ENTITIES)[number];
+
+const STRIPE_ENTITY_LABELS: Record<StripeEntity, string> = {
+  customers: "Customers",
+  subscriptions: "Subscriptions",
+  disputes: "Disputes",
+  charges: "Charges",
+  invoices: "Invoices",
+  products: "Products",
+  plans: "Plans",
+  prices: "Prices",
+  payment_intents: "Payment Intents",
+  balance_transactions: "Balance Transactions",
+  payouts: "Payouts",
+  payout_balance_transactions: "Payout Balance Transactions",
+  refunds: "Refunds",
+  credit_notes: "Credit Notes",
+  customer_balance_transactions: "Customer Balance Transactions",
+  invoice_items: "Invoice Items",
+  subscription_schedules: "Subscription Schedules",
+  coupons: "Coupons",
+  promotion_codes: "Promotion Codes",
+  checkout_sessions: "Checkout Sessions",
+  setup_intents: "Setup Intents",
+  early_fraud_warnings: "Early Fraud Warnings",
+};
+
+// Stripe caps `autoPagingToArray` at 10,000 items. A single payout or customer
+// never comes close (a payout groups a few days of transactions).
+const CHILD_LIST_MAX = 10_000;
+
+type StripeListParams = {
+  limit: number;
+  starting_after?: string;
+  created?: { gte: number };
+};
+
+type StripeListResponse = { data: Array<{ id: string }>; has_more: boolean };
+
+interface StripePage {
+  records: Array<Record<string, unknown>>;
+  hasMore: boolean;
+  /** `starting_after` for the next page — the last *parent* id for nested entities. */
+  nextCursor?: string;
+}
 
 export class StripeConnector extends BaseConnector {
   private stripe: Stripe | null = null;
@@ -222,17 +286,11 @@ export class StripeConnector extends BaseConnector {
       partitionGranularity: "day" as const,
       clusterFields: ["_dataSourceId", "id"],
     };
-    return [
-      { name: "customers", label: "Customers", layoutSuggestion },
-      { name: "subscriptions", label: "Subscriptions", layoutSuggestion },
-      { name: "disputes", label: "Disputes", layoutSuggestion },
-      { name: "charges", label: "Charges", layoutSuggestion },
-      { name: "invoices", label: "Invoices", layoutSuggestion },
-      { name: "products", label: "Products", layoutSuggestion },
-      { name: "plans", label: "Plans", layoutSuggestion },
-      { name: "prices", label: "Prices", layoutSuggestion },
-      { name: "payment_intents", label: "Payment Intents", layoutSuggestion },
-    ];
+    return STRIPE_ENTITIES.map(name => ({
+      name,
+      label: STRIPE_ENTITY_LABELS[name],
+      layoutSuggestion,
+    }));
   }
 
   /**
@@ -249,7 +307,6 @@ export class StripeConnector extends BaseConnector {
     const { entity, onBatch, onProgress, since, state } = options;
     const maxIterations = options.maxIterations || 10;
 
-    const stripe = this.getStripeClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
 
@@ -265,123 +322,25 @@ export class StripeConnector extends BaseConnector {
     }
 
     while (hasMore && iterations < maxIterations) {
-      let response: any;
+      const page = await this.listEntityPage(entity, {
+        limit: batchSize,
+        startingAfter,
+        since,
+      });
 
-      // Fetch data based on entity type
-      switch (entity) {
-        case "customers":
-          response = await stripe.customers.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "subscriptions":
-          response = await stripe.subscriptions.list({
-            limit: batchSize,
-            // Stripe defaults to excluding canceled/incomplete_expired subs;
-            // without `status: "all"` the backfill silently drops all churned
-            // subscriptions, corrupting churn/retention/historical-MRR.
-            status: "all",
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "charges":
-          response = await stripe.charges.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "disputes":
-          response = await stripe.disputes.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "invoices":
-          response = await stripe.invoices.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "products":
-          response = await stripe.products.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "plans":
-          response = await stripe.plans.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "prices":
-          response = await stripe.prices.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "payment_intents":
-          response = await stripe.paymentIntents.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        default:
-          throw new Error(`Unsupported entity: ${entity}`);
-      }
-
-      // Pass batch to callback
-      if (response.data.length > 0) {
-        await onBatch(response.data);
-        recordCount += response.data.length;
+      if (page.records.length > 0) {
+        await onBatch(page.records);
+        recordCount += page.records.length;
 
         if (onProgress) {
           onProgress(recordCount, undefined);
         }
       }
 
-      // Check for more pages
-      hasMore = response.has_more;
+      hasMore = page.hasMore;
 
-      if (hasMore && response.data.length > 0) {
-        startingAfter = response.data[response.data.length - 1].id;
+      if (hasMore && page.nextCursor) {
+        startingAfter = page.nextCursor;
         iterations++;
 
         // Rate limiting
@@ -403,7 +362,6 @@ export class StripeConnector extends BaseConnector {
   async fetchEntity(options: FetchOptions): Promise<void> {
     const { entity, onBatch, onProgress, since } = options;
 
-    const stripe = this.getStripeClient();
     const batchSize = options.batchSize || this.getBatchSize();
     const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
 
@@ -417,127 +375,158 @@ export class StripeConnector extends BaseConnector {
     }
 
     while (hasMore) {
-      let response: any;
+      const page = await this.listEntityPage(entity, {
+        limit: batchSize,
+        startingAfter,
+        since,
+      });
 
-      // Fetch data based on entity type
-      switch (entity) {
-        case "customers":
-          response = await stripe.customers.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "subscriptions":
-          response = await stripe.subscriptions.list({
-            limit: batchSize,
-            // Stripe defaults to excluding canceled/incomplete_expired subs;
-            // without `status: "all"` the backfill silently drops all churned
-            // subscriptions, corrupting churn/retention/historical-MRR.
-            status: "all",
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "charges":
-          response = await stripe.charges.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "disputes":
-          response = await stripe.disputes.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "invoices":
-          response = await stripe.invoices.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "products":
-          response = await stripe.products.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "plans":
-          response = await stripe.plans.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "prices":
-          response = await stripe.prices.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        case "payment_intents":
-          response = await stripe.paymentIntents.list({
-            limit: batchSize,
-            ...(startingAfter && { starting_after: startingAfter }),
-            ...(since && {
-              created: { gte: Math.floor(since.getTime() / 1000) },
-            }),
-          });
-          break;
-
-        default:
-          throw new Error(`Unsupported entity: ${entity}`);
-      }
-
-      // Pass batch to callback
-      if (response.data.length > 0) {
-        await onBatch(response.data);
-        recordCount += response.data.length;
+      if (page.records.length > 0) {
+        await onBatch(page.records);
+        recordCount += page.records.length;
 
         if (onProgress) {
           onProgress(recordCount, undefined);
         }
       }
 
-      // Check for more pages
-      hasMore = response.has_more;
+      hasMore = page.hasMore && Boolean(page.nextCursor);
 
-      if (hasMore && response.data.length > 0) {
-        startingAfter = response.data[response.data.length - 1].id;
+      if (hasMore) {
+        startingAfter = page.nextCursor;
 
         // Rate limiting
         await this.sleep(rateLimitDelay);
       }
+    }
+  }
+
+  /**
+   * One page of an entity. Top-level entities map 1:1 to a Stripe list call.
+   * Nested entities (payout_balance_transactions,
+   * customer_balance_transactions) page over their parent list and expand
+   * every parent's children, so the resumable cursor is the last parent id.
+   */
+  private async listEntityPage(
+    entity: string,
+    options: { limit: number; startingAfter?: string; since?: Date },
+  ): Promise<StripePage> {
+    const stripe = this.getStripeClient();
+    const params: StripeListParams = {
+      limit: options.limit,
+      ...(options.startingAfter && { starting_after: options.startingAfter }),
+      ...(options.since && {
+        created: { gte: Math.floor(options.since.getTime() / 1000) },
+      }),
+    };
+
+    if (entity === "payout_balance_transactions") {
+      // Stripe only attributes balance transactions to the payout that settled
+      // them when listing *by payout* — the transaction object itself carries
+      // no payout id. Polling payouts by `created` is complete for this entity:
+      // a payout is always created after every transaction it pays out.
+      const payouts = await stripe.payouts.list(params);
+      const records: Array<Record<string, unknown>> = [];
+      for (const payout of payouts.data) {
+        const transactions = await stripe.balanceTransactions
+          .list({ payout: payout.id, limit: 100 })
+          .autoPagingToArray({ limit: CHILD_LIST_MAX });
+        for (const transaction of transactions) {
+          records.push({ ...transaction, payout: payout.id });
+        }
+      }
+      return {
+        records,
+        hasMore: payouts.has_more,
+        nextCursor: payouts.data.at(-1)?.id,
+      };
+    }
+
+    if (entity === "customer_balance_transactions") {
+      // Stripe has no account-wide list of customer balance (prepaid credit)
+      // transactions, only one per customer. Old customers keep receiving new
+      // transactions, so `since` (customer creation) cannot bound this entity:
+      // always walk every customer. Declared `none` in the incremental
+      // capabilities.
+      const customers = await stripe.customers.list({
+        limit: params.limit,
+        ...(params.starting_after && { starting_after: params.starting_after }),
+      });
+      const records: Array<Record<string, unknown>> = [];
+      for (const customer of customers.data) {
+        const transactions = await stripe.customers
+          .listBalanceTransactions(customer.id, { limit: 100 })
+          .autoPagingToArray({ limit: CHILD_LIST_MAX });
+        records.push(
+          ...(transactions as unknown as Array<Record<string, unknown>>),
+        );
+      }
+      return {
+        records,
+        hasMore: customers.has_more,
+        nextCursor: customers.data.at(-1)?.id,
+      };
+    }
+
+    const response = await this.listTopLevel(stripe, entity, params);
+    return {
+      records: response.data as unknown as Array<Record<string, unknown>>,
+      hasMore: response.has_more,
+      nextCursor: response.data.at(-1)?.id,
+    };
+  }
+
+  private listTopLevel(
+    stripe: Stripe,
+    entity: string,
+    params: StripeListParams,
+  ): Promise<StripeListResponse> {
+    switch (entity) {
+      case "customers":
+        return stripe.customers.list(params);
+      case "subscriptions":
+        // Stripe defaults to excluding canceled/incomplete_expired subs;
+        // without `status: "all"` the backfill silently drops all churned
+        // subscriptions, corrupting churn/retention/historical-MRR.
+        return stripe.subscriptions.list({ ...params, status: "all" });
+      case "charges":
+        return stripe.charges.list(params);
+      case "disputes":
+        return stripe.disputes.list(params);
+      case "invoices":
+        return stripe.invoices.list(params);
+      case "products":
+        return stripe.products.list(params);
+      case "plans":
+        return stripe.plans.list(params);
+      case "prices":
+        return stripe.prices.list(params);
+      case "payment_intents":
+        return stripe.paymentIntents.list(params);
+      case "balance_transactions":
+        return stripe.balanceTransactions.list(params);
+      case "payouts":
+        return stripe.payouts.list(params);
+      case "refunds":
+        return stripe.refunds.list(params);
+      case "credit_notes":
+        return stripe.creditNotes.list(params);
+      case "invoice_items":
+        return stripe.invoiceItems.list(params);
+      case "subscription_schedules":
+        return stripe.subscriptionSchedules.list(params);
+      case "coupons":
+        return stripe.coupons.list(params);
+      case "promotion_codes":
+        return stripe.promotionCodes.list(params);
+      case "checkout_sessions":
+        return stripe.checkout.sessions.list(params);
+      case "setup_intents":
+        return stripe.setupIntents.list(params);
+      case "early_fraud_warnings":
+        return stripe.radar.earlyFraudWarnings.list(params);
+      default:
+        throw new Error(`Unsupported entity: ${entity}`);
     }
   }
 
@@ -709,6 +698,115 @@ export class StripeConnector extends BaseConnector {
       "plan.created": { entity: "plans", operation: "upsert" },
       "plan.updated": { entity: "plans", operation: "upsert" },
       "plan.deleted": { entity: "plans", operation: "delete" },
+      // Payouts (status moves pending → in_transit → paid/failed)
+      "payout.created": { entity: "payouts", operation: "upsert" },
+      "payout.updated": { entity: "payouts", operation: "upsert" },
+      "payout.paid": { entity: "payouts", operation: "upsert" },
+      "payout.failed": { entity: "payouts", operation: "upsert" },
+      "payout.canceled": { entity: "payouts", operation: "upsert" },
+      "payout.reconciliation_completed": {
+        entity: "payouts",
+        operation: "upsert",
+      },
+      // Refunds (`charge.refund.updated` carries a Refund object)
+      "refund.created": { entity: "refunds", operation: "upsert" },
+      "refund.updated": { entity: "refunds", operation: "upsert" },
+      "charge.refund.updated": { entity: "refunds", operation: "upsert" },
+      // Credit notes
+      "credit_note.created": { entity: "credit_notes", operation: "upsert" },
+      "credit_note.updated": { entity: "credit_notes", operation: "upsert" },
+      "credit_note.voided": { entity: "credit_notes", operation: "upsert" },
+      // Invoice items
+      "invoiceitem.created": { entity: "invoice_items", operation: "upsert" },
+      "invoiceitem.updated": { entity: "invoice_items", operation: "upsert" },
+      "invoiceitem.deleted": { entity: "invoice_items", operation: "delete" },
+      // Subscription schedules
+      "subscription_schedule.created": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.updated": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.released": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.completed": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.canceled": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.aborted": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.expiring": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      // Coupons & promotion codes
+      "coupon.created": { entity: "coupons", operation: "upsert" },
+      "coupon.updated": { entity: "coupons", operation: "upsert" },
+      "coupon.deleted": { entity: "coupons", operation: "delete" },
+      "promotion_code.created": {
+        entity: "promotion_codes",
+        operation: "upsert",
+      },
+      "promotion_code.updated": {
+        entity: "promotion_codes",
+        operation: "upsert",
+      },
+      // Checkout sessions
+      "checkout.session.completed": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      "checkout.session.expired": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      "checkout.session.async_payment_succeeded": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      "checkout.session.async_payment_failed": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      // Setup intents
+      "setup_intent.created": { entity: "setup_intents", operation: "upsert" },
+      "setup_intent.succeeded": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      "setup_intent.setup_failed": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      "setup_intent.requires_action": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      "setup_intent.canceled": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      // Radar early fraud warnings
+      "radar.early_fraud_warning.created": {
+        entity: "early_fraud_warnings",
+        operation: "upsert",
+      },
+      "radar.early_fraud_warning.updated": {
+        entity: "early_fraud_warnings",
+        operation: "upsert",
+      },
+      // balance_transactions, payout_balance_transactions and
+      // customer_balance_transactions have no Stripe events: polled only.
     };
 
     return mappings[eventType] || null;
@@ -762,6 +860,53 @@ export class StripeConnector extends BaseConnector {
       "plan.created",
       "plan.updated",
       "plan.deleted",
+      // Payouts
+      "payout.created",
+      "payout.updated",
+      "payout.paid",
+      "payout.failed",
+      "payout.canceled",
+      "payout.reconciliation_completed",
+      // Refunds
+      "refund.created",
+      "refund.updated",
+      "charge.refund.updated",
+      // Credit notes
+      "credit_note.created",
+      "credit_note.updated",
+      "credit_note.voided",
+      // Invoice items
+      "invoiceitem.created",
+      "invoiceitem.updated",
+      "invoiceitem.deleted",
+      // Subscription schedules
+      "subscription_schedule.created",
+      "subscription_schedule.updated",
+      "subscription_schedule.released",
+      "subscription_schedule.completed",
+      "subscription_schedule.canceled",
+      "subscription_schedule.aborted",
+      "subscription_schedule.expiring",
+      // Coupons & promotion codes
+      "coupon.created",
+      "coupon.updated",
+      "coupon.deleted",
+      "promotion_code.created",
+      "promotion_code.updated",
+      // Checkout sessions
+      "checkout.session.completed",
+      "checkout.session.expired",
+      "checkout.session.async_payment_succeeded",
+      "checkout.session.async_payment_failed",
+      // Setup intents
+      "setup_intent.created",
+      "setup_intent.succeeded",
+      "setup_intent.setup_failed",
+      "setup_intent.requires_action",
+      "setup_intent.canceled",
+      // Radar
+      "radar.early_fraud_warning.created",
+      "radar.early_fraud_warning.updated",
     ];
   }
 
@@ -811,6 +956,11 @@ export class StripeConnector extends BaseConnector {
       // only arrive via the webhook trigger.
       supported: true,
       mode: "created-anchor",
+      perEntity: {
+        // No account-wide list exists; every customer is re-walked on each
+        // poll (see `listEntityPage`), so `since` is not applied.
+        customer_balance_transactions: { mode: "none" },
+      },
       warning:
         "Stripe only reports newly created records to polls; updates to existing records require the webhook trigger.",
     };
