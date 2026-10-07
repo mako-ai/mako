@@ -390,6 +390,43 @@ describe("one name, however it is spelled", () => {
     expect((await rig.row(js._id))!.language).toBe("javascript");
   });
 
+  it("names at the length limit still get a free name: a second duplicate, a restore beside a namesake (never a hang)", async () => {
+    const name = `${LONG(118)}📊`; // 120 UTF-16 units, an emoji at the end
+    const c = await rig.save(name, owner);
+    const first = await rig.api("POST", `/consoles/${c._id}/duplicate`, owner);
+    const second = await rig.api("POST", `/consoles/${c._id}/duplicate`, owner);
+    expect(first.status).toBe(201);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    const a = (await rig.row((first.body.data as { id: string }).id))!;
+    const b = (await rig.row((second.body.data as { id: string }).id))!;
+    expect(a.path).not.toBe(b.path);
+    for (const row of [a, b]) {
+      expect(parseConsoleRepoPath(row.path!)!.name).toBe(row.name);
+      expect(row.name.length).toBeLessThanOrEqual(120);
+      // No lone surrogate (half an emoji) in the name.
+      expect(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(
+          row.name,
+        ),
+      ).toBe(false);
+    }
+    // Trash it, take its name, restore it: it comes back beside.
+    expect((await rig.api("DELETE", `/consoles/${c._id}`, owner)).status).toBe(
+      200,
+    );
+    await rig.save(name, owner);
+    const restored = await rig.api(
+      "PATCH",
+      `/consoles/${c._id}/restore`,
+      owner,
+    );
+    expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+    const back = (await rig.row(c._id))!;
+    expect(back.path).not.toBe(`consoles/${name}.sql`);
+    expect(parseConsoleRepoPath(back.path!)!.name).toBe(back.name);
+    expect(back.name.endsWith(" (2)")).toBe(true);
+  });
+
   it("a duplicate of a console with a name at the length limit is named as its file", async () => {
     const c = await rig.save(LONG(120), owner);
     const r = await rig.api("POST", `/consoles/${c._id}/duplicate`, owner);

@@ -86,6 +86,7 @@ import {
   CONSOLES_README,
   CONSOLES_README_PATH,
   ConsoleNameError,
+  MAX_CONSOLE_NAME_LENGTH,
   USERS_DIR,
   chartSidecarPath,
   consoleNameProblem,
@@ -2432,13 +2433,28 @@ export function uniquePath(
   if (free(wanted)) return wanted;
   const location = parseConsoleRepoPath(wanted);
   if (!location) return wanted;
-  for (let i = 2; ; i++) {
+  for (let i = 2; i < 100_000; i++) {
+    // The suffix must survive the file name's length limit: appended to a
+    // name already at the limit, " (2)" was cut off again, every candidate
+    // was the taken path itself, and this loop never ended (a restore or a
+    // second duplicate of a 120-character name spun the server).
+    const suffix = ` (${i})`;
+    let stem = "";
+    for (const ch of location.name) {
+      // Whole code points: never half an emoji.
+      if (stem.length + ch.length > MAX_CONSOLE_NAME_LENGTH - suffix.length) {
+        break;
+      }
+      stem += ch;
+    }
+    stem = stem.trimEnd();
     const candidate = consoleRepoPath({
       ...location,
-      name: `${location.name} (${i})`,
+      name: `${stem}${suffix}`,
     });
     if (free(candidate)) return candidate;
   }
+  throw new Error(`No free name for ${wanted}`);
 }
 
 async function stampRow(
