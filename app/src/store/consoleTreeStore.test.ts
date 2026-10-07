@@ -467,6 +467,125 @@ describe("consoleTreeStore — the tree shows the name the server SAVED", () => 
   });
 });
 
+describe("consoleTreeStore restoreFolder — undoing a folder delete", () => {
+  const snapshot: ConsoleEntry = folder("f", "Fold2", [
+    file("a", "Q1"),
+    folder("g", "Deep", [file("b", "Q2")]),
+  ]);
+
+  it("recreates the folder (and its subfolder) where it was and brings each console back into it under its own name", async () => {
+    seed([folder("p", "Parent")]);
+    const created: Array<Record<string, unknown>> = [];
+    http.POST.mockImplementation(async (_url: string, init: unknown) => {
+      const body = (init as { body: Record<string, unknown> }).body;
+      created.push(body);
+      return ok({ success: true, data: { id: `new-${body.name}` } });
+    });
+    http.PATCH.mockImplementation(async () => ok({ success: true }));
+    http.GET.mockResolvedValue(ok({ success: true, myConsoles: [] }));
+    const outcome = await useConsoleTreeStore
+      .getState()
+      .restoreFolder(WID, snapshot, { parentId: "p", section: "my" });
+    expect(outcome).toEqual({
+      restored: 2,
+      failed: 0,
+      atRoot: 0,
+      folderRecreated: true,
+    });
+    expect(created).toEqual([
+      { name: "Fold2", parentId: "p", access: "private" },
+      { name: "Deep", parentId: "new-Fold2", access: "private" },
+    ]);
+    const calls = http.PATCH.mock.calls.map(([url, init]) => [
+      url,
+      (init as { params: { path: { id: string } } }).params.path.id,
+      (init as { body?: unknown }).body,
+    ]);
+    expect(calls).toEqual([
+      ["/api/workspaces/{workspaceId}/consoles/{id}/restore", "a", undefined],
+      [
+        "/api/workspaces/{workspaceId}/consoles/{id}/move",
+        "a",
+        { folderId: "new-Fold2", name: "Q1" },
+      ],
+      ["/api/workspaces/{workspaceId}/consoles/{id}/restore", "b", undefined],
+      [
+        "/api/workspaces/{workspaceId}/consoles/{id}/move",
+        "b",
+        { folderId: "new-Deep", name: "Q2" },
+      ],
+    ]);
+    // The tree is re-read once at the end.
+    expect(http.GET).toHaveBeenCalled();
+    http.POST.mockReset();
+    http.PATCH.mockReset();
+    http.GET.mockReset();
+  });
+
+  it("a folder that cannot be recreated: its consoles still come back — at the root; a console that cannot is counted", async () => {
+    seed([]);
+    http.POST.mockResolvedValue({
+      data: undefined,
+      error: { success: false, error: "A folder named 'fold2' already exists" },
+      response: { ok: false, status: 409, statusText: "Conflict" },
+    });
+    http.PATCH.mockImplementation(async (_url: string, init: unknown) => {
+      const id = (init as { params: { path: { id: string } } }).params.path.id;
+      return id === "b"
+        ? {
+            data: undefined,
+            error: { success: false, error: "Cannot restore" },
+            response: { ok: false, status: 403, statusText: "Forbidden" },
+          }
+        : ok({ success: true });
+    });
+    http.GET.mockResolvedValue(ok({ success: true, myConsoles: [] }));
+    const outcome = await useConsoleTreeStore
+      .getState()
+      .restoreFolder(WID, snapshot, { parentId: null, section: "workspace" });
+    expect(outcome).toEqual({
+      restored: 1,
+      failed: 1,
+      atRoot: 1,
+      folderRecreated: false,
+    });
+    // Only the root folder was attempted; no move into a folder that is not there.
+    expect(http.POST).toHaveBeenCalledTimes(1);
+    expect(
+      http.PATCH.mock.calls.filter(([url]) => String(url).endsWith("/move")),
+    ).toEqual([]);
+    http.POST.mockReset();
+    http.PATCH.mockReset();
+    http.GET.mockReset();
+  });
+
+  it("an old parent that is gone: the folder is recreated at the root", async () => {
+    seed([]);
+    const created: Array<Record<string, unknown>> = [];
+    http.POST.mockImplementation(async (_url: string, init: unknown) => {
+      const body = (init as { body: Record<string, unknown> }).body;
+      created.push(body);
+      return ok({ success: true, data: { id: `new-${body.name}` } });
+    });
+    http.PATCH.mockImplementation(async () => ok({ success: true }));
+    http.GET.mockResolvedValue(ok({ success: true, myConsoles: [] }));
+    await useConsoleTreeStore
+      .getState()
+      .restoreFolder(WID, folder("f", "Solo", []), {
+        parentId: "gone",
+        section: "my",
+      });
+    expect(created[0]).toEqual({
+      name: "Solo",
+      parentId: undefined,
+      access: "private",
+    });
+    http.POST.mockReset();
+    http.PATCH.mockReset();
+    http.GET.mockReset();
+  });
+});
+
 describe("consoleTreeStore extras", () => {
   it("applyRemoteRename patches the node in place without a request", () => {
     seed([], [folder("f", "shared", [file("a", "alpha"), file("b", "bravo")])]);

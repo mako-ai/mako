@@ -54,6 +54,7 @@ vi.mock("./ConsoleTree", async () => {
         onFileOpen?: (node: object) => void;
         onMoveRequest?: (node: object) => void;
         onSoftDelete?: (node: object) => void;
+        onDeleteRequest?: (node: object) => void;
         onUndo?: () => void;
       },
       _ref,
@@ -73,7 +74,20 @@ vi.mock("./ConsoleTree", async () => {
             Delete Alpha
           </button>
           <button type="button" onClick={() => props.onUndo?.()}>
-            Undo
+            Ctrl+Z
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              props.onDeleteRequest?.({
+                id: "f-fin",
+                name: "finance",
+                path: "finance",
+                isDirectory: true,
+              })
+            }
+          >
+            Delete folder finance
           </button>
         </>
       );
@@ -399,7 +413,132 @@ describe("ConsoleExplorer — undoing a delete (Cmd+Z)", () => {
     render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Delete Alpha" }));
     await new Promise(resolve => setTimeout(resolve, 0));
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ctrl+Z" }));
     expect(await screen.findByText("Restored as 'Alpha (2)'")).toBeTruthy();
+  });
+});
+
+describe("ConsoleExplorer — every delete says 'Moved to trash' and offers Undo", () => {
+  it("a console (no dialog): the toast, then its Undo restores it in place", async () => {
+    const restoreConsole = vi.fn(async () => ({ name: "Alpha" }));
+    useConsoleTreeStore.setState({
+      myItems: { ws: [] },
+      workspaceItems: { ws: [] },
+      sharedItems: { ws: [] },
+      actionError: {},
+      deleteItem: vi.fn(async () => true),
+      restoreConsole,
+    } as never);
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Alpha" }));
+    expect(await screen.findByText("Moved “Alpha” to trash")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Restored 'Alpha'")).toBeTruthy();
+    expect(restoreConsole).toHaveBeenCalledWith("ws", "c-alpha");
+  });
+
+  it("a folder: the confirm promises only an undo; the toast's Undo recreates the folder with its consoles", async () => {
+    const deleteItem = vi.fn(async () => true);
+    const restoreFolder = vi.fn(async () => ({
+      restored: 1,
+      failed: 0,
+      atRoot: 0,
+      folderRecreated: true,
+    }));
+    const finance = {
+      id: "f-fin",
+      name: "finance",
+      path: "finance",
+      isDirectory: true,
+      children: [
+        { id: "c-q1", name: "Q1", path: "finance/Q1", isDirectory: false },
+      ],
+    };
+    useConsoleTreeStore.setState({
+      myItems: { ws: [] },
+      workspaceItems: { ws: [finance] },
+      sharedItems: { ws: [] },
+      actionError: {},
+      deleteItem,
+      restoreFolder,
+    } as never);
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete folder finance" }),
+    );
+    const body = await screen.findByText(/Delete the folder “finance”/);
+    expect(body.textContent).toMatch(/undo this right after/);
+    expect(body.textContent).not.toMatch(/permanent|restored/i);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(
+      await screen.findByText(
+        "Deleted folder “finance” — 1 console moved to trash",
+      ),
+    ).toBeTruthy();
+    expect(deleteItem).toHaveBeenCalledWith("ws", "f-fin", true);
+    // (Once the confirm's closing transition has let go of the page.)
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(
+      await screen.findByText("Restored folder “finance” and 1 console"),
+    ).toBeTruthy();
+    expect(restoreFolder).toHaveBeenCalledWith(
+      "ws",
+      expect.objectContaining({
+        id: "f-fin",
+        name: "finance",
+        children: [expect.objectContaining({ id: "c-q1" })],
+      }),
+      { parentId: null, section: "workspace" },
+    );
+  });
+
+  it("a folder that could not be recreated: its consoles come back to the root, and the toast says so", async () => {
+    useConsoleTreeStore.setState({
+      myItems: { ws: [] },
+      workspaceItems: {
+        ws: [
+          {
+            id: "f-fin",
+            name: "finance",
+            path: "finance",
+            isDirectory: true,
+            children: [
+              {
+                id: "c-q1",
+                name: "Q1",
+                path: "finance/Q1",
+                isDirectory: false,
+              },
+              {
+                id: "c-q2",
+                name: "Q2",
+                path: "finance/Q2",
+                isDirectory: false,
+              },
+            ],
+          },
+        ],
+      },
+      sharedItems: { ws: [] },
+      actionError: {},
+      deleteItem: vi.fn(async () => true),
+      restoreFolder: vi.fn(async () => ({
+        restored: 2,
+        failed: 0,
+        atRoot: 2,
+        folderRecreated: false,
+      })),
+    } as never);
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete folder finance" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(
+      await screen.findByText(
+        "The folder “finance” could not be recreated — 2 consoles restored to the root of Workspace",
+      ),
+    ).toBeTruthy();
   });
 });
