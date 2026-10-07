@@ -61,6 +61,7 @@ import {
 } from "./dbt-config-files";
 import { parseDbtCommands } from "./commands";
 import { unsafeSlugReason } from "../utils/slugify";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   isRetiredObjectId,
   retireObjectId,
@@ -1781,8 +1782,12 @@ async function syncDbtConfigNow(
       .lean()),
     ...(await retiredIdHolders(workspaceId, "dbt_job")),
   ];
+  // Whether this sync changed any job row: open job stores are told (the
+  // rename service tells them; a push that renamed or retitled a job must
+  // too, or a stale form writes the old name back on its next save).
+  let jobsChanged = false;
   try {
-    await rekeyRenamedJobs({
+    const renamed = await rekeyRenamedJobs({
       workspaceId,
       projectId: project._id,
       repoDir,
@@ -1794,6 +1799,7 @@ async function syncDbtConfigNow(
         oid: blobOid(buf),
       })),
     });
+    if (renamed.length > 0) jobsChanged = true;
   } catch (error) {
     logger.warn("dbt job rename detection failed; syncing by slug only", {
       workspaceId,
@@ -1997,6 +2003,7 @@ async function syncDbtConfigNow(
       );
     }
     if (scheduleChanged) await applyJobScheduleChange(doc);
+    jobsChanged = true;
     logger.info("dbt job synced from repo", { workspaceId, slug });
   }
 
@@ -2039,6 +2046,7 @@ async function syncDbtConfigNow(
     if (parked.has(doc._id.toString())) continue;
     await retireObjectId(workspaceId, "dbt_job", doc._id, doc.slug);
     await DbtJob.deleteOne({ _id: doc._id });
+    jobsChanged = true;
     logger.info("dbt job removed (file deleted on main)", {
       workspaceId,
       slug: doc.slug,
@@ -2085,6 +2093,12 @@ async function syncDbtConfigNow(
     logger.warn("Could not re-acquire job file aliases", {
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (jobsChanged || parked.size > 0) {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.job.updated",
+      projectId: project._id.toString(),
     });
   }
 }

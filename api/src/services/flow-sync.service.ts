@@ -69,6 +69,7 @@ import {
   type DesiredFlow,
 } from "../sync-cdc/flow-reconcile";
 import { isRetiredObjectId, retiredIdHolders } from "../rename/retired-ids";
+import { publishRealtimeEvent } from "./realtime.service";
 import {
   currentTreeCheck,
   detectGitRenames,
@@ -2087,14 +2088,17 @@ export async function syncFlowsFromRepo(
     ...(await Flow.find({ workspaceId }).select("_id slug").lean()),
     ...(await retiredIdHolders(workspaceId, "flow")),
   ];
+  let renamedInPlace = 0;
   try {
-    await rekeyRenamedFlows({
-      workspaceId,
-      repoDir,
-      head,
-      files,
-      treeIsCurrent,
-    });
+    renamedInPlace = (
+      await rekeyRenamedFlows({
+        workspaceId,
+        repoDir,
+        head,
+        files,
+        treeIsCurrent,
+      })
+    ).length;
   } catch (error) {
     logger.warn("Flow rename detection failed; syncing by slug only", {
       workspaceId,
@@ -2460,6 +2464,19 @@ export async function syncFlowsFromRepo(
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  // Open flow stores refetch, as after a rename through the service: a
+  // push that renamed or retitled a flow must reach a form still holding
+  // the old name before its next save writes that name back.
+  if (
+    renamedInPlace > 0 ||
+    result.created > 0 ||
+    result.updated > 0 ||
+    result.invalid.length > 0 ||
+    reconciled.removed.length > 0
+  ) {
+    publishRealtimeEvent(workspaceId, { type: "flow.updated" });
   }
 
   return result;

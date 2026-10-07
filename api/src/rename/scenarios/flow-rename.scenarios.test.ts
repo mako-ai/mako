@@ -845,7 +845,10 @@ describe("entry point: laptop git mv + push", () => {
     const l = await laptop();
     await l.mv("flows/hubspot.yml", "flows/hubspot-crm.yml");
     await l.commit("git mv");
+    published.length = 0;
     const result = await pushAndSync(l);
+    // Open flow stores are told, as after a rename through the service.
+    expect(published.map(e => e.type)).toContain("flow.updated");
     expect(result.created).toBe(0);
     expect(await expectSameStream(before)).toMatchObject({
       slug: "hubspot-crm",
@@ -1087,11 +1090,14 @@ describe("entry point: laptop git mv + push", () => {
     const l = await laptop();
     await l.write("README.md", "y\n");
     await l.commit("docs");
+    published.length = 0;
     expect(await pushAndSync(l)).toMatchObject({
       created: 0,
       updated: 0,
       unchanged: 1,
     });
+    // Nothing changed: nobody is told to refetch.
+    expect(published.map(e => e.type)).not.toContain("flow.updated");
     expect(await expectSameStream(before)).toMatchObject({ slug: "stripe" });
     await expectNoTeardownNoDuplicate();
   });

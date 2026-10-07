@@ -612,7 +612,10 @@ describe("entry point: laptop git mv + push", () => {
     const l = await laptop();
     await l.mv("dbt/jobs/nightly.yml", "dbt/jobs/nightly-prod.yml");
     await l.commit("git mv");
+    published.length = 0;
     await pushAndSync(l);
+    // Open job stores are told, as after a rename through the service.
+    expect(published.map(e => e.type)).toContain("dbt.job.updated");
     expect(await expectSameJob(before)).toMatchObject({
       slug: "nightly-prod",
       aliases: ["nightly"],
