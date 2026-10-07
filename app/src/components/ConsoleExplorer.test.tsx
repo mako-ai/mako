@@ -290,6 +290,33 @@ describe("ConsoleExplorer — Move to…", () => {
     );
   });
 
+  it("names the destination as the tree shows it NOW — not a folder's stale path after an inline rename", async () => {
+    const moveItem = vi.fn(async () => true);
+    seed(moveItem);
+    // "finance" renamed inline to "Fold2": its stored path still says the
+    // old name.
+    useConsoleTreeStore.setState(state => ({
+      workspaceItems: {
+        ws: [{ ...state.workspaceItems.ws[0], name: "Fold2", path: "finance" }],
+      },
+    }));
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Move Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move Here" }));
+    expect(await screen.findByText("Moved to Workspace › Fold2")).toBeTruthy();
+  });
+
+  it("an inline rename the server saved under another name says so", async () => {
+    seed(vi.fn(async () => true));
+    useConsoleTreeStore.setState({ actionNotice: {} } as never);
+    render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);
+    useConsoleTreeStore.setState({
+      actionNotice: { ws: "Saved as “a-b”" },
+    } as never);
+    expect(await screen.findByText("Saved as “a-b”")).toBeTruthy();
+    expect(useConsoleTreeStore.getState().actionNotice.ws).toBeNull();
+  });
+
   it("a refused move says only why (the store's actionError)", async () => {
     seed(vi.fn(async () => false));
     render(<ConsoleExplorer onConsoleSelect={vi.fn()} />);

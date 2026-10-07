@@ -4,6 +4,7 @@ import {
   useImperativeHandle,
   useRef,
   useCallback,
+  useEffect,
 } from "react";
 import {
   Box,
@@ -38,10 +39,11 @@ import {
   isUnloadedConsoleTab,
   useConsoleStore,
 } from "../store/consoleStore";
-import { filterTree, findById } from "../store/lib/tree-helpers";
+import { filterTree, findById, namesTrailOf } from "../store/lib/tree-helpers";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
 import {
   consoleCopiedNotice,
+  consoleDeleteConfirmText,
   consoleRestoredNotice,
   treeMoveNotice,
 } from "../lib/console-relocation";
@@ -125,6 +127,20 @@ function ConsoleExplorer(
 
   // What the last action did, when it says nothing by itself (a Duplicate).
   const [notice, setNotice] = useState<string | null>(null);
+
+  // An inline rename the server saved under another name ("a/b" → "a-b"):
+  // said here, as the dialogs say it.
+  const actionNotice = useConsoleTreeStore(state =>
+    currentWorkspace ? (state.actionNotice[currentWorkspace.id] ?? null) : null,
+  );
+  const clearActionNotice = useConsoleTreeStore(
+    state => state.clearActionNotice,
+  );
+  useEffect(() => {
+    if (!actionNotice || !currentWorkspace) return;
+    setNotice(actionNotice);
+    clearActionNotice(currentWorkspace.id);
+  }, [actionNotice, currentWorkspace, clearActionNotice]);
 
   const [undoStack, setUndoStack] = useState<
     Array<{ type: "delete"; id: string; isDirectory: boolean; name: string }>
@@ -432,9 +448,12 @@ function ConsoleExplorer(
 
     // Say where it went (it used to say nothing): in the explorer's words.
     if (ok) {
+      // The destination's trail from the tree AS IT IS NOW: a folder's
+      // stored `path` is stale after an inline rename ("New Folder" →
+      // "Fold2" still said "Moved to New Folder").
       const tree = useConsoleTreeStore.getState();
-      const target = targetFolderId
-        ? findById(
+      const trail = targetFolderId
+        ? namesTrailOf(
             (section === "workspace"
               ? tree.workspaceItems[currentWorkspace.id]
               : tree.myItems[currentWorkspace.id]) ?? [],
@@ -447,7 +466,7 @@ function ConsoleExplorer(
           renamedTo,
           name: selectedItem.name,
           section,
-          folderPath: target?.path,
+          folderPath: trail?.join("/"),
         }),
       );
     }
@@ -714,11 +733,10 @@ function ConsoleExplorer(
       <ConfirmDialog
         open={!!tree.deleteTarget}
         title={`Delete ${tree.deleteTarget?.isDirectory ? "Folder" : "Console"}`}
-        body={`${
-          tree.deleteTarget?.isDirectory
-            ? "This will permanently delete the folder and all its contents (subfolders and consoles)."
-            : "This will permanently delete the console."
-        } Are you sure you want to delete "${tree.deleteTarget?.name}"?`}
+        body={consoleDeleteConfirmText({
+          name: tree.deleteTarget?.name ?? "",
+          isDirectory: !!tree.deleteTarget?.isDirectory,
+        })}
         confirmLabel="Delete"
         destructive
         onConfirm={() => void tree.confirmDelete()}

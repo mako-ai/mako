@@ -2537,10 +2537,6 @@ export class ConsoleManager {
             ...(segment ? { $addToSet: { historySegments: segment } } : {}),
           },
         );
-        publishRealtimeEvent(workspaceId, {
-          type: "console.deleted",
-          consoleId: row._id.toString(),
-        });
       }
       // Rows already in the trash leave the folder too.
       await SavedConsole.updateMany(
@@ -2551,6 +2547,15 @@ export class ConsoleManager {
         _id: { $in: folderIds },
         workspaceId: wid,
       });
+      // Announced only now: every open window refetches the tree on
+      // `console.deleted`, and a refetch while the folder records still
+      // existed listed the deleted folder, empty, until a manual refresh.
+      for (const row of live) {
+        publishRealtimeEvent(workspaceId, {
+          type: "console.deleted",
+          consoleId: row._id.toString(),
+        });
+      }
       return result.deletedCount > 0;
     } catch (error) {
       if (
