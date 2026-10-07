@@ -124,19 +124,36 @@ export function normalizePath(path: string): string {
   return p.startsWith(`${DBT_ROOT}/`) ? p.slice(DBT_ROOT.length + 1) : p;
 }
 
+/**
+ * Why a project-relative path cannot name a file in the dbt project, in
+ * words a person can act on — or null when it can. The path is checked as
+ * given (after `normalizePath`): `..` is refused, never resolved, so
+ * nothing can ever reach outside `dbt/`.
+ */
+export function dbtPathProblem(path: string): string | null {
+  if (path.length === 0) {
+    return "is empty — give a path like models/staging/orders.sql";
+  }
+  if (path.length >= 1024) return "is too long";
+  if (path.includes("\\")) return "uses \\ — separate folders with /";
+  // Control characters (NUL, newline, tab, DEL): git refuses some, every
+  // checkout mangles the rest.
+  if ([...path].some(ch => ch.charCodeAt(0) < 0x20 || ch === "\u007f")) {
+    return "contains a line break or another control character";
+  }
+  const segments = path.split("/");
+  if (segments.includes("..")) {
+    return "must stay inside the dbt project (no .. folders)";
+  }
+  if (segments.includes(".git")) return "can't be inside .git";
+  if (path.startsWith("/") || segments.some(s => s === "" || s === ".")) {
+    return "has an empty or . folder — give the path from the project root, like models/staging/orders.sql";
+  }
+  return null;
+}
+
 export function isSafeDbtPath(path: string): boolean {
-  return (
-    path.length > 0 &&
-    path.length < 1024 &&
-    !path.startsWith("/") &&
-    !path.includes("\\") &&
-    // Control characters (NUL, newline, tab, DEL): git refuses some, every
-    // checkout mangles the rest.
-    ![...path].some(ch => ch.charCodeAt(0) < 0x20 || ch === "\u007f") &&
-    !path
-      .split("/")
-      .some(seg => seg === "" || seg === "." || seg === ".." || seg === ".git")
-  );
+  return dbtPathProblem(path) === null;
 }
 
 /** Windows device names, with or without an extension (`CON`, `aux.sql`). */
@@ -340,8 +357,15 @@ export async function renameDbtFile(
 ): Promise<RenameResult> {
   const from = normalizePath(input.from);
   const to = normalizePath(input.to);
-  if (!isSafeDbtPath(from) || !isSafeDbtPath(to)) {
-    throw new RenameError("Invalid from/to path", 400);
+  if (!isSafeDbtPath(from)) {
+    throw new RenameError(
+      `"${input.from}" is not a file path in the dbt project.`,
+      400,
+    );
+  }
+  const toProblem = dbtPathProblem(to);
+  if (toProblem) {
+    throw new RenameError(`The new path "${input.to}" ${toProblem}.`, 400);
   }
   if (from === to) throw new RenameError("The new path is the old path", 400);
   const unportable = unportableDbtPathReason(to);
@@ -485,8 +509,17 @@ export async function renameDbtFile(
       ? projectConfigsLostByMove(projectYml, from, to)
       : [];
     if (lost.length > 0) {
+      // One plain sentence first (what to do), the precise keys after a
+      // line break (what the UI shows as secondary detail).
+      const block = from.split("/")[0];
+      const ownKeyLength = from.split("/").length - 1;
+      const where = lost.map(chain =>
+        chain.length === ownKeyLength ? from : `${block}/${chain.join("/")}`,
+      );
+      const pkg = projectPackageName(projectYml) ?? "<project>";
       warnings.push(
-        `dbt_project.yml configures ${from} through ${lost.map(c => `"${c}"`).join(", ")}; at ${to} ${lost.length === 1 ? "that no longer applies" : "those no longer apply"} (materialization, schema, tags…) — move the config or check the model.`,
+        `dbt_project.yml config for ${where.join(", ")} (materialization, schema, tags…) no longer applies at its new place, ${to}. Move that config or check the model.\n` +
+          `Detail: ${lost.map(chain => [block, pkg, ...chain].join(".")).join(", ")} applied to ${from}; it is now ${to}.`,
       );
     }
   }
