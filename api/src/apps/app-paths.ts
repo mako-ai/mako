@@ -52,6 +52,71 @@ export function isSafeSegment(segment: string): boolean {
   );
 }
 
+/**
+ * A name as a person typed it, as it will be stored: trimmed, and in NFC —
+ * `é` typed as `e` + U+0301 (macOS input, some keyboards) is the same name
+ * as `é`, and git must never hold the two as different folders a checkout
+ * then cannot tell apart.
+ */
+export function normalizeName(name: string): string {
+  return name.trim().normalize("NFC");
+}
+
+// A Windows device name, alone or with any extension (`con`, `NUL.json`):
+// git for Windows refuses to check out a path with one, so a single such
+// folder makes the WHOLE workspace repo unusable there.
+const WINDOWS_DEVICE_RE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
+
+/** Is `segment` a Windows reserved device name (see above)? */
+export function isWindowsDeviceName(segment: string): boolean {
+  return WINDOWS_DEVICE_RE.test(segment);
+}
+
+/**
+ * Why `segment` cannot be a NEW app or folder name, or null when it can.
+ * Stricter than {@link isSafeSegment}, which is what discovery accepts —
+ * an existing folder pushed from a laptop keeps being listed, moved and
+ * renamed away from; only a name someone is choosing now is held to this:
+ *
+ *  - a Windows device name (`con`, `aux.txt`): no Windows checkout;
+ *  - 24 hex characters: every resolver reads `/apps/<that>` as an app id
+ *    first, so the link would open another app (or none).
+ */
+export function newSegmentProblem(segment: string): string | null {
+  if (!isSafeSegment(segment)) {
+    return "use letters, digits, spaces, dots, dashes and underscores (at most 100), starting with a letter or digit";
+  }
+  if (isWindowsDeviceName(segment)) {
+    return "it is a reserved device name on Windows, where a checkout of the repo would fail";
+  }
+  if (isAppId(segment)) {
+    return "it looks like an app id, and its link would be read as one";
+  }
+  return null;
+}
+
+/** The longest app name (title) a rename or create accepts. */
+export const MAX_APP_TITLE_LENGTH = 1000;
+
+/**
+ * Why `title` (already {@link normalizeName}d) cannot be an app's name, or
+ * null when it can. A title is display text in a JSON manifest, so almost
+ * anything goes — but not control characters (a NUL cannot even reach a
+ * commit message; a line break turns a one-line name into a header), not
+ * a name that is empty once invisible characters are set aside, and not
+ * an essay.
+ */
+export function appTitleProblem(title: string): string | null {
+  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(title)) {
+    return "An app name cannot contain control characters (line breaks, tabs, NUL)";
+  }
+  if (!title.replace(/[\s\p{Cf}]/gu, "")) return "An app needs a name";
+  if (title.length > MAX_APP_TITLE_LENGTH) {
+    return `An app name is at most ${MAX_APP_TITLE_LENGTH} characters`;
+  }
+  return null;
+}
+
 /** Root folder of a tree: `apps` or `users/<id>/apps`. */
 export function appTreeRoot(scope: AppScope, ownerId?: string): string {
   if (scope === "workspace") return APPS_DIR;
@@ -276,6 +341,12 @@ export function addManifestAliases(
   contents: string | null | undefined,
   add: readonly string[],
   drop: readonly string[] = [],
+  /**
+   * Keep only the newest this many (the list is oldest first). A name
+   * older than the index serves (MAX_ALIASES_PER_APP) opens nothing, and
+   * a list that grows on every rename forever is a file nobody reads.
+   */
+  max = Infinity,
 ): string | null {
   let raw: Record<string, unknown>;
   try {
@@ -288,9 +359,10 @@ export function addManifestAliases(
     return null;
   }
   const current = parseAppAliases(raw.aliases);
-  const next = parseAppAliases([...current.aliases, ...add]).aliases.filter(
+  const all = parseAppAliases([...current.aliases, ...add]).aliases.filter(
     a => !drop.includes(a),
   );
+  const next = all.length > max ? all.slice(all.length - max) : all;
   const unchanged =
     current.rejected.length === 0 &&
     next.length === current.aliases.length &&

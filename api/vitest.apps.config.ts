@@ -87,6 +87,10 @@ export default defineConfig({
       "src/apps/app-index.service.test.ts",
       // Graceful rename of an app: one commit, the old slug an alias.
       "src/rename/handlers/app.test.ts",
+      // The app rename scenario matrix (entry points × operations × roles ×
+      // links, hostile names, partial failures, races, scale): real git,
+      // real Mongo, a real laptop clone. One file per concern.
+      "src/apps/scenarios/*.scenarios.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       // A deploy's outcome as a GitHub commit status on the pushed sha.

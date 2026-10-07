@@ -988,15 +988,29 @@ export function aliasForOldPath(path: string): string {
  * names NEWEST FIRST and the sources come newest first too, so the cap
  * keeps the names people most recently used (a manifest's `aliases` are
  * appended over time — pass them reversed).
+ *
+ * "Once" is by what a name answers to (aliasMatchesRef): `x` and `apps/x`
+ * are one name, kept in the spelling seen first. `ownPath` drops anything
+ * that names the app's CURRENT place — a hand-written manifest may list it,
+ * and an app's current name is not one of its old ones.
  */
 export function mergeAliases(
   sources: ReadonlyArray<readonly string[]>,
   drop: readonly string[] = [],
+  ownPath?: string,
 ): string[] {
-  const merged = parseAppAliases(sources.flat()).aliases.filter(
-    alias => !drop.includes(alias),
-  );
-  return merged.slice(0, MAX_ALIASES_PER_APP);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const alias of parseAppAliases(sources.flat()).aliases) {
+    if (drop.includes(alias)) continue;
+    if (ownPath && aliasMatchesRef(alias, ownPath)) continue;
+    const key = nameKey(alias);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(alias);
+    if (out.length >= MAX_ALIASES_PER_APP) break;
+  }
+  return out;
 }
 
 /** Is the commit in this repo's object store? */
@@ -1089,10 +1103,11 @@ function rowToIndex(
     hasManifestId: row.hasManifestId,
     duplicateOf: row.duplicateOf ?? undefined,
     aliases: withoutSuperseded(
-      mergeAliases([
-        [...(row.aliases ?? [])].reverse(),
-        row.indexAliases ?? [],
-      ]),
+      mergeAliases(
+        [[...(row.aliases ?? [])].reverse(), row.indexAliases ?? []],
+        [],
+        row.path,
+      ),
       row.supersededAliases ?? [],
     ),
     schedules: (row.schedules ?? []).map(s => ({
@@ -1133,6 +1148,61 @@ export function syncAppsIndexFromRepo(
   });
 }
 
+/**
+ * Commits this instance put on main that are not durable yet: a lifecycle
+ * commit (rename, move, create, delete…) is on the local main while its
+ * push to the workspace's mirror is in flight, and is rolled back if that
+ * push fails. Until the push lands, a read must not index it — the list
+ * would show a rename that may never happen, and a rollback would leave
+ * the rows (and the project row's path) describing it. Workspace → shas.
+ */
+const notYetDurable = new Map<string, Set<string>>();
+
+/**
+ * Keep `sha` out of the index until the returned release is called (once
+ * the mirror has it, or main was rolled back from it). Reads meanwhile are
+ * served from the rows as they are.
+ */
+export function holdBackCommit(workspaceId: string, sha: string): () => void {
+  const held = notYetDurable.get(workspaceId) ?? new Set<string>();
+  held.add(sha);
+  notYetDurable.set(workspaceId, held);
+  return () => {
+    held.delete(sha);
+    if (held.size === 0 && notYetDurable.get(workspaceId) === held) {
+      notYetDurable.delete(workspaceId);
+    }
+  };
+}
+
+/**
+ * A commit that main was rolled back from (its durable push failed) must
+ * not stay indexed. While it was main, a read on this instance may have
+ * synced the index to it — and the "never rebuild backwards" rule below
+ * then keeps serving it, because the commit is still in the object store
+ * and main is its parent: the rename (or create) that never happened would
+ * stay in the list, its row relocated, until main moved on. Rebuild from
+ * main when the index describes `sha`, after any sync in flight (the
+ * serialization guarantees that one has landed first).
+ */
+export function forgetRolledBackCommit(
+  workspaceId: string,
+  sha: string,
+): Promise<void> {
+  return serialized(workspaceId, async () => {
+    invalidateAppsIndexCache(workspaceId);
+    const head = await AppIndexHead.findOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).lean();
+    if (head?.sha !== sha) return;
+    logger.warn("Apps index: rebuilding past a rolled-back commit", {
+      workspaceId,
+      sha,
+    });
+    await syncNow(workspaceId, { force: true });
+  });
+}
+
 async function syncNow(
   workspaceId: string,
   options: { force?: boolean },
@@ -1143,6 +1213,12 @@ async function syncNow(
   if (!sha) return null;
   const ws = new Types.ObjectId(workspaceId);
   const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
+  // Main is a commit whose durable push is still in flight: serve the
+  // index as it is (never cached under that sha) until it lands.
+  if (head && !options.force && notYetDurable.get(workspaceId)?.has(sha)) {
+    const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+    return { sha: head.sha, apps: rows.map(rowToIndex), folders: head.folders };
+  }
   if (head?.schemaVersion === INDEX_SCHEMA_VERSION && !options.force) {
     if (head.sha === sha) {
       // A history scan that failed when these rows were built is retried
@@ -1426,10 +1502,11 @@ async function syncNow(
     supersededByPath.set(row.path, superseded);
     if (row.duplicateOf) continue;
     row.aliases = withoutSuperseded(
-      mergeAliases([
-        [...row.aliases].reverse(),
-        indexAliasesByPath.get(row.path) ?? [],
-      ]),
+      mergeAliases(
+        [[...row.aliases].reverse(), indexAliasesByPath.get(row.path) ?? []],
+        [],
+        row.path,
+      ),
       superseded,
     );
   }
@@ -1806,7 +1883,13 @@ export function findAppInSnapshotVia(
   snapshot: AppsIndexSnapshot,
   ref: string,
 ): { app: AppIndexRow; via: "current" | "alias" } | null {
-  const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  // NFC, as every app name is stored (normalizeName): `é` typed as
+  // e + U+0301 is the same name as `é`.
+  const clean = ref
+    .trim()
+    .normalize("NFC")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
   if (!clean) return null;
   const apps = snapshot.apps;
   const current = (app: AppIndexRow | undefined | null) =>

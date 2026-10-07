@@ -82,6 +82,41 @@ assert.match(
 assert.equal(authorizeAppMove(fromU2, workspace(), "u2", "member"), null);
 assert.equal(authorizeAppMove(null, workspace(), "u1", "admin"), null);
 
+// Given the app, filing it into a personal tree (it becomes the mover's
+// private app) is its owner's call, or a workspace owner/admin's — never
+// an editor's it is merely shared with, nor a member's on a shared app.
+const ownedByU2 = {
+  access: "private" as const,
+  owner_id: "u2",
+  sharedWith: [{ userId: "u1", role: "editor" as const }],
+};
+assert.match(
+  authorizeAppMove(fromWorkspace, personal(), "u1", "member", ownedByU2) ?? "",
+  /owner or a workspace admin/,
+);
+assert.equal(
+  authorizeAppMove(fromWorkspace, personal(), "u2", "member", ownedByU2),
+  null,
+);
+assert.equal(
+  authorizeAppMove(fromWorkspace, personal(), "u3", "admin", {
+    access: "workspace",
+  }),
+  null,
+);
+assert.match(
+  authorizeAppMove(fromWorkspace, personal(), "u1", "member", {
+    access: "workspace",
+    workspaceRole: "editor",
+  }) ?? "",
+  /owner or a workspace admin/,
+);
+// Within the workspace tree, the app's owner does not matter.
+assert.equal(
+  authorizeAppMove(fromWorkspace, workspace(), "u1", "member", ownedByU2),
+  null,
+);
+
 // Who may write (and so rename) an app — what GET /apps sends per app as
 // `canWrite`. Its OWNER first, whatever the access and the workspace role:
 // createProject makes a new app private and owned by its creator, and a
