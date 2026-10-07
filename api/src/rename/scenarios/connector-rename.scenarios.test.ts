@@ -47,10 +47,28 @@ vi.mock("../../connectors/workspace/sync-box", async importOriginal => ({
   })),
 }));
 
+const member = vi.hoisted(() => ({ of: [] as string[] }));
+vi.mock("../../auth/unified-auth.middleware", () => ({
+  unifiedAuthMiddleware: async (
+    c: { set: (k: string, v: unknown) => void },
+    next: () => Promise<void>,
+  ) => {
+    c.set("user", { id: "u1" });
+    await next();
+  },
+}));
+vi.mock("../../services/workspace.service", () => ({
+  workspaceService: {
+    hasAccess: vi.fn(async (ws: string) => member.of.includes(ws)),
+  },
+}));
+
+import { Hono } from "hono";
 import {
   ConnectorDefinition,
   SourceConnection,
 } from "../../database/workspace-schema";
+import { connectorRoutes } from "../../routes/connectors";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -195,6 +213,30 @@ describe("cycles, chains and taken names", () => {
     ).toBeNull();
     const r = await rename(hexSlug, "readable");
     expect(r.id).toBe(H);
+  });
+});
+
+describe("old names in the catalog", () => {
+  it("the icon of a connection still typed by an OLD slug is the connector's own icon (members only)", async () => {
+    const icon = `<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>`;
+    await push({
+      writes: { ...folder("acme"), "connectors/acme/icon.svg": icon },
+    });
+    await syncConnectorsFromRepo(WS);
+    await rename("acme", "acme-crm");
+    const app = new Hono();
+    app.route("/api/connectors", connectorRoutes);
+    const get = (type: string) =>
+      Promise.resolve(
+        app.request(`/api/connectors/${type}/icon.svg?workspaceId=${WS}`),
+      );
+    member.of = [WS];
+    for (const type of ["ws:acme-crm", "ws:acme"]) {
+      const res = await get(type);
+      expect([type, res.status, await res.text()]).toEqual([type, 200, icon]);
+    }
+    member.of = [];
+    expect(await (await get("ws:acme")).text()).not.toBe(icon);
   });
 });
 
