@@ -351,9 +351,11 @@ connectorRoutes.openapi(
         try {
           const slug = type.slice(3);
           const definition = await loadConnectorDefinition(workspaceId, slug);
+          // The folder is at the definition's CURRENT slug: `slug` may be an
+          // old name (a connection typed ws:<old> still renders its icon).
           const files = await readConnectorFolder(
             workspaceId,
-            slug,
+            definition.slug,
             definition.sha,
           );
           const icon = files.get("icon.svg");

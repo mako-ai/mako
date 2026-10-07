@@ -51,6 +51,7 @@ import {
   BlobPreconditionError,
   PathConflictError,
   listTree,
+  treeOidAt,
   type IndexEntry,
   type IndexMode,
 } from "../apps/repository.service";
@@ -58,11 +59,11 @@ import {
   DBT_ROOT,
   commitDbtChanges,
   getCheckoutBranch,
-  listWorkingFiles,
   readWorkingFile,
 } from "../dbt/dbt-working-tree.service";
 import {
   mentionsName,
+  projectConfigsLostByMove,
   refNameForDbtPath,
   rewriteJobCommands,
   rewriteNodeProperties,
@@ -76,7 +77,6 @@ import { resolveDbtAccess } from "../dbt/rbac";
 import { loggers } from "../logging";
 import { findRenamedPath } from "./git-renames";
 import { isUtf8Text } from "../apps/text-bytes";
-import { caseTwinOf } from "../apps/git";
 import {
   RenameError,
   type RenameContext,
@@ -118,7 +118,8 @@ export function parseDbtFileRef(ref: string): DbtFileRef | null {
   return { path: normalizePath(clean) };
 }
 
-function normalizePath(path: string): string {
+/** `/dbt/models/a.sql`, `dbt/models/a.sql` → `models/a.sql` (project-relative). */
+export function normalizePath(path: string): string {
   const p = path.replace(/^\/+/, "");
   return p.startsWith(`${DBT_ROOT}/`) ? p.slice(DBT_ROOT.length + 1) : p;
 }
@@ -129,8 +130,81 @@ export function isSafeDbtPath(path: string): boolean {
     path.length < 1024 &&
     !path.startsWith("/") &&
     !path.includes("\\") &&
-    !path.split("/").some(seg => seg === "" || seg === ".." || seg === ".git")
+    // Control characters (NUL, newline, tab, DEL): git refuses some, every
+    // checkout mangles the rest.
+    ![...path].some(ch => ch.charCodeAt(0) < 0x20 || ch === "\u007f") &&
+    !path
+      .split("/")
+      .some(seg => seg === "" || seg === "." || seg === ".." || seg === ".git")
   );
+}
+
+/** Windows device names, with or without an extension (`CON`, `aux.sql`). */
+const RESERVED_SEGMENT = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+
+/**
+ * Why a NEW path (a rename's target) would be a file some checkout cannot
+ * hold, or one that cannot be told apart from another by looking at it —
+ * or null when it is fine. Only targets are checked: a file that already
+ * has such a name must stay renamable, that is how it gets fixed.
+ */
+export function unportableDbtPathReason(path: string): string | null {
+  for (const seg of path.split("/")) {
+    if (Buffer.byteLength(seg, "utf8") > 255) {
+      return `"${seg.slice(0, 40)}…" is longer than the 255 bytes a file name may have`;
+    }
+    if (/[<>:"|?*]/.test(seg)) {
+      return `"${seg}" contains a character Windows does not allow in a file name (< > : " | ? *)`;
+    }
+    if (/[ .]$/.test(seg) || /^ /.test(seg)) {
+      return `"${seg}" starts or ends with a space, or ends with a dot — Windows strips those, and the name would change on checkout`;
+    }
+    if (RESERVED_SEGMENT.test(seg)) {
+      return `"${seg}" is a reserved device name on Windows`;
+    }
+    // Zero-width and bidirectional controls: a name that LOOKS like another.
+    if (
+      /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/.test(seg)
+    ) {
+      return `"${seg}" contains an invisible or text-direction character, so it would look like a different name`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The file or folder in `taken` (or above one) that `to` cannot be told
+ * apart from on macOS or Windows: same letters in another case, or the same
+ * text in another Unicode normalization (é as U+00E9 vs e + U+0301 — APFS
+ * and NTFS treat the two as one name). Never a path that IS `to`'s own
+ * prefix (a folder it moves into).
+ */
+function indistinguishableTwinOf(
+  taken: ReadonlySet<string>,
+  to: string,
+): string | undefined {
+  const fold = (p: string) => p.normalize("NFC").toLowerCase();
+  const known = new Map<string, string>();
+  for (const path of taken) {
+    const parts = path.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const prefix = parts.slice(0, i).join("/");
+      if (!known.has(fold(prefix))) known.set(fold(prefix), prefix);
+    }
+  }
+  const exact = new Set(
+    [...taken].flatMap(p =>
+      p.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/")),
+    ),
+  );
+  const segments = to.split("/");
+  for (let i = segments.length; i >= 1; i--) {
+    const prefix = segments.slice(0, i).join("/");
+    if (exact.has(prefix)) continue;
+    const twin = known.get(fold(prefix));
+    if (twin !== undefined) return twin;
+  }
+  return undefined;
 }
 
 export function dbtFileUrl(projectId: string, path: string): string {
@@ -237,14 +311,10 @@ export interface RenameDbtFileInput {
 }
 
 /** The dbt project's `name` (dbt_project.yml), for the two-arg ref form. */
-async function projectPackageName(
-  project: IDbtProject,
-  actor: string,
-): Promise<string | undefined> {
-  const file = await readWorkingFile(project, actor, "dbt_project.yml");
-  if (!file) return undefined;
+function projectPackageName(content: string | null): string | undefined {
+  if (!content) return undefined;
   try {
-    const doc = yaml.load(file.content) as { name?: unknown } | null;
+    const doc = yaml.load(content) as { name?: unknown } | null;
     return typeof doc?.name === "string" ? doc.name : undefined;
   } catch {
     return undefined;
@@ -274,22 +344,20 @@ export async function renameDbtFile(
     throw new RenameError("Invalid from/to path", 400);
   }
   if (from === to) throw new RenameError("The new path is the old path", 400);
+  const unportable = unportableDbtPathReason(to);
+  if (unportable) throw new RenameError(`Invalid path: ${unportable}.`, 400);
   assertMayWriteDbt(ctx);
   const project = await findDbtProject(ctx.workspaceId, input.projectId);
   if (!project) throw new RenameError("dbt project not found", 404);
   const projectId = project._id.toString();
   const actor = actingUserId(ctx);
 
-  const [source, target] = await Promise.all([
-    readWorkingFile(project, actor, from),
-    readWorkingFile(project, actor, to),
-  ]);
-  if (!source) throw new RenameError(`File not found: ${from}`, 404);
-  if (target) throw new RenameError(`"${to}" already exists`, 409);
-
   // The branch the rename commits to (the session branch, or main when it
   // has none yet) — every blob below is read from it.
   const repoDir = await repoForWorkspace(ctx.workspaceId);
+  if (!(await repoExists(repoDir))) {
+    throw new RenameError(`File not found: ${from}`, 404);
+  }
   const checkoutBranch = await getCheckoutBranch(project, actor);
   const readRef = (await resolveCommit(repoDir, `refs/heads/${checkoutBranch}`))
     ? `refs/heads/${checkoutBranch}`
@@ -300,7 +368,19 @@ export async function renameDbtFile(
   const sourceRaw = (
     await readBlobsBatch(repoDir, readRef, [`${DBT_ROOT}/${from}`])
   ).get(`${DBT_ROOT}/${from}`);
-  if (!sourceRaw) throw new RenameError(`File not found: ${from}`, 404);
+  // EVERYTHING else is read at this one commit, and the commit below pins
+  // the whole dbt/ tree to it: a save, a new file or a delete landing
+  // anywhere in the project before the rename commits refuses the rename
+  // (409) — a file read as "does not mention the model" must not gain a
+  // `ref('old')` that the commit then leaves dangling, a case twin of the
+  // target must not appear beside it, a node of the new name must not be
+  // added. (A save landing before this point but after the byte read above
+  // changes `from`'s pinned oid: refused too.)
+  const head = await resolveCommit(repoDir, readRef);
+  if (!sourceRaw || !head) {
+    throw new RenameError(`File not found: ${from}`, 404);
+  }
+  const dbtTree = await treeOidAt(repoDir, head, DBT_ROOT);
   // Modes travel with the move: an executable stays executable, and a
   // symlink (`120000`, whose blob is the link TARGET) is moved by oid —
   // its "content" is never rewritten, that would corrupt the link.
@@ -310,26 +390,42 @@ export async function renameDbtFile(
   // travel with the move.
   const dbtPrefix = `${DBT_ROOT}/`;
   const modeByPath = new Map(
-    (await listTree(repoDir, readRef))
+    (await listTree(repoDir, head))
       .filter(e => e.path.startsWith(dbtPrefix))
       .map(e => [e.path.slice(dbtPrefix.length), e]),
   );
+  if (!modeByPath.has(from)) {
+    throw new RenameError(`File not found: ${from}`, 404);
+  }
+  if (modeByPath.has(to)) {
+    throw new RenameError(`"${to}" already exists`, 409);
+  }
   // Git keeps models/Orders.sql and models/orders.sql apart; a checkout on
   // macOS or Windows cannot. A target that differs from another file — or
   // from a folder on the way — only in upper/lower case is refused. The
   // file's OWN case change is a plain git mv: it is not in `others`, and
   // neither is a folder only it was in.
   const others = new Set([...modeByPath.keys()].filter(p => p !== from));
-  const twin = caseTwinOf(others, to);
+  const twin = indistinguishableTwinOf(others, to);
   if (twin) {
     throw new RenameError(
-      `"${twin}" already exists, and "${to}" differs from it only in upper/lower case — a checkout on macOS or Windows cannot tell the two apart.`,
+      `"${twin}" already exists, and "${to}" differs from it only in upper/lower case (or Unicode normalization) — a checkout on macOS or Windows cannot tell the two apart.`,
       409,
     );
   }
+  /** A text file of the project at the pinned commit. */
+  const projectText = async (path: string): Promise<string | null> => {
+    const buf = (
+      await readBlobsBatch(repoDir, head, [`${DBT_ROOT}/${path}`])
+    ).get(`${DBT_ROOT}/${path}`);
+    return buf && !buf.includes(0) ? buf.toString("utf8") : null;
+  };
   const sourceEntry = modeByPath.get(from);
   const sourceIsSymlink = sourceEntry?.mode === "120000";
-  if (!sourceIsSymlink && !isUtf8Text(sourceRaw)) {
+  // Binary (a docs image, an asset): moved by oid — there is no text to
+  // rewrite, and its bytes are never round-tripped through a string.
+  const sourceIsBinary = !sourceIsSymlink && sourceRaw.includes(0);
+  if (!sourceIsSymlink && !sourceIsBinary && !isUtf8Text(sourceRaw)) {
     throw new RenameError(
       `${from} is not UTF-8 text, so Mako cannot move it without changing its bytes — rename it with git.`,
       400,
@@ -340,8 +436,9 @@ export async function renameDbtFile(
   const modes: Record<string, IndexMode> = {};
   const entries: IndexEntry[] = [];
   const deletes = [from];
-  // What this rename read, by blob oid: the commit refuses if any of it
-  // changed before the commit lands (a save racing the rename).
+  // What this rename read: the moved file by blob oid, the target absent
+  // (named first, for the message), and the whole project tree as of the
+  // commit every other read was made at.
   const expectBlobs: Record<string, string | null> = {
     [from]: gitBlobOid(sourceRaw),
     [to]: null,
@@ -366,10 +463,9 @@ export async function renameDbtFile(
   // "old relation" warning would invite dropping a live table).
   if (newModel && newModel !== oldModel) {
     const taken = await nodeNameTakenBy(
-      project,
-      actor,
+      [...modeByPath.keys()],
       repoDir,
-      readRef,
+      head,
       newModel,
       from,
     );
@@ -382,6 +478,18 @@ export async function renameDbtFile(
   }
   let movedContent = sourceText;
 
+  if (oldModel && newModel) {
+    // A move to another folder: configs keyed by the old path stop applying.
+    const projectYml = await projectText("dbt_project.yml");
+    const lost = projectYml
+      ? projectConfigsLostByMove(projectYml, from, to)
+      : [];
+    if (lost.length > 0) {
+      warnings.push(
+        `dbt_project.yml configures ${from} through ${lost.map(c => `"${c}"`).join(", ")}; at ${to} ${lost.length === 1 ? "that no longer applies" : "those no longer apply"} (materialization, schema, tags…) — move the config or check the model.`,
+      );
+    }
+  }
   if (oldModel && !newModel) {
     warnings.push(
       `'${from}' was the model '${oldModel}'; '${to}' is not a model path, so ref('${oldModel}') calls, selectors and its schema entry were left as they are and will fail to resolve.`,
@@ -389,13 +497,15 @@ export async function renameDbtFile(
   }
   if (oldModel && newModel && oldModel !== newModel) {
     if (updateRefs) {
-      const packageName = await projectPackageName(project, actor);
-      const files = (await listWorkingFiles(project, actor))
-        .map(f => f.path)
-        .filter(p => p !== from && isRewritableDbtPath(p));
+      const packageName = projectPackageName(
+        await projectText("dbt_project.yml"),
+      );
+      const files = [...modeByPath.keys()].filter(
+        p => p !== from && isRewritableDbtPath(p),
+      );
       const blobs = await readBlobsBatch(
         repoDir,
-        readRef,
+        head,
         files.map(p => `${DBT_ROOT}/${p}`),
       );
       for (const path of files) {
@@ -453,17 +563,19 @@ export async function renameDbtFile(
           if (entry && entry.mode !== "100644") {
             modes[path] = entry.mode as IndexMode;
           }
-          expectBlobs[path] = gitBlobOid(buf);
+          // Pinned by the dbt/ tree (one check, however many files).
           rewritten.push(path);
           if (isJob) jobsTouched = true;
         }
       }
-      // The moved file may ref itself (a comment, a docs block) — rewrite it too.
+      // The moved file may ref itself (a comment, a docs block) — rewrite it
+      // too, when it is a file dbt parses: a seed's CSV is DATA, and a
+      // cell that happens to read `ref('countries')` is not a reference.
       if (sourceIsSymlink) {
         warnings.push(
           `${from} is a symlink; it was moved as-is (its target was not rewritten).`,
         );
-      } else {
+      } else if (isRewritableDbtPath(from)) {
         movedContent = rewriteRefs(
           sourceText,
           oldModel,
@@ -489,8 +601,12 @@ export async function renameDbtFile(
     );
     warnings.push(...(await referencingSqlWarnings(ctx, project, oldModel)));
   }
-  if (sourceIsSymlink && sourceEntry) {
-    entries.push({ path: to, oid: sourceEntry.oid, mode: "120000" });
+  if ((sourceIsSymlink || sourceIsBinary) && sourceEntry) {
+    entries.push({
+      path: to,
+      oid: sourceEntry.oid,
+      mode: sourceEntry.mode as IndexMode,
+    });
   } else {
     writes[to] = movedContent;
     if (sourceEntry && sourceEntry.mode !== "100644") {
@@ -510,11 +626,14 @@ export async function renameDbtFile(
       { writes, deletes, entries, modes },
       message,
       expectBlobs,
+      { expectTree: dbtTree },
     );
   } catch (error) {
     if (error instanceof BlobPreconditionError) {
       throw new RenameError(
-        `${error.path.replace(/^dbt\//, "")} changed while renaming — reload and try again.`,
+        error.path === DBT_ROOT
+          ? "The dbt project changed while renaming (a save or a push landed) — reload and try again."
+          : `${error.path.replace(/^dbt\//, "")} changed while renaming — reload and try again.`,
         409,
       );
     }
@@ -616,14 +735,12 @@ function rewriteProjectFile(
  * block. Returns what holds it, or null.
  */
 async function nodeNameTakenBy(
-  project: IDbtProject,
-  actor: string,
+  files: string[],
   repoDir: string,
-  readRef: string,
+  head: string,
   name: string,
   except: string,
 ): Promise<string | null> {
-  const files = (await listWorkingFiles(project, actor)).map(f => f.path);
   const byFile = files.find(p => p !== except && refNameForDbtPath(p) === name);
   if (byFile) return byFile;
   // Snapshots are named by their block: read the (few) snapshot files and
@@ -634,7 +751,7 @@ async function nodeNameTakenBy(
   if (snapshots.length === 0) return null;
   const blobs = await readBlobsBatch(
     repoDir,
-    readRef,
+    head,
     snapshots.map(p => `${DBT_ROOT}/${p}`),
   );
   const block = new RegExp(

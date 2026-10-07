@@ -669,6 +669,16 @@ sourceConnectionRoutes.openapi(
             ? await canonicalConnectorType(body.type, workspaceId)
             : body.type;
         if (nextType !== currentValues.type) {
+          // Re-pointed at a workspace connector: one that exists and runs,
+          // the same bar as a create. Accepting a name nothing answers
+          // would leave an UNBOUND credential waiting there for whichever
+          // folder takes that name next.
+          if (isWorkspaceConnectorType(nextType) && workspaceId) {
+            const exists = await connectorTypeExists(nextType, workspaceId);
+            if (!exists.ok) {
+              return c.json({ success: false, error: exists.reason }, 400);
+            }
+          }
           sourceConnection.type = nextType;
           // Re-pointing a connection at another connector is an explicit
           // act: bind it to that definition (or unbind for a built-in).
@@ -1054,6 +1064,8 @@ sourceConnectionRoutes.openapi(
           error.status,
         );
       }
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       logger.error("Connection probe failed", {
         workspaceId,
         connectionId: id,
@@ -1281,6 +1293,8 @@ sourceConnectionRoutes.openapi(
         data: entityData,
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       return c.json(
         {
           success: false,
@@ -1448,6 +1462,10 @@ sourceConnectionRoutes.openapi(
         return c.json({ success: false, error: "Decryption failed" }, 400);
       }
     } catch (error) {
+      // Its connector is gone or its type names another: nothing to reveal
+      // by — say how to re-bind, as every other route does.
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       logger.error("Reveal-secret endpoint error", { error });
       return c.json(
         {

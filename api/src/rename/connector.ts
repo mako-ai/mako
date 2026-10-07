@@ -66,6 +66,7 @@ import {
 import {
   CONNECTOR_RENAME_SIMILARITY,
   migrateSourceConnectionType,
+  retypeBoundElsewhere,
   syncConnectorsFromRepo,
 } from "../connectors/workspace/reconcile.service";
 import {
@@ -222,12 +223,18 @@ export async function renameWorkspaceConnector(
       409,
     );
   }
-  // Connections typed ws:<to> with no connector behind them belong to a
-  // DELETED connector; renaming into the slug would hand their
-  // credentials to this code. Refuse until they are gone or re-pointed.
+  // Connections typed ws:<to> bound to another LIVE connector are that
+  // connector's (by id): their cosmetic type is fixed first, so taking the
+  // name does not make them refuse. What is left typed ws:<to> — bound to
+  // nothing, or to a DELETED connector — was saved for something that is
+  // no longer there; renaming into the slug would hand those credentials
+  // to this code. Refuse until they are gone or re-pointed. (This
+  // connector's OWN connections with a stale type are fine.)
+  await retypeBoundElsewhere(ctx.workspaceId, to, String(row._id));
   const orphans = await SourceConnection.countDocuments({
     workspaceId: wsId,
     type: `${WORKSPACE_TYPE_PREFIX}${to}`,
+    connectorDefinitionId: { $ne: row._id },
   });
   if (orphans > 0) {
     throw new RenameError(
@@ -332,8 +339,20 @@ export async function renameWorkspaceConnector(
   }
   queueMirrorPush(ctx.workspaceId);
 
+  // Connections FIRST, then the index row. Bound ones follow by id; their
+  // `type` is made to match (cosmetic). Legacy unbound ones typed by the
+  // current slug are this connector's by construction and are bound now.
+  // In this order a crash between the two leaves every connection bound
+  // by id to a row the next push re-keys (they keep running it meanwhile);
+  // the other order stranded the legacy ones typed ws:<from> for good.
+  const movedConnections = await migrateSourceConnectionType(
+    ctx.workspaceId,
+    from,
+    to,
+    { definitionId: String(row._id), includeUnstamped: true },
+  );
   // Re-key the index now (the push-time reconcile would find the same
-  // rename through the alias and do nothing more), then move connections.
+  // rename through the alias and do nothing more).
   // `sourceSha` is unchanged on purpose: the hash ignores `aliases`, so a
   // verified connector stays verified — a rename is not new code.
   row.slug = to;
@@ -344,15 +363,6 @@ export async function renameWorkspaceConnector(
   row.retiredAliases = (row.retiredAliases ?? []).filter(a => a !== to);
   row.sha = commit.commitOid;
   await row.save();
-  // Connections bound to this row follow by id; their `type` is made to
-  // match (cosmetic). Legacy unbound ones typed by the current slug are
-  // this connector's by construction and are bound now.
-  const movedConnections = await migrateSourceConnectionType(
-    ctx.workspaceId,
-    from,
-    to,
-    { definitionId: String(row._id), includeUnstamped: true },
-  );
   const remaining = await SourceConnection.countDocuments({
     workspaceId: wsId,
     type: `${WORKSPACE_TYPE_PREFIX}${from}`,
