@@ -46,6 +46,7 @@ import {
   syncConsolesIndexFromRepo,
 } from "../../apps/workspace-consoles.service";
 import { renameObject, resolveObjectRef } from "../../rename/registry";
+import { createServerConsoleTools } from "../../agent-lib/tools/server-console-tools";
 import { createConsoleRig, type Actor } from "./console-scenario-rig";
 
 const rig = createConsoleRig(who, "console-rename-scenarios");
@@ -737,6 +738,49 @@ describe("a console that was never indexed (pushed, not synced)", () => {
     expect(await SavedConsole.countDocuments({})).toBe(1);
     // The file is untouched by a draft.
     expect(await rig.fileAt("consoles/pushed.sql")).toBe("SELECT 'pushed'\n");
+  });
+});
+
+describe("the agent's modify_console title", () => {
+  it("renames through the same service: one commit, the file as committed, the agent's edit stays a draft; a bad title applies nothing", async () => {
+    const c = await attached("alpha");
+    const tools = createServerConsoleTools({
+      workspaceId: rig.ws,
+      userId: owner.id,
+    });
+    const run = (input: Record<string, unknown>) =>
+      (
+        tools.modify_console as unknown as {
+          execute: (i: unknown, o: unknown) => Promise<Record<string, unknown>>;
+        }
+      ).execute(input, { toolCallId: "t", messages: [] });
+    const commits = await rig.commitCount();
+    const bad = await run({
+      consoleId: c._id.toString(),
+      action: "replace",
+      content: "SELECT 'agent'\n",
+      title: "Q1: revenue",
+    });
+    expect(bad.success).toBe(false);
+    expect(await rig.commitCount()).toBe(commits);
+    expect((await rig.row(c._id))!.code).toBe("SELECT 'alpha'\n");
+    const ok = await run({
+      consoleId: c._id.toString(),
+      action: "replace",
+      content: "SELECT 'agent'\n",
+      title: "beta",
+    });
+    expect(ok.success, JSON.stringify(ok)).toBe(true);
+    await expectIdentityKept(c, {
+      path: "consoles/beta.sql",
+      name: "beta",
+      commitsBefore: commits,
+    });
+    const row = (await rig.row(c._id))!;
+    expect(row.path).toBe("consoles/beta.sql");
+    expect(row.code).toBe("SELECT 'agent'\n");
+    expect(await rig.fileAt("consoles/beta.sql")).toBe("SELECT 'alpha'\n");
+    expect(await rig.commitCount()).toBe(commits + 1);
   });
 });
 
