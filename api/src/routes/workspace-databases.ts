@@ -851,8 +851,23 @@ workspaceDatabaseRoutes.openapi(
 
       const verifyBeforeSave = body.verifyBeforeSave === true;
 
-      // Update fields
-      if (body.name) database.name = body.name;
+      // Update fields. An empty name is "unchanged" (as it always was); a
+      // name of only spaces is a clear 400, never the schema's 500.
+      if (typeof body.name === "string" && body.name !== "") {
+        const name = body.name.trim();
+        if (!name) {
+          return c.json(
+            { success: false, error: "A connection needs a name." },
+            400,
+          );
+        }
+        database.name = name;
+      } else if (body.name !== undefined && typeof body.name !== "string") {
+        return c.json(
+          { success: false, error: "A connection's name is text." },
+          400,
+        );
+      }
       if (typeof body.allowAgentWrites === "boolean") {
         // Security-sensitive opt-in (scoped agent credentials may write to
         // this connection) — owners/admins only, unlike general edits.
