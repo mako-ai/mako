@@ -2425,11 +2425,13 @@ export function uniquePath(
   // Ignoring letter case: "Report" and "report" in one folder are one file
   // on macOS / Windows. The console's own file is not in the way (a
   // case-only rename of it is the same file).
+  // …and Unicode normal form (a laptop can push an NFD name; Mako writes
+  // NFC): one file on macOS too.
   const takenFolded = new Set(
-    [...taken].filter(p => p !== ownPath).map(p => p.toLowerCase()),
+    [...taken].filter(p => p !== ownPath).map(foldConsolePath),
   );
   const free = (p: string) =>
-    p === ownPath || !takenFolded.has(p.toLowerCase());
+    p === ownPath || !takenFolded.has(foldConsolePath(p));
   if (free(wanted)) return wanted;
   const location = parseConsoleRepoPath(wanted);
   if (!location) return wanted;

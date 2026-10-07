@@ -51,7 +51,7 @@ import { RenameError } from "../../rename/types";
 import { createConsoleRig } from "./console-scenario-rig";
 
 const rig = createConsoleRig(who, "console-hostile-scenarios");
-const { owner } = rig.people;
+const { owner, member } = rig.people;
 
 const LONG = (n: number) => "x".repeat(n);
 
@@ -281,6 +281,50 @@ describe("one name, however it is spelled", () => {
       "consoles/café.sql",
       "consoles/other.sql",
     ]);
+  });
+
+  it("a NEW console (first save, POST /, a duplicate) never lands on a case or Unicode twin", async () => {
+    await rig.save("Caf\u00e9 Report", owner);
+    const before = await rig.consolePaths();
+    for (const path of [
+      "café report",
+      "CAFE\u0301 REPORT",
+      "Cafe\u0301 Report",
+    ]) {
+      const put = await rig.api(
+        "PUT",
+        `/consoles/${new Types.ObjectId()}`,
+        owner,
+        { content: "SELECT 1\n", isSaved: true, path, access: "workspace" },
+      );
+      expect(put.status, `${path}: ${JSON.stringify(put.body)}`).toBe(409);
+      const post = await rig.api("POST", "/consoles", member, {
+        path,
+        content: "SELECT 2\n",
+        access: "workspace",
+      });
+      expect([409], `${path}: ${JSON.stringify(post.body)}`).toContain(
+        post.status,
+      );
+    }
+    expect(await rig.consolePaths()).toEqual(before);
+    // A duplicate's free name skips an NFD twin a laptop pushed into the
+    // copier's tree.
+    await rig.laptop({
+      writes: {
+        [`users/${owner.id}/consoles/Cafe\u0301 Report copy.sql`]:
+          "SELECT 'laptop'\n",
+      },
+    });
+    const dup = await rig.api(
+      "POST",
+      `/consoles/${(await SavedConsole.findOne({ path: "consoles/Caf\u00e9 Report.sql" }))!._id}/duplicate`,
+      owner,
+    );
+    expect(dup.status, JSON.stringify(dup.body)).toBe(201);
+    expect((await rig.row((dup.body.data as { id: string }).id))!.path).toBe(
+      `users/${owner.id}/consoles/Caf\u00e9 Report copy (2).sql`,
+    );
   });
 
   it("a name that a laptop pushed in NFD still blocks its NFC twin", async () => {
