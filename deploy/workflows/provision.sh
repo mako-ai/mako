@@ -18,7 +18,7 @@
 #   - namespace `mako-workflows` + quota + egress lockdown for workflow workers
 #   - firewall: Cloud Run subnet → Hatchet API pods on :8080 (VPC path, as kernels)
 #
-# Prereqs: gcloud (authenticated), kubectl, helm.
+# Prereqs: gcloud (authenticated), kubectl, helm, psql.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +54,12 @@ if ! ADMIN_PASSWORD="$(secret HATCHET_ADMIN_PASSWORD 2>/dev/null)"; then
 else
   echo "✓ HATCHET_ADMIN_PASSWORD exists"
 fi
+
+# Hatchet's seed job refuses to start unless the database timezone is UTC, and
+# Neon databases default to GMT.
+echo "→ Setting Hatchet database timezone to UTC"
+psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -q -c \
+  "DO \$\$ BEGIN EXECUTE format('ALTER DATABASE %I SET timezone TO ''UTC''', current_database()); END \$\$;"
 
 # --- 2. Hatchet -----------------------------------------------------------------
 echo "→ Installing Hatchet (chart ${CHART_VERSION})"
