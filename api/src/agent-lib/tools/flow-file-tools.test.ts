@@ -315,6 +315,26 @@ describe("partial input never reports a phantom teardown", () => {
     expect(ambiguous.notes.some(n => n.includes("will not guess"))).toBe(true);
   });
 
+  it("reports a file moved into a sub-folder as a PARKED flow, not a teardown (what the push does)", async () => {
+    await seedRepo({ "flows/beta.yml": flowYaml("beta") });
+    await seedRow("beta");
+    const moved = await checkFlowFiles({
+      workspaceId: WS.toString(),
+      files: [{ path: "flows/team/beta.yml", contents: flowYaml("beta") }],
+      deletedPaths: ["flows/beta.yml"],
+    });
+    expect(moved.wouldPark).toEqual([
+      { slug: "beta", movedTo: "flows/team/beta.yml", via: "identical" },
+    ]);
+    expect(moved.wouldTeardown).toEqual([]);
+    expect(moved.summary).toContain("park 1");
+    expect(moved.notes.some(n => n.includes("PARKED"))).toBe(true);
+    // The path itself is still reported: it is not where flows live.
+    expect(moved.problems.some(p => p.path === "flows/team/beta.yml")).toBe(
+      true,
+    );
+  });
+
   it("attributes a fileless flow to the repo, not to the caller", async () => {
     // `orphan` has a row and no file: a push tears it down with or without
     // this change, so it must not be reported as caused by these files.
