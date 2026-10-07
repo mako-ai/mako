@@ -20,25 +20,12 @@ This is the dbt pattern applied to code. dbt models live in `dbt/` and dbt
 runs them; workflows live in `workflows/` and Hatchet runs them. Mako adds
 discovery, deploys, run inspection and operations.
 
-### 1.1 Words used in the UI
+### 1.1 V1 is deliberately small
 
-Two terms come up on every screen. Both describe where a workflow's code
-comes from.
-
-- **Live.** The code on `main`. It runs for real: schedules fire, it reads
-  and writes real data, and agents and the API trigger it. "Live 8fc2ad1"
-  means the code at commit `8fc2ad1` is what runs now.
-- **Branch test.** The code on the branch you are editing, before it is
-  merged. Clicking Run on it executes your unmerged changes once, so you can
-  check them. Schedules never fire for a branch test, and it cannot change
-  what runs live.
-- **Version** (the history list). Every merge to `main` builds a new
-  version. The history shows each one with its commit, when it went live,
-  and its build error if it failed. Engineers would call these deployments;
-  the UI says versions.
-
-In short: you edit on a branch, try it with a branch test, merge, and it
-becomes the new live version.
+V1 runs only what is on `main`. There are no branch tests, no version
+history screen and no dashboards. The UI has three things, modeled on
+Hatchet's own dashboard: a **runs list**, a **run page**, and a **Run
+button**. Everything else waits until real use asks for it (§17).
 
 ## 2. What v4 changes from v3
 
@@ -52,12 +39,13 @@ open. Each item below was ambiguous or wrong in v3:
 | 3 | Sandbox execution is "not V1" | Workers run in a **per-workspace E2B box**, as workspace connectors do | Workflow code is untrusted tenant code. It never runs in the API process. This reuses existing infra and adds no new sandbox feature. |
 | 4 | `db.customers.findMany(...)` | Data access goes through **`@makoai/workflows`**: `mako.query()` and `mako.ai` | Tenant code has no database client or credentials today. Something has to give it data. |
 | 5 | `ctx.taskOutput(task)` | `await ctx.parentOutput(task)` | `taskOutput` does not exist in Hatchet's TypeScript SDK. |
-| 6 | Three environments: local, staging, production | Two separate things: **Mako's own environments** (local, staging, prod, each with its own Hatchet) and, per workspace, **Live** and **Branch test** (§1.1, §8) | v3 mixed the two. A customer needs a safe place to try a branch before it runs for real. |
+| 6 | Three environments: local, staging, production | Two separate things: **Mako's own environments** (local, staging, prod, each with its own Hatchet) and, per workspace, what is on `main` (§8) | v3 mixed the two. Customers only ever see their workspace's runs. |
 | 7 | Git SHA "associated with every run" | The SHA comes from the **worker label** of the worker that ran the task | Cron runs are started by Hatchet, so Mako cannot stamp them at trigger time. |
-| 8 | 800–1,500 LOC | **About 3,800 LOC** with tests (§12) | The UI alone is roughly 1,400. Build, worker box, tenancy and the SDK are the rest. |
+| 8 | 800–1,500 LOC | **About 3,000 LOC** with tests (§12) | The UI is about 850. Build, worker box, tenancy and the SDK are the rest. |
 | 9 | "Open raw execution in Hatchet" | Staff and self-hosters only | Customers have no Hatchet login and should not get one. |
-| 10 | Not addressed | **Coding agents** get three MCP tools and a skill | The definition of done says an agent can add a workflow. It also has to see the run. |
-| 11 | Not addressed | **Flows is renamed Sync** in the UI, with a new icon | "Flows" next to "Workflows" in the rail reads as the same thing twice. Sync says what it does: move data from a source to a destination. |
+| 10 | A Processes page, a Runs explorer and a rich run page | **Three surfaces only**: runs list, run page, Run button (§10) | Hatchet's own dashboard proves this is enough to operate workflows. Anything more waits for real use. |
+| 11 | Not addressed | **Coding agents** get three MCP tools and a skill | The definition of done says an agent can add a workflow. It also has to see the run. |
+| 12 | Not addressed | **Flows is renamed Sync** in the UI, with a new icon | "Flows" next to "Workflows" in the rail reads as the same thing twice. Sync says what it does: move data from a source to a destination. |
 
 ## 3. Decisions
 
@@ -74,9 +62,10 @@ yes from Jonas before the spike starts.
 | Deploy | Push to `main`, then Mako builds, typechecks and rolls the worker. A failed build leaves the previous worker running. |
 | Version | Git commit SHA. No Mako version table. |
 | Execution state | Hatchet only. Mako stores **deployments** (which SHA is live), never runs. |
-| Tenancy | One Hatchet tenant per workspace for Live (`ws_<id>_prod`) and one for branch tests (`ws_<id>_dev`). See §1.1 and §8. |
+| Tenancy | One Hatchet tenant per workspace (`ws_<id>`). |
+| Branch tests | **Not in V1.** Only `main` runs. Developers test locally with Hatchet Lite until real use shows a hosted branch test is needed. |
 | Data and AI access | Through the Mako API via `@makoai/workflows`, with a short-lived scoped token. Read by default; writes only to connections the workspace allows. **confirm** |
-| UI | A new "Workflows" rail section, built like Transforms (dbt): explorer tree, workflow tab, run tab, all-runs tab. Icon: lucide `Workflow`. |
+| UI | A "Workflows" rail section with three surfaces: runs list, run page, Run button. Modeled on Hatchet's dashboard. Icon: lucide `Workflow`. |
 | Flows | Renamed **Sync** in the UI (rail, tabs, breadcrumbs, command palette, docs). Icon changes from `ArrowLeftRight` to lucide `RefreshCcwDot`. The repo folder `flows/`, the API routes and the Mongo collections keep their names. Ships before Workflows. |
 
 ## 4. The workflow file
@@ -186,11 +175,7 @@ Mako adds exactly one collection, and it holds deployments, not runs.
 ## 6. Lifecycle
 
 ```
-edit workflows/*.ts  (IDE, terminal or agent; on a session branch)
-        │
-        ├─ branch test: `mako workflows dev` in the session box
-        │             → worker on ws_<id>_dev, namespace = session id
-        │             → "Run on branch" from the workflow tab
+edit workflows/*.ts  (IDE, terminal or agent)
         ▼
 merge to main
         ▼
@@ -202,7 +187,7 @@ build in the workflow box at that SHA
         ▼
   failed? → deployment = failed, old worker keeps running, UI shows the error
         ▼
-start new worker (label git_sha=<sha>) on ws_<id>_prod
+start new worker (label git_sha=<sha>) on tenant ws_<id>
         ▼
 registered → deployment = live → drain the previous worker
         ▼
@@ -210,8 +195,8 @@ Mako shows the new SHA on every workflow
 ```
 
 The manifest is produced by importing the registry, not by parsing source.
-For each workflow it records name, file, cron, tasks with parents, retries
-and timeouts. That is enough to draw the DAG before a run exists.
+For each workflow it records name, file, cron and task names. That is
+enough to list workflows that have never run.
 
 ## 7. Versions and deploys
 
@@ -229,37 +214,19 @@ pin a run's remaining tasks to the worker that started it (worker affinity
 on `git_sha`) is spike question S3. If it cannot, mixed runs are allowed and
 shown, and this section records that.
 
-## 8. Live, branch tests and Mako's own environments
+## 8. Environments
 
-v3 merged two unrelated things. They are separate here.
+v3 merged two unrelated things.
 
-**Mako's own environments.** This is about how Mako itself is hosted, and
-customers never see it. Local, staging and production Mako each run their
-own Hatchet with its own Postgres, and their state never mixes. Locally,
-`pnpm dev` starts Hatchet Lite in docker-compose next to the notebook kernel.
+**Mako's own environments.** How Mako itself is hosted; customers never see
+it. Local, staging and production Mako each run their own Hatchet with its
+own Postgres, and their state never mixes. Locally, `pnpm dev` starts
+Hatchet Lite in docker-compose next to the notebook kernel.
 
-**Live and Branch test, per workspace.** This is what customers see (§1.1).
-Inside one Hatchet, each workspace gets two tenants:
-
-| UI name | Tenant | Code from | Runs on | Who can start it | Schedules |
-|---|---|---|---|---|---|
-| Live | `ws_<id>_prod` | `main`, built by Mako on merge | The workspace's workflow box | Cron, UI, API, agents | Fire |
-| Branch test | `ws_<id>_dev` | The branch open in your session, unmerged | Your session box, while it is open | You and your agent, from that session | Never fire |
-
-A typical day:
-
-1. You or your agent edit `workflows/customer-health.workflow.ts` on the
-   branch `jonas/score-v2`.
-2. The session box starts a test worker for that branch
-   (`mako workflows dev`, started automatically when the session opens a
-   `workflows/` file).
-3. In the Run dialog you pick "My branch" and click Run. The run appears
-   under "Branch test" in the explorer with your branch name.
-4. It works, so you merge. Mako builds the new version, and it becomes live.
-
-Test workers set Hatchet's client `namespace` to the session id. Two people
-on the same workspace can then test the same workflow name at once without
-overwriting each other, and nothing on a branch can change what runs live.
+**Per workspace.** One Hatchet tenant, `ws_<id>`, running the code on
+`main`. That is the only thing a customer sees. Testing a change before
+merging is done locally against Hatchet Lite in V1; a hosted way to test a
+branch is listed under §17.
 
 ## 9. Security model
 
@@ -272,25 +239,23 @@ connectors (`rfcs/connectors-as-code.md` §6.4).
 | Query connections through Mako | Hold database credentials | `mako.query` is proxied. The box holds a token, not a password. |
 | Write to allowed connections | Write anywhere else | `writableConnections` is checked server-side per call |
 | Use a token scoped to `workflows:runtime` for this workspace, valid 1 hour and refreshed by the box supervisor | Push to the repo, call MCP tools or reach another workspace | The box never clones (it receives the bundle), so it never gets the `mgt_` git token |
-| See its own workspace's runs | See another tenant's runs | One Hatchet tenant per workspace, Live and branch test apart |
+| See its own workspace's runs | See another tenant's runs | One Hatchet tenant per workspace |
 | Run until its `executionTimeout` | Run forever | Hatchet enforces the timeout. The box has CPU and memory limits. |
 
 ## 10. Product, V1
 
-V1 answers four questions: what workflows exist, what has run, what
-happened in each step, and can I operate it. Screen-by-screen mockups are
-in the companion artifact.
+Strict minimum, modeled on Hatchet's dashboard. Three surfaces, all in one
+"Workflows" rail section. Mockups are in the companion artifact.
 
-| Surface | What it shows | Built from |
-|---|---|---|
-| **Rail + explorer** | "Workflows" rail item. Two groups: **Live** (workflows from `main`, with last-run status and schedule) and **Branch test** (only while your session has unmerged changes). A banner at the top shows the live version, whether its worker is online, and a failed build. "Version history" lists every merge. | `ExplorerShell`, `ResourceTree`, `FlowsExplorer` |
-| **Workflow tab** | Header (name, file, SHA, schedule, next fire), DAG from the manifest, recent runs with a duration chart, Run button. | `DbtJobView` |
-| **Run tab** | The main screen. Status header, waterfall of tasks with every attempt, step panel with Input, Output, Logs, Attempts and Metadata. AI steps render model and tool lines as cards. Cancel, Replay, Replay from step. | `DbtRunHistory` |
-| **All runs tab** | Filterable table across workflows: workflow, status, Live or branch test, trigger, SHA, time range. | `DbtRunsView` |
-| **Trigger dialog** | JSON input editor, prefilled from the last run's input, with a choice between the live version and your branch. | New |
-| **Chat card** | A run the agent started, live, like `DbtRunCard`. | `DbtRunCard` |
+| Surface | What it shows |
+|---|---|
+| **Runs list** | The default view. A table of runs: status, workflow, started, duration. Two filters: workflow and status. The explorer on the left lists workflow names; clicking one filters the table. A one-line footer in the explorer shows the live commit, and turns red when the last build failed. |
+| **Run page** | Header with status, commit, duration, and Cancel or Replay. Below it, the tasks in order, each with status, duration and a bar on a shared timeline. Clicking a task opens three tabs: Input, Output (with the error and attempt count when it failed) and Logs. |
+| **Run button** | On the runs list, filtered to one workflow. Opens a JSON input box and starts a run. |
 
-Not in V1: editing in a form, a visual builder, approvals, a human inbox.
+Not in V1 UI: a per-workflow overview page, DAG drawing, charts, version
+history, branch tests, an AI trace view, a chat run card, form editing, a
+visual builder, approvals, a human inbox.
 
 ### 10.1 Agent and MCP surface
 
@@ -298,7 +263,7 @@ Three tools, all in the **deferred** tier (`DEFERRED_BUILTIN_TOOL_DOMAINS`),
 so the tier-policy test passes:
 
 - `workflow_list` returns the manifest and the live deployment.
-- `workflow_trigger` takes a name, input and `live` or `branch`, and returns a run id.
+- `workflow_trigger` takes a name and input, and returns a run id.
 - `workflow_get_run` returns the run with steps, errors and the tail of each
   task's log.
 
@@ -315,8 +280,7 @@ the workspace's tenant token.
 | Route | Does |
 |---|---|
 | `GET /` | Manifest plus live deployment |
-| `GET /versions` | Version history (one per merge to `main`) with build logs |
-| `GET /runs?workflow&status&target&since&until&cursor` | Proxies Hatchet run list |
+| `GET /runs?workflow&status&cursor` | Proxies Hatchet run list |
 | `GET /runs/:runId` | Run, tasks and attempts, with SHA per task |
 | `GET /runs/:runId/tasks/:taskId/logs` | Proxies task logs |
 | `POST /:name/trigger` | Starts a run. Adds `additionalMetadata` `{ triggeredBy, trigger: "manual" \| "agent" \| "api" }`. |
@@ -340,13 +304,12 @@ api/src/routes/workflows.routes.ts                                  ~200
 api/src/agent-skills/workflows/  +  3 MCP tools                     ~250
 packages/workflows-sdk/          @makoai/workflows                  ~200
 app/src/components/workflows/
-  WorkflowsExplorer.tsx  WorkflowView.tsx  WorkflowRunView.tsx
-  WorkflowRunsView.tsx   RunWaterfall.tsx  StepPanel.tsx
-  TriggerDialog.tsx      WorkflowRunCard.tsx                        ~1,400
-app/src/store/workflowStore.ts, rail, tab kinds, icons              ~200
+  WorkflowsExplorer.tsx  WorkflowRunsView.tsx
+  WorkflowRunView.tsx    TriggerDialog.tsx                          ~700
+app/src/store/workflowStore.ts, rail, tab kinds, icons              ~150
 ```
 
-About **3,800 LOC** with tests. Plus one Mongo model,
+About **3,000 LOC** with tests. Plus one Mongo model,
 `WorkflowDeployment` (`workspaceId`, `sha`, `status`, `buildLog`,
 `manifest`, `workerBoxId`, `startedAt`, `endedAt`).
 
@@ -363,8 +326,7 @@ One week, before M1. Each question has a pass condition.
 | S2 | Does a long-lived worker in an E2B box stay connected across box pause and resume? | 24 h soak, no lost tasks. If not, keep the box running and measure cost per workspace. |
 | S3 | What happens to an in-flight DAG run when a new SHA's worker registers? | Documented behaviour, and whether `desiredWorkerLabels` on `git_sha` pins the rest of the run. |
 | S4 | Can the run list filter by workflow, status and time in one call fast enough for the UI? | p95 < 300 ms for 10k runs in a tenant. |
-| S5 | Does the client `namespace` isolate dev registrations fully? | Two dev workers with the same workflow name, no cross-talk. |
-| S6 | Retention and log size limits | Known numbers, written into the docs page. |
+| S5 | Retention and log size limits | Known numbers, written into the docs page. |
 
 ## 14. Milestones
 
@@ -372,8 +334,8 @@ One week, before M1. Each question has a pass condition.
 |---|---|---|
 | **M0** spike | §13 answers | The plan holds |
 | **M1** runs | Tenants, build, workflow box, `@makoai/workflows` query, sequential example, `GET /runs` | Push to main runs a workflow |
-| **M2** see it | Rail, explorer, workflow tab, run tab, all runs | Every step is inspectable |
-| **M3** operate it | Trigger, cancel, replay, cron example, AI example, MCP tools, skill, chat card, branch tests | An agent can write, run and debug a workflow end to end |
+| **M2** see it | Rail, runs list, run page | Every step is inspectable |
+| **M3** operate it | Run button, cancel, replay, cron example, AI example, MCP tools, skill | An agent can write, run and debug a workflow end to end |
 
 ## 15. First examples
 
@@ -403,22 +365,25 @@ queue, retry engine, execution database or log backend, Temporal or Inngest
 adapters, customer access to the Hatchet dashboard, Python workflows,
 self-hosted customer workers.
 
+Also deferred until real use asks for them: hosted branch tests (running a
+session branch's code before merging), a version history screen, a
+per-workflow overview page with DAG and charts, an AI trace view, a chat
+run card, failure notifications.
+
 ## 18. Definition of done
 
 1. A member or coding agent adds `workflows/<name>.workflow.ts` and lists it
    in `workflows/index.ts`.
 2. It merges to `main`. Mako builds it, and a failed typecheck shows in the
-   explorer banner while the old worker keeps running.
+   explorer footer while the old worker keeps running.
 3. Hatchet runs it on the workspace's worker. Cron workflows fire without
    Mako involvement.
-4. The explorer lists it with its live SHA and schedule.
-5. The all-runs tab lists every run, filterable by workflow, status, Live or branch test, and time.
-6. The run tab shows every task and attempt: status, timing, input, output,
-   logs, retries and error, with the SHA that ran it.
-7. Trigger, cancel and replay work from the UI and from the MCP tools.
-8. The same workflow runs as a branch test on a session branch without
-   touching prod.
-9. Mako's database holds no run state: `workflow_deployments` is the only
+4. The explorer lists it, and the footer shows the live commit.
+5. The runs list shows every run, filterable by workflow and status.
+6. The run page shows every task: status, timing, input, output, logs,
+   attempts and error, with the commit that ran it.
+7. Run, cancel and replay work from the UI and from the MCP tools.
+8. Mako's database holds no run state: `workflow_deployments` is the only
    new collection.
 
 ## 19. Open questions
