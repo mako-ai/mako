@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { flowNameForSave } from "./flow-auto-name";
+import { clampAutoName, flowNameForSave } from "./flow-auto-name";
+import { objectNameError } from "./object-name-rules";
 
 describe("flowNameForSave", () => {
   it("names a new flow automatically", () => {
@@ -54,5 +55,32 @@ describe("flowNameForSave", () => {
         nextAutoName: "Stripe → Warehouse",
       }),
     ).toBeUndefined();
+  });
+
+  it("an auto name is one the server accepts: control characters become spaces, a long one is shortened with an ellipsis", () => {
+    const long = `${"S".repeat(150)} \u2192 ${"D".repeat(150)}`;
+    const name = flowNameForSave({
+      existingName: undefined,
+      previousAutoName: undefined,
+      nextAutoName: long,
+    });
+    expect(name).toHaveLength(200);
+    expect(name?.endsWith("\u2026")).toBe(true);
+    expect(objectNameError("flow", name ?? "")).toBeNull();
+    expect(clampAutoName("Close\tCRM \u2192 BQ")).toBe("Close CRM \u2192 BQ");
+    // A stored name that IS the clamped auto name is still "never set":
+    // a new selection may replace it.
+    expect(
+      flowNameForSave({
+        existingName: name,
+        previousAutoName: long,
+        nextAutoName: "Stripe \u2192 Warehouse",
+      }),
+    ).toBe("Stripe \u2192 Warehouse");
+    // Never cuts an emoji in half.
+    const emoji = clampAutoName("\u{1F600}".repeat(150));
+    expect(emoji.length).toBeLessThanOrEqual(200);
+    expect(objectNameError("flow", emoji)).toBeNull();
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(emoji)).toBe(false);
   });
 });
