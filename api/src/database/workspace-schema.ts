@@ -1018,6 +1018,13 @@ export interface IFlow extends Document {
   webhookConfig?: {
     endpoint: string;
     secret: string;
+    /**
+     * Provider-side id of the subscription that POSTs to `endpoint` (Stripe
+     * `we_…`), stored at provisioning so later entity changes update that
+     * subscription in place instead of creating a duplicate. Authoritative in
+     * `flows/<slug>.yml` (`webhook.provider_webhook_id`); mirrored here.
+     */
+    providerWebhookId?: string;
     lastReceivedAt?: Date;
     totalReceived: number;
     enabled: boolean;
@@ -2463,6 +2470,9 @@ const FlowSchema = new Schema<IFlow>(
         sparse: true,
       },
       secret: {
+        type: String,
+      },
+      providerWebhookId: {
         type: String,
       },
       lastReceivedAt: Date,

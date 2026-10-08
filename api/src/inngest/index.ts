@@ -49,6 +49,7 @@ import {
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
 import { consoleDescriptionFunction } from "./functions/console-description";
+import { flowWebhookResubscribeFunction } from "./functions/flow-webhook-subscription";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -72,6 +73,7 @@ const baseFunctions = [
   dbtRunCancelFunction,
   dbtRunSweeperFunction,
   consoleDescriptionFunction,
+  flowWebhookResubscribeFunction,
 ];
 
 const allWebhookFunctions = [
