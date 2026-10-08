@@ -16,18 +16,15 @@
 #   - secret HATCHET_ADMIN_PASSWORD (generated once; the Mako API logs in with it)
 #   - Helm release `hatchet` (hatchet/hatchet-stack 0.19.0) in namespace `hatchet`
 #   - namespace `mako-workflows` + quota + egress lockdown for workflow workers
-#   - firewall: Cloud Run subnet → Hatchet API pods on :8080 (VPC path, as kernels)
+#   - Service `hatchet-api-internal`: an internal load balancer the Mako API calls
 #
 # Prereqs: gcloud (authenticated), kubectl, helm, psql.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ID="${PROJECT_ID:?set PROJECT_ID (mako-ai-dev or mako-ai-prod)}"
-REGION="${REGION:-europe-west1}"
 CLUSTER="${CLUSTER:-mako-notebooks}"
 CLUSTER_LOCATION="${CLUSTER_LOCATION:-europe-west1-b}"
-NETWORK="${NETWORK:-mako-vpc}"
-CLOUD_RUN_SUBNET="${CLOUD_RUN_SUBNET:-mako-subnet}"
 CHART_VERSION="0.19.0"
 
 echo "→ Project=${PROJECT_ID} Cluster=${CLUSTER} (${CLUSTER_LOCATION})"
@@ -94,33 +91,31 @@ echo "→ Applying mako-workflows namespace + network policy"
 kubectl apply -f "${SCRIPT_DIR}/k8s/namespace.yaml"
 kubectl apply -f "${SCRIPT_DIR}/k8s/network-policy.yaml"
 
-# --- 4. Firewall: Cloud Run → Hatchet API pods ----------------------------------
-FW_NAME="mako-workflows-cr-to-hatchet"
-if gcloud compute firewall-rules describe "${FW_NAME}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-  echo "✓ Firewall ${FW_NAME} exists"
-else
-  CR_RANGE="$(gcloud compute networks subnets describe "${CLOUD_RUN_SUBNET}" \
-    --region="${REGION}" --project "${PROJECT_ID}" --format='value(ipCidrRange)')"
-  NODE_TAG="$(gcloud compute firewall-rules list --project "${PROJECT_ID}" \
-    --filter="network=${NETWORK} AND name~^gke-${CLUSTER}-" \
-    --format='value(targetTags[0])' | head -1)"
-  echo "→ Creating firewall ${FW_NAME} (${CR_RANGE} → ${NODE_TAG}:8080)"
-  gcloud compute firewall-rules create "${FW_NAME}" --project "${PROJECT_ID}" \
-    --network="${NETWORK}" --direction=INGRESS --action=ALLOW \
-    --rules=tcp:8080 --source-ranges="${CR_RANGE}" --target-tags="${NODE_TAG}"
-fi
+# --- 4. In-VPC address for the Hatchet API ---------------------------------------
+kubectl apply -f "${SCRIPT_DIR}/k8s/hatchet-api-internal.yaml"
+echo "→ Waiting for the internal load balancer address"
+HATCHET_IP=""
+for _ in $(seq 1 60); do
+  HATCHET_IP="$(kubectl -n hatchet get svc hatchet-api-internal \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+  [[ -n "${HATCHET_IP}" ]] && break
+  sleep 5
+done
+[[ -n "${HATCHET_IP}" ]] || { echo "✗ No address for hatchet-api-internal after 5 minutes." >&2; exit 1; }
 
 cat <<EOF
 
 ✅ Mako Workflows provisioned in ${PROJECT_ID}.
-   Hatchet   : namespace hatchet (api :8080, engine :7070), DB from HATCHET_DATABASE_URL
+   Hatchet   : namespace hatchet, DB from HATCHET_DATABASE_URL
    Workers   : namespace mako-workflows (gVisor, egress locked)
    Dashboard : kubectl -n hatchet port-forward svc/caddy 8080:8080
                login workflows-admin@mako.ai / secret HATCHET_ADMIN_PASSWORD
 
 The Mako API needs (Cloud Run):
-   HATCHET_ADMIN_PASSWORD    --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest
-   WORKFLOWS_RUNTIME_IMAGE   the workflows-runtime image in this project's registry
-   WORKFLOWS_NAME_PREFIX     previews only: pr-<n>-
+   HATCHET_API_URL              http://${HATCHET_IP}:8080
+   HATCHET_ADMIN_PASSWORD       --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest
+   HATCHET_CLIENT_TLS_STRATEGY  none   (this Hatchet's gRPC port has no TLS)
+   WORKFLOWS_RUNTIME_IMAGE      the workflows-runtime image in this project's registry
+   WORKFLOWS_NAME_PREFIX        previews only: pr-<n>-
 The cluster endpoint/CA are the existing KERNEL_GKE_* values.
 EOF

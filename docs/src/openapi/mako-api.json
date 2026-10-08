@@ -31345,7 +31345,7 @@
         "tags": [
           "Workflows"
         ],
-        "summary": "Whether workflows are on, and what is deployed (from Kubernetes)",
+        "summary": "Whether workflows are on, and which commit the worker runs",
         "security": [
           {
             "cookieAuth": []
@@ -33961,6 +33961,10 @@
                 "properties": {
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "hatchetToken": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [

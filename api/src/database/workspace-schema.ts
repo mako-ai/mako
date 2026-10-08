@@ -149,9 +149,9 @@ export interface IWorkspace extends Document {
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
   appsRepo?: IWorkspaceRepoBinding;
   /**
-   * Workflows as code (rfcs/workflows-as-code.md). Mako stores only how to
-   * reach this workspace's Hatchet tenant: workflows and schedules live in
-   * git, the live commit in Kubernetes, runs and logs in Hatchet.
+   * Workflows as code (rfcs/workflows-as-code.md). Mako stores how to reach
+   * the workspace's Hatchet tenant and which commit its worker runs.
+   * Workflows and schedules live in git; runs and logs live in Hatchet.
    */
   workflows?: IWorkspaceWorkflows;
 }
@@ -159,11 +159,19 @@ export interface IWorkspace extends Document {
 export interface IWorkspaceWorkflows {
   /** Staff-set feature flag. Nothing deploys while this is not true. */
   enabled: boolean;
-  hatchetTenantId?: string;
-  /** Tenant API token, encrypted like connection secrets. */
+  /**
+   * The workspace's Hatchet API token, encrypted like connection secrets.
+   * Absent when the installation shares one token (HATCHET_CLIENT_TOKEN).
+   */
   hatchetToken?: string;
-  /** The worker pod's key in `apiKeys` (scope `workflows:runtime`). */
+  /** The worker's key in `apiKeys` (scope `workflows:runtime`). */
   workerApiKeyId?: Types.ObjectId;
+  /** The commit the worker should run: where `workflows/` last changed on main. */
+  target?: { sha: string; tree: string };
+  /** The commit the worker reports it is running. */
+  live?: { sha: string };
+  /** The last commit the worker could not start, with its build output. */
+  failed?: { sha: string; error: string };
 }
 
 export interface IWorkspaceRepoBinding {
@@ -1396,9 +1404,11 @@ const WorkspaceSchema = new Schema<IWorkspace>(
     workflows: {
       type: {
         enabled: { type: Boolean, default: false },
-        hatchetTenantId: { type: String },
         hatchetToken: { type: String },
         workerApiKeyId: { type: Schema.Types.ObjectId },
+        target: { type: { sha: String, tree: String }, _id: false },
+        live: { type: { sha: String }, _id: false },
+        failed: { type: { sha: String, error: String }, _id: false },
       },
       default: undefined,
       _id: false,

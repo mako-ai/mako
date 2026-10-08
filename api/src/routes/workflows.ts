@@ -1,16 +1,16 @@
 /**
  * Workflows — `/api/workspaces/:workspaceId/workflows` for people, and
- * `/api/workflows/runtime` for a workspace's worker pod
+ * `/api/workflows/runtime` for a workspace's worker
  * (rfcs/workflows-as-code.md).
  *
- * Mako keeps no copy of workflow state. Each handler reads the owner of the
- * fact it returns: Kubernetes for what is deployed, Hatchet for workflows,
- * runs and logs. Hatchet responses are returned in Hatchet's own shape.
+ * Mako keeps no copy of workflows, runs or logs: those handlers read Hatchet
+ * and return Hatchet's own response shapes. What Mako does keep is the deploy
+ * state on the workspace: the commit the worker should run, the commit it
+ * reports running, and the last build error.
  *
  * The runtime routes accept only a workspace API key carrying the
- * `workflows:runtime` scope, which Mako mints for the worker pod and a person
- * cannot put on a key. The key decides the workspace; no id is taken from the
- * request.
+ * `workflows:runtime` scope, which a person cannot put on a key. The key
+ * decides the workspace; no id is taken from the request.
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
@@ -32,7 +32,7 @@ import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { workspaceService } from "../services/workspace.service";
 import {
   HatchetError,
-  isHatchetConfigured,
+  hasInstanceHatchet,
   isHatchetId,
   readWorkspaceTenant,
   runAction,
@@ -41,11 +41,6 @@ import {
   triggerRun,
   type WorkspaceTenant,
 } from "../workflows/hatchet";
-import {
-  isWorkflowsKubeConfigured,
-  readWorkerStatus,
-  type WorkerStatus,
-} from "../workflows/kube";
 import { WORKFLOWS_DIR } from "../workflows/on-push";
 
 const logger = loggers.api("workflows");
@@ -107,19 +102,12 @@ async function tenantOr(
   c: Context,
   workspaceId: string,
 ): Promise<WorkspaceTenant | Response> {
-  if (!isHatchetConfigured()) {
-    return c.json(
-      { success: false, error: "Workflows are not configured on this server" },
-      503,
-    );
-  }
   const tenant = await readWorkspaceTenant(workspaceId);
   if (!tenant) {
     return c.json(
       {
         success: false,
-        error:
-          "This workspace has no workflows yet. Merge a workflows/ folder to main.",
+        error: "Workflows are not set up for this workspace.",
       },
       404,
     );
@@ -136,19 +124,12 @@ async function mayRun(c: AuthenticatedContext): Promise<boolean> {
   );
 }
 
-const NOT_DEPLOYED: WorkerStatus = {
-  liveSha: null,
-  targetSha: null,
-  deploying: false,
-  buildError: null,
-};
-
 workflowRoutes.openapi(
   createRoute({
     method: "get",
     path: "/",
     tags: ["Workflows"],
-    summary: "Whether workflows are on, and what is deployed (from Kubernetes)",
+    summary: "Whether workflows are on, and which commit the worker runs",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParam },
     responses: OPEN_RESPONSES,
@@ -157,14 +138,32 @@ workflowRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
       const workspace = await Workspace.findById(workspaceId)
-        .select("workflows.enabled")
+        .select("workflows")
         .lean();
-      const enabled = workspace?.workflows?.enabled === true;
-      const deployment =
-        enabled && isWorkflowsKubeConfigured()
-          ? await readWorkerStatus(workspaceId)
-          : NOT_DEPLOYED;
-      return c.json({ success: true as const, enabled, deployment }, 200);
+      const state = workspace?.workflows;
+      const targetSha = state?.target?.sha ?? null;
+      const liveSha = state?.live?.sha ?? null;
+      const buildError =
+        targetSha && state?.failed?.sha === targetSha
+          ? state.failed.error
+          : null;
+      return c.json(
+        {
+          success: true as const,
+          enabled: state?.enabled === true,
+          // False when no Hatchet token exists for this workspace and the
+          // installation has none to share: the UI hides Workflows.
+          configured: Boolean(state?.hatchetToken) || hasInstanceHatchet(),
+          deployment: {
+            liveSha,
+            targetSha,
+            deploying: targetSha !== liveSha && !buildError,
+            buildError,
+          },
+          dashboardUrl: process.env.HATCHET_DASHBOARD_URL ?? null,
+        },
+        200,
+      );
     } catch (error) {
       return fail(c, error);
     }
@@ -284,6 +283,8 @@ const GATEWAY_BASE_URL = (
   process.env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1/ai"
 ).replace(/\/+$/, "");
 
+const MAX_BUILD_ERROR_CHARS = 8000;
+
 /** The workspace a worker key belongs to, or null when the key is not one. */
 async function workerWorkspaceId(c: Context): Promise<string | null> {
   const header = c.req.header("Authorization");
@@ -299,8 +300,59 @@ async function workerWorkspaceId(c: Context): Promise<string | null> {
   return workspace._id.toString();
 }
 
-// `workflows/` at a commit, as a gzipped tarball. The pod asks for the commit
-// its Deployment names; the key limits it to its own workspace's repository.
+// What the worker should run. It polls this: the commit to switch to, and the
+// Hatchet token to connect with, so the worker holds one credential only.
+workflowRuntimeRoutes.get("/head", async c => {
+  const workspaceId = await workerWorkspaceId(c);
+  if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
+  try {
+    const [workspace, tenant] = await Promise.all([
+      Workspace.findById(workspaceId).select("workflows.target").lean(),
+      readWorkspaceTenant(workspaceId),
+    ]);
+    return c.json({
+      sha: workspace?.workflows?.target?.sha ?? null,
+      tree: workspace?.workflows?.target?.tree ?? null,
+      hatchetToken: tenant?.token ?? null,
+    });
+  } catch (error) {
+    return fail(c, error);
+  }
+});
+
+// The worker reports each switch: the commit it now runs, or the commit it
+// could not start and why. This is what the UI shows as live and build error.
+workflowRuntimeRoutes.post("/status", async c => {
+  const workspaceId = await workerWorkspaceId(c);
+  if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
+  const body = (await c.req.json().catch(() => null)) as {
+    sha?: unknown;
+    error?: unknown;
+  } | null;
+  if (typeof body?.sha !== "string" || !isOid(body.sha)) {
+    return c.json({ error: "Invalid commit" }, 400);
+  }
+  await Workspace.updateOne(
+    { _id: new Types.ObjectId(workspaceId) },
+    typeof body.error === "string"
+      ? {
+          $set: {
+            "workflows.failed": {
+              sha: body.sha,
+              error: body.error.slice(-MAX_BUILD_ERROR_CHARS),
+            },
+          },
+        }
+      : {
+          $set: { "workflows.live": { sha: body.sha } },
+          $unset: { "workflows.failed": "" },
+        },
+  );
+  return c.json({ ok: true });
+});
+
+// `workflows/` at a commit, as a gzipped tarball. The key limits the worker to
+// its own workspace's repository.
 workflowRuntimeRoutes.get("/source/:sha", async c => {
   try {
     const workspaceId = await workerWorkspaceId(c);

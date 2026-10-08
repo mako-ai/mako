@@ -5,9 +5,10 @@
 # drives this sidecar's Jupyter Kernel Gateway. In deployed environments the
 # GKE KernelProvider is used instead — this is dev-only.
 #
-# Also runs Hatchet Lite (+ its Postgres) for workspace workflows
-# (rfcs/workflows-as-code.md). Dashboard and REST API: http://localhost:8085
-# (admin@example.com / Admin123!!), gRPC: localhost:7077.
+# Workspace workflows (rfcs/workflows-as-code.md) are optional and off by
+# default. `docker compose --profile workflows up -d` adds Hatchet Lite, its
+# Postgres and the workflow worker, for local testing only. Hatchet dashboard
+# and REST API: http://localhost:8085 (admin@example.com / Admin123!!).
 #
 # The dev database is hosted MongoDB Atlas (via DATABASE_URL), so it is not a
 # compose service.
@@ -34,6 +35,7 @@ services:
     restart: unless-stopped
 
   hatchet-postgres:
+    profiles: ["workflows"]
     image: postgres:16-alpine
     container_name: mako-hatchet-postgres
     environment:
@@ -45,6 +47,7 @@ services:
     restart: unless-stopped
 
   hatchet:
+    profiles: ["workflows"]
     image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.107.0
     container_name: mako-hatchet
     depends_on:
@@ -64,6 +67,29 @@ services:
       SERVER_GRPC_BROADCAST_ADDRESS: localhost:7077
       SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: localhost:7077
       SERVER_DEFAULT_ENGINE_VERSION: V1
+    restart: unless-stopped
+
+  # The workflow worker: follows the commit Mako names for the workspace that
+  # holds WORKFLOWS_WORKER_KEY, and runs its workflows/. No sandbox: this is
+  # for an operator's own code.
+  workflows-worker:
+    profiles: ["workflows"]
+    build:
+      context: .
+      dockerfile: deploy/workflows/runtime/Dockerfile
+    image: mako-workflows-runtime:local
+    container_name: mako-workflows-worker
+    depends_on:
+      - hatchet
+    environment:
+      MAKO_URL: http://host.docker.internal:8080
+      # Same value as WORKFLOWS_WORKER_KEY in the API's .env.
+      MAKO_API_KEY: ${WORKFLOWS_WORKER_KEY:-}
+      # Hatchet Lite advertises localhost:7077, which is this container here.
+      HATCHET_CLIENT_HOST_PORT: hatchet:7077
+      HATCHET_CLIENT_TLS_STRATEGY: none
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:

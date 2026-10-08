@@ -1,58 +1,49 @@
 /**
  * Hatchet access for workspace workflows (rfcs/workflows-as-code.md).
  *
- * One Hatchet tenant per workspace. Mako stores the tenant id and an encrypted
- * tenant token on `Workspace.workflows`, and nothing else: registered
- * workflows, crons, runs, tasks and logs are read from Hatchet on demand, in
- * Hatchet's own response shapes.
+ * A workspace's connection to Hatchet is one API token. The token is a JWT
+ * that names its tenant and the Hatchet API's address, so nothing else is
+ * configured or stored. It works the same against Hatchet Cloud, a
+ * self-hosted Hatchet and the Hatchet Lite in docker-compose, and Hatchet
+ * itself keeps one tenant's token from reading another tenant.
  *
- * Two credentials, two jobs:
- *   - the admin login (HATCHET_ADMIN_PASSWORD) creates a tenant and its token,
- *     once per workspace
- *   - the tenant token makes every other call, so Hatchet itself keeps one
- *     workspace from reading another's runs
+ * Where the token comes from, first match wins:
+ *   1. the workspace's own token (`Workspace.workflows.hatchetToken`)
+ *   2. HATCHET_CLIENT_TOKEN, one tenant for the whole installation
+ *   3. created by Mako, when HATCHET_ADMIN_PASSWORD is set: Mako logs in to
+ *      a Hatchet it operates, creates a tenant for the workspace and saves
+ *      its token (Mako's own cloud, and the local docker-compose setup)
  *
- * Reaching Hatchet: HATCHET_API_URL when set (local Hatchet Lite), otherwise
- * the `hatchet-api` pod's IP on the notebook-kernels cluster over the VPC —
- * the same path the API uses for kernel gateways.
+ * Mako stores no workflow state: registered workflows, crons, runs, tasks and
+ * logs are read from Hatchet on demand, in Hatchet's own response shapes.
  */
 import { Types } from "mongoose";
 
 import { Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { decryptString, encryptString } from "../services/crypto.service";
-import {
-  gkeClients,
-  isGkeProviderConfigured,
-} from "../services/kernel-provider/gke-kernel-provider";
 
 const logger = loggers.api("workflows-hatchet");
 
-const HATCHET_NAMESPACE = "hatchet";
-const HATCHET_API_POD_LABEL =
-  "app.kubernetes.io/instance=hatchet,app.kubernetes.io/name=api";
-const HATCHET_API_PORT = "8080";
 const ADMIN_EMAIL =
   process.env.HATCHET_ADMIN_EMAIL || "workflows-admin@mako.ai";
-// Tenant tokens are long-lived: the worker Secret holds the same token, and
-// rotating it means rewriting that Secret.
+// Tokens Mako creates are long-lived: rotating one means re-saving it.
 const TOKEN_TTL = "87600h";
 const REQUEST_TIMEOUT_MS = 20_000;
-const POD_IP_TTL_MS = 60_000;
 
 /**
- * Prefix for tenant slugs and worker names. PR previews share one Hatchet and
- * one cluster, so each sets `pr-<n>-` to stay out of the others' way.
+ * Prefix for the tenants Mako creates and for worker names. PR previews share
+ * one Hatchet and one cluster, so each sets `pr-<n>-`.
  */
 export function workflowsNamePrefix(): string {
   return process.env.WORKFLOWS_NAME_PREFIX || "";
 }
 
-/** True when this API instance can create tenants and read Hatchet. */
-export function isHatchetConfigured(): boolean {
-  return (
-    Boolean(process.env.HATCHET_ADMIN_PASSWORD) &&
-    (Boolean(process.env.HATCHET_API_URL) || isGkeProviderConfigured())
+/** True when a workspace without its own token can still get one. */
+export function hasInstanceHatchet(): boolean {
+  return Boolean(
+    process.env.HATCHET_CLIENT_TOKEN ||
+      (process.env.HATCHET_ADMIN_PASSWORD && process.env.HATCHET_API_URL),
   );
 }
 
@@ -66,29 +57,35 @@ export class HatchetError extends Error {
   }
 }
 
-let cachedPodUrl: { url: string; at: number } | null = null;
+export interface WorkspaceTenant {
+  tenantId: string;
+  token: string;
+  /** Base URL of the Hatchet REST API. */
+  apiUrl: string;
+}
 
-async function baseUrl(): Promise<string> {
-  const fixed = process.env.HATCHET_API_URL;
-  if (fixed) return fixed.replace(/\/+$/, "");
-  if (cachedPodUrl && Date.now() - cachedPodUrl.at < POD_IP_TTL_MS) {
-    return cachedPodUrl.url;
+/**
+ * Read a Hatchet token's tenant and API address. HATCHET_API_URL overrides
+ * the address in the token, for a Hatchet whose advertised URL the Mako API
+ * cannot resolve (an in-cluster name, or `localhost` seen from a container).
+ */
+export function tenantFromToken(token: string): WorkspaceTenant {
+  let claims: { sub?: string; server_url?: string };
+  try {
+    claims = JSON.parse(
+      Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"),
+    );
+  } catch {
+    throw new HatchetError("The Hatchet token is not a valid token", 400);
   }
-  const { core } = await gkeClients();
-  const list = await core.listNamespacedPod({
-    namespace: HATCHET_NAMESPACE,
-    labelSelector: HATCHET_API_POD_LABEL,
-  });
-  const pod = (list.items ?? []).find(
-    p =>
-      !p.metadata?.deletionTimestamp &&
-      p.status?.podIP &&
-      p.status.conditions?.some(c => c.type === "Ready" && c.status === "True"),
-  );
-  const podIp = pod?.status?.podIP;
-  if (!podIp) throw new HatchetError("No ready Hatchet API pod", 503);
-  cachedPodUrl = { url: `http://${podIp}:${HATCHET_API_PORT}`, at: Date.now() };
-  return cachedPodUrl.url;
+  const apiUrl = process.env.HATCHET_API_URL || claims.server_url;
+  if (!claims.sub || !apiUrl) {
+    throw new HatchetError(
+      "The Hatchet token names no tenant or API address",
+      400,
+    );
+  }
+  return { tenantId: claims.sub, token, apiUrl: apiUrl.replace(/\/+$/, "") };
 }
 
 export interface HatchetRequest {
@@ -98,14 +95,13 @@ export interface HatchetRequest {
 }
 
 async function send(
-  path: string,
+  url: string,
   headers: Record<string, string>,
   req: HatchetRequest,
 ): Promise<Response> {
   const query = req.query?.toString();
-  const url = `${await baseUrl()}${path}${query ? `?${query}` : ""}`;
   try {
-    return await fetch(url, {
+    return await fetch(`${url}${query ? `?${query}` : ""}`, {
       method: req.method ?? "GET",
       headers: {
         ...headers,
@@ -117,8 +113,6 @@ async function send(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
-    // A cached pod IP goes stale when Hatchet restarts; resolve again next time.
-    cachedPodUrl = null;
     throw new HatchetError(
       `Hatchet is unreachable: ${error instanceof Error ? error.message : String(error)}`,
       502,
@@ -137,11 +131,54 @@ async function parse<T>(res: Response, what: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-// --- Admin: tenant and token creation --------------------------------------
+// --- The workspace's token ---------------------------------------------------
 
-async function adminCookie(): Promise<string> {
-  const res = await send(
-    "/api/v1/users/login",
+/** The workspace's tenant, or null when it has no token and none is shared. */
+export async function readWorkspaceTenant(
+  workspaceId: string,
+): Promise<WorkspaceTenant | null> {
+  const workspace = await Workspace.findById(workspaceId)
+    .select("workflows.hatchetToken")
+    .lean();
+  const stored = workspace?.workflows?.hatchetToken;
+  const token = stored
+    ? decryptString(stored)
+    : process.env.HATCHET_CLIENT_TOKEN;
+  return token ? tenantFromToken(token) : null;
+}
+
+/** Save a token someone pasted for this workspace. Throws if it is not one. */
+export async function saveWorkspaceToken(
+  workspaceId: string,
+  token: string,
+): Promise<void> {
+  tenantFromToken(token);
+  await Workspace.updateOne(
+    { _id: new Types.ObjectId(workspaceId) },
+    { $set: { "workflows.hatchetToken": encryptString(token) } },
+  );
+}
+
+/**
+ * The workspace's tenant, created now if Mako operates the Hatchet and the
+ * workspace has none yet. The one caller, the deploy, already runs once per
+ * workspace at a time.
+ */
+export async function ensureWorkspaceTenant(
+  workspaceId: string,
+): Promise<WorkspaceTenant> {
+  const existing = await readWorkspaceTenant(workspaceId);
+  if (existing) return existing;
+  const adminUrl = process.env.HATCHET_API_URL?.replace(/\/+$/, "");
+  if (!process.env.HATCHET_ADMIN_PASSWORD || !adminUrl) {
+    throw new HatchetError(
+      "This workspace has no Hatchet token. Set HATCHET_CLIENT_TOKEN or save a token for the workspace.",
+      400,
+    );
+  }
+
+  const login = await send(
+    `${adminUrl}/api/v1/users/login`,
     {},
     {
       method: "POST",
@@ -151,98 +188,52 @@ async function adminCookie(): Promise<string> {
       },
     },
   );
-  if (!res.ok) {
-    throw new HatchetError(`Hatchet admin login failed (${res.status})`, 502);
-  }
-  const cookie = res.headers
+  const cookie = login.headers
     .getSetCookie()
     .map(c => c.split(";")[0])
     .join("; ");
-  if (!cookie) throw new HatchetError("Hatchet login set no cookie", 502);
-  return cookie;
-}
-
-interface TenantMembership {
-  tenant?: { slug?: string; metadata?: { id?: string } };
-}
-
-/** The tenant for this slug: created now, or found if an earlier call made it. */
-async function ensureTenant(cookie: string, slug: string): Promise<string> {
-  const created = await send(
-    "/api/v1/tenants",
-    { Cookie: cookie },
-    { method: "POST", body: { name: slug, slug } },
-  );
-  if (created.ok) {
-    const tenant = (await created.json()) as { metadata?: { id?: string } };
-    if (tenant.metadata?.id) return tenant.metadata.id;
+  if (!login.ok || !cookie) {
+    throw new HatchetError(`Hatchet admin login failed (${login.status})`, 502);
   }
-  const memberships = await parse<{ rows?: TenantMembership[] }>(
-    await send("/api/v1/users/memberships", { Cookie: cookie }, {}),
-    "List Hatchet tenants",
-  );
-  const existing = memberships.rows?.find(m => m.tenant?.slug === slug);
-  const id = existing?.tenant?.metadata?.id;
-  if (!id) {
+  const admin = { Cookie: cookie };
+
+  // Create the tenant, or find it if an earlier attempt created it and then
+  // failed before saving the token: the slug is taken either way.
+  const slug = `${workflowsNamePrefix()}${workspaceId}`;
+  const created = await send(`${adminUrl}/api/v1/tenants`, admin, {
+    method: "POST",
+    body: { name: slug, slug },
+  });
+  let tenantId = created.ok
+    ? ((await created.json()) as { metadata?: { id?: string } }).metadata?.id
+    : undefined;
+  if (!tenantId) {
+    const memberships = await parse<{
+      rows?: Array<{ tenant?: { slug?: string; metadata?: { id?: string } } }>;
+    }>(
+      await send(`${adminUrl}/api/v1/users/memberships`, admin, {}),
+      "List Hatchet tenants",
+    );
+    tenantId = memberships.rows?.find(m => m.tenant?.slug === slug)?.tenant
+      ?.metadata?.id;
+  }
+  if (!tenantId) {
     throw new HatchetError(
       `Could not create Hatchet tenant ${slug} (${created.status})`,
       502,
     );
   }
-  return id;
-}
 
-export interface WorkspaceTenant {
-  tenantId: string;
-  token: string;
-}
-
-/**
- * The workspace's tenant and token, created on first use and saved on the
- * workspace. The one caller, the deploy, already runs once per workspace at a
- * time.
- */
-export async function ensureWorkspaceTenant(
-  workspaceId: string,
-): Promise<WorkspaceTenant> {
-  const existing = await readWorkspaceTenant(workspaceId);
-  if (existing) return existing;
-
-  const slug = `${workflowsNamePrefix()}${workspaceId}`;
-  const cookie = await adminCookie();
-  const tenantId = await ensureTenant(cookie, slug);
   const { token } = await parse<{ token: string }>(
-    await send(
-      `/api/v1/tenants/${tenantId}/api-tokens`,
-      { Cookie: cookie },
-      { method: "POST", body: { name: "mako", expiresIn: TOKEN_TTL } },
-    ),
+    await send(`${adminUrl}/api/v1/tenants/${tenantId}/api-tokens`, admin, {
+      method: "POST",
+      body: { name: "mako", expiresIn: TOKEN_TTL },
+    }),
     "Create Hatchet token",
   );
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(workspaceId) },
-    {
-      $set: {
-        "workflows.hatchetTenantId": tenantId,
-        "workflows.hatchetToken": encryptString(token),
-      },
-    },
-  );
+  await saveWorkspaceToken(workspaceId, token);
   logger.info("Created Hatchet tenant", { workspaceId, tenantId });
-  return { tenantId, token };
-}
-
-/** The saved tenant and token, or null when the workspace has none yet. */
-export async function readWorkspaceTenant(
-  workspaceId: string,
-): Promise<WorkspaceTenant | null> {
-  const workspace = await Workspace.findById(workspaceId)
-    .select("workflows")
-    .lean();
-  const tenantId = workspace?.workflows?.hatchetTenantId;
-  const encrypted = workspace?.workflows?.hatchetToken;
-  if (!tenantId || !encrypted) return null;
-  return { tenantId, token: decryptString(encrypted) };
+  return tenantFromToken(token);
 }
 
 // --- Tenant calls -----------------------------------------------------------
@@ -253,7 +244,11 @@ export function tenantFetch(
   path: string,
   req: HatchetRequest = {},
 ): Promise<Response> {
-  return send(path, { Authorization: `Bearer ${tenant.token}` }, req);
+  return send(
+    `${tenant.apiUrl}${path}`,
+    { Authorization: `Bearer ${tenant.token}` },
+    req,
+  );
 }
 
 export async function tenantJson<T>(

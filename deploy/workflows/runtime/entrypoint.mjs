@@ -1,40 +1,66 @@
-// Workflow worker entrypoint. One process per workspace pod:
+// Workflow worker entrypoint. One container serves one workspace and follows
+// the commit Mako names for it:
 //
-//   1. fetch workflows/ at GIT_SHA from the Mako API (or use a local dir in dev)
-//   2. typecheck it; on failure print the errors and exit 1 — the pod never
-//      becomes ready, so Kubernetes keeps the previous pod and Mako shows these
-//      log lines as the build error
-//   3. start a Hatchet worker with label git_sha=<sha>, then mark ready
-//   4. on SIGTERM, stop taking tasks, finish running ones, exit
+//   1. ask Mako what to run:   GET /api/workflows/runtime/head
+//   2. when the commit changes, fetch `workflows/` at it and typecheck it
+//   3. start a worker for the new commit; once it is up, tell the old worker
+//      to finish its running tasks and exit
+//   4. report the commit now running, or the build error, to Mako
 //
-// Env: GIT_SHA, MAKO_URL, MAKO_API_KEY, HATCHET_CLIENT_TOKEN (from the Secret),
-// optional WORKFLOWS_SOURCE_DIR (dev: skip the fetch), WORKER_SLOTS.
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+// A commit that fails its typecheck or cannot start is reported and skipped,
+// and the worker for the previous commit keeps running.
+//
+// Env: MAKO_URL, MAKO_API_KEY. The Hatchet token comes from Mako, so the
+// container holds one credential.
+// Dev: WORKFLOWS_SOURCE_DIR + HATCHET_CLIENT_TOKEN run a local folder once,
+// without Mako.
+import { execFileSync, fork } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { register } from "tsx/esm/api";
+import { fileURLToPath } from "node:url";
 
 const RUNTIME_DIR = dirname(fileURLToPath(import.meta.url));
-const READY_FILE = "/tmp/ready";
-const sha = process.env.GIT_SHA ?? "dev";
+const TMP_DIR = process.env.WORKFLOWS_TMP_DIR ?? "/tmp";
+const READY_FILE = join(TMP_DIR, "ready");
+const SOURCE_ROOT = join(TMP_DIR, "src");
+const POLL_MS = Number(process.env.WORKFLOWS_POLL_MS ?? 10_000);
+const START_TIMEOUT_MS = 60_000;
+const auth = { Authorization: `Bearer ${process.env.MAKO_API_KEY}` };
 
-async function fetchSource() {
-  if (process.env.WORKFLOWS_SOURCE_DIR) return process.env.WORKFLOWS_SOURCE_DIR;
-  const dir = "/tmp/src";
+function mako(path, init = {}) {
+  return fetch(`${process.env.MAKO_URL}/api/workflows/runtime${path}`, {
+    ...init,
+    headers: { ...auth, ...init.headers },
+  });
+}
+
+async function report(sha, error) {
+  await mako("/status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(error === undefined ? { sha } : { sha, error }),
+  }).catch(err => console.error("Could not report to Mako:", err.message));
+}
+
+async function fetchSource(sha) {
+  // A fresh folder per attempt: the running worker still reads its own.
+  const dir = join(SOURCE_ROOT, `${sha}-${Date.now()}`);
   mkdirSync(dir, { recursive: true });
-  const res = await fetch(
-    `${process.env.MAKO_URL}/api/workflows/runtime/source/${sha}`,
-    { headers: { Authorization: `Bearer ${process.env.MAKO_API_KEY}` } },
-  );
-  if (!res.ok)
-    throw new Error(`source fetch failed: ${res.status} ${await res.text()}`);
+  const res = await mako(`/source/${sha}`);
+  if (!res.ok) throw new Error(`source fetch failed: ${res.status}`);
   const tarball = join(dir, "src.tgz");
   writeFileSync(tarball, Buffer.from(await res.arrayBuffer()));
   execFileSync("tar", ["-xzf", tarball, "-C", dir]);
   return dir;
 }
 
+/** Typecheck `workflows/` under `root`. Returns the errors, or null. */
 function typecheck(root) {
   // Workflow code resolves packages from the runtime image, nowhere else.
   const modules = join(root, "node_modules");
@@ -64,43 +90,108 @@ function typecheck(root) {
       cwd: root,
       stdio: "pipe",
     });
+    return null;
   } catch (err) {
-    console.error(
-      `Build failed at ${sha}:\n${err.stdout?.toString() ?? err.message}`,
-    );
-    process.exit(1);
+    return err.stdout?.toString() || err.message;
   }
 }
 
-const root = await fetchSource();
-typecheck(root);
-
-register();
-const { hatchet, workflows } = await import(
-  pathToFileURL(join(root, "workflows/index.ts")).href
-);
-if (!hatchet || !Array.isArray(workflows)) {
-  console.error(
-    "Build failed: workflows/index.ts must export { hatchet, workflows }",
-  );
-  process.exit(1);
+/** Start a worker process. Resolves once it is up; rejects with its output. */
+function startWorker(root, sha, hatchetToken) {
+  return new Promise((resolve, reject) => {
+    const child = fork(join(RUNTIME_DIR, "worker.mjs"), {
+      env: {
+        ...process.env,
+        WORKFLOWS_ROOT: root,
+        GIT_SHA: sha,
+        ...(hatchetToken ? { HATCHET_CLIENT_TOKEN: hatchetToken } : {}),
+      },
+      stdio: ["ignore", "inherit", "pipe", "ipc"],
+    });
+    let stderr = "";
+    child.stderr.on("data", chunk => {
+      process.stderr.write(chunk);
+      stderr = (stderr + chunk).slice(-4000);
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), START_TIMEOUT_MS);
+    child.once("message", () => {
+      clearTimeout(timer);
+      resolve(child);
+    });
+    child.once("exit", code => {
+      clearTimeout(timer);
+      reject(new Error(stderr || `worker exited with code ${code}`));
+    });
+  });
 }
 
-const worker = await hatchet.worker("workspace", {
-  workflows,
-  slots: Number(process.env.WORKER_SLOTS ?? 50),
-  labels: { git_sha: sha },
-});
+/** The running worker: its process and what it was started from. */
+let current = null;
+/** A target that failed, so it is not rebuilt on every poll. */
+let failed = null;
 
-process.on("SIGTERM", async () => {
+async function switchTo(head) {
+  const key = `${head.tree}:${head.hatchetToken}`;
+  if (current?.key === key || failed === key) return;
+  console.log(`Switching to ${head.sha}`);
+  let root;
+  let child;
+  try {
+    root = await fetchSource(head.sha);
+    const errors = typecheck(root);
+    if (errors) throw new Error(errors);
+    child = await startWorker(root, head.sha, head.hatchetToken);
+  } catch (err) {
+    failed = key;
+    if (root) rmSync(root, { recursive: true, force: true });
+    console.error(`Build failed at ${head.sha}:\n${err.message}`);
+    await report(head.sha, err.message);
+    return;
+  }
+  const previous = current;
+  current = { key, child };
+  failed = null;
+  child.once("exit", () => {
+    rmSync(root, { recursive: true, force: true });
+    // If this worker died on its own, the next poll starts it again.
+    if (current?.child === child) current = null;
+  });
+  previous?.child.kill("SIGTERM");
+  writeFileSync(READY_FILE, head.sha);
+  await report(head.sha);
+}
+
+async function poll() {
+  try {
+    const res = await mako("/head");
+    if (!res.ok) throw new Error(`head: ${res.status} ${await res.text()}`);
+    const head = await res.json();
+    if (head.sha && head.hatchetToken) await switchTo(head);
+  } catch (err) {
+    console.error("Poll failed:", err.message);
+  }
+}
+
+process.on("SIGTERM", () => {
   console.log("SIGTERM: finishing running tasks");
-  await worker.stop();
-  process.exit(0);
+  if (!current) process.exit(0);
+  current.child.once("exit", () => process.exit(0));
+  current.child.kill("SIGTERM");
 });
 
-worker.start().catch(err => {
-  console.error("Worker stopped:", err);
-  process.exit(1);
-});
-writeFileSync(READY_FILE, sha);
-console.log(`Worker started at ${sha} with ${workflows.length} workflows`);
+if (process.env.WORKFLOWS_SOURCE_DIR) {
+  const root = process.env.WORKFLOWS_SOURCE_DIR;
+  const errors = typecheck(root);
+  if (errors) {
+    console.error(`Build failed:\n${errors}`);
+    process.exit(1);
+  }
+  const child = await startWorker(root, "dev");
+  current = { key: "dev", child };
+  child.once("exit", code => process.exit(code ?? 1));
+} else {
+  for (;;) {
+    await poll();
+    await new Promise(resolve => setTimeout(resolve, POLL_MS));
+  }
+}

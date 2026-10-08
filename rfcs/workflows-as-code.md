@@ -1,102 +1,117 @@
 # RFC: Workflows as code — native Hatchet workflows in the workspace repo
 
-**Status:** proposal v6, the plan to validate. Supersedes v3 (issue #761)
-and v4–v5.
+**Status:** proposal v7. Supersedes v3 (issue #761) and v4–v6. v7 makes
+workflows optional and removes Kubernetes as a requirement, so the open
+source project can run them anywhere.
 **Plan and mockups:** https://claude.ai/artifact/4ivqohdXB3zwBGKMH4SzFG
 
 ## 1. Summary
 
 A workflow is a TypeScript file in the workspace repo, under `workflows/`,
-written against Hatchet's own SDK. Merging to `main` deploys it to a
-sandboxed pod. Hatchet runs it, and Mako shows the runs.
+written against Hatchet's own SDK. Merging to `main` deploys it. Hatchet runs
+it, and Mako shows the runs.
 
-The goal is the thinnest possible layer on Hatchet:
+Mako is the thinnest possible layer on Hatchet:
 
-| Mako adds | Size |
+| Mako adds | What |
 |---|---|
-| One pod per workspace, deployed by setting `GIT_SHA` | ~150 lines of Kubernetes client code |
-| One allowlisted pass-through to Hatchet's REST API | ~150 lines |
-| Three screens: runs list, run page, Run | ~600 lines |
-| Three MCP tools and a skill | ~220 lines |
-| New collections, npm packages, Mako services | 0 |
+| A connection | One Hatchet API token per workspace |
+| A deploy | The commit the worker should run, saved on the workspace |
+| A worker | The runtime image. It follows that commit by itself. |
+| A read path | One allowlisted pass-through to Hatchet's REST API |
+| Screens | Runs list, run page, Run |
+| Agent tools | Three MCP tools and a skill |
 
-About **1,600 lines** of Mako code, plus about 400 lines of tests.
+No new collection, no npm package, no Mako service, no queue.
+
+### Installing it
+
+Workflows are optional. An installation picks one row:
+
+| Use | Hatchet | Setup |
+|---|---|---|
+| **Off** (default) | none | Set nothing. The routes answer "not set up" and the UI hides Workflows. |
+| **Local testing** | Hatchet Lite from `docker-compose.yml` | `docker compose --profile workflows up -d`. Mako creates the tenant. Not for production. |
+| **Production** | Hatchet Cloud, or a Hatchet you run | Set `HATCHET_CLIENT_TOKEN`. Run the worker container. |
+| **Mako's cloud** | Our own Hatchet on GKE | Mako creates a tenant and a sandboxed pod per workspace. |
+
+`HATCHET_DASHBOARD_URL` makes Mako link admins to the Hatchet dashboard, and
+each run page to the same run there. Mako does not proxy the dashboard.
 
 ## 2. Architecture
 
-Each fact has exactly one owner, and Mako never copies state it can read.
+Each fact has one owner.
 
 | Owner | Knows | Mako reads it through |
 |---|---|---|
 | Git | Workflow code, schedules, retries, timeouts. Version = commit SHA. | The bare repo (`git archive`) |
-| Kubernetes | Which SHA is deployed, whether the pod started, the build error | The Kubernetes API, as `gke-kernel-provider.ts` does |
-| Hatchet | Registered workflows, runs, tasks, attempts, input, output, logs, crons | Hatchet REST with the workspace's tenant token |
-| Mako | Who may see what, plus the screens and agent tools | — |
+| Hatchet | Registered workflows, runs, tasks, attempts, input, output, logs, crons | Hatchet REST with the workspace's token |
+| Mako | The Hatchet token, the commit the worker should run, the commit it reports running, the last build error. Who may see what. | — |
 
 ```
-workspace repo ──push to main──▶ Mako API ──k8s API──▶ Deployment wf-<ws> (gVisor)
-                                   │                        │ gRPC
-                                   │ REST, tenant token     ▼
-                                   └──────────────────▶ Hatchet + Postgres
-pod ──▶ Mako API: /runtime/source/:sha, /runtime/ai/*, /api/mcp
+workspace repo ──push to main──▶ Mako API: save target commit
+                                   ▲   │ REST, workspace token
+              poll: what do I run? │   ▼
+                         worker ──gRPC──▶ Hatchet
+worker ──▶ Mako API: /runtime/head, /runtime/source/:sha, /runtime/status,
+                     /runtime/ai/*, /api/mcp
 ```
+
+### The token is the whole connection
+
+A Hatchet API token is a JWT that names its tenant, the REST address and the
+worker (gRPC) address. So a workspace's connection is that one value, and it
+is the same for Hatchet Cloud, a self-hosted Hatchet and Hatchet Lite. Hatchet
+keeps one tenant's token from reading another tenant.
+
+Where the token comes from, first match wins:
+
+1. The workspace's own token, pasted by an admin.
+2. `HATCHET_CLIENT_TOKEN`: one tenant for the whole installation.
+3. Created by Mako when `HATCHET_ADMIN_PASSWORD` is set: Mako logs in to a
+   Hatchet it operates, creates a tenant for the workspace and saves its
+   token. Used by local testing and by Mako's cloud.
+
+### The worker follows a commit
+
+One worker serves one workspace. It holds one credential, a Mako API key
+with the scope `workflows:runtime`, and loops:
+
+1. `GET /runtime/head` → the commit to run and the Hatchet token.
+2. When the commit changes: download `workflows/` at it, run `tsc --noEmit`.
+3. Start a worker process for the new commit (label `git_sha=<sha>`). Once
+   it is up, tell the old process to finish its running tasks and exit.
+4. `POST /runtime/status`: the commit now running, or the build error.
+
+A commit that fails its typecheck, or cannot start, is reported and skipped.
+The process for the previous commit keeps running. Rollback is a revert
+commit. There is no build job, no bundle storage and no deploy queue.
+
+Who starts the worker is the one thing that differs between installations
+(`WORKFLOWS_WORKER_PROVIDER`, the same idea as `KERNEL_PROVIDER`):
+
+| Provider | Who runs it | Sandbox |
+|---|---|---|
+| `static` | The operator: the compose service, or the image anywhere. The key is `WORKFLOWS_WORKER_KEY`. | None. For the operator's own code. |
+| `gke` | Mako creates a Secret and a Deployment per workspace, once | gVisor, locked-down egress. For code from people the operator does not know. |
 
 ## 3. Infra
 
-Built on what Mako already runs for notebook kernels (`deploy/notebook-kernels/`):
-the same GKE cluster, gVisor node pool and locked-down egress.
+Only Mako's cloud needs any. It builds on what Mako already runs for notebook
+kernels (`deploy/notebook-kernels/`): the same GKE cluster, gVisor node pool
+and locked-down egress.
 
 | Piece | What | New or reused |
 |---|---|---|
-| Hatchet | Official Helm chart, namespace `hatchet`, Neon Postgres (direct endpoint, timezone UTC). Dashboard for staff only, through `kubectl port-forward`. | New |
+| Hatchet | Official Helm chart, namespace `hatchet`. Dashboard for staff only. | New |
+| Hatchet API address | An internal load balancer, so the Mako API on Cloud Run can reach Hatchet (`HATCHET_API_URL`) | New |
 | Namespace | `mako-workflows` on the gVisor node pool | Pool reused |
 | Network policy | Copy of the kernel policy (HTTPS out, no private ranges, no metadata server), plus Hatchet gRPC | Copied |
-| Runtime image | Node 20 + pinned `@hatchet-dev/typescript-sdk`, `ai`, `@ai-sdk/gateway`, `@ai-sdk/mcp`, `zod`, `tsx`, `typescript`, and `entrypoint.mjs` | New |
-| Per workspace | One `Secret` (Hatchet token, Mako API key) and one `Deployment` with 1 replica | Created on first push |
-| Local | Hatchet Lite in `docker-compose.yml`. The same entrypoint runs as a local process. | New service in existing file |
+| Runtime image | Node 20 + pinned `@hatchet-dev/typescript-sdk`, `ai`, `@ai-sdk/gateway`, `@ai-sdk/mcp`, `zod`, `tsx`, `typescript`, `entrypoint.mjs`, `worker.mjs` | New |
+| Per workspace | One `Secret` (the Mako API key) and one `Deployment` with 1 replica | Created on first deploy |
 
-### A deploy, start to finish
-
-1. A merge to `main` touches `workflows/`.
-2. The push hook (`syncRepoBackedResources` → `on-push.ts`) sets `GIT_SHA` on
-   Deployment `wf-<ws>`. The first time, it creates the Hatchet tenant, the
-   worker API key, the Secret and the Deployment.
-3. The new pod downloads `workflows/` at that SHA from
-   `/runtime/source/:sha`, runs `tsc --noEmit`, starts the worker with label
-   `git_sha=<sha>`, then writes `/tmp/ready`.
-4. Kubernetes stops the old pod. Its worker stops taking tasks and finishes
-   the ones it holds within the 30-minute grace period. Hatchet retries any
-   it could not finish.
-5. If `tsc` fails, the new pod never becomes ready, so the rollout stalls and
-   the old pod keeps running. The UI shows the unready pod's last log lines
-   as the build error.
-
-There is no build job, no bundle storage, no deploy queue and no Inngest
-function. Rollback is a revert commit.
-
-### The Deployment
-
-```yaml
-kind: Deployment
-metadata: { name: wf-<ws>, namespace: mako-workflows }
-spec:
-  replicas: 1
-  progressDeadlineSeconds: 300
-  strategy: { rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
-  template:
-    spec:
-      runtimeClassName: gvisor
-      terminationGracePeriodSeconds: 1800
-      containers:
-        - name: worker
-          image: workflows-runtime:<pinned>
-          env:
-            - { name: GIT_SHA, value: 8fc2ad1 }
-            - { name: MAKO_URL, value: https://app.mako.ai }
-          envFrom: [{ secretRef: { name: wf-<ws> } }]
-          readinessProbe: { exec: { command: [test, -f, /tmp/ready] } }
-          resources: { limits: { cpu: "1", memory: 1Gi } }
-```
+The pod is created once and replaced only for a new runtime image. Deploying
+a commit never touches Kubernetes.
 
 ## 4. Data model
 
@@ -104,10 +119,12 @@ One optional field on `Workspace`, and no new collection:
 
 ```ts
 workflows?: {
-  enabled: boolean;        // staff-set feature flag
-  hatchetTenantId: string;
-  hatchetToken: string;    // AES-256-CBC, like connection secrets
-  workerApiKeyId: string;  // scopes: mcp, query:read, workflows:runtime
+  enabled: boolean;         // staff-set feature flag
+  hatchetToken?: string;    // AES-256-CBC; absent with HATCHET_CLIENT_TOKEN
+  workerApiKeyId?: ObjectId; // scopes: mcp, query:read, workflows:runtime
+  target?: { sha, tree };   // set on push: where workflows/ last changed
+  live?: { sha };           // reported by the worker
+  failed?: { sha, error };  // reported by the worker
 }
 ```
 
@@ -115,10 +132,12 @@ workflows?: {
 |---|---|
 | Workflow list, crons | Hatchet, registered workflows |
 | Runs, tasks, logs | Hatchet |
-| Live commit | Kubernetes, the Deployment's `GIT_SHA` |
-| Build error | Kubernetes, the unready pod's logs |
+| Hatchet tenant id and addresses | The token |
 | Commit of a run | Hatchet, the worker label `git_sha` |
 | Who started a run | Hatchet, `additionalMetadata` |
+
+v6 read the live commit and the build error from Kubernetes. v7 stores them,
+because an installation without Kubernetes has nowhere else to keep them.
 
 ## 5. Files
 
@@ -130,18 +149,18 @@ change them.
 
 | File | What | Lines |
 |---|---|---|
-| `api/src/workflows/hatchet.ts` | Create tenant and token. Per-tenant client. REST allowlist. | 150 |
-| `api/src/workflows/kube.ts` | Ensure Secret and Deployment, set `GIT_SHA`, read status and logs | 150 |
-| `api/src/workflows/on-push.ts` | Called from `syncRepoBackedResources` on `main` | 40 |
-| `api/src/routes/workflows.ts` | Status, Hatchet pass-through, Run, runtime source and AI | 160 |
+| `api/src/workflows/hatchet.ts` | Read the token. Optional tenant creation. REST allowlist. | 340 |
+| `api/src/workflows/kube.ts` | The `gke` provider only: ensure the Secret and Deployment | 220 |
+| `api/src/workflows/on-push.ts` | Called from `syncRepoBackedResources` on `main`: save the target, ensure token and worker | 210 |
+| `api/src/routes/workflows.ts` | Status, Hatchet pass-through, Run, and the worker's routes | 420 |
 | `api/src/database/workspace-schema.ts` | The `workflows` field | 15 |
 | `api/src/auth/api-key-scopes.ts` | Add `workflows:runtime` | 5 |
 | `api/src/agent-lib/tools/workflow-tools.ts` | Three MCP tools, deferred tier | 140 |
 | `api/src/agent-skills/workflows/SKILL.md` | File rules, helpers, agent pattern | 80 |
 | `app/src/components/workflows/*` | `WorkflowsExplorer`, `RunsTable`, `RunView`, `RunDialog` | 500 |
 | `app/src/lib/*`, store | Rail entry, tab kinds, icons, a small store | 90 |
-| `deploy/workflows/` | Helm values, namespace, network policy, Deployment template, Dockerfile, `entrypoint.mjs` | 220 |
-| `docker-compose.yml` | Hatchet Lite | 20 |
+| `deploy/workflows/` | Helm values, namespace, network policy, Dockerfile, `entrypoint.mjs`, `worker.mjs` | 400 |
+| `docker-compose.yml` | Profile `workflows`: Hatchet Lite and the worker | 45 |
 
 ### Workspace template (customer repo)
 
@@ -190,11 +209,13 @@ only the worker API key, with the `workflows:runtime` scope.
 
 | Route | Does |
 |---|---|
-| `GET /workflows` | Whether workflows are on, the live commit and the build error (from Kubernetes). The workflow and cron lists come from the pass-through. |
+| `GET /workflows` | Whether workflows are set up and on, the target and live commit, the build error, the dashboard URL. The workflow and cron lists come from the pass-through. |
 | `GET /workflows/hatchet/*` | Pass-through to an allowlist of Hatchet REST reads: run list, run, task logs, workers. The tenant token is added server-side. |
 | `POST /workflows/:name/run` | Start a run, with `additionalMetadata` `{ trigger: "ui", triggeredBy }` |
 | `POST /workflows/runs/:id/cancel`, `/replay` | Hatchet cancel and replay |
+| `GET /workflows/runtime/head` | The commit the worker should run, and the Hatchet token |
 | `GET /workflows/runtime/source/:sha` | `git archive <sha> workflows/` as a tarball |
+| `POST /workflows/runtime/status` | The worker reports the commit it runs, or a build error |
 | `ALL /workflows/runtime/ai/*` | Pass-through to the Vercel AI Gateway with Mako's key |
 
 The UI uses Hatchet's own response shapes, so Mako keeps no copy of them.
@@ -266,12 +287,16 @@ enrichLead.task({
    their agents. Behind a staff-set flag at first.
 2. Native Hatchet code, no Mako SDK. Two helper files in the customer's repo,
    about 120 lines together.
-3. Self-hosted Hatchet on our GKE, one tenant per workspace.
-4. One gVisor pod per workspace, always on in V1. Scale to zero with KEDA
-   later.
-5. Deploy = set `GIT_SHA` on the pod. Typecheck at pod start; a failed check
-   keeps the old pod running.
-6. No new collection. One field on `Workspace`.
+3. A workspace's connection to Hatchet is one token. Hatchet Cloud, a
+   self-hosted Hatchet and Hatchet Lite all work. Mako's cloud runs its own
+   Hatchet with one tenant per workspace.
+4. The worker follows the commit Mako names. One container per workspace,
+   run by the operator (`static`) or as a gVisor pod (`gke`), always on in
+   V1. Scale to zero with KEDA later.
+5. Deploy = save the target commit. The worker typechecks it before
+   switching; a failed check keeps the old code running.
+6. No new collection. One field on `Workspace`, which holds the token and
+   the deploy state.
 7. The UI reads Hatchet through an allowlisted pass-through, using Hatchet's
    own response shapes.
 8. Three screens: runs list, run page, Run.
@@ -286,7 +311,7 @@ enrichLead.task({
 |---|---|---|
 | 0. Spike | Hatchet Helm on staging, a hand-made tenant, a worker under gVisor with the network policy, a pod kill and a rolling update during a long task | A task survives a pod kill and a redeploy |
 | 1. Infra | `deploy/workflows/`, Hatchet Lite in docker-compose | A hand-applied worker registers on staging |
-| 2. Backend | `hatchet.ts`, `kube.ts`, `on-push.ts`, routes, the Workspace field and scope, template files | A merge on staging deploys, a bad commit keeps the old pod, and `curl` lists runs |
+| 2. Backend | `hatchet.ts`, `kube.ts`, `on-push.ts`, routes, the Workspace field and scope, the self-switching worker, the compose profile | A merge on staging deploys, a bad commit keeps the old code, and `curl` lists runs |
 | 3. UI | Rail entry, runs list, run page, Run | The three screens work against staging |
 | 4. Agent | Three MCP tools, the skill | Claude Code writes, deploys, runs and checks a workflow on staging |
 

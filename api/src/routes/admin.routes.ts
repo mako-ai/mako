@@ -21,6 +21,7 @@ import {
 } from "../services/model-catalog.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { Workspace } from "../database/workspace-schema";
+import { saveWorkspaceToken } from "../workflows/hatchet";
 import { deployWorkflowsFromRepo } from "../workflows/on-push";
 
 const logger = loggers.app();
@@ -257,7 +258,7 @@ adminRoutes.openapi(
 
 // ---------------------------------------------------------------------------
 // PUT /api/admin/workspaces/{workspaceId}/workflows
-// Body: { enabled: boolean }
+// Body: { enabled: boolean, hatchetToken?: string }
 // Workflows (rfcs/workflows-as-code.md) are behind a staff-set flag per
 // workspace. Turning it on deploys `workflows/` at main if there is one.
 // ---------------------------------------------------------------------------
@@ -277,7 +278,13 @@ adminRoutes.openapi(
       body: {
         required: true,
         content: {
-          "application/json": { schema: z.object({ enabled: z.boolean() }) },
+          "application/json": {
+            schema: z.object({
+              enabled: z.boolean(),
+              // A token from Hatchet Cloud or the operator's own Hatchet.
+              hatchetToken: z.string().min(1).optional(),
+            }),
+          },
         },
       },
     },
@@ -286,7 +293,7 @@ adminRoutes.openapi(
   async c => {
     try {
       const { workspaceId } = c.req.valid("param");
-      const { enabled } = c.req.valid("json");
+      const { enabled, hatchetToken } = c.req.valid("json");
       if (!Types.ObjectId.isValid(workspaceId)) {
         return c.json({ success: false, error: "Invalid workspace ID" }, 400);
       }
@@ -296,6 +303,19 @@ adminRoutes.openapi(
       );
       if (result.matchedCount === 0) {
         return c.json({ success: false, error: "Workspace not found" }, 404);
+      }
+      if (hatchetToken) {
+        try {
+          await saveWorkspaceToken(workspaceId, hatchetToken);
+        } catch (error) {
+          return c.json(
+            {
+              success: false,
+              error: error instanceof Error ? error.message : "Invalid token",
+            },
+            400,
+          );
+        }
       }
       const deploy = enabled
         ? await deployWorkflowsFromRepo(workspaceId, c.get("user")?.id).catch(

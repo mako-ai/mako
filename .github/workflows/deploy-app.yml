@@ -230,6 +230,7 @@ jobs:
       # cluster, so each PR prefixes its tenants and worker Deployments.
       WORKFLOWS_RUNTIME_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_DEV_PROJECT_ID }}/${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}/workflows-runtime:latest
       WORKFLOWS_NAME_PREFIX: pr-${{ needs.detect-changes.outputs.pr_number }}-
+      HATCHET_API_URL: ${{ vars.DEV_HATCHET_API_URL }}
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
@@ -676,6 +677,8 @@ jobs:
             --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
             --set-env-vars WORKFLOWS_RUNTIME_IMAGE=${WORKFLOWS_RUNTIME_IMAGE} \
             --set-env-vars WORKFLOWS_NAME_PREFIX=${WORKFLOWS_NAME_PREFIX} \
+            --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
+            --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
             --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
             --quiet
 

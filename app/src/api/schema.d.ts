@@ -5064,7 +5064,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Whether workflows are on, and what is deployed (from Kubernetes) */
+        /** Whether workflows are on, and which commit the worker runs */
         get: operations["get_api_workspaces_workspaceId_workflows"];
         put?: never;
         post?: never;
@@ -23795,6 +23795,7 @@ export interface operations {
             content: {
                 "application/json": {
                     enabled: boolean;
+                    hatchetToken?: string;
                 };
             };
         };

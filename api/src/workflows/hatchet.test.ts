@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 
 import { parseWorkspaceApiKeyScopes } from "../auth/api-key-scopes";
-import { isHatchetId, resolveHatchetRead } from "./hatchet";
+import {
+  HatchetError,
+  isHatchetId,
+  resolveHatchetRead,
+  tenantFromToken,
+} from "./hatchet";
 
 /**
  * The Hatchet pass-through is the one place a browser's path reaches Hatchet,
@@ -60,5 +65,28 @@ assert.throws(
   () => parseWorkspaceApiKeyScopes(["mcp", "workflows:runtime"]),
   /reserved/,
 );
+
+// A Hatchet token is the whole connection: tenant and API address come from it.
+const jwt = (claims: object) =>
+  `x.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.y`;
+const token = jwt({ sub: TENANT, server_url: "https://hatchet.example/" });
+delete process.env.HATCHET_API_URL;
+assert.deepEqual(tenantFromToken(token), {
+  tenantId: TENANT,
+  token,
+  apiUrl: "https://hatchet.example",
+});
+// HATCHET_API_URL wins over the address in the token.
+process.env.HATCHET_API_URL = "http://10.0.0.1:8080";
+assert.equal(tenantFromToken(token).apiUrl, "http://10.0.0.1:8080");
+delete process.env.HATCHET_API_URL;
+for (const bad of [
+  "",
+  "not-a-token",
+  jwt({ server_url: "https://x" }),
+  jwt({ sub: TENANT }),
+]) {
+  assert.throws(() => tenantFromToken(bad), HatchetError, `must refuse ${bad}`);
+}
 
 console.log("workflows hatchet tests passed");

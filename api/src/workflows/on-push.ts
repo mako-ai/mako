@@ -2,13 +2,14 @@
  * Deploy a workspace's workflows when `main` moves (rfcs/workflows-as-code.md).
  *
  * Called from `syncRepoBackedResources`, so it runs for a push through Mako's
- * git endpoint and for a push made directly on GitHub. Like the other entries
- * there it is an idempotent reconcile: it compares the `workflows/` tree at
- * `main` with the tree at the deployed commit and does nothing when they are
- * the same, so a push that touches only apps or dbt never restarts the worker.
+ * git endpoint and for a push made directly on GitHub. A deploy is one write:
+ * the commit and tree of `workflows/` at `main`, saved as the workspace's
+ * target. The worker asks Mako for its target, typechecks it and switches to
+ * it, so a push that touches only apps or dbt changes nothing, and a commit
+ * that does not build never replaces the running code.
  *
- * The first deploy for a workspace also creates its Hatchet tenant, the
- * worker's Mako API key and the Kubernetes Secret holding both credentials.
+ * Before the first deploy this also makes sure the workspace has a Hatchet
+ * token and a worker: its Mako API key, and under the `gke` provider its pod.
  */
 import { Types } from "mongoose";
 
@@ -20,17 +21,16 @@ import {
   repoExists,
   resolveCommit,
 } from "../apps/repository.service";
-import { generateApiKey } from "../auth/api-key.middleware";
+import { generateApiKey, hashApiKey } from "../auth/api-key.middleware";
 import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
 import { Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { ensureWorkspaceTenant, isHatchetConfigured } from "./hatchet";
+import { ensureWorkspaceTenant } from "./hatchet";
 import {
-  deployWorker,
-  isWorkflowsKubeConfigured,
-  readTargetSha,
-  workerSecretExists,
   createWorkerSecret,
+  ensureWorkerDeployment,
+  isGkeWorkerConfigured,
+  workerSecretExists,
 } from "./kube";
 
 const logger = loggers.api("workflows-on-push");
@@ -42,6 +42,17 @@ const WORKER_KEY_SCOPES: WorkspaceApiKeyScope[] = [
   "query:read",
   "workflows:runtime",
 ];
+
+/**
+ * Who runs the worker. `gke`: Mako creates a sandboxed pod per workspace.
+ * `static`: the operator runs the runtime image themselves (docker-compose,
+ * or anywhere) with WORKFLOWS_WORKER_KEY, and Mako creates nothing.
+ */
+export function workerProvider(): "gke" | "static" {
+  const explicit = process.env.WORKFLOWS_WORKER_PROVIDER;
+  if (explicit === "gke" || explicit === "static") return explicit;
+  return isGkeWorkerConfigured() ? "gke" : "static";
+}
 
 /** The tree id of `workflows/` at a commit, or null when it has none. */
 async function workflowsTree(
@@ -63,20 +74,23 @@ async function workflowsTree(
   }
 }
 
-/**
- * Make sure the worker's Secret exists. The Mako API key can be read only
- * when it is created, so a missing Secret means a new key: the old one is
- * removed and the new one written to Kubernetes in the same step.
- */
-async function ensureWorkerCredentials(
+/** Make `key` the workspace's worker key, replacing any earlier one. */
+async function setWorkerKey(
   workspaceId: string,
-  hatchetToken: string,
   userId: string,
+  key: string,
 ): Promise<void> {
-  if (await workerSecretExists(workspaceId)) return;
-
   const _id = new Types.ObjectId(workspaceId);
-  const { key, hash, prefix } = generateApiKey();
+  const keyHash = hashApiKey(key);
+  const holder = await Workspace.findOne({ "apiKeys.keyHash": keyHash })
+    .select("_id")
+    .lean();
+  if (holder) {
+    if (holder._id.equals(_id)) return;
+    throw new Error(
+      "WORKFLOWS_WORKER_KEY already belongs to another workspace. A static worker serves one workspace.",
+    );
+  }
   const keyId = new Types.ObjectId();
   const workspace = await Workspace.findById(_id).select("workflows").lean();
   const previous = workspace?.workflows?.workerApiKeyId;
@@ -93,8 +107,8 @@ async function ensureWorkerCredentials(
         apiKeys: {
           _id: keyId,
           name: WORKER_KEY_NAME,
-          keyHash: hash,
-          prefix,
+          keyHash,
+          prefix: key.substring(0, 14),
           scopes: WORKER_KEY_SCOPES,
           createdAt: new Date(),
           createdBy: userId,
@@ -103,7 +117,33 @@ async function ensureWorkerCredentials(
       $set: { "workflows.workerApiKeyId": keyId },
     },
   );
-  await createWorkerSecret(workspaceId, { hatchetToken, makoApiKey: key });
+}
+
+/** Make sure the workspace's worker can sign in to Mako, and exists. */
+async function ensureWorker(
+  workspaceId: string,
+  userId: string,
+): Promise<void> {
+  if (workerProvider() === "static") {
+    const key = process.env.WORKFLOWS_WORKER_KEY;
+    if (!key?.startsWith("revops_")) {
+      logger.warn(
+        "Set WORKFLOWS_WORKER_KEY (revops_...) and start the worker with it",
+        { workspaceId },
+      );
+      return;
+    }
+    await setWorkerKey(workspaceId, userId, key);
+    return;
+  }
+  // The key can be read only when it is created, so a missing Secret means a
+  // new key, written to Kubernetes in the same step.
+  if (!(await workerSecretExists(workspaceId))) {
+    const { key } = generateApiKey();
+    await setWorkerKey(workspaceId, userId, key);
+    await createWorkerSecret(workspaceId, key);
+  }
+  await ensureWorkerDeployment(workspaceId);
 }
 
 export type WorkflowsDeployResult =
@@ -112,7 +152,7 @@ export type WorkflowsDeployResult =
 
 const deployInFlight = new Map<string, Promise<WorkflowsDeployResult>>();
 
-/** Deploy `workflows/` at `main` if it differs from what is deployed. */
+/** Point the worker at `workflows/` on `main` if it changed. */
 export function deployWorkflowsFromRepo(
   workspaceId: string,
   userId?: string,
@@ -148,26 +188,15 @@ async function deployWorkflowsNow(
     return { deployed: false, reason: "main has no workflows/ folder" };
   }
 
-  if (!isHatchetConfigured() || !isWorkflowsKubeConfigured()) {
-    // Local development: run the worker by hand (deploy/workflows/README.md).
-    logger.info("Workflows changed but this instance cannot deploy workers", {
-      workspaceId,
-      head,
-    });
-    return { deployed: false, reason: "Worker deploys are not configured" };
-  }
-
-  const deployedSha = await readTargetSha(workspaceId);
-  if (deployedSha && (await workflowsTree(repoDir, deployedSha)) === tree) {
+  await ensureWorkspaceTenant(workspaceId);
+  await ensureWorker(workspaceId, userId ?? workspace.createdBy);
+  if (workspace.workflows.target?.tree === tree) {
     return { deployed: false, reason: "workflows/ is unchanged" };
   }
-
-  const tenant = await ensureWorkspaceTenant(workspaceId);
-  await ensureWorkerCredentials(
-    workspaceId,
-    tenant.token,
-    userId ?? workspace.createdBy,
+  await Workspace.updateOne(
+    { _id: workspace._id },
+    { $set: { "workflows.target": { sha: head, tree } } },
   );
-  await deployWorker(workspaceId, head);
+  logger.info("Set workflows target", { workspaceId, sha: head });
   return { deployed: true, sha: head };
 }

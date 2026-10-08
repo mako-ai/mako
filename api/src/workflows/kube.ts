@@ -1,16 +1,16 @@
 /**
- * Kubernetes side of workspace workflows (rfcs/workflows-as-code.md).
+ * The `gke` worker provider: one sandboxed worker pod per workspace
+ * (rfcs/workflows-as-code.md). For hosting workflows written by people the
+ * operator does not know. An installation that runs its own code uses the
+ * `static` provider instead and needs none of this.
  *
  * Each workspace has one Secret and one Deployment named `wf-<prefix><id>` in
- * the `mako-workflows` namespace, on the gVisor node pool the notebook kernels
- * use. A deploy is one write: set `GIT_SHA` on the Deployment. The new pod
- * fetches `workflows/` at that commit, typechecks it and only then becomes
- * ready, so a commit that does not build never replaces the running pod.
- *
- * Kubernetes is the record of what is deployed. The live commit and the build
- * error are read from it here, never copied into Mongo.
+ * the `mako-workflows` namespace, on the gVisor node pool the notebook
+ * kernels use. The pod is created once. It holds one credential, its Mako API
+ * key, and asks Mako which commit to run, so deploying a commit never touches
+ * Kubernetes.
  */
-import type { V1Deployment, V1Pod } from "@kubernetes/client-node";
+import type { V1Deployment } from "@kubernetes/client-node";
 
 import { loggers } from "../logging";
 import {
@@ -26,10 +26,9 @@ const NAMESPACE = "mako-workflows";
 const POD_NAME_LABEL = "mako-workflow-worker";
 const WORKSPACE_LABEL = "mako.ai/workspace";
 const ENV_LABEL = "mako.ai/env";
-const BUILD_LOG_LINES = 60;
 
-/** True when this API instance can deploy workers. */
-export function isWorkflowsKubeConfigured(): boolean {
+/** True when this API instance can create worker pods. */
+export function isGkeWorkerConfigured(): boolean {
   return isGkeProviderConfigured() && Boolean(runtimeImage());
 }
 
@@ -51,7 +50,7 @@ function makoUrl(): string {
   return url.replace(/\/+$/, "");
 }
 
-export function workerName(workspaceId: string): string {
+function workerName(workspaceId: string): string {
   return `wf-${workflowsNamePrefix()}${workspaceId}`;
 }
 
@@ -87,10 +86,10 @@ export async function workerSecretExists(
   }
 }
 
-/** Create the worker's credentials. Called only when the Secret is missing. */
+/** Create the worker's credential. Called only when the Secret is missing. */
 export async function createWorkerSecret(
   workspaceId: string,
-  secrets: { hatchetToken: string; makoApiKey: string },
+  makoApiKey: string,
 ): Promise<void> {
   const { core } = await gkeClients();
   await core.createNamespacedSecret({
@@ -100,27 +99,24 @@ export async function createWorkerSecret(
         name: workerName(workspaceId),
         labels: resourceLabels(workspaceId),
       },
-      stringData: {
-        HATCHET_CLIENT_TOKEN: secrets.hatchetToken,
-        MAKO_API_KEY: secrets.makoApiKey,
-      },
+      stringData: { MAKO_API_KEY: makoApiKey },
     },
   });
 }
 
-function deploymentBody(workspaceId: string, sha: string): V1Deployment {
+function deploymentBody(workspaceId: string): V1Deployment {
   const name = workerName(workspaceId);
   const labels = {
     "app.kubernetes.io/name": POD_NAME_LABEL,
     ...resourceLabels(workspaceId),
   };
+  const tls = process.env.HATCHET_CLIENT_TLS_STRATEGY;
   return {
     metadata: { name, labels },
     spec: {
       replicas: 1,
-      // A pod that fails its typecheck never becomes ready; after this long
-      // the rollout is marked stalled, and the previous pod keeps running.
-      progressDeadlineSeconds: 300,
+      // A new pod (a new runtime image) is ready only once it runs a commit,
+      // and the old pod is stopped only then.
       strategy: {
         type: "RollingUpdate",
         rollingUpdate: { maxSurge: 1, maxUnavailable: 0 },
@@ -140,8 +136,8 @@ function deploymentBody(workspaceId: string, sha: string): V1Deployment {
             },
           ],
           automountServiceAccountToken: false,
-          // Long enough for a running task to finish when a deploy replaces
-          // the pod. Hatchet retries what does not finish in time.
+          // Long enough for a running task to finish when the pod is
+          // replaced. Hatchet retries what does not finish in time.
           terminationGracePeriodSeconds: 1800,
           securityContext: {
             runAsNonRoot: true,
@@ -156,10 +152,12 @@ function deploymentBody(workspaceId: string, sha: string): V1Deployment {
               // Previews run `:latest`; a digest check per pod start is cheap.
               imagePullPolicy: "Always",
               env: [
-                { name: "GIT_SHA", value: sha },
                 { name: "MAKO_URL", value: makoUrl() },
-                { name: "HATCHET_CLIENT_TLS_STRATEGY", value: "none" },
                 { name: "HOME", value: "/tmp" },
+                // A Hatchet without TLS on its gRPC port, as Mako's own is.
+                ...(tls
+                  ? [{ name: "HATCHET_CLIENT_TLS_STRATEGY", value: tls }]
+                  : []),
               ],
               envFrom: [{ secretRef: { name } }],
               readinessProbe: {
@@ -185,134 +183,34 @@ function deploymentBody(workspaceId: string, sha: string): V1Deployment {
   };
 }
 
-async function readDeployment(
+/**
+ * Make sure the workspace's worker pod exists and runs the current runtime
+ * image. An existing Deployment is replaced only when its image differs.
+ */
+export async function ensureWorkerDeployment(
   workspaceId: string,
-): Promise<V1Deployment | null> {
+): Promise<void> {
   const { apps } = await gkeClients();
+  const name = workerName(workspaceId);
+  const body = deploymentBody(workspaceId);
+  let existing: V1Deployment;
   try {
-    return await apps.readNamespacedDeployment({
-      name: workerName(workspaceId),
+    existing = await apps.readNamespacedDeployment({
+      name,
       namespace: NAMESPACE,
     });
   } catch (error) {
-    if (isNotFound(error)) return null;
-    throw error;
-  }
-}
-
-function shaOf(spec: V1Deployment | V1Pod | null): string | null {
-  const containers =
-    (spec as V1Deployment | null)?.spec?.template?.spec?.containers ??
-    (spec as V1Pod | null)?.spec?.containers;
-  return containers?.[0]?.env?.find(e => e.name === "GIT_SHA")?.value ?? null;
-}
-
-/** The commit the Deployment is set to, or null when there is no Deployment. */
-export async function readTargetSha(
-  workspaceId: string,
-): Promise<string | null> {
-  return shaOf(await readDeployment(workspaceId));
-}
-
-/**
- * Deploy a commit: create the Deployment, or replace its pod template. The
- * template is rebuilt from scratch each time so a new runtime image or a
- * changed setting reaches existing workers on their next deploy.
- */
-export async function deployWorker(
-  workspaceId: string,
-  sha: string,
-): Promise<void> {
-  const { apps } = await gkeClients();
-  const body = deploymentBody(workspaceId, sha);
-  const existing = await readDeployment(workspaceId);
-  if (!existing) {
+    if (!isNotFound(error)) throw error;
     await apps.createNamespacedDeployment({ namespace: NAMESPACE, body });
-    logger.info("Created workflow worker", { workspaceId, sha });
+    logger.info("Created workflow worker", { workspaceId });
     return;
   }
+  const image = existing.spec?.template?.spec?.containers?.[0]?.image;
+  if (image === runtimeImage()) return;
   body.metadata = {
     ...body.metadata,
     resourceVersion: existing.metadata?.resourceVersion,
   };
-  await apps.replaceNamespacedDeployment({
-    name: workerName(workspaceId),
-    namespace: NAMESPACE,
-    body,
-  });
-  logger.info("Deployed workflow worker", { workspaceId, sha });
-}
-
-export interface WorkerStatus {
-  /** The commit a ready pod is running. Null before the first good deploy. */
-  liveSha: string | null;
-  /** The commit the Deployment is set to. Differs from live while rolling out. */
-  targetSha: string | null;
-  /** True when a rollout to `targetSha` is still in progress. */
-  deploying: boolean;
-  /** The failing pod's last log lines when `targetSha` did not build. */
-  buildError: string | null;
-}
-
-function podReady(pod: V1Pod): boolean {
-  if (pod.metadata?.deletionTimestamp) return false;
-  return (
-    pod.status?.conditions?.some(
-      c => c.type === "Ready" && c.status === "True",
-    ) ?? false
-  );
-}
-
-/** What is deployed for this workspace, read from Kubernetes. */
-export async function readWorkerStatus(
-  workspaceId: string,
-): Promise<WorkerStatus> {
-  const deployment = await readDeployment(workspaceId);
-  const targetSha = shaOf(deployment);
-  if (!deployment) {
-    return {
-      liveSha: null,
-      targetSha: null,
-      deploying: false,
-      buildError: null,
-    };
-  }
-  const { core } = await gkeClients();
-  const pods = await core.listNamespacedPod({
-    namespace: NAMESPACE,
-    labelSelector: `${WORKSPACE_LABEL}=${workspaceId}`,
-  });
-  const items = pods.items ?? [];
-  const live = items.find(podReady);
-  const liveSha = shaOf(live ?? null);
-  if (liveSha === targetSha) {
-    return { liveSha, targetSha, deploying: false, buildError: null };
-  }
-
-  // The new pod is not ready. It is either still starting or it failed its
-  // typecheck and is restarting; a restart count tells the two apart.
-  const pending = items.find(
-    p => !p.metadata?.deletionTimestamp && shaOf(p) === targetSha,
-  );
-  const status = pending?.status?.containerStatuses?.[0];
-  const failed =
-    (status?.restartCount ?? 0) > 0 || Boolean(status?.state?.terminated);
-  if (!pending?.metadata?.name || !failed) {
-    return { liveSha, targetSha, deploying: true, buildError: null };
-  }
-  const log = await core
-    .readNamespacedPodLog({
-      name: pending.metadata.name,
-      namespace: NAMESPACE,
-      tailLines: BUILD_LOG_LINES,
-      // A crash-looping container's current instance may have no output yet.
-      previous: Boolean(status?.state?.waiting),
-    })
-    .catch(() => "");
-  return {
-    liveSha,
-    targetSha,
-    deploying: false,
-    buildError: log || "The worker failed to start and left no log.",
-  };
+  await apps.replaceNamespacedDeployment({ name, namespace: NAMESPACE, body });
+  logger.info("Updated workflow worker image", { workspaceId, image });
 }
