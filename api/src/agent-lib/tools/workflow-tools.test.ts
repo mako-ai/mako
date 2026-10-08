@@ -130,6 +130,8 @@ async function main() {
     // The overview separates live from preview, and never leaks the token.
     const overview = await call(tools, "workflows_status", {});
     assert.equal(overview.success, true);
+    // No repository is linked to this workspace: the screen prompts for one.
+    assert.equal(overview.repoLinked, false);
     assert.equal(overview.deployment.liveSha, SHA_A);
     assert.equal(overview.deployment.buildError, null);
     assert.equal(overview.preview.branch, "workflow/x");

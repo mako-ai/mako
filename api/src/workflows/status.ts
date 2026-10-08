@@ -4,6 +4,7 @@
  * which the push hook and the worker's reports keep (see on-push.ts).
  */
 import { Workspace } from "../database/workspace-schema";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import { hasInstanceHatchet } from "./hatchet";
 
 export interface Deployment {
@@ -35,11 +36,15 @@ function deployment(
 }
 
 export async function readWorkflowsStatus(workspaceId: string) {
-  const workspace = await Workspace.findById(workspaceId)
-    .select("workflows")
-    .lean();
+  const [workspace, repo] = await Promise.all([
+    Workspace.findById(workspaceId).select("workflows").lean(),
+    getWorkspaceRepo(workspaceId),
+  ]);
   const state = workspace?.workflows;
   return {
+    // Workflows are files in the workspace's repository; without one linked
+    // there is nowhere to write them, and the screen says so.
+    repoLinked: Boolean(repo),
     enabled: state?.enabled === true,
     // False when no Hatchet token exists for this workspace and the
     // installation has none to share: the UI hides Workflows.

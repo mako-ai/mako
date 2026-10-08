@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
+  Button,
   Chip,
   Divider,
   IconButton,
@@ -19,11 +20,16 @@ import {
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
   FileCode as FileIcon,
+  Github as LinkIcon,
   RefreshCw as RefreshIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { EXPLORER_ICONS } from "../lib/entity-icons";
-import { useConsoleStore } from "../store/consoleStore";
+import {
+  selectTabBySettingsSection,
+  useConsoleStore,
+} from "../store/consoleStore";
+import { SECTION_LABELS } from "../pages/settings/sections";
 import { useWorkflowsStore } from "../store/workflowsStore";
 import ExplorerShell from "./ExplorerShell";
 
@@ -183,6 +189,23 @@ export function WorkflowsExplorer() {
       KEEP_OTHER_TABS,
     );
 
+  const openGitHubSettings = () => {
+    const state = useConsoleStore.getState();
+    const existing = selectTabBySettingsSection("github")(state);
+    if (existing) {
+      state.setActiveTab(existing.id);
+      return;
+    }
+    state.setActiveTab(
+      state.openTab({
+        title: SECTION_LABELS.github,
+        content: "",
+        kind: "settings",
+        settingsSection: "github",
+      }),
+    );
+  };
+
   const deployment = overview?.deployment;
   const buildError = deployment?.buildError
     ? `Build failed at ${short(deployment.targetSha)}. ${
@@ -223,121 +246,140 @@ export function WorkflowsExplorer() {
         </Tooltip>
       }
     >
-      {() => (
-        <Box sx={{ whiteSpace: "pre-wrap" }}>
-          <SectionHeader
-            label="Workflows"
-            open={workflowsOpen}
-            onToggle={() => setWorkflowsOpen(o => !o)}
-          />
-          {workflowsOpen && (
-            <Box sx={{ pb: 1 }}>
-              {workflows.length === 0 ? (
-                <Typography
-                  variant="caption"
-                  sx={{
-                    display: "block",
-                    px: 1.5,
-                    py: 0.5,
-                    color: "text.secondary",
-                  }}
-                >
-                  No workflows yet.
-                </Typography>
-              ) : (
-                workflows.map(w => (
-                  <Box
-                    key={w.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openWorkflow(w.id)}
-                    onKeyDown={e => e.key === "Enter" && openWorkflow(w.id)}
+      {() =>
+        overview?.repoLinked === false ? (
+          <Box sx={{ p: 2 }}>
+            <Typography variant="body2" color="text.secondary" gutterBottom>
+              Workflows live in a GitHub repository. Link one to get started —
+              each workflow is a folder in the repo, and merging to the default
+              branch puts it live.
+            </Typography>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<LinkIcon size={16} />}
+              sx={{ mt: 1 }}
+              onClick={openGitHubSettings}
+            >
+              Link a GitHub repo
+            </Button>
+          </Box>
+        ) : (
+          <Box sx={{ whiteSpace: "pre-wrap" }}>
+            <SectionHeader
+              label="Workflows"
+              open={workflowsOpen}
+              onToggle={() => setWorkflowsOpen(o => !o)}
+            />
+            {workflowsOpen && (
+              <Box sx={{ pb: 1 }}>
+                {workflows.length === 0 ? (
+                  <Typography
+                    variant="caption"
                     sx={{
-                      ...ROW_SX,
-                      bgcolor:
-                        activeMeta?.workflowId === w.id
-                          ? "action.selected"
-                          : "transparent",
+                      display: "block",
+                      px: 1.5,
+                      py: 0.5,
+                      color: "text.secondary",
                     }}
                   >
-                    <WorkflowIcon size={16} strokeWidth={1.5} />
-                    <Box component="span">{w.id}</Box>
-                    {w.previewOnly && (
-                      <Chip
-                        label="preview"
-                        size="small"
-                        variant="outlined"
-                        color="info"
-                        sx={{
-                          height: 16,
-                          fontSize: "0.62rem",
-                          "& .MuiChip-label": { px: 0.5 },
-                        }}
-                      />
-                    )}
-                  </Box>
-                ))
-              )}
-            </Box>
-          )}
+                    No workflows yet.
+                  </Typography>
+                ) : (
+                  workflows.map(w => (
+                    <Box
+                      key={w.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openWorkflow(w.id)}
+                      onKeyDown={e => e.key === "Enter" && openWorkflow(w.id)}
+                      sx={{
+                        ...ROW_SX,
+                        bgcolor:
+                          activeMeta?.workflowId === w.id
+                            ? "action.selected"
+                            : "transparent",
+                      }}
+                    >
+                      <WorkflowIcon size={16} strokeWidth={1.5} />
+                      <Box component="span">{w.id}</Box>
+                      {w.previewOnly && (
+                        <Chip
+                          label="preview"
+                          size="small"
+                          variant="outlined"
+                          color="info"
+                          sx={{
+                            height: 16,
+                            fontSize: "0.62rem",
+                            "& .MuiChip-label": { px: 0.5 },
+                          }}
+                        />
+                      )}
+                    </Box>
+                  ))
+                )}
+              </Box>
+            )}
 
-          <Divider />
+            <Divider />
 
-          <SectionHeader
-            label="Files"
-            open={filesOpen}
-            onToggle={() => setFilesOpen(o => !o)}
-          />
-          {filesOpen && (
-            <Box sx={{ pb: 1 }}>
-              {(files ?? []).length === 0 ? (
-                <Typography
-                  variant="caption"
-                  sx={{
-                    display: "block",
-                    px: 1.5,
-                    py: 0.5,
-                    color: "text.secondary",
-                  }}
-                >
-                  No files yet.
-                </Typography>
-              ) : (
-                <>
-                  {tree.folders.map(([folder, paths]) => {
-                    const open = !!openFolders[folder];
-                    return (
-                      <Box key={folder}>
-                        <Box
-                          role="button"
-                          tabIndex={0}
-                          onClick={() =>
-                            setOpenFolders(f => ({ ...f, [folder]: !open }))
-                          }
-                          onKeyDown={e =>
-                            e.key === "Enter" &&
-                            setOpenFolders(f => ({ ...f, [folder]: !open }))
-                          }
-                          sx={ROW_SX}
-                        >
-                          {open ? (
-                            <ChevronDownIcon size={14} strokeWidth={2} />
-                          ) : (
-                            <ChevronRightIcon size={14} strokeWidth={2} />
-                          )}
-                          <Box component="span">{folder}</Box>
+            <SectionHeader
+              label="Files"
+              open={filesOpen}
+              onToggle={() => setFilesOpen(o => !o)}
+            />
+            {filesOpen && (
+              <Box sx={{ pb: 1 }}>
+                {(files ?? []).length === 0 ? (
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      display: "block",
+                      px: 1.5,
+                      py: 0.5,
+                      color: "text.secondary",
+                    }}
+                  >
+                    No files yet.
+                  </Typography>
+                ) : (
+                  <>
+                    {tree.folders.map(([folder, paths]) => {
+                      const open = !!openFolders[folder];
+                      return (
+                        <Box key={folder}>
+                          <Box
+                            role="button"
+                            tabIndex={0}
+                            onClick={() =>
+                              setOpenFolders(f => ({ ...f, [folder]: !open }))
+                            }
+                            onKeyDown={e =>
+                              e.key === "Enter" &&
+                              setOpenFolders(f => ({ ...f, [folder]: !open }))
+                            }
+                            sx={ROW_SX}
+                          >
+                            {open ? (
+                              <ChevronDownIcon size={14} strokeWidth={2} />
+                            ) : (
+                              <ChevronRightIcon size={14} strokeWidth={2} />
+                            )}
+                            <Box component="span">{folder}</Box>
+                          </Box>
+                          {open && paths.map(path => fileRow(path, 4.25))}
                         </Box>
-                        {open && paths.map(path => fileRow(path, 4.25))}
-                      </Box>
-                    );
-                  })}
-                  {tree.rootFiles.map(path => fileRow(path, 1.75))}
-                </>
-              )}
-            </Box>
-          )}
-        </Box>
-      )}
+                      );
+                    })}
+                    {tree.rootFiles.map(path => fileRow(path, 1.75))}
+                  </>
+                )}
+              </Box>
+            )}
+          </Box>
+        )
+      }
     </ExplorerShell>
   );
 }

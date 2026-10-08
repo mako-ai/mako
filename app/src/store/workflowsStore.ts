@@ -48,6 +48,8 @@ export interface WorkflowsOverview {
   enabled: boolean;
   /** False when this installation has no Hatchet: the section is hidden. */
   configured: boolean;
+  /** False when the workspace has no repository to keep workflow files in. */
+  repoLinked: boolean;
   deployment: WorkflowDeployment;
   preview: (WorkflowDeployment & { branch: string }) | null;
   dashboardUrl: string | null;
