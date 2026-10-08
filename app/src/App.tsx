@@ -63,6 +63,7 @@ import SourceConnectionExplorer from "./components/SourceConnectionExplorer";
 import Editor from "./components/Editor";
 import DbtProjectDrawersHost from "./components/DbtProjectDrawersHost";
 import { FlowsExplorer } from "./components/FlowsExplorer";
+import { WorkflowsExplorer } from "./components/WorkflowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
@@ -554,6 +555,8 @@ function MainApp() {
         return <SourceControlExplorer />;
       case "dbt":
         return <DbtExplorer />;
+      case "workflows":
+        return <WorkflowsExplorer />;
       case "settings":
         return <SettingsExplorer />;
       default:

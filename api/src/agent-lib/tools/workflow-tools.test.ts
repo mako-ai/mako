@@ -49,6 +49,7 @@ const responses: Record<string, unknown> = {
         status: "FAILED",
         duration: 1200,
         errorMessage: "boom",
+        additionalMetadata: { trigger: "agent", triggeredBy: "member" },
       },
     ],
   },
@@ -148,6 +149,8 @@ async function main() {
       startedAt: undefined,
       durationMs: 1200,
       error: "boom",
+      trigger: "agent",
+      triggeredBy: "member",
     });
     assert.ok(!JSON.stringify(overview).includes(TOKEN));
 

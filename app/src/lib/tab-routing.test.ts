@@ -45,6 +45,10 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     metadata: { schema: "public", table: "users" },
   }),
   notebook: baseTab({ kind: "notebook", metadata: { notebookId: "nb-1" } }),
+  workflow: baseTab({
+    kind: "workflow",
+    metadata: { workflowId: "daily-digest" },
+  }),
   app: baseTab({
     kind: "app",
     metadata: { appId: "66f000000000000000000001" },

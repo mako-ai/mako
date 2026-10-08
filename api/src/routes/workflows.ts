@@ -4,7 +4,8 @@
  * (docs/src/content/docs/workflows.md).
  *
  * Mako keeps no copy of workflows, runs or logs: those handlers read Hatchet
- * and return Hatchet's own response shapes. What Mako does keep is the deploy
+ * and return it trimmed, the same way the agent tools do (workflows/runs.ts).
+ * What Mako does keep is the deploy
  * state on the workspace: the commit the worker should run, the commit it
  * reports running, and the last build error.
  *
@@ -17,16 +18,26 @@ import type { Context } from "hono";
 import { Types } from "mongoose";
 
 import { WORKFLOWS_DIR } from "../apps/app-paths";
-import { ensureCommitLocally } from "../apps/cloud-repo.service";
-import { isOid, runGitBuffer } from "../apps/git";
-import { repoDirFor, repoExists } from "../apps/repository.service";
+import {
+  ensureCommitLocally,
+  ensureLocalRepo,
+} from "../apps/cloud-repo.service";
+import { GitError, assertSafeRelPath, isOid, runGitBuffer } from "../apps/git";
+import {
+  DEFAULT_BRANCH,
+  listTree,
+  readBlob,
+  repoDirFor,
+  repoExists,
+  resolveCommit,
+} from "../apps/repository.service";
 import { hashApiKey } from "../auth/api-key.middleware";
 import {
   hasWorkspaceApiKeyScope,
   resolveWorkspaceApiKeyScopes,
 } from "../auth/api-key-scopes";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { Workspace } from "../database/workspace-schema";
+import { AppWorktree, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -36,14 +47,15 @@ import {
   isHatchetId,
   readWorkspaceTenant,
   runAction,
-  resolveHatchetRead,
-  tenantFetch,
   triggerRun,
   type WorkspaceTenant,
 } from "../workflows/hatchet";
-import { readWorkflowsStatus } from "../workflows/status";
+import { readRun, readWorkflowsOverview } from "../workflows/runs";
 
 const logger = loggers.api("workflows");
+
+/** How many recent runs the Workflows screen lists. */
+const RUNS_SHOWN = 100;
 
 // --- Workspace routes -------------------------------------------------------
 
@@ -129,7 +141,8 @@ workflowRoutes.openapi(
     method: "get",
     path: "/",
     tags: ["Workflows"],
-    summary: "Whether workflows are on, and which commit the worker runs",
+    summary:
+      "What is deployed (live and preview), the workflows, schedules and recent runs",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParam },
     responses: OPEN_RESPONSES,
@@ -137,8 +150,12 @@ workflowRoutes.openapi(
   async c => {
     try {
       const { workspaceId } = c.req.valid("param");
+      const tenant = await readWorkspaceTenant(workspaceId).catch(() => null);
       return c.json(
-        { success: true as const, ...(await readWorkflowsStatus(workspaceId)) },
+        {
+          success: true as const,
+          ...(await readWorkflowsOverview(workspaceId, tenant, RUNS_SHOWN)),
+        },
         200,
       );
     } catch (error) {
@@ -147,31 +164,107 @@ workflowRoutes.openapi(
   },
 );
 
-// Allowlisted Hatchet reads, in Hatchet's own response shapes. The tenant and
-// its token are added here; the caller cannot name either.
-workflowRoutes.get("/hatchet/*", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId") as string;
-    const tenant = await tenantOr(c, workspaceId);
-    if (tenant instanceof Response) return tenant;
-    const subPath = c.req.path.split("/workflows/hatchet/")[1] ?? "";
-    const target = resolveHatchetRead(subPath, tenant.tenantId);
-    if (!target) {
-      return c.json({ success: false, error: "Not found" }, 404);
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/runs/{id}",
+    tags: ["Workflows"],
+    summary: "One run: its steps in order, with status, output, error and logs",
+    security: AUTH_SECURITY,
+    request: { params: RunParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId, id } = c.req.valid("param");
+      if (!isHatchetId(id)) {
+        return c.json({ success: false, error: "Invalid run id" }, 400);
+      }
+      const tenant = await tenantOr(c, workspaceId);
+      if (tenant instanceof Response) return tenant;
+      return c.json(
+        { success: true as const, run: await readRun(tenant, id) },
+        200,
+      );
+    } catch (error) {
+      return fail(c, error);
     }
-    const res = await tenantFetch(tenant, target, {
-      query: new URL(c.req.url).searchParams,
-    });
-    return new Response(res.body, {
-      status: res.status,
-      headers: {
-        "Content-Type": res.headers.get("Content-Type") ?? "application/json",
-      },
-    });
-  } catch (error) {
-    return fail(c, error);
+  },
+);
+
+/**
+ * The commit a person's view of `workflows/` is read from: the branch their
+ * checkout is on, so they see the work they are previewing, else main.
+ */
+async function filesRef(
+  workspaceId: string,
+  userId: string,
+): Promise<{ repoDir: string; ref: string } | null> {
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) return null;
+  const worktree = await AppWorktree.findOne({
+    workspaceId: new Types.ObjectId(workspaceId),
+    userId,
+  })
+    .select("branch")
+    .lean();
+  for (const branch of [worktree?.branch, DEFAULT_BRANCH]) {
+    if (!branch) continue;
+    const ref = await resolveCommit(repoDir, `refs/heads/${branch}`);
+    if (ref) return { repoDir, ref };
   }
-});
+  return null;
+}
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/files",
+    tags: ["Workflows"],
+    summary: "The files under workflows/, or one file's contents with ?path=",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({ path: z.string().optional() }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path } = c.req.valid("query");
+      const source = await filesRef(workspaceId, String(c.get("user")!.id));
+      if (!source) return c.json({ success: true as const, files: [] }, 200);
+      const prefix = `${WORKFLOWS_DIR}/`;
+      if (!path) {
+        const files = (await listTree(source.repoDir, source.ref))
+          .map(entry => entry.path)
+          .filter(file => file.startsWith(prefix))
+          .map(file => file.slice(prefix.length));
+        return c.json({ success: true as const, files }, 200);
+      }
+      const file = await readBlob(
+        source.repoDir,
+        source.ref,
+        `${prefix}${assertSafeRelPath(path)}`,
+      );
+      return c.json(
+        {
+          success: true as const,
+          path,
+          contents: file.isBinary ? "" : file.contents,
+        },
+        200,
+      );
+    } catch (error) {
+      if (error instanceof GitError) {
+        return c.json({ success: false, error: "File not found" }, 404);
+      }
+      return fail(c, error);
+    }
+  },
+);
 
 workflowRoutes.openapi(
   createRoute({

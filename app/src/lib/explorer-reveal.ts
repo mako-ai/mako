@@ -136,6 +136,9 @@ export function tabRevealTarget(
       const projectId = meta.projectId as string | undefined;
       return projectId ? { explorer: "dbt", nodeId: projectId } : null;
     }
+    case "workflow":
+      // The Workflows explorer marks its open item from the active tab itself.
+      return null;
     case "app-diff":
     case "console-diff":
     case "repo-diff":

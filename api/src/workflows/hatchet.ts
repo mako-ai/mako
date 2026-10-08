@@ -226,8 +226,7 @@ export async function ensureWorkspaceTenant(
 
 // --- Tenant calls -----------------------------------------------------------
 
-/** One call to Hatchet as the workspace's tenant. Returns Hatchet's response. */
-export function tenantFetch(
+function tenantFetch(
   tenant: WorkspaceTenant,
   path: string,
   req: HatchetRequest = {},
@@ -247,55 +246,9 @@ export async function tenantJson<T>(
   return parse<T>(await tenantFetch(tenant, path, req), `Hatchet ${path}`);
 }
 
-const UUID = "[0-9a-fA-F-]{36}";
-
-/**
- * The Hatchet reads the UI may make, keyed by the path under
- * `/workflows/hatchet/`. `{tenant}` is filled in server-side; every other
- * Hatchet route is unreachable through Mako. Run and task routes carry no
- * tenant in their path — Hatchet checks the token against the resource.
- */
-const READ_ALLOWLIST: Array<{ pattern: RegExp; target: string }> = [
-  {
-    pattern: /^runs$/,
-    target: "/api/v1/stable/tenants/{tenant}/workflow-runs",
-  },
-  {
-    pattern: new RegExp(`^runs/(${UUID})$`),
-    target: "/api/v1/stable/workflow-runs/$1",
-  },
-  {
-    pattern: new RegExp(`^runs/(${UUID})/task-events$`),
-    target: "/api/v1/stable/workflow-runs/$1/task-events",
-  },
-  {
-    pattern: new RegExp(`^tasks/(${UUID})$`),
-    target: "/api/v1/stable/tasks/$1",
-  },
-  {
-    pattern: new RegExp(`^tasks/(${UUID})/logs$`),
-    target: "/api/v1/stable/tasks/$1/logs",
-  },
-  { pattern: /^workers$/, target: "/api/v1/tenants/{tenant}/worker" },
-  { pattern: /^workflows$/, target: "/api/v1/tenants/{tenant}/workflows" },
-  { pattern: /^crons$/, target: "/api/v1/tenants/{tenant}/workflows/crons" },
-];
-
-/** The Hatchet path for an allowlisted read, or null when it is not allowed. */
-export function resolveHatchetRead(
-  subPath: string,
-  tenantId: string,
-): string | null {
-  for (const { pattern, target } of READ_ALLOWLIST) {
-    const match = pattern.exec(subPath);
-    if (!match) continue;
-    return target.replace("{tenant}", tenantId).replace("$1", match[1] ?? "");
-  }
-  return null;
-}
-
+/** A Hatchet id: a UUID. Checked before one is put in a Hatchet path. */
 export function isHatchetId(value: string): boolean {
-  return new RegExp(`^${UUID}$`).test(value);
+  return /^[0-9a-fA-F-]{36}$/.test(value);
 }
 
 export function triggerRun(

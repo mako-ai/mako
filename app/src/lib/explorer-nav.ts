@@ -3,6 +3,9 @@
  * which icon and label. Shared by the desktop rail (Sidebar) and the
  * phone's Browse grid (MobileBrowse), so the two can never disagree.
  */
+import { useEffect, useMemo } from "react";
+import { useWorkspace } from "../contexts/workspace-context";
+import { useWorkflowsStore } from "../store/workflowsStore";
 import { EXPLORER_ICONS } from "./entity-icons";
 
 export type NavigationView =
@@ -14,6 +17,7 @@ export type NavigationView =
   | "notebooks"
   | "apps"
   | "dbt"
+  | "workflows"
   | "source-control"
   | "settings"
   | "views";
@@ -35,6 +39,7 @@ export const topNavigationItems: {
   { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
   { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
   { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
+  { view: "workflows", icon: EXPLORER_ICONS.workflows, label: "Workflows" },
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Sources" },
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
@@ -46,3 +51,28 @@ export const bottomNavigationItems: {
   icon: any;
   label: string;
 }[] = [{ view: "settings", icon: EXPLORER_ICONS.settings, label: "Settings" }];
+
+/**
+ * The rail for this workspace: Workflows is listed only where they are set
+ * up and turned on, so an installation without them never shows an entry
+ * that leads nowhere.
+ */
+export function useNavigationItems(): typeof topNavigationItems {
+  const { currentWorkspace } = useWorkspace();
+  const workspaceId = currentWorkspace?.id;
+  const overview = useWorkflowsStore(s =>
+    workspaceId ? s.overviewByWorkspace[workspaceId] : undefined,
+  );
+  const fetchOverview = useWorkflowsStore(s => s.fetchOverview);
+  useEffect(() => {
+    if (workspaceId) void fetchOverview(workspaceId);
+  }, [workspaceId, fetchOverview]);
+  const available = Boolean(overview?.configured && overview.enabled);
+  return useMemo(
+    () =>
+      available
+        ? topNavigationItems
+        : topNavigationItems.filter(item => item.view !== "workflows"),
+    [available],
+  );
+}

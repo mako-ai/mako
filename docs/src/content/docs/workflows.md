@@ -110,13 +110,8 @@ With none of these set, Mako runs without workflows.
 
 All under `/api/workspaces/<workspaceId>/workflows`:
 
-| Route                                                 | Does                                                                                                 |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `GET /`                                               | Whether workflows are on, the commit that should run, the commit that runs, and the last build error |
-| `GET /hatchet/workflows`, `/hatchet/crons`            | Registered workflows and schedules                                                                   |
-| `GET /hatchet/runs?since=<ISO date>&only_tasks=false` | Runs                                                                                                 |
-| `GET /hatchet/runs/<id>`, `/hatchet/tasks/<id>/logs`  | One run, and a task's logs                                                                           |
-| `POST /<name>/run`                                    | Start a run. Body: `{ "input": { ... } }`                                                            |
-| `POST /runs/<id>/cancel`, `/runs/<id>/replay`         | Cancel or replay a run                                                                               |
-
-Responses from the `/hatchet/` routes are Hatchet's own.
+| Route                                  | Does                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /`                                | What is deployed (live and preview), build errors, the workflows, schedules and recent runs |
+| `GET /runs/<id>`                       | One run: its steps in order, with status, output, error and logs                            |
+| `GET /files`, `GET /files?path=<file>` | The files under `workflows/`, or one file's contents                                        |

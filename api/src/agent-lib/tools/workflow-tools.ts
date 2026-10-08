@@ -22,144 +22,16 @@ import {
   HatchetError,
   isHatchetId,
   readWorkspaceTenant,
-  tenantJson,
   triggerRun,
-  type WorkspaceTenant,
 } from "../../workflows/hatchet";
-import { readWorkflowsStatus } from "../../workflows/status";
+import {
+  PREVIEW_PREFIX,
+  readRun,
+  readWorkflowsOverview,
+} from "../../workflows/runs";
 
-/** Preview workflows are registered in Hatchet under this prefix (worker.mjs). */
-const PREVIEW_PREFIX = "preview_";
+/** How many recent runs an agent is shown. */
 const RECENT_RUNS = 10;
-const RECENT_RUNS_DAYS = 7;
-const LOG_LINES_PER_STEP = 20;
-const MAX_TEXT_CHARS = 2000;
-
-type Row = Record<string, unknown>;
-type Rows = { rows?: Row[] };
-
-const cap = (value: unknown): string | undefined => {
-  if (value === undefined || value === null || value === "") return undefined;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length > MAX_TEXT_CHARS
-    ? `${text.slice(0, MAX_TEXT_CHARS)}… (${text.length} chars)`
-    : text;
-};
-
-const idOf = (row: Row): string | undefined =>
-  (row.metadata as { id?: string } | undefined)?.id;
-
-/** A workflow's name as people write it, and whether it is the preview's. */
-function splitName(name: unknown): { workflowId: string; preview: boolean } {
-  const text = String(name ?? "");
-  return text.startsWith(PREVIEW_PREFIX)
-    ? { workflowId: text.slice(PREVIEW_PREFIX.length), preview: true }
-    : { workflowId: text, preview: false };
-}
-
-/**
- * Hatchet reports a step's error as JSON, `{ message, stack }`. The message
- * is what an agent needs; the stack's first lines say where.
- */
-function errorOf(value: unknown): string | undefined {
-  if (typeof value !== "string" || !value) return undefined;
-  try {
-    const parsed = JSON.parse(value) as { message?: string; stack?: string };
-    if (parsed.message) {
-      const where = (parsed.stack ?? "").split("\n").slice(1, 4).join("\n");
-      return cap(`${parsed.message.trim()}${where ? `\n${where}` : ""}`);
-    }
-  } catch {
-    // Not JSON: use it as it is.
-  }
-  return cap(value);
-}
-
-/** A one-step run reports Hatchet's envelope around the input; unwrap it. */
-function inputOf(value: unknown): unknown {
-  const envelope = value as { input?: unknown; triggered_by?: unknown } | null;
-  return envelope && "triggered_by" in envelope ? envelope.input : value;
-}
-
-const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
-  runId: idOf(run),
-  ...splitName(workflowName),
-  status: run.status,
-  startedAt: run.startedAt ?? run.createdAt,
-  durationMs: run.duration,
-  error: errorOf(run.errorMessage),
-});
-
-async function overview(workspaceId: string, tenant: WorkspaceTenant | null) {
-  const status = await readWorkflowsStatus(workspaceId);
-  if (!tenant) return status;
-  const base = `/api/v1/tenants/${tenant.tenantId}`;
-  const since = new Date(Date.now() - RECENT_RUNS_DAYS * 864e5).toISOString();
-  const [workflows, crons, runs] = await Promise.all([
-    tenantJson<Rows>(tenant, `${base}/workflows`),
-    tenantJson<Rows>(tenant, `${base}/workflows/crons`),
-    tenantJson<Rows>(
-      tenant,
-      `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs`,
-      {
-        query: new URLSearchParams({
-          since,
-          only_tasks: "false",
-          limit: String(RECENT_RUNS),
-        }),
-      },
-    ),
-  ]);
-  return {
-    ...status,
-    workflows: (workflows.rows ?? []).map(w => splitName(w.name)),
-    schedules: (crons.rows ?? []).map(c => ({
-      workflowId: c.workflowName,
-      cron: c.cron,
-    })),
-    recentRuns: (runs.rows ?? []).map(run => runSummary(run)),
-  };
-}
-
-async function runDetail(tenant: WorkspaceTenant, runId: string) {
-  const detail = await tenantJson<{ run?: Row; tasks?: Row[] }>(
-    tenant,
-    `/api/v1/stable/workflow-runs/${runId}`,
-  );
-  // A step's `actionId` is `<workflow>:<step>`; Hatchet lists steps in no order.
-  const tasks = [...(detail.tasks ?? [])].sort((a, b) =>
-    String(a.taskInsertedAt ?? "").localeCompare(
-      String(b.taskInsertedAt ?? ""),
-    ),
-  );
-  const nameOf = (task: Row | undefined, part: 0 | 1) =>
-    String(task?.actionId ?? "").split(":")[part];
-  const steps = await Promise.all(
-    tasks.map(async task => {
-      const taskId = idOf(task);
-      const logs = taskId
-        ? await tenantJson<Rows>(tenant, `/api/v1/stable/tasks/${taskId}/logs`)
-            .then(l => (l.rows ?? []).slice(-LOG_LINES_PER_STEP))
-            .catch(() => [])
-        : [];
-      return {
-        step: nameOf(task, 1) || task.displayName,
-        status: task.status,
-        attempt: task.attempt,
-        durationMs: task.duration,
-        output: cap(task.output),
-        error: errorOf(task.errorMessage),
-        logs: logs.map(line => cap(line.message)),
-      };
-    }),
-  );
-  return {
-    ...runSummary(detail.run ?? {}, nameOf(tasks[0], 0)),
-    input: cap(inputOf(detail.run?.input)),
-    output: cap(detail.run?.output),
-    steps,
-  };
-}
 
 const failure = (error: unknown) => ({
   success: false as const,
@@ -190,7 +62,14 @@ export function createWorkflowTools({
         try {
           const tenant = await readWorkspaceTenant(workspaceId);
           if (!runId) {
-            return { success: true, ...(await overview(workspaceId, tenant)) };
+            return {
+              success: true,
+              ...(await readWorkflowsOverview(
+                workspaceId,
+                tenant,
+                RECENT_RUNS,
+              )),
+            };
           }
           if (!isHatchetId(runId)) {
             return { success: false, error: `Invalid run id: ${runId}` };
@@ -198,7 +77,7 @@ export function createWorkflowTools({
           if (!tenant) {
             return { success: false, error: "Workflows are not set up." };
           }
-          return { success: true, run: await runDetail(tenant, runId) };
+          return { success: true, run: await readRun(tenant, runId) };
         } catch (error) {
           return failure(error);
         }
@@ -243,10 +122,10 @@ export function createWorkflowTools({
             `${preview ? PREVIEW_PREFIX : ""}${workflowId}`,
             input ?? {},
             { trigger: "agent", triggeredBy: userId ?? "api-key" },
-          )) as { run?: Row } & Row;
+          )) as { run?: { metadata?: { id?: string } } };
           return {
             success: true,
-            runId: idOf(run.run ?? run),
+            runId: run.run?.metadata?.id,
             workflowId,
             preview: preview === true,
           };

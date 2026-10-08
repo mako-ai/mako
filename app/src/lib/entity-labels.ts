@@ -32,6 +32,7 @@ export const TAB_KIND_ENTITY_LABELS = {
   "dbt-job": "job",
   "dbt-runs": "runs view",
   "dbt-console": "project",
+  workflow: "workflow",
   notebook: "notebook",
 } as const satisfies Record<NonNullable<TabKind>, string>;
 
