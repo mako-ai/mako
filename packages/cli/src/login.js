@@ -13,7 +13,10 @@ const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 
 export function pkcePair() {
   const verifier = crypto.randomBytes(32).toString("base64url");
-  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+  const challenge = crypto
+    .createHash("sha256")
+    .update(verifier)
+    .digest("base64url");
   return { verifier, challenge };
 }
 
@@ -26,7 +29,9 @@ export async function discover(apiUrl, fetchImpl = globalThis.fetch) {
     registration_endpoint: `${base}/api/oauth/mcp/register`,
   };
   try {
-    const res = await fetchImpl(`${base}/.well-known/oauth-authorization-server`);
+    const res = await fetchImpl(
+      `${base}/.well-known/oauth-authorization-server`,
+    );
     if (!res.ok) return fallback;
     const meta = await res.json();
     return { ...fallback, ...meta };
@@ -35,7 +40,11 @@ export async function discover(apiUrl, fetchImpl = globalThis.fetch) {
   }
 }
 
-export async function registerClient(meta, redirectUri, fetchImpl = globalThis.fetch) {
+export async function registerClient(
+  meta,
+  redirectUri,
+  fetchImpl = globalThis.fetch,
+) {
   const res = await fetchImpl(meta.registration_endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -48,10 +57,13 @@ export async function registerClient(meta, redirectUri, fetchImpl = globalThis.f
     }),
   });
   if (!res.ok) {
-    throw new Error(`client registration failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+    throw new Error(
+      `client registration failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`,
+    );
   }
   const body = await res.json();
-  if (!body.client_id) throw new Error("client registration returned no client_id");
+  if (!body.client_id)
+    throw new Error("client registration returned no client_id");
   return body.client_id;
 }
 
@@ -81,30 +93,41 @@ function awaitCallback(server, expectedState, timeoutMs) {
         return;
       }
       res.end(
-        loginPage(error === "access_denied" ? "denied" : error ? "error" : "approved", error === "access_denied" ? "" : error ?? ""),
+        loginPage(
+          error === "access_denied" ? "denied" : error ? "error" : "approved",
+          error === "access_denied" ? "" : (error ?? ""),
+        ),
       );
       clearTimeout(timer);
       server.close();
-      error ? reject(new Error(`sign-in refused: ${error} ${url.searchParams.get("error_description") ?? ""}`.trim())) : resolve(code);
+      error
+        ? reject(
+            new Error(
+              `sign-in refused: ${error} ${url.searchParams.get("error_description") ?? ""}`.trim(),
+            ),
+          )
+        : resolve(code);
     });
   });
 }
 
 /**
- * What the CLI asks for: read-only MCP, plus `warehouse:write` with
- * `--warehouse-write` (what `mako dbt run` needs — the consent screen shows
- * it as its own option, pre-ticked because it was asked for; untickable).
+ * What the CLI asks for: everything. The server issues the full MCP scope
+ * set on every sign-in anyway; `--warehouse-write` is still accepted (old
+ * scripts pass it) and changes nothing.
  */
-export function loginScopes(flags = {}) {
-  return ["mcp", "query:read", ...(flags["warehouse-write"] ? ["warehouse:write"] : [])];
+export function loginScopes(_flags = {}) {
+  return ["mcp", "query:read", "warehouse:write", "connections:write"];
 }
 
 /**
- * The browser's authorize URL. `scope` carries what `loginScopes` asks for;
- * the consent page shows (and pre-ticks) exactly the optional scopes named
- * here, so `--warehouse-write` must reach it.
+ * The browser's authorize URL. `scope` carries what `loginScopes` asks for
+ * (the full set; the server issues it whatever is asked).
  */
-export function authorizeUrl(meta, { apiUrl, clientId, redirectUri, challenge, state, flags = {} }) {
+export function authorizeUrl(
+  meta,
+  { apiUrl, clientId, redirectUri, challenge, state, flags = {} },
+) {
   const url = new URL(meta.authorization_endpoint);
   url.search = new URLSearchParams({
     response_type: "code",
@@ -131,9 +154,18 @@ export async function login(ctx, flags, io = { log: console.log }) {
   const clientId = await registerClient(meta, redirectUri);
   const { verifier, challenge } = pkcePair();
   const state = crypto.randomBytes(16).toString("base64url");
-  const authorize = authorizeUrl(meta, { apiUrl, clientId, redirectUri, challenge, state, flags });
+  const authorize = authorizeUrl(meta, {
+    apiUrl,
+    clientId,
+    redirectUri,
+    challenge,
+    state,
+    flags,
+  });
 
-  io.log(`Signing in to ${apiUrl}${ctx.workspaceId ? ` (workspace ${ctx.workspaceId})` : ""}…`);
+  io.log(
+    `Signing in to ${apiUrl}${ctx.workspaceId ? ` (workspace ${ctx.workspaceId})` : ""}…`,
+  );
   if (flags.browser === false || !openInBrowser(authorize.toString())) {
     io.log(`Open this URL in your browser:\n\n  ${authorize}\n`);
   } else {
@@ -153,20 +185,29 @@ export async function login(ctx, flags, io = { log: console.log }) {
     }),
   });
   if (!tokenRes.ok) {
-    throw new Error(`token exchange failed: HTTP ${tokenRes.status} ${(await tokenRes.text()).slice(0, 200)}`);
+    throw new Error(
+      `token exchange failed: HTTP ${tokenRes.status} ${(await tokenRes.text()).slice(0, 200)}`,
+    );
   }
   const tokens = await tokenRes.json();
   saveCredential(apiUrl, ctx.workspaceId, {
     clientId,
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
-    expiresAt: new Date(Date.now() + Number(tokens.expires_in || 3600) * 1000).toISOString(),
-    scopes: typeof tokens.scope === "string" ? tokens.scope.split(" ") : undefined,
+    expiresAt: new Date(
+      Date.now() + Number(tokens.expires_in || 3600) * 1000,
+    ).toISOString(),
+    scopes:
+      typeof tokens.scope === "string" ? tokens.scope.split(" ") : undefined,
   });
-  io.log(`Signed in. Credentials saved for ${apiUrl}${ctx.workspaceId ? ` / workspace ${ctx.workspaceId}` : ""}.`);
+  io.log(
+    `Signed in. Credentials saved for ${apiUrl}${ctx.workspaceId ? ` / workspace ${ctx.workspaceId}` : ""}.`,
+  );
   if (typeof tokens.scope === "string") io.log(`Granted: ${tokens.scope}.`);
   if (!ctx.workspaceId) {
-    io.log("Tip: run `mako login` inside a workspace checkout so the credential is tied to that workspace.");
+    io.log(
+      "Tip: run `mako login` inside a workspace checkout so the credential is tied to that workspace.",
+    );
   }
   return 0;
 }

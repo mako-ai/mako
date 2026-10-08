@@ -105,10 +105,10 @@ assert.equal(
   false,
 );
 
-// `mako dbt run`: start, follow and cancel a laptop run — with
-// warehouse:write only (the uploaded code runs with the environment's
-// warehouse credentials), never with a read-only login. Which ENVIRONMENT
-// may be built is the route's decision (local-run.service), not this one.
+// `mako dbt run`: start, follow and cancel a laptop run — with any MCP/CLI
+// login (no separate warehouse opt-in; the dbt routes' RBAC keeps viewers
+// out). Which ENVIRONMENT may be built is the route's decision
+// (local-run.service), not this one.
 const warehouse = ["mcp", "query:read", "warehouse:write"] as const;
 const localRuns = `/api/workspaces/${WS}/dbt/local-runs`;
 const RUN = "68b0c0ffee0000000000abcd";
@@ -134,14 +134,12 @@ for (const path of [
   assert.equal(scopedKeyMayAccess("GET", path, warehouse), false, path);
   assert.equal(scopedKeyMayAccess("POST", path, warehouse), false, path);
 }
-// Review finding (#1013): no narrower scope opens these routes.
+// Any MCP/CLI login opens them, old warehouse:write logins included.
 for (const scopes of [read, mcpOnly]) {
-  assert.equal(scopedKeyMayAccess("POST", localRuns, scopes), false);
-  assert.equal(scopedKeyMayAccess("GET", `${localRuns}/${RUN}`, scopes), false);
-  assert.equal(
-    scopedKeyMayAccess("POST", `${localRuns}/${RUN}/cancel`, scopes),
-    false,
-  );
+  assert.equal(scopedKeyMayAccess("POST", localRuns, scopes), true);
+  assert.equal(scopedKeyMayAccess("GET", `${localRuns}/${RUN}`, scopes), true);
 }
+// A key without the mcp scope (REST-only) still cannot.
+assert.equal(scopedKeyMayAccess("POST", localRuns, ["query:read"]), false);
 
 console.log("scoped-key-routes: ok");

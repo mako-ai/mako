@@ -27,7 +27,14 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * on each execution rather than trusted from the key. A key cannot invite
  * above its owner's own role either — see invite_workspace_member.
  *
- * None of the write scopes are granted by default; workspace admins opt a
+ * `warehouse:write` and `connections:write` are no longer opt-ins: every
+ * MCP/CLI credential holds the warehouse-write and connections-write grants
+ * (mako-mcp-server.ts, EXTERNAL_MCP_IMPLICIT_GRANTS), OAuth issues both
+ * scopes on every sign-in, and what a viewer may not do is decided by the
+ * caller's live workspace role. The scope names stay valid so stored keys,
+ * tokens and older CLIs keep parsing.
+ *
+ * `members:write` and `query:write` are the remaining opt-ins; workspace admins opt a
  * key in explicitly.
  */
 export const WORKSPACE_API_KEY_SCOPES = [
@@ -37,6 +44,7 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "warehouse:write",
   "git:write",
   "members:write",
+  "connections:write",
 ] as const;
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
@@ -141,6 +149,9 @@ export function capabilityGrantsFromScopes(
   }
   if (hasWorkspaceApiKeyScope(scopes, "members:write")) {
     grants.push("members-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "connections:write")) {
+    grants.push("connections-write");
   }
   return grants;
 }

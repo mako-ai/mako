@@ -11,7 +11,7 @@ import { whoami } from "./whoami.js";
 
 const HELP = `mako — Mako from your terminal
 
-  mako login   [--api-url <url>] [--no-browser] [--warehouse-write]
+  mako login   [--api-url <url>] [--no-browser]
                                                   sign in once (OAuth, browser), for this workspace checkout
   mako logout                                     forget the stored credential for this host/workspace
   mako whoami                                     show which host/workspace you are signed in to (refreshes an expired token)
@@ -22,8 +22,7 @@ const HELP = `mako — Mako from your terminal
   mako connector probe <id|name> [--entity <e>]   run a configured connector live: check + one page, written nowhere
   mako dbt run|build|test -s <selector> [--env <name>] [--full-refresh] [--no-defer]
                                                   run dbt in Mako's runner on this checkout's dbt/ (uncommitted
-                                                  edits included); default: your personal environment;
-                                                  needs \`mako login --warehouse-write\`
+                                                  edits included); default: your personal environment
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env

@@ -309,6 +309,12 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // reads external data, so it needs query access like sql_execute_query
   // does, and it reaches outside the workspace, hence openWorldHint.
   probe_connection: bridge({ requiresQueryAccess: true, openWorldHint: true }),
+  // The one write in this group: stores a new SOURCE connection (credential)
+  // and runs its credential check against the platform (openWorldHint).
+  // Hidden from any key without connections:write (the connections-write
+  // grant) and refused below the member role, both enforced from the
+  // capability registry at listing and at execution.
+  create_connection: bridge({ openWorldHint: true }),
   // The pre-push check for flow files. Reads only — it says what a push
   // WOULD do to running streams and performs none of it — so it is bridged
   // next to the discovery pair it completes: discover ids, write the file,
