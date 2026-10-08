@@ -1,8 +1,8 @@
 # Helm values for hatchet/hatchet-stack 0.19.0 (engine v0.107.0), installed by
 # provision.sh into namespace `hatchet` on the notebook-kernels cluster.
 #
-# - Postgres is Neon (DATABASE_URL, the DIRECT endpoint — never `-pooler`),
-#   set by provision.sh from the HATCHET_DATABASE_URL secret.
+# - Postgres is Cloud SQL (private IP), created by provision.sh, which passes
+#   DATABASE_URL from the HATCHET_DATABASE_URL secret. Not Neon: see the README.
 # - No RabbitMQ: Hatchet uses Postgres as its queue.
 # - Nothing is exposed outside the cluster. Workers reach the engine over
 #   in-cluster gRPC; the Mako API reaches the REST API on pod IPs over the VPC

@@ -75,34 +75,31 @@ reuses the notebook-kernels GKE cluster and its gVisor node pool.
 
 | Path                  | What                                                                                                                                         |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provision.sh`        | One-time, idempotent setup per project: Hatchet (Helm), its internal load balancer, the `mako-workflows` namespace, egress lockdown          |
-| `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Neon Postgres, Postgres queue, nothing exposed                                               |
+| `provision.sh`        | One-time, idempotent setup per project: the Cloud SQL database, Hatchet (Helm), its internal load balancer, the `mako-workflows` namespace   |
+| `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Cloud SQL Postgres, Postgres queue, nothing exposed                                          |
 | `k8s/`                | Namespace, quota and network policy for worker pods                                                                                          |
 | `runtime/`            | The worker image: follow the commit Mako names, typecheck it, run a Hatchet worker                                                           |
 | `template/workflows/` | Starter files for a workspace: `hatchet.ts`, `index.ts`, `lib/mako.ts` and three examples. Typechecked against the runtime image's packages. |
 
 ## Environments
 
-| Environment          | GCP project    | Hatchet database (Neon, direct endpoint)        |
+Each environment has its own Hatchet and its own database.
+
+| Environment          | GCP project    | Hatchet database                                |
 | -------------------- | -------------- | ----------------------------------------------- |
-| Production           | `mako-ai-prod` | secret `HATCHET_DATABASE_URL` in `mako-ai-prod` |
-| PR previews (shared) | `mako-ai-dev`  | secret `HATCHET_DATABASE_URL` in `mako-ai-dev`  |
-| Local                | —              | Hatchet Lite in `docker-compose.yml`            |
+| Production           | `mako-ai-prod` | Cloud SQL `mako-hatchet` in `mako-ai-prod`      |
+| PR previews (shared) | `mako-ai-dev`  | Cloud SQL `mako-hatchet` in `mako-ai-dev`       |
+| Local                | —              | Postgres in `docker-compose.yml` (Hatchet Lite) |
 
 Previews share one Hatchet. Each PR prefixes its tenants and worker
 Deployments with `pr-<n>-` (`WORKFLOWS_NAME_PREFIX`). When the PR closes,
 `cleanup-preview.yml` deletes its Deployments and Secrets; the idle Hatchet
 tenants stay.
 
-Hatchet refuses to start unless its database timezone is UTC. Neon defaults to
-GMT, so `provision.sh` sets it before the install.
-
-**Known problem (2026-10-08): Hatchet v0.107.0 does not work on Neon.** Runs
-stay `QUEUED` and the engine logs `relation "outbox.messages" does not exist`.
-Hatchet's outbox migrations select their schema with the `search_path`
-connection parameter, which Neon drops, also on the direct endpoint, so the
-outbox tables are created in `public`. The dev Hatchet is in this state. Open:
-move Hatchet's database off Neon, or repair the schema after each migration.
+**Do not put Hatchet's database on Neon.** Hatchet's outbox migrations choose
+their schema with the `search_path` connection parameter. Neon drops it, also
+on the direct endpoint, so the tables are created in `public`, the engine logs
+`relation "outbox.messages" does not exist`, and runs stay `QUEUED`.
 
 Workflows stay off for a workspace until staff turn them on:
 `PUT /api/admin/workspaces/:workspaceId/workflows` with `{ "enabled": true }`.

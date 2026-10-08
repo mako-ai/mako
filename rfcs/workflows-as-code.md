@@ -103,7 +103,8 @@ and locked-down egress.
 
 | Piece | What | New or reused |
 |---|---|---|
-| Hatchet | Official Helm chart, namespace `hatchet`. Dashboard for staff only. | New |
+| Hatchet | Official Helm chart, namespace `hatchet`. One per environment (dev, prod). Dashboard for staff only. | New |
+| Hatchet database | Cloud SQL Postgres, private IP, one per environment. Not Neon: Hatchet's migrations need a connection parameter Neon drops. | New |
 | Hatchet API address | An internal load balancer, so the Mako API on Cloud Run can reach Hatchet (`HATCHET_API_URL`) | New |
 | Namespace | `mako-workflows` on the gVisor node pool | Pool reused |
 | Network policy | Copy of the kernel policy (HTTPS out, no private ranges, no metadata server), plus Hatchet gRPC | Copied |
