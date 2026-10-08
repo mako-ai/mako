@@ -21,8 +21,8 @@ export type CapabilityGrant =
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
-  // Store a new credential (a source connection) in the workspace. Opted
-  // into per key, never implicit on external MCP.
+  // Store a new credential (a source connection) in the workspace. Held by
+  // every external MCP/CLI credential; the member role gates it.
   "connections-write",
   "git-write",
   // Who can reach the workspace at all — the only grant that can widen the

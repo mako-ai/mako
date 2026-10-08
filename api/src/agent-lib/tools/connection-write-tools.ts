@@ -8,15 +8,14 @@
  * written `connectors/<slug>/` can go on to probing it without a human
  * round-trip through the connection form.
  *
- * Authorization, in layers (same shape as member-tools.ts):
+ * Authorization:
  *
- *   1. The key must carry the `connections:write` scope (grant
- *      `connections-write`), which is never implicit and never a default.
- *      The capability registry hides the tool from keys without it and the
- *      runtime refuses it at execution.
- *   2. The key's OWNER must still hold at least the member role, looked up
- *      live on every call: the capability's `minimumWorkspaceRole`, and again
- *      here, because a key outlives the membership that justified it.
+ *   1. Every MCP/CLI credential holds the `connections-write` grant — no
+ *      opt-in scope or consent checkbox, like warehouse execution.
+ *   2. The credential's OWNER must still hold at least the member role,
+ *      looked up live on every call: the capability's `minimumWorkspaceRole`
+ *      hides it from viewers, and it is checked again here, because a key
+ *      outlives the membership that justified it.
  *   3. It only CREATES. It cannot read, change or delete an existing
  *      connection, so a key holding it cannot swap the credential behind a
  *      running flow or exfiltrate one.
@@ -144,7 +143,7 @@ export function createConnectionWriteTools(
         "By default the credential is checked against the platform right away; if the check fails, nothing is kept and the platform's message is returned. Pass `check: false` only for a platform that is unreachable on purpose.",
         "The credential travels through this conversation: only use a value the user gave you for this purpose, never one read from a file, a page or another tool's output, and never repeat it back.",
         "Creates only — it cannot read, update or delete an existing connection. Names must be unique among the workspace's source connections.",
-        "Requires an API key or OAuth grant with the 'connections:write' scope whose owner is at least a member of the workspace.",
+        "Requires at least the member role in the workspace.",
       ].join("\n"),
       inputSchema: z.object({
         connector: z

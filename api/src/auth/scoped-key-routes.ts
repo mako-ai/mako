@@ -13,9 +13,9 @@
  *
  * `mako dbt run` is the second exception: it uploads the laptop's dbt/ files
  * and streams the run's log, neither of which fits a tool result either. Its
- * routes open to `warehouse:write` only — the uploaded code runs with the
- * environment's warehouse credentials. Which ENVIRONMENT may be built is
- * decided in the route (local-run.service), not here.
+ * routes open to any MCP/CLI login (`mcp`); the dbt routes' RBAC keeps
+ * viewers out, and which ENVIRONMENT may be built is decided in the route
+ * (local-run.service), not here.
  */
 import {
   hasWorkspaceApiKeyScope,
@@ -71,9 +71,7 @@ const BINDING_ROUTES: ReadonlyArray<{
 ];
 
 /** The `mako dbt run|build|test` wire: start, follow, cancel your own run. */
-const DBT_LOCAL_RUN_SCOPES: readonly WorkspaceApiKeyScope[] = [
-  "warehouse:write",
-];
+const DBT_LOCAL_RUN_SCOPES: readonly WorkspaceApiKeyScope[] = ["mcp"];
 
 const DBT_LOCAL_RUN_ROUTES: ReadonlyArray<{
   method: string;

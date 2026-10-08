@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 process.env.ENCRYPTION_KEY =
   process.env.ENCRYPTION_KEY ??
@@ -8,7 +10,6 @@ import { AGENT_CAPABILITY_BY_NAME, CAPABILITY_GRANTS } from "@mako/agent-tools";
 
 import { configProblem, declaredFields } from "./connection-write-tools";
 import {
-  DEFAULT_WORKSPACE_API_KEY_SCOPES,
   capabilityGrantsFromScopes,
   resolveWorkspaceApiKeyScopes,
 } from "../../auth/api-key-scopes";
@@ -16,7 +17,7 @@ import { MCP_BRIDGE_POLICY } from "../../mcp/bridge-policy";
 
 /**
  * create_connection stores a credential. These assertions cover what would
- * quietly turn it from gated into open, or store a secret in plaintext.
+ * let a viewer reach it, or store a secret in plaintext.
  */
 
 // --- config validation: fail closed, and never mention a value -------------
@@ -62,23 +63,24 @@ assert.ok(missing);
 assert.match(missing, /Missing required config field\(s\): apiKey/);
 assert.ok(configProblem({ apiKey: "" }, fields), "an empty secret is missing");
 
-// --- the scope is opt-in, and maps to exactly one grant --------------------
+// --- no opt-in: every MCP session holds the grant; the role gates it ------
 
-assert.ok(
-  !DEFAULT_WORKSPACE_API_KEY_SCOPES.includes("connections:write" as never),
-  "connections:write must never be a default scope",
+const serverSource = readFileSync(
+  join(__dirname, "../../mcp/mako-mcp-server.ts"),
+  "utf8",
 );
+assert.ok(
+  /EXTERNAL_MCP_IMPLICIT_GRANTS[\s\S]{0,200}?"connections-write"/.test(
+    serverSource,
+  ),
+  "connections-write must be an implicit grant of every MCP/CLI credential",
+);
+// Stored keys and tokens that carry the old scope keep parsing.
 assert.deepEqual(
   capabilityGrantsFromScopes(
     resolveWorkspaceApiKeyScopes(["mcp", "query:read", "connections:write"]),
   ),
   ["connections-write"],
-);
-assert.deepEqual(
-  capabilityGrantsFromScopes(
-    resolveWorkspaceApiKeyScopes(["mcp", "query:read"]),
-  ),
-  [],
 );
 assert.ok(CAPABILITY_GRANTS.includes("connections-write"));
 

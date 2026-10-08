@@ -211,8 +211,8 @@ export function buildMakoMcpCandidateTools(
   const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
   // Connector discovery for flow authoring (RFC: agent-authored flows).
   const connectorTools = createConnectorTools(workspaceId);
-  // Gated by the connections-write grant (scope connections:write) and the
-  // capability's live minimum role; creates source connections only.
+  // Gated by the capability's live minimum role (member); creates source
+  // connections only.
   const connectionWriteTools = createConnectionWriteTools(workspaceId, userId);
   // The pre-push check for `flows/<slug>.yml` (RFC: agent-authored flows).
   // The agent in that scenario has the WORKSPACE repo checked out, not this
@@ -259,11 +259,15 @@ export function buildMakoMcpCandidateTools(
 /**
  * Grants held by this MCP session.
  *
- * External MCP keeps its long-standing implicit headless-authoring authority
- * (artifact-write for app/notebook/dbt-file drafts, schedule-write for
- * binding schedules — both relied on by every existing key), and derives the
- * rest from explicit opt-in OAuth/API-key scopes (warehouse:write → the
- * warehouse-write grant behind dbt_run_model / dbt_run_job / dbt_cancel_run).
+ * Connecting an MCP client or the CLI gives it everything its owner's
+ * workspace ROLE allows — no per-permission opt-in, no consent checkbox:
+ * app/notebook/dbt-file drafts (artifact-write), binding schedules
+ * (schedule-write), governed dbt execution (warehouse-write) and creating
+ * source connections (connections-write). What a viewer may not do is
+ * decided by each capability's `minimumWorkspaceRole`, checked against the
+ * caller's LIVE role at listing and at execution — not by the credential.
+ * Only `members-write` (who can reach the workspace at all) stays an
+ * explicit per-key scope (`members:write`).
  *
  * Desktop ACP holds every grant: plan-grant gating is DISABLED pending
  * product review — see the CallTool comment below.
@@ -271,6 +275,8 @@ export function buildMakoMcpCandidateTools(
 const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
   "artifact-write",
   "schedule-write",
+  "warehouse-write",
+  "connections-write",
 ];
 
 /**
@@ -279,12 +285,10 @@ const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
  * opted into per key via `members:write` and never conferred by the blanket
  * ACP-desktop grant — otherwise adding a grant to CAPABILITY_GRANTS silently
  * widens that surface, which is exactly what happened when this one was
- * added. `connections-write` stores a credential that arrives through the
- * agent's own context, so it is opted into per key (`connections:write`)
- * for the same reason.
+ * added.
  */
 const ACP_DESKTOP_WITHHELD_GRANTS: ReadonlySet<CapabilityGrant> =
-  new Set<CapabilityGrant>(["members-write", "connections-write"]);
+  new Set<CapabilityGrant>(["members-write"]);
 
 function sessionCapabilityGrants(
   context: MakoMcpContext,
@@ -389,9 +393,9 @@ export function buildMakoMcpToolset(
         a.name.localeCompare(b.name),
       ),
       hint:
-        "warehouse:write and connections:write are never granted by " +
-        "default. Request them during OAuth authorization or use a " +
-        "workspace API key carrying that scope.",
+        "Every MCP/CLI credential holds every grant except members-write " +
+        "(an explicit members:write API-key scope); a tool listed as " +
+        "unavailable for a workspace role needs a higher role, not a scope.",
     }),
   };
 

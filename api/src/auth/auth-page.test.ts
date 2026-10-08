@@ -7,10 +7,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AUTH_PAGE_TOKENS, authMessagePage } from "./auth-page";
 import { consentPage, describeRedirect } from "./mcp-consent-page";
-import {
-  parseMcpOAuthScopes,
-  resolveMcpOAuthConsentScopes,
-} from "./mcp-oauth.service";
+import { parseMcpOAuthScopes } from "./mcp-oauth.service";
 
 const WORKSPACES = [
   { id: "ws1", name: "RealAdvisor", role: "owner" },
@@ -32,66 +29,47 @@ function consentFor(scope: string | undefined, clientName = "Mako CLI") {
   });
 }
 
-function warehouseCheckbox(html: string): string | undefined {
-  return html.match(/<input[^>]*name="grant_warehouse_write"[^>]*>/)?.[0];
-}
+const ALL_SCOPES = "mcp query:read warehouse:write connections:write";
 
 describe("MCP consent page", () => {
-  // Joan ran `mako login --warehouse-write` and still had to tick the box.
-  it("pre-ticks warehouse execution when the client requested it", () => {
-    const box = warehouseCheckbox(consentFor("mcp query:read warehouse:write"));
-    expect(box).toBeDefined();
-    expect(box).toMatch(/\bchecked\b/);
-    // Still a checkbox the user can untick, not a hidden grant.
-    expect(box).toMatch(/type="checkbox"/);
-  });
-
-  it("offers no warehouse execution when the client did not request it", () => {
-    for (const scope of [undefined, "mcp query:read", "offline_access"]) {
+  // Connecting gives everything the person's role allows: no per-permission
+  // checkbox, whatever the client asked for.
+  it("has no permission checkboxes, whatever was requested", () => {
+    for (const scope of [
+      undefined,
+      "mcp query:read",
+      "mcp query:read warehouse:write",
+      "connections:write",
+      "offline_access",
+    ]) {
       const html = consentFor(scope);
-      expect(warehouseCheckbox(html)).toBeUndefined();
-      expect(html).toContain("Cannot run dbt or change warehouse data");
+      expect(html).not.toMatch(/type="checkbox"/);
+      expect(html).not.toContain("grant_warehouse_write");
+      expect(html).toContain("Run dbt models and jobs in your warehouse");
+      expect(html).toContain("Create source connections");
+      expect(html).toContain("a viewer stays read-only");
     }
   });
 
-  it("grants only what is still ticked when Allow is pressed (unchanged)", () => {
-    const requested = parseMcpOAuthScopes("mcp query:read warehouse:write");
-    expect(resolveMcpOAuthConsentScopes(requested, true)).toContain(
+  it("issues the full scope set on every grant", () => {
+    for (const scope of [
+      undefined,
+      "mcp",
       "warehouse:write",
-    );
-    // An unticked box is simply absent from the form post.
-    expect(resolveMcpOAuthConsentScopes(requested, false)).not.toContain(
-      "warehouse:write",
-    );
-  });
-
-  it("offers connection creation, pre-ticked, only when requested", () => {
-    const box = (html: string) =>
-      html.match(/<input[^>]*name="grant_connections_write"[^>]*>/)?.[0];
-    const requested = box(consentFor("mcp query:read connections:write"));
-    expect(requested).toBeDefined();
-    expect(requested).toMatch(/\bchecked\b/);
-    expect(requested).toMatch(/type="checkbox"/);
-    for (const scope of [undefined, "mcp query:read", "warehouse:write"]) {
-      expect(box(consentFor(scope))).toBeUndefined();
+      "offline_access",
+    ]) {
+      expect(parseMcpOAuthScopes(scope).join(" ")).toBe(ALL_SCOPES);
     }
-    const scopes = parseMcpOAuthScopes("mcp query:read connections:write");
-    expect(resolveMcpOAuthConsentScopes(scopes, false, true)).toContain(
-      "connections:write",
-    );
-    expect(resolveMcpOAuthConsentScopes(scopes, true, false)).not.toContain(
-      "connections:write",
-    );
   });
 
   it("carries the flow's parameters through the form, unchanged", () => {
-    const html = consentFor("mcp query:read warehouse:write");
+    const html = consentFor("mcp query:read");
     for (const [name, value] of [
       ["client_id", "mcpc_1"],
       ["redirect_uri", "http://127.0.0.1:53422/callback"],
       ["state", "st"],
       ["code_challenge", "ch"],
-      ["scope", "mcp query:read warehouse:write"],
+      ["scope", ALL_SCOPES],
     ]) {
       expect(html).toContain(
         `<input type="hidden" name="${name}" value="${value}" />`,

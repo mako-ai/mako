@@ -27,9 +27,7 @@ import {
   parseMcpOAuthScopes,
   refreshAccessToken,
   registerOAuthClient,
-  resolveMcpOAuthConsentScopes,
 } from "../auth/mcp-oauth.service";
-import { hasMinimumWorkspaceRole } from "@mako/agent-tools";
 import { workspaceService } from "../services/workspace.service";
 import { authMessagePage } from "../auth/auth-page";
 import { AUTHORIZE_PATH, consentPage } from "../auth/mcp-consent-page";
@@ -379,33 +377,9 @@ mcpOAuthRoutes.post("/authorize", async c => {
       403,
     );
   }
-  const scopes = resolveMcpOAuthConsentScopes(
-    parsed.value.scopes,
-    form.grant_warehouse_write === "yes",
-    form.grant_connections_write === "yes",
-  );
-  if (
-    scopes.includes("connections:write") &&
-    !hasMinimumWorkspaceRole(member.role, "member")
-  ) {
-    return c.html(
-      cannotConnectPage(
-        "Creating connections needs at least the member role in this workspace. Untick it to connect without it, or ask an admin for access.",
-      ),
-      403,
-    );
-  }
-  if (
-    scopes.includes("warehouse:write") &&
-    !hasMinimumWorkspaceRole(member.role, "member")
-  ) {
-    return c.html(
-      cannotConnectPage(
-        "Running dbt in the warehouse needs at least the member role in this workspace. Untick it to connect read-only, or ask an admin for access.",
-      ),
-      403,
-    );
-  }
+  // Every grant carries the full MCP scope set (parseMcpOAuthScopes); what a
+  // viewer may not do is decided by their live role at each tool call.
+  const scopes = parsed.value.scopes;
 
   const code = await createAuthorizationCode({
     clientId: parsed.value.clientId,

@@ -18,10 +18,10 @@
  * `create_connection` is the one write: it stores a new SOURCE connection
  * (a credential) for a connector, so an agent can go from "this connector
  * exists" to probing it without a human round-trip through the UI. It is
- * external-MCP only and behind the `connections-write` grant (scope
- * `connections:write`), which no key holds by default: the credential
- * travels through the MCP client, and a prompt-injected in-product chat
- * must not be able to plant a credential the workspace then syncs from.
+ * external-MCP only: every MCP/CLI credential holds its grant
+ * (`connections-write`), and the caller's live role must be at least member,
+ * as in the UI. It is kept out of the in-product chat so a prompt-injected
+ * page cannot plant a credential the workspace then syncs from.
  *
  * Deliberately NOT the same thing as the dashboard `list_data_sources` /
  * `create_data_source` family, which operate on in-browser DuckDB

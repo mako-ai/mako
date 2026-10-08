@@ -5,9 +5,9 @@
  * git repo, the artifact store and Inngest are stubbed. Pins the authority
  * model:
  *
- *  - any local run needs `warehouse:write` (or a browser session): the
- *    uploaded code runs with the environment's credentials, so no narrower
- *    scope is offered (a `dbt:personal`-style scope is refused);
+ *  - any MCP/CLI login (`mcp`) or browser session may run it — there is no
+ *    separate warehouse opt-in; the dbt routes' RBAC keeps viewers out, and
+ *    a credential without `mcp` is refused;
  *  - the default target is the caller's OWN environment (created on first
  *    use); another person's is refused;
  *  - the prod-like environment is refused for every command, and the
@@ -214,17 +214,24 @@ describe("startLocalDbtRun", () => {
     ).toBe(JOAN);
   });
 
-  // Review finding (#1013, HIGH): no scope narrower than warehouse:write
-  // may run uploaded dbt code — not even against the caller's own schema.
-  it("refuses a login without warehouse:write, explaining why", async () => {
+  // No warehouse opt-in: a plain login runs dbt; a credential that is not an
+  // MCP/CLI login (no `mcp` scope) is refused before anything is written.
+  it("lets a plain login run dbt in its own environment", async () => {
+    await seedProject({ joanHasEnv: true });
+    const result = await startLocalDbtRun(input({ authority: READ_ONLY }));
+    expect(result.run.environment).toBe("joan");
+  });
+
+  it("refuses a credential that is not an MCP/CLI login", async () => {
     await seedProject({ joanHasEnv: true });
     const error = await refusal(
-      startLocalDbtRun(input({ authority: READ_ONLY })),
+      startLocalDbtRun(
+        input({ authority: { kind: "token", scopes: ["query:read"] } }),
+      ),
     );
     expect(error).toBeInstanceOf(LocalRunError);
     expect(error.status).toBe(403);
-    expect(error.message).toMatch(/mako login --warehouse-write/);
-    expect(error.message).toMatch(/warehouse credentials/);
+    expect(error.message).toMatch(/mako login/);
     expect(await DbtRun.countDocuments({})).toBe(0);
     expect(sendMock).not.toHaveBeenCalled();
   });
@@ -268,18 +275,13 @@ describe("startLocalDbtRun", () => {
     expect(await DbtRun.countDocuments({})).toBe(0);
   });
 
-  it("refuses a read-only login, even for the caller's own environment", async () => {
-    await seedProject({ joanHasEnv: true });
-    const error = await refusal(
-      startLocalDbtRun(input({ authority: READ_ONLY })),
-    );
-    expect(error.status).toBe(403);
-    expect(error.message).toMatch(/mako login/);
-  });
-
   it("does not provision anything for a login that could not use it", async () => {
     await seedProject();
-    await refusal(startLocalDbtRun(input({ authority: READ_ONLY })));
+    await refusal(
+      startLocalDbtRun(
+        input({ authority: { kind: "token", scopes: ["query:read"] } }),
+      ),
+    );
     const project = await DbtProject.findOne({ workspaceId: WS }).lean();
     expect(project?.environments.some(env => env.ownerUserId === JOAN)).toBe(
       false,
