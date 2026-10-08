@@ -115,7 +115,7 @@ cat <<EOF
 ✅ Mako Workflows provisioned in ${PROJECT_ID}.
    Hatchet   : namespace hatchet (api :8080, engine :7070), DB from HATCHET_DATABASE_URL
    Workers   : namespace mako-workflows (gVisor, egress locked)
-   Dashboard : kubectl -n hatchet port-forward svc/hatchet-frontend 8080:8080
+   Dashboard : kubectl -n hatchet port-forward svc/caddy 8080:8080
                login workflows-admin@mako.ai / secret HATCHET_ADMIN_PASSWORD
 
 The Mako API needs (Cloud Run):

@@ -7,7 +7,7 @@
 # - Nothing is exposed outside the cluster. Workers reach the engine over
 #   in-cluster gRPC; the Mako API reaches the REST API on pod IPs over the VPC
 #   (the same path it uses for kernel gateways); staff reach the dashboard with
-#   `kubectl -n hatchet port-forward svc/hatchet-frontend 8080:8080`.
+#   `kubectl -n hatchet port-forward svc/caddy 8080:8080`.
 sharedConfig:
   image:
     tag: "v0.107.0"
@@ -35,5 +35,10 @@ postgres:
 rabbitmq:
   enabled: false
 
+# In-cluster proxy that puts the dashboard and the API on one origin, which the
+# dashboard needs. ClusterIP only; staff reach it with a port-forward.
 caddy:
-  enabled: false
+  enabled: true
+  service:
+    # The chart defaults to LoadBalancer, which would give Hatchet a public IP.
+    type: ClusterIP
