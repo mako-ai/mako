@@ -8,6 +8,10 @@
  * it, so a push that touches only apps or dbt changes nothing, and a commit
  * that does not build never replaces the running code.
  *
+ * A push to another branch is saved the same way as the workspace's preview.
+ * The worker runs it next to the live code, under prefixed names and with
+ * schedules off, so unmerged work can be run before it is merged.
+ *
  * Before the first deploy this also makes sure the workspace has a Hatchet
  * token and a worker: its Mako API key, and under the `gke` provider its pod.
  */
@@ -23,7 +27,7 @@ import {
 } from "../apps/repository.service";
 import { generateApiKey, hashApiKey } from "../auth/api-key.middleware";
 import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
-import { Workspace } from "../database/workspace-schema";
+import { AppWorktree, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { ensureWorkspaceTenant } from "./hatchet";
 import {
@@ -150,9 +154,21 @@ export type WorkflowsDeployResult =
   | { deployed: true; sha: string }
   | { deployed: false; reason: string };
 
+type Commit = { sha: string; tree: string };
+
+/** `workflows/` on a branch, or null when the branch or the folder is missing. */
+async function workflowsAt(
+  repoDir: string,
+  branch: string,
+): Promise<Commit | null> {
+  const sha = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  const tree = sha ? await workflowsTree(repoDir, sha) : null;
+  return sha && tree ? { sha, tree } : null;
+}
+
 const deployInFlight = new Map<string, Promise<WorkflowsDeployResult>>();
 
-/** Point the worker at `workflows/` on `main` if it changed. */
+/** Point the worker at `workflows/` on `main`, and at the pusher's branch. */
 export function deployWorkflowsFromRepo(
   workspaceId: string,
   userId?: string,
@@ -173,7 +189,8 @@ async function deployWorkflowsNow(
   const workspace = await Workspace.findById(workspaceId)
     .select("workflows createdBy")
     .lean();
-  if (!workspace?.workflows?.enabled) {
+  const state = workspace?.workflows;
+  if (!workspace || !state?.enabled) {
     return { deployed: false, reason: "Workflows are not enabled" };
   }
   await ensureLocalRepo(workspaceId);
@@ -181,22 +198,49 @@ async function deployWorkflowsNow(
   if (!(await repoExists(repoDir))) {
     return { deployed: false, reason: "The workspace has no repository" };
   }
-  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!head) return { deployed: false, reason: "main has no commits" };
-  const tree = await workflowsTree(repoDir, head);
-  if (!tree) {
-    return { deployed: false, reason: "main has no workflows/ folder" };
-  }
+  const main = await workflowsAt(repoDir, DEFAULT_BRANCH);
 
+  // The pusher's branch is the workspace's one preview: the last branch
+  // pushed with workflow changes wins. Once it matches main (merged, or
+  // reverted) there is nothing left to preview.
+  const worktree = userId
+    ? await AppWorktree.findOne({ workspaceId: workspace._id, userId })
+        .select("branch")
+        .lean()
+    : null;
+  const branch = worktree?.branch;
+  const pushed =
+    branch && branch !== DEFAULT_BRANCH
+      ? await workflowsAt(repoDir, branch)
+      : null;
+  const preview = pushed && pushed.tree !== main?.tree ? pushed : null;
+
+  if (!main && !preview) {
+    return { deployed: false, reason: "No workflows/ folder" };
+  }
   await ensureWorkspaceTenant(workspaceId);
   await ensureWorker(workspaceId, userId ?? workspace.createdBy);
-  if (workspace.workflows.target?.tree === tree) {
+
+  const set: Record<string, unknown> = {};
+  const unset: Record<string, ""> = {};
+  if (main && state.target?.tree !== main.tree) {
+    set["workflows.target"] = main;
+  }
+  if (preview && branch && state.preview?.tree !== preview.tree) {
+    set["workflows.preview"] = { branch, ...preview };
+  } else if (!preview && branch && state.preview?.branch === branch) {
+    unset["workflows.preview"] = "";
+  }
+  if (Object.keys(set).length + Object.keys(unset).length === 0) {
     return { deployed: false, reason: "workflows/ is unchanged" };
   }
   await Workspace.updateOne(
     { _id: workspace._id },
-    { $set: { "workflows.target": { sha: head, tree } } },
+    {
+      ...(Object.keys(set).length ? { $set: set } : {}),
+      ...(Object.keys(unset).length ? { $unset: unset } : {}),
+    },
   );
-  logger.info("Set workflows target", { workspaceId, sha: head });
-  return { deployed: true, sha: head };
+  logger.info("Set workflows target", { workspaceId, ...set });
+  return { deployed: true, sha: (preview ?? main)?.sha ?? "" };
 }

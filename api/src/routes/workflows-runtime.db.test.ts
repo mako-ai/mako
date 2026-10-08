@@ -11,6 +11,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 
 import { hashApiKey } from "../auth/api-key.middleware";
 import { Workspace } from "../database/workspace-schema";
+import { readWorkflowsStatus } from "../workflows/status";
 import { workflowRuntimeRoutes } from "./workflows";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -80,6 +81,7 @@ async function main() {
       sha: SHA_A,
       tree: "tree-a",
       hatchetToken: HATCHET_TOKEN,
+      preview: null,
     });
 
     // It reports the commit it runs.
@@ -105,6 +107,42 @@ async function main() {
     );
     assert.deepEqual((await state())?.live, { sha: SHA_B });
     assert.equal((await state())?.failed, undefined);
+
+    // A preview is unmerged work next to live: the worker is told about it,
+    // and its reports never touch the live commit.
+    await Workspace.updateOne(
+      { _id: id },
+      {
+        $set: {
+          "workflows.preview": { branch: "jo/x", sha: SHA_A, tree: "tree-p" },
+        },
+      },
+    );
+    const withPreview = (await (await call("/head", WORKER_KEY)).json()) as {
+      preview: unknown;
+    };
+    assert.deepEqual(withPreview.preview, { sha: SHA_A, tree: "tree-p" });
+    await call("/status", WORKER_KEY, {
+      sha: SHA_A,
+      error: "TS1005",
+      preview: true,
+    });
+    assert.deepEqual((await state())?.previewFailed, {
+      sha: SHA_A,
+      error: "TS1005",
+    });
+    assert.deepEqual((await state())?.live, { sha: SHA_B });
+    let status = await readWorkflowsStatus(id.toString());
+    assert.equal(status.preview?.branch, "jo/x");
+    assert.equal(status.preview?.buildError, "TS1005");
+    assert.equal(status.deployment.buildError, null);
+    await call("/status", WORKER_KEY, { sha: SHA_A, preview: true });
+    status = await readWorkflowsStatus(id.toString());
+    assert.deepEqual(
+      [status.preview?.liveSha, status.preview?.deploying],
+      [SHA_A, false],
+    );
+    assert.equal(status.deployment.liveSha, SHA_B);
 
     // A commit must be a full SHA.
     assert.equal(

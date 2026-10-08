@@ -172,6 +172,13 @@ export interface IWorkspaceWorkflows {
   live?: { sha: string };
   /** The last commit the worker could not start, with its build output. */
   failed?: { sha: string; error: string };
+  /**
+   * Unmerged work to run next to the live code: the last branch pushed with
+   * workflow changes. Same three facts as above, for that branch.
+   */
+  preview?: { branch: string; sha: string; tree: string };
+  previewLive?: { sha: string };
+  previewFailed?: { sha: string; error: string };
 }
 
 export interface IWorkspaceRepoBinding {
@@ -1409,6 +1416,12 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         target: { type: { sha: String, tree: String }, _id: false },
         live: { type: { sha: String }, _id: false },
         failed: { type: { sha: String, error: String }, _id: false },
+        preview: {
+          type: { branch: String, sha: String, tree: String },
+          _id: false,
+        },
+        previewLive: { type: { sha: String }, _id: false },
+        previewFailed: { type: { sha: String, error: String }, _id: false },
       },
       default: undefined,
       _id: false,

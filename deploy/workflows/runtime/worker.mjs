@@ -5,6 +5,10 @@
 // is the Hatchet workflow named `<name>`. Folders without that file (shared
 // code such as `lib/`) are not workflows.
 //
+// A preview (PREVIEW=1) is unmerged work: the Hatchet client prefixes every
+// name through HATCHET_CLIENT_NAMESPACE, and schedules and event triggers are
+// dropped here so a preview only ever runs when someone starts it.
+//
 // Env: WORKFLOWS_ROOT, GIT_SHA, HATCHET_CLIENT_TOKEN, optional WORKER_SLOTS.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -34,6 +38,11 @@ for (const entry of readdirSync(dir, { withFileTypes: true })) {
         (name ? `, not "${name}"` : ""),
     );
     process.exit(1);
+  }
+  if (process.env.PREVIEW) {
+    for (const trigger of ["on", "onCrons", "onEvents"]) {
+      delete workflow.definition[trigger];
+    }
   }
   workflows.push(workflow);
 }

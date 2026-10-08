@@ -10,6 +10,10 @@
 // A commit that fails its typecheck or cannot start is reported and skipped,
 // and the worker for the previous commit keeps running.
 //
+// Mako may also name a preview commit: unmerged work. It runs the same way in
+// a second process, next to the live one, with its workflows registered as
+// `preview_<name>` and their schedules off.
+//
 // Env: MAKO_URL, MAKO_API_KEY. The Hatchet token comes from Mako, so the
 // container holds one credential.
 import { execFileSync, fork } from "node:child_process";
@@ -29,6 +33,8 @@ const READY_FILE = join(TMP_DIR, "ready");
 const SOURCE_ROOT = join(TMP_DIR, "src");
 const POLL_MS = Number(process.env.WORKFLOWS_POLL_MS ?? 10_000);
 const START_TIMEOUT_MS = 60_000;
+// Preview workflows are registered in Hatchet as `preview_<name>`.
+const PREVIEW_PREFIX = "preview_";
 const auth = { Authorization: `Bearer ${process.env.MAKO_API_KEY}` };
 
 function mako(path, init = {}) {
@@ -38,11 +44,15 @@ function mako(path, init = {}) {
   });
 }
 
-async function report(sha, error) {
+async function report(slot, sha, error) {
   await mako("/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(error === undefined ? { sha } : { sha, error }),
+    body: JSON.stringify({
+      sha,
+      ...(error === undefined ? {} : { error }),
+      ...(slot.preview ? { preview: true } : {}),
+    }),
   }).catch(err => console.error("Could not report to Mako:", err.message));
 }
 
@@ -95,7 +105,7 @@ function typecheck(root) {
 }
 
 /** Start a worker process. Resolves once it is up; rejects with its output. */
-function startWorker(root, sha, hatchetToken) {
+function startWorker(slot, root, sha, hatchetToken) {
   return new Promise((resolve, reject) => {
     const child = fork(join(RUNTIME_DIR, "worker.mjs"), {
       env: {
@@ -103,6 +113,9 @@ function startWorker(root, sha, hatchetToken) {
         WORKFLOWS_ROOT: root,
         GIT_SHA: sha,
         HATCHET_CLIENT_TOKEN: hatchetToken,
+        ...(slot.preview
+          ? { PREVIEW: "1", HATCHET_CLIENT_NAMESPACE: PREVIEW_PREFIX }
+          : {}),
       },
       stdio: ["ignore", "inherit", "pipe", "ipc"],
     });
@@ -123,40 +136,51 @@ function startWorker(root, sha, hatchetToken) {
   });
 }
 
-/** The running worker: its process and what it was started from. */
-let current = null;
-/** A target that failed, so it is not rebuilt on every poll. */
-let failed = null;
+/**
+ * The two things a worker can run: the live code, and a preview of unmerged
+ * work. Each has its running process (`current`) and the target that last
+ * failed (`failed`), so a broken commit is not rebuilt on every poll.
+ */
+const slots = {
+  live: { preview: false, current: null, failed: null },
+  preview: { preview: true, current: null, failed: null },
+};
 
-async function switchTo(head) {
-  const key = `${head.tree}:${head.hatchetToken}`;
-  if (current?.key === key || failed === key) return;
-  console.log(`Switching to ${head.sha}`);
+function stop(slot) {
+  slot.current?.child.kill("SIGTERM");
+  slot.current = null;
+}
+
+async function switchTo(slot, target, hatchetToken) {
+  const key = `${target.tree}:${hatchetToken}`;
+  if (slot.current?.key === key || slot.failed === key) return;
+  const label = slot.preview ? "preview" : "live";
+  console.log(`Switching ${label} to ${target.sha}`);
   let root;
   let child;
   try {
-    root = await fetchSource(head.sha);
+    root = await fetchSource(target.sha);
     const errors = typecheck(root);
     if (errors) throw new Error(errors);
-    child = await startWorker(root, head.sha, head.hatchetToken);
+    child = await startWorker(slot, root, target.sha, hatchetToken);
   } catch (err) {
-    failed = key;
+    slot.failed = key;
     if (root) rmSync(root, { recursive: true, force: true });
-    console.error(`Build failed at ${head.sha}:\n${err.message}`);
-    await report(head.sha, err.message);
+    console.error(`Build failed (${label}) at ${target.sha}:\n${err.message}`);
+    await report(slot, target.sha, err.message);
     return;
   }
-  const previous = current;
-  current = { key, child };
-  failed = null;
+  const previous = slot.current;
+  slot.current = { key, child };
+  slot.failed = null;
   child.once("exit", () => {
     rmSync(root, { recursive: true, force: true });
     // If this worker died on its own, the next poll starts it again.
-    if (current?.child === child) current = null;
+    if (slot.current?.child === child) slot.current = null;
   });
   previous?.child.kill("SIGTERM");
-  writeFileSync(READY_FILE, head.sha);
-  await report(head.sha);
+  writeFileSync(READY_FILE, target.sha);
+  await report(slot, target.sha);
 }
 
 async function poll() {
@@ -164,7 +188,13 @@ async function poll() {
     const res = await mako("/head");
     if (!res.ok) throw new Error(`head: ${res.status} ${await res.text()}`);
     const head = await res.json();
-    if (head.sha && head.hatchetToken) await switchTo(head);
+    if (!head.hatchetToken) return;
+    if (head.sha) await switchTo(slots.live, head, head.hatchetToken);
+    if (head.preview) {
+      await switchTo(slots.preview, head.preview, head.hatchetToken);
+    } else {
+      stop(slots.preview);
+    }
   } catch (err) {
     console.error("Poll failed:", err.message);
   }
@@ -172,9 +202,15 @@ async function poll() {
 
 process.on("SIGTERM", () => {
   console.log("SIGTERM: finishing running tasks");
-  if (!current) process.exit(0);
-  current.child.once("exit", () => process.exit(0));
-  current.child.kill("SIGTERM");
+  const children = Object.values(slots)
+    .map(slot => slot.current?.child)
+    .filter(Boolean);
+  if (children.length === 0) process.exit(0);
+  let left = children.length;
+  for (const child of children) {
+    child.once("exit", () => --left === 0 && process.exit(0));
+    child.kill("SIGTERM");
+  }
 });
 
 for (;;) {

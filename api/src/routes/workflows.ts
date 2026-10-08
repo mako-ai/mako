@@ -32,7 +32,6 @@ import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { workspaceService } from "../services/workspace.service";
 import {
   HatchetError,
-  hasInstanceHatchet,
   isHatchetId,
   readWorkspaceTenant,
   runAction,
@@ -42,6 +41,7 @@ import {
   type WorkspaceTenant,
 } from "../workflows/hatchet";
 import { WORKFLOWS_DIR } from "../workflows/on-push";
+import { readWorkflowsStatus } from "../workflows/status";
 
 const logger = loggers.api("workflows");
 
@@ -137,31 +137,8 @@ workflowRoutes.openapi(
   async c => {
     try {
       const { workspaceId } = c.req.valid("param");
-      const workspace = await Workspace.findById(workspaceId)
-        .select("workflows")
-        .lean();
-      const state = workspace?.workflows;
-      const targetSha = state?.target?.sha ?? null;
-      const liveSha = state?.live?.sha ?? null;
-      const buildError =
-        targetSha && state?.failed?.sha === targetSha
-          ? state.failed.error
-          : null;
       return c.json(
-        {
-          success: true as const,
-          enabled: state?.enabled === true,
-          // False when no Hatchet token exists for this workspace and the
-          // installation has none to share: the UI hides Workflows.
-          configured: Boolean(state?.hatchetToken) || hasInstanceHatchet(),
-          deployment: {
-            liveSha,
-            targetSha,
-            deploying: targetSha !== liveSha && !buildError,
-            buildError,
-          },
-          dashboardUrl: process.env.HATCHET_DASHBOARD_URL ?? null,
-        },
+        { success: true as const, ...(await readWorkflowsStatus(workspaceId)) },
         200,
       );
     } catch (error) {
@@ -296,52 +273,62 @@ async function workerWorkspaceId(c: Context): Promise<string | null> {
   return workspace._id.toString();
 }
 
-// What the worker should run. It polls this: the commit to switch to, and the
-// Hatchet token to connect with, so the worker holds one credential only.
+// What the worker should run. It polls this: the commit to switch to, the
+// preview commit if there is one, and the Hatchet token to connect with, so
+// the worker holds one credential only.
 workflowRuntimeRoutes.get("/head", async c => {
   const workspaceId = await workerWorkspaceId(c);
   if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
   try {
     const [workspace, tenant] = await Promise.all([
-      Workspace.findById(workspaceId).select("workflows.target").lean(),
+      Workspace.findById(workspaceId)
+        .select("workflows.target workflows.preview")
+        .lean(),
       readWorkspaceTenant(workspaceId),
     ]);
+    const preview = workspace?.workflows?.preview;
     return c.json({
       sha: workspace?.workflows?.target?.sha ?? null,
       tree: workspace?.workflows?.target?.tree ?? null,
       hatchetToken: tenant?.token ?? null,
+      // Unmerged work to run next to the live code, or null.
+      preview: preview ? { sha: preview.sha, tree: preview.tree } : null,
     });
   } catch (error) {
     return fail(c, error);
   }
 });
 
-// The worker reports each switch: the commit it now runs, or the commit it
-// could not start and why. This is what the UI shows as live and build error.
+// The worker reports each switch, for the live code or the preview: the
+// commit it now runs, or the commit it could not start and why. This is what
+// the UI shows as live and build error.
 workflowRuntimeRoutes.post("/status", async c => {
   const workspaceId = await workerWorkspaceId(c);
   if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
   const body = (await c.req.json().catch(() => null)) as {
     sha?: unknown;
     error?: unknown;
+    preview?: unknown;
   } | null;
   if (typeof body?.sha !== "string" || !isOid(body.sha)) {
     return c.json({ error: "Invalid commit" }, 400);
   }
+  const live = body.preview === true ? "previewLive" : "live";
+  const failed = body.preview === true ? "previewFailed" : "failed";
   await Workspace.updateOne(
     { _id: new Types.ObjectId(workspaceId) },
     typeof body.error === "string"
       ? {
           $set: {
-            "workflows.failed": {
+            [`workflows.${failed}`]: {
               sha: body.sha,
               error: body.error.slice(-MAX_BUILD_ERROR_CHARS),
             },
           },
         }
       : {
-          $set: { "workflows.live": { sha: body.sha } },
-          $unset: { "workflows.failed": "" },
+          $set: { [`workflows.${live}`]: { sha: body.sha } },
+          $unset: { [`workflows.${failed}`]: "" },
         },
   );
   return c.json({ ok: true });
