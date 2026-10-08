@@ -9,6 +9,7 @@ import {
   DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
   APP_MODE_SYSTEM_PROMPT,
+  WORKFLOW_MODE_SYSTEM_PROMPT,
   TRANSFORM_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
   NOTEBOOK_MODE_SYSTEM_PROMPT,
@@ -248,6 +249,33 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "cancel_query",
 ];
 
+/**
+ * Workflows are files, so the mode is mostly the shell, file and git tools the
+ * app mode has, pointed at a workflow folder (`workflowId`), plus the two
+ * tools that look at and start runs.
+ */
+const WORKFLOW_MODE_TOOL_NAMES: string[] = [
+  "workflows_status",
+  "workflows_run",
+  "app_bash",
+  "app_read_file",
+  "app_write_file",
+  "app_edit_file",
+  "app_glob",
+  "app_grep",
+  "app_status",
+  "app_commit",
+  "app_merge_to_main",
+  // Discovery: look at the data before writing a query into a step.
+  "list_connections",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
+  "sql_execute_query",
+  "check_query_status",
+  "cancel_query",
+];
+
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_connections",
   "list_databases",
@@ -344,6 +372,19 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Inspect the source tables for the model",
       "Write the model SQL + schema.yml entries",
       "Verify with dbt_parse, dbt_compile_model, then dbt_run_model on dev",
+    ],
+  },
+  workflow: {
+    id: "workflow",
+    name: "Workflow",
+    routingPrompt:
+      "Write, test and deploy workflows: scheduled or multi-step jobs as TypeScript files in the workspace repo, run by Hatchet.",
+    systemPrompt: WORKFLOW_MODE_SYSTEM_PROMPT,
+    toolNames: WORKFLOW_MODE_TOOL_NAMES,
+    trajectories: [
+      "Switch to a branch and write the workflow's folder",
+      "Commit, then run the preview and read the run's steps",
+      "Fix until the preview run succeeds, then merge to main",
     ],
   },
   notebook: {

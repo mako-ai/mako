@@ -18,6 +18,7 @@ export type ExpertiseModeId =
   | "flow"
   | "app"
   | "transform"
+  | "workflow"
   | "notebook"
   | "explore";
 

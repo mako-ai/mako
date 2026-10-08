@@ -314,6 +314,11 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // next to the discovery pair it completes: discover ids, write the file,
   // check it, then push.
   check_flow_files: bridge(),
+  // Workflows: look at what runs and at one run (reads Hatchet), and start a
+  // run. Starting one executes the workspace's own workflow code with its
+  // data access, so it is bridged like the other tools that act.
+  workflows_status: bridge(),
+  workflows_run: bridge(),
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",

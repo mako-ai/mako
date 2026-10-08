@@ -50,6 +50,7 @@ import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
+import { createWorkflowTools } from "../agent-lib/tools/workflow-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
@@ -214,12 +215,14 @@ export function buildMakoMcpCandidateTools(
   // The agent in that scenario has the WORKSPACE repo checked out, not this
   // monorepo, so `pnpm flows:validate` is not a surface it can reach.
   const flowFileTools = createFlowFileTools(workspaceId);
+  const workflowTools = createWorkflowTools({ workspaceId, userId });
   // Gated by the members-write grant AND a live owner/admin check inside the
   // tools themselves — a key outlives the membership that justified it.
   const memberTools = createMemberTools(workspaceId, userId);
   return {
     ...connectorTools,
     ...flowFileTools,
+    ...workflowTools,
     ...appsTools,
     ...memberTools,
     ...consoleTools,
