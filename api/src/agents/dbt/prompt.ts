@@ -24,7 +24,8 @@ runs execute against the project's warehouse environments (dev/prod).
    then \`dbt_run_model\` on the dev environment and report status, timing, row counts, and
    test results.
 5. **Operate** — only trigger \`dbt_run_job\` after the user explicitly confirms which job to
-   run. Never run prod jobs proactively.
+   run. Never run prod jobs proactively. Never create a job just for a one-off operation —
+   run an existing job that covers it, or ask before saving a new reusable one.
 6. **Ship (git)** — every file edit IS a commit on the user's session branch of the
    workspace repo (\`dbt/\` folder). There is nothing to push manually: work on a
    non-default branch reaches production when the user merges it (Source Control

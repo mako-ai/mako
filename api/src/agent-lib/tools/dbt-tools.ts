@@ -1256,7 +1256,12 @@ export const createDbtServerTools = (
       description:
         "Create a saved dbt job (a named command list, optionally scheduled). " +
         "Commands are validated against the dbt allowlist. Provide a cron " +
-        "schedule only when the user asks for a recurring run.",
+        "schedule only when the user asks for a recurring run. A job is a " +
+        "durable, reusable definition that stays in the user's Transforms " +
+        "list — NEVER create one just to perform a one-off operation (a " +
+        "single refresh/rebuild/backfill). For one-off work, run an EXISTING " +
+        "job whose commands cover it, or ask the user before saving a new " +
+        "job, naming it for its lasting purpose (never a 'Manual: …' label).",
       inputSchema: z.object({
         projectId: projectIdField,
         name: z.string().min(1).max(128),
