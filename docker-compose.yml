@@ -5,7 +5,7 @@
 # drives this sidecar's Jupyter Kernel Gateway. In deployed environments the
 # GKE KernelProvider is used instead — this is dev-only.
 #
-# Workspace workflows (rfcs/workflows-as-code.md) are optional and off by
+# Workspace workflows (docs/src/content/docs/workflows.md) are optional and off by
 # default. `docker compose --profile workflows up -d` adds Hatchet Lite, its
 # Postgres and the workflow worker, for local testing only. Hatchet dashboard
 # and REST API: http://localhost:8085 (admin@example.com / Admin123!!).

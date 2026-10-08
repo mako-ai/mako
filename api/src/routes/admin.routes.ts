@@ -259,7 +259,7 @@ adminRoutes.openapi(
 // ---------------------------------------------------------------------------
 // PUT /api/admin/workspaces/{workspaceId}/workflows
 // Body: { enabled: boolean, hatchetToken?: string }
-// Workflows (rfcs/workflows-as-code.md) are behind a staff-set flag per
+// Workflows (docs/src/content/docs/workflows.md) are behind a staff-set flag per
 // workspace. Turning it on deploys `workflows/` at main if there is one.
 // ---------------------------------------------------------------------------
 adminRoutes.openapi(

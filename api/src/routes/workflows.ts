@@ -1,7 +1,7 @@
 /**
  * Workflows — `/api/workspaces/:workspaceId/workflows` for people, and
  * `/api/workflows/runtime` for a workspace's worker
- * (rfcs/workflows-as-code.md).
+ * (docs/src/content/docs/workflows.md).
  *
  * Mako keeps no copy of workflows, runs or logs: those handlers read Hatchet
  * and return Hatchet's own response shapes. What Mako does keep is the deploy

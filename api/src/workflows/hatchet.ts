@@ -1,5 +1,5 @@
 /**
- * Hatchet access for workspace workflows (rfcs/workflows-as-code.md).
+ * Hatchet access for workspace workflows (docs/src/content/docs/workflows.md).
  *
  * A workspace's connection to Hatchet is one API token. The token is a JWT
  * that names its tenant and the Hatchet API's address, so nothing else is

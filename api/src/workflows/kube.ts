@@ -1,6 +1,6 @@
 /**
  * The `gke` worker provider: one sandboxed worker pod per workspace
- * (rfcs/workflows-as-code.md). For hosting workflows written by people the
+ * (docs/src/content/docs/workflows.md). For hosting workflows written by people the
  * operator does not know. An installation that runs its own code uses the
  * `static` provider instead and needs none of this.
  *

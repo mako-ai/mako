@@ -317,7 +317,7 @@ export function syncRepoBackedResources(
         error: error instanceof Error ? error.message : String(error),
       });
     });
-  // Workflows (`workflows/`, rfcs/workflows-as-code.md): a change at main
+  // Workflows (`workflows/`, docs/src/content/docs/workflows.md): a change at main
   // rolls the workspace's worker to the new commit. A commit that fails its
   // typecheck never becomes ready, so the previous worker keeps running.
   void import("../workflows/on-push")

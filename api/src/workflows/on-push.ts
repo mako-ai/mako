@@ -1,5 +1,5 @@
 /**
- * Deploy a workspace's workflows when `main` moves (rfcs/workflows-as-code.md).
+ * Deploy a workspace's workflows when `main` moves (docs/src/content/docs/workflows.md).
  *
  * Called from `syncRepoBackedResources`, so it runs for a push through Mako's
  * git endpoint and for a push made directly on GitHub. A deploy is one write:

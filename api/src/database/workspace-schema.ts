@@ -149,7 +149,7 @@ export interface IWorkspace extends Document {
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
   appsRepo?: IWorkspaceRepoBinding;
   /**
-   * Workflows as code (rfcs/workflows-as-code.md). Mako stores how to reach
+   * Workflows as code (docs/src/content/docs/workflows.md). Mako stores how to reach
    * the workspace's Hatchet tenant and which commit its worker runs.
    * Workflows and schedules live in git; runs and logs live in Hatchet.
    */
