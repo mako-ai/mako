@@ -279,7 +279,7 @@ enrichLead.task({
 - **Data:** Mako MCP with the worker key. Read-only unless an admin grants
   the key `query:write` **and** flags the connection `allowAgentWrites`.
 - **Models:** through Mako's pass-through, billed to the workspace. The
-  gateway key never enters the pod.
+  gateway key never enters the worker.
 - **Hatchet MCP:** not used. It would need raw tenant tokens.
 
 ## 8. Decisions to validate

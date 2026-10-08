@@ -275,7 +275,7 @@ for (const action of ["cancel", "replay"] as const) {
   );
 }
 
-// --- Runtime routes (worker pod only) ----------------------------------------
+// --- Runtime routes (the worker only) ----------------------------------------
 
 export const workflowRuntimeRoutes = createRouter();
 

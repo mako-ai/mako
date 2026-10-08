@@ -2,7 +2,8 @@ name: Build & publish workflows runtime image
 
 # Builds the workflows runtime image (deploy/workflows/runtime): the Hatchet
 # worker that runs workspace workflows/. Publishes to the dev + prod Artifact
-# Registries. PRs publish to dev only; master + manual runs publish to both. Workspace worker Deployments pick up the new tag on their next deploy
+# Registries. PRs publish to dev only; master + manual runs publish to both.
+# Worker pods move to a new image on their workspace's next deploy
 # (WORKFLOWS_RUNTIME_IMAGE on the API).
 on:
   push:
@@ -96,5 +97,5 @@ jobs:
             echo "- \`${{ steps.reg.outputs.dev }}:${{ steps.reg.outputs.sha }}\` (+ \`:latest\`)"
             echo "- \`${{ steps.reg.outputs.prod }}:${{ steps.reg.outputs.sha }}\` (+ \`:latest\`)"
             echo ""
-            echo "Point \`WORKFLOWS_RUNTIME_IMAGE\` at the new tag; worker pods pick it up on their next deploy."
+            echo "Point \`WORKFLOWS_RUNTIME_IMAGE\` at the new tag; worker pods move to it on their workspace's next deploy."
           } >> "$GITHUB_STEP_SUMMARY"

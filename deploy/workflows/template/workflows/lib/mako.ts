@@ -1,5 +1,5 @@
 // Mako access for workflow code: models, data tools, and SQL.
-// Credentials come from the worker pod's environment; nothing is hardcoded.
+// Credentials come from the worker's environment; nothing is hardcoded.
 import { createGateway } from "@ai-sdk/gateway";
 import { createMCPClient } from "@ai-sdk/mcp";
 

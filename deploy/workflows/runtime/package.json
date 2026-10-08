@@ -1,7 +1,7 @@
 {
   "name": "@mako/workflows-runtime",
   "private": true,
-  "description": "Runtime image for workspace workflows: fetch workflows/ at GIT_SHA, typecheck, run a Hatchet worker. Workflow code can import exactly these packages.",
+  "description": "Runtime image for workspace workflows: follow the commit Mako names, typecheck it, run a Hatchet worker. Workflow code can import exactly these packages.",
   "type": "module",
   "dependencies": {
     "@ai-sdk/gateway": "3.0.210",
