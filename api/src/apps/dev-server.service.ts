@@ -203,7 +203,7 @@ function launcherSource(
 ): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
-import { appendFileSync, createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, createReadStream, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 // The app's env vault (env.service, dev tier — secrets included), baked into
@@ -285,6 +285,16 @@ process.on("SIGHUP", () => void farewell(129));
 // browser talks to the sandbox directly (apps.md §12.4), so nothing was
 // answering it: Vite fell through to its SPA fallback and returned index.html,
 // and the parquet reader failed with "footer != PAR1" on the HTML.
+// Replace a staged parquet whole (write aside, then rename): a reader gets the
+// old bytes or the new, never a half-written file. Mako's own restaging does
+// the same (stageFileAtomically); the suffixes differ so they never collide.
+function stageParquet(name, buf) {
+  const file = path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet");
+  writeFileSync(file + ".writing", buf);
+  renameSync(file + ".writing", file);
+  rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+}
+
 const makoData = {
   name: "mako-data",
   configureServer(server) {
@@ -344,8 +354,7 @@ const makoData = {
             // Write-through, like the live path above: serve these bytes
             // until the next refresh rather than re-querying on every read.
             try {
-              writeFileSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet"), buf);
-              rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+              stageParquet(name, buf);
             } catch {}
             reply(200, {
               success: true,
@@ -401,8 +410,7 @@ const makoData = {
             // session — the next fetch (and every re-open) serves the file, not
             // a fresh 60s query. A rebuild/re-stage overwrites it.
             try {
-              writeFileSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet"), buf);
-              rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+              stageParquet(name, buf);
             } catch {}
             res.statusCode = 200;
             res.setHeader("content-type", "application/vnd.apache.parquet");
@@ -427,12 +435,15 @@ const makoData = {
         }));
         return;
       }
-      // Parquet readers need the length to locate the footer.
+      // Parquet readers need the length to locate the footer. One read, so
+      // the length and the bytes come from the same file even when a
+      // restage renames a new one into place between a stat and an open.
+      const buf = readFileSync(file);
       res.statusCode = 200;
       res.setHeader("content-type", "application/vnd.apache.parquet");
-      res.setHeader("content-length", String(statSync(file).size));
+      res.setHeader("content-length", String(buf.length));
       res.setHeader("cache-control", "no-store");
-      createReadStream(file).pipe(res);
+      res.end(buf);
     });
   },
 };
@@ -594,6 +605,32 @@ export interface DevPreview {
 }
 
 /**
+ * Write a staged file under a temporary name, then rename it into place.
+ * The dev server reads these files while a reattach restages them in the
+ * background; a write in place (truncate, then fill) let a page reload read a
+ * half-written parquet and fail with "No magic bytes found at end of file".
+ * `then` runs in the same exec as the rename, sparing a round-trip.
+ */
+export async function stageFileAtomically(
+  provider: ReturnType<typeof getSandboxProvider>,
+  ctx: SandboxExecContext,
+  target: string,
+  bytes: Uint8Array,
+  then?: string,
+): Promise<void> {
+  const temp = `${target}.staging`;
+  await provider.writeFile(ctx, temp, bytes);
+  const moved = await provider.exec(
+    ctx,
+    `mv -f ${sh(temp)} ${sh(target)}${then ? ` && ${then}` : ""}`,
+    { timeoutMs: 15_000 },
+  );
+  if (moved.exitCode !== 0) {
+    throw new Error(`Could not stage ${target}: ${moved.stderr.trim()}`);
+  }
+}
+
+/**
  * Copy each materialized binding's parquet into the sandbox so the dev server
  * can answer `__data/<name>.parquet` locally.
  *
@@ -654,20 +691,17 @@ async function stageBindingData(
       await stageLive(binding.name);
       continue;
     }
-    // A stale marker from a previous life mustn't shadow a now-static binding.
-    await provider
-      .exec(ctx, `rm -f ${stageDir}/${binding.name}.live`, {
-        timeoutMs: 15_000,
-      })
-      .catch(() => undefined);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
       chunks.push(Buffer.from(chunk as Buffer));
     }
-    await provider.writeFile(
+    // A stale marker from a previous life mustn't shadow a now-static binding.
+    await stageFileAtomically(
+      provider,
       ctx,
       `${stageDir}/${binding.name}.parquet`,
       new Uint8Array(Buffer.concat(chunks)),
+      `rm -f ${stageDir}/${binding.name}.live`,
     );
     staged.push(binding.name);
   }
@@ -675,7 +709,8 @@ async function stageBindingData(
   // The staged names as a file beside the data, so the app-side SDK's
   // useDuckDB can register every binding without a Mako API in reach —
   // the same relative fetch that gets it the parquet gets it the list.
-  await provider.writeFile(
+  await stageFileAtomically(
+    provider,
     ctx,
     `${stageDir}/index.json`,
     new TextEncoder().encode(JSON.stringify(staged)),
