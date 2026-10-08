@@ -16,6 +16,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { Types } from "mongoose";
 
+import { WORKFLOWS_DIR } from "../apps/app-paths";
 import { ensureCommitLocally } from "../apps/cloud-repo.service";
 import { isOid, runGitBuffer } from "../apps/git";
 import { repoDirFor, repoExists } from "../apps/repository.service";
@@ -40,7 +41,6 @@ import {
   triggerRun,
   type WorkspaceTenant,
 } from "../workflows/hatchet";
-import { WORKFLOWS_DIR } from "../workflows/on-push";
 import { readWorkflowsStatus } from "../workflows/status";
 
 const logger = loggers.api("workflows");

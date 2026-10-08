@@ -17,6 +17,7 @@
  */
 import { Types } from "mongoose";
 
+import { WORKFLOWS_DIR } from "../apps/app-paths";
 import { ensureLocalRepo } from "../apps/cloud-repo.service";
 import { runGit } from "../apps/git";
 import {
@@ -39,7 +40,6 @@ import {
 
 const logger = loggers.api("workflows-on-push");
 
-export const WORKFLOWS_DIR = "workflows";
 const WORKER_KEY_NAME = "Workflows worker";
 const WORKER_KEY_SCOPES: WorkspaceApiKeyScope[] = [
   "mcp",
