@@ -2,8 +2,7 @@ name: Build & publish workflows runtime image
 
 # Builds the workflows runtime image (deploy/workflows/runtime): the Hatchet
 # worker that runs workspace workflows/. Publishes to the dev + prod Artifact
-# Registries. PRs build-only (validate the Dockerfile); master + manual runs
-# push. Workspace worker Deployments pick up the new tag on their next deploy
+# Registries. PRs publish to dev only; master + manual runs publish to both. Workspace worker Deployments pick up the new tag on their next deploy
 # (WORKFLOWS_RUNTIME_IMAGE on the API).
 on:
   push:
@@ -71,9 +70,10 @@ jobs:
             -t runtime:${{ steps.reg.outputs.sha }} \
             .
 
-      # PRs stop here (Dockerfile validated). master + manual runs publish.
+      # Dev is published from PRs too: previews run `:latest` from the dev
+      # registry, and a PR that changes the runtime must be testable on its
+      # own preview. Prod is published from master and manual runs only.
       - name: Publish to dev registry
-        if: github.event_name != 'pull_request'
         run: |
           for TAG in "${{ steps.reg.outputs.sha }}" latest; do
             docker tag runtime:${{ steps.reg.outputs.sha }} ${{ steps.reg.outputs.dev }}:${TAG}
