@@ -7,13 +7,13 @@ sandboxed worker pod per workspace (the `gke` worker provider). It reuses the
 notebook-kernels GKE cluster and its gVisor node pool. A self-hosted
 installation needs none of it.
 
-| Path                  | What                                                                                                                                       |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `provision.sh`        | One-time, idempotent setup per project: the Cloud SQL database, Hatchet (Helm), its internal load balancer, the `mako-workflows` namespace |
-| `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Cloud SQL Postgres, Postgres queue, nothing exposed                                        |
-| `k8s/`                | Namespace, quota and network policy for worker pods                                                                                        |
-| `runtime/`            | The worker image: follow the commit Mako names, typecheck it, run a Hatchet worker                                                         |
-| `template/workflows/` | Starter files for a workspace: `hatchet.ts`, `lib/mako.ts` and two example workflows, one folder each.                                     |
+| Path                  | What                                                                                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provision.sh`        | One-time, idempotent setup per project: the Cloud SQL database, Hatchet (Helm), its internal load balancer, the `mako-workflows` namespace                                            |
+| `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Cloud SQL Postgres, Postgres queue, nothing exposed                                                                                   |
+| `k8s/`                | Namespace, quota and network policy for worker pods                                                                                                                                   |
+| `runtime/`            | The worker image: follow the commit Mako names, typecheck it, run a Hatchet worker. `runtime/defaults/` are the shared files (`hatchet.ts`, `lib/mako.ts`) it supplies to every repo. |
+| `template/workflows/` | Two example workflows, one folder each.                                                                                                                                               |
 
 ## Environments
 

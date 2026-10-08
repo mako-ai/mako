@@ -41,6 +41,7 @@ import {
   pageLines,
 } from "./shared/output-cap";
 import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { requireWorkspaceRepo } from "../../apps/workspace-repo-required";
 import { workspaceService } from "../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import {
@@ -254,6 +255,9 @@ export function createAppsTools({
     if (target.appId && target.workflowId) {
       return { error: "Give appId or workflowId, not both." };
     }
+    if (!target.appId && !target.workflowId) {
+      return { error: "Give appId (an app) or workflowId (a workflow)." };
+    }
     if (!target.workflowId) return loadProject(target.appId ?? "", opts);
     if (!isSafeSegment(target.workflowId)) {
       return { error: `Invalid workflow: ${target.workflowId}` };
@@ -261,6 +265,15 @@ export function createAppsTools({
     const role = userId ? await memberRole() : "member";
     if (!role || (opts.write && role === "viewer")) {
       return { error: "You cannot change workflows in this workspace." };
+    }
+    // The first workflow may be the first thing in the workspace's repo.
+    // Same gate as every other content write: a connected repository.
+    if (opts.write) {
+      try {
+        await requireWorkspaceRepo(workspaceId);
+      } catch (error) {
+        return { error: errorMessage(error) };
+      }
     }
     const project = new AppProject({
       workspaceId: new Types.ObjectId(workspaceId),
@@ -282,6 +295,16 @@ export function createAppsTools({
     if (!workflowFolders.has(project)) return null;
     if ((await currentActorBranch(project)) !== DEFAULT_BRANCH) return null;
     return `The checkout is on ${DEFAULT_BRANCH}, where workflows are live. Switch to a branch first, e.g. app_bash with \`git checkout -b workflow/${project.slug}\`, then retry. Merge with app_merge_to_main when it works.`;
+  };
+  /**
+   * Paths are relative to the target's folder. An agent that knows the repo
+   * layout tends to pass `workflows/<id>/workflow.ts` for a workflow anyway;
+   * read that as the file it means, not as a folder nested in itself.
+   */
+  const toRelPath = (project: IAppProject, path: string): string => {
+    if (!workflowFolders.has(project)) return path;
+    const prefix = `${appRootFor(project)}/`;
+    return path.startsWith(prefix) ? path.slice(prefix.length) : path;
   };
   /** An app's scope names its row; a workflow folder has no row to name. */
   const scopeFor = (project: IAppProject) => {
@@ -513,7 +536,7 @@ export function createAppsTools({
       execute: async ({
         appId,
         workflowId,
-        path: relPath,
+        path: givenPath,
         withLineNumbers,
         offset,
         limit,
@@ -523,6 +546,7 @@ export function createAppsTools({
           { write: false },
         );
         if ("error" in loaded) return { success: false, error: loaded.error };
+        const relPath = toRelPath(loaded.project, givenPath);
         try {
           const file = await readFile(loaded.project, relPath, actorId);
           if (file.isBinary) {
@@ -651,9 +675,10 @@ export function createAppsTools({
         path: z.string().min(1),
         contents: z.string(),
       }),
-      execute: async ({ appId, workflowId, path: relPath, contents }) => {
+      execute: async ({ appId, workflowId, path: givenPath, contents }) => {
         const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
+        const relPath = toRelPath(loaded.project, givenPath);
         try {
           const refusal = await liveBranchRefusal(loaded.project);
           if (refusal) return { success: false, error: refusal };
@@ -701,13 +726,14 @@ export function createAppsTools({
       execute: async ({
         appId,
         workflowId,
-        path: relPath,
+        path: givenPath,
         oldString,
         newString,
         replaceAll,
       }) => {
         const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
+        const relPath = toRelPath(loaded.project, givenPath);
         try {
           const refusal = await liveBranchRefusal(loaded.project);
           if (refusal) return { success: false, error: refusal };

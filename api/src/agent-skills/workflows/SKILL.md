@@ -23,11 +23,16 @@ retries and timeouts are Hatchet's.
 
 ```
 workflows/
-  hatchet.ts            the Hatchet client (shared, rarely changed)
-  lib/                  shared code
   daily-digest/
     workflow.ts         the workflow named "daily-digest"
 ```
+
+That one file is all a workflow needs. `../hatchet` (the Hatchet client) and
+`../lib/mako` (Mako data access) are supplied when it is built; do not create
+them.
+
+With `workflowId: "daily-digest"`, file paths are relative to that folder:
+the file above is `path: "workflow.ts"`.
 
 ## The loop
 

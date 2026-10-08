@@ -29,6 +29,9 @@ import ExplorerShell from "./ExplorerShell";
 
 const WorkflowIcon = EXPLORER_ICONS.workflows;
 const POLL_INTERVAL_MS = 8_000;
+// A workflow tab has no unsaved state, so the store sees it as replaceable;
+// opening a file must not close the runs next to it.
+const KEEP_OTHER_TABS = { replacePristine: false };
 
 const ROW_SX = {
   display: "flex",
@@ -157,20 +160,28 @@ export function WorkflowsExplorer() {
   }, [files]);
 
   const openWorkflow = (workflowId: string) =>
-    focusOrOpenTab({ kind: "workflow", metadata: { workflowId } }, () => ({
-      title: workflowId,
-      content: "",
-      kind: "workflow",
-      metadata: { workflowId },
-    }));
+    focusOrOpenTab(
+      { kind: "workflow", metadata: { workflowId } },
+      () => ({
+        title: workflowId,
+        content: "",
+        kind: "workflow",
+        metadata: { workflowId },
+      }),
+      KEEP_OTHER_TABS,
+    );
 
   const openFile = (path: string) =>
-    focusOrOpenTab({ kind: "workflow", metadata: { path } }, () => ({
-      title: path.split("/").pop() ?? path,
-      content: "",
-      kind: "workflow",
-      metadata: { path },
-    }));
+    focusOrOpenTab(
+      { kind: "workflow", metadata: { path } },
+      () => ({
+        title: path.split("/").pop() ?? path,
+        content: "",
+        kind: "workflow",
+        metadata: { path },
+      }),
+      KEEP_OTHER_TABS,
+    );
 
   const deployment = overview?.deployment;
   const buildError = deployment?.buildError

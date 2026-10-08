@@ -47,6 +47,19 @@ for (const entry of readdirSync(dir, { withFileTypes: true })) {
   workflows.push(workflow);
 }
 
+if (workflows.length === 0) {
+  // Nothing to run is a mistake in the layout, not a deploy: say where the
+  // files are, so a file one folder too deep is seen at once.
+  const found = readdirSync(dir, { recursive: true })
+    .filter(file => String(file).endsWith("workflow.ts"))
+    .map(file => `workflows/${file}`);
+  console.error(
+    "No workflow found. A workflow is the file workflows/<name>/workflow.ts." +
+      (found.length ? ` Found instead: ${found.join(", ")}` : ""),
+  );
+  process.exit(1);
+}
+
 const worker = await hatchet.worker("workspace", {
   workflows,
   slots: Number(process.env.WORKER_SLOTS ?? 50),

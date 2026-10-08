@@ -18,6 +18,7 @@
 // container holds one credential.
 import { execFileSync, fork } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   rmSync,
@@ -68,8 +69,23 @@ async function fetchSource(sha) {
   return dir;
 }
 
+/**
+ * Shared files every workflow imports: the Hatchet client and the Mako
+ * helpers. The image supplies them, so a repo needs only its workflow
+ * folders; a repo that has its own copy keeps it.
+ */
+function addDefaults(root) {
+  for (const file of ["hatchet.ts", "lib/mako.ts"]) {
+    const target = join(root, "workflows", file);
+    if (existsSync(target)) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(join(RUNTIME_DIR, "defaults", file), target);
+  }
+}
+
 /** Typecheck `workflows/` under `root`. Returns the errors, or null. */
 function typecheck(root) {
+  addDefaults(root);
   // Workflow code resolves packages from the runtime image, nowhere else.
   const modules = join(root, "node_modules");
   if (!existsSync(modules))

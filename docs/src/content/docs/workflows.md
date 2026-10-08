@@ -13,11 +13,11 @@ A workflow is a folder: `workflows/<name>/workflow.ts`. The folder name is the w
 
 ```
 workflows/
-  hatchet.ts            the Hatchet client, shared
-  lib/                  shared code
   daily-digest/
     workflow.ts
 ```
+
+That file is all a workflow needs. `../hatchet` (the Hatchet client) and `../lib/mako` (Mako data access) are supplied when the workflow is built. Add your own `workflows/hatchet.ts` or `workflows/lib/mako.ts` only to replace them.
 
 ```ts
 // workflows/daily-digest/workflow.ts
@@ -39,7 +39,7 @@ export default dailyDigest;
 
 Every folder with a `workflow.ts` is picked up. There is no list to keep.
 
-Starter files are in the Mako repository under `deploy/workflows/template/workflows/`.
+Examples are in the Mako repository under `deploy/workflows/template/workflows/`.
 
 ## How a deploy works
 
