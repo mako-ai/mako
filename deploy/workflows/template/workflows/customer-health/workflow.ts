@@ -1,11 +1,11 @@
 // Sequential example: fetch, then score. Every task retries once so a crashed
 // worker never loses a run (Hatchet reassigns the task to the new worker).
-import { hatchet } from "./hatchet";
-import { query } from "./lib/mako";
+import { hatchet } from "../hatchet";
+import { query } from "../lib/mako";
 
 type Input = { connection: string; limit?: number };
 
-export const customerHealth = hatchet.workflow<Input>({
+const customerHealth = hatchet.workflow<Input>({
   name: "customer-health",
 });
 
@@ -32,3 +32,5 @@ customerHealth.task({
     };
   },
 });
+
+export default customerHealth;

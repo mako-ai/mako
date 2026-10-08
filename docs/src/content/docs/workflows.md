@@ -9,12 +9,22 @@ A workflow is a TypeScript file in your workspace repo, in the `workflows/` fold
 
 ## A workflow
 
-```ts
-// workflows/daily-digest.workflow.ts
-import { hatchet } from "./hatchet";
+A workflow is a folder: `workflows/<name>/workflow.ts`. The folder name is the workflow's name.
 
-export const dailyDigest = hatchet.workflow({
-  name: "daily-digest",
+```
+workflows/
+  hatchet.ts            the Hatchet client, shared
+  lib/                  shared code
+  daily-digest/
+    workflow.ts
+```
+
+```ts
+// workflows/daily-digest/workflow.ts
+import { hatchet } from "../hatchet";
+
+const dailyDigest = hatchet.workflow({
+  name: "daily-digest", // same as the folder
   on: { cron: "0 7 * * 1-5" }, // weekdays at 07:00 UTC
 });
 
@@ -23,17 +33,11 @@ dailyDigest.task({
   retries: 1,
   fn: async () => ({ date: new Date().toISOString().slice(0, 10) }),
 });
+
+export default dailyDigest;
 ```
 
-`workflows/index.ts` lists the workflows to run:
-
-```ts
-import { hatchet } from "./hatchet";
-import { dailyDigest } from "./daily-digest.workflow";
-
-export { hatchet };
-export const workflows = [dailyDigest];
-```
+Every folder with a `workflow.ts` is picked up. There is no list to keep.
 
 Starter files are in the Mako repository under `deploy/workflows/template/workflows/`.
 
