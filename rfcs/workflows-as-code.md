@@ -190,7 +190,7 @@ only the worker API key, with the `workflows:runtime` scope.
 
 | Route | Does |
 |---|---|
-| `GET /workflows` | Live commit (from Kubernetes), or the build error, plus workflows from Hatchet |
+| `GET /workflows` | Whether workflows are on, the live commit and the build error (from Kubernetes). The workflow and cron lists come from the pass-through. |
 | `GET /workflows/hatchet/*` | Pass-through to an allowlist of Hatchet REST reads: run list, run, task logs, workers. The tenant token is added server-side. |
 | `POST /workflows/:name/run` | Start a run, with `additionalMetadata` `{ trigger: "ui", triggeredBy }` |
 | `POST /workflows/runs/:id/cancel`, `/replay` | Hatchet cancel and replay |

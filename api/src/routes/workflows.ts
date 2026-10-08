@@ -32,14 +32,12 @@ import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { workspaceService } from "../services/workspace.service";
 import {
   HatchetError,
-  cancelRun,
   isHatchetConfigured,
   isHatchetId,
   readWorkspaceTenant,
-  replayRun,
+  runAction,
   resolveHatchetRead,
   tenantFetch,
-  tenantJson,
   triggerRun,
   type WorkspaceTenant,
 } from "../workflows/hatchet";
@@ -150,8 +148,7 @@ workflowRoutes.openapi(
     method: "get",
     path: "/",
     tags: ["Workflows"],
-    summary:
-      "What is deployed (from Kubernetes) and the registered workflows and crons (from Hatchet)",
+    summary: "Whether workflows are on, and what is deployed (from Kubernetes)",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParam },
     responses: OPEN_RESPONSES,
@@ -163,36 +160,11 @@ workflowRoutes.openapi(
         .select("workflows.enabled")
         .lean();
       const enabled = workspace?.workflows?.enabled === true;
-      const tenant = isHatchetConfigured()
-        ? await readWorkspaceTenant(workspaceId)
-        : null;
-      const [deployment, workflows, crons] = await Promise.all([
-        tenant && isWorkflowsKubeConfigured()
-          ? readWorkerStatus(workspaceId)
-          : NOT_DEPLOYED,
-        tenant
-          ? tenantJson<{ rows?: unknown[] }>(
-              tenant,
-              `/api/v1/tenants/${tenant.tenantId}/workflows`,
-            )
-          : null,
-        tenant
-          ? tenantJson<{ rows?: unknown[] }>(
-              tenant,
-              `/api/v1/tenants/${tenant.tenantId}/workflows/crons`,
-            )
-          : null,
-      ]);
-      return c.json(
-        {
-          success: true as const,
-          enabled,
-          deployment,
-          workflows: workflows?.rows ?? [],
-          crons: crons?.rows ?? [],
-        },
-        200,
-      );
+      const deployment =
+        enabled && isWorkflowsKubeConfigured()
+          ? await readWorkerStatus(workspaceId)
+          : NOT_DEPLOYED;
+      return c.json({ success: true as const, enabled, deployment }, 200);
     } catch (error) {
       return fail(c, error);
     }
@@ -270,10 +242,7 @@ workflowRoutes.openapi(
   },
 );
 
-for (const [action, call] of [
-  ["cancel", cancelRun],
-  ["replay", replayRun],
-] as const) {
+for (const action of ["cancel", "replay"] as const) {
   workflowRoutes.openapi(
     createRoute({
       method: "post",
@@ -298,7 +267,7 @@ for (const [action, call] of [
         }
         const tenant = await tenantOr(c, workspaceId);
         if (tenant instanceof Response) return tenant;
-        const result = await call(tenant, id);
+        const result = await runAction(tenant, action, id);
         return c.json({ success: true as const, result }, 200);
       } catch (error) {
         return fail(c, error);

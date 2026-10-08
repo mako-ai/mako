@@ -31345,7 +31345,7 @@
         "tags": [
           "Workflows"
         ],
-        "summary": "What is deployed (from Kubernetes) and the registered workflows and crons (from Hatchet)",
+        "summary": "Whether workflows are on, and what is deployed (from Kubernetes)",
         "security": [
           {
             "cookieAuth": []

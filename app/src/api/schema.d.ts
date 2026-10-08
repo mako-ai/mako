@@ -5064,7 +5064,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** What is deployed (from Kubernetes) and the registered workflows and crons (from Hatchet) */
+        /** Whether workflows are on, and what is deployed (from Kubernetes) */
         get: operations["get_api_workspaces_workspaceId_workflows"];
         put?: never;
         post?: never;

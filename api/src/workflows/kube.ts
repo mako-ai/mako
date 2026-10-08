@@ -21,7 +21,7 @@ import { workflowsNamePrefix } from "./hatchet";
 
 const logger = loggers.api("workflows-kube");
 
-const NAMESPACE = process.env.WORKFLOWS_NAMESPACE || "mako-workflows";
+const NAMESPACE = "mako-workflows";
 // The network policy selects worker pods by this label.
 const POD_NAME_LABEL = "mako-workflow-worker";
 const WORKSPACE_LABEL = "mako.ai/workspace";
@@ -87,26 +87,25 @@ export async function workerSecretExists(
   }
 }
 
-/** Write the worker's credentials. Replaces the Secret if it already exists. */
-export async function writeWorkerSecret(
+/** Create the worker's credentials. Called only when the Secret is missing. */
+export async function createWorkerSecret(
   workspaceId: string,
   secrets: { hatchetToken: string; makoApiKey: string },
 ): Promise<void> {
   const { core } = await gkeClients();
-  const name = workerName(workspaceId);
-  const body = {
-    metadata: { name, labels: resourceLabels(workspaceId) },
-    stringData: {
-      HATCHET_CLIENT_TOKEN: secrets.hatchetToken,
-      MAKO_API_KEY: secrets.makoApiKey,
+  await core.createNamespacedSecret({
+    namespace: NAMESPACE,
+    body: {
+      metadata: {
+        name: workerName(workspaceId),
+        labels: resourceLabels(workspaceId),
+      },
+      stringData: {
+        HATCHET_CLIENT_TOKEN: secrets.hatchetToken,
+        MAKO_API_KEY: secrets.makoApiKey,
+      },
     },
-  };
-  try {
-    await core.createNamespacedSecret({ namespace: NAMESPACE, body });
-  } catch (error) {
-    if ((error as { code?: number } | null)?.code !== 409) throw error;
-    await core.replaceNamespacedSecret({ name, namespace: NAMESPACE, body });
-  }
+  });
 }
 
 function deploymentBody(workspaceId: string, sha: string): V1Deployment {

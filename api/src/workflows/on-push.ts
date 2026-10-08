@@ -30,7 +30,7 @@ import {
   isWorkflowsKubeConfigured,
   readTargetSha,
   workerSecretExists,
-  writeWorkerSecret,
+  createWorkerSecret,
 } from "./kube";
 
 const logger = loggers.api("workflows-on-push");
@@ -103,7 +103,7 @@ async function ensureWorkerCredentials(
       $set: { "workflows.workerApiKeyId": keyId },
     },
   );
-  await writeWorkerSecret(workspaceId, { hatchetToken, makoApiKey: key });
+  await createWorkerSecret(workspaceId, { hatchetToken, makoApiKey: key });
 }
 
 export type WorkflowsDeployResult =

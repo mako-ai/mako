@@ -28,10 +28,10 @@ import {
 
 const logger = loggers.api("workflows-hatchet");
 
-const HATCHET_NAMESPACE = process.env.HATCHET_NAMESPACE || "hatchet";
+const HATCHET_NAMESPACE = "hatchet";
 const HATCHET_API_POD_LABEL =
   "app.kubernetes.io/instance=hatchet,app.kubernetes.io/name=api";
-const HATCHET_API_PORT = process.env.HATCHET_API_PORT || "8080";
+const HATCHET_API_PORT = "8080";
 const ADMIN_EMAIL =
   process.env.HATCHET_ADMIN_EMAIL || "workflows-admin@mako.ai";
 // Tenant tokens are long-lived: the worker Secret holds the same token, and
@@ -197,25 +197,12 @@ export interface WorkspaceTenant {
   token: string;
 }
 
-const tenantInFlight = new Map<string, Promise<WorkspaceTenant>>();
-
 /**
  * The workspace's tenant and token, created on first use and saved on the
- * workspace. Concurrent first calls share one creation.
+ * workspace. The one caller, the deploy, already runs once per workspace at a
+ * time.
  */
-export function ensureWorkspaceTenant(
-  workspaceId: string,
-): Promise<WorkspaceTenant> {
-  const running = tenantInFlight.get(workspaceId);
-  if (running) return running;
-  const run = ensureWorkspaceTenantNow(workspaceId).finally(() => {
-    tenantInFlight.delete(workspaceId);
-  });
-  tenantInFlight.set(workspaceId, run);
-  return run;
-}
-
-async function ensureWorkspaceTenantNow(
+export async function ensureWorkspaceTenant(
   workspaceId: string,
 ): Promise<WorkspaceTenant> {
   const existing = await readWorkspaceTenant(workspaceId);
@@ -341,24 +328,15 @@ export function triggerRun(
   );
 }
 
-export function cancelRun(
+/** Cancel or replay a run. The two Hatchet calls differ only in their path. */
+export function runAction(
   tenant: WorkspaceTenant,
+  action: "cancel" | "replay",
   runId: string,
 ): Promise<unknown> {
   return tenantJson(
     tenant,
-    `/api/v1/stable/tenants/${tenant.tenantId}/tasks/cancel`,
-    { method: "POST", body: { externalIds: [runId] } },
-  );
-}
-
-export function replayRun(
-  tenant: WorkspaceTenant,
-  runId: string,
-): Promise<unknown> {
-  return tenantJson(
-    tenant,
-    `/api/v1/stable/tenants/${tenant.tenantId}/tasks/replay`,
+    `/api/v1/stable/tenants/${tenant.tenantId}/tasks/${action}`,
     { method: "POST", body: { externalIds: [runId] } },
   );
 }
