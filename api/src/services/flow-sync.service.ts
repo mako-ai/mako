@@ -81,6 +81,8 @@ import {
   type RemovedSlug,
   type SlugRenamePair,
 } from "../rename/flow-dbt-job-pairing";
+import { flowEntitySignature } from "../sync-cdc/entity-selection";
+import { inngest } from "../inngest/client";
 
 const logger = loggers.api("flow-sync");
 
@@ -909,14 +911,17 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
     entities: file.backfillSchedule?.entities,
   } as IFlow["backfillSchedule"];
 
-  // Enabled-ness only. The endpoint is inbound URL identity minted once in
-  // Mongo (17 of 31 production flows have external systems POSTing to it) and
-  // the secret is a credential; neither is in the file and neither may be
-  // touched from here.
+  // Enabled-ness and the provider subscription id. The endpoint is inbound
+  // URL identity minted once in Mongo (17 of 31 production flows have
+  // external systems POSTing to it) and the secret is a credential; neither
+  // is in the file and neither may be touched from here.
   if (file.type === "webhook") {
     doc.webhookConfig = {
       ...(doc.webhookConfig ?? {}),
       enabled: file.webhookEnabled !== false,
+      // The provider subscription id is definition, not identity: the file
+      // owns it.
+      providerWebhookId: file.webhookProviderId,
     } as IFlow["webhookConfig"];
   }
 
@@ -2058,6 +2063,7 @@ export async function syncFlowsFromRepo(
 
   const result: FlowSyncResult = { ...empty, invalid: [] };
   const desired: DesiredFlow[] = [];
+  const webhookResyncs: IFlow[] = [];
   const seen = new Set<string>();
 
   // A file that moved is the same flow: re-key its row to the new slug
@@ -2291,6 +2297,7 @@ export async function syncFlowsFromRepo(
     }
     const isNew = !row;
     const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
+    const entitySignatureBefore = row ? flowEntitySignature(row as IFlow) : "";
     const doc =
       row ??
       new Flow({
@@ -2405,6 +2412,12 @@ export async function syncFlowsFromRepo(
       desired.push({ slug, file: parsed, flowId: String(doc._id) });
     } else {
       result.updated++;
+      if (
+        (doc as IFlow).type === "webhook" &&
+        flowEntitySignature(doc as IFlow) !== entitySignatureBefore
+      ) {
+        webhookResyncs.push(doc as IFlow);
+      }
     }
     logger.info("Flow synced from repo", { workspaceId, slug, isNew });
   }
@@ -2449,6 +2462,27 @@ export async function syncFlowsFromRepo(
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  // A file that enables or disables entities changes which provider events
+  // the flow needs: retarget its webhook subscription. Dispatched as an event
+  // (inngest/functions/flow-webhook-subscription) so this module never loads
+  // the connector registry, and so a provider error cannot stall the push.
+  if (webhookResyncs.length > 0) {
+    try {
+      await inngest.send(
+        webhookResyncs.map(flow => ({
+          name: "flow.webhook.resubscribe",
+          data: { flowId: String(flow._id) },
+        })),
+      );
+    } catch (error) {
+      logger.warn("Could not queue webhook retargeting for changed flows", {
+        workspaceId,
+        flowIds: webhookResyncs.map(flow => String(flow._id)),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // Removal is the reconciler's, end to end. A flow is a running stream, so a

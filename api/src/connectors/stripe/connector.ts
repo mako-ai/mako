@@ -11,6 +11,7 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  UpdateWebhookSubscriptionOptions,
   type WebhookCapabilities,
   type IncrementalCapabilities,
   type ConnectorEntitySchema,
@@ -38,7 +39,29 @@ const STRIPE_ENTITIES = [
   "plans",
   "prices",
   "payment_intents",
+  // Money movement: what Stripe actually settled, kept and paid out. Needed to
+  // reconcile cash collected → fees → payouts → bank, and to date refunds and
+  // credit notes when they happen rather than on the original invoice.
+  "balance_transactions",
+  "payouts",
+  "payout_balance_transactions",
+  "refunds",
+  "credit_notes",
+  "customer_balance_transactions",
+  // Billing detail behind MRR movements (one-off items, scheduled plan
+  // changes, discounts) and the self-serve checkout funnel.
+  "invoice_items",
+  "subscription_schedules",
+  "coupons",
+  "promotion_codes",
+  "checkout_sessions",
+  "setup_intents",
+  "early_fraud_warnings",
 ] as const;
+
+// Stripe caps `autoPagingToArray` at 10,000 items. A single payout or customer
+// never comes close (a payout groups a few days of transactions).
+const CHILD_LIST_MAX = 10_000;
 
 export class StripeConnector extends BaseConnector {
   private stripe: Stripe | null = null;
@@ -232,6 +255,43 @@ export class StripeConnector extends BaseConnector {
       { name: "plans", label: "Plans", layoutSuggestion },
       { name: "prices", label: "Prices", layoutSuggestion },
       { name: "payment_intents", label: "Payment Intents", layoutSuggestion },
+      {
+        name: "balance_transactions",
+        label: "Balance Transactions",
+        layoutSuggestion,
+      },
+      { name: "payouts", label: "Payouts", layoutSuggestion },
+      {
+        name: "payout_balance_transactions",
+        label: "Payout Balance Transactions",
+        layoutSuggestion,
+      },
+      { name: "refunds", label: "Refunds", layoutSuggestion },
+      { name: "credit_notes", label: "Credit Notes", layoutSuggestion },
+      {
+        name: "customer_balance_transactions",
+        label: "Customer Balance Transactions",
+        layoutSuggestion,
+      },
+      { name: "invoice_items", label: "Invoice Items", layoutSuggestion },
+      {
+        name: "subscription_schedules",
+        label: "Subscription Schedules",
+        layoutSuggestion,
+      },
+      { name: "coupons", label: "Coupons", layoutSuggestion },
+      { name: "promotion_codes", label: "Promotion Codes", layoutSuggestion },
+      {
+        name: "checkout_sessions",
+        label: "Checkout Sessions",
+        layoutSuggestion,
+      },
+      { name: "setup_intents", label: "Setup Intents", layoutSuggestion },
+      {
+        name: "early_fraud_warnings",
+        label: "Early Fraud Warnings",
+        layoutSuggestion,
+      },
     ];
   }
 
@@ -363,6 +423,125 @@ export class StripeConnector extends BaseConnector {
           });
           break;
 
+        case "balance_transactions":
+          response = await stripe.balanceTransactions.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "payouts":
+          response = await stripe.payouts.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "refunds":
+          response = await stripe.refunds.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "credit_notes":
+          response = await stripe.creditNotes.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "invoice_items":
+          response = await stripe.invoiceItems.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "subscription_schedules":
+          response = await stripe.subscriptionSchedules.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "coupons":
+          response = await stripe.coupons.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "promotion_codes":
+          response = await stripe.promotionCodes.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "checkout_sessions":
+          response = await stripe.checkout.sessions.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "setup_intents":
+          response = await stripe.setupIntents.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "early_fraud_warnings":
+          response = await stripe.radar.earlyFraudWarnings.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "payout_balance_transactions":
+        case "customer_balance_transactions":
+          response = await this.fetchNestedPage(entity, {
+            limit: batchSize,
+            startingAfter,
+            since,
+          });
+          break;
+
         default:
           throw new Error(`Unsupported entity: ${entity}`);
       }
@@ -380,8 +559,12 @@ export class StripeConnector extends BaseConnector {
       // Check for more pages
       hasMore = response.has_more;
 
-      if (hasMore && response.data.length > 0) {
-        startingAfter = response.data[response.data.length - 1].id;
+      // Nested entities page over their parent list (payouts, customers) and
+      // resume from the last parent, not the last child.
+      const nextCursor: string | undefined =
+        response.nextCursor ?? response.data[response.data.length - 1]?.id;
+      if (hasMore && nextCursor) {
+        startingAfter = nextCursor;
         iterations++;
 
         // Rate limiting
@@ -515,6 +698,125 @@ export class StripeConnector extends BaseConnector {
           });
           break;
 
+        case "balance_transactions":
+          response = await stripe.balanceTransactions.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "payouts":
+          response = await stripe.payouts.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "refunds":
+          response = await stripe.refunds.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "credit_notes":
+          response = await stripe.creditNotes.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "invoice_items":
+          response = await stripe.invoiceItems.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "subscription_schedules":
+          response = await stripe.subscriptionSchedules.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "coupons":
+          response = await stripe.coupons.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "promotion_codes":
+          response = await stripe.promotionCodes.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "checkout_sessions":
+          response = await stripe.checkout.sessions.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "setup_intents":
+          response = await stripe.setupIntents.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "early_fraud_warnings":
+          response = await stripe.radar.earlyFraudWarnings.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "payout_balance_transactions":
+        case "customer_balance_transactions":
+          response = await this.fetchNestedPage(entity, {
+            limit: batchSize,
+            startingAfter,
+            since,
+          });
+          break;
+
         default:
           throw new Error(`Unsupported entity: ${entity}`);
       }
@@ -532,13 +834,82 @@ export class StripeConnector extends BaseConnector {
       // Check for more pages
       hasMore = response.has_more;
 
-      if (hasMore && response.data.length > 0) {
-        startingAfter = response.data[response.data.length - 1].id;
+      // Nested entities page over their parent list (payouts, customers) and
+      // resume from the last parent, not the last child.
+      const nextCursor: string | undefined =
+        response.nextCursor ?? response.data[response.data.length - 1]?.id;
+      if (hasMore && nextCursor) {
+        startingAfter = nextCursor;
 
         // Rate limiting
         await this.sleep(rateLimitDelay);
       }
     }
+  }
+
+  /**
+   * One page of a nested entity. Stripe has no account-wide list for these:
+   * - payout_balance_transactions: transactions are only attributed to the
+   *   payout that settled them when listed *by payout* (the transaction object
+   *   carries no payout id), so page over payouts and inject `payout`. A
+   *   payout is created after every transaction it pays out, so filtering
+   *   payouts by `created` is complete.
+   * - customer_balance_transactions: listed per customer, and old customers
+   *   keep receiving new credit, so `since` cannot bound the walk; declared
+   *   incremental mode `none`.
+   * Returns the parent cursor as `nextCursor`.
+   */
+  private async fetchNestedPage(
+    entity: "payout_balance_transactions" | "customer_balance_transactions",
+    options: { limit: number; startingAfter?: string; since?: Date },
+  ): Promise<{
+    data: Array<Record<string, unknown>>;
+    has_more: boolean;
+    nextCursor?: string;
+  }> {
+    const stripe = this.getStripeClient();
+    const records: Array<Record<string, unknown>> = [];
+
+    if (entity === "payout_balance_transactions") {
+      const payouts = await stripe.payouts.list({
+        limit: options.limit,
+        ...(options.startingAfter && { starting_after: options.startingAfter }),
+        ...(options.since && {
+          created: { gte: Math.floor(options.since.getTime() / 1000) },
+        }),
+      });
+      for (const payout of payouts.data) {
+        const transactions = await stripe.balanceTransactions
+          .list({ payout: payout.id, limit: 100 })
+          .autoPagingToArray({ limit: CHILD_LIST_MAX });
+        for (const transaction of transactions) {
+          records.push({ ...transaction, payout: payout.id });
+        }
+      }
+      return {
+        data: records,
+        has_more: payouts.has_more,
+        nextCursor: payouts.data[payouts.data.length - 1]?.id,
+      };
+    }
+
+    const customers = await stripe.customers.list({
+      limit: options.limit,
+      ...(options.startingAfter && { starting_after: options.startingAfter }),
+    });
+    for (const customer of customers.data) {
+      const transactions = await stripe.customers
+        .listBalanceTransactions(customer.id, { limit: 100 })
+        .autoPagingToArray({ limit: CHILD_LIST_MAX });
+      records.push(
+        ...(transactions as unknown as Array<Record<string, unknown>>),
+      );
+    }
+    return {
+      data: records,
+      has_more: customers.has_more,
+      nextCursor: customers.data[customers.data.length - 1]?.id,
+    };
   }
 
   /**
@@ -709,6 +1080,116 @@ export class StripeConnector extends BaseConnector {
       "plan.created": { entity: "plans", operation: "upsert" },
       "plan.updated": { entity: "plans", operation: "upsert" },
       "plan.deleted": { entity: "plans", operation: "delete" },
+      // Payouts (status moves pending → in_transit → paid/failed)
+      "payout.created": { entity: "payouts", operation: "upsert" },
+      "payout.updated": { entity: "payouts", operation: "upsert" },
+      "payout.paid": { entity: "payouts", operation: "upsert" },
+      "payout.failed": { entity: "payouts", operation: "upsert" },
+      "payout.canceled": { entity: "payouts", operation: "upsert" },
+      "payout.reconciliation_completed": {
+        entity: "payouts",
+        operation: "upsert",
+      },
+      // Refunds (`charge.refund.updated` carries a Refund object)
+      "refund.created": { entity: "refunds", operation: "upsert" },
+      "refund.updated": { entity: "refunds", operation: "upsert" },
+      "charge.refund.updated": { entity: "refunds", operation: "upsert" },
+      // Credit notes
+      "credit_note.created": { entity: "credit_notes", operation: "upsert" },
+      "credit_note.updated": { entity: "credit_notes", operation: "upsert" },
+      "credit_note.voided": { entity: "credit_notes", operation: "upsert" },
+      // Invoice items
+      "invoiceitem.created": { entity: "invoice_items", operation: "upsert" },
+      // No `invoiceitem.updated`: Stripe rejects it as deprecated on webhook
+      // endpoints, which fails the whole create/update request.
+      "invoiceitem.deleted": { entity: "invoice_items", operation: "delete" },
+      // Subscription schedules
+      "subscription_schedule.created": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.updated": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.released": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.completed": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.canceled": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.aborted": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      "subscription_schedule.expiring": {
+        entity: "subscription_schedules",
+        operation: "upsert",
+      },
+      // Coupons & promotion codes
+      "coupon.created": { entity: "coupons", operation: "upsert" },
+      "coupon.updated": { entity: "coupons", operation: "upsert" },
+      "coupon.deleted": { entity: "coupons", operation: "delete" },
+      "promotion_code.created": {
+        entity: "promotion_codes",
+        operation: "upsert",
+      },
+      "promotion_code.updated": {
+        entity: "promotion_codes",
+        operation: "upsert",
+      },
+      // Checkout sessions
+      "checkout.session.completed": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      "checkout.session.expired": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      "checkout.session.async_payment_succeeded": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      "checkout.session.async_payment_failed": {
+        entity: "checkout_sessions",
+        operation: "upsert",
+      },
+      // Setup intents
+      "setup_intent.created": { entity: "setup_intents", operation: "upsert" },
+      "setup_intent.succeeded": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      "setup_intent.setup_failed": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      "setup_intent.requires_action": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      "setup_intent.canceled": {
+        entity: "setup_intents",
+        operation: "upsert",
+      },
+      // Radar early fraud warnings
+      "radar.early_fraud_warning.created": {
+        entity: "early_fraud_warnings",
+        operation: "upsert",
+      },
+      "radar.early_fraud_warning.updated": {
+        entity: "early_fraud_warnings",
+        operation: "upsert",
+      },
+      // balance_transactions, payout_balance_transactions and
+      // customer_balance_transactions have no Stripe events: polled only.
     };
 
     return mappings[eventType] || null;
@@ -762,6 +1243,52 @@ export class StripeConnector extends BaseConnector {
       "plan.created",
       "plan.updated",
       "plan.deleted",
+      // Payouts
+      "payout.created",
+      "payout.updated",
+      "payout.paid",
+      "payout.failed",
+      "payout.canceled",
+      "payout.reconciliation_completed",
+      // Refunds
+      "refund.created",
+      "refund.updated",
+      "charge.refund.updated",
+      // Credit notes
+      "credit_note.created",
+      "credit_note.updated",
+      "credit_note.voided",
+      // Invoice items
+      "invoiceitem.created",
+      "invoiceitem.deleted",
+      // Subscription schedules
+      "subscription_schedule.created",
+      "subscription_schedule.updated",
+      "subscription_schedule.released",
+      "subscription_schedule.completed",
+      "subscription_schedule.canceled",
+      "subscription_schedule.aborted",
+      "subscription_schedule.expiring",
+      // Coupons & promotion codes
+      "coupon.created",
+      "coupon.updated",
+      "coupon.deleted",
+      "promotion_code.created",
+      "promotion_code.updated",
+      // Checkout sessions
+      "checkout.session.completed",
+      "checkout.session.expired",
+      "checkout.session.async_payment_succeeded",
+      "checkout.session.async_payment_failed",
+      // Setup intents
+      "setup_intent.created",
+      "setup_intent.succeeded",
+      "setup_intent.setup_failed",
+      "setup_intent.requires_action",
+      "setup_intent.canceled",
+      // Radar
+      "radar.early_fraud_warning.created",
+      "radar.early_fraud_warning.updated",
     ];
   }
 
@@ -811,6 +1338,11 @@ export class StripeConnector extends BaseConnector {
       // only arrive via the webhook trigger.
       supported: true,
       mode: "created-anchor",
+      perEntity: {
+        // No account-wide list exists; every customer is re-walked on each
+        // poll (see `fetchNestedPage`), so `since` is not applied.
+        customer_balance_transactions: { mode: "none" },
+      },
       warning:
         "Stripe only reports newly created records to polls; updates to existing records require the webhook trigger.",
     };
@@ -872,6 +1404,104 @@ export class StripeConnector extends BaseConnector {
             : String(error);
       throw new Error(
         `Failed to create Stripe webhook subscription: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * Events a provisioned endpoint should carry: the explicitly requested
+   * ones, else those of the flow's enabled entities, restricted to events
+   * this connector understands.
+   */
+  private resolveProvisionEvents(options: ProvisionWebhookOptions): string[] {
+    const requestedEvents = Array.isArray(options.events)
+      ? options.events
+          .map(event => event.trim())
+          .filter((event): event is string => event.length > 0)
+      : [];
+
+    const supported = new Set(this.getSupportedWebhookEvents());
+    const effectiveEvents = (
+      requestedEvents.length > 0
+        ? requestedEvents
+        : this.getWebhookEventsForEntities(options.enabledEntities ?? [])
+    ).filter(event => supported.has(event));
+
+    if (effectiveEvents.length === 0) {
+      throw new Error(
+        requestedEvents.length > 0
+          ? `No valid Stripe webhook events configured. Unsupported events: ${requestedEvents.join(", ")}`
+          : "No webhook events resolved for the selected entities",
+      );
+    }
+    return effectiveEvents;
+  }
+
+  supportsWebhookSubscriptionUpdate(): boolean {
+    return true;
+  }
+
+  /**
+   * Retarget the Stripe endpoint(s) that POST to `endpointUrl` to the events
+   * of the flow's current entities, keeping their signing secret.
+   *
+   * Every endpoint on that URL is updated, not just one: flows provisioned
+   * before ids were stored may have duplicates from earlier re-provisioning,
+   * and Stripe never reveals a secret after creation, so there is no way to
+   * tell which duplicate the flow's stored secret belongs to.
+   */
+  async updateWebhookSubscription(
+    options: UpdateWebhookSubscriptionOptions,
+  ): Promise<ProvisionWebhookResult | null> {
+    const stripe = this.getStripeClient();
+    const effectiveEvents = this.resolveProvisionEvents(options);
+
+    try {
+      const endpoints = (
+        await stripe.webhookEndpoints
+          .list({ limit: 100 })
+          .autoPagingToArray({ limit: 1000 })
+      ).filter(endpoint => endpoint.url === options.endpointUrl);
+
+      if (endpoints.length === 0) {
+        return null;
+      }
+
+      // Without a stored id, prefer an endpoint Stripe still considers
+      // healthy: duplicates whose secret the flow no longer holds fail every
+      // delivery and end up disabled by Stripe.
+      const primary =
+        endpoints.find(endpoint => endpoint.id === options.providerWebhookId) ??
+        endpoints.find(endpoint => endpoint.status === "enabled") ??
+        endpoints[0];
+
+      for (const endpoint of endpoints) {
+        await stripe.webhookEndpoints.update(endpoint.id, {
+          enabled_events:
+            effectiveEvents as Stripe.WebhookEndpointUpdateParams.EnabledEvent[],
+          // Re-enable only the endpoint the flow is bound to: provisioning is
+          // an explicit request to receive its events again.
+          ...(endpoint.id === primary.id && { disabled: false }),
+        });
+      }
+
+      if (endpoints.length > 1) {
+        logger.warn("Multiple Stripe webhook endpoints share one flow URL", {
+          endpointIds: endpoints.map(endpoint => endpoint.id),
+          keptId: primary.id,
+        });
+      }
+
+      return { providerWebhookId: primary.id, endpointUrl: primary.url };
+    } catch (error) {
+      const message =
+        error instanceof Stripe.errors.StripeError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      throw new Error(
+        `Failed to update Stripe webhook subscription: ${message}`,
       );
     }
   }

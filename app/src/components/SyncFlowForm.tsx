@@ -367,6 +367,10 @@ export function SyncFlowForm({
   const watchBackfillScheduleEnabled = watch("backfillScheduleEnabled");
   const watchSyncMode = watch("syncMode");
   const watchWriteMode = watch("writeMode");
+  // A flow that already holds a signing secret is re-provisioned in place:
+  // the API updates the provider's existing subscription instead of
+  // creating a second one.
+  const watchWebhookSecret = watch("webhookSecret");
 
   const {
     fields: queryFields,
@@ -2517,9 +2521,12 @@ export function SyncFlowForm({
                                     }
                                   >
                                     {isProvisioningWebhook
-                                      ? `Creating in ${provisionProviderLabel}...`
-                                      : webhookProvisionSucceeded
-                                        ? `Recreate in ${provisionProviderLabel}`
+                                      ? watchWebhookSecret
+                                        ? `Updating in ${provisionProviderLabel}...`
+                                        : `Creating in ${provisionProviderLabel}...`
+                                      : watchWebhookSecret ||
+                                          webhookProvisionSucceeded
+                                        ? `Update in ${provisionProviderLabel}`
                                         : `Create in ${provisionProviderLabel}`}
                                   </Button>
                                 </Box>

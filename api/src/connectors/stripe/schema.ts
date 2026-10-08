@@ -16,6 +16,11 @@ const i = (nullable = true): ConnectorFieldSchema => ({
   type: "integer",
   nullable,
 });
+const n = (nullable = true): ConnectorFieldSchema => ({
+  type: "number",
+  nullable,
+});
+
 const b = (nullable = true): ConnectorFieldSchema => ({
   type: "boolean",
   nullable,
@@ -286,6 +291,235 @@ export const PRICE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   currency_options: j(),
 };
 
+// ---------------------------------------------------------------------------
+// Money movement. Amounts are integers in the currency's minor unit (cents),
+// exactly as Stripe returns them.
+// ---------------------------------------------------------------------------
+
+export const BALANCE_TRANSACTION_SCHEMA: Record<string, ConnectorFieldSchema> =
+  {
+    ...COMMON_STRIPE_SCHEMA,
+    amount: i(),
+    available_on: ts(),
+    balance_type: s(),
+    currency: s(),
+    description: s(),
+    exchange_rate: n(),
+    fee: i(),
+    fee_details: j(),
+    net: i(),
+    reporting_category: s(),
+    source: s(),
+    status: s(),
+    type: s(),
+  };
+
+/** Balance transactions listed per payout; `payout` is injected by the connector. */
+export const PAYOUT_BALANCE_TRANSACTION_SCHEMA: Record<
+  string,
+  ConnectorFieldSchema
+> = {
+  ...BALANCE_TRANSACTION_SCHEMA,
+  payout: s(),
+};
+
+export const PAYOUT_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: i(),
+  arrival_date: ts(),
+  automatic: b(),
+  balance_transaction: s(),
+  currency: s(),
+  description: s(),
+  destination: s(),
+  failure_balance_transaction: s(),
+  failure_code: s(),
+  failure_message: s(),
+  method: s(),
+  original_payout: s(),
+  reconciliation_status: s(),
+  reversed_by: s(),
+  source_type: s(),
+  statement_descriptor: s(),
+  status: s(),
+  type: s(),
+};
+
+export const REFUND_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: i(),
+  balance_transaction: s(),
+  charge: s(),
+  currency: s(),
+  description: s(),
+  failure_balance_transaction: s(),
+  failure_reason: s(),
+  payment_intent: s(),
+  reason: s(),
+  receipt_number: s(),
+  status: s(),
+  destination_details: j(),
+};
+
+export const CREDIT_NOTE_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: i(),
+  amount_shipping: i(),
+  currency: s(),
+  customer: s(),
+  customer_balance_transaction: s(),
+  discount_amount: i(),
+  discount_amounts: j(),
+  effective_at: ts(),
+  invoice: s(),
+  lines: j(),
+  memo: s(),
+  number: s(),
+  out_of_band_amount: i(),
+  pdf: s(),
+  reason: s(),
+  refund: s(),
+  status: s(),
+  subtotal: i(),
+  subtotal_excluding_tax: i(),
+  tax_amounts: j(),
+  total: i(),
+  total_excluding_tax: i(),
+  type: s(),
+  voided_at: ts(),
+};
+
+export const CUSTOMER_BALANCE_TRANSACTION_SCHEMA: Record<
+  string,
+  ConnectorFieldSchema
+> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: i(),
+  credit_note: s(),
+  currency: s(),
+  customer: s(),
+  description: s(),
+  ending_balance: i(),
+  invoice: s(),
+  type: s(),
+};
+
+// ---------------------------------------------------------------------------
+// Billing detail
+// ---------------------------------------------------------------------------
+
+export const INVOICE_ITEM_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: i(),
+  currency: s(),
+  customer: s(),
+  date: ts(),
+  description: s(),
+  discountable: b(),
+  discounts: j(),
+  invoice: s(),
+  period: j(),
+  plan: j(),
+  price: j(),
+  proration: b(),
+  quantity: i(),
+  subscription: s(),
+  subscription_item: s(),
+  tax_rates: j(),
+  test_clock: s(),
+  unit_amount: i(),
+  unit_amount_decimal: s(),
+};
+
+export const SUBSCRIPTION_SCHEDULE_SCHEMA: Record<
+  string,
+  ConnectorFieldSchema
+> = {
+  ...COMMON_STRIPE_SCHEMA,
+  canceled_at: ts(),
+  completed_at: ts(),
+  current_phase: j(),
+  customer: s(),
+  default_settings: j(),
+  end_behavior: s(),
+  phases: j(),
+  released_at: ts(),
+  released_subscription: s(),
+  status: s(),
+  subscription: s(),
+  test_clock: s(),
+};
+
+export const COUPON_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount_off: i(),
+  applies_to: j(),
+  currency: s(),
+  currency_options: j(),
+  duration: s(),
+  duration_in_months: i(),
+  max_redemptions: i(),
+  name: s(),
+  percent_off: n(),
+  redeem_by: ts(),
+  times_redeemed: i(),
+  valid: b(),
+};
+
+export const PROMOTION_CODE_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  active: b(),
+  code: s(),
+  coupon: j(),
+  customer: s(),
+  expires_at: ts(),
+  max_redemptions: i(),
+  restrictions: j(),
+  times_redeemed: i(),
+};
+
+export const CHECKOUT_SESSION_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount_subtotal: i(),
+  amount_total: i(),
+  client_reference_id: s(),
+  currency: s(),
+  customer: s(),
+  customer_details: j(),
+  customer_email: s(),
+  expires_at: ts(),
+  invoice: s(),
+  mode: s(),
+  payment_intent: s(),
+  payment_link: s(),
+  payment_status: s(),
+  status: s(),
+  subscription: s(),
+  total_details: j(),
+  url: s(),
+};
+
+export const SETUP_INTENT_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  cancellation_reason: s(),
+  customer: s(),
+  description: s(),
+  last_setup_error: j(),
+  payment_method: s(),
+  payment_method_types: j(),
+  status: s(),
+  usage: s(),
+};
+
+export const EARLY_FRAUD_WARNING_SCHEMA: Record<string, ConnectorFieldSchema> =
+  {
+    ...COMMON_STRIPE_SCHEMA,
+    actionable: b(),
+    charge: s(),
+    fraud_type: s(),
+    payment_intent: s(),
+  };
+
 export const STRIPE_ENTITY_SCHEMA_MAP: Record<
   string,
   Record<string, ConnectorFieldSchema>
@@ -299,6 +533,19 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<
   plans: PLAN_SCHEMA,
   payment_intents: PAYMENT_INTENT_SCHEMA,
   prices: PRICE_SCHEMA,
+  balance_transactions: BALANCE_TRANSACTION_SCHEMA,
+  payouts: PAYOUT_SCHEMA,
+  payout_balance_transactions: PAYOUT_BALANCE_TRANSACTION_SCHEMA,
+  refunds: REFUND_SCHEMA,
+  credit_notes: CREDIT_NOTE_SCHEMA,
+  customer_balance_transactions: CUSTOMER_BALANCE_TRANSACTION_SCHEMA,
+  invoice_items: INVOICE_ITEM_SCHEMA,
+  subscription_schedules: SUBSCRIPTION_SCHEDULE_SCHEMA,
+  coupons: COUPON_SCHEMA,
+  promotion_codes: PROMOTION_CODE_SCHEMA,
+  checkout_sessions: CHECKOUT_SESSION_SCHEMA,
+  setup_intents: SETUP_INTENT_SCHEMA,
+  early_fraud_warnings: EARLY_FRAUD_WARNING_SCHEMA,
 };
 
 export function resolveStripeEntitySchema(

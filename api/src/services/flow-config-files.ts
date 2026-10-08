@@ -142,6 +142,13 @@ export interface FlowFile {
   backfillSchedule?: FlowFileBackfillSchedule | null;
   /** Only whether inbound delivery is on; never the endpoint or secret. */
   webhookEnabled?: boolean;
+  /**
+   * Provider-side id of the subscription delivering to this flow (Stripe
+   * `we_…`), written by provisioning. Not a credential — the signing secret
+   * stays out of the file — and it lets a re-provision or an entity change
+   * update that subscription in place.
+   */
+  webhookProviderId?: string;
   sync: {
     mode?: string;
     writeMode?: string;
@@ -303,7 +310,12 @@ export function serializeFlowFile(flow: FlowFile): string {
     };
   }
   if (flow.type === "webhook") {
-    doc.webhook = { enabled: flow.webhookEnabled !== false };
+    doc.webhook = {
+      enabled: flow.webhookEnabled !== false,
+      ...(flow.webhookProviderId
+        ? { provider_webhook_id: flow.webhookProviderId }
+        : {}),
+    };
   }
 
   const sync = omitEmpty({
@@ -497,6 +509,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     schedule: scheduleFrom(doc.schedule),
     backfillSchedule: backfillScheduleFrom(doc.backfill_schedule),
     webhookEnabled: webhookDoc ? webhookDoc.enabled !== false : undefined,
+    webhookProviderId: str(webhookDoc?.provider_webhook_id),
     sync: {
       mode: str(syncDoc.mode),
       writeMode: str(syncDoc.write_mode),
@@ -606,11 +619,15 @@ export function flowToFile(flow: IFlow): FlowFile {
             timezone: flow.backfillSchedule.timezone || "UTC",
           }
         : null,
-    // Enabled-ness only: the endpoint is inbound URL identity and the
-    // secret is a credential.
+    // Never the endpoint (inbound URL identity) or the secret (a
+    // credential); the provider subscription id is neither.
     webhookEnabled:
       flow.type === "webhook"
         ? flow.webhookConfig?.enabled !== false
+        : undefined,
+    webhookProviderId:
+      flow.type === "webhook"
+        ? flow.webhookConfig?.providerWebhookId || undefined
         : undefined,
     sync: {
       mode: flow.syncMode,
