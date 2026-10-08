@@ -49,6 +49,7 @@ import { createVersionHistoryTools } from "../agent-lib/tools/version-history-to
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
+import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
@@ -210,6 +211,9 @@ export function buildMakoMcpCandidateTools(
   const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
   // Connector discovery for flow authoring (RFC: agent-authored flows).
   const connectorTools = createConnectorTools(workspaceId);
+  // Gated by the connections-write grant (scope connections:write) and the
+  // capability's live minimum role; creates source connections only.
+  const connectionWriteTools = createConnectionWriteTools(workspaceId, userId);
   // The pre-push check for `flows/<slug>.yml` (RFC: agent-authored flows).
   // The agent in that scenario has the WORKSPACE repo checked out, not this
   // monorepo, so `pnpm flows:validate` is not a surface it can reach.
@@ -219,6 +223,7 @@ export function buildMakoMcpCandidateTools(
   const memberTools = createMemberTools(workspaceId, userId);
   return {
     ...connectorTools,
+    ...connectionWriteTools,
     ...flowFileTools,
     ...appsTools,
     ...memberTools,
@@ -274,10 +279,12 @@ const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
  * opted into per key via `members:write` and never conferred by the blanket
  * ACP-desktop grant — otherwise adding a grant to CAPABILITY_GRANTS silently
  * widens that surface, which is exactly what happened when this one was
- * added.
+ * added. `connections-write` stores a credential that arrives through the
+ * agent's own context, so it is opted into per key (`connections:write`)
+ * for the same reason.
  */
 const ACP_DESKTOP_WITHHELD_GRANTS: ReadonlySet<CapabilityGrant> =
-  new Set<CapabilityGrant>(["members-write"]);
+  new Set<CapabilityGrant>(["members-write", "connections-write"]);
 
 function sessionCapabilityGrants(
   context: MakoMcpContext,
@@ -382,8 +389,9 @@ export function buildMakoMcpToolset(
         a.name.localeCompare(b.name),
       ),
       hint:
-        "warehouse:write is never granted by default. Request it during " +
-        "OAuth authorization or use a workspace API key carrying that scope.",
+        "warehouse:write and connections:write are never granted by " +
+        "default. Request them during OAuth authorization or use a " +
+        "workspace API key carrying that scope.",
     }),
   };
 
@@ -396,6 +404,7 @@ function capabilityScopeForGrant(
   if (grant === "warehouse-write") return "warehouse:write";
   if (grant === "git-write") return "git:write";
   if (grant === "members-write") return "members:write";
+  if (grant === "connections-write") return "connections:write";
   return undefined;
 }
 

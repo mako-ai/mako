@@ -136,7 +136,40 @@ async function main() {
     "mcp",
     "query:read",
     "warehouse:write",
+    "connections:write",
   ]);
+  // connections:write is an OAuth scope, granted only when requested AND
+  // left ticked on the consent screen — independently of warehouse:write.
+  assert.deepEqual(parseMcpOAuthScopes("connections:write"), [
+    "mcp",
+    "query:read",
+    "connections:write",
+  ]);
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(
+      ["mcp", "query:read", "warehouse:write", "connections:write"],
+      true,
+    ),
+    ["mcp", "query:read", "warehouse:write"],
+    "an unticked connections box must drop the scope even when warehouse is ticked",
+  );
+  assert.deepEqual(
+    resolveMcpOAuthConsentScopes(
+      ["mcp", "query:read", "connections:write"],
+      false,
+      true,
+    ),
+    ["mcp", "query:read", "connections:write"],
+  );
+  // Never a default, and maps to exactly the connections-write grant.
+  assert.deepEqual(parseWorkspaceApiKeyScopes(undefined), [
+    "mcp",
+    "query:read",
+  ]);
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "connections:write"]),
+    ["connections-write"],
+  );
   // query:write is double-gated: the scope alone yields "write-opt-in",
   // which resolves to write ONLY against connections a workspace admin
   // marked allowAgentWrites — and can never upgrade a plain query:read key.
@@ -616,6 +649,105 @@ async function main() {
       (gatedCall.result as { content: { text: string }[] }).content[0].text,
       /Invalid arguments/,
       "warehouse:write key reaches dbt_run_model",
+    );
+  }
+
+  // 3a1b. connections:write opt-in: create_connection is listed only with
+  //       the scope AND at least the member role; without the scope a call
+  //       is an unknown tool; with it, the call reaches the zod schema.
+  {
+    const listFor = async (
+      scopes: WorkspaceApiKeyScope[],
+      role = "admin",
+      acp = false,
+    ) => {
+      const [res] = await exchange(
+        [{ jsonrpc: "2.0", id: "conn-list", method: "tools/list" }],
+        scopes,
+        acp,
+        undefined,
+        role,
+      );
+      const { tools } = res.result as {
+        tools: {
+          name: string;
+          annotations?: {
+            readOnlyHint?: boolean;
+            destructiveHint?: boolean;
+            openWorldHint?: boolean;
+          };
+        }[];
+      };
+      return new Map(tools.map(tool => [tool.name, tool]));
+    };
+
+    assert.equal(
+      (await listFor(["mcp", "query:read"])).has("create_connection"),
+      false,
+      "the default key must not see create_connection",
+    );
+    assert.equal(
+      (await listFor(["mcp", "query:read", "warehouse:write"])).has(
+        "create_connection",
+      ),
+      false,
+      "warehouse:write must not imply connections:write",
+    );
+    const scoped = await listFor(["mcp", "query:read", "connections:write"]);
+    const createTool = scoped.get("create_connection");
+    assert.ok(createTool, "connections:write exposes create_connection");
+    assert.equal(createTool.annotations?.readOnlyHint, false);
+    assert.equal(createTool.annotations?.destructiveHint, false);
+    assert.equal(createTool.annotations?.openWorldHint, true);
+    assert.ok(
+      (await listFor(["mcp", "query:read", "connections:write"], "member")).has(
+        "create_connection",
+      ),
+      "a member may create connections, as in the UI",
+    );
+    assert.equal(
+      (await listFor(["mcp", "query:read", "connections:write"], "viewer")).has(
+        "create_connection",
+      ),
+      false,
+      "a viewer's key must not create connections even with the scope",
+    );
+    assert.equal(
+      (await listFor(["mcp", "query:read"], "admin", true)).has(
+        "create_connection",
+      ),
+      false,
+      "the blanket Desktop ACP grant must not confer connections-write",
+    );
+
+    const [ungated] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: "conn-call",
+        method: "tools/call",
+        params: { name: "create_connection", arguments: {} },
+      },
+    ]);
+    assert.match(
+      (ungated.result as { content: { text: string }[] }).content[0].text,
+      /Unknown tool/,
+      "create_connection without connections:write must fail",
+    );
+    const [gated] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "conn-call-scoped",
+          method: "tools/call",
+          params: { name: "create_connection", arguments: {} },
+        },
+      ],
+      ["mcp", "query:read", "connections:write"],
+    );
+    assert.match(
+      (gated.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "a connections:write key reaches create_connection",
     );
   }
 

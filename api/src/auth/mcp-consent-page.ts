@@ -132,6 +132,7 @@ export function consentPage(input: {
   const { clientName, params, workspaces } = input;
   const client = escapeHtml(clientName);
   const warehouseWrite = params.scopes.includes("warehouse:write");
+  const connectionsWrite = params.scopes.includes("connections:write");
   const hidden = (name: string, value?: string) =>
     value
       ? `<input type="hidden" name="${name}" value="${escapeHtml(value)}" />`
@@ -156,6 +157,15 @@ export function consentPage(input: {
         Build, run and cancel dbt models and jobs. These can create, replace or modify tables in your warehouse. Untick to connect read-only.</span>
       </label>`
     : `<ul class="perms"><li class="off">${iconSvg("cross")}<span>Cannot run dbt or change warehouse data (not requested).</span></li></ul>`;
+  // Only offered when the client asked for it: most clients never create
+  // credentials, and an unrequested line would read as a permission held.
+  const connections = connectionsWrite
+    ? `<label class="option">
+        <input type="checkbox" name="grant_connections_write" value="yes" checked />
+        <span><strong>Allow creating connections<em class="requested">requested</em></strong>
+        Store new source credentials (API keys) in this workspace and check them against the platform. It cannot read, change or delete existing connections. Untick to connect without it.</span>
+      </label>`
+    : "";
 
   const body = `<p class="lede"><strong>${client}</strong> wants to connect to a Mako workspace.</p>
   <div class="client">${iconSvg("link")}<span>Approving returns you to <code>${escapeHtml(describeRedirect(params.redirectUri))}</code></span></div>
@@ -176,6 +186,7 @@ export function consentPage(input: {
         <li>${check}<span>Create and edit Mako apps, notebooks and dbt files</span></li>
       </ul>
       ${warehouse}
+      ${connections}
     </div>
     <div class="actions">
       <button class="deny" type="submit" name="decision" value="deny">Deny</button>

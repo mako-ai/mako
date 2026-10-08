@@ -65,6 +65,25 @@ describe("MCP consent page", () => {
     );
   });
 
+  it("offers connection creation, pre-ticked, only when requested", () => {
+    const box = (html: string) =>
+      html.match(/<input[^>]*name="grant_connections_write"[^>]*>/)?.[0];
+    const requested = box(consentFor("mcp query:read connections:write"));
+    expect(requested).toBeDefined();
+    expect(requested).toMatch(/\bchecked\b/);
+    expect(requested).toMatch(/type="checkbox"/);
+    for (const scope of [undefined, "mcp query:read", "warehouse:write"]) {
+      expect(box(consentFor(scope))).toBeUndefined();
+    }
+    const scopes = parseMcpOAuthScopes("mcp query:read connections:write");
+    expect(resolveMcpOAuthConsentScopes(scopes, false, true)).toContain(
+      "connections:write",
+    );
+    expect(resolveMcpOAuthConsentScopes(scopes, true, false)).not.toContain(
+      "connections:write",
+    );
+  });
+
   it("carries the flow's parameters through the form, unchanged", () => {
     const html = consentFor("mcp query:read warehouse:write");
     for (const [name, value] of [

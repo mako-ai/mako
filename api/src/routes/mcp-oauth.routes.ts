@@ -382,7 +382,19 @@ mcpOAuthRoutes.post("/authorize", async c => {
   const scopes = resolveMcpOAuthConsentScopes(
     parsed.value.scopes,
     form.grant_warehouse_write === "yes",
+    form.grant_connections_write === "yes",
   );
+  if (
+    scopes.includes("connections:write") &&
+    !hasMinimumWorkspaceRole(member.role, "member")
+  ) {
+    return c.html(
+      cannotConnectPage(
+        "Creating connections needs at least the member role in this workspace. Untick it to connect without it, or ask an admin for access.",
+      ),
+      403,
+    );
+  }
   if (
     scopes.includes("warehouse:write") &&
     !hasMinimumWorkspaceRole(member.role, "member")

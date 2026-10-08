@@ -13,6 +13,7 @@ export type CapabilityRisk = "read" | "write" | "destructive";
 
 export type CapabilityGrant =
   | "artifact-write"
+  | "connections-write"
   | "git-write"
   | "members-write"
   | "schedule-write"
@@ -20,6 +21,9 @@ export type CapabilityGrant =
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
+  // Store a new credential (a source connection) in the workspace. Opted
+  // into per key, never implicit on external MCP.
+  "connections-write",
   "git-write",
   // Who can reach the workspace at all — the only grant that can widen the
   // set of people holding every other one. Never implicit on any surface.
