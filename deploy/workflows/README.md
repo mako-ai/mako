@@ -7,13 +7,13 @@ sandboxed worker pod per workspace (the `gke` worker provider). It reuses the
 notebook-kernels GKE cluster and its gVisor node pool. A self-hosted
 installation needs none of it.
 
-| Path                  | What                                                                                                                                         |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provision.sh`        | One-time, idempotent setup per project: the Cloud SQL database, Hatchet (Helm), its internal load balancer, the `mako-workflows` namespace   |
-| `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Cloud SQL Postgres, Postgres queue, nothing exposed                                          |
-| `k8s/`                | Namespace, quota and network policy for worker pods                                                                                          |
-| `runtime/`            | The worker image: follow the commit Mako names, typecheck it, run a Hatchet worker                                                           |
-| `template/workflows/` | Starter files for a workspace: `hatchet.ts`, `index.ts`, `lib/mako.ts` and three examples. Typechecked against the runtime image's packages. |
+| Path                  | What                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `provision.sh`        | One-time, idempotent setup per project: the Cloud SQL database, Hatchet (Helm), its internal load balancer, the `mako-workflows` namespace |
+| `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Cloud SQL Postgres, Postgres queue, nothing exposed                                        |
+| `k8s/`                | Namespace, quota and network policy for worker pods                                                                                        |
+| `runtime/`            | The worker image: follow the commit Mako names, typecheck it, run a Hatchet worker                                                         |
+| `template/workflows/` | Starter files for a workspace: `hatchet.ts`, `index.ts`, `lib/mako.ts` and two examples. Typechecked against the runtime image's packages. |
 
 ## Environments
 
@@ -44,11 +44,3 @@ Workflows stay off for a workspace until staff turn them on:
 - Secret `wf-<prefix><workspaceId>`: the worker's Mako API key
 - Deployment `wf-<prefix><workspaceId>`: one replica of the runtime image.
   Created once, replaced only for a new image.
-
-## Run the runtime locally
-
-```bash
-cd deploy/workflows/runtime && npm install
-HATCHET_CLIENT_TOKEN=<token> HATCHET_CLIENT_TLS_STRATEGY=none \
-WORKFLOWS_SOURCE_DIR=../template node entrypoint.mjs   # runs that folder once, without Mako
-```

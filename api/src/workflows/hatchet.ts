@@ -7,12 +7,12 @@
  * self-hosted Hatchet and the Hatchet Lite in docker-compose, and Hatchet
  * itself keeps one tenant's token from reading another tenant.
  *
- * Where the token comes from, first match wins:
- *   1. the workspace's own token (`Workspace.workflows.hatchetToken`)
- *   2. HATCHET_CLIENT_TOKEN, one tenant for the whole installation
- *   3. created by Mako, when HATCHET_ADMIN_PASSWORD is set: Mako logs in to
- *      a Hatchet it operates, creates a tenant for the workspace and saves
- *      its token (Mako's own cloud, and the local docker-compose setup)
+ * Where the token comes from:
+ *   - HATCHET_CLIENT_TOKEN: one tenant for the whole installation, or
+ *   - created by Mako when HATCHET_ADMIN_PASSWORD is set: Mako logs in to a
+ *     Hatchet it operates, creates a tenant for the workspace and saves its
+ *     token on the workspace (Mako's own cloud, and the local docker-compose
+ *     setup). A saved token wins over the installation's.
  *
  * Mako stores no workflow state: registered workflows, crons, runs, tasks and
  * logs are read from Hatchet on demand, in Hatchet's own response shapes.
@@ -147,18 +147,6 @@ export async function readWorkspaceTenant(
   return token ? tenantFromToken(token) : null;
 }
 
-/** Save a token someone pasted for this workspace. Throws if it is not one. */
-export async function saveWorkspaceToken(
-  workspaceId: string,
-  token: string,
-): Promise<void> {
-  tenantFromToken(token);
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(workspaceId) },
-    { $set: { "workflows.hatchetToken": encryptString(token) } },
-  );
-}
-
 /**
  * The workspace's tenant, created now if Mako operates the Hatchet and the
  * workspace has none yet. The one caller, the deploy, already runs once per
@@ -171,10 +159,7 @@ export async function ensureWorkspaceTenant(
   if (existing) return existing;
   const adminUrl = process.env.HATCHET_API_URL?.replace(/\/+$/, "");
   if (!process.env.HATCHET_ADMIN_PASSWORD || !adminUrl) {
-    throw new HatchetError(
-      "This workspace has no Hatchet token. Set HATCHET_CLIENT_TOKEN or save a token for the workspace.",
-      400,
-    );
+    throw new HatchetError("No Hatchet token. Set HATCHET_CLIENT_TOKEN.", 400);
   }
 
   const login = await send(
@@ -231,7 +216,10 @@ export async function ensureWorkspaceTenant(
     }),
     "Create Hatchet token",
   );
-  await saveWorkspaceToken(workspaceId, token);
+  await Workspace.updateOne(
+    { _id: new Types.ObjectId(workspaceId) },
+    { $set: { "workflows.hatchetToken": encryptString(token) } },
+  );
   logger.info("Created Hatchet tenant", { workspaceId, tenantId });
   return tenantFromToken(token);
 }

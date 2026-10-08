@@ -12,8 +12,6 @@
 //
 // Env: MAKO_URL, MAKO_API_KEY. The Hatchet token comes from Mako, so the
 // container holds one credential.
-// Dev: WORKFLOWS_SOURCE_DIR + HATCHET_CLIENT_TOKEN run a local folder once,
-// without Mako.
 import { execFileSync, fork } from "node:child_process";
 import {
   existsSync,
@@ -104,7 +102,7 @@ function startWorker(root, sha, hatchetToken) {
         ...process.env,
         WORKFLOWS_ROOT: root,
         GIT_SHA: sha,
-        ...(hatchetToken ? { HATCHET_CLIENT_TOKEN: hatchetToken } : {}),
+        HATCHET_CLIENT_TOKEN: hatchetToken,
       },
       stdio: ["ignore", "inherit", "pipe", "ipc"],
     });
@@ -179,19 +177,7 @@ process.on("SIGTERM", () => {
   current.child.kill("SIGTERM");
 });
 
-if (process.env.WORKFLOWS_SOURCE_DIR) {
-  const root = process.env.WORKFLOWS_SOURCE_DIR;
-  const errors = typecheck(root);
-  if (errors) {
-    console.error(`Build failed:\n${errors}`);
-    process.exit(1);
-  }
-  const child = await startWorker(root, "dev");
-  current = { key: "dev", child };
-  child.once("exit", code => process.exit(code ?? 1));
-} else {
-  for (;;) {
-    await poll();
-    await new Promise(resolve => setTimeout(resolve, POLL_MS));
-  }
+for (;;) {
+  await poll();
+  await new Promise(resolve => setTimeout(resolve, POLL_MS));
 }

@@ -279,10 +279,6 @@ for (const action of ["cancel", "replay"] as const) {
 
 export const workflowRuntimeRoutes = createRouter();
 
-const GATEWAY_BASE_URL = (
-  process.env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1/ai"
-).replace(/\/+$/, "");
-
 const MAX_BUILD_ERROR_CHARS = 8000;
 
 /** The workspace a worker key belongs to, or null when the key is not one. */
@@ -381,48 +377,5 @@ workflowRuntimeRoutes.get("/source/:sha", async c => {
   } catch (error) {
     logger.warn("Workflow source fetch failed", { error });
     return c.json({ error: "No workflows/ folder at that commit" }, 404);
-  }
-});
-
-// Model calls from workflow code, forwarded to the AI gateway with Mako's key.
-// The worker never holds a provider key.
-workflowRuntimeRoutes.all("/ai/*", async c => {
-  const workspaceId = await workerWorkspaceId(c);
-  if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
-  const subPath = c.req.path.split("/runtime/ai/")[1] ?? "";
-  const headers = new Headers();
-  c.req.raw.headers.forEach((value, name) => {
-    // Forward the gateway's own protocol headers and the content type only.
-    if (name === "content-type" || name.startsWith("ai-")) {
-      headers.set(name, value);
-    }
-  });
-  headers.set(
-    "Authorization",
-    `Bearer ${process.env.AI_GATEWAY_API_KEY ?? ""}`,
-  );
-  const hasBody = c.req.method !== "GET" && c.req.method !== "HEAD";
-  try {
-    const res = await fetch(`${GATEWAY_BASE_URL}/${subPath}`, {
-      method: c.req.method,
-      headers,
-      body: hasBody ? await c.req.arrayBuffer() : undefined,
-      signal: c.req.raw.signal,
-    });
-    logger.info("Workflow model call", {
-      workspaceId,
-      path: subPath,
-      model: c.req.header("ai-language-model-id"),
-      status: res.status,
-    });
-    return new Response(res.body, {
-      status: res.status,
-      headers: {
-        "Content-Type": res.headers.get("Content-Type") ?? "application/json",
-      },
-    });
-  } catch (error) {
-    logger.warn("Workflow model call failed", { workspaceId, error });
-    return c.json({ error: "The AI gateway is unreachable" }, 502);
   }
 });

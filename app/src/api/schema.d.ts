@@ -23795,7 +23795,6 @@ export interface operations {
             content: {
                 "application/json": {
                     enabled: boolean;
-                    hatchetToken?: string;
                 };
             };
         };

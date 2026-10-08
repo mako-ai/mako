@@ -43,8 +43,8 @@ export const WORKSPACE_API_KEY_SCOPES = [
 /**
  * Scopes Mako mints for its own machinery and a person can never put on a key
  * they create. `workflows:runtime` belongs to a workspace's workflow
- * worker: it reads `workflows/` source and calls models through Mako's gateway
- * key, so a hand-made key carrying it would be unmetered model access.
+ * worker: it reads `workflows/` source and receives the workspace's Hatchet
+ * token, so a hand-made key carrying it would hand that token out.
  */
 export const INTERNAL_WORKSPACE_API_KEY_SCOPES: readonly WorkspaceApiKeyScope[] =
   ["workflows:runtime"];

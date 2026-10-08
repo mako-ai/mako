@@ -2,7 +2,6 @@
 import { hatchet } from "./hatchet";
 import { customerHealth } from "./customer-health.workflow";
 import { dailyDigest } from "./daily-digest.workflow";
-import { enrichLead } from "./enrich-lead.workflow";
 
 export { hatchet };
-export const workflows = [customerHealth, dailyDigest, enrichLead];
+export const workflows = [customerHealth, dailyDigest];
