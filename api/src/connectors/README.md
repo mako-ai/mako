@@ -158,7 +158,7 @@ table of connectors and entities. Summary:
 ### Stripe
 
 - Syncs payment data from Stripe
-- Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents
+- Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents, balance_transactions, payouts, payout_balance_transactions, refunds, credit_notes, customer_balance_transactions, invoice_items, subscription_schedules, coupons, promotion_codes, checkout_sessions, setup_intents, early_fraud_warnings
 - Required config: `api_key`
 - Supports backfill and CDC webhooks (auto-provisioning)
 
