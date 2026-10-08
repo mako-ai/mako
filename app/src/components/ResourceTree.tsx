@@ -63,6 +63,7 @@ const ROW_HEIGHT = 24;
 // vertically across sibling rows.
 const ICON_COL_WIDTH = 20;
 import {
+  canMoveFromSection,
   findNodeInSections,
   getFolderDropTargetId,
   isSidebarRowActive,
@@ -93,6 +94,16 @@ export interface ResourceTreeSection {
   nodes: ResourceTreeNode[];
   droppableId?: string;
   defaultAccess?: "private" | "workspace";
+  /**
+   * Nothing is created here: the header offers no "New Folder" (consoles'
+   * "Shared with me" — other members' items, nobody's place to file into).
+   */
+  noNewFolder?: boolean;
+  /**
+   * Its items are not this person's to place: no "Move to…", no drag out
+   * (consoles' "Shared with me" — another member's, in their folder).
+   */
+  noMoveOut?: boolean;
   /**
    * When true, skip rendering the section header row entirely. Useful for
    * explorers that have only one implicit section (e.g. Databases, Flows,
@@ -218,6 +229,13 @@ export interface ResourceTreeProps {
   ) => void;
   onRenameItem?: (id: string, name: string, isDirectory: boolean) => void;
   /**
+   * Take over a rename before the inline box opens (F2, double-click, the
+   * context menu): return `true` to handle it elsewhere — a row whose rename
+   * needs more than one field (an app: its name AND its link) opens a
+   * dialog instead. `false`/absent keeps the inline flow.
+   */
+  onRenameRequest?: (node: ResourceTreeNode) => boolean;
+  /**
    * What the inline rename box starts from, when it is not the row's
    * displayed name — an app row shows its TITLE but renames its folder
    * (slug). Defaults to `node.name`; the commit compares against the seed,
@@ -242,6 +260,12 @@ export interface ResourceTreeProps {
   getFolderExpansionKey?: (node: ResourceTreeNode) => string;
 
   canManageItem?: (node: ResourceTreeNode) => boolean;
+  /**
+   * Who may RENAME a row, when that differs from who may manage it (move,
+   * delete): a console shared with someone as an editor is theirs to
+   * rename in place, not to move. Defaults to `canManageItem`.
+   */
+  canRenameItem?: (node: ResourceTreeNode) => boolean;
 }
 
 const collisionDetectionStrategy: CollisionDetection = args => {
@@ -284,6 +308,7 @@ function ResourceTreeInner(
     onMoveItem,
     onMoveFolder,
     onRenameItem,
+    onRenameRequest,
     getRenameSeed,
     onDeleteItem,
     onDuplicateItem,
@@ -298,6 +323,7 @@ function ResourceTreeInner(
     onExpandFolder,
     getFolderExpansionKey,
     canManageItem,
+    canRenameItem,
   }: ResourceTreeProps,
   ref: React.Ref<ResourceTreeRef>,
 ) {
@@ -321,6 +347,7 @@ function ResourceTreeInner(
     anchorPosition: { top: number; left: number };
     item: ResourceTreeNode;
     readOnly: boolean;
+    canRename: boolean;
   } | null>(null);
   const [sectionContextMenu, setSectionContextMenu] = useState<{
     anchorPosition: { top: number; left: number };
@@ -533,6 +560,11 @@ function ResourceTreeInner(
     },
     [canManageItem],
   );
+  const resolveCanRename = useCallback(
+    (node: ResourceTreeNode) =>
+      canRenameItem ? canRenameItem(node) : resolveCanManage(node),
+    [canRenameItem, resolveCanManage],
+  );
 
   const updateLocationSelection = useCallback(
     (folderId: string | null, sectionKey: string) => {
@@ -667,11 +699,15 @@ function ResourceTreeInner(
   const startInlineRename = useCallback(
     (item: ResourceTreeNode) => {
       if (!enableRename) return;
+      if (onRenameRequest?.(item)) {
+        setContextMenu(null);
+        return;
+      }
       setRenamingItemId(item.id);
       setRenameValue(getRenameSeed?.(item) ?? item.name);
       setContextMenu(null);
     },
-    [enableRename, getRenameSeed],
+    [enableRename, getRenameSeed, onRenameRequest],
   );
 
   const cancelInlineRename = useCallback(() => {
@@ -725,10 +761,11 @@ function ResourceTreeInner(
         anchorPosition: { top: event.clientY + 2, left: event.clientX + 2 },
         item,
         readOnly,
+        canRename: resolveCanRename(item),
       });
       setFocusedNodeId(item.id);
     },
-    [getContextMenuItems, resolveCanManage],
+    [getContextMenuItems, resolveCanManage, resolveCanRename],
   );
 
   const handleSectionContextMenu = useCallback(
@@ -769,6 +806,7 @@ function ResourceTreeInner(
 
       const activeLocation = findNodeLocation(activeId);
       if (!activeLocation) return;
+      if (!canMoveFromSection(sections, activeId)) return;
 
       const target = resolveTreeDropTarget(sections, overId);
       if (!target) return;
@@ -822,9 +860,10 @@ function ResourceTreeInner(
       const focusLocation = focusId ? findNodeLocation(focusId) : null;
       const focusItem = focusLocation?.node ?? null;
       const canManageFocused = focusItem ? resolveCanManage(focusItem) : false;
+      const canRenameFocused = focusItem ? resolveCanRename(focusItem) : false;
       const meta = event.metaKey || event.ctrlKey;
 
-      if (event.key === "F2" && focusItem && enableRename && canManageFocused) {
+      if (event.key === "F2" && focusItem && enableRename && canRenameFocused) {
         event.preventDefault();
         startInlineRename(focusItem);
         return;
@@ -949,6 +988,7 @@ function ResourceTreeInner(
     onLoadChildren,
     onUndo,
     resolveCanManage,
+    resolveCanRename,
     startInlineRename,
     updateLocationSelection,
   ]);
@@ -1090,6 +1130,7 @@ function ResourceTreeInner(
       if (!showFiles && !node.isDirectory) continue;
 
       const canManage = resolveCanManage(node);
+      const canRename = resolveCanRename(node);
       const isExpanded = node.isDirectory && isNodeExpanded(node);
       const isSelectedLocation =
         mode === "picker" && currentSelectedLocation === node.id;
@@ -1138,7 +1179,7 @@ function ResourceTreeInner(
             }}
             onContextMenu={event => handleContextMenu(event, node)}
             onDoubleClick={event => {
-              if (enableRename && canManage) {
+              if (enableRename && canRename) {
                 event.stopPropagation();
                 startInlineRename(node);
               }
@@ -1356,7 +1397,7 @@ function ResourceTreeInner(
           }}
           onContextMenu={event => handleContextMenu(event, node)}
           onDoubleClick={event => {
-            if (enableRename && canManage) {
+            if (enableRename && canRename) {
               event.stopPropagation();
               startInlineRename(node);
             }
@@ -1447,7 +1488,11 @@ function ResourceTreeInner(
             }));
           }
         }}
-        onContextMenu={event => handleSectionContextMenu(event, section.key)}
+        onContextMenu={
+          section.noNewFolder
+            ? undefined
+            : event => handleSectionContextMenu(event, section.key)
+        }
         sx={{
           py: 0,
           pl: 1.5,
@@ -1630,7 +1675,7 @@ function ResourceTreeInner(
       >
         {contextMenu &&
           (() => {
-            const { item, readOnly } = contextMenu;
+            const { item, readOnly, canRename } = contextMenu;
             const canManage = !readOnly;
 
             const customItems = getContextMenuItems?.(item, {
@@ -1641,7 +1686,7 @@ function ResourceTreeInner(
             }
 
             return [
-              enableRename && canManage && (
+              enableRename && canRename && (
                 <MenuItem
                   key="rename"
                   onClick={() => {
@@ -1681,18 +1726,21 @@ function ResourceTreeInner(
                     New Subfolder
                   </MenuItem>
                 ),
-              enableMove && canManage && onMoveRequest && (
-                <MenuItem
-                  key="move"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onMoveRequest(item);
-                  }}
-                >
-                  <ArrowRightLeft size={14} style={{ marginRight: 8 }} />
-                  Move to...
-                </MenuItem>
-              ),
+              enableMove &&
+                canManage &&
+                onMoveRequest &&
+                canMoveFromSection(sections, item.id) && (
+                  <MenuItem
+                    key="move"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onMoveRequest(item);
+                    }}
+                  >
+                    <ArrowRightLeft size={14} style={{ marginRight: 8 }} />
+                    Move to...
+                  </MenuItem>
+                ),
               enableInfo && !item.isDirectory && onInfoRequest && (
                 <MenuItem
                   key="info-file"

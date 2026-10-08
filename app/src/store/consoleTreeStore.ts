@@ -1,4 +1,10 @@
-import { api, unwrapBody, ApiError } from "../api";
+import { api, unwrapBody, ApiError, toErrorMessage } from "../api";
+import type { ConsoleContentResponse, ConsoleLocation } from "../lib/api-types";
+import { consoleNameAsSaved } from "../lib/console-relocation";
+import {
+  markDeletedHere,
+  unmarkDeletedHere,
+} from "./lib/console-local-deletes";
 import {
   createResourceTreeStore,
   type ResourceTreeEntry,
@@ -8,6 +14,7 @@ import {
   findParentArray,
   findTargetArray,
   insertAlphabetically,
+  namesTrailOf,
   removeById,
 } from "./lib/tree-helpers";
 
@@ -25,6 +32,13 @@ export interface ConsoleEntry extends ResourceTreeEntry {
   isPrivate?: boolean;
   lastExecutedAt?: Date;
   executionCount?: number;
+  /**
+   * The server's write rule for the caller (owner, a share as editor, the
+   * workspace role): Rename is offered by it — a shared editor renames in
+   * place even though moving the console or changing who sees it is not
+   * theirs.
+   */
+  canWrite?: boolean;
 }
 
 export interface ConsoleSearchResult {
@@ -60,15 +74,175 @@ export interface ConsoleTreeExtra {
     itemId: string,
     newName: string,
   ) => void;
+  /**
+   * Copy a console into the caller's My Consoles. Resolves to the copy —
+   * its id, name and path in the tree (folders + name) — or null (the
+   * reason is in `actionError`).
+   */
   duplicateConsole: (
     workspaceId: string,
     consoleId: string,
-  ) => Promise<{ id: string; name: string } | null>;
-  /** Undo a soft delete; refetches the tree on success. */
-  restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
+  ) => Promise<{ id: string; name: string; path: string } | null>;
+  /**
+   * Undo a soft delete; refetches the tree on success. Resolves to the
+   * name it came back under ("name (2)" when its name was taken), or null.
+   */
+  restoreConsole: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<{ name?: string } | null>;
+  /**
+   * Undo a folder delete: recreate the folder (and its subfolders) where
+   * it was, from the tree's snapshot of it taken before the delete, and
+   * bring each of its consoles back from the trash into it under its own
+   * name. When the folder cannot be recreated (a twin took its name, the
+   * parent is not this person's to write…) its consoles still come back —
+   * at the root of the section (`atRoot`). `failed` counts consoles that
+   * could not be restored at all.
+   */
+  restoreFolder: (
+    workspaceId: string,
+    snapshot: ConsoleEntry,
+    placement: { parentId: string | null; section: "my" | "workspace" },
+  ) => Promise<{
+    restored: number;
+    failed: number;
+    atRoot: number;
+    folderRecreated: boolean;
+  }>;
 }
 
 const base = "/api/workspaces/{workspaceId}/consoles" as const;
+
+/**
+ * Point an open tab at where the server says the console is now — after
+ * EVERY rename or move the tree makes (inline rename, drag, "Move to…", the
+ * editor's Rename / Move dialog), from the route's own answer. The tab kept
+ * its old path before, showed it as a fake parent in the breadcrumb, and its
+ * next save moved the console back. Lazy import: the tab store persists to
+ * localStorage, the tree store must not load it with itself.
+ */
+async function retargetOpenTab(
+  workspaceId: string,
+  location: ConsoleLocation | undefined,
+): Promise<void> {
+  if (!location?.id) return;
+  // The tree's own row: the optimistic update renamed/moved it, but its
+  // path (what a click opens the tab with) is the server's to say.
+  useConsoleTreeStore.setState(state => {
+    const node = findIn(
+      [
+        ...(state.myItems[workspaceId] ?? []),
+        ...(state.workspaceItems[workspaceId] ?? []),
+        ...(state.sharedItems[workspaceId] ?? []),
+      ],
+      location.id,
+    );
+    if (node && node.path !== location.path) node.path = location.path;
+    // …and its name: the one the server saved (a cleaned one, maybe).
+    if (node && location.name && node.name !== location.name) {
+      node.name = location.name;
+    }
+  });
+  const { useConsoleStore } = await import("./consoleStore");
+  useConsoleStore.getState().retargetConsoleTab(location.id, location);
+}
+
+function findIn(
+  nodes: ConsoleEntry[] | undefined,
+  id: string,
+): ConsoleEntry | null {
+  for (const node of nodes ?? []) {
+    if (node.id === id) return node;
+    const hit = findIn(node.children, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** A node of the current tree, in any section. */
+function findNode(workspaceId: string, id: string): ConsoleEntry | null {
+  const state = useConsoleTreeStore.getState();
+  return (
+    findIn(state.myItems[workspaceId], id) ??
+    findIn(state.workspaceItems[workspaceId], id) ??
+    findIn(state.sharedItems[workspaceId], id)
+  );
+}
+
+/**
+ * A folder renamed: its row and every row under it carry a `path` (what a
+ * click opens a tab with, what a notice names) — rewritten from the tree's
+ * names with the folder's new one. Left as they were, a console opened
+ * from the renamed folder got its old place, and "Move to…" into it said
+ * "Moved to New Folder" after it had become "Fold2".
+ */
+function repathFolder(workspaceId: string, folderId: string, name: string) {
+  useConsoleTreeStore.setState(state => {
+    for (const section of [
+      state.myItems[workspaceId],
+      state.workspaceItems[workspaceId],
+      state.sharedItems[workspaceId],
+    ]) {
+      if (!section) continue;
+      const trail = namesTrailOf(section, folderId);
+      const node = findIn(section, folderId);
+      if (!trail || !node) continue;
+      const repath = (n: ConsoleEntry, parent: string) => {
+        n.path = parent ? `${parent}/${n.name}` : n.name;
+        for (const child of n.children ?? []) repath(child, n.path);
+      };
+      node.name = name;
+      repath(node, trail.slice(0, -1).join("/"));
+      return;
+    }
+  });
+}
+
+/** Every console id under a folder node (any depth). */
+function consoleIdsUnder(node: ConsoleEntry | null | undefined): string[] {
+  if (!node?.children) return [];
+  const ids: string[] = [];
+  for (const child of node.children) {
+    if (child.isDirectory) ids.push(...consoleIdsUnder(child));
+    else if (child.id) ids.push(child.id);
+  }
+  return ids;
+}
+
+/**
+ * A folder renamed or moved changes the path of every console in it: open
+ * tabs among them re-read where they are (GET /content — location only;
+ * their content, unsaved edits included, is left alone).
+ */
+async function retargetOpenTabsUnder(
+  workspaceId: string,
+  consoleIds: string[],
+): Promise<void> {
+  if (consoleIds.length === 0) return;
+  const { useConsoleStore } = await import("./consoleStore");
+  const open = consoleIds.filter(id => useConsoleStore.getState().tabs[id]);
+  await Promise.all(
+    open.map(async id => {
+      try {
+        const res = unwrapBody(
+          await api.GET(`${base}/content`, {
+            params: { path: { workspaceId }, query: { id } },
+          }),
+        ) as ConsoleContentResponse;
+        if (!res.success) return;
+        useConsoleStore.getState().retargetConsoleTab(id, {
+          name: res.name,
+          path: res.path,
+          access: res.access,
+          isSaved: res.isSaved,
+        });
+      } catch {
+        // Best effort: the next open or revision sync corrects it.
+      }
+    }),
+  );
+}
 
 /**
  * The console API answers `{ success: false }` with a 200; the factory's
@@ -94,39 +268,51 @@ export const useConsoleTreeStore = createResourceTreeStore<
           tree?: ConsoleEntry[];
           myConsoles?: ConsoleEntry[];
           sharedWithWorkspace?: ConsoleEntry[];
+          sharedWithMe?: ConsoleEntry[];
         };
         return {
           my: data.myConsoles ?? data.tree ?? [],
           workspace: data.sharedWithWorkspace ?? [],
+          // Another member's private console shared with this person: its
+          // own section, as the breadcrumb names it (consolePlacement).
+          shared: data.sharedWithMe ?? [],
         };
       } catch (error) {
         // Writes 412 without GitHub; GET/list is an empty explorer (disconnect
         // or never linked). Keeping the previous tree left the sidebar
         // populated after unlink.
         if (error instanceof ApiError && error.status === 412) {
-          return { my: [], workspace: [] };
+          return { my: [], workspace: [], shared: [] };
         }
         throw error;
       }
     },
-    moveItem: async (workspaceId, id, folderId, access) =>
-      ok(
+    moveItem: async (workspaceId, id, folderId, access, name) => {
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/{id}/move`, {
             params: { path: { workspaceId, id } },
-            body: { folderId, access },
+            // A rename-while-moving rides along so the server commits once.
+            body: { folderId, access, ...(name ? { name } : {}) },
           }),
-        ) as { success: boolean },
-      ),
-    moveFolder: async (workspaceId, id, parentId, access) =>
-      ok(
+        ) as { success: boolean; data?: ConsoleLocation },
+      );
+      await retargetOpenTab(workspaceId, res.data);
+      return res;
+    },
+    moveFolder: async (workspaceId, id, parentId, access) => {
+      const inside = consoleIdsUnder(findNode(workspaceId, id));
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/folders/{id}/move`, {
             params: { path: { workspaceId, id } },
             body: { parentId, access },
           }),
         ) as { success: boolean },
-      ),
+      );
+      void retargetOpenTabsUnder(workspaceId, inside);
+      return res;
+    },
     createFolder: async (workspaceId, name, parentId, access) =>
       ok(
         unwrapBody(
@@ -140,32 +326,52 @@ export const useConsoleTreeStore = createResourceTreeStore<
           }),
         ) as { success: boolean; data?: { id: string; name: string } },
       ).data,
-    renameItem: async (workspaceId, id, name) =>
-      ok(
+    renameItem: async (workspaceId, id, name) => {
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/{id}/rename`, {
             params: { path: { workspaceId, id } },
-            body: { name },
+            // A name typed in the tree is a NAME: "A/B test" is not a move
+            // into a folder "A" (this route reads a "/" as one) — its "/"
+            // gets the stand-in the server gives every such character.
+            body: { name: consoleNameAsSaved(name) },
           }),
-        ) as { success: boolean },
-      ),
-    renameFolder: async (workspaceId, id, name) =>
-      ok(
+        ) as { success: boolean; console?: ConsoleLocation },
+      );
+      await retargetOpenTab(workspaceId, res.console);
+      return { ...res, savedName: res.console?.name };
+    },
+    renameFolder: async (workspaceId, id, name) => {
+      const inside = consoleIdsUnder(findNode(workspaceId, id));
+      const res = ok(
         unwrapBody(
           await api.PATCH(`${base}/folders/{id}/rename`, {
             params: { path: { workspaceId, id } },
             body: { name },
           }),
-        ) as { success: boolean },
-      ),
-    deleteItem: async (workspaceId, id) =>
-      ok(
-        unwrapBody(
-          await api.DELETE(`${base}/{id}`, {
-            params: { path: { workspaceId, id } },
-          }),
-        ) as { success: boolean },
-      ),
+        ) as { success: boolean; data?: { name?: string } },
+      );
+      repathFolder(workspaceId, id, res.data?.name ?? name);
+      void retargetOpenTabsUnder(workspaceId, inside);
+      return { ...res, savedName: res.data?.name };
+    },
+    deleteItem: async (workspaceId, id) => {
+      // The deletion this window makes is announced back to it: its banner
+      // says "Moved to trash", not "deleted elsewhere".
+      markDeletedHere(id);
+      try {
+        return ok(
+          unwrapBody(
+            await api.DELETE(`${base}/{id}`, {
+              params: { path: { workspaceId, id } },
+            }),
+          ) as { success: boolean },
+        );
+      } catch (error) {
+        unmarkDeletedHere(id);
+        throw error;
+      }
+    },
     deleteFolder: async (workspaceId, id) =>
       ok(
         unwrapBody(
@@ -258,34 +464,72 @@ export const useConsoleTreeStore = createResourceTreeStore<
           }),
         ) as {
           success: boolean;
-          data?: { id: string; name: string; folderId?: string };
+          error?: string;
+          data?: {
+            id: string;
+            name: string;
+            folderId?: string | null;
+            owner_id?: string;
+          };
         };
-        if (!res.success || !res.data) return null;
+        if (!res.success || !res.data) {
+          throw new Error(res.error || "Could not duplicate the console.");
+        }
         const created = res.data;
+        let placedPath = created.name;
         set(state => {
           const original = helpers.findInAnySection(
             state,
             workspaceId,
             consoleId,
           );
-          if (!original) return;
           const copy: ConsoleEntry = {
-            ...original,
+            ...(original ?? {}),
             id: created.id,
             name: created.name,
+            path: created.name,
             isDirectory: false,
+            access: "private",
+            isPrivate: true,
+            canWrite: true,
+            ...(created.owner_id ? { owner_id: created.owner_id } : {}),
           };
-          // The copy lands next to the original, whichever section/folder.
-          for (const section of helpers.allSections(state, workspaceId)) {
-            const parent = findParentArray(section, consoleId);
-            if (parent) {
-              insertAlphabetically(parent, copy);
-              return;
-            }
+          delete copy.children;
+          // A copy is the copier's: My Consoles, in the folder the server
+          // chose (theirs — never the original's when that is someone
+          // else's or a workspace folder; null = the root). It used to land
+          // next to the original — under Workspace, for a console shared
+          // with them — until a refresh moved it.
+          helpers.insertIntoFolder(
+            state,
+            workspaceId,
+            copy,
+            created.folderId ?? null,
+            "my",
+          );
+          const folder = created.folderId
+            ? helpers.findInAnySection(state, workspaceId, created.folderId)
+            : null;
+          const placed = helpers.findInAnySection(
+            state,
+            workspaceId,
+            created.id,
+          );
+          if (placed && folder?.path) {
+            placed.path = `${folder.path}/${created.name}`;
           }
+          placedPath = placed?.path ?? created.name;
         });
-        return { id: created.id, name: created.name };
-      } catch {
+        return { id: created.id, name: created.name, path: placedPath };
+      } catch (err: unknown) {
+        // The server's reason, for the explorer's snackbar — a failed copy
+        // used to say nothing at all.
+        set(state => {
+          state.actionError[workspaceId] = toErrorMessage(
+            err,
+            "Could not duplicate the console.",
+          );
+        });
         return null;
       }
     },
@@ -296,12 +540,105 @@ export const useConsoleTreeStore = createResourceTreeStore<
           await api.PATCH(`${base}/{id}/restore`, {
             params: { path: { workspaceId, id: consoleId } },
           }),
-        ) as { success: boolean };
-        if (res.success) await get().refresh(workspaceId);
-        return res.success;
+        ) as { success: boolean; console?: ConsoleLocation };
+        if (!res.success) return null;
+        await get().refresh(workspaceId);
+        return { name: res.console?.name };
       } catch {
-        return false;
+        return null;
       }
+    },
+
+    restoreFolder: async (workspaceId, snapshot, placement) => {
+      const outcome = {
+        restored: 0,
+        failed: 0,
+        atRoot: 0,
+        folderRecreated: false,
+      };
+      const access =
+        placement.section === "workspace" ? "workspace" : "private";
+      const createFolder = async (
+        name: string,
+        parentId: string | null,
+      ): Promise<string | null> => {
+        try {
+          const res = unwrapBody(
+            await api.POST(`${base}/folders`, {
+              params: { path: { workspaceId } },
+              body: { name, parentId: parentId || undefined, access },
+            }),
+          ) as { success: boolean; data?: { id: string } };
+          return res.success ? (res.data?.id ?? null) : null;
+        } catch {
+          return null;
+        }
+      };
+      // Out of the trash (it comes back at its scope's root: its folder is
+      // gone), then into the recreated folder under its own name — one
+      // commit each.
+      const bringBack = async (node: ConsoleEntry, folderId: string | null) => {
+        try {
+          const restored = unwrapBody(
+            await api.PATCH(`${base}/{id}/restore`, {
+              params: { path: { workspaceId, id: node.id } },
+            }),
+          ) as { success: boolean };
+          if (!restored.success) throw new Error("not restored");
+        } catch {
+          outcome.failed++;
+          return;
+        }
+        outcome.restored++;
+        if (!folderId) {
+          outcome.atRoot++;
+          return;
+        }
+        try {
+          const moved = unwrapBody(
+            await api.PATCH(`${base}/{id}/move`, {
+              params: { path: { workspaceId, id: node.id } },
+              body: { folderId, name: node.name },
+            }),
+          ) as { success: boolean };
+          if (!moved.success) outcome.atRoot++;
+        } catch {
+          outcome.atRoot++;
+        }
+      };
+      const walk = async (folder: ConsoleEntry, parentId: string | null) => {
+        const folderId = await createFolder(folder.name, parentId);
+        if (folder === snapshot) outcome.folderRecreated = folderId !== null;
+        for (const child of folder.children ?? []) {
+          if (child.isDirectory) {
+            // A subfolder whose parent could not be recreated is not made
+            // at the root on its own: its consoles come back to the root.
+            if (folderId) await walk(child, folderId);
+            else await walkConsolesOnly(child);
+          } else {
+            await bringBack(child, folderId);
+          }
+        }
+      };
+      const walkConsolesOnly = async (folder: ConsoleEntry) => {
+        for (const child of folder.children ?? []) {
+          if (child.isDirectory) await walkConsolesOnly(child);
+          else await bringBack(child, null);
+        }
+      };
+      // Its old parent, when it is still in the tree; else the root.
+      const parentStillThere =
+        placement.parentId !== null &&
+        findIn(
+          [
+            ...(get().myItems[workspaceId] ?? []),
+            ...(get().workspaceItems[workspaceId] ?? []),
+          ],
+          placement.parentId,
+        ) !== null;
+      await walk(snapshot, parentStillThere ? placement.parentId : null);
+      await get().refresh(workspaceId);
+      return outcome;
     },
   }),
 });

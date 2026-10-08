@@ -1,10 +1,37 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// The store persists through zustand's `persist`, which reads the global
+// `localStorage` once at module load. Node 22+ defines that global but
+// leaves it `undefined` without `--localstorage-file` (and it shadows
+// jsdom's), so every write threw; give it an in-memory one before the store
+// module is evaluated (hoisted above the imports).
+vi.hoisted(() => {
+  const memory = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (k: string) => memory.get(k) ?? null,
+      setItem: (k: string, v: string) => void memory.set(k, v),
+      removeItem: (k: string) => void memory.delete(k),
+      clear: () => memory.clear(),
+      key: (i: number) => [...memory.keys()][i] ?? null,
+      get length() {
+        return memory.size;
+      },
+    },
+  });
+});
+
 import type { ConsoleRevisionSyncEntry } from "../lib/api-types";
+import { api } from "../api";
+import { apiClient } from "../lib/api-client";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import {
   hasPendingAgentReview,
   hasUnsavedLocalEdits,
+  isUnloadedConsoleTab,
+  remoteEntryMatchesBaseline,
   useConsoleStore,
 } from "./consoleStore";
 
@@ -335,5 +362,480 @@ describe("consoleStore focusOrOpenTab — the one open-or-focus primitive", () =
       () => ({ title: "Connector", content: "cx1", kind: "connectors" }),
     );
     expect(again).toBe(id);
+  });
+});
+
+describe("consoleStore — a rename or move retargets an open tab", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  function openRenamable(id: string, content = "select 1 as revenue") {
+    useConsoleStore.getState().openTab({
+      id,
+      title: "Revenue Daily",
+      content,
+      isSaved: true,
+      filePath: "Revenue Daily",
+      access: "workspace",
+      savedStateHash: computeConsoleStateHash("select 1 as revenue"),
+      draftRevision: 4,
+      version: 2,
+      isDirty: true,
+      kind: "console",
+    });
+  }
+
+  it("takes the server's name, place and visibility — never the content, the dirty flag or the saved baseline", () => {
+    const id = "c-retarget";
+    openRenamable(id, "select 1 as revenue -- unsaved edit");
+    const before = useConsoleStore.getState().tabs[id];
+
+    useConsoleStore.getState().retargetConsoleTab(id, {
+      name: "Revenue by Day",
+      path: "finance/Revenue by Day",
+      access: "workspace",
+      isSaved: true,
+      draftRevision: 5,
+    });
+
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.title).toBe("Revenue by Day");
+    expect(tab.filePath).toBe("finance/Revenue by Day");
+    expect(tab.access).toBe("workspace");
+    // The rename's own bump on top of this tab's base: adopted, so the next
+    // save is not a false conflict.
+    expect(tab.draftRevision).toBe(5);
+    expect(tab.content).toBe("select 1 as revenue -- unsaved edit");
+    expect(tab.savedStateHash).toBe(before.savedStateHash);
+    expect(tab.isDirty).toBe(true);
+    expect(tab.version).toBe(2);
+  });
+
+  it("leaves the revision alone when more than the rename happened since this tab's base", () => {
+    const id = "c-gap";
+    openRenamable(id);
+    useConsoleStore.getState().retargetConsoleTab(id, {
+      name: "Renamed",
+      draftRevision: 9,
+    });
+    expect(useConsoleStore.getState().tabs[id].draftRevision).toBe(4);
+    expect(useConsoleStore.getState().tabs[id].title).toBe("Renamed");
+  });
+
+  it("never gives a draft a path (its first save must still ask where)", () => {
+    const id = "c-draft";
+    useConsoleStore.getState().openTab({
+      id,
+      title: "Untitled",
+      content: "select 1",
+      isSaved: false,
+      kind: "console",
+    });
+    useConsoleStore.getState().retargetConsoleTab(id, {
+      name: "Renamed draft",
+      path: "Renamed draft",
+      isSaved: false,
+    });
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.title).toBe("Renamed draft");
+    expect(tab.filePath).toBeUndefined();
+  });
+
+  it("ignores tabs of other kinds sharing nothing but an id shape", () => {
+    useConsoleStore.getState().openTab({
+      id: "app-tab",
+      title: "My App",
+      content: "",
+      kind: "app",
+    });
+    useConsoleStore.getState().retargetConsoleTab("app-tab", { name: "x" });
+    expect(useConsoleStore.getState().tabs["app-tab"].title).toBe("My App");
+  });
+});
+
+describe("consoleStore — the user's own rename with unsaved edits is not a conflict", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("recognises a server copy whose content is still the tab's baseline", () => {
+    const id = "c-baseline";
+    const saved = "select 1 as revenue";
+    useConsoleStore.getState().openTab({
+      id,
+      title: "Revenue Daily",
+      content: `${saved} -- DRAFT TWO (never saved)`,
+      isSaved: true,
+      filePath: "Revenue Daily",
+      savedStateHash: computeConsoleStateHash(saved),
+      draftRevision: 4,
+      kind: "console",
+    });
+    expect(hasUnsavedLocalEdits(id)).toBe(true);
+    // The rename bumped the revision; the server's content did not move.
+    expect(remoteEntryMatchesBaseline({ id, content: saved })).toBe(true);
+    // Someone else's save did move it.
+    expect(remoteEntryMatchesBaseline({ id, content: "select 2" })).toBe(false);
+  });
+
+  it("fastForwardRemoteMetadata adopts name/place/revision and keeps every local edit, with no banner", () => {
+    const id = "c-meta";
+    const saved = "select 1 as revenue";
+    useConsoleStore.getState().openTab({
+      id,
+      title: "Revenue Daily",
+      content: `${saved} -- unsaved`,
+      isSaved: true,
+      filePath: "Revenue Daily",
+      access: "private",
+      savedStateHash: computeConsoleStateHash(saved),
+      connectionId: "conn-local-choice",
+      draftRevision: 4,
+      kind: "console",
+    });
+    useConsoleStore.getState().setRemoteUpdate(id, {
+      draftRevision: 5,
+      updatedBy: "me",
+      kind: "updated",
+    });
+
+    useConsoleStore.getState().fastForwardRemoteMetadata({
+      id,
+      content: saved,
+      draftRevision: 5,
+      name: "Revenue by Day",
+      path: "finance/Revenue by Day",
+      access: "workspace",
+      isSaved: true,
+      version: 1,
+    });
+
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.title).toBe("Revenue by Day");
+    expect(tab.filePath).toBe("finance/Revenue by Day");
+    expect(tab.access).toBe("workspace");
+    expect(tab.draftRevision).toBe(5);
+    expect(tab.content).toBe(`${saved} -- unsaved`);
+    expect(tab.connectionId).toBe("conn-local-choice");
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(saved));
+    expect(tab.remoteUpdate).toBeNull();
+  });
+
+  it("a clean tab's fast-forward also takes the new place", () => {
+    const id = "c-clean";
+    openSavedConsole({
+      id,
+      content: "select 1",
+      savedStateHash: computeConsoleStateHash("select 1"),
+      draftRevision: 1,
+    });
+    useConsoleStore.getState().fastForwardRemoteConsoleEntry({
+      id,
+      content: "select 1",
+      draftRevision: 2,
+      name: "Renamed",
+      path: "Team/Renamed",
+      access: "workspace",
+      isSaved: true,
+    });
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.title).toBe("Renamed");
+    expect(tab.filePath).toBe("Team/Renamed");
+    expect(tab.access).toBe("workspace");
+  });
+});
+
+describe("consoleStore.saveConsole — a save is not a move", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("keepPlace sends no path and no access (a stale tab path can never move the console back)", async () => {
+    const id = "c-save";
+    openSavedConsole({ id, content: "select 1", draftRevision: 3 });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, version: 2, draftRevision: 4 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const res = await useConsoleStore
+        .getState()
+        .saveConsole(
+          "ws",
+          id,
+          "select 2",
+          "Revenue Daily",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "",
+          "workspace",
+          { keepPlace: true },
+        );
+      expect(res.success).toBe(true);
+      const body = JSON.parse(
+        (fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1]
+          .body,
+      ) as Record<string, unknown>;
+      expect(body.path).toBeUndefined();
+      expect(body.access).toBeUndefined();
+      expect(body.isPrivate).toBeUndefined();
+      expect(body.isSaved).toBe(true);
+      expect(body.content).toBe("select 2");
+      expect(body.expectedDraftRevision).toBe(3);
+
+      // A first save still places it.
+      await useConsoleStore
+        .getState()
+        .saveConsole(
+          "ws",
+          id,
+          "select 2",
+          "Team/x",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "",
+          "private",
+        );
+      const first = JSON.parse(
+        (fetchMock.mock.calls[1] as unknown as [string, { body: string }])[1]
+          .body,
+      ) as Record<string, unknown>;
+      expect(first.path).toBe("Team/x");
+      expect(first.access).toBe("private");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("consoleStore.reloadConsoleFromServer — after a version restore", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("puts the restored text in the tab AND the editor, clean, and closes no other tab", async () => {
+    const id = "c-restored";
+    const before = "SELECT 1 AS a1_test, 2 AS b, 3 AS c";
+    const restored = "SELECT 1 AS a1_test";
+    openSavedConsole({
+      id,
+      content: before,
+      savedStateHash: computeConsoleStateHash(before),
+      draftRevision: 6,
+    });
+    // A pristine (preview) tab: reopening the console used to replace it.
+    useConsoleStore.getState().openTab(
+      {
+        id: "c-other",
+        title: "Ghost.sql",
+        content: "select 2",
+        isSaved: true,
+        filePath: "New Folder/Ghost.sql",
+        kind: "console",
+      },
+      { replacePristine: false },
+    );
+    useConsoleStore.getState().setActiveTab(id);
+
+    const get = vi.spyOn(api, "GET").mockResolvedValue({
+      data: {
+        success: true,
+        id,
+        name: "Alpha Two",
+        path: "finance/Alpha Two",
+        content: restored,
+        isSaved: true,
+        access: "workspace",
+        draftRevision: 8,
+      },
+      response: new Response(null, { status: 200 }),
+    } as never);
+    const shown: Array<{ consoleId: string; content: string }> = [];
+    const onRemote = (e: Event) =>
+      shown.push(
+        (e as CustomEvent<{ consoleId: string; content: string }>).detail,
+      );
+    window.addEventListener("console-remote-content", onRemote);
+    try {
+      const ok = await useConsoleStore
+        .getState()
+        .reloadConsoleFromServer("ws", id);
+      expect(ok).toBe(true);
+    } finally {
+      window.removeEventListener("console-remote-content", onRemote);
+      get.mockRestore();
+    }
+
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.content).toBe(restored);
+    // Clean: the saved baseline is the restored text (Save disabled is
+    // right only because the editor shows that text too).
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(restored));
+    expect(tab.draftRevision).toBe(8);
+    expect(tab.filePath).toBe("finance/Alpha Two");
+    // The mounted editor is told to show it.
+    expect(shown).toEqual([{ consoleId: id, content: restored }]);
+    expect(useConsoleStore.getState().tabs["c-other"]).toBeDefined();
+    expect(useConsoleStore.getState().activeTabId).toBe(id);
+  });
+});
+
+describe("consoleStore.autoSaveConsole — only a console id is saved through the console route", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("never PUTs an app binding open in the console editor (it has no tab, and its own save)", async () => {
+    vi.useFakeTimers();
+    const put = vi
+      .spyOn(apiClient, "putWithStatus")
+      .mockResolvedValue({ status: 200, body: { success: true } } as never);
+    try {
+      const store = useConsoleStore.getState();
+      // The binding editor's id: no tab, so "not saved" — it used to
+      // autosave on mount and commit a stray Workspace console.
+      store.autoSaveConsole(
+        "ws",
+        "binding:6ac5395a545a64d5b321f871:bindings/orders.sql",
+        "SELECT * FROM orders",
+        "orders.sql",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(put).not.toHaveBeenCalled();
+
+      // A new console's draft (an ObjectId) still autosaves.
+      const draft = "6ac5395a545a64d5b321f872";
+      store.openTab({
+        id: draft,
+        title: "Untitled",
+        content: "",
+        kind: "console",
+      });
+      store.autoSaveConsole("ws", draft, "SELECT 1", "Untitled");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(put).toHaveBeenCalledTimes(1);
+      expect((put.mock.calls[0] as unknown[])[0]).toBe(
+        `/workspaces/ws/consoles/${draft}`,
+      );
+    } finally {
+      put.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("consoleStore.fetchConsoleContent — an edit typed while it is in flight", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  const SAVED = "SELECT 1";
+  const server = (content: string) => ({
+    data: {
+      success: true,
+      id: "c-open",
+      name: "Alpha Two",
+      path: "finance/Alpha Two",
+      content,
+      isSaved: true,
+      access: "workspace",
+      draftRevision: 9,
+      version: 4,
+    },
+    response: new Response(null, { status: 200 }),
+  });
+
+  it("is kept on its baseline; only the name and place are taken", async () => {
+    openSavedConsole({
+      id: "c-open",
+      content: SAVED,
+      savedStateHash: computeConsoleStateHash(SAVED),
+      draftRevision: 3,
+      version: 2,
+    });
+    let answer: (v: unknown) => void = () => undefined;
+    const get = vi
+      .spyOn(api, "GET")
+      .mockReturnValue(new Promise(resolve => (answer = resolve)) as never);
+    try {
+      const fetching = useConsoleStore
+        .getState()
+        .fetchConsoleContent("ws", "c-open");
+      // The user types while the server answers.
+      useConsoleStore.getState().updateContent("c-open", "SELECT 1 -- mine");
+      answer(server("SELECT 1 -- someone else's save"));
+      await fetching;
+    } finally {
+      get.mockRestore();
+    }
+    const tab = useConsoleStore.getState().tabs["c-open"];
+    expect(tab.content).toBe("SELECT 1 -- mine");
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(SAVED));
+    expect(tab.draftRevision).toBe(3);
+    expect(tab.version).toBe(2);
+    expect(hasUnsavedLocalEdits("c-open")).toBe(true);
+    expect(tab.title).toBe("Alpha Two");
+    expect(tab.filePath).toBe("finance/Alpha Two");
+  });
+
+  it("without an edit, the server's copy is loaded as before (a placeholder tab included)", async () => {
+    useConsoleStore.getState().openTab({
+      id: "c-open",
+      title: "Alpha",
+      content: "loading...",
+      isSaved: true,
+      kind: "console",
+    });
+    expect(isUnloadedConsoleTab("c-open")).toBe(true);
+    const get = vi.spyOn(api, "GET").mockResolvedValue(server(SAVED) as never);
+    try {
+      await useConsoleStore.getState().fetchConsoleContent("ws", "c-open");
+    } finally {
+      get.mockRestore();
+    }
+    const tab = useConsoleStore.getState().tabs["c-open"];
+    expect(tab.content).toBe(SAVED);
+    expect(tab.savedStateHash).toBe(computeConsoleStateHash(SAVED));
+    expect(tab.draftRevision).toBe(9);
+    expect(isUnloadedConsoleTab("c-open")).toBe(false);
+    expect(hasUnsavedLocalEdits("c-open")).toBe(false);
+  });
+});
+
+describe("consoleStore.setRemoteUpdate — the banner's cause survives a reload", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("the same remote change raised again without its cause keeps it; a newer one does not", () => {
+    openSavedConsole({ id: "c-banner", content: "SELECT 1" });
+    const store = useConsoleStore.getState();
+    store.setRemoteUpdate("c-banner", {
+      kind: "updated",
+      draftRevision: 5,
+      via: "git",
+    });
+    // After a reload the revision sync raises it again, cause unknown.
+    store.setRemoteUpdate("c-banner", { kind: "updated", draftRevision: 5 });
+    expect(useConsoleStore.getState().tabs["c-banner"].remoteUpdate).toEqual({
+      kind: "updated",
+      draftRevision: 5,
+      via: "git",
+    });
+    // A newer change is its own: no borrowed cause.
+    store.setRemoteUpdate("c-banner", { kind: "updated", draftRevision: 6 });
+    expect(useConsoleStore.getState().tabs["c-banner"].remoteUpdate).toEqual({
+      kind: "updated",
+      draftRevision: 6,
+    });
   });
 });

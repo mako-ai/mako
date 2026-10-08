@@ -116,6 +116,8 @@ export interface RefApp {
   id: string;
   slug?: string;
   path?: string;
+  /** Previous slugs or repo paths (the server's `aliases`). */
+  aliases?: string[];
 }
 
 /** Repo-relative folder of an app; legacy rows sit at `apps/<slug>`. */
@@ -124,32 +126,253 @@ export function appPathOf(app: RefApp): string {
 }
 
 /**
- * Find an app by whatever a link carries, exactly as the API resolves it:
- * a 24-hex id → by id; something with a slash → by repo path (with or
- * without the leading `apps/`); a bare slug → the one app with that folder
- * name, else the top-level `apps/<slug>`, else nothing. An ambiguous nested
- * name must NOT silently pick a folder — the server refuses it too, and a
- * client that guessed would open one app while the address bar named another.
+ * Find an app by whatever a link carries, exactly as the API resolves it
+ * (`findAppInSnapshot` in api/src/apps/app-index.service.ts; keep the two
+ * in step): a 24-hex id → by id; something with a slash → by repo path
+ * (with or without the leading `apps/`), else the one app whose aliases
+ * name that path; a bare name → the app at `apps/<name>` today, else the
+ * one app whose aliases say `apps/<name>` was its folder (a renamed
+ * top-level app keeps its link even when a nested app has since taken the
+ * bare name — nested apps never had it as a link), else the one app
+ * anywhere with that folder name. A bare name several nested apps share is
+ * ambiguous and final: nothing, never a third app's alias — the server
+ * refuses it too, and a client that guessed would open one app while the
+ * address bar named another. An alias claimed by two apps resolves to
+ * neither.
  */
 export function resolveAppRef<T extends RefApp>(
   apps: readonly T[],
   ref: string,
 ): T | null {
-  const clean = ref.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  return resolveAppRefVia(apps, ref)?.app ?? null;
+}
+
+/** {@link resolveAppRef}, saying whether a current name or an alias matched. */
+export function resolveAppRefVia<T extends RefApp>(
+  apps: readonly T[],
+  ref: string,
+): { app: T; via: "current" | "alias" } | null {
+  // NFC, as every app name is stored: `é` typed as e + U+0301 is `é`.
+  const clean = ref
+    .trim()
+    .normalize("NFC")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
   if (!clean) return null;
+  const current = (app: T | undefined) =>
+    app ? { app, via: "current" as const } : null;
+  const alias = (app: T | null) =>
+    app ? { app, via: "alias" as const } : null;
   if (/^[0-9a-f]{24}$/i.test(clean)) {
     const lower = clean.toLowerCase();
-    const byId = apps.find(a => a.id.toLowerCase() === lower);
+    const byId = current(apps.find(a => a.id.toLowerCase() === lower));
     if (byId) return byId;
   }
   if (clean.includes("/")) {
     return (
-      apps.find(a => appPathOf(a) === clean) ??
-      apps.find(a => appPathOf(a) === `apps/${clean}`) ??
-      null
+      current(apps.find(a => appPathOf(a) === clean)) ??
+      current(apps.find(a => appPathOf(a) === `apps/${clean}`)) ??
+      alias(findByAlias(apps, clean))
     );
   }
+  const topLevel = current(apps.find(a => appPathOf(a) === `apps/${clean}`));
+  if (topLevel) return topLevel;
+  const wasTopLevel = alias(findByAlias(apps, clean));
+  if (wasTopLevel) return wasTopLevel;
   const matches = apps.filter(a => basenameOf(appPathOf(a)) === clean);
-  if (matches.length === 1) return matches[0];
-  return matches.find(a => appPathOf(a) === `apps/${clean}`) ?? null;
+  return matches.length === 1 ? current(matches[0]) : null;
+}
+
+function findByAlias<T extends RefApp>(
+  apps: readonly T[],
+  clean: string,
+): T | null {
+  const claimants = apps.filter(a =>
+    (a.aliases ?? []).some(alias => aliasMatchesRef(alias, clean)),
+  );
+  return claimants.length === 1 ? claimants[0] : null;
+}
+
+/**
+ * Does an alias name the (cleaned) ref? Equal, or equal with or without
+ * the leading `apps/`: a slug alias `x` (a top-level old name) answers `x`
+ * and `apps/x`; a path alias `apps/S/x` answers `apps/S/x` and `S/x` — and
+ * never the bare `x`.
+ */
+export function aliasMatchesRef(alias: string, clean: string): boolean {
+  return (
+    alias === clean || alias === `apps/${clean}` || `apps/${alias}` === clean
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Who may rename an app from the explorer — the server's rules
+// ---------------------------------------------------------------------------
+
+export interface RenamableApp {
+  path?: string;
+  slug?: string;
+  id: string;
+  access?: "private" | "workspace";
+  owner_id?: string;
+  workspaceRole?: "viewer" | "editor";
+  /** The server's answer (GET /apps): may this viewer write the app. */
+  canWrite?: boolean;
+}
+
+const EDITING_ROLES = new Set(["owner", "admin", "member"]);
+
+/**
+ * What this person may rename on an app from the explorer:
+ *
+ *  - `full` — its name (the title) and its link (the folder);
+ *  - `title` — its name only; `linkReason` says why the link is locked;
+ *  - `none` — nothing; `reason` says why.
+ *
+ * The two rules the rename route applies (api/src/rename/handlers/app.ts),
+ * so the explorer neither offers what the server refuses nor hides what it
+ * allows:
+ *
+ *  - ANY rename needs the app's write ACL (resource-acl canWriteResource):
+ *    its owner first, whatever its access; anyone it is shared with as an
+ *    editor; on a workspace-access app, admins and members its workspace
+ *    role makes editors. GET /apps sends the answer as `canWrite` — the
+ *    list carries no `sharedWith`, so only the server knows a share. A
+ *    list without it (an older API) falls back to owner, then role;
+ *  - a LINK change moves the folder, so the tree rule (authorizeAppMove)
+ *    applies too: a personal tree is its owner's alone, the workspace tree
+ *    is organised by editing members. An editor the tree rule stops (an
+ *    app in someone else's personal folder, shared with them) still
+ *    renames the title — which is all the server would let them change.
+ *
+ * `nameOf` turns the personal folder's owner id into something to show
+ * (their email); without it the reason says "its owner".
+ */
+export type AppRenameRights =
+  | { kind: "full" }
+  | { kind: "title"; linkReason: string }
+  | { kind: "none"; reason: string };
+
+export function appRenameRights(
+  app: RenamableApp,
+  viewer: {
+    userId?: string;
+    role?: string;
+    nameOf?: (userId: string) => string | undefined;
+  },
+): AppRenameRights {
+  const { userId, role } = viewer;
+  const writable =
+    app.canWrite ??
+    ((!!userId && app.owner_id === userId) ||
+      (app.access !== "private" &&
+        (role === "owner" ||
+          role === "admin" ||
+          (role === "member" && app.workspaceRole === "editor"))));
+  if (!writable) {
+    return {
+      kind: "none",
+      reason:
+        "You have read-only access to this app. Ask an editor or the owner to rename it (or to share edit access with you).",
+    };
+  }
+  const personal = /^users\/([^/]+)\/apps\//.exec(appPathOf(app));
+  if (personal) {
+    const ownerId = personal[1];
+    if (userId && ownerId === userId) return { kind: "full" };
+    const owner = viewer.nameOf?.(ownerId) ?? "its owner";
+    return {
+      kind: "title",
+      linkReason: `Only ${owner} can change this app's link.`,
+    };
+  }
+  return role && EDITING_ROLES.has(role)
+    ? { kind: "full" }
+    : {
+        kind: "title",
+        linkReason: "Only workspace editors can change this app's link.",
+      };
+}
+
+// ---------------------------------------------------------------------------
+// Where this person may file an app — the server's rules (app-authorization)
+// ---------------------------------------------------------------------------
+
+export interface MovableApp {
+  id: string;
+  path?: string;
+  slug?: string;
+  owner_id?: string;
+}
+
+const PERSONAL_ROOT = /^users\/([^/]+)\/apps(\/|$)/;
+
+/**
+ * Why this person may NOT file `app` into the folder `dest` (`apps/…` or
+ * `users/<id>/apps/…`), or null when they may — the rules the move route
+ * applies (api/src/apps/app-authorization.ts authorizeAppMove), so a drop
+ * the server would refuse is never sent:
+ *
+ *  - a personal tree is its owner's, both ways: only they file into it,
+ *    only they take an app out of it;
+ *  - the Workspace tree is organised by editing members (owner, admin,
+ *    member), never a viewer;
+ *  - filing an app INTO a personal tree makes it that person's private
+ *    app: only its owner may, or a workspace owner/admin — not an editor
+ *    it is merely shared with, nor a member on a shared workspace app.
+ */
+export function appMoveRefusal(
+  app: MovableApp,
+  dest: string,
+  viewer: { userId?: string; role?: string },
+): string | null {
+  const { userId, role } = viewer;
+  const into = PERSONAL_ROOT.exec(dest);
+  const from = PERSONAL_ROOT.exec(appPathOf(app));
+  if (into) {
+    if (!userId) return "Personal folders need a signed-in user.";
+    if (into[1] !== userId) {
+      return "You can only file things into your own personal folders.";
+    }
+  } else if (!(role && EDITING_ROLES.has(role))) {
+    return "Only workspace editors can reorganise the Workspace tree.";
+  }
+  if (from) {
+    if (!userId || from[1] !== userId) {
+      return "Only the owner can move an app out of their personal folder.";
+    }
+    return null;
+  }
+  if (!(role && EDITING_ROLES.has(role))) {
+    return "Only workspace editors can reorganise the Workspace tree.";
+  }
+  if (
+    into &&
+    role !== "owner" &&
+    role !== "admin" &&
+    !(userId && app.owner_id === userId)
+  ) {
+    return "Only the app's owner or a workspace admin can move it into a personal folder: it would become private to you.";
+  }
+  return null;
+}
+
+/**
+ * {@link appMoveRefusal} for a folder move: the first app inside `folder`
+ * the move would refuse, as its refusal (or null). Moving a folder files
+ * every app in it at the destination.
+ */
+export function folderMoveRefusal(
+  apps: readonly MovableApp[],
+  folder: string,
+  dest: string,
+  viewer: { userId?: string; role?: string },
+): string | null {
+  for (const app of apps) {
+    const at = appPathOf(app);
+    if (!at.startsWith(`${folder}/`)) continue;
+    const refusal = appMoveRefusal(app, dest, viewer);
+    if (refusal) return `${at}: ${refusal}`;
+  }
+  return null;
 }

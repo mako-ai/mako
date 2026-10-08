@@ -39,20 +39,22 @@ import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { RepoRequiredError } from "../apps/config";
 import {
+  NotThisNotebookError,
   notebookCommitChanges,
   notebookFileVersions,
   notebookHistory,
-  removeNotebookFile,
+  removeNotebookIndexAndFile,
   restoreNotebookTo,
   scheduleNotebookCheckpoint,
 } from "../notebooks/notebook-git.service";
 import {
   createNotebookIndex,
-  deleteNotebookIndex,
   getNotebookIndex,
   updateNotebookIndex,
 } from "../services/notebook-index.service";
 import { NotebookManager } from "../utils/notebook-manager";
+import { renameNotebook } from "../rename/notebook";
+import { RenameError } from "../rename/types";
 
 const logger = loggers.api("notebooks");
 
@@ -435,8 +437,19 @@ notebookRoutes.openapi(
     const loaded = await loadReadableNotebook(c, "read");
     if ("errorResponse" in loaded) return loaded.errorResponse;
     const { sha, path: relPath } = c.req.valid("query");
-    const versions = await notebookFileVersions(loaded.index, sha, relPath);
-    return c.json({ success: true as const, versions });
+    try {
+      const versions = await notebookFileVersions(loaded.index, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      // Only this notebook's own file, at one of its own commits.
+      if (error instanceof NotThisNotebookError) {
+        return c.json(
+          { success: false, error: "Path is not this notebook" },
+          403,
+        );
+      }
+      throw error;
+    }
   },
 );
 
@@ -477,6 +490,9 @@ notebookRoutes.openapi(
           error.status as 412,
         );
       }
+      if (error instanceof NotThisNotebookError) {
+        return c.json({ success: false, error: error.message }, 404);
+      }
       logger.error("Notebook restore failed", { error });
       return c.json(
         {
@@ -510,6 +526,42 @@ notebookRoutes.openapi(
     const store = getNotebookStore();
     const ws = workspaceId(c);
     const id = c.req.valid("param").id;
+
+    // A body with ONLY a name is the explorer's rename: the same service
+    // the agent's `rename_object` and the objects route use (one checkpoint
+    // commit moves the file; the id never changes). A name alongside blocks
+    // is an editor save and stays on the versioned path below.
+    if (body.name !== undefined && body.blocks === undefined) {
+      try {
+        const { doc } = await renameNotebook({
+          workspaceId: ws,
+          notebookId: id,
+          name: body.name,
+          // Legacy API keys carry an ObjectId here; the ACL compares strings.
+          actorUserId:
+            c.get("user")?.id === undefined
+              ? undefined
+              : String(c.get("user")?.id),
+          role: memberRole(c),
+          clientId:
+            typeof body.clientId === "string" ? body.clientId : undefined,
+        });
+        return c.json({ success: true, data: doc });
+      } catch (error) {
+        if (error instanceof RenameError) {
+          return c.json(
+            {
+              success: false,
+              error:
+                error.status === 404 ? "Notebook not found" : error.message,
+            },
+            error.status,
+          );
+        }
+        throw error;
+      }
+    }
+
     const access = await requireNotebookAccess(
       ws,
       id,
@@ -560,6 +612,15 @@ notebookRoutes.openapi(
         name: doc.name,
         updatedAt: new Date(doc.updatedAt),
       });
+      // The index follows the store: a rename that wrote the name after
+      // this save must not be overwritten by this older one.
+      const latest = await store.get(ws, id);
+      if (latest && latest.name !== doc.name) {
+        await updateNotebookIndex(ws, id, {
+          name: latest.name,
+          updatedAt: new Date(latest.updatedAt),
+        });
+      }
       publishTreeUpdated(ws);
     } else {
       await updateNotebookIndex(ws, id, {
@@ -673,20 +734,13 @@ notebookRoutes.openapi(
       );
     }
 
-    const doomedIndex = await NotebookIndex.findOne({
-      workspaceId: new Types.ObjectId(ws),
-      notebookId: id,
-    }).select("path name");
     const ok = await getNotebookStore().remove(ws, id);
     if (!ok) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }
-    await deleteNotebookIndex(ws, id);
-    if (doomedIndex) {
-      await removeNotebookFile(ws, doomedIndex, editorUserId(c)).catch(
-        () => undefined,
-      );
-    }
+    // The index row and the file where it is NOW (a rename landing in the
+    // meantime moved it) — in the checkpoint queue.
+    await removeNotebookIndexAndFile(ws, id, editorUserId(c));
     publishTreeUpdated(ws);
     return c.json({ success: true });
   },

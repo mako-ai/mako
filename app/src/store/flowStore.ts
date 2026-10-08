@@ -8,7 +8,9 @@ import {
   toErrorMessage as normalizeError,
 } from "../api";
 import { z } from "zod";
-import { createValidatedStorage, errorSchema } from "./store-validation";
+import { createListValidatedStorage, errorSchema } from "./store-validation";
+import { onRealtimeEvent } from "./lib/realtime-channel";
+import { healFlowTabs } from "../flow-runtime/shell";
 
 // Zod schemas for validation
 const flowDataSourceSchema = z.object({
@@ -74,17 +76,27 @@ const flowSchema = z.object({
   workspaceId: z.string(),
   /** Editable display name; absent on rows predating RFC #904's backfill. */
   name: z.string().nullable().optional(),
-  /** Filename identity for `flows/<slug>.yml`. Never changes on rename. */
+  /** Filename identity for `flows/<slug>.yml`; a rename moves the file. */
   slug: z.string().nullable().optional(),
-  dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
-  destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
+  /** Previous slugs that still resolve to this flow (graceful rename). */
+  aliases: z.array(z.string()).nullable().optional(),
+  /** A file at main with no row yet (push not synced): not renameable. */
+  gitOnly: z.boolean().optional(),
+  // Optional for database-to-database flows. `null` when the list could not
+  // look the connection up (a file-born flow naming a connection this
+  // workspace does not have, or one since deleted): the API sends null, and
+  // rejecting it made every persist of the whole flow list fail ("Validation
+  // failed when saving flow-store-v2"), freezing a stale copy on disk.
+  dataSourceId: flowDataSourceSchema.nullable().optional(),
+  destinationDatabaseId: flowDestinationSchema.nullable().optional(),
   destinationDatabaseName: z.string().nullable().optional(),
   type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
   schedule: flowScheduleSchema,
   webhookConfig: webhookConfigSchema,
   entityFilter: z.array(z.string()).nullable().optional(),
   queries: z.array(flowQuerySchema).nullable().optional(),
-  syncMode: z.enum(["full", "incremental"]),
+  // A file with no `sync.mode` leaves it unset (the API's default is full).
+  syncMode: z.enum(["full", "incremental"]).default("full"),
   writeMode: z.enum(["append_dedup", "append", "overwrite"]).optional(),
   syncEngine: z.enum(["legacy", "cdc"]).optional(),
   backfillSchedule: z
@@ -102,17 +114,18 @@ const flowSchema = z.object({
   syncStateUpdatedAt: z.string().nullable().optional(),
   syncStateMeta: z
     .object({
-      lastEvent: z.string().optional(),
-      lastReason: z.string().optional(),
-      lastErrorCode: z.string().optional(),
-      lastErrorMessage: z.string().optional(),
+      lastEvent: z.string().nullable().optional(),
+      lastReason: z.string().nullable().optional(),
+      lastErrorCode: z.string().nullable().optional(),
+      lastErrorMessage: z.string().nullable().optional(),
     })
+    .nullable()
     .optional(),
   lastRunAt: z.string().nullable().optional(),
   lastSuccessAt: z.string().nullable().optional(),
   lastError: z.string().nullable().optional(),
   nextRunAt: z.string().nullable().optional(),
-  runCount: z.number(),
+  runCount: z.number().default(0),
   avgDurationMs: z.number().nullable().optional(),
   createdBy: z.string(),
   createdAt: z.string(),
@@ -129,21 +142,27 @@ const flowSchema = z.object({
     })
     .nullable()
     .optional(),
-  // Database-to-database sync fields
+  // Database-to-database sync fields. Every nested field below is optional:
+  // the list overlays each `flows/<slug>.yml` on its row, so a connector or
+  // CDC flow carries a `tableDestination` with a schema and no table name,
+  // and a file without `incremental:` / `conflict:` / `pagination:` blocks
+  // arrives with `{}` for them. Requiring the database-flow halves refused
+  // every such flow — and with it every save of the persisted list.
   sourceType: z.enum(["connector", "database"]).optional(),
   databaseSource: z
     .object({
-      connectionId: z.string(),
+      connectionId: z.string().nullable().optional(),
       database: z.string().optional(),
-      query: z.string(),
+      query: z.string().optional(),
     })
+    .nullable()
     .optional(),
   tableDestination: z
     .object({
-      connectionId: z.string(),
+      connectionId: z.string().nullable().optional(),
       database: z.string().optional(),
       schema: z.string().optional(),
-      tableName: z.string(),
+      tableName: z.string().optional(),
       createIfNotExists: z.boolean().optional(),
       partitioning: z
         .object({
@@ -169,32 +188,38 @@ const flowSchema = z.object({
         entity: z.string(),
         label: z.string().optional(),
         partitionField: z.string(),
-        partitionGranularity: z.enum(["day", "hour", "month", "year"]),
-        clusterFields: z.array(z.string()),
+        // The file's raw layout: the API fills these in only when it saves.
+        partitionGranularity: z
+          .enum(["day", "hour", "month", "year"])
+          .default("day"),
+        clusterFields: z.array(z.string()).default([]),
         enabled: z.boolean().optional(),
       }),
     )
     .optional(),
   incrementalConfig: z
     .object({
-      trackingColumn: z.string(),
-      trackingType: z.enum(["numeric", "timestamp"]),
+      trackingColumn: z.string().optional(),
+      trackingType: z.enum(["numeric", "timestamp"]).optional(),
       lastValue: z.string().nullable().optional(),
     })
+    .nullable()
     .optional(),
   conflictConfig: z
     .object({
-      keyColumns: z.array(z.string()),
-      strategy: z.enum(["update", "ignore", "replace", "upsert"]),
+      keyColumns: z.array(z.string()).optional(),
+      strategy: z.enum(["update", "ignore", "replace", "upsert"]).optional(),
     })
+    .nullable()
     .optional(),
   paginationConfig: z
     .object({
-      mode: z.enum(["offset", "keyset"]),
+      mode: z.enum(["offset", "keyset"]).optional(),
       keysetColumn: z.string().optional(),
       keysetDirection: z.enum(["asc", "desc"]).optional(),
       lastKeysetValue: z.string().nullable().optional(),
     })
+    .nullable()
     .optional(),
   typeCoercions: z
     .array(
@@ -651,11 +676,15 @@ export const useFlowStore = create<FlowStore>()(
           };
 
           if (response.success) {
+            const flows = response.data || [];
             set(state => {
-              state.flows[workspaceId] = response.data || [];
+              state.flows[workspaceId] = flows;
               state.error[workspaceId] = null;
             });
-            return response.data || [];
+            // Open tabs follow a rename made anywhere (this list is what
+            // Refresh, `flow.updated` and a push all refetch).
+            healFlowTabs(flows);
+            return flows;
           } else {
             throw new Error(response.error || "Failed to fetch flows");
           }
@@ -1783,10 +1812,15 @@ export const useFlowStore = create<FlowStore>()(
     })),
     {
       name: "flow-store-v2",
-      storage: createValidatedStorage(
+      // Per item: one flow (or run) the schema refuses is left out of the
+      // copy on disk, never the whole list with it.
+      storage: createListValidatedStorage(
         flowStoreStateSchema,
         "flow-store-v2",
-        initialState,
+        {
+          flows: flowSchema,
+          executionHistory: flowExecutionHistorySchema,
+        },
       ),
       partialize: state => ({
         flows: state.flows,
@@ -1795,4 +1829,19 @@ export const useFlowStore = create<FlowStore>()(
       }),
     },
   ),
+);
+
+// A rename made elsewhere (api/src/rename, by the agent or another session)
+// must reach an open flow store before its next form save: the save decides
+// whether to send the auto name by comparing the STORED name with the auto
+// name, and a stale store would call a new title "never set" and overwrite
+// it. Refetch, like the dbt store does for jobs.
+onRealtimeEvent(
+  "flow.updated",
+  "flowStore",
+  (_event, ctx) => {
+    if (!ctx.workspaceId) return;
+    void useFlowStore.getState().fetchFlows(ctx.workspaceId);
+  },
+  { suppressOwnEcho: true },
 );

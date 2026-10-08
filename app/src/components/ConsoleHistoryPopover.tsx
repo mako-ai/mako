@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import type { AppCommit } from "../store/appsStore";
 import { useConsoleHistoryStore } from "../store/consoleHistoryStore";
-import { useConsoleStore } from "../store/consoleStore";
+import { hasUnsavedLocalEdits, useConsoleStore } from "../store/consoleStore";
 import { CommitChip, CommitRow } from "./CommitRow";
 
 function errorMessage(e: unknown, fallback: string): string {
@@ -90,6 +90,9 @@ export default function ConsoleHistoryPopover({
     commit: AppCommit;
   } | null>(null);
   const [confirm, setConfirm] = useState<AppCommit | null>(null);
+  // The open tab had edits not saved yet when the restore was asked for:
+  // the restore replaces them (the tab reloads the restored version).
+  const [replacesEdits, setReplacesEdits] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -246,7 +249,10 @@ export default function ConsoleHistoryPopover({
         <MenuItem
           disabled={!!menu && menu.commit.oid === headOid}
           onClick={() => {
-            if (menu) setConfirm(menu.commit);
+            if (menu) {
+              setReplacesEdits(hasUnsavedLocalEdits(consoleId));
+              setConfirm(menu.commit);
+            }
             setMenu(null);
           }}
         >
@@ -284,6 +290,13 @@ export default function ConsoleHistoryPopover({
               </>
             )}
           </DialogContentText>
+          {replacesEdits && (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              This console has unsaved edits. Restoring replaces them with this
+              version — they are not saved anywhere. To keep them, cancel and
+              save first (or save them as a copy).
+            </Alert>
+          )}
           {error && (
             <Alert severity="error" sx={{ mt: 2 }}>
               {error}
@@ -296,10 +309,15 @@ export default function ConsoleHistoryPopover({
           </Button>
           <Button
             variant="contained"
+            color={replacesEdits ? "warning" : "primary"}
             onClick={() => void runConfirmed()}
             disabled={busy}
           >
-            {busy ? "Working…" : "Restore"}
+            {busy
+              ? "Working…"
+              : replacesEdits
+                ? "Discard edits and restore"
+                : "Restore"}
           </Button>
         </DialogActions>
       </Dialog>

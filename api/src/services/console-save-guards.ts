@@ -78,3 +78,30 @@ export function buildConsoleWriteGuard(
 
   return { filter, guardActive: useVersionGuard || useDraftGuard };
 }
+
+/**
+ * The same guards, checked against a document already read: for a step that
+ * must not run on a stale base and cannot be folded into the guarded update
+ * itself — the explicit save's relocation (a git commit) runs BEFORE that
+ * update, so a stale window's save would move the console and only then be
+ * refused. Not atomic (the guarded update stays the guarantee); it stops
+ * the common case — a tab that missed a rename — before anything moves.
+ */
+export function consoleWriteGuardRefuses(
+  doc: { version?: number | null; draftRevision?: number | null },
+  expected: { expectedVersion?: number; expectedDraftRevision?: number },
+): boolean {
+  if (
+    isValidExpectation(expected.expectedVersion) &&
+    (doc.version ?? 1) !== expected.expectedVersion
+  ) {
+    return true;
+  }
+  if (
+    isValidExpectation(expected.expectedDraftRevision) &&
+    (doc.draftRevision ?? 1) !== expected.expectedDraftRevision
+  ) {
+    return true;
+  }
+  return false;
+}

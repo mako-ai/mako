@@ -7,7 +7,7 @@ import {
   isLocalConnectionId,
   localAgentClient,
 } from "../lib/local-agent-client";
-import { generateObjectId } from "../utils/objectId";
+import { generateObjectId, isObjectIdString } from "../utils/objectId";
 import { ConsoleVersionManager } from "../utils/ConsoleVersionManager";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { logRenderDebug, renderDebugEnabled } from "../utils/renderDebug";
@@ -174,6 +174,25 @@ interface ConsoleActions {
    */
   fastForwardRemoteConsoleEntry: (entry: ConsoleRevisionSyncEntry) => void;
   /**
+   * Apply a revisions-sync entry whose CONTENT is still this tab's baseline
+   * (the server copy did not change — a rename, a move, a run artifact
+   * bumped the revision) to a tab holding unsaved local edits: adopt the
+   * name, place, visibility and revision, and NOTHING of the content or
+   * connection — the user's edits stay exactly as they are, no banner
+   * (there is nothing to reconcile), and the next save is not a false
+   * conflict.
+   */
+  fastForwardRemoteMetadata: (entry: ConsoleRevisionSyncEntry) => void;
+  /**
+   * Point an open console tab at where the server says the console is now
+   * (a rename or move from the explorer, the editor's dialog, another
+   * window or the agent): title, path (breadcrumb) and visibility — never
+   * its content, its dirty state or its saved baseline. The revision is
+   * adopted only when it is the rename's own bump on top of this tab's
+   * base; any wider gap is someone else's write, for the revision sync.
+   */
+  retargetConsoleTab: (id: string, location: ConsoleLocationUpdate) => void;
+  /**
    * Start (or update) a Monaco diff review for an agent (modify_console)
    * edit. The change is already persisted to the server draft; this surfaces
    * it for Accept/Reject review instead of applying it silently. The editor
@@ -202,6 +221,16 @@ interface ConsoleActions {
     workspaceId: string,
     consoleId: string,
   ) => Promise<void>;
+  /**
+   * Replace an open tab with the server's copy IN PLACE — the store AND the
+   * mounted editor — and leave it clean: after a version restore (the repo
+   * changed under the tab), or a "Load latest". Local unsaved edits are
+   * discarded. False when the server copy could not be read.
+   */
+  reloadConsoleFromServer: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<boolean>;
   /**
    * Resolve the remote-update affordance the other way: deliberately
    * overwrite the server copy with this tab's content (revision-targeted at
@@ -295,6 +324,16 @@ interface ConsoleActions {
     resultsViewMode?: string,
     comment?: string,
     access?: "private" | "workspace",
+    options?: {
+      /**
+       * Save the content where the console IS (no path, no access): the
+       * editor's Cmd+S of a saved console. A save is not a move — a tab's
+       * path can be stale (renamed in another window, its folder renamed)
+       * and sending it would move the console back. Placing a console is
+       * the first save's (path) and the rename/move routes' job.
+       */
+      keepPlace?: boolean;
+    },
   ) => Promise<ConsoleSaveResponse>;
   deleteConsole: (
     workspaceId: string,
@@ -512,6 +551,23 @@ export const hasUnsavedLocalEdits = (consoleId: string): boolean => {
   return false;
 };
 
+/** The content a tab shows until its console has loaded. */
+export const CONSOLE_LOADING_CONTENT = "loading...";
+
+/**
+ * A tab opened before its console loaded (the explorer's placeholder): marked
+ * saved, but with no saved baseline and no path yet, still showing the
+ * loading text. Nothing was loaded, so nothing is being edited — opening it
+ * again must fetch it (a first fetch that failed left it stuck otherwise,
+ * since `hasUnsavedLocalEdits` counts a saved tab with no baseline as
+ * edited).
+ */
+export const isUnloadedConsoleTab = (consoleId: string): boolean => {
+  const tab = useConsoleStore.getState().tabs[consoleId];
+  if (!tab || !tab.isSaved || tab.savedStateHash || tab.filePath) return false;
+  return tab.content === CONSOLE_LOADING_CONTENT || tab.content.trim() === "";
+};
+
 const cancelAutoSave = (consoleId: string): void => {
   const timer = draftSaveTimers.get(consoleId);
   if (timer) {
@@ -523,6 +579,10 @@ const cancelAutoSave = (consoleId: string): void => {
 };
 
 const shouldAutoSave = (getState: () => ConsoleState, consoleId: string) => {
+  // Only a console id is saved through the console route: an app binding
+  // open in the console editor (`binding:<app>:<file>`, no tab) has its own
+  // save, and its draft autosave committed a stray Workspace console.
+  if (!isObjectIdString(consoleId)) return false;
   const tab = getState().tabs[consoleId];
   return tab ? !tab.isSaved : true;
 };
@@ -561,6 +621,58 @@ function normalizeScheduledRunSnapshotForTab(
     consecutiveFailures: scheduledRun?.consecutiveFailures ?? 0,
   };
 }
+
+/** Where a console is, as the server reports it (see `retargetConsoleTab`). */
+export interface ConsoleLocationUpdate {
+  name?: string;
+  /** `Folder/Sub/name`. */
+  path?: string;
+  /** EFFECTIVE visibility (folder inheritance included). */
+  access?: "private" | "workspace";
+  isSaved?: boolean;
+  draftRevision?: number;
+}
+
+/**
+ * Write a server-reported location onto a tab (inside an immer `set`). A
+ * draft has no place yet — its first save asks for one — so a server name
+ * never gives it a path (that would skip the first-save dialog).
+ */
+function applyConsoleLocation(t: ConsoleTab, loc: ConsoleLocationUpdate) {
+  if (loc.name && t.title !== loc.name) t.title = loc.name;
+  const saved = loc.isSaved ?? t.isSaved;
+  if (loc.path && saved && t.filePath !== loc.path) t.filePath = loc.path;
+  if (loc.access && t.access !== loc.access) t.access = loc.access;
+}
+
+/**
+ * Is this server copy's CONTENT still the one this tab is based on? For a
+ * saved console: the hash of its last explicit save (saved consoles do not
+ * autosave, so the server's copy only moves by a save, an agent edit — a
+ * diff review — or a draft write by someone else). For a draft: the last
+ * copy this tab autosaved or synced. True means the revision moved for
+ * something else (a rename, a move, a run), so unsaved local edits are
+ * still based on the current copy — no conflict, nothing to show.
+ */
+export const remoteEntryMatchesBaseline = (
+  entry: Pick<
+    ConsoleRevisionSyncEntry,
+    "id" | "content" | "connectionId" | "databaseId" | "databaseName"
+  >,
+): boolean => {
+  const tab = useConsoleStore.getState().tabs[entry.id];
+  if (!tab) return false;
+  const serverHash = computeConsoleStateHash(
+    entry.content,
+    entry.connectionId,
+    entry.databaseId,
+    entry.databaseName,
+  );
+  if (tab.isSaved) {
+    return !!tab.savedStateHash && tab.savedStateHash === serverHash;
+  }
+  return lastSavedContentHash.get(entry.id) === serverHash;
+};
 
 /**
  * Tabs are persisted per workspace: `console-store:<workspaceId>`. The active
@@ -809,6 +921,29 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            // The same banner — the same remote change — raised again
+            // without its cause (after a reload the in-memory "who wrote
+            // it" is gone and the revision sync raises it anew): keep the
+            // cause it had; "updated from a git push" must not turn into
+            // "updated elsewhere". A newer change has its own (or none).
+            const prev = tab.remoteUpdate;
+            if (
+              info &&
+              prev &&
+              prev.kind === info.kind &&
+              prev.draftRevision === info.draftRevision &&
+              !info.updatedBy &&
+              !info.via &&
+              !info.here
+            ) {
+              tab.remoteUpdate = {
+                ...info,
+                ...(prev.updatedBy ? { updatedBy: prev.updatedBy } : {}),
+                ...(prev.via ? { via: prev.via } : {}),
+                ...(prev.here ? { here: prev.here } : {}),
+              };
+              return;
+            }
             tab.remoteUpdate = info;
           }
         }),
@@ -839,7 +974,7 @@ export const useConsoleStore = create<ConsoleStore>()(
           const t = state.tabs[entry.id];
           if (!t) return;
           t.content = entry.content;
-          if (entry.name) t.title = entry.name;
+          applyConsoleLocation(t, entry);
           t.connectionId = entry.connectionId;
           t.databaseId = entry.databaseId;
           t.databaseName = entry.databaseName;
@@ -884,7 +1019,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const t = state.tabs[entry.id];
           if (!t) return;
-          if (entry.name) t.title = entry.name;
+          applyConsoleLocation(t, entry);
           t.connectionId = entry.connectionId;
           t.databaseId = entry.databaseId;
           t.databaseName = entry.databaseName;
@@ -905,6 +1040,37 @@ export const useConsoleStore = create<ConsoleStore>()(
         blockedDraftSaves.delete(entry.id);
         lastSavedContentHash.set(entry.id, newStateHash);
       },
+
+      fastForwardRemoteMetadata: entry => {
+        set(state => {
+          const t = state.tabs[entry.id];
+          if (!t) return;
+          if (typeof entry.isSaved === "boolean") t.isSaved = entry.isSaved;
+          applyConsoleLocation(t, entry);
+          t.draftRevision = entry.draftRevision;
+          if (typeof entry.version === "number") t.version = entry.version;
+          // The server copy is still this tab's baseline: no conflict.
+          t.remoteUpdate = null;
+          t.lastRun = entry.lastRun ?? t.lastRun;
+        });
+        // A draft autosave blocked on an older conflict may retry against
+        // the new base; content, connection and the saved hash stay mine.
+        blockedDraftSaves.delete(entry.id);
+      },
+
+      retargetConsoleTab: (id, location) =>
+        set(state => {
+          const t = state.tabs[id];
+          if (!t || (t.kind !== undefined && t.kind !== "console")) return;
+          applyConsoleLocation(t, location);
+          if (
+            typeof location.draftRevision === "number" &&
+            typeof t.draftRevision === "number" &&
+            location.draftRevision === t.draftRevision + 1
+          ) {
+            t.draftRevision = location.draftRevision;
+          }
+        }),
 
       beginAgentReview: entry => {
         const tab = get().tabs[entry.id];
@@ -947,11 +1113,10 @@ export const useConsoleStore = create<ConsoleStore>()(
         // results without waiting for the user to resolve the diff. The
         // Accept/Reject controls govern only the code shown in the diff;
         // content + draftRevision stay on the baseline until the user resolves.
-        const proposedName = entry.name;
         set(state => {
           const t = state.tabs[entry.id];
           if (!t) return;
-          if (proposedName && proposedName !== t.title) t.title = proposedName;
+          applyConsoleLocation(t, entry);
           if (entry.lastRun) t.lastRun = entry.lastRun;
         });
         // Push the proposal into the mounted Monaco editor as a diff. The
@@ -1063,16 +1228,21 @@ export const useConsoleStore = create<ConsoleStore>()(
       },
 
       applyRemoteConsoleUpdate: async (workspaceId, consoleId) => {
+        await get().reloadConsoleFromServer(workspaceId, consoleId);
+      },
+
+      reloadConsoleFromServer: async (workspaceId, consoleId) => {
         // Discarding local edits: a queued autosave would otherwise fire
         // later with the pre-discard content captured in its closure.
         cancelAutoSave(consoleId);
         const res = await get().fetchConsoleContent(workspaceId, consoleId);
-        if (!res?.success) return;
+        if (!res?.success) return false;
         set(state => {
           const t = state.tabs[consoleId];
           if (!t) return;
           t.remoteUpdate = null;
         });
+        blockedDraftSaves.delete(consoleId);
         lastSavedContentHash.set(
           consoleId,
           computeConsoleStateHash(
@@ -1082,11 +1252,15 @@ export const useConsoleStore = create<ConsoleStore>()(
             res.databaseName,
           ),
         );
+        // The mounted Monaco buffer follows (Editor → setRemoteContent): the
+        // store alone left a restored console showing its OLD text with
+        // Save disabled.
         window.dispatchEvent(
           new CustomEvent("console-remote-content", {
             detail: { consoleId, content: res.content || "" },
           }),
         );
+        return true;
       },
 
       resolveRemoteUpdateKeepMine: async (workspaceId, consoleId, content) => {
@@ -1401,6 +1575,9 @@ export const useConsoleStore = create<ConsoleStore>()(
       },
 
       fetchConsoleContent: async (workspaceId, consoleId, options) => {
+        // What the tab shows as the fetch starts: an edit made while it is
+        // in flight is kept (below), never replaced by the server's copy.
+        const startContent = get().tabs[consoleId]?.content;
         try {
           const res = unwrapBody(
             await api.GET("/api/workspaces/{workspaceId}/consoles/content", {
@@ -1417,8 +1594,27 @@ export const useConsoleStore = create<ConsoleStore>()(
             // path presence (those predate drafts).
             const isSaved = res.isSaved ?? !!res.path;
             const filePath = isSaved ? res.path || res.name : undefined;
+            // Typed into while the fetch was in flight: the edit stays, on
+            // the baseline it was typed on (content, connection, saved hash
+            // and revision base untouched); only where the console is and
+            // what it is (name, place, access, schedule…) are taken.
+            const current = get().tabs[consoleId];
+            const editedMeanwhile =
+              startContent !== undefined &&
+              current !== undefined &&
+              current.content !== startContent;
             set(state => {
               const tab = state.tabs[consoleId];
+              if (tab && editedMeanwhile) {
+                if (res.name) tab.title = res.name;
+                if (filePath) tab.filePath = filePath;
+                tab.access = res.access;
+                tab.owner_id = res.owner_id;
+                tab.readOnly = res.readOnly;
+                tab.schedule = res.schedule;
+                tab.scheduledRun = res.scheduledRun;
+                return;
+              }
               if (tab) {
                 tab.content = res.content || "";
                 tab.connectionId = res.connectionId;
@@ -1442,17 +1638,19 @@ export const useConsoleStore = create<ConsoleStore>()(
               }
             });
 
-            const savedStateHash =
-              res.savedStateHash ??
-              (isSaved && res.lastDraftOrigin === "agent"
-                ? undefined
-                : computeConsoleStateHash(
-                    res.content || "",
-                    res.connectionId,
-                    res.databaseId,
-                    res.databaseName,
-                  ));
-            get().updateSavedState(consoleId, isSaved, savedStateHash);
+            if (!editedMeanwhile) {
+              const savedStateHash =
+                res.savedStateHash ??
+                (isSaved && res.lastDraftOrigin === "agent"
+                  ? undefined
+                  : computeConsoleStateHash(
+                      res.content || "",
+                      res.connectionId,
+                      res.databaseId,
+                      res.databaseName,
+                    ));
+              get().updateSavedState(consoleId, isSaved, savedStateHash);
+            }
           }
 
           return res.success ? res : null;
@@ -1606,9 +1804,11 @@ export const useConsoleStore = create<ConsoleStore>()(
         resultsViewMode,
         comment,
         access,
+        options,
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
+          const keepPlace = options?.keepPlace === true;
           // Optimistic concurrency: send the version this tab was loaded
           // from so the server rejects (409) instead of overwriting a
           // concurrent save by someone else. The draft revision rides along
@@ -1624,7 +1824,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               credentials: "include",
               body: JSON.stringify({
                 content,
-                path: cleanPath,
+                path: keepPlace ? undefined : cleanPath,
                 connectionId: cloudSafeConnectionId(connectionId),
                 databaseName,
                 databaseId,
@@ -1632,9 +1832,11 @@ export const useConsoleStore = create<ConsoleStore>()(
                 chartSpec: chartSpec ?? null,
                 resultsViewMode,
                 comment: comment ?? "",
-                access,
+                access: keepPlace ? undefined : access,
                 isPrivate:
-                  access === undefined ? undefined : access === "private",
+                  keepPlace || access === undefined
+                    ? undefined
+                    : access === "private",
                 expectedVersion,
                 expectedDraftRevision,
                 // Realtime sync: identifies this tab so its own
@@ -1682,7 +1884,14 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.remoteUpdate = null;
               }
             });
-            return { success: true, path: cleanPath, version: newVersion };
+            // The place and name the server SAVED it under (a name may
+            // have been cleaned: "Q1: revenue" → "Q1 - revenue").
+            return {
+              success: true,
+              path: res.console?.path ?? cleanPath,
+              name: res.console?.name,
+              version: newVersion,
+            };
           }
           return {
             success: false,
@@ -2002,7 +2211,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         databaseId,
         databaseName,
       ) => {
-        if (!content?.trim() || content === "loading...") return;
+        if (!content?.trim() || content === CONSOLE_LOADING_CONTENT) return;
         if (!shouldAutoSave(get, consoleId)) return;
         // Conflict pending (banner shown): don't hammer the server with
         // doomed 409s. Edits stay local until the user resolves (Load

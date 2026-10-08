@@ -20,12 +20,14 @@ import {
 } from "@mui/material";
 import {
   Delete as DeleteIcon,
+  DriveFileRenameOutline as RenameIcon,
   EditOutlined as EditIcon,
   PushPinOutlined as PinIcon,
   Refresh as RefreshIcon,
   Save as SaveIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
+import { renameObject } from "../lib/object-links";
 import { useConfirm } from "./ConfirmDialog";
 
 interface SkillSummary {
@@ -37,6 +39,8 @@ interface SkillSummary {
   entities: string[];
   suppressed: boolean;
   pinned: boolean;
+  /** Previous names (a rename records them); `load_skill` still answers to them. */
+  aliases?: string[];
   definitionInvalid: { reason: string; path: string } | null;
 }
 
@@ -61,6 +65,38 @@ export function SkillsSection() {
   const [editPinned, setEditPinned] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Rename: the folder moves and the old name becomes an alias (one commit,
+  // api/src/rename) — the agent's load_skill("old") keeps working.
+  const [renaming, setRenaming] = useState<SkillSummary | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+
+  const handleRename = async () => {
+    if (!workspaceId || !renaming) return;
+    const next = renameValue.trim();
+    if (!next || next === renaming.name) {
+      setRenaming(null);
+      return;
+    }
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      // By id: a pending proposal can share a retired name with a live
+      // skill, and the name would rename the live one.
+      await renameObject(workspaceId, "skill", {
+        ref: renaming.id,
+        slug: next,
+      });
+      setRenaming(null);
+      await fetchSkills();
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : "Failed to rename");
+    } finally {
+      setRenameBusy(false);
+    }
+  };
 
   const fetchSkills = useCallback(async () => {
     if (!workspaceId) return;
@@ -369,6 +405,17 @@ export function SkillsSection() {
                         variant="outlined"
                       />
                     )}
+                    {skill.aliases && skill.aliases.length > 0 && (
+                      <Tooltip title="Previous names — still resolve to this skill">
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontFamily: "monospace" }}
+                        >
+                          was {skill.aliases.join(", ")}
+                        </Typography>
+                      </Tooltip>
+                    )}
                   </Stack>
                   <Typography
                     variant="body2"
@@ -459,6 +506,20 @@ export function SkillsSection() {
                       <EditIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
+                  <Tooltip title="Rename — the old name keeps working">
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        setRenaming(skill);
+                        setRenameValue(skill.name);
+                        setRenameError(null);
+                      }}
+                      aria-label="rename skill"
+                      disabled={!!skill.definitionInvalid}
+                    >
+                      <RenameIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
                   <Tooltip title="Delete current skill file">
                     <IconButton
                       size="small"
@@ -474,6 +535,49 @@ export function SkillsSection() {
           ))}
         </Stack>
       )}
+
+      <Dialog
+        open={renaming !== null}
+        onClose={() => !renameBusy && setRenaming(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Rename skill</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Moves <code>skills/{renaming?.name}/</code> and records the old name
+            as an alias, so{" "}
+            <code>load_skill(&quot;{renaming?.name}&quot;)</code> and old links
+            keep resolving.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="New name (snake_case)"
+            value={renameValue}
+            onChange={e => setRenameValue(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleRename();
+            }}
+            error={!!renameError}
+            helperText={renameError ?? undefined}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenaming(null)} disabled={renameBusy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleRename()}
+            disabled={renameBusy || !renameValue.trim()}
+          >
+            Rename
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={editing !== null || editLoading}

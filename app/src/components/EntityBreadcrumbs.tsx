@@ -1,11 +1,16 @@
 import React from "react";
 import { Box } from "@mui/material";
 import { ChevronRight as BreadcrumbChevronIcon } from "lucide-react";
-import { useConsoleStore } from "../store/consoleStore";
+import {
+  CONSOLE_LOADING_CONTENT,
+  useConsoleStore,
+} from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useAppsStore } from "../store/appsStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDbtStore } from "../store/dbtStore";
+import { useFlowStore } from "../store/flowStore";
+import { getFlowTitle } from "../flow-runtime/shell";
 import { useUIStore } from "../store/uiStore";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
 import { tabRevealTarget } from "../lib/explorer-reveal";
@@ -13,6 +18,10 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
 import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
+import { consolePlacement } from "../lib/console-relocation";
+import { loadErrorTitle } from "../lib/entity-labels";
+import type { LoadError } from "../api/result";
+import { useAuth } from "../contexts/auth-context";
 
 interface BreadcrumbSegment {
   label: string;
@@ -22,11 +31,15 @@ interface BreadcrumbSegment {
 
 interface EntityContext {
   workspaceName: string;
+  /** The signed-in user (a console shared with them is not theirs). */
+  currentUserId?: string;
   connectionName?: string;
   dashboardTitle?: string;
   dashboardDataSourceName?: string;
   appTitle?: string;
   dbtProjectName?: string;
+  /** The listed flow's name — current even when the tab's title lags. */
+  flowTitle?: string;
 }
 
 /**
@@ -55,20 +68,40 @@ function segmentsForTab(
   const kind: NonNullable<TabKind> = tab.kind ?? "console";
   switch (kind) {
     case "console": {
-      if (!tab.filePath) {
+      // A console that failed to load (a dead /c/:id link) is not an
+      // unsaved one: say what the tab's body says.
+      const loadError = tab.metadata?.loadError as LoadError | undefined;
+      if (loadError) {
         return [
           root,
           { label: "Consoles" },
-          { label: "Unsaved console", italic: true },
+          { label: loadErrorTitle(loadError, "console"), italic: true },
         ];
       }
-      const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
+      if (!tab.filePath) {
+        // A console opened before it loaded is not an unsaved one.
+        const loading =
+          tab.isSaved &&
+          !tab.savedStateHash &&
+          tab.content === CONSOLE_LOADING_CONTENT;
+        return [
+          root,
+          { label: "Consoles" },
+          { label: loading ? "Loading…" : "Unsaved console", italic: true },
+        ];
+      }
       // Single source of truth: the leaf is the live display name (tab.title);
       // the folder trail is derived from the full path by stripping that leaf
       // (robust to a leaf name that itself contains slashes — legacy data).
+      // Section and folders follow the explorer's placement rule.
       const leaf = tab.title || consoleLeafName(tab.filePath);
-      const folderParts = consoleFolderTrail(tab.filePath, leaf);
-      return plain(["Consoles", group, ...folderParts, leaf]);
+      const { section, folders } = consolePlacement({
+        access: tab.access,
+        ownerId: tab.owner_id,
+        currentUserId: ctx.currentUserId,
+        folders: consoleFolderTrail(tab.filePath, leaf),
+      });
+      return plain(["Consoles", section, ...folders, leaf]);
     }
     case "table-data":
       return plain([
@@ -112,7 +145,7 @@ function segmentsForTab(
     case "connectors":
       return plain(["Sources", tab.title || "New source connection"]);
     case "flow-editor":
-      return plain(["Flows", tab.title || "New flow"]);
+      return plain(["Flows", ctx.flowTitle || tab.title || "New flow"]);
     case "settings":
       return plain([
         "Settings",
@@ -167,6 +200,7 @@ interface EntityBreadcrumbsProps {
 function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
   const tab = useConsoleStore(s => s.tabs[tabId]);
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
 
   const setLeftPane = useUIStore(s => s.setLeftPane);
   const openLeftPane = useUIStore(s => s.openLeftPane);
@@ -211,6 +245,17 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
       : undefined,
   );
 
+  // A flow keeps its id through every rename; its name is the list's.
+  const flowId =
+    tab?.kind === "flow-editor"
+      ? (tab.metadata?.flowId as string | undefined)
+      : undefined;
+  const flowTitle = useFlowStore(s => {
+    if (!flowId || !currentWorkspace) return undefined;
+    const flow = s.flows[currentWorkspace.id]?.find(f => f._id === flowId);
+    return flow ? getFlowTitle(flow) : undefined;
+  });
+
   const dashboardId = tab?.metadata?.dashboardId as string | undefined;
   const dataSourceId = tab?.metadata?.dataSourceId as string | undefined;
   const dashboardTitle = useDashboardStore(s =>
@@ -228,11 +273,13 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
 
   const segments = segmentsForTab(tab, {
     workspaceName: currentWorkspace?.name || "Workspace",
+    currentUserId: user?.id,
     connectionName,
     dashboardTitle,
     dashboardDataSourceName,
     appTitle,
     dbtProjectName,
+    flowTitle,
   });
 
   return (

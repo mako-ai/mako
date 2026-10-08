@@ -41,9 +41,10 @@ import {
   getCheckoutBranch,
   listWorkingFiles,
   readWorkingFile,
-  renameWorkingFile,
   writeWorkingFile,
 } from "../dbt/dbt-working-tree.service";
+import { renameDbtFile } from "../rename/dbt-file";
+import { RenameError } from "../rename/types";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
@@ -59,6 +60,7 @@ import {
 import { buildStarterScaffold } from "../dbt/scaffold";
 import {
   commitDbtEnvironmentsFile,
+  DbtConfigConflictError,
   commitDbtJobFile,
   deleteDbtJobFile,
   ensureEnvironmentsDerivedCache,
@@ -69,6 +71,9 @@ import {
   reserveJobSlug,
   resolveLiveJobRow,
 } from "../dbt/dbt-config.service";
+import { retireObjectId } from "../rename/retired-ids";
+import { displayNameError, normalizeDisplayName } from "../rename/title-rules";
+import { JOB_NAME_MAX_LENGTH } from "../rename/dbt-job-rename";
 import {
   DBT_PREVIEW_DEFAULT_LIMIT,
   DBT_PREVIEW_MAX_LIMIT,
@@ -195,6 +200,14 @@ function serverError(
   }
   if (error instanceof DbtProtectedEnvironmentError) {
     return c.json({ success: false, error: error.message }, 400);
+  }
+  if (error instanceof DbtConfigConflictError) {
+    // The repo is fine; this edit is stale (a rename or another edit landed
+    // first). Reload and retry — not an upstream failure.
+    return c.json(
+      { success: false, code: "definition_conflict", error: error.message },
+      409,
+    );
   }
   logger.error(fallback, { error });
   return c.json(
@@ -817,41 +830,40 @@ dbtRoutes.post(
         from?: unknown;
         to?: unknown;
         clientId?: unknown;
+        updateRefs?: unknown;
       };
       const from = typeof body.from === "string" ? body.from : "";
       const to = typeof body.to === "string" ? body.to : "";
-      if (!isSafeDbtPath(from) || !isSafeDbtPath(to)) {
-        return badRequest(c, "Invalid from/to path");
+      if (!from.trim() || !to.trim()) {
+        return badRequest(
+          c,
+          "Give the file's current path (from) and its new path (to).",
+        );
       }
-      const userId = getUserId(c);
-      const renameError = await renameWorkingFile(project, userId, from, to);
-      if (renameError === "File not found") {
-        return c.json({ success: false, error: renameError }, 404);
-      }
-      if (renameError) return badRequest(c, renameError);
-      // The rename is one commit (delete + add) — poke both paths so open
-      // windows move the file.
-      const clientId =
-        typeof body.clientId === "string" ? body.clientId : undefined;
-      publishDbtEvent(c, {
-        type: "dbt.file.updated",
-        projectId: project._id.toString(),
-        path: from,
-        deleted: true,
-        updatedBy: userId,
-        clientId,
-        origin: "save",
-      });
-      publishDbtEvent(c, {
-        type: "dbt.file.updated",
-        projectId: project._id.toString(),
-        path: to,
-        updatedBy: userId,
-        clientId,
-        origin: "save",
-      });
-      return c.json({ success: true });
+      // The paths are validated — and refusals explained in plain words —
+      // by the one rename service (api/src/rename/dbt-file.ts): one commit
+      // carrying the move and, for a model, the ref()/selector rewrites;
+      // it pokes open windows itself (the old tab retargets to `to`).
+      const result = await renameDbtFile(
+        {
+          workspaceId: project.workspaceId.toString(),
+          userId: c.get("user")?.id,
+          role: c.get("memberRole"),
+        },
+        {
+          projectId: project._id.toString(),
+          from,
+          to,
+          updateRefs: body.updateRefs !== false,
+          clientId:
+            typeof body.clientId === "string" ? body.clientId : undefined,
+        },
+      );
+      return c.json({ success: true, result });
     } catch (error) {
+      if (error instanceof RenameError) {
+        return c.json({ success: false, error: error.message }, error.status);
+      }
       return serverError(c, error, "Failed to rename dbt file");
     }
   },
@@ -862,7 +874,9 @@ dbtRoutes.post(
 // ---------------------------------------------------------------------------
 
 const jobSchema = z.object({
-  name: z.string().min(1).max(128),
+  // Empty and too long are the name rule's (rename/title-rules.ts), with
+  // the same message as a rename; this bound only stops absurd bodies.
+  name: z.string().max(100_000),
   environment: z.string().min(1),
   commands: z.array(z.string().min(1)).min(1).max(10),
   schedule: z
@@ -947,6 +961,10 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     if (!parsed.success) {
       return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid job");
     }
+    // The rename rules for a name (rename/title-rules.ts).
+    parsed.data.name = normalizeDisplayName(parsed.data.name);
+    const nameProblem = displayNameError(parsed.data.name, JOB_NAME_MAX_LENGTH);
+    if (nameProblem) return badRequest(c, nameProblem);
     const validationError = validateJobBody(project, parsed.data);
     if (validationError) return badRequest(c, validationError);
 
@@ -1000,6 +1018,15 @@ dbtRoutes.patch(
       const parsed = jobSchema.partial().safeParse(await c.req.json());
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid job");
+      }
+      if (parsed.data.name !== undefined) {
+        // The rename rules for a name (rename/title-rules.ts).
+        parsed.data.name = normalizeDisplayName(parsed.data.name);
+        const nameProblem = displayNameError(
+          parsed.data.name,
+          JOB_NAME_MAX_LENGTH,
+        );
+        if (nameProblem) return badRequest(c, nameProblem);
       }
       const merged = {
         name: parsed.data.name ?? job.name,
@@ -1057,7 +1084,13 @@ dbtRoutes.delete(
         );
       }
       const doomed = resolved.row;
-      await deleteDbtJobFile(project, doomed.slug, getUserId(c));
+      await deleteDbtJobFile(project, doomed.slug, getUserId(c), doomed._id);
+      await retireObjectId(
+        project.workspaceId,
+        "dbt_job",
+        doomed._id,
+        doomed.slug,
+      );
       await DbtJob.deleteOne({ _id: doomed._id });
       publishDbtEvent(c, {
         type: "dbt.job.updated",

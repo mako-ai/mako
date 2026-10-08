@@ -18,6 +18,13 @@ import {
   type ConsoleEntry,
 } from "../store/consoleTreeStore";
 import { useWorkspace } from "../contexts/workspace-context";
+import {
+  consoleNameAsSaved,
+  consoleNameProblem,
+  consoleNameSavedAsNotice,
+  consoleNameTakenBy,
+  consoleNameTakenMessage,
+} from "../lib/console-relocation";
 
 type DialogMode = "save" | "move" | "new-folder";
 
@@ -50,6 +57,30 @@ interface FileExplorerDialogProps {
   /** Pre-select this folder on open (e.g. the item's current parent) */
   initialFolderId?: string | null;
   initialSection?: "my" | "workspace";
+
+  /** Dialog title (defaults per mode). */
+  title?: string;
+  /** Confirm button label (defaults per mode). */
+  confirmLabel?: string;
+  /**
+   * The item being moved/renamed: excluded from the "name already taken
+   * here" check (a rename in place is not a clash with itself).
+   */
+  selfId?: string;
+  /**
+   * The item's place cannot change (a console shared with this person):
+   * the folder picker is replaced by its location and this reason; only
+   * the name can be edited.
+   */
+  locationLockedReason?: string | null;
+  /** Where the item is, shown when its location is locked. */
+  locationLabel?: string;
+  /**
+   * Only folders of this section may be picked (changing who sees a
+   * console is its owner's or an admin's call); the reason is shown.
+   */
+  lockedSection?: "my" | "workspace" | null;
+  sectionLockedReason?: string | null;
 }
 
 export default function FileExplorerDialog({
@@ -65,6 +96,13 @@ export default function FileExplorerDialog({
   initialFolderId,
   initialSection,
   isDirectory = false,
+  title,
+  confirmLabel: confirmLabelOverride,
+  selfId,
+  locationLockedReason,
+  locationLabel,
+  lockedSection,
+  sectionLockedReason,
 }: FileExplorerDialogProps) {
   const { currentWorkspace } = useWorkspace();
   const myConsolesMap = useConsoleTreeStore(state => state.myItems);
@@ -78,7 +116,9 @@ export default function FileExplorerDialog({
   const [selectedSection, setSelectedSection] = useState<"my" | "workspace">(
     "my",
   );
-  const [overwriteConfirm, setOverwriteConfirm] = useState(false);
+  // A click in a section this person may not move the item into: the
+  // selection stays, the reason is said (once per click).
+  const [sectionNotice, setSectionNotice] = useState(false);
 
   const treeRef = useRef<ConsoleTreeRef | null>(null);
 
@@ -90,7 +130,7 @@ export default function FileExplorerDialog({
       setFolderName("");
       setSelectedFolderId(initialFolderId ?? null);
       setSelectedSection(initialSection ?? "my");
-      setOverwriteConfirm(false);
+      setSectionNotice(false);
     }
   }, [open, effectiveName, initialFolderId, initialSection]);
 
@@ -98,6 +138,11 @@ export default function FileExplorerDialog({
     folderId: string | null,
     section: "my" | "workspace",
   ) => {
+    if (lockedSection && section !== lockedSection) {
+      setSectionNotice(true);
+      return;
+    }
+    setSectionNotice(false);
     setSelectedFolderId(folderId);
     setSelectedSection(section);
   };
@@ -105,76 +150,77 @@ export default function FileExplorerDialog({
   const findExistingConsole = useCallback(
     (name: string, folderId: string | null): ConsoleEntry | null => {
       if (!currentWorkspace) return null;
-      const myConsoles = myConsolesMap[currentWorkspace.id] || [];
-      const workspaceConsoles =
-        sharedWithWorkspaceMap[currentWorkspace.id] || [];
-
-      const searchInFolder = (
-        nodes: ConsoleEntry[],
-        targetFolderId: string | null,
-      ): ConsoleEntry | null => {
-        if (!targetFolderId) {
-          return (
-            nodes.find(
-              n =>
-                !n.isDirectory && n.name.toLowerCase() === name.toLowerCase(),
-            ) ?? null
-          );
-        }
-        for (const node of nodes) {
-          if (node.id === targetFolderId && node.isDirectory && node.children) {
-            return (
-              node.children.find(
-                n =>
-                  !n.isDirectory && n.name.toLowerCase() === name.toLowerCase(),
-              ) ?? null
-            );
-          }
-          if (node.isDirectory && node.children) {
-            const found = searchInFolder(node.children, targetFolderId);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-
-      return (
-        searchInFolder(myConsoles, folderId) ??
-        searchInFolder(workspaceConsoles, folderId)
+      return consoleNameTakenBy(
+        {
+          my: myConsolesMap[currentWorkspace.id] || [],
+          workspace: sharedWithWorkspaceMap[currentWorkspace.id] || [],
+        },
+        selectedSection,
+        folderId,
+        name,
+        selfId,
       );
     },
-    [currentWorkspace, myConsolesMap, sharedWithWorkspaceMap],
+    [
+      currentWorkspace,
+      myConsolesMap,
+      sharedWithWorkspaceMap,
+      selectedSection,
+      selfId,
+    ],
   );
+
+  const showNameField = mode === "save" || (mode === "move" && !isDirectory);
+  const trimmedName = consoleName.trim();
+  // Why the typed name cannot be used: a "/" (the folder has its own
+  // picker), or a console of that name already in the chosen folder. A
+  // clash is REFUSED — there is no "Replace": overwriting another console
+  // by renaming onto it destroyed it, and the server refuses it anyway.
+  // A locked location may be a folder this person cannot see (the
+  // owner's): the tree cannot judge a clash there — the server does.
+  // The name as the server will SAVE it: characters no file name can carry
+  // get a visible stand-in ("Q1: revenue" → "Q1 - revenue", "A/B test" →
+  // "A-B test") — said under the field, judged and sent as such.
+  const savedName = trimmedName ? consoleNameAsSaved(trimmedName) : "";
+  const clash =
+    showNameField && savedName && !locationLockedReason
+      ? findExistingConsole(savedName, selectedFolderId)
+      : null;
+  const nameProblem = !showNameField
+    ? null
+    : mode === "move" && !trimmedName
+      ? null
+      : (consoleNameProblem(consoleName) ??
+        (clash ? consoleNameTakenMessage(savedName, clash.name) : null));
+  const nameNotice =
+    showNameField && !nameProblem && trimmedName
+      ? consoleNameSavedAsNotice(trimmedName)
+      : null;
+  const folderProblem =
+    mode === "new-folder" && folderName.trim()
+      ? consoleNameProblem(folderName, "folder")
+      : null;
+  const folderNotice =
+    mode === "new-folder" && !folderProblem && folderName.trim()
+      ? consoleNameSavedAsNotice(folderName)
+      : null;
 
   const handleConfirm = () => {
     if (mode === "save") {
-      if (!consoleName.trim()) return;
-      const existing = findExistingConsole(
-        consoleName.trim(),
-        selectedFolderId,
-      );
-      if (existing && !overwriteConfirm) {
-        setOverwriteConfirm(true);
-        return;
-      }
-      setOverwriteConfirm(false);
-      onSave?.(consoleName.trim(), selectedFolderId, selectedSection);
+      if (!trimmedName || nameProblem) return;
+      onSave?.(savedName, selectedFolderId, selectedSection);
     } else if (mode === "move") {
-      const newName = consoleName.trim();
-      const nameChanged = newName && newName !== itemName;
+      if (nameProblem) return;
+      const nameChanged = trimmedName && savedName !== itemName;
       onMove?.(
         selectedFolderId,
-        nameChanged ? newName : undefined,
+        nameChanged ? savedName : undefined,
         selectedSection,
       );
     } else if (mode === "new-folder") {
-      if (!folderName.trim()) return;
-      onNewFolder?.(selectedFolderId, folderName.trim());
+      if (!folderName.trim() || folderProblem) return;
+      onNewFolder?.(selectedFolderId, consoleNameAsSaved(folderName));
     }
-  };
-
-  const handleCancelOverwrite = () => {
-    setOverwriteConfirm(false);
   };
 
   const handleNewFolder = () => {
@@ -183,42 +229,40 @@ export default function FileExplorerDialog({
   };
 
   const handleFileClick = (node: ConsoleEntry) => {
-    if (mode === "save" || mode === "move") {
-      setConsoleName(node.name);
-    }
+    // Save: picking a console offers its name. Rename / Move: a click in
+    // the tree is never a new name — a misclick on another console renamed
+    // the one being moved to that console's name.
+    if (mode === "save") setConsoleName(node.name);
   };
 
   const handleNameChange = (value: string) => {
     setConsoleName(value);
-    if (overwriteConfirm) setOverwriteConfirm(false);
   };
 
-  const showNameField = mode === "save" || (mode === "move" && !isDirectory);
-
   const dialogTitle =
-    mode === "save"
+    title ??
+    (mode === "save"
       ? "Save Console"
       : mode === "move"
         ? `Move "${itemName}"`
-        : "Create New Folder";
+        : "Create New Folder");
 
   const confirmLabel =
-    mode === "save"
-      ? overwriteConfirm
-        ? "Replace"
-        : isSaving
-          ? "Saving..."
-          : "Save"
+    confirmLabelOverride ??
+    (mode === "save"
+      ? isSaving
+        ? "Saving..."
+        : "Save"
       : mode === "move"
         ? "Move Here"
-        : "Create Here";
+        : "Create Here");
 
   const confirmDisabled =
     mode === "save"
-      ? !consoleName.trim() || isSaving
+      ? !trimmedName || !!nameProblem || isSaving
       : mode === "new-folder"
-        ? !folderName.trim()
-        : false;
+        ? !folderName.trim() || !!folderProblem
+        : !!nameProblem;
 
   return (
     <Dialog
@@ -234,11 +278,13 @@ export default function FileExplorerDialog({
         <Box sx={{ flex: 1, minWidth: 0 }} className="app-truncate">
           {dialogTitle}
         </Box>
-        <Tooltip title="New Folder">
-          <IconButton size="small" onClick={handleNewFolder}>
-            <CreateFolderIcon size={18} strokeWidth={1.5} />
-          </IconButton>
-        </Tooltip>
+        {!locationLockedReason && (
+          <Tooltip title="New Folder">
+            <IconButton size="small" onClick={handleNewFolder}>
+              <CreateFolderIcon size={18} strokeWidth={1.5} />
+            </IconButton>
+          </Tooltip>
+        )}
       </DialogTitle>
       <DialogContent
         sx={{
@@ -261,8 +307,12 @@ export default function FileExplorerDialog({
             value={consoleName}
             onChange={e => handleNameChange(e.target.value)}
             onKeyDown={e => {
-              if (e.key === "Enter" && consoleName.trim()) handleConfirm();
+              if (e.key === "Enter" && trimmedName && !confirmDisabled) {
+                handleConfirm();
+              }
             }}
+            error={!!nameProblem}
+            helperText={nameProblem ?? nameNotice ?? undefined}
             autoComplete="off"
             spellCheck={false}
           />
@@ -279,59 +329,74 @@ export default function FileExplorerDialog({
             onKeyDown={e => {
               if (e.key === "Enter" && folderName.trim()) handleConfirm();
             }}
+            error={!!folderProblem}
+            helperText={folderProblem ?? folderNotice ?? undefined}
             autoComplete="off"
             spellCheck={false}
           />
         )}
 
-        <Box
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            border: 1,
-            borderColor: "divider",
-            borderRadius: 1,
-            overflow: "auto",
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          <ConsoleTree
-            ref={treeRef}
-            mode="picker"
-            showFiles
-            enableDragDrop
-            enableRename
-            enableDelete
-            enableDuplicate={false}
-            enableInfo={false}
-            enableMove={false}
-            onLocationChange={handleLocationChange}
-            onFileClick={handleFileClick}
-            selectedLocationId={selectedFolderId}
-            selectedSectionKey={selectedSection}
-            initialFolderId={initialFolderId}
-          />
-        </Box>
+        {locationLockedReason ? (
+          <Box sx={{ py: 1 }}>
+            {locationLabel && (
+              <Typography variant="body2" sx={{ mb: 0.5 }}>
+                Location: {locationLabel}
+              </Typography>
+            )}
+            <Typography variant="body2" color="text.secondary">
+              {locationLockedReason}
+            </Typography>
+          </Box>
+        ) : (
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+              overflow: "auto",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <ConsoleTree
+              ref={treeRef}
+              mode="picker"
+              showFiles
+              enableDragDrop
+              enableRename
+              enableDelete
+              enableDuplicate={false}
+              enableInfo={false}
+              enableMove={false}
+              onLocationChange={handleLocationChange}
+              onFileClick={handleFileClick}
+              selectedLocationId={selectedFolderId}
+              selectedSectionKey={selectedSection}
+              initialFolderId={initialFolderId}
+              initialSection={initialSection}
+            />
+          </Box>
+        )}
 
-        {overwriteConfirm && (
-          <Typography variant="body2" color="warning.main" sx={{ mt: 0.5 }}>
-            A console named &ldquo;{consoleName.trim()}&rdquo; already exists
-            here. Click Replace to overwrite it.
+        {!locationLockedReason && sectionLockedReason && (
+          <Typography
+            variant="caption"
+            color={sectionNotice ? "warning.main" : "text.secondary"}
+            sx={{ mt: 0.5 }}
+          >
+            {sectionLockedReason}
           </Typography>
         )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        {overwriteConfirm && (
-          <Button onClick={handleCancelOverwrite}>Back</Button>
-        )}
         <Button
           onClick={handleConfirm}
           disabled={confirmDisabled}
           variant="contained"
           disableElevation
-          color={overwriteConfirm ? "warning" : "primary"}
         >
           {confirmLabel}
         </Button>

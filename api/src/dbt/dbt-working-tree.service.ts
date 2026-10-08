@@ -33,6 +33,8 @@ import {
   repoExists,
   resolveCommit,
   updateRefCas,
+  type IndexEntry,
+  type IndexMode,
 } from "../apps/repository.service";
 
 /** Repo-relative root of the dbt project inside the workspace repo. */
@@ -158,11 +160,23 @@ export async function readWorkingFile(
  * Commit a mutation to the dbt tree on the actor's session branch and queue
  * the mirror push. The one write path for saves, deletes and renames.
  */
+export interface DbtMutation {
+  writes?: Record<string, string>;
+  deletes?: string[];
+  /** Blobs moved as they are (oid + mode): an executable or a symlink. */
+  entries?: IndexEntry[];
+  /** Mode for a written path (default 100644). */
+  modes?: Record<string, IndexMode>;
+}
+
 async function commitDbtMutation(
   project: IDbtProject,
   userId: string,
-  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  mutation: DbtMutation,
   message: string,
+  expectBlobs?: Record<string, string | null>,
+  /** The `dbt/` tree oid the mutation was decided from (`null` = absent). */
+  expectTree?: string | null,
 ): Promise<WriteWorkingFileResult> {
   const workspaceId = project.workspaceId.toString();
   // Production: the workspace's own repo is the only durable store (§17).
@@ -191,11 +205,75 @@ async function commitDbtMutation(
         Object.entries(mutation.writes ?? {}).map(([p, c]) => [repoPath(p), c]),
       ),
       deletes: (mutation.deletes ?? []).map(repoPath),
+      entries: (mutation.entries ?? []).map(e => ({
+        ...e,
+        path: repoPath(e.path),
+      })),
+      modes: Object.fromEntries(
+        Object.entries(mutation.modes ?? {}).map(([p, m]) => [repoPath(p), m]),
+      ),
     },
-    { message, author },
+    {
+      message,
+      author,
+      expectBlobs:
+        expectBlobs || expectTree !== undefined
+          ? {
+              ...Object.fromEntries(
+                Object.entries(expectBlobs ?? {}).map(([p, oid]) => [
+                  repoPath(p),
+                  oid,
+                ]),
+              ),
+              // Checked last: a named file that changed is the clearer refusal.
+              ...(expectTree !== undefined ? { [DBT_ROOT]: expectTree } : {}),
+            }
+          : undefined,
+    },
   );
   if (!result.unchanged) queueMirrorPush(workspaceId);
   return { commitOid: result.unchanged ? undefined : result.commitOid };
+}
+
+/**
+ * Commit writes AND deletes in one commit (a rename with its ref rewrites —
+ * api/src/rename/dbt-file.ts). Paths are project-relative like every other
+ * entry point here. `expectBlobs` (project path → blob oid read, `null` =
+ * must be absent) makes the commit refuse with `BlobPreconditionError` when
+ * a file changed after it was read — a rewrite decided from stale content
+ * must never overwrite a save that landed in between.
+ */
+export async function commitDbtChanges(
+  project: IDbtProject,
+  userId: string,
+  mutation: DbtMutation,
+  message: string,
+  expectBlobs?: Record<string, string | null>,
+  options: {
+    /**
+     * Pin the WHOLE `dbt/` tree to the oid the caller read it at: any
+     * change anywhere in the project (a save, an added or deleted file)
+     * refuses the commit with `BlobPreconditionError` (path `dbt`). For a
+     * mutation decided from every file of the project — a rename that
+     * rewrote refs after reading them all — this is "CAS on every file it
+     * read" in one check, however many files there are.
+     */
+    expectTree?: string | null;
+  } = {},
+): Promise<WriteWorkingFileResult> {
+  for (const path of Object.keys(mutation.writes ?? {})) {
+    assertSafeDbtPath(path);
+  }
+  for (const path of mutation.deletes ?? []) assertSafeDbtPath(path);
+  for (const entry of mutation.entries ?? []) assertSafeDbtPath(entry.path);
+  return commitDbtMutation(
+    project,
+    userId,
+    mutation,
+    message,
+    expectBlobs,
+    options.expectTree,
+  );
 }
 
 /** Commit a batch of files in one commit (scaffold, imports). */

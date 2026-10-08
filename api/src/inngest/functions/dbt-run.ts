@@ -619,16 +619,48 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           failures >= DBT_AUTO_DISABLE_AFTER_FAILURES
         ) {
           try {
-            const { commitDbtJobFile } = await import(
+            const { commitDbtJobFile, DbtConfigConflictError } = await import(
               "../../dbt/dbt-config.service"
             );
+            const message = `dbt: auto-disable job "${updatedJob.name}" after ${failures} failures`;
             updatedJob.enabled = false;
-            await commitDbtJobFile(
-              { workspaceId: updatedJob.workspaceId },
-              updatedJob,
-              undefined,
-              `dbt: auto-disable job "${updatedJob.name}" after ${failures} failures`,
-            );
+            try {
+              await commitDbtJobFile(
+                { workspaceId: updatedJob.workspaceId },
+                updatedJob,
+                undefined,
+                message,
+              );
+            } catch (error) {
+              // The file moved under us (a rename or an edit landed first):
+              // the row in hand is stale, not the intent. Re-read once and
+              // retry; a second refusal is worth an error, because a job
+              // that keeps failing keeps running until this lands.
+              if (!(error instanceof DbtConfigConflictError)) throw error;
+              const reread = await DbtJob.findById(updatedJob._id);
+              if (!reread) throw error;
+              reread.enabled = false;
+              try {
+                await commitDbtJobFile(
+                  { workspaceId: reread.workspaceId },
+                  reread,
+                  undefined,
+                  message,
+                );
+              } catch (retryError) {
+                logger.error(
+                  "Auto-disable write-through refused twice; the job stays enabled",
+                  {
+                    jobId: updatedJob._id.toString(),
+                    error:
+                      retryError instanceof Error
+                        ? retryError.message
+                        : String(retryError),
+                  },
+                );
+                throw retryError;
+              }
+            }
             await DbtJob.updateOne(
               { _id: updatedJob._id },
               {

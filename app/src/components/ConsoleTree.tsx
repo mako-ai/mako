@@ -142,7 +142,11 @@ function ConsoleTreeInner(
     currentWorkspace?.id,
     { autoFetch: false },
   );
-  const { myItems: myConsoles, workspaceItems: sharedWithWorkspace } = tree;
+  const {
+    myItems: myConsoles,
+    workspaceItems: sharedWithWorkspace,
+    sharedItems: sharedWithMe,
+  } = tree;
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
 
   const activeTabId = useConsoleStore(state => state.activeTabId);
@@ -292,6 +296,9 @@ function ConsoleTreeInner(
 
   // Not `tree.sections`: console sections carry no header icon and are only
   // drop targets when drag-and-drop is on (the picker turns it off).
+  // "Shared with me" — another member's private console shared with this
+  // person — is where the breadcrumb says it is (consolePlacement); it is
+  // no place to save, move or create in, so the picker leaves it out.
   const sections = [
     {
       key: "my",
@@ -307,6 +314,21 @@ function ConsoleTreeInner(
       droppableId: enableDragDrop ? "__section_workspace" : undefined,
       defaultAccess: "workspace" as const,
     },
+    ...(mode === "sidebar" && sharedWithMe.length > 0
+      ? [
+          {
+            key: "shared",
+            label: "Shared with me",
+            nodes: sharedWithMe,
+            noNewFolder: true,
+            // Another member's console, in a folder of theirs: renamed in
+            // place, never moved from here — an admin's "Move to…" put it
+            // at its owner's root, unasked (who sees it is the Share
+            // dialog's call).
+            noMoveOut: true,
+          },
+        ]
+      : []),
   ] satisfies ResourceTreeSection[];
 
   const resourceTreeRef = useRef<ResourceTreeRef | null>(null);
@@ -347,6 +369,19 @@ function ConsoleTreeInner(
   );
   const handleCanManageItem = useCallback(
     (node: ResourceTreeNode) => canManage(node as ConsoleEntry),
+    [canManage],
+  );
+  // Rename follows the server's write rule (the listing's `canWrite`): a
+  // console shared with this person as an editor is theirs to rename in
+  // place (PATCH /rename keeps its folder and who sees it) — moving it or
+  // deleting it stays the owner's or an admin's. Folders keep the manage
+  // rule.
+  const handleCanRenameItem = useCallback(
+    (node: ResourceTreeNode) => {
+      const entry = node as ConsoleEntry;
+      if (canManage(entry)) return true;
+      return !entry.isDirectory && entry.canWrite === true;
+    },
     [canManage],
   );
   const getResourceItemIcon = useCallback(
@@ -396,6 +431,7 @@ function ConsoleTreeInner(
       onExpandFolder={expandFolder}
       getFolderExpansionKey={getResourceFolderExpansionKey}
       canManageItem={handleCanManageItem}
+      canRenameItem={handleCanRenameItem}
     />
   );
 }

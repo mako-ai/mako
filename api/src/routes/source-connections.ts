@@ -17,7 +17,15 @@ import {
 import { SourceConnection } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import {
+  isWorkspaceConnectorType,
+  slugFromType,
+} from "../connectors/workspace/SandboxedConnector";
+import {
+  ConnectorBindingError,
+  findConnectorDefinitionRow,
+  resolveConnectionBinding,
+} from "../connectors/workspace/resolver";
 import {
   PROBE_DEFAULT_LIMIT,
   PROBE_MAX_LIMIT,
@@ -25,7 +33,10 @@ import {
   probeConnection,
   runConnectionCheck,
 } from "../connectors/probe.service";
-import { connectorTypeExists } from "../connectors/workspace/catalog";
+import {
+  canonicalConnectorType,
+  connectorTypeExists,
+} from "../connectors/workspace/catalog";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -271,22 +282,116 @@ async function publicSourceConnection(
 ): Promise<Record<string, unknown>> {
   const record = asSourceRecord(doc);
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
+  // Set when the connection's binding does not resolve: the edit form shows
+  // the message and, for a connector that is gone, re-sends `type` on save
+  // so the save re-binds (PUT below).
+  let connectorBinding:
+    | { ok: false; problem: ConnectorBindingError["problem"]; message: string }
+    | undefined;
   try {
     schema = await syncConnectorRegistry.getConfigSchemaForType(
       String(record.type ?? ""),
       workspaceId,
+      {
+        type: String(record.type ?? ""),
+        connectorDefinitionId: (record as { connectorDefinitionId?: unknown })
+          .connectorDefinitionId,
+      },
     );
   } catch (error) {
-    logger.warn("Could not load connector schema while redacting config", {
-      type: record.type,
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (error instanceof ConnectorBindingError) {
+      connectorBinding = {
+        ok: false,
+        problem: error.problem,
+        message: error.message,
+      };
+    } else {
+      logger.warn("Could not load connector schema while redacting config", {
+        type: record.type,
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return {
     ...record,
     config: redactSourceConfig(record.config, schema),
+    ...(connectorBinding ? { connectorBinding } : {}),
   };
+}
+
+/**
+ * A connection whose binding does not resolve cannot have its credential
+ * encrypted, decrypted or run: that is a state to fix (re-bind or delete),
+ * not a server fault — 409 with the resolver's explanation of how.
+ */
+function connectorBindingConflict(error: unknown) {
+  return error instanceof ConnectorBindingError
+    ? {
+        body: {
+          success: false as const,
+          error: error.message,
+          code: "connector_binding",
+          problem: error.problem,
+        },
+        status: 409 as const,
+      }
+    : null;
+}
+
+/**
+ * Naming a connection's OWN `ws:` type in a PUT is a deliberate act, and it
+ * re-binds the connection to the definition that slug currently names —
+ * but only when the connection has no live binding to keep:
+ *
+ *  - its stamped definition is GONE (the folder was deleted; a restore is
+ *    a new row with a new id, so without this a revert would strand the
+ *    connection for good), or
+ *  - it was never stamped (a row the stamping migration found no
+ *    definition for), where this binds it to what it already resolves to.
+ *
+ * A stamp pointing at a LIVE definition is never moved this way, even when
+ * `type` now names a different one: moving a credential to another
+ * connector takes a type change. Returns whether the stamp changed.
+ */
+async function rebindOnExplicitType(
+  workspaceId: string,
+  sourceConnection: {
+    _id: unknown;
+    type: string;
+    connectorDefinitionId?: Types.ObjectId;
+  },
+): Promise<boolean> {
+  const current = await resolveConnectionBinding(workspaceId, {
+    type: sourceConnection.type,
+    connectorDefinitionId: sourceConnection.connectorDefinitionId,
+  });
+  const rebindable = current.ok
+    ? current.via === "current"
+    : current.problem !== "name-moved";
+  if (!rebindable) return false;
+  const target = await findConnectorDefinitionRow(
+    workspaceId,
+    slugFromType(sourceConnection.type),
+  );
+  // Same-type means `type` is already canonical: a current slug, never an
+  // alias claimant. Nothing named → nothing to bind to; the stamp stays.
+  if (!target || target.via !== "current") return false;
+  logger.info(
+    "Re-bound a source connection to its connector by an explicit type",
+    {
+      workspaceId,
+      connectionId: String(sourceConnection._id),
+      type: sourceConnection.type,
+      from:
+        sourceConnection.connectorDefinitionId == null
+          ? null
+          : String(sourceConnection.connectorDefinitionId),
+      to: String(target.row._id),
+    },
+  );
+  sourceConnection.connectorDefinitionId = target.row._id as Types.ObjectId;
+  return true;
 }
 
 sourceConnectionRoutes.openapi(
@@ -418,6 +523,7 @@ sourceConnectionRoutes.openapi(
       // workspace wrote, so the answer comes from its index rather than from
       // the global registry, and a blocked connector is refused here rather
       // than at the first sync.
+      let boundDefinitionId: unknown = undefined;
       if (isWorkspaceConnectorType(body.type)) {
         if (!workspaceId) {
           return c.json(
@@ -429,6 +535,16 @@ sourceConnectionRoutes.openapi(
         if (!exists.ok) {
           return c.json({ success: false, error: exists.reason }, 400);
         }
+        // Store the connector's CURRENT slug, never an old one (a renamed
+        // connector answers to its aliases, but a connection must not be
+        // keyed on a name a future connector could claim).
+        body.type = await canonicalConnectorType(body.type, workspaceId);
+        // Bind the credential to its definition BY ID: renames and aliases
+        // move names, the id never moves, and every decrypt/run resolves
+        // through it (resolver.ts findConnectorDefinitionFor).
+        boundDefinitionId = (
+          await findConnectorDefinitionRow(workspaceId, slugFromType(body.type))
+        )?.row._id;
       } else if (!connectorRegistry.hasConnector(body.type)) {
         return c.json(
           {
@@ -439,10 +555,14 @@ sourceConnectionRoutes.openapi(
         );
       }
 
-      // Load connector schema for schema-driven encryption
+      // Load connector schema for schema-driven encryption — through the
+      // binding, so the secret-field list is the bound definition's.
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         body.type,
         workspaceId,
+        boundDefinitionId
+          ? { type: body.type, connectorDefinitionId: boundDefinitionId }
+          : undefined,
       );
 
       // Create source connection
@@ -450,6 +570,7 @@ sourceConnectionRoutes.openapi(
         workspaceId,
         name: body.name,
         type: body.type,
+        connectorDefinitionId: boundDefinitionId,
         description: body.description,
         config: applySchemaEncryption(body.config || {}, schema),
         settings: {
@@ -532,7 +653,16 @@ sourceConnectionRoutes.openapi(
 
       // Update only fields that have changed
       if (body.name !== undefined && body.name !== currentValues.name) {
-        sourceConnection.name = body.name;
+        // A blank name is a clear 400 (the rename's rule) — it used to
+        // reach the schema's `required` as a 500.
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        if (!name) {
+          return c.json(
+            { success: false, error: "A connection needs a name." },
+            400,
+          );
+        }
+        sourceConnection.name = name;
         hasChanges = true;
       }
       if (
@@ -542,9 +672,51 @@ sourceConnectionRoutes.openapi(
         sourceConnection.description = body.description;
         hasChanges = true;
       }
-      if (body.type !== undefined && body.type !== currentValues.type) {
-        sourceConnection.type = body.type;
-        hasChanges = true;
+      if (body.type !== undefined) {
+        const nextType =
+          isWorkspaceConnectorType(body.type) && workspaceId
+            ? await canonicalConnectorType(body.type, workspaceId)
+            : body.type;
+        if (nextType !== currentValues.type) {
+          // Re-pointed at a workspace connector: one that exists and runs,
+          // the same bar as a create. Accepting a name nothing answers
+          // would leave an UNBOUND credential waiting there for whichever
+          // folder takes that name next.
+          if (isWorkspaceConnectorType(nextType) && workspaceId) {
+            const exists = await connectorTypeExists(nextType, workspaceId);
+            if (!exists.ok) {
+              return c.json({ success: false, error: exists.reason }, 400);
+            }
+          } else if (
+            !isWorkspaceConnectorType(nextType) &&
+            !connectorRegistry.hasConnector(nextType)
+          ) {
+            // A built-in type no connector answers to: refused, like a create.
+            return c.json(
+              { success: false, error: `Unsupported source type: ${nextType}` },
+              400,
+            );
+          }
+          sourceConnection.type = nextType;
+          // Re-pointing a connection at another connector is an explicit
+          // act: bind it to that definition (or unbind for a built-in).
+          sourceConnection.connectorDefinitionId =
+            isWorkspaceConnectorType(nextType) && workspaceId
+              ? ((
+                  await findConnectorDefinitionRow(
+                    workspaceId,
+                    slugFromType(nextType),
+                  )
+                )?.row._id as Types.ObjectId | undefined)
+              : undefined;
+          hasChanges = true;
+        } else if (
+          isWorkspaceConnectorType(nextType) &&
+          workspaceId &&
+          (await rebindOnExplicitType(workspaceId, sourceConnection))
+        ) {
+          hasChanges = true;
+        }
       }
       if (
         body.isActive !== undefined &&
@@ -584,6 +756,7 @@ sourceConnectionRoutes.openapi(
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             sourceConnection.type,
             workspaceId,
+            sourceConnection,
           );
           sourceConnection.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
@@ -646,6 +819,10 @@ sourceConnectionRoutes.openapi(
           : "No changes detected",
       });
     } catch (error) {
+      // A config edit on a connection whose connector is gone (or whose
+      // type names another): nothing was written; say how to re-bind.
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       return c.json(
         {
           success: false,
@@ -788,6 +965,8 @@ sourceConnectionRoutes.openapi(
         data: result,
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       return c.json(
         {
           success: false,
@@ -903,6 +1082,8 @@ sourceConnectionRoutes.openapi(
           error.status,
         );
       }
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       logger.error("Connection probe failed", {
         workspaceId,
         connectionId: id,
@@ -1130,6 +1311,8 @@ sourceConnectionRoutes.openapi(
         data: entityData,
       });
     } catch (error) {
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       return c.json(
         {
           success: false,
@@ -1237,6 +1420,7 @@ sourceConnectionRoutes.openapi(
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         (sourceConnection as { type: string }).type,
         workspaceId,
+        sourceConnection as { type: string; connectorDefinitionId?: unknown },
       );
       const declared = (schema?.fields ?? []).find(
         (f: ConnectorFieldSchema) => f.name === field,
@@ -1296,6 +1480,10 @@ sourceConnectionRoutes.openapi(
         return c.json({ success: false, error: "Decryption failed" }, 400);
       }
     } catch (error) {
+      // Its connector is gone or its type names another: nothing to reveal
+      // by — say how to re-bind, as every other route does.
+      const conflict = connectorBindingConflict(error);
+      if (conflict) return c.json(conflict.body, conflict.status);
       logger.error("Reveal-secret endpoint error", { error });
       return c.json(
         {

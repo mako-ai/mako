@@ -40,8 +40,14 @@ export type RealtimeEvent =
        */
       clientId?: string;
       origin: "draft" | "save" | "agent";
+      /**
+       * "git": the change came in by a push (a laptop clone, GitHub) and
+       * the index sync applied it — whoever pushed, it was not another
+       * window of the app.
+       */
+      via?: "git";
     }
-  | { type: "console.deleted"; consoleId: string }
+  | { type: "console.deleted"; consoleId: string; via?: "git" }
   | {
       type: "console.run.completed";
       consoleId: string;
@@ -95,6 +101,11 @@ export type RealtimeEvent =
       projectId: string;
       path: string;
       deleted?: boolean;
+      /**
+       * Set with `deleted` when the file was renamed, not removed: open
+       * tabs for `path` retarget to this path instead of going stale.
+       */
+      renamedTo?: string;
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
@@ -106,6 +117,20 @@ export type RealtimeEvent =
       forUserId?: string;
     }
   | { type: "dbt.job.updated"; projectId: string; clientId?: string }
+  // A flow's definition, name or file name changed outside the editor
+  // (a rename through api/src/rename, by another session or the agent) —
+  // open flow stores refetch so a later form save does not write a stale
+  // name back.
+  | { type: "flow.updated"; flowId?: string; clientId?: string }
+  // A connection was renamed or edited (REST, the agent's rename_object,
+  // another window): open schema stores refetch the connection list, which
+  // the browser persists across reloads and otherwise keeps showing.
+  | {
+      type: "connection.updated";
+      connectionId: string;
+      connectionKind: "database" | "source";
+      clientId?: string;
+    }
   // A run was created/cancelled/retried — clients refetch run lists.
   | {
       type: "dbt.run.updated";

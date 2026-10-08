@@ -24,6 +24,7 @@
  * duplicate them.
  */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +39,10 @@ import {
 import { DEFAULT_BRANCH, repoExists } from "../apps/repository.service";
 import { GitTokenError, verifyGitToken } from "../apps/git-token.service";
 import { notifyRepoPushed } from "../apps/worktree.service";
+import {
+  PUSH_PATH_CHECK_FILE,
+  PUSH_PATH_CHECK_SCRIPT,
+} from "../apps/push-path-check";
 import { createRouter } from "../openapi/core";
 import { loggers } from "../logging";
 
@@ -115,6 +120,23 @@ while read old new ref; do
     done
   fi
 done
+`;
+}
+
+/**
+ * The hook as installed: the ref and authorship rules above, then the
+ * app-folder check (apps/push-path-check.ts) on the same updates. The
+ * updates arrive on stdin once, so they are kept and replayed to both.
+ */
+function hookScript(): string {
+  return `#!/bin/sh
+updates=$(cat)
+printf '%s\n' "$updates" | sh "$(dirname "$0")/mako-refs-and-authors.sh" || exit 1
+# App folders a checkout cannot hold (case twins, Windows names, non-NFC):
+# refused when this push introduces them, never for what is already there.
+if [ -n "$MAKO_NODE_BIN" ]; then
+  printf '%s\n' "$updates" | "$MAKO_NODE_BIN" "$(dirname "$0")/${PUSH_PATH_CHECK_FILE}" ${DEFAULT_BRANCH} || exit 1
+fi
 exit 0
 `;
 }
@@ -130,9 +152,27 @@ exit 0
 let hooksDirPromise: Promise<string> | null = null;
 function hooksDir(): Promise<string> {
   hooksDirPromise ??= (async () => {
-    const dir = path.join(os.tmpdir(), "mako-apps-git-hooks");
+    // Named by its contents: several API processes (and versions) on one
+    // machine must never run each other's hooks.
+    const version = createHash("sha1")
+      .update(preReceiveScript())
+      .update(hookScript())
+      .update(PUSH_PATH_CHECK_SCRIPT)
+      .digest("hex")
+      .slice(0, 12);
+    const dir = path.join(os.tmpdir(), `mako-apps-git-hooks-${version}`);
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, "pre-receive"), preReceiveScript(), {
+    await fs.writeFile(
+      path.join(dir, "mako-refs-and-authors.sh"),
+      `${preReceiveScript()}exit 0\n`,
+      { mode: 0o755 },
+    );
+    await fs.writeFile(
+      path.join(dir, PUSH_PATH_CHECK_FILE),
+      PUSH_PATH_CHECK_SCRIPT,
+      { mode: 0o644 },
+    );
+    await fs.writeFile(path.join(dir, "pre-receive"), hookScript(), {
       mode: 0o755,
     });
     return dir;
@@ -313,6 +353,8 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       // when the token carried it, so old tokens skip the check (fail-open on
       // a missing identity, never on a mismatch).
       ...(input.authorEmail ? { MAKO_AUTHOR_EMAIL: input.authorEmail } : {}),
+      // The app-folder check is a Node script: run by this very Node.
+      MAKO_NODE_BIN: process.execPath,
       // Config injected per invocation instead of written into the repo:
       // it applies to exactly this serving path (updateRefCas and the mirror
       // push never see it), and there is no migration to run over existing

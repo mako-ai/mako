@@ -47,12 +47,19 @@ export interface ResourceTreeEntry {
  * `success: false` should throw on it).
  */
 export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
-  fetch: (workspaceId: string) => Promise<{ my: T[]; workspace: T[] }>;
+  /**
+   * `shared`: items of other members shared with this person, listed in
+   * their own "Shared with me" section (consoles). Nothing moves into it.
+   */
+  fetch: (
+    workspaceId: string,
+  ) => Promise<{ my: T[]; workspace: T[]; shared?: T[] }>;
   moveItem: (
     workspaceId: string,
     id: string,
     folderId: string | null,
     access?: TreeAccessLevel,
+    name?: string,
   ) => Promise<unknown>;
   moveFolder: (
     workspaceId: string,
@@ -65,7 +72,12 @@ export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
     name: string,
     parentId: string | null | undefined,
     access: TreeAccessLevel,
-  ) => Promise<{ id: string } | null | undefined>;
+  ) => Promise<{ id: string; name?: string } | null | undefined>;
+  /**
+   * Rename endpoints may answer `{ savedName }`: the name the server stored,
+   * when it differs from the one typed (a console's "Q1: revenue" is saved
+   * as "Q1 - revenue") — the tree then shows that one.
+   */
   renameItem: (
     workspaceId: string,
     id: string,
@@ -83,17 +95,38 @@ export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
 export interface ResourceTreeState<T extends ResourceTreeEntry> {
   myItems: Record<string, T[]>;
   workspaceItems: Record<string, T[]>;
+  /** "Shared with me" (see `ResourceTreeEndpoints.fetch`); flat. */
+  sharedItems: Record<string, T[]>;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
+  /**
+   * Why the last move or rename was refused (the server's message), per
+   * workspace — the tree only snaps back, which says nothing.
+   */
+  actionError: Record<string, string | null>;
+  /** The refusal was shown: forget it. */
+  clearActionError: (workspaceId: string) => void;
+  /**
+   * What the last inline rename did when it is not what was typed — the
+   * server saved another name ("a/b" → "a-b": `Saved as “a-b”`), the
+   * dialogs' feedback for the tree. Per workspace; null when nothing to say.
+   */
+  actionNotice: Record<string, string | null>;
+  clearActionNotice: (workspaceId: string) => void;
 
   fetchTree: (workspaceId: string) => Promise<void>;
   refresh: (workspaceId: string) => Promise<void>;
-  /** Optimistic; resolves `false` after the tree was refetched on failure. */
+  /**
+   * Optimistic; resolves `false` after the tree was refetched on failure.
+   * `name` renames in the same request ("Move to…" with a new name) so a
+   * git-backed kind commits once, not a rename then a move.
+   */
   moveItem: (
     workspaceId: string,
     itemId: string,
     targetFolderId: string | null,
     access?: TreeAccessLevel,
+    name?: string,
   ) => Promise<boolean>;
   moveFolder: (
     workspaceId: string,
@@ -113,6 +146,12 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
     name: string,
     isDirectory: boolean,
   ) => Promise<boolean>;
+  /**
+   * Reflect a rename the server already applied (an editor save, a realtime
+   * poke) in the tree WITHOUT sending another request — `renameItem` is the
+   * request path. Unknown ids are ignored.
+   */
+  reflectRename: (workspaceId: string, itemId: string, name: string) => void;
   deleteItem: (
     workspaceId: string,
     itemId: string,
@@ -121,15 +160,30 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
   resortItem: (workspaceId: string, itemId: string) => void;
 }
 
+/**
+ * The `access` a "Move to…" should send: only when the user actually
+ * changed section. Sending the target section's access every time asked
+ * the server to re-scope a console whose scope the user never touched —
+ * and a shared editor moving someone else's private console within "My
+ * consoles" was refused for a flip they did not request.
+ */
+export function accessForMove(
+  from: "my" | "workspace",
+  to: "my" | "workspace",
+): TreeAccessLevel | undefined {
+  if (from === to) return undefined;
+  return to === "workspace" ? "workspace" : "private";
+}
+
 /** The section arrays an extension mutates inside `set`. */
 export type ResourceTreeSections<T extends ResourceTreeEntry> = Pick<
   ResourceTreeState<T>,
-  "myItems" | "workspaceItems"
+  "myItems" | "workspaceItems" | "sharedItems"
 >;
 
 /** The internal section helpers, handed to `extend` so extras compose. */
 export interface ResourceTreeHelpers<T extends ResourceTreeEntry> {
-  /** Both section arrays for a workspace (missing ones read as empty). */
+  /** Every section array for a workspace (missing ones read as empty). */
   allSections: (state: ResourceTreeSections<T>, wid: string) => T[][];
   findInAnySection: (
     state: ResourceTreeSections<T>,
@@ -184,6 +238,7 @@ export function createResourceTreeStore<
   const allSections = (state: Sections, wid: string): T[][] => [
     state.myItems[wid] || [],
     state.workspaceItems[wid] || [],
+    state.sharedItems[wid] || [],
   ];
 
   const findInAnySection = (
@@ -284,8 +339,23 @@ export function createResourceTreeStore<
     immer((set, get) => ({
       myItems: {},
       workspaceItems: {},
+      sharedItems: {},
       loading: {},
       error: {},
+      actionError: {},
+      actionNotice: {},
+
+      clearActionError: workspaceId => {
+        set(state => {
+          state.actionError[workspaceId] = null;
+        });
+      },
+
+      clearActionNotice: workspaceId => {
+        set(state => {
+          state.actionNotice[workspaceId] = null;
+        });
+      },
 
       fetchTree: workspaceId => {
         const pending = fetchInFlight.get(workspaceId);
@@ -301,6 +371,7 @@ export function createResourceTreeStore<
             set(state => {
               state.myItems[workspaceId] = data.my as never;
               state.workspaceItems[workspaceId] = data.workspace as never;
+              state.sharedItems[workspaceId] = (data.shared ?? []) as never;
             });
           } catch (err: unknown) {
             set(state => {
@@ -327,7 +398,7 @@ export function createResourceTreeStore<
         await get().fetchTree(workspaceId);
       },
 
-      moveItem: async (workspaceId, itemId, targetFolderId, access) => {
+      moveItem: async (workspaceId, itemId, targetFolderId, access, name) => {
         set(state => {
           const entry = removeFromAnySection(
             state as Sections,
@@ -336,6 +407,7 @@ export function createResourceTreeStore<
           );
           if (!entry) return;
           if (access) entry.access = access;
+          if (name) entry.name = name;
           insertIntoFolder(
             state as Sections,
             workspaceId,
@@ -350,10 +422,25 @@ export function createResourceTreeStore<
           );
         });
         try {
-          await endpoints.moveItem(workspaceId, itemId, targetFolderId, access);
+          await endpoints.moveItem(
+            workspaceId,
+            itemId,
+            targetFolderId,
+            access,
+            name,
+          );
           return true;
-        } catch {
+        } catch (err: unknown) {
           await get().refresh(workspaceId);
+          // After the refresh (which clears the tree's own error): the
+          // server's reason (403 scope flip, 409 name taken) for the UI
+          // to show — a silently restored tree says nothing.
+          set(state => {
+            state.actionError[workspaceId] = toErrorMessage(
+              err,
+              `Failed to move ${resourceName}`,
+            );
+          });
           return false;
         }
       },
@@ -378,8 +465,14 @@ export function createResourceTreeStore<
         try {
           await endpoints.moveFolder(workspaceId, folderId, parentId, access);
           return true;
-        } catch {
+        } catch (err: unknown) {
           await get().refresh(workspaceId);
+          set(state => {
+            state.actionError[workspaceId] = toErrorMessage(
+              err,
+              `Failed to move ${resourceName} folder`,
+            );
+          });
           return false;
         }
       },
@@ -428,7 +521,13 @@ export function createResourceTreeStore<
               workspaceId,
               tempId,
             );
-            if (node) node.id = realId;
+            if (!node) return;
+            node.id = realId;
+            // The name the server gave it (a cleaned one, maybe).
+            if (created?.name && created.name !== node.name) {
+              node.name = created.name;
+              node.path = created.name;
+            }
           });
           return realId;
         } catch {
@@ -445,14 +544,49 @@ export function createResourceTreeStore<
           resortIn(state as Sections, workspaceId, itemId);
         });
         try {
-          await (isDirectory
+          const result = await (isDirectory
             ? endpoints.renameFolder(workspaceId, itemId, name)
             : endpoints.renameItem(workspaceId, itemId, name));
+          // The name the server stored, when it is not the one typed.
+          const savedName = (result as { savedName?: unknown } | null)
+            ?.savedName;
+          if (typeof savedName === "string" && savedName !== name) {
+            set(state => {
+              const node = findInAnySection(
+                state as Sections,
+                workspaceId,
+                itemId,
+              );
+              if (node) {
+                node.name = savedName;
+                resortIn(state as Sections, workspaceId, itemId);
+              }
+              // Said, as the dialogs say it: the name is not what was typed.
+              state.actionNotice[workspaceId] = `Saved as “${savedName}”`;
+            });
+          }
           return true;
-        } catch {
+        } catch (err: unknown) {
           await get().refresh(workspaceId);
+          // After the refresh: the server's reason (409 name taken, 403 not
+          // theirs) — the row snapping back alone said nothing.
+          set(state => {
+            state.actionError[workspaceId] = toErrorMessage(
+              err,
+              `Failed to rename ${resourceName}`,
+            );
+          });
           return false;
         }
+      },
+
+      reflectRename: (workspaceId, itemId, name) => {
+        set(state => {
+          const node = findInAnySection(state as Sections, workspaceId, itemId);
+          if (!node || node.name === name) return;
+          node.name = name;
+          resortIn(state as Sections, workspaceId, itemId);
+        });
       },
 
       deleteItem: async (workspaceId, itemId, isDirectory) => {
@@ -463,6 +597,13 @@ export function createResourceTreeStore<
           await (isDirectory
             ? endpoints.deleteFolder(workspaceId, itemId)
             : endpoints.deleteItem(workspaceId, itemId));
+          // Gone for good: a tree refetch that answered while the delete
+          // was still running (other events trigger them) may have put it
+          // back — the deleted folder sat there, "Empty", until a manual
+          // refresh.
+          set(state => {
+            removeFromAnySection(state as Sections, workspaceId, itemId);
+          });
           return true;
         } catch {
           await get().refresh(workspaceId);

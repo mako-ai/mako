@@ -8,9 +8,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ZERO_OID, assertSafeRelPath } from "./git";
+import { ZERO_OID, assertSafeRelPath, runGitBuffer } from "./git";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
+  blobOid,
+  blobOidAt,
+  commitBlobsOnBranch,
   commitTree,
   diffNameStatus,
   globTree,
@@ -18,6 +22,8 @@ import {
   initRepo,
   listTree,
   log,
+  logFollow,
+  parseFollowLog,
   readBlob,
   resolveCommit,
   snapshotDirToTree,
@@ -149,6 +155,183 @@ describe("updateRefCas", () => {
   });
 });
 
+describe("commitBlobsOnBranch expectBlobs (compare-and-swap on content)", () => {
+  it("refuses a mutation whose read-side file changed or whose new path appeared, and commits otherwise", async () => {
+    const { commitOid: c1 } = await initRepo(repoDir, {
+      "flows/a.yml": "name: A\n",
+    });
+    const aOid = blobOid("name: A\n");
+    expect(await blobOidAt(repoDir, c1, "flows/a.yml")).toBe(aOid);
+    expect(await blobOidAt(repoDir, c1, "flows/b.yml")).toBeNull();
+
+    // Someone else edits a.yml first.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "flows/a.yml": "name: A edited\n" } },
+      { message: "edit" },
+    );
+    const headBefore = await resolveCommit(
+      repoDir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    // A move decided from the ORIGINAL a.yml must not re-apply on top.
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { "flows/b.yml": "name: B\n" }, deletes: ["flows/a.yml"] },
+        {
+          message: "mv",
+          expectBlobs: { "flows/a.yml": aOid, "flows/b.yml": null },
+        },
+      ),
+    ).rejects.toBeInstanceOf(BlobPreconditionError);
+    expect(await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`)).toBe(
+      headBefore,
+    );
+
+    // Decided from the current a.yml: applies.
+    const edited = blobOid("name: A edited\n");
+    const moved = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "flows/b.yml": "name: B\n" }, deletes: ["flows/a.yml"] },
+      {
+        message: "mv",
+        expectBlobs: { "flows/a.yml": edited, "flows/b.yml": null },
+      },
+    );
+    expect(moved.unchanged).toBe(false);
+    expect(await blobOidAt(repoDir, moved.commitOid, "flows/a.yml")).toBeNull();
+    expect(await blobOidAt(repoDir, moved.commitOid, "flows/b.yml")).toBe(
+      blobOid("name: B\n"),
+    );
+
+    // "Must be absent" fails once the path exists.
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { "flows/b.yml": "name: B2\n" } },
+        { message: "x", expectBlobs: { "flows/b.yml": null } },
+      ),
+    ).rejects.toMatchObject({ path: "flows/b.yml", expected: null });
+  });
+});
+
+describe("commitBlobsOnBranch writes many blobs in one go, byte for byte", () => {
+  it("CRLF, binary, non-UTF-8, empty, spaces and unicode in names, a symlink entry and an executable: exact bytes, oids, modes", async () => {
+    await initRepo(repoDir, { "README.md": "x\n" });
+    const files: Record<string, string | Buffer> = {
+      "a/crlf.sql": "select 1\r\nfrom t\r\n",
+      "a/binary.png": Buffer.from([0x89, 0x50, 0x00, 0xff, 0x00, 0x0a, 0x0d]),
+      "a/latin1.sql": Buffer.from("-- caf\xe9\n", "latin1"),
+      "a/empty.txt": "",
+      "a/with space.md": "spaces\n",
+      "a/café ☕.md": "unicode name\n",
+      "a/run.sh": "#!/bin/sh\necho hi\n",
+      "a/no-final-newline": "last line",
+    };
+    for (let i = 0; i < 40; i++) files[`bulk/f${i}.txt`] = `file ${i}\n`;
+    const link = blobOid("crlf.sql");
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "a/target.txt": "crlf.sql" } },
+      { message: "a blob the symlink entry can point at" },
+    );
+    const { commitOid } = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: files,
+        modes: { "a/run.sh": "100755" },
+        entries: [{ path: "a/link.sql", oid: link, mode: "120000" }],
+      },
+      { message: "many" },
+    );
+    const tree = new Map(
+      (await listTree(repoDir, commitOid)).map(e => [e.path, e]),
+    );
+    for (const [p, contents] of Object.entries(files)) {
+      const entry = tree.get(p);
+      expect([p, entry?.oid]).toEqual([p, blobOid(contents)]);
+      expect(entry?.mode).toBe(p === "a/run.sh" ? "100755" : "100644");
+      const bytes = await runGitBuffer([
+        "-C",
+        repoDir,
+        "cat-file",
+        "blob",
+        entry!.oid,
+      ]);
+      const want = Buffer.isBuffer(contents)
+        ? contents
+        : Buffer.from(contents, "utf8");
+      expect([p, bytes.equals(want)]).toEqual([p, true]);
+    }
+    expect(tree.get("a/link.sql")).toMatchObject({ oid: link, mode: "120000" });
+  });
+
+  it("one written file and none: same commit semantics", async () => {
+    await initRepo(repoDir, { "README.md": "x\n" });
+    const one = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "one.txt": "1\r\n" } },
+      { message: "one" },
+    );
+    expect(await blobOidAt(repoDir, one.commitOid, "one.txt")).toBe(
+      blobOid("1\r\n"),
+    );
+    const none = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { deletes: ["one.txt"] },
+      { message: "none" },
+    );
+    expect(await blobOidAt(repoDir, none.commitOid, "one.txt")).toBeNull();
+  });
+
+  it("path conflicts are refused exactly as before, the first one named, across a large batch", async () => {
+    await initRepo(repoDir, { "m/a.sql": "a\n", "d/x/y.txt": "y\n" });
+    const writes: Record<string, string> = {};
+    for (let i = 0; i < 60; i++) writes[`m/ok${i}.sql`] = `${i}\n`;
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { ...writes, "m/a.sql/b.sql": "b\n" } },
+        { message: "file as folder" },
+      ),
+    ).rejects.toMatchObject({
+      name: "PathConflictError",
+      path: "m/a.sql/b.sql",
+      conflict: "m/a.sql",
+      kind: "file",
+    });
+    await expect(
+      commitBlobsOnBranch(
+        repoDir,
+        DEFAULT_BRANCH,
+        { writes: { ...writes, "d/x": "now a file\n" } },
+        { message: "folder as file" },
+      ),
+    ).rejects.toMatchObject({ name: "PathConflictError", kind: "directory" });
+    // …unless the mutation removes what is in the way.
+    const ok = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: { ...writes, "d/x": "now a file\n", "m/a.sql/b.sql": "b\n" },
+        deletes: ["d/x/y.txt", "m/a.sql"],
+      },
+      { message: "replace" },
+    );
+    expect(ok.unchanged).toBe(false);
+  });
+});
+
 describe("grepTree + globTree (sandbox-free search)", () => {
   it("greps contents and globs paths straight from the object db", async () => {
     await initRepo(repoDir, {
@@ -217,5 +400,156 @@ describe("history + diff", () => {
     expect(byPath["c.txt"]).toBe("added");
 
     expect(await treeOfCommit(repoDir, c2)).toBe(t2);
+  });
+
+  it("follows a file across renames, saying where it was in each commit", async () => {
+    await initRepo(repoDir, { "consoles/a.sql": "SELECT 1\n" });
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "consoles/a.sql": "SELECT 2\n" } },
+      { message: "edit" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: { "consoles/Team/b c.sql": "SELECT 2\n" },
+        deletes: ["consoles/a.sql"],
+      },
+      { message: "move" },
+    );
+    // Plain log: the file's history "starts" at the move.
+    expect(
+      (await log(repoDir, DEFAULT_BRANCH, 10, "consoles/Team/b c.sql")).map(
+        c => c.subject,
+      ),
+    ).toEqual(["move"]);
+    const followed = await logFollow(
+      repoDir,
+      DEFAULT_BRANCH,
+      10,
+      "consoles/Team/b c.sql",
+    );
+    expect(followed.map(c => [c.subject, c.path, c.previousPath])).toEqual([
+      ["move", "consoles/Team/b c.sql", "consoles/a.sql"],
+      ["edit", "consoles/a.sql", undefined],
+      ["Initial scaffold", "consoles/a.sql", undefined],
+    ]);
+  });
+
+  it("follows renames only — never into the file it was copied from, nor an earlier file at the same path", async () => {
+    const secret = "SELECT name, salary\nFROM payroll\nWHERE exec\n";
+    await initRepo(repoDir, { "users/a/consoles/P.sql": secret });
+    // A copy (same text) under another name: git --follow sees a `C`.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "consoles/W.sql": secret } },
+      { message: "copy" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "users/a/consoles/P.sql": `${secret}-- later\n` } },
+      { message: "private edit" },
+    );
+    expect(
+      (await logFollow(repoDir, DEFAULT_BRANCH, 10, "consoles/W.sql")).map(
+        c => [c.subject, c.path, c.previousPath, c.created],
+      ),
+    ).toEqual([["copy", "consoles/W.sql", undefined, true]]);
+
+    // A path that held another file before this one was created there.
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { deletes: ["users/a/consoles/P.sql"] },
+      { message: "delete P" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes: { "users/a/consoles/P.sql": "SELECT 'new'\n" } },
+      { message: "new P" },
+    );
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      {
+        writes: { "consoles/P.sql": "SELECT 'new'\n" },
+        deletes: ["users/a/consoles/P.sql"],
+      },
+      { message: "move P" },
+    );
+    expect(
+      (await logFollow(repoDir, DEFAULT_BRANCH, 10, "consoles/P.sql")).map(
+        c => [c.subject, c.path, c.previousPath],
+      ),
+    ).toEqual([
+      ["move P", "consoles/P.sql", "users/a/consoles/P.sql"],
+      ["new P", "users/a/consoles/P.sql", undefined],
+    ]);
+  });
+
+  it("parseFollowLog ends the walk at a copy, at an add, and before an earlier file's delete", () => {
+    const head = (oid: string, subject: string) =>
+      `\x01${oid}\0me\x001\0${subject}\0`;
+    const copied =
+      head("c2", "copy") +
+      "\nC100\0private.sql\0copy.sql\0" +
+      head("c1", "private create") +
+      "\nA\0private.sql\0";
+    expect(
+      parseFollowLog(copied, "copy.sql").map(c => [c.oid, c.path, c.created]),
+    ).toEqual([["c2", "copy.sql", true]]);
+
+    const reoccupied =
+      head("c4", "edit") +
+      "\nM\0p.sql\0" +
+      head("c3", "create") +
+      "\nA\0p.sql\0" +
+      head("c2", "earlier delete") +
+      "\nD\0p.sql\0" +
+      head("c1", "earlier create") +
+      "\nA\0p.sql\0";
+    expect(parseFollowLog(reoccupied, "p.sql").map(c => c.oid)).toEqual([
+      "c4",
+      "c3",
+    ]);
+    // The walk cut short by -n (no add seen) keeps everything it saw.
+    expect(
+      parseFollowLog(head("c4", "edit") + "\nM\0p.sql\0", "p.sql").map(
+        c => c.created,
+      ),
+    ).toEqual([undefined]);
+
+    // Its own deletion (absent at the ref) is its newest commit.
+    const deleted =
+      head("c3", "delete") +
+      "\nD\0p.sql\0" +
+      head("c2", "edit") +
+      "\nM\0p.sql\0" +
+      head("c1", "create") +
+      "\nA\0p.sql\0";
+    expect(parseFollowLog(deleted, "p.sql").map(c => c.oid)).toEqual([
+      "c3",
+      "c2",
+      "c1",
+    ]);
+  });
+
+  it("parseFollowLog carries the name backwards through a commit without a status line", () => {
+    const stdout =
+      "\x01c3\0me\x001\0rename\0\nR100\0old.sql\0new.sql\0" +
+      "\x01c2\0me\x001\0merge\0" +
+      "\x01c1\0me\x001\0create\0\nA\0old.sql\0";
+    expect(parseFollowLog(stdout, "new.sql").map(c => [c.oid, c.path])).toEqual(
+      [
+        ["c3", "new.sql"],
+        ["c2", "old.sql"],
+        ["c1", "old.sql"],
+      ],
+    );
   });
 });

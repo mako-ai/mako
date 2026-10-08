@@ -4,6 +4,7 @@ import {
   useImperativeHandle,
   useRef,
   useCallback,
+  useEffect,
 } from "react";
 import {
   Box,
@@ -16,6 +17,8 @@ import {
   Skeleton,
   Menu,
   MenuItem,
+  Snackbar,
+  Button,
   Tooltip,
 } from "@mui/material";
 import {
@@ -30,9 +33,23 @@ import {
   type ConsoleEntry,
   type ConsoleSearchResult,
 } from "../store/consoleTreeStore";
-import { useConsoleStore } from "../store/consoleStore";
+import { accessForMove } from "../store/lib/createResourceTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
-import { filterTree } from "../store/lib/tree-helpers";
+import {
+  hasUnsavedLocalEdits,
+  isUnloadedConsoleTab,
+  useConsoleStore,
+} from "../store/consoleStore";
+import { filterTree, findById, namesTrailOf } from "../store/lib/tree-helpers";
+import { useExplorerRevealStore } from "../store/explorerRevealStore";
+import {
+  consoleCopiedNotice,
+  consoleDeleteConfirmText,
+  consoleFolderRestoredNotice,
+  consoleFolderTrashedNotice,
+  consoleRestoredNotice,
+  treeMoveNotice,
+} from "../lib/console-relocation";
 import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
@@ -40,6 +57,13 @@ import FolderInfoModal from "./FolderInfoModal";
 import ConsoleTree from "./ConsoleTree";
 import ExplorerShell from "./ExplorerShell";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+/** A tree path with its last segment replaced by the row's current name. */
+function withLeafName(path: string, name: string): string {
+  const parts = path.split("/");
+  parts[parts.length - 1] = name;
+  return parts.join("/");
+}
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -74,6 +98,7 @@ function ConsoleExplorer(
   const {
     myItems: myConsoles,
     workspaceItems: sharedWithWorkspace,
+    sharedItems: sharedWithMe,
     loading,
     error,
   } = tree;
@@ -84,9 +109,14 @@ function ConsoleExplorer(
   const clearSearch = useConsoleTreeStore(state => state.clearSearch);
   const searchResults = useConsoleTreeStore(state => state.searchResults);
   const searchLoading = useConsoleTreeStore(state => state.searchLoading);
-  const updateTabFilePath = useConsoleStore(state => state.updateFilePath);
-  const updateTabTitle = useConsoleStore(state => state.updateTitle);
-  const updateTabAccess = useConsoleStore(state => state.updateAccess);
+  // Why the last rename or move was refused — inline rename, drag, "Move
+  // to…" alike (the server's message: a name already taken, a visibility
+  // change that is not theirs). The tree itself only snaps back, which says
+  // nothing.
+  const actionError = useConsoleTreeStore(state =>
+    currentWorkspace ? (state.actionError[currentWorkspace.id] ?? null) : null,
+  );
+  const clearActionError = useConsoleTreeStore(state => state.clearActionError);
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [explorerDialogOpen, setExplorerDialogOpen] = useState(false);
@@ -98,9 +128,41 @@ function ConsoleExplorer(
     null,
   );
 
-  const [undoStack, setUndoStack] = useState<
-    Array<{ type: "delete"; id: string; isDirectory: boolean }>
-  >([]);
+  // What the last action did, when it says nothing by itself (a Duplicate).
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // An inline rename the server saved under another name ("a/b" → "a-b"):
+  // said here, as the dialogs say it.
+  const actionNotice = useConsoleTreeStore(state =>
+    currentWorkspace ? (state.actionNotice[currentWorkspace.id] ?? null) : null,
+  );
+  const clearActionNotice = useConsoleTreeStore(
+    state => state.clearActionNotice,
+  );
+  useEffect(() => {
+    if (!actionNotice || !currentWorkspace) return;
+    setNotice(actionNotice);
+    clearActionNotice(currentWorkspace.id);
+  }, [actionNotice, currentWorkspace, clearActionNotice]);
+
+  type UndoEntry = {
+    type: "delete";
+    id: string;
+    isDirectory: boolean;
+    name: string;
+    /** A folder: its subtree as the tree showed it, and where it was. */
+    snapshot?: ConsoleEntry;
+    parentId?: string | null;
+    section?: "my" | "workspace";
+  };
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  // "Moved to trash" with its Undo, after EVERY delete — a console's (no
+  // dialog) and a folder's (after its confirm): nothing said it before,
+  // and the trash has no view; this Undo (and Ctrl+Z) is the way back.
+  const [trashToast, setTrashToast] = useState<{
+    message: string;
+    entry: UndoEntry;
+  } | null>(null);
 
   const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
     const ids = new Set<string>();
@@ -132,7 +194,39 @@ function ConsoleExplorer(
     [clearSearch, currentWorkspace, searchConsoles],
   );
 
+  /**
+   * A console already open with edits not saved yet is only focused: the
+   * open path refetches it and marks the tab saved — that replaced the
+   * edit with the server's copy (Save then said "No changes to save", a
+   * reload lost it). A clean open tab is refreshed as before.
+   */
+  const focusIfEditing = (consoleId: string): boolean => {
+    const consoles = useConsoleStore.getState();
+    if (
+      !consoles.tabs[consoleId] ||
+      // Still the loading placeholder (its first fetch failed or is in
+      // flight): nothing to lose — fetch it again.
+      isUnloadedConsoleTab(consoleId) ||
+      !hasUnsavedLocalEdits(consoleId)
+    ) {
+      return false;
+    }
+    consoles.setActiveTab(consoleId);
+    return true;
+  };
+
+  /**
+   * After a fetch: the store kept an edit typed while it was in flight
+   * (the tab no longer shows what the fetch began from); the server's
+   * copy must not be written over it here either.
+   */
+  const keptEditDuringFetch = (consoleId: string, serverContent: string) => {
+    const tab = useConsoleStore.getState().tabs[consoleId];
+    return !!tab && tab.content !== serverContent;
+  };
+
   const handleSearchResultClick = (result: ConsoleSearchResult) => {
+    if (focusIfEditing(result.id)) return;
     onConsoleSelect(
       result.title,
       "loading...",
@@ -155,7 +249,7 @@ function ConsoleExplorer(
           updateSavedState,
         } = consoleStore.useConsoleStore.getState();
         const data = await fetchConsoleContent(currentWorkspace.id, result.id);
-        if (data) {
+        if (data && !keptEditDuringFetch(result.id, data.content || "")) {
           useConsoleContentStore.getState().set(result.id, {
             content: data.content,
             connectionId: data.connectionId,
@@ -194,13 +288,17 @@ function ConsoleExplorer(
       if (!node.id) return;
 
       const consoleId = node.id;
+      if (focusIfEditing(consoleId)) return;
       const cached = useConsoleContentStore.getState().get(consoleId);
       const initialContent = cached?.content ?? "loading...";
       const connectionId = cached?.connectionId || node.connectionId;
       const databaseId = cached?.databaseId || node.databaseId;
       const databaseName = cached?.databaseName || node.databaseName;
+      // The row's NAME is current (a rename updates it at once); its path
+      // may lag until the server answers. The fetch below sets the tab's
+      // path and visibility from the server either way.
       onConsoleSelect(
-        node.path,
+        withLeafName(node.path, node.name),
         initialContent,
         connectionId,
         consoleId,
@@ -213,7 +311,7 @@ function ConsoleExplorer(
         const consoleStore = await import("../store/consoleStore");
         const { fetchConsoleContent } = consoleStore.useConsoleStore.getState();
         const data = await fetchConsoleContent(currentWorkspace.id, consoleId);
-        if (data) {
+        if (data && !keptEditDuringFetch(consoleId, data.content || "")) {
           useConsoleContentStore.getState().set(consoleId, {
             content: data.content,
             connectionId: data.connectionId || node.connectionId,
@@ -222,7 +320,6 @@ function ConsoleExplorer(
           });
           const {
             updateContent,
-            updateFilePath,
             updateDatabase,
             updateConnection,
             updateSavedState,
@@ -235,8 +332,11 @@ function ConsoleExplorer(
           if (data.databaseId || data.databaseName) {
             updateDatabase(consoleId, data.databaseId, data.databaseName);
           }
-
-          updateFilePath(consoleId, node.path);
+          // No path from the tree here: fetchConsoleContent set the tab's
+          // path, name and visibility from the server. The tree's path is
+          // what a client computed (stale after a folder rename, "/name"
+          // for a console in a folder this person cannot see), and a save
+          // used to send it back.
 
           const { computeConsoleStateHash } = await import(
             "../utils/stateHash"
@@ -307,31 +407,6 @@ function ConsoleExplorer(
     return inWorkspace !== undefined ? "workspace" : "my";
   };
 
-  const findFolderPathById = (
-    nodes: ConsoleEntry[],
-    folderId: string,
-  ): string | null => {
-    for (const node of nodes) {
-      if (node.id === folderId && node.isDirectory) return node.path;
-      if (node.isDirectory && node.children) {
-        const found = findFolderPathById(node.children, folderId);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-
-  const getPathForMoveTarget = (
-    targetFolderId: string | null,
-    section: "my" | "workspace",
-    itemName: string,
-  ): string => {
-    if (!targetFolderId) return itemName;
-    const tree = section === "workspace" ? sharedWithWorkspace : myConsoles;
-    const folderPath = findFolderPathById(tree, targetFolderId);
-    return folderPath ? `${folderPath}/${itemName}` : itemName;
-  };
-
   const handleMoveTo = (item: ConsoleEntry) => {
     setSelectedItem(item);
     setExplorerDialogOpen(true);
@@ -344,45 +419,74 @@ function ConsoleExplorer(
   ) => {
     if (!currentWorkspace || !selectedItem?.id) return;
 
-    if (newName && newName !== selectedItem.name) {
+    const renamedTo =
+      newName && newName !== selectedItem.name ? newName : undefined;
+    let ok = true;
+    if (renamedTo && selectedItem.isDirectory) {
       const renameItem = useConsoleTreeStore.getState().renameItem;
-      await renameItem(
+      ok =
+        (await renameItem(
+          currentWorkspace.id,
+          selectedItem.id,
+          renamedTo,
+          true,
+        )) !== false;
+    }
+
+    // Re-scope (private ↔ workspace) only when the user changed section;
+    // the server refuses a scope flip from anyone but the owner, and a
+    // move within the same section must not look like one.
+    const fromSection = getSectionForItem(selectedItem);
+    const access = accessForMove(fromSection, section);
+    const moved =
+      targetFolderId !== getParentFolderIdForItem(selectedItem) ||
+      section !== fromSection;
+    // A refusal (403 scope flip, 409 name taken) lands in the store's
+    // actionError, which the snackbar below shows; an open tab is
+    // retargeted by the store from the server's answer (name, folder,
+    // visibility) — never from a path computed here.
+    if (ok && selectedItem.isDirectory) {
+      ok = await moveFolder(
         currentWorkspace.id,
         selectedItem.id,
-        newName,
-        selectedItem.isDirectory,
+        targetFolderId,
+        access,
+      );
+    } else if (ok) {
+      // Rename + move in ONE request: a console is a file in the repo, and
+      // two requests made two commits (rename, then move) for one gesture.
+      ok = await moveConsole(
+        currentWorkspace.id,
+        selectedItem.id,
+        targetFolderId,
+        access,
+        renamedTo,
       );
     }
 
-    if (selectedItem.isDirectory) {
-      await moveFolder(
-        currentWorkspace.id,
-        selectedItem.id,
-        targetFolderId,
-        section === "workspace" ? "workspace" : "private",
-      );
-    } else {
-      const success = await moveConsole(
-        currentWorkspace.id,
-        selectedItem.id,
-        targetFolderId,
-        section === "workspace" ? "workspace" : "private",
-      );
-      if (success) {
-        const nextName = newName || selectedItem.name;
-        const nextPath = getPathForMoveTarget(
-          targetFolderId,
+    // Say where it went (it used to say nothing): in the explorer's words.
+    if (ok) {
+      // The destination's trail from the tree AS IT IS NOW: a folder's
+      // stored `path` is stale after an inline rename ("New Folder" →
+      // "Fold2" still said "Moved to New Folder").
+      const tree = useConsoleTreeStore.getState();
+      const trail = targetFolderId
+        ? namesTrailOf(
+            (section === "workspace"
+              ? tree.workspaceItems[currentWorkspace.id]
+              : tree.myItems[currentWorkspace.id]) ?? [],
+            targetFolderId,
+          )
+        : null;
+      setNotice(
+        treeMoveNotice({
+          moved,
+          renamedTo,
+          name: selectedItem.name,
           section,
-          nextName,
-        );
-        updateTabFilePath(selectedItem.id, nextPath);
-        // Title is the canonical leaf name; the path drives the breadcrumb.
-        updateTabTitle(selectedItem.id, nextName);
-        updateTabAccess(
-          selectedItem.id,
-          section === "workspace" ? "workspace" : "private",
-        );
-      }
+          folderPath: trail?.join("/"),
+        }),
+      );
     }
 
     setExplorerDialogOpen(false);
@@ -391,8 +495,29 @@ function ConsoleExplorer(
 
   const handleDuplicate = async (item: ConsoleEntry) => {
     if (!currentWorkspace || !item.id || item.isDirectory) return;
-    const duplicateConsole = useConsoleTreeStore.getState().duplicateConsole;
-    await duplicateConsole(currentWorkspace.id, item.id);
+    const workspaceId = currentWorkspace.id;
+    const { duplicateConsole } = useConsoleTreeStore.getState();
+    const copy = await duplicateConsole(workspaceId, item.id);
+    // A refusal is in actionError: the snackbar below says why.
+    if (!copy) return;
+    // The copy is the copier's — My Consoles, maybe in a folder of theirs,
+    // not next to the original: say where it went, open it, and show it in
+    // the tree (it used to land unopened in a collapsed folder of another
+    // section, with no word).
+    setNotice(consoleCopiedNotice(copy));
+    const node = findById(
+      useConsoleTreeStore.getState().myItems[workspaceId] ?? [],
+      copy.id,
+    );
+    void handleFileOpen(
+      node ?? {
+        id: copy.id,
+        name: copy.name,
+        path: copy.path,
+        isDirectory: false,
+      },
+    );
+    useExplorerRevealStore.getState().requestReveal("consoles", copy.id);
   };
 
   const handleGetInfo = (item: ConsoleEntry) => {
@@ -407,6 +532,16 @@ function ConsoleExplorer(
     setFolderInfoOpen(true);
   };
 
+  const remember = (entry: UndoEntry) => {
+    setUndoStack(prev => [...prev, entry]);
+    setTrashToast({
+      message: entry.isDirectory
+        ? consoleFolderTrashedNotice(entry.name, entry.snapshot)
+        : `Moved “${entry.name}” to trash`,
+      entry,
+    });
+  };
+
   const handleSoftDelete = async (item: ConsoleEntry) => {
     if (!currentWorkspace || !item.id) return;
     const itemId = item.id;
@@ -416,23 +551,80 @@ function ConsoleExplorer(
       item.isDirectory,
     );
     if (success) {
-      setUndoStack(prev => [
-        ...prev,
-        { type: "delete", id: itemId, isDirectory: item.isDirectory },
-      ]);
+      remember({
+        type: "delete",
+        id: itemId,
+        isDirectory: item.isDirectory,
+        name: item.name,
+      });
     }
+  };
+
+  // The folder confirm's "Delete": the folder as the tree shows it NOW
+  // (its consoles and subfolders) is kept for the Undo before it goes.
+  const handleConfirmDelete = async () => {
+    const target = tree.deleteTarget as ConsoleEntry | null;
+    if (!currentWorkspace || !target?.id) {
+      tree.cancelDelete();
+      return;
+    }
+    const snapshot = target.isDirectory
+      ? (findById([...myConsoles, ...sharedWithWorkspace], target.id) ?? target)
+      : undefined;
+    const parentId = getParentFolderIdForItem(target);
+    const section = getSectionForItem(target);
+    tree.cancelDelete();
+    const success = await deleteItem(
+      currentWorkspace.id,
+      target.id,
+      target.isDirectory,
+    );
+    if (success) {
+      remember({
+        type: "delete",
+        id: target.id,
+        isDirectory: target.isDirectory,
+        name: target.name,
+        snapshot: snapshot
+          ? (JSON.parse(JSON.stringify(snapshot)) as ConsoleEntry)
+          : undefined,
+        parentId,
+        section,
+      });
+    }
+  };
+
+  const undoEntry = async (entry: UndoEntry) => {
+    if (!currentWorkspace) return;
+    setTrashToast(null);
+    if (!entry.isDirectory) {
+      const restoreConsole = useConsoleTreeStore.getState().restoreConsole;
+      const restored = await restoreConsole(currentWorkspace.id, entry.id);
+      if (!restored) return;
+      setUndoStack(prev => prev.filter(e => e !== entry));
+      // Say so — and under which name, when its own was taken meanwhile.
+      setNotice(consoleRestoredNotice(entry.name, restored.name));
+      return;
+    }
+    if (!entry.snapshot) return;
+    const outcome = await useConsoleTreeStore
+      .getState()
+      .restoreFolder(currentWorkspace.id, entry.snapshot, {
+        parentId: entry.parentId ?? null,
+        section: entry.section ?? "my",
+      });
+    setUndoStack(prev => prev.filter(e => e !== entry));
+    setNotice(
+      consoleFolderRestoredNotice(entry.name, {
+        ...outcome,
+        section: entry.section === "workspace" ? "Workspace" : "My Consoles",
+      }),
+    );
   };
 
   const handleUndo = async () => {
     if (!currentWorkspace || undoStack.length === 0) return;
-    const last = undoStack[undoStack.length - 1];
-    if (last.type === "delete" && !last.isDirectory) {
-      const restoreConsole = useConsoleTreeStore.getState().restoreConsole;
-      const success = await restoreConsole(currentWorkspace.id, last.id);
-      if (success) {
-        setUndoStack(prev => prev.slice(0, -1));
-      }
-    }
+    await undoEntry(undoStack[undoStack.length - 1]);
   };
 
   const treeRef = useRef<import("./ConsoleTree").ConsoleTreeRef | null>(null);
@@ -494,12 +686,17 @@ function ConsoleExplorer(
             searchQuery.length >= 2
               ? filterTree(sharedWithWorkspace, searchQuery)
               : sharedWithWorkspace;
+          const filteredSharedConsoles =
+            searchQuery.length >= 2
+              ? filterTree(sharedWithMe, searchQuery)
+              : sharedWithMe;
 
           const treeIds =
             searchQuery.length >= 2
               ? new Set([
                   ...collectIds(filteredMyConsoles),
                   ...collectIds(filteredWorkspaceConsoles),
+                  ...collectIds(filteredSharedConsoles),
                 ])
               : new Set<string>();
           const extraServerResults = searchResults.filter(
@@ -510,6 +707,7 @@ function ConsoleExplorer(
             searchQuery.length >= 2 &&
             filteredMyConsoles.length === 0 &&
             filteredWorkspaceConsoles.length === 0 &&
+            filteredSharedConsoles.length === 0 &&
             extraServerResults.length === 0 &&
             !searchLoading;
 
@@ -613,14 +811,13 @@ function ConsoleExplorer(
       <ConfirmDialog
         open={!!tree.deleteTarget}
         title={`Delete ${tree.deleteTarget?.isDirectory ? "Folder" : "Console"}`}
-        body={`${
-          tree.deleteTarget?.isDirectory
-            ? "This will permanently delete the folder and all its contents (subfolders and consoles)."
-            : "This will permanently delete the console."
-        } Are you sure you want to delete "${tree.deleteTarget?.name}"?`}
+        body={consoleDeleteConfirmText({
+          name: tree.deleteTarget?.name ?? "",
+          isDirectory: !!tree.deleteTarget?.isDirectory,
+        })}
         confirmLabel="Delete"
         destructive
-        onConfirm={() => void tree.confirmDelete()}
+        onConfirm={() => void handleConfirmDelete()}
         onCancel={tree.cancelDelete}
       />
 
@@ -646,11 +843,46 @@ function ConsoleExplorer(
         mode="move"
         onMove={handleMoveConfirm}
         itemName={selectedItem?.name || ""}
+        selfId={selectedItem?.id}
         isDirectory={selectedItem?.isDirectory || false}
         initialFolderId={
           selectedItem ? getParentFolderIdForItem(selectedItem) : null
         }
         initialSection={selectedItem ? getSectionForItem(selectedItem) : "my"}
+      />
+
+      <Snackbar
+        open={actionError !== null}
+        autoHideDuration={6000}
+        onClose={() => {
+          if (currentWorkspace) clearActionError(currentWorkspace.id);
+        }}
+        message={actionError ?? ""}
+      />
+      <Snackbar
+        open={trashToast !== null && actionError === null}
+        autoHideDuration={8000}
+        onClose={(_event, reason) => {
+          if (reason !== "clickaway") setTrashToast(null);
+        }}
+        message={trashToast?.message ?? ""}
+        action={
+          trashToast ? (
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => void undoEntry(trashToast.entry)}
+            >
+              Undo
+            </Button>
+          ) : undefined
+        }
+      />
+      <Snackbar
+        open={notice !== null && actionError === null && trashToast === null}
+        autoHideDuration={4000}
+        onClose={() => setNotice(null)}
+        message={notice ?? ""}
       />
     </>
   );

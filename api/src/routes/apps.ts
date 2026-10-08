@@ -56,7 +56,7 @@ import {
   checkoutBranch,
   checkoutInBox,
   commitWorktree,
-  createProject,
+  createProjectWith,
   defaultBranchSha,
   deleteProject,
   discardWorktree,
@@ -90,7 +90,9 @@ import {
   listAppFolderPaths,
   moveAppFolder,
   moveProject,
+  projectFromIndexRow,
   stampAppId,
+  supersessionWarnings,
   type AppFolderTarget,
 } from "../apps/worktree.service";
 import { loadAppsIndex, resolveAppRef } from "../apps/app-index.service";
@@ -98,6 +100,8 @@ import { parseAppRepoPath } from "../apps/app-paths";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
+  canTakePrivate,
+  canWriteApp,
 } from "../apps/app-authorization";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
@@ -774,6 +778,17 @@ appsRoutes.openapi(
             // A copied app that still declares its source's id: the index
             // filed it under its own derived id; the UI offers to stamp one.
             duplicateOf: folder.duplicateOf,
+            // Previous slugs/paths: the client resolves an old link to the
+            // app and rewrites it (UrlSync), mirroring the server's rule.
+            aliases: folder.aliases,
+            // Whether the caller may write it (rename, edit): the list does
+            // not carry `sharedWith`, so only the server can tell an app
+            // shared with the caller as an editor from any other.
+            canWrite: canWriteApp(
+              state ?? projectFromIndexRow(workspaceId, folder),
+              userId,
+              role,
+            ),
           };
         });
       // Folders of the two trees the caller can see: the workspace tree, and
@@ -804,7 +819,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Create an Apps project",
     description:
-      "Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold.",
+      "Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold. `warnings` says when the new app's name was another app's old link, which opens the new app from now on.",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam,
@@ -831,14 +846,11 @@ appsRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description, folder } = c.req.valid("json");
       const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
       let target: AppFolderTarget | undefined;
       if (folder) {
         target = folderTargetFromPath(folder);
-        const denied = authorizeFolderTarget(
-          target,
-          userId,
-          await memberRoleFor(workspaceId, userId),
-        );
+        const denied = authorizeFolderTarget(target, userId, role);
         if (denied) return c.json({ success: false, error: denied }, 403);
       }
       // Apps live in the workspace's own GitHub repo (apps.md §17). Creating
@@ -856,7 +868,7 @@ appsRoutes.openapi(
           412,
         );
       }
-      const project = await createProject({
+      const { project, takenOver } = await createProjectWith({
         workspaceId,
         title,
         description,
@@ -867,6 +879,15 @@ appsRoutes.openapi(
         {
           success: true as const,
           app: toProjectJson(project, { title, description }),
+          // The new app's name was another app's old link, which opens
+          // this one from now on.
+          warnings: await supersessionWarnings(
+            workspaceId,
+            userId,
+            role,
+            project.title,
+            takenOver,
+          ),
         },
         200,
       );
@@ -981,6 +1002,24 @@ appsRoutes.openapi(
             403,
           );
         }
+        // Into a personal tree, every app inside becomes the caller's
+        // private app: theirs to take only (authorizeAppMove).
+        if (target.scope === "private" && from.scope !== "private") {
+          const rowById = new Map(rows.map(r => [r._id.toString(), r]));
+          for (const app of inside) {
+            const taken = canTakePrivate(
+              rowById.get(app.appId) ?? projectFromIndexRow(workspaceId, app),
+              userId,
+              role,
+            );
+            if (taken) {
+              return c.json(
+                { success: false, error: `${app.path}: ${taken}` },
+                403,
+              );
+            }
+          }
+        }
       }
       const moved = await moveAppFolder(workspaceId, from, target, { userId });
       return c.json({ success: true as const, ...moved }, 200);
@@ -1035,7 +1074,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "File the app in another folder (and/or rename its folder)",
     description:
-      "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it, and nothing is rebuilt. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
+      "One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it. Filed elsewhere under the same name, an app that already has an id is not rebuilt (the index remembers the old path); any mako.json write — a stamp, a new alias, a title change — rebuilds it once. Renamed (`name`), the old folder name is recorded as an `aliases` entry in mako.json in the same commit, so the old /apps/<slug> link and old refs keep opening it. `warnings` lists any other app that loses a link: one whose old name the app now sits at or keeps as an alias. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -1065,12 +1104,18 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
       const target = folderTargetFromPath(folder);
       const source = parseAppRepoPath(appRootFor(loaded.project));
-      const denied = authorizeAppMove(source, target, userId, role);
+      const denied = authorizeAppMove(
+        source,
+        target,
+        userId,
+        role,
+        loaded.project,
+      );
       if (denied) return c.json({ success: false, error: denied }, 403);
       const moved = await moveProject(
         loaded.project,
         { ...target, slug: name },
-        { userId },
+        { userId, role },
       );
       return c.json(
         {

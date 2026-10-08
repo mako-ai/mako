@@ -1,6 +1,7 @@
 import { Box, Button, Typography } from "@mui/material";
 import { SearchX, Lock, AlertTriangle } from "lucide-react";
 import type { LoadError } from "../api";
+import { loadErrorTitle } from "../lib/entity-labels";
 
 /**
  * Shared load states for any entity opened in a tab (app, dashboard, console,
@@ -33,11 +34,7 @@ export default function EntityLoadErrorState({
   const forbidden = error.status === 403;
 
   const Icon = notFound ? SearchX : forbidden ? Lock : AlertTriangle;
-  const title = notFound
-    ? `${capitalize(entityLabel)} not found`
-    : forbidden
-      ? `You don't have access to this ${entityLabel}`
-      : `Failed to load ${entityLabel}`;
+  const title = loadErrorTitle(error, entityLabel);
   const detailText =
     detail ??
     (notFound
@@ -88,8 +85,4 @@ export function EntityLoadingState({ label }: { label: string }) {
       <Typography variant="body2">{label}</Typography>
     </Box>
   );
-}
-
-function capitalize(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
 }

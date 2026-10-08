@@ -33,6 +33,7 @@ import {
 import { CronExpressionParser } from "cron-parser";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
+import { normalizeObjectName, objectNameError } from "../lib/object-name-rules";
 import { useIsMobile } from "../hooks/useIsMobile";
 import DbtRunHistory from "./DbtRunHistory";
 import EntityLoadErrorState, {
@@ -268,11 +269,18 @@ export default function DbtJobView({
     }
   }, []);
 
+  // The server's name rules (lib/object-name-rules.ts), as you type: a
+  // name it would refuse disables Save with its reason instead of a 400
+  // banner after the PATCH. Empty keeps the old "Untitled job" fallback.
+  const nameError = formName.trim()
+    ? objectNameError("dbt_job", formName)
+    : null;
+
   const handleSave = useCallback(async () => {
-    if (!workspaceId) return;
+    if (!workspaceId || nameError) return;
     setSaving(true);
     const payload: Partial<DbtJobItem> & { name: string } = {
-      name: formName.trim() || "Untitled job",
+      name: normalizeObjectName(formName) || "Untitled job",
       environment: formEnvironment,
       commands: formCommands.map(c => c.trim()).filter(Boolean),
       schedule: formScheduleEnabled
@@ -297,6 +305,7 @@ export default function DbtJobView({
     projectId,
     jobId,
     formName,
+    nameError,
     formEnvironment,
     formCommands,
     formScheduleEnabled,
@@ -485,6 +494,8 @@ export default function DbtJobView({
             label="Job name"
             value={formName}
             onChange={e => setFormName(e.target.value)}
+            error={!!nameError}
+            helperText={nameError ?? undefined}
             sx={{ mb: 2 }}
           />
           <FormControl fullWidth size="small" sx={{ mb: 2 }}>
@@ -695,6 +706,7 @@ export default function DbtJobView({
             variant="contained"
             disabled={
               saving ||
+              !!nameError ||
               !formEnvironment ||
               formCommands.length === 0 ||
               (formScheduleEnabled && previewRuns.length === 0)

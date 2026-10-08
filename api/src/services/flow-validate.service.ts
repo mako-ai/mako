@@ -70,7 +70,7 @@ export async function validateFlowFile(input: {
         {
           path,
           reason:
-            "not a flow file: it must be `flows/<slug>.yml`, and the slug in the filename is the flow's permanent identity",
+            "not a flow file: it must be `flows/<slug>.yml` (the slug in the filename names the flow; rename it with `rename_object`)",
         },
       ],
     };
@@ -129,6 +129,62 @@ export async function validateFlowFile(input: {
     );
   }
 
+  // ---- this slug may be another flow's OLD name ---------------------------
+  // Current always wins: once this file is pushed, links that used `<slug>`
+  // to reach the renamed flow open THIS flow instead, and the renamed flow
+  // loses that alias. Legitimate (names can be reused), but worth saying.
+  const aliasHolders = await Flow.find({ workspaceId, aliases: slug })
+    .select("_id slug name")
+    .lean();
+  for (const holder of aliasHolders) {
+    if (holder.slug === slug) continue;
+    problems.push({
+      path,
+      slug,
+      reason: `note: \`${slug}\` is an old name of flow "${holder.name ?? holder.slug}" (now \`${holder.slug}\`); links that still use \`${slug}\` will open this flow once it is pushed`,
+    });
+  }
+
+  // ---- aliases: old names this file still answers to ----------------------
+  for (const alias of file.aliases ?? []) {
+    if (alias === slug) {
+      add(
+        `\`aliases:\` lists \`${slug}\`, which is this file's own slug — an alias is a PREVIOUS name`,
+      );
+      continue;
+    }
+    // Harmless but pointless: a current slug always beats an alias, so this
+    // entry would never resolve. Said as a note, not a refusal.
+    const holder = await Flow.findOne({ workspaceId, slug: alias })
+      .select("_id")
+      .lean();
+    if (holder) {
+      problems.push({
+        path,
+        slug,
+        reason: `note: alias \`${alias}\` is another flow's current slug, so it resolves to that flow, not this one`,
+      });
+      continue;
+    }
+    // An alias another flow already lists (a copied file, typically) would
+    // be claimed twice and resolve to neither; the sync drops it from the
+    // newcomer, so say so here rather than let the author expect it to work.
+    const claimant = await Flow.findOne({
+      workspaceId,
+      aliases: alias,
+      slug: { $ne: slug },
+    })
+      .select("_id slug name")
+      .lean();
+    if (claimant) {
+      problems.push({
+        path,
+        slug,
+        reason: `note: alias \`${alias}\` already belongs to flow "${claimant.name ?? claimant.slug}" (\`${claimant.slug}\`); the sync keeps it there and drops it from this file's flow`,
+      });
+    }
+  }
+
   // ---- the slug is identity: free, or already this flow's ----------------
   const existing = await Flow.findOne({ workspaceId, slug })
     .select("_id")
@@ -154,6 +210,7 @@ export async function validateFlowFiles(input: {
 }): Promise<FlowValidation> {
   const problems: FlowFileProblem[] = [];
   const seen = new Map<string, string>();
+  const aliasSeen = new Map<string, string>();
 
   for (const f of input.files) {
     const one = await validateFlowFile({
@@ -162,6 +219,24 @@ export async function validateFlowFiles(input: {
       contents: f.contents,
     });
     problems.push(...one.problems);
+
+    // One old name claimed by two files resolves to NEITHER (an ambiguous
+    // alias is never guessed), so every old link to it goes dead.
+    const parsed = parseFlowFileResult(f.contents);
+    if (parsed.ok) {
+      for (const alias of parsed.file.aliases ?? []) {
+        const first = aliasSeen.get(alias);
+        if (first && first !== f.path) {
+          problems.push({
+            path: f.path,
+            slug: slugFromFlowFilePath(f.path) ?? undefined,
+            reason: `alias \`${alias}\` is also claimed by \`${first}\`; an alias two flows claim resolves to neither`,
+          });
+        } else {
+          aliasSeen.set(alias, f.path);
+        }
+      }
+    }
 
     // Two files claiming one slug is not visible file-by-file, and the loser
     // would be silently overwritten by whichever the tree walk reached last.
@@ -172,7 +247,7 @@ export async function validateFlowFiles(input: {
         problems.push({
           path: f.path,
           slug,
-          reason: `duplicate slug: \`${first}\` already claims \`${slug}\`, and the filename is the identity`,
+          reason: `duplicate slug: \`${first}\` already claims \`${slug}\` — two files cannot share one flow's name`,
         });
       } else {
         seen.set(slug, f.path);

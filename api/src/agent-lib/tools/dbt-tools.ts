@@ -72,6 +72,12 @@ import {
   reserveJobSlug,
   resolveLiveJobRow,
 } from "../../dbt/dbt-config.service";
+import { retireObjectId } from "../../rename/retired-ids";
+import {
+  displayNameError,
+  normalizeDisplayName,
+} from "../../rename/title-rules";
+import { JOB_NAME_MAX_LENGTH } from "../../rename/dbt-job-rename";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
@@ -1259,7 +1265,11 @@ export const createDbtServerTools = (
         "schedule only when the user asks for a recurring run.",
       inputSchema: z.object({
         projectId: projectIdField,
-        name: z.string().min(1).max(128),
+        // Empty / too long: the name rule's message (rename/title-rules.ts).
+        name: z
+          .string()
+          .max(100_000)
+          .describe("Display name, up to 128 characters"),
         commands: z
           .array(z.string().min(1))
           .min(1)
@@ -1287,6 +1297,10 @@ export const createDbtServerTools = (
       }) => {
         try {
           const project = await assertProject(projectId);
+          // The rename rules for a name (rename/title-rules.ts).
+          name = normalizeDisplayName(name);
+          const nameProblem = displayNameError(name, JOB_NAME_MAX_LENGTH);
+          if (nameProblem) return { success: false, error: nameProblem };
           const env = environment ?? project.defaultEnvironment;
           const validationError = validateJob(project, {
             environment: env,
@@ -1335,7 +1349,11 @@ export const createDbtServerTools = (
       inputSchema: z.object({
         projectId: projectIdField,
         jobId: z.string().describe("dbt job ID (from read_dbt_project_tree)"),
-        name: z.string().min(1).max(128).optional(),
+        name: z
+          .string()
+          .max(100_000)
+          .optional()
+          .describe("Display name, up to 128 characters"),
         commands: z.array(z.string().min(1)).min(1).max(10).optional(),
         environment: z.string().optional(),
         schedule: z
@@ -1369,7 +1387,12 @@ export const createDbtServerTools = (
             return { success: false, error: validationError };
           }
 
-          if (updates.name !== undefined) job.name = updates.name;
+          if (updates.name !== undefined) {
+            const name = normalizeDisplayName(updates.name);
+            const nameProblem = displayNameError(name, JOB_NAME_MAX_LENGTH);
+            if (nameProblem) return { success: false, error: nameProblem };
+            job.name = name;
+          }
           job.environment = merged.environment;
           job.commands = merged.commands;
           job.schedule = merged.schedule ?? undefined;
@@ -1416,7 +1439,13 @@ export const createDbtServerTools = (
           if (!resolved.ok) return { success: false, error: resolved.error };
           const job = resolved.row;
           const name = job.name;
-          await deleteDbtJobFile(project, job.slug, actingUserId);
+          await deleteDbtJobFile(project, job.slug, actingUserId, job._id);
+          await retireObjectId(
+            project.workspaceId,
+            "dbt_job",
+            job._id,
+            job.slug,
+          );
           await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };

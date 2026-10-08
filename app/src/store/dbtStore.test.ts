@@ -12,6 +12,11 @@ vi.mock("../lib/api-client", () => ({
   },
 }));
 
+// Tab retargeting touches the console store; the rename tests only assert
+// it is asked to move the right tab.
+const tabs = vi.hoisted(() => ({ retargetDbtFileTabs: vi.fn() }));
+vi.mock("../lib/dbt-file-tabs", () => tabs);
+
 import { apiClient } from "../lib/api-client";
 import { useDbtStore } from "./dbtStore";
 
@@ -272,11 +277,16 @@ describe("project update + file list/delete/rename", () => {
     });
     await useDbtStore.getState().fetchFiles(WS, "p1");
     useDbtStore.getState().writeFile("p1", "models/a.sql", "x");
-    api.post.mockResolvedValue({ success: true });
-    const ok = await useDbtStore
+    api.post.mockResolvedValue({
+      success: true,
+      result: { warnings: ["1 console still mentions the old relation name"] },
+    });
+    const outcome = await useDbtStore
       .getState()
       .renameFile(WS, "p1", "models/a.sql", "models/b.sql");
-    expect(ok).toBe(true);
+    expect(outcome).toEqual({
+      warnings: ["1 console still mentions the old relation name"],
+    });
     const files = useDbtStore.getState().filesByProject.p1;
     expect(files["models/a.sql"]).toBeUndefined();
     expect(files["models/b.sql"].content).toBe("x");
@@ -285,12 +295,113 @@ describe("project update + file list/delete/rename", () => {
     );
     expect(api.post).toHaveBeenCalledWith(
       `/workspaces/${WS}/dbt/projects/p1/files/rename`,
-      // clientId (per-tab echo suppression) rides along with every rename.
+      // clientId (per-tab echo suppression) rides along with every rename;
+      // updateRefs defaults on (a model rename rewrites its refs).
       {
         from: "models/a.sql",
         to: "models/b.sql",
         clientId: expect.any(String),
+        updateRefs: true,
       },
+    );
+  });
+
+  it("renameFile retargets open tabs and drops stale clean buffers", async () => {
+    api.get.mockResolvedValue({
+      success: true,
+      files: [{ path: "models/a.sql" }, { path: "models/mart.sql" }],
+    });
+    await useDbtStore.getState().fetchFiles(WS, "p1");
+    useDbtStore.getState().writeFile("p1", "models/a.sql", "x");
+    // A clean, loaded buffer for a file the server may have rewritten…
+    useDbtStore.setState(state => {
+      state.filesByProject.p1["models/mart.sql"] = {
+        content: "ref('a')",
+        dirty: false,
+        loaded: true,
+      };
+    });
+    tabs.retargetDbtFileTabs.mockClear();
+    api.post.mockResolvedValue({ success: true, result: { warnings: [] } });
+    await useDbtStore
+      .getState()
+      .renameFile(WS, "p1", "models/a.sql", "models/b.sql", {
+        updateRefs: false,
+      });
+    expect(tabs.retargetDbtFileTabs).toHaveBeenCalledWith(
+      "p1",
+      "models/a.sql",
+      "models/b.sql",
+    );
+    // …is dropped so the editor re-reads it; the moved buffer survives.
+    expect(
+      useDbtStore.getState().filesByProject.p1["models/mart.sql"],
+    ).toBeUndefined();
+    expect(
+      useDbtStore.getState().filesByProject.p1["models/b.sql"],
+    ).toBeDefined();
+    expect(api.post).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ updateRefs: false }),
+    );
+  });
+
+  it("renameFile refuses while an unsaved buffer mentions the model (it would be rewritten)", async () => {
+    api.get.mockResolvedValue({
+      success: true,
+      files: [{ path: "models/a.sql" }, { path: "models/mart.sql" }],
+    });
+    await useDbtStore.getState().fetchFiles(WS, "p1");
+    useDbtStore.getState().writeFile("p1", "models/a.sql", "x");
+    useDbtStore.setState(state => {
+      state.filesByProject.p1["models/mart.sql"] = {
+        content: "select * from {{ ref('a') }}",
+        dirty: true,
+        loaded: true,
+      };
+      state.filesByProject.p1["models/other.sql"] = {
+        content: "select 1 -- unrelated unsaved edit",
+        dirty: true,
+        loaded: true,
+      };
+    });
+    api.post.mockClear();
+    const refused = await useDbtStore
+      .getState()
+      .renameFile(WS, "p1", "models/a.sql", "models/b.sql");
+    expect(refused).toBeNull();
+    expect(api.post).not.toHaveBeenCalled();
+    expect(useDbtStore.getState().error["file:p1:models/a.sql"]).toMatch(
+      /unsaved changes in models\/mart.sql first/,
+    );
+    // Without ref rewriting there is nothing to clobber: it proceeds.
+    api.post.mockResolvedValue({ success: true, result: { warnings: [] } });
+    expect(
+      await useDbtStore
+        .getState()
+        .renameFile(WS, "p1", "models/a.sql", "models/b.sql", {
+          updateRefs: false,
+        }),
+    ).toEqual({ warnings: [] });
+  });
+
+  it("a remote rename poke retargets open tabs", async () => {
+    api.get.mockResolvedValue({
+      success: true,
+      files: [{ path: "models/a.sql" }],
+    });
+    await useDbtStore.getState().fetchFiles(WS, "p1");
+    tabs.retargetDbtFileTabs.mockClear();
+    await useDbtStore
+      .getState()
+      .applyRemoteFileUpdate(WS, "p1", "models/a.sql", true, "models/b.sql");
+    expect(tabs.retargetDbtFileTabs).toHaveBeenCalledWith(
+      "p1",
+      "models/a.sql",
+      "models/b.sql",
+    );
+    expect(useDbtStore.getState().filePathsByProject.p1).not.toContain(
+      "models/a.sql",
     );
   });
 });

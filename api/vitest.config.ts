@@ -23,9 +23,15 @@ export default defineConfig({
       "src/routes/connector-reveal-secret.test.ts",
       "src/routes/source-connection-ids.test.ts",
       "src/routes/source-connection-secrets.test.ts",
+      "src/routes/source-connection-alias-type.test.ts",
       "src/routes/connector-probe.test.ts",
       "src/routes/connector-catalog-tenancy.test.ts",
       "src/agent-lib/tools/dbt-*.test.ts",
+      // Graceful rename of dbt jobs (same rig as dbt-config.service.test.ts).
+      "src/rename/dbt-job-rename.test.ts",
+      // Exhaustive rename scenarios (#1037) for dbt project files.
+      "src/rename/scenarios/dbt-file.scenarios.test.ts",
+      "src/rename/scenarios/dbt-file-scale.scenarios.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

@@ -1,7 +1,19 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { workspaceResourceLoader } from "./lib/load-resource";
 import type { Context } from "hono";
-import { ConsoleManager } from "../utils/console-manager";
+import {
+  ConsoleManager,
+  ConsoleConflictError,
+  ConsoleScopeError,
+  isWorkspaceAdminRole,
+  type ConsoleLocation,
+} from "../utils/console-manager";
+import { BlobPreconditionError } from "../apps/repository.service";
+import {
+  ConsoleNameError,
+  cleanConsoleName,
+  consolePathTakenMessage,
+  normalizeConsoleName,
+} from "../apps/console-files";
 import { canWriteResource } from "../utils/resource-acl";
 import { wouldCreateFolderCycle } from "../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
@@ -15,6 +27,7 @@ import {
   SavedConsole,
   ConsoleFolder,
   IDatabaseConnection,
+  type ConsoleAccessLevel,
   type ISavedConsole,
   ScheduledQueryRun,
 } from "../database/workspace-schema";
@@ -44,17 +57,27 @@ import {
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { buildConsoleWriteGuard } from "../services/console-save-guards";
+import {
+  buildConsoleWriteGuard,
+  consoleWriteGuardRefuses,
+} from "../services/console-save-guards";
 import { RepoRequiredError } from "../apps/config";
 import {
   commitConsoleState,
+  consoleCaseVariantAtMain,
   consoleCommitChanges,
+  consoleRowForId,
+  ConsoleFolderTwinError,
+  folderTwinOf,
   savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
   liveConsoleCode,
   loadLiveConsoleById,
+  NotThisConsoleError,
   projectSavedConsole,
+  readConsoleDefinitionAtMain,
+  repoPathForRow,
   requestConsoleDescription,
   restoreConsoleTo,
 } from "../apps/workspace-consoles.service";
@@ -90,6 +113,7 @@ function emptyConsoleTree() {
     success: true as const,
     myConsoles: [] as never[],
     sharedWithWorkspace: [] as never[],
+    sharedWithMe: [] as never[],
     tree: [] as never[],
   };
 }
@@ -233,8 +257,31 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
 consoleRoutes.use("/:id/schedule", requireWorkspaceAdmin);
 consoleRoutes.use("/:id/schedule/*", requireWorkspaceAdmin);
 
+/**
+ * Where a console is now (`ConsoleManager.consoleLocation`), for the
+ * answer of a route that moved or renamed it; undefined when it is gone.
+ */
+async function locationOfConsole(
+  workspaceId: string,
+  consoleId: string,
+): Promise<ConsoleLocation | undefined> {
+  if (!Types.ObjectId.isValid(consoleId)) return undefined;
+  const row = await SavedConsole.findOne({
+    _id: new Types.ObjectId(consoleId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  return row ? consoleManager.consoleLocation(row) : undefined;
+}
+
 // ── Sharing (collaborators + general access) ──
-const loadConsoleById = workspaceResourceLoader(SavedConsole);
+// A console listed under its derived id (pushed, not yet indexed) is
+// indexed on demand, like every other route that acts on a console by id.
+const loadConsoleById = async (c: AuthenticatedContext) => {
+  const workspaceId = c.req.param("workspaceId");
+  const id = c.req.param("id");
+  if (!workspaceId || !id || !Types.ObjectId.isValid(workspaceId)) return null;
+  return consoleRowForId(workspaceId, id);
+};
 
 registerCollaboratorRoutes(consoleRoutes, {
   resourceName: "Console",
@@ -243,6 +290,38 @@ registerCollaboratorRoutes(consoleRoutes, {
 registerSharingSettingsRoutes(consoleRoutes, {
   resourceName: "Console",
   load: loadConsoleById,
+  // A console's general access is where its file lives and who reads it:
+  // the share dialog's access goes through the one relocation (the
+  // visibility rule — owner or workspace admin — on the EFFECTIVE
+  // visibility, file moved under compare-and-swap) — never a field written
+  // on the row behind the file's back.
+  setAccess: async (c, doc, access, userId) => {
+    try {
+      await consoleManager.relocateForSave(
+        doc as unknown as ISavedConsole,
+        { access },
+        userId,
+        {
+          verb: "move",
+          publish: true,
+          bumpRevision: true,
+          isAdmin: isWorkspaceAdminRole(c.get("memberRole")),
+        },
+      );
+      return null;
+    } catch (error) {
+      if (error instanceof ConsoleScopeError) {
+        return { status: 403, error: error.message };
+      }
+      if (error instanceof ConsoleConflictError) {
+        return { status: 409, error: error.message };
+      }
+      if (error instanceof RepoRequiredError) {
+        return { status: 412, error: error.message };
+      }
+      throw error;
+    }
+  },
 });
 
 // GET /api/workspaces/:workspaceId/consoles - List all consoles (tree structure) for workspace
@@ -277,7 +356,7 @@ consoleRoutes.openapi(
         );
         const userRole = member?.role || "member";
 
-        const { myConsoles, sharedWithWorkspace } =
+        const { myConsoles, sharedWithWorkspace, sharedWithMe } =
           await consoleManager.listConsolesSplit(
             access.workspaceId,
             userId,
@@ -288,6 +367,7 @@ consoleRoutes.openapi(
           success: true,
           myConsoles,
           sharedWithWorkspace,
+          sharedWithMe,
           tree: myConsoles,
         });
       }
@@ -540,10 +620,17 @@ consoleRoutes.openapi(
         const savedStateHash = isSaved
           ? await getLatestConsoleSavedStateHash(doc)
           : undefined;
+        // Where it is (a rename or move also bumps the revision): the tab
+        // retargets its breadcrumb and visibility from this, not from a
+        // path it kept from before.
+        const location = await consoleManager.consoleLocation(doc);
         changed.push({
           id,
           draftRevision: serverRevision,
           name: doc.name,
+          path: location.path,
+          folderId: location.folderId,
+          access: location.access,
           content: doc.code,
           connectionId: doc.connectionId?.toString(),
           databaseId: doc.databaseId,
@@ -1041,10 +1128,19 @@ consoleRoutes.openapi(
       }
 
       // Check if a console already exists at this path (with a different ID)
-      const existingConsole = await consoleManager.getConsoleByPath(
+      const existingAtPath = await consoleManager.getConsoleByPath(
         consolePath,
         workspaceId,
       );
+
+      // Only a console the caller can read is a conflict to show (its
+      // content goes back in the response) or a placeholder to take over;
+      // anything else is left to the scoped save and its compare-and-swap.
+      const existingConsole =
+        existingAtPath &&
+        (await consoleManager.canReadWithInheritance(existingAtPath, user.id))
+          ? existingAtPath
+          : null;
 
       // If console exists and has a different ID, check for conflict
       // Skip conflict if existing console only has placeholder content (loading...)
@@ -1097,6 +1193,7 @@ consoleRoutes.openapi(
           language,
           isPrivate,
           access,
+          memberRole: c.get("memberRole"),
         },
       );
 
@@ -1148,7 +1245,13 @@ consoleRoutes.openapi(
           message: "Console created successfully",
           data: {
             id: savedConsole._id.toString(),
-            path: consolePath,
+            // Where it was saved, under the name it was saved as ("Q1:
+            // revenue" is saved as "Q1 - revenue"): the editor names its
+            // tab and the tree from this, never from what it asked for.
+            path:
+              (await consoleManager.consoleLocation(savedConsole)).path ??
+              consolePath,
+            name: savedConsole.name,
             content,
             connectionId: targetConnectionId,
             databaseName,
@@ -1160,6 +1263,34 @@ consoleRoutes.openapi(
       );
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      // A name no file can carry: a clear 400, nothing written.
+      if (error instanceof ConsoleNameError) {
+        return c.json({ success: false, error: error.message }, 400);
+      }
+      if (error instanceof ConsoleFolderTwinError) {
+        return c.json({ success: false, error: error.message }, 409);
+      }
+      // Saving over an existing console (by id or by path): one the caller
+      // cannot write, a visibility change that is not theirs, a taken path.
+      if (error instanceof ConsoleScopeError) {
+        return c.json({ success: false, error: error.message }, 403);
+      }
+      if (error instanceof ConsoleConflictError) {
+        return c.json({ success: false, error: error.message }, 409);
+      }
+      if (error instanceof BlobPreconditionError) {
+        return c.json(
+          {
+            success: false,
+            error: consolePathTakenMessage(
+              error.takenAs ?? error.path,
+              c.get("user")?.id,
+              error.path,
+            ),
+          },
+          409,
+        );
+      }
       logger.error("Error creating console", { error });
       return c.json(
         {
@@ -1175,9 +1306,9 @@ consoleRoutes.openapi(
   },
 );
 
-// PUT /api/workspaces/:workspaceId/consoles/:pathOrId - Update/upsert console
-// If pathOrId is a valid ObjectId, upserts by ID (used for auto-save)
-// Otherwise, saves by path (used for explicit user save to folder)
+// PUT /api/workspaces/:workspaceId/consoles/:id - Update/upsert console by
+// its id (a draft autosave, or an explicit save with `isSaved` and its
+// place in the body). Anything that is not a console id is refused (400).
 consoleRoutes.put("/:path{.+}", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId") as string;
@@ -1337,16 +1468,81 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         );
       };
 
+      // A console's name, folder and access are where its file is and who
+      // can read it: every change of them goes through the relocation
+      // (`relocateForSave` — scoped folders, free-path check, compare-and-
+      // swap, the owner-or-admin rule on the EFFECTIVE visibility), and the
+      // save then writes what the relocation left — never fields of its own.
+      const placementRefused = (error: unknown) => {
+        if (error instanceof ConsoleNameError) {
+          return c.json({ success: false, error: error.message }, 400);
+        }
+        if (
+          error instanceof ConsoleConflictError ||
+          error instanceof ConsoleFolderTwinError
+        ) {
+          return c.json({ success: false, error: error.message }, 409);
+        }
+        if (error instanceof ConsoleScopeError) {
+          return c.json({ success: false, error: error.message }, 403);
+        }
+        return null;
+      };
+      const placedFields = (row: ISavedConsole) => {
+        const access = ConsoleManager.resolveAccess(row);
+        return {
+          name: row.name,
+          folderId: row.folderId ?? null,
+          access,
+          isPrivate: access === "private",
+        };
+      };
+
+      // An explicit save never brings a deleted console back: that is a
+      // restore, which checks who may do it and restores what was committed.
+      if (isExplicitSave && existingById?.is_deleted) {
+        return c.json(
+          {
+            success: false,
+            error: "This console is deleted. Restore it before saving.",
+          },
+          409,
+        );
+      }
+
+      // An explicit save of a console that exists only in git (no row
+      // yet) and names no path keeps the file where it is: the editor's
+      // Cmd+S never sends a place (a tab's path can be stale — a rename in
+      // another window, a folder renamed since — and a save is not a move),
+      // and without one the row-less save below would project a second
+      // file instead of replacing this one.
+      const livePlace =
+        liveFile && !existingById
+          ? [...liveFile.location.folderSegments, liveFile.location.name].join(
+              "/",
+            )
+          : undefined;
+      const explicitPath =
+        typeof body.path === "string" && body.path ? body.path : livePlace;
+
       // If this is an explicit save with a path, check for path conflicts
-      if (isExplicitSave && body.path) {
-        const consolePath = body.path;
+      if (isExplicitSave && explicitPath) {
+        const consolePath = explicitPath;
         const existingConsole = await consoleManager.getConsoleByPath(
           consolePath,
           workspaceId,
         );
 
-        // If a different console exists at this path, return conflict
-        if (existingConsole && existingConsole._id.toString() !== pathOrId) {
+        // A different console at this path → the conflict dialog. Only one
+        // the caller can read: its content goes back in the response.
+        if (
+          existingConsole &&
+          existingConsole._id.toString() !== pathOrId &&
+          (await consoleManager.canReadWithInheritance(
+            existingConsole,
+            user.id,
+          ))
+        ) {
           return c.json(
             {
               success: false,
@@ -1366,21 +1562,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         // Parse path to get folder and name
         const parts = consolePath.split("/");
         const consoleName = parts[parts.length - 1];
-        let folderId: string | undefined;
-        if (parts.length > 1) {
-          const folderPath = parts.slice(0, -1);
-          folderId = await consoleManager.findOrCreateFolderPath(
-            folderPath,
-            workspaceId,
-            user.id,
-          );
-        }
 
         // Update with path information (use upsert in case console hasn't been auto-saved yet)
         const setFields: Record<string, any> = {
           code: body.content,
           name: consoleName,
-          folderId: folderId ? new Types.ObjectId(folderId) : undefined,
           connectionId: body.connectionId
             ? new Types.ObjectId(body.connectionId)
             : undefined,
@@ -1396,10 +1582,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         if (body.resultsViewMode !== undefined) {
           setFields.resultsViewMode = body.resultsViewMode;
         }
-        if (body.access !== undefined) {
-          setFields.access = body.access;
-          setFields.isPrivate = body.access === "private";
-        }
 
         const setOnInsertFields: Record<string, any> = {
           createdBy: user.id,
@@ -1408,22 +1590,149 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           executionCount: 0,
           createdAt: now,
         };
-        if (body.access === undefined) {
-          setOnInsertFields.isPrivate = true;
-          setOnInsertFields.access = "private" as const;
+
+        // An existing console: the path and the access the editor sends
+        // (the tab's EFFECTIVE visibility) are placed FIRST — a plain Cmd+S
+        // keeps its folder, a new chain is found in the console's own
+        // scope, a re-scope is the owner's or an admin's — then the content
+        // is saved onto the path the console owns. The Mongo conflict check
+        // above cannot see a laptop-pushed file; the relocation's CAS can.
+        let current: ISavedConsole | null = existingById;
+        if (current) {
+          // A stale base is refused BEFORE the relocation: the guarded
+          // write below would refuse it anyway, but only after the file had
+          // moved — a stale window's save re-placing a console renamed
+          // elsewhere, then answering "conflict" with the move kept.
+          if (
+            consoleWriteGuardRefuses(current, {
+              expectedVersion,
+              expectedDraftRevision,
+            })
+          ) {
+            return versionConflictResponse();
+          }
+          try {
+            const moved = await consoleManager.relocateForSave(
+              current,
+              { path: consolePath, access: body.access },
+              user.id,
+              { isAdmin: isAdminPut },
+            );
+            if (moved) current = moved.row;
+          } catch (error) {
+            const refused = placementRefused(error);
+            if (refused) return refused;
+            throw error;
+          }
+          Object.assign(setFields, placedFields(current));
+        } else {
+          // A brand-new console, or a git-only one saved under its derived
+          // id: its folders are found in its scope (the file's, unless the
+          // request re-scopes it — the file owner's or an admin's call).
+          const liveScope: ConsoleAccessLevel | undefined = liveFile
+            ? liveFile.location.scope === "private"
+              ? "private"
+              : "workspace"
+            : undefined;
+          if (
+            liveFile &&
+            body.access !== undefined &&
+            body.access !== liveScope &&
+            liveFile.location.ownerId !== user.id &&
+            !isAdminPut
+          ) {
+            return c.json(
+              { success: false, error: new ConsoleScopeError().message },
+              403,
+            );
+          }
+          const access: ConsoleAccessLevel =
+            body.access ?? liveScope ?? "private";
+          // A brand-new console's name is judged before any folder is
+          // made for it (a git-only console keeps the name its file has).
+          if (!liveFile) {
+            setFields.name = cleanConsoleName(
+              consoleName,
+              "console",
+              setOnInsertFields.language,
+            );
+          }
+          const folderId =
+            parts.length > 1
+              ? await consoleManager.findOrCreateFolderPath(
+                  parts.slice(0, -1),
+                  workspaceId,
+                  { access, ownerId: liveFile?.location.ownerId ?? user.id },
+                )
+              : undefined;
+          if (folderId) setFields.folderId = new Types.ObjectId(folderId);
+          setFields.access = access;
+          setFields.isPrivate = access === "private";
+          // A brand-new console must not land on a file that is already at
+          // main without a row (pushed, not synced yet).
+          const wanted = await repoPathForRow({
+            ...setOnInsertFields,
+            ...setFields,
+            workspaceId: new Types.ObjectId(workspaceId),
+          } as Parameters<typeof repoPathForRow>[0]);
+          // Nor on one whose name differs only in letter case (one file
+          // on macOS / Windows).
+          const taken =
+            wanted !== liveFile?.path &&
+            ((await readConsoleDefinitionAtMain(workspaceId, wanted))
+              ? wanted
+              : await consoleCaseVariantAtMain(
+                  workspaceId,
+                  wanted,
+                  liveFile?.path,
+                ));
+          if (taken) {
+            return c.json(
+              {
+                success: false,
+                error: consolePathTakenMessage(
+                  taken,
+                  c.get("user")?.id,
+                  wanted,
+                ),
+              },
+              409,
+            );
+          }
         }
 
         // Git first (apps.md §16.3), then the guarded row write; a lost
         // guard reverts the commit.
-        const projected = await projectSavedConsole({
-          workspaceId,
-          current: existingById ?? null,
-          previousPath: liveFile?.path ?? null,
-          set: setFields,
-          onInsert: setOnInsertFields,
-          actorUserId: user.id,
-          message: body.comment?.trim() || `save: ${consolePath}`,
-        });
+        let projected: Awaited<ReturnType<typeof projectSavedConsole>>;
+        try {
+          projected = await projectSavedConsole({
+            workspaceId,
+            current: current ?? null,
+            previousPath: liveFile?.path ?? null,
+            set: setFields,
+            onInsert: setOnInsertFields,
+            actorUserId: user.id,
+            message: body.comment?.trim() || `save: ${consolePath}`,
+          });
+        } catch (error) {
+          // A first save (draft or brand-new) found a file already at its
+          // path on main — pushed meanwhile, synced or not. The commit's
+          // compare-and-swap refused it; nothing was written.
+          if (error instanceof BlobPreconditionError) {
+            return c.json(
+              {
+                success: false,
+                error: consolePathTakenMessage(
+                  error.takenAs ?? error.path,
+                  c.get("user")?.id,
+                  error.path,
+                ),
+              },
+              409,
+            );
+          }
+          throw error;
+        }
         setFields.path = projected.path;
         setFields.sourceBlobSha = projected.sourceBlobSha;
 
@@ -1455,7 +1764,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           draftRevision: result.draftRevision ?? 1,
           console: {
             id: result._id.toString(),
+            // The name and place it was saved under (a name may have been
+            // cleaned: "Q1: revenue" → "Q1 - revenue").
             name: result.name,
+            path: (await consoleManager.consoleLocation(result)).path,
           },
         });
       }
@@ -1474,9 +1786,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         lastDraftOrigin: "user",
       };
 
-      // Only update name if explicitly provided
+      // Only update name if explicitly provided — as it will be stored
+      // and filed (a draft's name is judged on its first save).
       if (body.title !== undefined) {
-        setFields.name = body.title || "Untitled";
+        setFields.name =
+          normalizeConsoleName(String(body.title ?? "")) || "Untitled";
       }
 
       if (body.chartSpec !== undefined) setFields.chartSpec = body.chartSpec;
@@ -1494,6 +1808,43 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       }
 
       if (isExplicitSave) {
+        // A new name (title) or access on an existing console is a rename /
+        // a re-scope, not a field: the same relocation as "Rename / Move…"
+        // (free-path check, compare-and-swap, owner-or-admin visibility), and
+        // the save writes the name/folder/access it left.
+        let current: ISavedConsole | null = existingById;
+        if (current) {
+          if (body.title !== undefined || body.access !== undefined) {
+            // Same as the path branch: a stale base never relocates.
+            if (
+              consoleWriteGuardRefuses(current, {
+                expectedVersion,
+                expectedDraftRevision,
+              })
+            ) {
+              return versionConflictResponse();
+            }
+            try {
+              const moved = await consoleManager.relocateForSave(
+                current,
+                {
+                  ...(body.title !== undefined
+                    ? { name: setFields.name as string }
+                    : {}),
+                  access: body.access,
+                },
+                user.id,
+                { isAdmin: isAdminPut },
+              );
+              if (moved) current = moved.row;
+            } catch (error) {
+              const refused = placementRefused(error);
+              if (refused) return refused;
+              throw error;
+            }
+          }
+          Object.assign(setFields, placedFields(current));
+        }
         const setOnInsertFields: Record<string, any> = {
           createdBy: user.id,
           owner_id: user.id,
@@ -1501,7 +1852,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           executionCount: 0,
           createdAt: now,
         };
-        if (body.access === undefined) {
+        if (setFields.access === undefined) {
           setOnInsertFields.isPrivate = true;
           setOnInsertFields.access = "private" as const;
         }
@@ -1510,16 +1861,36 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           setOnInsertFields.name = body.title || "Untitled";
         }
 
-        const projected = await projectSavedConsole({
-          workspaceId,
-          current: existingById ?? null,
-          set: setFields,
-          onInsert: setOnInsertFields,
-          actorUserId: user.id,
-          message:
-            body.comment?.trim() ||
-            `save: ${setFields.name ?? existingById?.name ?? "console"}`,
-        });
+        let projected: Awaited<ReturnType<typeof projectSavedConsole>>;
+        try {
+          projected = await projectSavedConsole({
+            workspaceId,
+            current: current ?? null,
+            set: setFields,
+            onInsert: setOnInsertFields,
+            actorUserId: user.id,
+            message:
+              body.comment?.trim() ||
+              `save: ${setFields.name ?? existingById?.name ?? "console"}`,
+          });
+        } catch (error) {
+          // A first save found a file already at its path on main (pushed
+          // meanwhile): the compare-and-swap refused it, nothing written.
+          if (error instanceof BlobPreconditionError) {
+            return c.json(
+              {
+                success: false,
+                error: consolePathTakenMessage(
+                  error.takenAs ?? error.path,
+                  c.get("user")?.id,
+                  error.path,
+                ),
+              },
+              409,
+            );
+          }
+          throw error;
+        }
         setFields.path = projected.path;
         setFields.sourceBlobSha = projected.sourceBlobSha;
 
@@ -1552,7 +1923,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           draftRevision: result.draftRevision ?? 1,
           console: {
             id: result._id.toString(),
+            // The name and place it was saved under (a name may have been
+            // cleaned: "Q1: revenue" → "Q1 - revenue").
             name: result.name,
+            path: (await consoleManager.consoleLocation(result)).path,
           },
         });
       }
@@ -1564,16 +1938,57 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // draft-revision-checked: a stale tab gets 409 draft_conflict instead
       // of overwriting a newer draft (another tab, another user, or the
       // agent). Clients without the field keep legacy last-write-wins.
+      //
+      // A draft typed into a console that exists only in git (opened under
+      // its derived id, no row yet) is THAT console's working copy: index
+      // the file first. Upserted as a fresh row, the draft took the
+      // console's id as a private "Untitled" of the typist's, and the file
+      // was re-listed under another id — the open tab, its links and the
+      // next save no longer pointed at the console in the tree.
+      const draftTarget =
+        existingById ??
+        (liveFile ? await consoleRowForId(workspaceId, pathOrId) : null);
+      if (draftTarget?.isSaved) {
+        // A saved console's name and access are where its file is and who
+        // reads it: an autosave (a stale tab's title included) never
+        // renames or re-scopes it in the index behind the file's back —
+        // that is a rename, "Rename / Move…" or the sharing dialog, each
+        // through the relocation.
+        delete setFields.name;
+        delete setFields.access;
+        delete setFields.isPrivate;
+      } else if (draftTarget && body.access !== undefined) {
+        // A draft has no file, but who may see it is still the visibility
+        // rule's (its owner or an admin).
+        try {
+          const moved = await consoleManager.relocateForSave(
+            draftTarget,
+            { access: body.access },
+            user.id,
+            { isAdmin: isAdminPut },
+          );
+          const placed = placedFields(moved?.row ?? draftTarget);
+          setFields.access = placed.access;
+          setFields.isPrivate = placed.isPrivate;
+        } catch (error) {
+          const refused = placementRefused(error);
+          if (refused) return refused;
+          throw error;
+        }
+      }
       const setOnInsertFields: Record<string, any> = {
         createdBy: user.id,
         owner_id: user.id,
         language: "sql" as const,
-        isPrivate: true,
-        access: "private" as const,
         isSaved: false,
         executionCount: 0,
         createdAt: now,
       };
+      // Only in $setOnInsert when not in $set (MongoDB refuses a path in both).
+      if (setFields.access === undefined) {
+        setOnInsertFields.isPrivate = true;
+        setOnInsertFields.access = "private" as const;
+      }
       // Only add name to $setOnInsert if not already in $set (avoid MongoDB conflict)
       if (!setFields.name) {
         setOnInsertFields.name = "Untitled";
@@ -1582,7 +1997,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       const { filter: draftFilter, guardActive: useDraftGuard } =
         buildConsoleWriteGuard({
           baseFilter: idFilter,
-          docExists: existingById !== null,
+          docExists: draftTarget !== null,
           // Draft autosaves are deliberately NOT version-guarded (that
           // counter belongs to explicit saves).
           expectedDraftRevision,
@@ -1629,66 +2044,50 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       });
     }
 
-    // Path-based save (explicit user save to folder)
-    const consolePath = pathOrId;
-
-    // connectionId is optional - consoles can be saved without being associated with a specific database
-    let targetConnectionId = body.connectionId;
-    if (!targetConnectionId) {
-      // Try to get the first database for the workspace, but don't require it
-      const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
-      if (databases.length > 0) {
-        targetConnectionId = databases[0]._id.toString();
-      }
-      // If no databases exist, that's fine - targetConnectionId will remain undefined
-    }
-
-    const savedConsole = await consoleManager.saveConsole(
-      consolePath,
-      body.content,
-      workspaceId,
-      user.id,
-      targetConnectionId,
-      body.databaseName,
-      body.databaseId,
+    // Not a console id. A console is addressed by its id — its row's, or
+    // the id derived from its file — never by anything else: an
+    // editor-internal id (`binding:<app>:<file>`, an app binding open in
+    // the console editor, whose mount autosave PUT here) was taken for a
+    // "path" and committed a stray Workspace console named after it. No
+    // client saves by path (the editor sends the console's id, and its
+    // place in the body).
+    return c.json(
       {
-        folderId: body.folderId,
-        description: body.description,
-        language: body.language,
-        isPrivate: body.isPrivate,
-        access: body.access,
+        success: false,
+        error: "Not a console id: consoles are saved by their id.",
       },
+      400,
     );
-
-    // Create version 1 for this new console
-    const freshDocPath = await SavedConsole.findById(savedConsole._id).lean();
-    if (freshDocPath) {
-      await SavedConsole.updateOne(
-        { _id: savedConsole._id },
-        { $set: { version: 1 } },
+  } catch (error) {
+    if (error instanceof RepoRequiredError) return repoRequired(c, error);
+    // A name no file can carry (a first save's): a clear 400.
+    if (error instanceof ConsoleNameError) {
+      return c.json({ success: false, error: error.message }, 400);
+    }
+    if (error instanceof ConsoleFolderTwinError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
+    // A save's placement: a console the caller cannot write, a visibility
+    // change that is not theirs, a taken path.
+    if (error instanceof ConsoleScopeError) {
+      return c.json({ success: false, error: error.message }, 403);
+    }
+    if (error instanceof ConsoleConflictError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
+    if (error instanceof BlobPreconditionError) {
+      return c.json(
+        {
+          success: false,
+          error: consolePathTakenMessage(
+            error.takenAs ?? error.path,
+            c.get("user")?.id,
+            error.path,
+          ),
+        },
+        409,
       );
     }
-
-    requestConsoleDescription({
-      workspaceId,
-      consoleId: savedConsole._id.toString(),
-      tracking: { userId: user.id, userEmail: user.email },
-    });
-
-    return c.json({
-      success: true,
-      message: "Console updated successfully",
-      data: {
-        id: savedConsole._id.toString(),
-        path: consolePath,
-        content: body.content,
-        connectionId: targetConnectionId,
-        databaseName: body.databaseName,
-        databaseId: body.databaseId,
-        language: savedConsole.language,
-      },
-    });
-  } catch (error) {
     logger.error("Error updating console", {
       path: c.req.param("path"),
       error,
@@ -1756,10 +2155,9 @@ consoleRoutes.openapi(
         memberRename?.role === "owner" || memberRename?.role === "admin";
 
       if (Types.ObjectId.isValid(consoleId)) {
-        const existing = await SavedConsole.findOne({
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        // A console the tree lists under its derived id (pushed, not yet
+        // indexed) is indexed here, so its rename is not a 404.
+        const existing = await consoleRowForId(workspaceId, consoleId);
         if (
           existing &&
           !ConsoleManager.canWrite(
@@ -1791,40 +2189,36 @@ consoleRoutes.openapi(
         name,
         workspaceId,
         user.id,
+        isAdminRename,
       );
 
       if (success) {
-        // Bump the draft revision so revision-sync catches the rename, then
-        // poke subscribers (other tabs/users update the tab title live).
-        if (Types.ObjectId.isValid(consoleId)) {
-          const renamed = await SavedConsole.findOneAndUpdate(
-            {
-              _id: new Types.ObjectId(consoleId),
-              workspaceId: new Types.ObjectId(workspaceId),
-            },
-            { $inc: { draftRevision: 1 } },
-            { new: true },
-          );
-          if (renamed) {
-            publishRealtimeEvent(workspaceId, {
-              type: "console.updated",
-              consoleId,
-              draftRevision: renamed.draftRevision ?? 1,
-              name: renamed.name,
-              updatedBy: user.id,
-              origin: "save",
-            });
-          }
-        }
+        // The manager bumped the draft revision and poked subscribers
+        // (relocateConsole) — every rename path shares that. The answer
+        // says where the console is now, so the caller retargets its open
+        // tab from the server's word (name, folder chain, visibility).
         return c.json({
           success: true,
           message: "Console renamed successfully",
+          console: await locationOfConsole(workspaceId, consoleId),
         });
       } else {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof ConsoleNameError) {
+        return c.json({ success: false, error: error.message }, 400);
+      }
+      if (
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleFolderTwinError
+      ) {
+        return c.json({ success: false, error: error.message }, 409);
+      }
+      if (error instanceof ConsoleScopeError) {
+        return c.json({ success: false, error: error.message }, 403);
+      }
       logger.error("Error renaming console", {
         consoleId: c.req.param("id"),
         error,
@@ -1877,10 +2271,7 @@ consoleRoutes.openapi(
       }
 
       if (Types.ObjectId.isValid(consoleId)) {
-        const existing = await SavedConsole.findOne({
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        const existing = await consoleRowForId(workspaceId, consoleId);
         if (existing) {
           const ownerId = existing.owner_id || existing.createdBy;
           if (ownerId !== user.id) {
@@ -1981,6 +2372,16 @@ consoleRoutes.openapi(
         );
       }
 
+      // A copy is a read: of a console the caller can see, never of
+      // another member's private one by its id.
+      const original = await consoleRowForId(workspaceId, consoleId);
+      if (
+        !original ||
+        !(await consoleManager.canReadWithInheritance(original, user.id))
+      ) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
       const copy = await consoleManager.duplicateConsole(
         consoleId,
         workspaceId,
@@ -1992,10 +2393,14 @@ consoleRoutes.openapi(
           {
             success: true,
             message: "Console duplicated",
+            // Where the copy is: the caller's My Consoles, in `folderId`
+            // (null = its root) — the tree places it from this answer.
             data: {
               id: copy._id.toString(),
               name: copy.name,
-              folderId: copy.folderId?.toString(),
+              folderId: copy.folderId?.toString() ?? null,
+              access: "private",
+              owner_id: user.id,
             },
           },
           201,
@@ -2005,6 +2410,19 @@ consoleRoutes.openapi(
       }
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof BlobPreconditionError) {
+        return c.json(
+          {
+            success: false,
+            error: consolePathTakenMessage(
+              error.takenAs ?? error.path,
+              c.get("user")?.id,
+              error.path,
+            ),
+          },
+          409,
+        );
+      }
       logger.error("Error duplicating console", {
         consoleId: c.req.param("id"),
         error,
@@ -2062,6 +2480,42 @@ consoleRoutes.openapi(
         );
       }
 
+      // A restore writes to main: the caller must be able to write the
+      // console, and the console must be deleted (restoring a live one
+      // would commit its working copy).
+      const memberRestore = await workspaceService.getMember(
+        workspaceId,
+        user.id,
+      );
+      const doomed = Types.ObjectId.isValid(consoleId)
+        ? await SavedConsole.findOne({
+            _id: new Types.ObjectId(consoleId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          })
+        : null;
+      if (!doomed) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+      if (
+        !ConsoleManager.canWrite(
+          doomed,
+          user.id,
+          memberRestore?.role === "owner" || memberRestore?.role === "admin",
+          memberRestore?.role,
+        )
+      ) {
+        return c.json(
+          { success: false, error: "Cannot restore a read-only console" },
+          403,
+        );
+      }
+      if (!doomed.is_deleted) {
+        return c.json(
+          { success: false, error: "This console is not deleted" },
+          409,
+        );
+      }
+
       const success = await consoleManager.restoreConsole(
         consoleId,
         workspaceId,
@@ -2069,7 +2523,26 @@ consoleRoutes.openapi(
       );
 
       if (success) {
-        return c.json({ success: true, message: "Console restored" });
+        // Where it is now (a taken name brings it back as "name (2)"): the
+        // caller says so, and every open tab — another window's, one
+        // reloaded later — is told the console is back (its revision
+        // moved), so it drops the "deleted" banner and takes the name.
+        const location = await locationOfConsole(workspaceId, consoleId);
+        if (location) {
+          publishRealtimeEvent(workspaceId, {
+            type: "console.updated",
+            consoleId,
+            draftRevision: location.draftRevision,
+            name: location.name,
+            updatedBy: user.id,
+            origin: "save",
+          });
+        }
+        return c.json({
+          success: true,
+          message: "Console restored",
+          ...(location ? { console: location } : {}),
+        });
       } else {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
@@ -2588,6 +3061,18 @@ consoleRoutes.openapi(
         | "csv";
       const limit = parseInt(c.req.query("limit") || "500000", 10);
 
+      // An export RUNS the console: the same bar as POST /:id/execute — an
+      // API key needs query access, and a person must be able to open the
+      // console. Without these any member exported (ran, and read the
+      // results and the name of) another member's private console by id.
+      const apiKey = c.get("apiKey");
+      if (apiKey && restQueryAccessFromStoredScopes(apiKey.scopes) === "none") {
+        return c.json(
+          { success: false, error: "API key does not have query access" },
+          403,
+        );
+      }
+
       if (!Types.ObjectId.isValid(consoleId)) {
         return c.json({ success: false, error: "Invalid console ID" }, 400);
       }
@@ -2598,6 +3083,14 @@ consoleRoutes.openapi(
       });
 
       if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const user = c.get("user");
+      if (
+        user &&
+        !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+      ) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
 
@@ -2621,6 +3114,13 @@ consoleRoutes.openapi(
       }
 
       const startTime = Date.now();
+
+      // What execute runs, export runs: the console as committed (its file
+      // at main) — a dashboard built on a saved console must not start
+      // reading someone's unsaved draft. A console with no file yet (a
+      // draft, an unbound workspace) runs its row, as execute does.
+      const liveCode = await liveConsoleCode(workspaceId, consoleId);
+      if (liveCode) savedConsole.code = liveCode.code;
 
       let query: any = savedConsole.code;
       if (
@@ -3119,12 +3619,22 @@ async function loadReadableConsole(
       ),
     };
   }
-  const doc = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const doc = await consoleRowForId(workspaceId, consoleId);
   const memberRole = (c as AuthenticatedContext).get("memberRole");
-  if (!doc || !ConsoleManager.canRead(doc, user.id, memberRole)) {
+  // A console in the trash has no file: its path is free, and whatever
+  // holds it now (another console, maybe one private to its owner) is not
+  // its history.
+  // Whoever can OPEN it reads its history — a private console filed in a
+  // workspace folder is seen by the workspace through it (GET /content's
+  // rule): its history answered 404 to the very people reading it.
+  if (
+    !doc ||
+    doc.is_deleted ||
+    !(
+      ConsoleManager.canRead(doc, user.id, memberRole) ||
+      (await consoleManager.canReadWithInheritance(doc, user.id))
+    )
+  ) {
     return {
       errorResponse: c.json(
         { success: false, error: "Console not found" },
@@ -3240,30 +3750,25 @@ consoleRoutes.openapi(
       const loaded = await loadReadableConsole(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { sha, path: relPath } = c.req.valid("query");
-      const target = relPath ?? loaded.doc.path;
-      if (!target) {
+      if (!loaded.doc.path) {
         return c.json(
           { success: false, error: "Console has no file yet" },
           404,
         );
       }
-      // Only this console's own file (and its chart) may be read through it.
-      const own = new Set([
-        loaded.doc.path,
-        loaded.doc.path
-          ? `${loaded.doc.path.replace(/\.[^./]+(\.js)?$/, "")}.chart.json`
-          : undefined,
-      ]);
-      if (!own.has(target)) {
+      // Only this console's own file (and its chart), under the name it
+      // had IN that commit, at one of its own commits — never another
+      // console's file that once had (or later took) one of its names.
+      const versions = await consoleFileVersions(loaded.doc, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof NotThisConsoleError) {
         return c.json(
           { success: false, error: "Path is not this console" },
           403,
         );
       }
-      const versions = await consoleFileVersions(loaded.doc, sha, target);
-      return c.json({ success: true as const, versions });
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error reading console file versions", { error });
       return c.json({ success: false, error: "Failed to read the diff" }, 500);
     }
@@ -3314,6 +3819,9 @@ consoleRoutes.openapi(
       return c.json({ success: true as const, result });
     } catch (error) {
       if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      if (error instanceof NotThisConsoleError) {
+        return c.json({ success: false, error: error.message }, 404);
+      }
       logger.error("Error restoring console", { error });
       return c.json(
         {
@@ -3353,8 +3861,45 @@ async function consoleFolderWriteDenied(
 
 const consoleFolderBackend: FolderBackend = {
   createFolder: async (ctx, { name, parentId, access }) => {
+    // A folder's name is a directory name in the repo: judged like a
+    // console's, and never a case twin of a sibling in its scope.
+    let clean: string;
+    try {
+      clean = cleanConsoleName(name, "folder");
+    } catch (error) {
+      if (error instanceof ConsoleNameError) {
+        return { ok: false, status: 400, error: error.message };
+      }
+      throw error;
+    }
+    const parent = parentId
+      ? await ConsoleFolder.findOne({
+          _id: new Types.ObjectId(parentId),
+          workspaceId: new Types.ObjectId(ctx.workspaceId),
+        })
+          .select("access isPrivate")
+          .lean<{ access?: ConsoleAccessLevel; isPrivate?: boolean } | null>()
+      : null;
+    const parentAccess =
+      parent && (parent.access ?? (parent.isPrivate ? "private" : "workspace"));
+    // createFolder's own rule: under a workspace folder it is one too.
+    const scopeAccess: ConsoleAccessLevel =
+      parentAccess === "workspace" ? "workspace" : (access ?? "private");
+    const twin = await folderTwinOf(
+      ctx.workspaceId,
+      parentId,
+      { access: scopeAccess, ownerId: ctx.userId },
+      clean,
+    );
+    if (twin) {
+      return {
+        ok: false,
+        status: 409,
+        error: new ConsoleFolderTwinError(twin, clean).message,
+      };
+    }
     const folder = await consoleManager.createFolder(
-      name,
+      clean,
       ctx.workspaceId,
       ctx.userId,
       parentId ?? undefined,
@@ -3382,7 +3927,11 @@ const consoleFolderBackend: FolderBackend = {
       ctx.userId,
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
-    return { ok: true };
+    // The name it got ("Q1: x" → "Q1 - x"): the tree shows this one.
+    const renamed = await ConsoleFolder.findById(folderId)
+      .select("name")
+      .lean<{ name?: string } | null>();
+    return { ok: true, data: { name: renamed?.name ?? name } };
   },
 
   deleteFolder: async (ctx, { folderId }) => {
@@ -3392,6 +3941,7 @@ const consoleFolderBackend: FolderBackend = {
       folderId,
       ctx.workspaceId,
       ctx.userId,
+      isWorkspaceAdminRole(ctx.role),
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
     return { ok: true };
@@ -3421,21 +3971,24 @@ const consoleFolderBackend: FolderBackend = {
       parentId ?? null,
       access,
       ctx.userId,
+      isWorkspaceAdminRole(ctx.role),
     );
     if (!success) return { ok: false, status: 404, error: "Folder not found" };
     return { ok: true };
   },
 
-  moveItem: async (ctx, { itemId, folderId, access }) => {
+  moveItem: async (ctx, { itemId, folderId, access, name }) => {
     if (Types.ObjectId.isValid(itemId)) {
-      const existing = await SavedConsole.findOne({
-        _id: new Types.ObjectId(itemId),
-        workspaceId: new Types.ObjectId(ctx.workspaceId),
-      });
-      const isAdmin = ctx.role === "owner" || ctx.role === "admin";
+      // Indexed on demand: a console listed under its derived id moves too.
+      const existing = await consoleRowForId(ctx.workspaceId, itemId);
       if (
         existing &&
-        !ConsoleManager.canWrite(existing, ctx.userId, isAdmin, ctx.role)
+        !ConsoleManager.canWrite(
+          existing,
+          ctx.userId,
+          isWorkspaceAdminRole(ctx.role),
+          ctx.role,
+        )
       ) {
         return {
           ok: false,
@@ -3444,15 +3997,43 @@ const consoleFolderBackend: FolderBackend = {
         };
       }
     }
-    const success = await consoleManager.moveConsole(
-      itemId,
-      ctx.workspaceId,
-      folderId ?? null,
-      access,
-      ctx.userId,
-    );
-    if (!success) return { ok: false, status: 404, error: "Console not found" };
-    return { ok: true };
+    // A move that also renames ("Move to…" with a new name) is one commit.
+    // No `folderId` at all keeps the folder: a rename in place (a shared
+    // editor's, whose console may sit in a folder they cannot see).
+    let success: boolean;
+    try {
+      success = await consoleManager.moveConsole(
+        itemId,
+        ctx.workspaceId,
+        folderId,
+        access,
+        ctx.userId,
+        name,
+        isWorkspaceAdminRole(ctx.role),
+      );
+    } catch (error) {
+      if (error instanceof ConsoleNameError) {
+        return { ok: false, status: 400, error: error.message };
+      }
+      if (
+        error instanceof ConsoleConflictError ||
+        error instanceof ConsoleFolderTwinError
+      ) {
+        return { ok: false, status: 409, error: error.message };
+      }
+      // A visibility change is the owner's or an admin's call — the same
+      // rule rename_object applies; a shared editor may only move within.
+      if (error instanceof ConsoleScopeError) {
+        return { ok: false, status: 403, error: error.message };
+      }
+      throw error;
+    }
+    if (!success) {
+      return { ok: false, status: 404, error: "Console not found" };
+    }
+    // Where it is now: the caller retargets an open tab from this.
+    const location = await locationOfConsole(ctx.workspaceId, itemId);
+    return location ? { ok: true, data: { ...location } } : { ok: true };
   },
 };
 
@@ -3461,6 +4042,39 @@ registerFolderRoutes(consoleRoutes, {
   schemaPrefix: "Console",
   backend: consoleFolderBackend,
   createdStatus: 201,
-  onError: (c, error) =>
-    error instanceof RepoRequiredError ? repoRequired(c, error) : undefined,
+  onError: (c, error) => {
+    if (error instanceof RepoRequiredError) return repoRequired(c, error);
+    // A folder name no directory can carry, or a case twin of a sibling.
+    if (error instanceof ConsoleNameError) {
+      return c.json({ success: false, error: error.message }, 400);
+    }
+    if (error instanceof ConsoleFolderTwinError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
+    // A destination under the folder is another console's file (or a
+    // laptop-pushed file with no row yet): nothing changed, say which.
+    if (error instanceof ConsoleConflictError) {
+      return c.json({ success: false, error: error.message }, 409);
+    }
+    // A folder move/flip that would publish another member's private
+    // console (by inheritance), or a console move that changes who sees
+    // it: the owner's or an admin's call, refused before anything changed.
+    if (error instanceof ConsoleScopeError) {
+      return c.json({ success: false, error: error.message }, 403);
+    }
+    // A folder rename/move/access change moves every file under it in one
+    // compare-and-swap commit; a concurrent save or push under the folder
+    // refuses it as a whole (nothing applied) — the client retries.
+    if (error instanceof BlobPreconditionError) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Something changed in the repository under this folder (a push or a save landed meanwhile). Reload and try again.",
+        },
+        409,
+      );
+    }
+    return undefined;
+  },
 });

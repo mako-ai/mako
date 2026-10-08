@@ -165,6 +165,7 @@ export async function runConnectionCheck(input: {
     await recordConnectionCheck({
       workspaceId,
       slug: slugFromType(sourceConnection.type),
+      definitionId: sourceConnection.connectorDefinitionId,
       sourceSha: workspaceSourceSha,
       success: result.success === true,
       message: result.message,

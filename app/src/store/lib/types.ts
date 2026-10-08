@@ -120,6 +120,10 @@ export interface ConsoleTab {
   remoteUpdate?: {
     draftRevision: number;
     updatedBy?: string;
+    /** "git": a push changed it (whoever pushed), not an app window. */
+    via?: "git";
+    /** This window did it (moved it to the trash). */
+    here?: true;
     kind: "updated" | "deleted";
   } | null;
   /**

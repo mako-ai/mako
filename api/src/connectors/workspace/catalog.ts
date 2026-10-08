@@ -6,7 +6,11 @@
  * never boot a sandbox, and they must be honest about a connector that is not
  * usable yet rather than hiding it.
  */
-import { listConnectorDefinitions, loadConnectorDefinition } from "./resolver";
+import {
+  findConnectorDefinitionRow,
+  listConnectorDefinitions,
+  loadConnectorDefinition,
+} from "./resolver";
 import {
   connectionSpecificationToForm,
   type FormSchema,
@@ -31,6 +35,8 @@ export interface WorkspaceConnectorSummary {
   /** Why the last connection test failed. A bad key, not a broken connector. */
   lastCheckError?: string;
   hasIcon: boolean;
+  /** Previous slugs; connections typed `ws:<alias>` still resolve here. */
+  aliases: string[];
   source: "workspace";
 }
 
@@ -57,6 +63,7 @@ export async function listWorkspaceConnectors(
       blockedReason: row.blockedReason,
       lastCheckError: row.lastCheckError,
       hasIcon: row.hasIcon === true,
+      aliases: row.aliases ?? [],
       source: "workspace" as const,
     };
   });
@@ -96,20 +103,44 @@ export async function connectorTypeExists(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (!isWorkspaceConnectorType(type)) return { ok: true };
   const slug = slugFromType(type);
-  const row = await ConnectorDefinition.findOne({ workspaceId, slug }).lean();
-  if (!row) {
+  const found = await findConnectorDefinitionRow(workspaceId, slug);
+  if (!found) {
     return {
       ok: false,
       reason: `This workspace has no connector "${slug}". Push a folder at connectors/${slug}/ to main.`,
     };
   }
+  const row = found.row;
   if (row.status === "blocked") {
     return {
       ok: false,
-      reason: `The connector "${slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
+      reason: `The connector "${row.slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
     };
   }
   return { ok: true };
+}
+
+/**
+ * The type a connection should be STORED with: `ws:<current slug>`, even
+ * when the caller named an alias. A connection typed `ws:<old>` would keep
+ * working through the alias — until someone pushes a NEW connector at
+ * `connectors/<old>/`, at which point the live name wins and that
+ * connection's credentials would start going to the new connector's
+ * sandbox. Canonicalizing at write time closes that door; the alias stays
+ * only for connections that pre-date the rename, which the reconcile
+ * migrates (and re-points if a live `<old>` ever appears).
+ * Built-in types and unknown slugs come back unchanged.
+ */
+export async function canonicalConnectorType(
+  type: string,
+  workspaceId: string,
+): Promise<string> {
+  if (!isWorkspaceConnectorType(type)) return type;
+  const found = await findConnectorDefinitionRow(
+    workspaceId,
+    slugFromType(type),
+  );
+  return found ? `${WORKSPACE_TYPE_PREFIX}${found.row.slug}` : type;
 }
 
 export { listConnectorDefinitions };

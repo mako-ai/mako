@@ -83,3 +83,15 @@ export {
   type ValidateSyncConfigInput,
   type ValidateSyncConfigResult,
 } from "./sync-mode-matrix";
+export {
+  MAX_APP_SEGMENT_LENGTH,
+  MAX_APP_TITLE_LENGTH,
+  RESERVED_APP_SLUGS,
+  appNameProblem,
+  appTitleProblem,
+  isSafeAppSegment,
+  isWindowsDeviceName,
+  looksLikeAppId,
+  normalizeAppName,
+  type AppNameKind,
+} from "./app-names";

@@ -12,7 +12,23 @@ vi.mock("../api", async importOriginal => {
   return { ...actual, api: http };
 });
 
+// The tab store the tree retargets after a rename/move (imported lazily
+// by the tree store): which tabs are open, and what they were told.
+const tabs = vi.hoisted(() => ({
+  open: {} as Record<string, unknown>,
+  retargetConsoleTab: vi.fn(),
+}));
+vi.mock("./consoleStore", () => ({
+  useConsoleStore: {
+    getState: () => ({
+      tabs: tabs.open,
+      retargetConsoleTab: tabs.retargetConsoleTab,
+    }),
+  },
+}));
+
 import { useConsoleTreeStore, type ConsoleEntry } from "./consoleTreeStore";
+import { accessForMove } from "./lib/createResourceTreeStore";
 
 const WID = "ws-1";
 
@@ -38,17 +54,24 @@ const folder = (
 
 const names = (nodes: ConsoleEntry[]) => nodes.map(n => n.name);
 
-function seed(my: ConsoleEntry[], workspace: ConsoleEntry[] = []) {
+function seed(
+  my: ConsoleEntry[],
+  workspace: ConsoleEntry[] = [],
+  shared: ConsoleEntry[] = [],
+) {
   useConsoleTreeStore.setState({
     myItems: { [WID]: my },
     workspaceItems: { [WID]: workspace },
+    sharedItems: { [WID]: shared },
     loading: {},
     error: {},
+    actionError: {},
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  tabs.open = {};
   seed([], []);
 });
 
@@ -183,6 +206,386 @@ describe("consoleTreeStore renameItem", () => {
   });
 });
 
+describe("consoleTreeStore — an open tab follows every rename and move", () => {
+  const location = (over: Record<string, unknown> = {}) => ({
+    id: "a",
+    name: "Revenue by Day",
+    path: "finance/Revenue by Day",
+    folderId: "f",
+    access: "workspace",
+    draftRevision: 5,
+    isSaved: true,
+    ...over,
+  });
+
+  it("an inline rename retargets the tab (and the row's path) from the server's answer", async () => {
+    seed([], [folder("f", "finance", [file("a", "Revenue Daily")])]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({ success: true, console: location() }),
+    );
+
+    await expect(
+      useConsoleTreeStore
+        .getState()
+        .renameItem(WID, "a", "Revenue by Day", false),
+    ).resolves.toBe(true);
+
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("a", location());
+    const row =
+      useConsoleTreeStore.getState().workspaceItems[WID][0].children?.[0];
+    expect(row?.name).toBe("Revenue by Day");
+    expect(row?.path).toBe("finance/Revenue by Day");
+  });
+
+  it("a move (drag, Move to…, the editor's dialog) retargets the tab from the server's answer", async () => {
+    seed([], [file("a", "Revenue Daily"), folder("f", "finance")]);
+    http.PATCH.mockResolvedValueOnce(ok({ success: true, data: location() }));
+
+    await expect(
+      useConsoleTreeStore
+        .getState()
+        .moveItem(WID, "a", "f", undefined, "Revenue by Day"),
+    ).resolves.toBe(true);
+
+    expect(http.PATCH).toHaveBeenCalledWith(
+      "/api/workspaces/{workspaceId}/consoles/{id}/move",
+      {
+        params: { path: { workspaceId: WID, id: "a" } },
+        body: { folderId: "f", access: undefined, name: "Revenue by Day" },
+      },
+    );
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("a", location());
+  });
+
+  it("a refused rename says why (the row used to just snap back)", async () => {
+    seed([file("a", "mine"), file("b", "taken")]);
+    http.PATCH.mockResolvedValueOnce({
+      data: undefined,
+      error: {
+        success: false,
+        error: "A console already exists at consoles/taken.sql",
+      },
+      response: { ok: false, status: 409, statusText: "Conflict" },
+    });
+    http.GET.mockResolvedValueOnce(
+      ok({
+        success: true,
+        myConsoles: [file("a", "mine"), file("b", "taken")],
+      }),
+    );
+
+    await expect(
+      useConsoleTreeStore.getState().renameItem(WID, "a", "taken", false),
+    ).resolves.toBe(false);
+
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBe(
+      "A console already exists at consoles/taken.sql",
+    );
+    expect(tabs.retargetConsoleTab).not.toHaveBeenCalled();
+    useConsoleTreeStore.getState().clearActionError(WID);
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBeNull();
+  });
+
+  it("a folder rename re-reads where its open consoles are (location only)", async () => {
+    seed(
+      [],
+      [
+        folder("f", "New Folder", [
+          file("a", "Revenue"),
+          folder("g", "Deep", [file("b", "Deeper")]),
+        ]),
+        file("c", "Outside"),
+      ],
+    );
+    tabs.open = { a: {}, b: {} };
+    http.PATCH.mockResolvedValueOnce(ok({ success: true }));
+    http.GET.mockImplementation(async (_url: string, init: unknown) => {
+      const id = (init as { params: { query: { id: string } } }).params.query
+        .id;
+      return ok({
+        success: true,
+        id,
+        name: id === "a" ? "Revenue" : "Deeper",
+        path: id === "a" ? "finance/Revenue" : "finance/Deep/Deeper",
+        access: "workspace",
+        isSaved: true,
+        content: "SHOULD NOT BE APPLIED",
+      });
+    });
+
+    await useConsoleTreeStore.getState().renameItem(WID, "f", "finance", true);
+    await vi.waitFor(() =>
+      expect(tabs.retargetConsoleTab).toHaveBeenCalledTimes(2),
+    );
+
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("a", {
+      name: "Revenue",
+      path: "finance/Revenue",
+      access: "workspace",
+      isSaved: true,
+    });
+    expect(tabs.retargetConsoleTab).toHaveBeenCalledWith("b", {
+      name: "Deeper",
+      path: "finance/Deep/Deeper",
+      access: "workspace",
+      isSaved: true,
+    });
+    // "c" is outside the folder; nothing else was fetched.
+    expect(http.GET).toHaveBeenCalledTimes(2);
+    http.GET.mockReset();
+  });
+});
+
+describe("consoleTreeStore — the tree shows the name the server SAVED", () => {
+  it("a console renamed 'A/B: test' is sent as a NAME (no folder) and shown as saved", async () => {
+    seed([file("a", "old")]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({
+        success: true,
+        console: {
+          id: "a",
+          name: "A-B - test",
+          path: "A-B - test",
+          folderId: null,
+          access: "private",
+          draftRevision: 2,
+          isSaved: true,
+        },
+      }),
+    );
+    await expect(
+      useConsoleTreeStore.getState().renameItem(WID, "a", "A/B: test", false),
+    ).resolves.toBe(true);
+    // The "/" never reached the route that reads it as a folder.
+    expect(http.PATCH).toHaveBeenCalledWith(
+      "/api/workspaces/{workspaceId}/consoles/{id}/rename",
+      {
+        params: { path: { workspaceId: WID, id: "a" } },
+        body: { name: "A-B - test" },
+      },
+    );
+    expect(useConsoleTreeStore.getState().myItems[WID][0].name).toBe(
+      "A-B - test",
+    );
+    // …and says so, as the dialogs do.
+    expect(useConsoleTreeStore.getState().actionNotice[WID]).toBe(
+      "Saved as “A-B - test”",
+    );
+  });
+
+  it("a name saved as typed says nothing more", async () => {
+    seed([file("a", "old")]);
+    useConsoleTreeStore.setState({ actionNotice: {} });
+    http.PATCH.mockResolvedValueOnce(
+      ok({
+        success: true,
+        console: {
+          id: "a",
+          name: "plain",
+          path: "plain",
+          folderId: null,
+          access: "private",
+          draftRevision: 2,
+          isSaved: true,
+        },
+      }),
+    );
+    await useConsoleTreeStore.getState().renameItem(WID, "a", "plain", false);
+    expect(useConsoleTreeStore.getState().actionNotice[WID] ?? null).toBeNull();
+  });
+
+  it("a folder rename rewrites the paths of everything under it", async () => {
+    seed([
+      folder("f", "New Folder", [
+        { ...file("a", "Revenue"), path: "New Folder/Revenue" },
+        {
+          ...folder("g", "Deep", [
+            { ...file("b", "Deeper"), path: "New Folder/Deep/Deeper" },
+          ]),
+          path: "New Folder/Deep",
+        },
+      ]),
+    ]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({ success: true, data: { name: "Fold2" } }),
+    );
+    http.GET.mockResolvedValue(ok({ success: false }));
+    await useConsoleTreeStore.getState().renameItem(WID, "f", "Fold2", true);
+    const f = useConsoleTreeStore.getState().myItems[WID][0];
+    const byId = (id: string) =>
+      [
+        f,
+        ...(f.children ?? []),
+        ...(f.children ?? []).flatMap(c => c.children ?? []),
+      ].find(n => n.id === id);
+    expect(f.path).toBe("Fold2");
+    expect(byId("g")?.path).toBe("Fold2/Deep");
+    expect(byId("b")?.path).toBe("Fold2/Deep/Deeper");
+    expect(byId("a")?.path).toBe("Fold2/Revenue");
+    http.GET.mockReset();
+  });
+
+  it("a deleted folder stays gone even when a refetch during the delete listed it", async () => {
+    seed([folder("f", "Fold2", [file("a", "x")]), file("c", "keep")]);
+    http.DELETE.mockImplementationOnce(async () => {
+      // A tree refetch (another event) answered while the delete ran.
+      useConsoleTreeStore.setState(state => ({
+        myItems: {
+          [WID]: [folder("f", "Fold2", []), ...state.myItems[WID]],
+        },
+      }));
+      return ok({ success: true });
+    });
+    await expect(
+      useConsoleTreeStore.getState().deleteItem(WID, "f", true),
+    ).resolves.toBe(true);
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
+      "keep",
+    ]);
+  });
+
+  it("a folder rename and a new folder take the server's name", async () => {
+    seed([folder("f", "old")]);
+    http.PATCH.mockResolvedValueOnce(
+      ok({ success: true, data: { name: "Team - EMEA" } }),
+    );
+    await useConsoleTreeStore
+      .getState()
+      .renameItem(WID, "f", "Team: EMEA", true);
+    expect(useConsoleTreeStore.getState().myItems[WID][0].name).toBe(
+      "Team - EMEA",
+    );
+    http.POST.mockResolvedValueOnce(
+      ok({ success: true, data: { id: "g", name: "Q1 - plans" } }),
+    );
+    await useConsoleTreeStore
+      .getState()
+      .createFolder(WID, "Q1: plans", null, "private");
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toContain(
+      "Q1 - plans",
+    );
+  });
+});
+
+describe("consoleTreeStore restoreFolder — undoing a folder delete", () => {
+  const snapshot: ConsoleEntry = folder("f", "Fold2", [
+    file("a", "Q1"),
+    folder("g", "Deep", [file("b", "Q2")]),
+  ]);
+
+  it("recreates the folder (and its subfolder) where it was and brings each console back into it under its own name", async () => {
+    seed([folder("p", "Parent")]);
+    const created: Array<Record<string, unknown>> = [];
+    http.POST.mockImplementation(async (_url: string, init: unknown) => {
+      const body = (init as { body: Record<string, unknown> }).body;
+      created.push(body);
+      return ok({ success: true, data: { id: `new-${body.name}` } });
+    });
+    http.PATCH.mockImplementation(async () => ok({ success: true }));
+    http.GET.mockResolvedValue(ok({ success: true, myConsoles: [] }));
+    const outcome = await useConsoleTreeStore
+      .getState()
+      .restoreFolder(WID, snapshot, { parentId: "p", section: "my" });
+    expect(outcome).toEqual({
+      restored: 2,
+      failed: 0,
+      atRoot: 0,
+      folderRecreated: true,
+    });
+    expect(created).toEqual([
+      { name: "Fold2", parentId: "p", access: "private" },
+      { name: "Deep", parentId: "new-Fold2", access: "private" },
+    ]);
+    const calls = http.PATCH.mock.calls.map(([url, init]) => [
+      url,
+      (init as { params: { path: { id: string } } }).params.path.id,
+      (init as { body?: unknown }).body,
+    ]);
+    expect(calls).toEqual([
+      ["/api/workspaces/{workspaceId}/consoles/{id}/restore", "a", undefined],
+      [
+        "/api/workspaces/{workspaceId}/consoles/{id}/move",
+        "a",
+        { folderId: "new-Fold2", name: "Q1" },
+      ],
+      ["/api/workspaces/{workspaceId}/consoles/{id}/restore", "b", undefined],
+      [
+        "/api/workspaces/{workspaceId}/consoles/{id}/move",
+        "b",
+        { folderId: "new-Deep", name: "Q2" },
+      ],
+    ]);
+    // The tree is re-read once at the end.
+    expect(http.GET).toHaveBeenCalled();
+    http.POST.mockReset();
+    http.PATCH.mockReset();
+    http.GET.mockReset();
+  });
+
+  it("a folder that cannot be recreated: its consoles still come back — at the root; a console that cannot is counted", async () => {
+    seed([]);
+    http.POST.mockResolvedValue({
+      data: undefined,
+      error: { success: false, error: "A folder named 'fold2' already exists" },
+      response: { ok: false, status: 409, statusText: "Conflict" },
+    });
+    http.PATCH.mockImplementation(async (_url: string, init: unknown) => {
+      const id = (init as { params: { path: { id: string } } }).params.path.id;
+      return id === "b"
+        ? {
+            data: undefined,
+            error: { success: false, error: "Cannot restore" },
+            response: { ok: false, status: 403, statusText: "Forbidden" },
+          }
+        : ok({ success: true });
+    });
+    http.GET.mockResolvedValue(ok({ success: true, myConsoles: [] }));
+    const outcome = await useConsoleTreeStore
+      .getState()
+      .restoreFolder(WID, snapshot, { parentId: null, section: "workspace" });
+    expect(outcome).toEqual({
+      restored: 1,
+      failed: 1,
+      atRoot: 1,
+      folderRecreated: false,
+    });
+    // Only the root folder was attempted; no move into a folder that is not there.
+    expect(http.POST).toHaveBeenCalledTimes(1);
+    expect(
+      http.PATCH.mock.calls.filter(([url]) => String(url).endsWith("/move")),
+    ).toEqual([]);
+    http.POST.mockReset();
+    http.PATCH.mockReset();
+    http.GET.mockReset();
+  });
+
+  it("an old parent that is gone: the folder is recreated at the root", async () => {
+    seed([]);
+    const created: Array<Record<string, unknown>> = [];
+    http.POST.mockImplementation(async (_url: string, init: unknown) => {
+      const body = (init as { body: Record<string, unknown> }).body;
+      created.push(body);
+      return ok({ success: true, data: { id: `new-${body.name}` } });
+    });
+    http.PATCH.mockImplementation(async () => ok({ success: true }));
+    http.GET.mockResolvedValue(ok({ success: true, myConsoles: [] }));
+    await useConsoleTreeStore
+      .getState()
+      .restoreFolder(WID, folder("f", "Solo", []), {
+        parentId: "gone",
+        section: "my",
+      });
+    expect(created[0]).toEqual({
+      name: "Solo",
+      parentId: undefined,
+      access: "private",
+    });
+    http.POST.mockReset();
+    http.PATCH.mockReset();
+    http.GET.mockReset();
+  });
+});
+
 describe("consoleTreeStore extras", () => {
   it("applyRemoteRename patches the node in place without a request", () => {
     seed([], [folder("f", "shared", [file("a", "alpha"), file("b", "bravo")])]);
@@ -207,5 +610,140 @@ describe("consoleTreeStore extras", () => {
       path: "reports/monthly",
       isDirectory: false,
     });
+  });
+});
+
+describe("Move to…", () => {
+  it("sends access only when the user changed section", () => {
+    expect(accessForMove("my", "my")).toBeUndefined();
+    expect(accessForMove("workspace", "workspace")).toBeUndefined();
+    expect(accessForMove("my", "workspace")).toBe("workspace");
+    expect(accessForMove("workspace", "my")).toBe("private");
+  });
+
+  it("a refused move snaps the tree back AND keeps the server's reason for the UI", async () => {
+    seed([folder("f", "mine", [file("a", "alpha")])], [folder("g", "team")]);
+    http.PATCH.mockResolvedValueOnce({
+      data: undefined,
+      error: {
+        success: false,
+        error:
+          "Only the owner can move a console between private and workspace",
+      },
+      response: { ok: false, status: 403 },
+    });
+    http.GET.mockResolvedValueOnce(
+      ok({
+        myConsoles: [folder("f", "mine", [file("a", "alpha")])],
+        sharedWithWorkspace: [folder("g", "team")],
+      }),
+    );
+
+    const moved = await useConsoleTreeStore
+      .getState()
+      .moveItem(WID, "a", "g", "workspace");
+
+    expect(moved).toBe(false);
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBe(
+      "Only the owner can move a console between private and workspace",
+    );
+    // Snapped back: alpha is in "mine" again, not under "team".
+    const mine = useConsoleTreeStore.getState().myItems[WID][0];
+    expect(names(mine.children ?? [])).toEqual(["alpha"]);
+    expect(http.PATCH).toHaveBeenCalledWith(
+      expect.stringContaining("/{id}/move"),
+      expect.objectContaining({
+        body: { folderId: "g", access: "workspace" },
+      }),
+    );
+  });
+});
+
+describe("consoleTreeStore — Shared with me and Duplicate", () => {
+  it("lists another member's console shared with me in its own section", async () => {
+    http.GET.mockResolvedValueOnce(
+      ok({
+        success: true,
+        myConsoles: [file("m", "mine")],
+        sharedWithWorkspace: [folder("f", "finance", [file("w", "team")])],
+        sharedWithMe: [file("s", "Secret Margin")],
+      }),
+    );
+    await useConsoleTreeStore.getState().fetchTree(WID);
+    const state = useConsoleTreeStore.getState();
+    expect(names(state.sharedItems[WID])).toEqual(["Secret Margin"]);
+    // Not under Workspace (the breadcrumb says "Shared with me").
+    expect(names(state.workspaceItems[WID])).toEqual(["finance"]);
+  });
+
+  it("files a copy of a shared console in My Consoles, in the folder the server chose", async () => {
+    seed(
+      [folder("mine-td", "Team Drafts")],
+      [folder("f", "finance")],
+      [file("s", "Secret Margin")],
+    );
+    http.POST.mockResolvedValueOnce(
+      ok({
+        success: true,
+        data: {
+          id: "copy",
+          name: "Secret Margin copy",
+          folderId: "mine-td",
+          owner_id: "editor2",
+        },
+      }),
+    );
+
+    const res = await useConsoleTreeStore.getState().duplicateConsole(WID, "s");
+
+    // Where it landed, for the explorer to say so and reveal it.
+    expect(res).toEqual({
+      id: "copy",
+      name: "Secret Margin copy",
+      path: "Team Drafts/Secret Margin copy",
+    });
+    const state = useConsoleTreeStore.getState();
+    const teamDrafts = state.myItems[WID][0];
+    expect(names(teamDrafts.children ?? [])).toEqual(["Secret Margin copy"]);
+    expect(teamDrafts.children?.[0]).toMatchObject({
+      path: "Team Drafts/Secret Margin copy",
+      access: "private",
+      owner_id: "editor2",
+    });
+    // Never next to the original (Shared with me) nor under Workspace.
+    expect(names(state.sharedItems[WID])).toEqual(["Secret Margin"]);
+    expect(names(state.workspaceItems[WID])).toEqual(["finance"]);
+  });
+
+  it("files a copy at the root of My Consoles when the server says so", async () => {
+    seed([], [folder("f", "finance", [file("a", "Alpha")])]);
+    http.POST.mockResolvedValueOnce(
+      ok({
+        success: true,
+        data: { id: "copy", name: "Alpha copy", folderId: null },
+      }),
+    );
+    const res = await useConsoleTreeStore.getState().duplicateConsole(WID, "a");
+    expect(res).toEqual({ id: "copy", name: "Alpha copy", path: "Alpha copy" });
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
+      "Alpha copy",
+    ]);
+  });
+
+  it("a failed copy says why (it used to fail silently)", async () => {
+    seed([file("a", "Alpha")]);
+    http.POST.mockResolvedValueOnce({
+      data: undefined,
+      error: { success: false, error: "Could not save the copy" },
+      response: { ok: false, status: 500 },
+    });
+    const res = await useConsoleTreeStore.getState().duplicateConsole(WID, "a");
+    expect(res).toBeNull();
+    expect(useConsoleTreeStore.getState().actionError[WID]).toBe(
+      "Could not save the copy",
+    );
+    expect(names(useConsoleTreeStore.getState().myItems[WID])).toEqual([
+      "Alpha",
+    ]);
   });
 });

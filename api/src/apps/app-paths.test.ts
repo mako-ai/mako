@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
+import * as schemas from "@mako/schemas";
 import {
+  RESERVED_APP_SLUGS,
+  addManifestAliases,
   appKeyOf,
+  appTitleProblem,
   appRepoPath,
   derivedAppId,
   isSafeSegment,
+  newAppSlugProblem,
+  newSegmentProblem,
+  parseAppAliases,
   parseAppFolderPath,
   parseAppManifest,
   parseAppRepoPath,
+  setManifestTitle,
   stampManifestId,
+  stripManifestAliases,
 } from "./app-paths";
 
 // Paths -------------------------------------------------------------------
@@ -141,4 +150,139 @@ assert.equal(isSafeSegment("a/b"), false);
 assert.equal(isSafeSegment(".hidden"), false);
 assert.equal(parseAppRepoPath("apps/café")?.slug, "café");
 
-console.log("app-paths: ok");
+// Aliases ------------------------------------------------------------------
+
+// Normalized, deduplicated, and anything unusable set aside (never fatal).
+assert.deepEqual(parseAppAliases(undefined), { aliases: [], rejected: [] });
+assert.deepEqual(parseAppAliases("report"), {
+  aliases: [],
+  rejected: ["report"],
+});
+assert.deepEqual(
+  parseAppAliases([
+    " old-name ",
+    "/apps/Sales/old/",
+    "old-name",
+    "",
+    7,
+    "a/../b",
+  ]),
+  { aliases: ["old-name", "apps/Sales/old"], rejected: ["", 7, "a/../b"] },
+);
+assert.deepEqual(
+  parseAppManifest('{"title":"X","aliases":["one","two"]}', "x").aliases,
+  ["one", "two"],
+);
+assert.deepEqual(parseAppManifest('{"title":"X"}', "x").aliases, []);
+
+// addManifestAliases: append, dedupe, drop the app's current names, keep
+// everything else where it is, and refuse an unparseable manifest.
+const withAliases = addManifestAliases(
+  '{\n  "id": "5ae23997208465e4541cd59d",\n  "title": "X",\n  "entry": "src/main.tsx"\n}\n',
+  ["old", "apps/Sales/old"],
+  ["x", "apps/x"],
+);
+assert.deepEqual(JSON.parse(withAliases!), {
+  id: "5ae23997208465e4541cd59d",
+  title: "X",
+  entry: "src/main.tsx",
+  aliases: ["old", "apps/Sales/old"],
+});
+// Already recorded: the contents come back untouched (same string).
+assert.equal(addManifestAliases(withAliases, ["old"]), withAliases);
+// The app's own current name is noise and is dropped, even if it was there.
+assert.deepEqual(
+  JSON.parse(addManifestAliases(withAliases, ["x"], ["x"])!).aliases,
+  ["old", "apps/Sales/old"],
+);
+// Dropping the last alias removes the key rather than leaving `[]`.
+assert.equal(
+  "aliases" in
+    JSON.parse(addManifestAliases('{"title":"X","aliases":["x"]}', [], ["x"])!),
+  false,
+);
+assert.equal(addManifestAliases("{not json", ["old"]), null);
+assert.equal(addManifestAliases("[1,2]", ["old"]), null);
+// A missing manifest becomes a minimal one (the move stamps the id first).
+assert.deepEqual(JSON.parse(addManifestAliases(null, ["old"])!), {
+  aliases: ["old"],
+});
+
+// setManifestTitle: in place when present, after the id when not, and
+// never over a file it could not read.
+assert.deepEqual(
+  JSON.parse(
+    setManifestTitle(
+      '{"id":"5ae23997208465e4541cd59d","title":"X","entry":"e"}',
+      "Y",
+    )!,
+  ),
+  { id: "5ae23997208465e4541cd59d", title: "Y", entry: "e" },
+);
+assert.deepEqual(
+  Object.keys(
+    JSON.parse(
+      setManifestTitle('{"id":"5ae23997208465e4541cd59d","entry":"e"}', "Y")!,
+    ),
+  ),
+  ["id", "title", "entry"],
+);
+assert.deepEqual(
+  Object.keys(JSON.parse(setManifestTitle('{"entry":"e"}', "Y")!)),
+  ["title", "entry"],
+);
+const same = '{"title":"Y"}';
+assert.equal(setManifestTitle(same, "Y"), same);
+assert.equal(setManifestTitle("{oops", "Y"), null);
+
+// stripManifestAliases: a stamped copy gives the source's old names up.
+assert.deepEqual(
+  JSON.parse(
+    stripManifestAliases(
+      '{"id":"5ae23997208465e4541cd59d","title":"X","aliases":["old"]}',
+    )!,
+  ),
+  { id: "5ae23997208465e4541cd59d", title: "X" },
+);
+const noAliases = '{"title":"X"}';
+assert.equal(stripManifestAliases(noAliases), noAliases);
+assert.equal(stripManifestAliases("{oops"), null);
+
+// The naming rules are the client's too (@mako/schemas app-names.ts): the
+// rename dialog refuses, as it is typed, exactly what the server refuses,
+// in the same words. Same functions, same list — not copies.
+assert.equal(RESERVED_APP_SLUGS, schemas.RESERVED_APP_SLUGS);
+assert.equal(newAppSlugProblem("link"), schemas.appNameProblem("link", "link"));
+assert.equal(
+  newAppSlugProblem("link"),
+  "This link is reserved by Mako — pick another.",
+);
+assert.equal(
+  newAppSlugProblem("CON"),
+  "Not allowed on Windows: CON — pick another link.",
+);
+assert.equal(
+  newSegmentProblem("aux"),
+  "Not allowed on Windows: aux — pick another folder name.",
+);
+assert.equal(newSegmentProblem("link"), null);
+assert.equal(
+  appTitleProblem("a\nb"),
+  "A name can't contain line breaks, tabs or other control characters.",
+);
+for (const name of [
+  "",
+  "x".repeat(101),
+  "a/b",
+  ".x",
+  "x.",
+  "0123456789abcdef01234567",
+]) {
+  assert.ok(newAppSlugProblem(name), `refused: ${JSON.stringify(name)}`);
+  assert.doesNotMatch(
+    newAppSlugProblem(name) ?? "",
+    /app folder name|apps API/,
+  );
+}
+
+console.log("app-paths.test.ts: ok");

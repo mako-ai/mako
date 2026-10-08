@@ -27,8 +27,10 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "draft" | "save" | "agent";
+      /** "git": a push brought it in (the index sync), not an app window. */
+      via?: "git";
     }
-  | { type: "console.deleted"; consoleId: string }
+  | { type: "console.deleted"; consoleId: string; via?: "git" }
   | {
       type: "console.run.completed";
       consoleId: string;
@@ -70,6 +72,8 @@ export type RealtimeEvent =
       projectId: string;
       path: string;
       deleted?: boolean;
+      /** With `deleted`: the file was renamed to this path, not removed. */
+      renamedTo?: string;
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
@@ -77,6 +81,17 @@ export type RealtimeEvent =
       forUserId?: string;
     }
   | { type: "dbt.job.updated"; projectId: string; clientId?: string }
+  // A flow's definition, name or file name changed outside the editor
+  // (a rename through api/src/rename, by another session or the agent) —
+  // open flow stores refetch so a later form save does not write a stale
+  // name back.
+  | { type: "flow.updated"; flowId?: string; clientId?: string }
+  | {
+      type: "connection.updated";
+      connectionId: string;
+      connectionKind: "database" | "source";
+      clientId?: string;
+    }
   | {
       type: "dbt.run.updated";
       projectId: string;

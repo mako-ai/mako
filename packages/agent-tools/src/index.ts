@@ -263,6 +263,12 @@ export {
 } from "./capabilities/member-capabilities";
 
 export {
+  RENAME_CAPABILITIES,
+  type RenameCapabilityDefinition,
+  type RenameCapabilityPack,
+} from "./capabilities/rename-capabilities";
+
+export {
   AGENT_CAPABILITIES,
   AGENT_CAPABILITY_BY_NAME,
   agentCapabilitiesForSurface,

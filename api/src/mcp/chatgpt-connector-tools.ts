@@ -67,12 +67,16 @@ function clientBaseUrl(): string {
   );
 }
 
-/** Workspace deep links (same prefixes the app's Copy-link share uses). */
+/**
+ * Workspace deep links (same prefixes the app's Copy-link share uses). Apps
+ * live at `/apps/<ref>` (app/src/lib/tab-routing.ts); the id form resolves
+ * whatever the app is called today, and the client rewrites it to the slug.
+ */
 function resourceUrl(
   kind: "console" | "dashboard" | "app",
   id: string,
 ): string {
-  const prefix = { console: "c", dashboard: "d", app: "a" }[kind];
+  const prefix = { console: "c", dashboard: "d", app: "apps" }[kind];
   return `${clientBaseUrl()}/${prefix}/${id}`;
 }
 

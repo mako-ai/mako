@@ -3,6 +3,7 @@ import {
   countItems,
   filterTree,
   insertAlphabetically,
+  namesTrailOf,
   removeById,
   type ManagedTreeNode,
 } from "./tree-helpers";
@@ -115,5 +116,30 @@ describe("tree-helpers", () => {
     ];
 
     expect(countItems(nodes)).toBe(3);
+  });
+});
+
+describe("namesTrailOf — a folder's trail from the tree as it is now", () => {
+  it("reads current names, never a stale stored path", () => {
+    const nodes = [
+      {
+        id: "f",
+        name: "Fold2", // renamed inline from "New Folder"…
+        path: "New Folder", // …whose stored path was not
+        isDirectory: true,
+        children: [
+          {
+            id: "g",
+            name: "Sub",
+            path: "New Folder/Sub",
+            isDirectory: true,
+            children: [],
+          },
+        ],
+      },
+    ] as unknown as TestNode[];
+    expect(namesTrailOf(nodes, "f")).toEqual(["Fold2"]);
+    expect(namesTrailOf(nodes, "g")).toEqual(["Fold2", "Sub"]);
+    expect(namesTrailOf(nodes, "nope")).toBeNull();
   });
 });

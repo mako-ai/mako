@@ -32,7 +32,10 @@ import {
 
 // Zustand stores
 import { useSourceConnectionStore } from "../store/sourceConnectionStore";
-import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
+import {
+  cachedConnectorSchema,
+  useConnectorCatalogStore,
+} from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
 
 export interface ConnectorFieldSchema {
@@ -211,6 +214,18 @@ function SourceConnectionForm({
 
   const selectedType = watch("type");
 
+  // Set by the server when this connection's connector does not resolve
+  // (api resolver.ts): its folder was removed — a restore is a NEW
+  // connector — or its type now names another one. For a connector that is
+  // gone, saving re-sends `type`, which is how the server re-binds it to the
+  // connector that slug names now; a credential is never moved silently.
+  const connectorBinding = connector?.connectorBinding as
+    | { ok: false; problem: string; message: string }
+    | undefined;
+  const rebindOnSave =
+    connectorBinding?.problem === "definition-gone" ||
+    connectorBinding?.problem === "not-found";
+
   useEffect(() => {
     if (connector) {
       const mutableDefaults = JSON.parse(JSON.stringify(defaultValues));
@@ -226,19 +241,29 @@ function SourceConnectionForm({
       setSchema(null);
       return;
     }
-    if (schemas[selectedType]) {
-      setSchema(schemas[selectedType]);
+    const cached = cachedConnectorSchema(schemas, selectedType);
+    if (cached) {
+      // The schema is here (cached, or a request that answered meanwhile):
+      // whatever an earlier attempt said, there is nothing failing now.
+      setSchema(cached);
+      setSchemaError(null);
+      setSchemaLoading(false);
       const currentValues = form.getValues();
-      schemas[selectedType].fields.forEach((field: ConnectorFieldSchema) => {
+      cached.fields.forEach((field: ConnectorFieldSchema) => {
         if (field.type === "object_array" && !currentValues[field.name]) {
           form.setValue(field.name, []);
         }
       });
+      // A workspace connector's form is checked against the server once.
+      void fetchSchema(selectedType);
       return;
     }
     setSchemaLoading(true);
     setSchemaError(null);
+    let current = true;
     fetchSchema(selectedType).then(res => {
+      // A newer selection (or the schema arriving) owns the outcome now.
+      if (!current) return;
       if (res) {
         setSchema(res);
         const defaults = generateDefaultValues(res);
@@ -253,6 +278,9 @@ function SourceConnectionForm({
       }
       setSchemaLoading(false);
     });
+    return () => {
+      current = false;
+    };
   }, [selectedType, schemas, fetchSchema, form]);
 
   // Reveal a stored secret: the SERVER reads the ciphertext from its own
@@ -387,7 +415,7 @@ function SourceConnectionForm({
 
     const payload: Record<string, unknown> = {};
 
-    if (isNewConnector || dirtyFields.type) {
+    if (isNewConnector || dirtyFields.type || rebindOnSave) {
       payload.type = values.type;
     }
 
@@ -1085,6 +1113,12 @@ function SourceConnectionForm({
       {errorMessage && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {errorMessage}
+        </Alert>
+      )}
+
+      {connectorBinding && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {connectorBinding.message}
         </Alert>
       )}
 

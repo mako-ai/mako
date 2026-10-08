@@ -292,6 +292,18 @@ export interface ISourceConnection extends Document {
   workspaceId: Types.ObjectId;
   name: string;
   type: string;
+  /**
+   * For a workspace connector (`type` = `ws:<slug>`): the ConnectorDefinition
+   * this credential was entered for, by id. The slug in `type` is a display
+   * name that renames and aliases move around; the id never changes. Every
+   * path that turns this connection into a config schema (which fields are
+   * secret), a decryption or a sandbox run resolves THROUGH the stamp, and
+   * fails closed when the definition is gone or `type` names another one —
+   * so a credential can never run under a different connector's code.
+   * Absent on rows that predate the stamp: those resolve by current slug
+   * only, never through an alias (see the stamping migration).
+   */
+  connectorDefinitionId?: Types.ObjectId;
   description?: string;
   config: {
     // API sources
@@ -445,6 +457,16 @@ export interface ISavedConsole extends Document {
   path?: string;
   sourceBlobSha?: string;
   /**
+   * The console's EARLIER lives in the repo, oldest first: each time it went
+   * to the trash, the file it had (`path`) and the commit that deleted it
+   * (`until`). A console restored from the trash comes back as a new file
+   * (an add), where its git history stops; its history routes walk each
+   * earlier life from `until` too. Only this row's own deletions are
+   * recorded, so another console that later takes the path never gains
+   * them.
+   */
+  historySegments?: Array<{ path: string; until: string }>;
+  /**
    * The blob the current description/embedding was derived from. Generation
    * runs only while this differs from `sourceBlobSha` (§16.4).
    */
@@ -535,6 +557,13 @@ export interface ISavedConsole extends Document {
   };
   is_deleted?: boolean;
   deletedAt?: Date;
+  /**
+   * Who put it in the trash: `app` (Delete in Mako — its file removed by
+   * that delete's commit) or `git` (a push removed its file). Only a `git`
+   * deletion is undone by the file coming back at its path; an `app` one
+   * by a restore.
+   */
+  deletedVia?: "app" | "git";
   createdAt: Date;
   updatedAt: Date;
   lastExecutedAt?: Date;
@@ -948,11 +977,49 @@ export interface IFlow extends Document {
    */
   slug?: string;
   /**
+   * Previous slugs (graceful rename, api/src/rename). An old `flows/<slug>.yml`
+   * name keeps resolving to this row — by alias, and only when no row holds it
+   * as its current slug. Mirrored into the file's `aliases:` by the
+   * write-through, and recorded here alone for a laptop `git mv` the sync
+   * re-keyed in place.
+   */
+  aliases?: string[];
+  /**
+   * The commit that last moved this flow's file (a rename). A tree that does
+   * not contain it predates the rename: the push reactor must not read the
+   * old file it still shows as a new flow, nor as a rename back.
+   */
+  lastRenameCommit?: string;
+  /**
+   * When `lastRenameCommit` was made. The guard it drives expires: a rename
+   * commit still absent from main after `RENAME_GUARD_MS` is one that never
+   * landed (a divergence reset, an instance recycled before its mirror
+   * push), and the tree is then trusted again.
+   */
+  lastRenameAt?: Date;
+  /**
+   * Git blob id of the file BEFORE the last rename moved it — the blob every
+   * instance has, since it was on the mirror's main. While the guard holds,
+   * the push-sync's pairing compares against this (not `sourceBlobSha`,
+   * which the rename re-stamps to a blob only the renaming instance may
+   * have), so a laptop move that won the mirror still re-keys the row.
+   */
+  renameFromBlobSha?: string;
+  /**
    * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
    * unchanged definition makes no commit. Runtime bookkeeping, never in the
    * file itself. Derived cache — git is the store.
    */
   sourceBlobSha?: string;
+  /**
+   * Blob sha of the file at main this row last SAW — valid or not. Differs
+   * from `sourceBlobSha` exactly while the row is marked invalid: that one
+   * keeps the last definition that applied, this one is the broken blob on
+   * main. The write-through's compare-and-swap expects THIS, so fixing a
+   * broken file from the UI is allowed to overwrite it (the intended
+   * recovery) while an edit nobody has seen is still refused.
+   */
+  lastSeenBlobSha?: string;
   /**
    * Set when `flows/<slug>.yml` at main does not parse or cannot be applied.
    * Runtime must not run this definition and must never write the row back
@@ -1609,6 +1676,10 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
       type: String,
       required: true,
     },
+    connectorDefinitionId: {
+      type: Schema.Types.ObjectId,
+      ref: "ConnectorDefinition",
+    },
     description: {
       type: String,
       trim: true,
@@ -1668,6 +1739,7 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
 // Indexes
 SourceConnectionSchema.index({ workspaceId: 1 });
 SourceConnectionSchema.index({ workspaceId: 1, type: 1 });
+SourceConnectionSchema.index({ workspaceId: 1, connectorDefinitionId: 1 });
 
 /**
  * ConsoleFolder Schema
@@ -1788,6 +1860,18 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     path: { type: String },
     sourceBlobSha: { type: String },
+    historySegments: {
+      type: [
+        new Schema(
+          {
+            path: { type: String, required: true },
+            until: { type: String, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
     descriptionSourceSha: { type: String },
     descriptionSource: { type: String, enum: ["authored", "generated"] },
     code: {
@@ -1963,6 +2047,10 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     },
     deletedAt: {
       type: Date,
+    },
+    deletedVia: {
+      type: String,
+      enum: ["app", "git"],
     },
   },
   {
@@ -2315,10 +2403,20 @@ const FlowSchema = new Schema<IFlow>(
       trim: true,
       match: /^[a-z0-9][a-z0-9-]*$/,
     },
+    // Old slugs that still resolve to this row (graceful rename). `default:
+    // undefined` so a row that was never renamed carries no empty array.
+    aliases: {
+      type: [String],
+      default: undefined,
+    },
+    lastRenameCommit: { type: String },
+    lastRenameAt: { type: Date },
+    renameFromBlobSha: { type: String },
     // Change detection for the git write-through (RFC #904).
     sourceBlobSha: {
       type: String,
     },
+    lastSeenBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },
       at: { type: Date },
@@ -2637,6 +2735,9 @@ FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
 // One file per slug per workspace. Sparse so rows awaiting the backfill
 // (no slug yet) do not collide with each other on null.
 FlowSchema.index({ workspaceId: 1, slug: 1 }, { unique: true, sparse: true });
+// Old-name lookups (`api/src/rename`): one alias may legitimately appear on
+// two rows (then it resolves to neither), so not unique.
+FlowSchema.index({ workspaceId: 1, aliases: 1 }, { sparse: true });
 FlowSchema.index({ workspaceId: 1, sourceType: 1 });
 FlowSchema.index({ dataSourceId: 1 }, { sparse: true }); // Sparse since not required for database sources
 FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });
@@ -4335,6 +4436,25 @@ export interface IConnectorDefinition extends Document {
   blockedReason?: string;
   entities: string[];
   hasIcon: boolean;
+  /**
+   * Previous slugs (connector.yaml `aliases`, plus a rename git detected on
+   * a push that carried none). `ws:<alias>` resolves to this row while no
+   * live row claims the slug — api/src/rename.
+   */
+  aliases: string[];
+  /**
+   * Slugs this row USED to answer to and must not again: a new connector
+   * took the name (reconcile `releaseAliasClaim`). The file may still list
+   * them in `aliases` — a push-time sync cannot edit the file — so the
+   * index subtracts this list on every pass. Durable without a commit.
+   */
+  retiredAliases: string[];
+  /**
+   * Aliases git detected on a push that carried none in connector.yaml
+   * (a bare `git mv`). Kept apart from the file's so that editing the
+   * file can remove what the file added, while a detected one stays.
+   */
+  detectedAliases: string[];
   lastCheckedAt?: Date;
   /**
    * Why the last real connection test failed. Distinct from `blockedReason`
@@ -4368,6 +4488,9 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     blockedReason: { type: String, maxlength: 4000 },
     entities: { type: [String], default: [] },
     hasIcon: { type: Boolean, default: false },
+    aliases: { type: [String], default: [] },
+    retiredAliases: { type: [String], default: [] },
+    detectedAliases: { type: [String], default: [] },
     lastCheckedAt: { type: Date },
     lastCheckError: { type: String, maxlength: 4000 },
   },
@@ -4375,6 +4498,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
 );
 
 ConnectorDefinitionSchema.index({ workspaceId: 1, slug: 1 }, { unique: true });
+ConnectorDefinitionSchema.index({ workspaceId: 1, aliases: 1 });
 
 export const ConnectorDefinition = mongoose.model<IConnectorDefinition>(
   "ConnectorDefinition",
@@ -4645,7 +4769,17 @@ export interface IDbtJob extends Document {
   name: string;
   /** Filename identity in dbt/jobs/<slug>.yml (apps.md §23). */
   slug?: string;
+  /** Previous slugs that still resolve to this job (graceful rename). */
+  aliases?: string[];
+  /** The commit that last moved this job's file; see IFlow.lastRenameCommit. */
+  lastRenameCommit?: string;
+  /** When it was made; see IFlow.lastRenameAt. */
+  lastRenameAt?: Date;
+  /** The file's blob before the last rename; see IFlow.renameFromBlobSha. */
+  renameFromBlobSha?: string;
   sourceBlobSha?: string;
+  /** The blob at main this row last saw, valid or not; see IFlow.lastSeenBlobSha. */
+  lastSeenBlobSha?: string;
   /** Set when `dbt/jobs/<slug>.yml` is invalid; schedule is disabled. */
   definitionInvalid?: {
     reason: string;
@@ -4692,7 +4826,12 @@ const DbtJobSchema = new Schema<IDbtJob>(
     },
     name: { type: String, required: true, trim: true },
     slug: { type: String },
+    aliases: { type: [String], default: undefined },
+    lastRenameCommit: { type: String },
+    lastRenameAt: { type: Date },
+    renameFromBlobSha: { type: String },
     sourceBlobSha: { type: String },
+    lastSeenBlobSha: { type: String },
     definitionInvalid: {
       reason: { type: String },
       at: { type: Date },
@@ -4726,6 +4865,7 @@ DbtJobSchema.index(
   { unique: true, partialFilterExpression: { slug: { $type: "string" } } },
 );
 DbtJobSchema.index({ "scheduledRun.nextAt": 1, enabled: 1 }, { sparse: true });
+DbtJobSchema.index({ projectId: 1, aliases: 1 }, { sparse: true });
 
 export const DbtJob = mongoose.model<IDbtJob>("DbtJob", DbtJobSchema);
 
@@ -5617,6 +5757,26 @@ export interface IAppIndexEntry extends Document {
    * id instead and the UI offers to stamp a fresh one.
    */
   duplicateOf?: string;
+  /**
+   * Previous slugs or repo paths from the manifest's `aliases`: old links
+   * resolve here when no current slug or path claims them.
+   */
+  aliases: string[];
+  /**
+   * Previous slugs or repo paths the INDEX knows that the manifest does not
+   * carry: a laptop `git mv` seen by the sync, and renames of the manifest
+   * found in git history. Kept across syncs — a superseded one included —
+   * and readers see the union with `aliases`, minus `supersededAliases`.
+   */
+  indexAliases: string[];
+  /**
+   * Names this app claims (in `aliases` or `indexAliases`) that another app
+   * holds and has held more recently (it owns the link now); readers do not
+   * see them. Set by the sync from a move it saw, from history, or from
+   * another app's arrival at the name; carried across syncs and re-checked
+   * on each, so a name returns once nobody else holds it.
+   */
+  supersededAliases: string[];
   /** Scheduled bindings, so the scheduler never opens the repo. */
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
   /** The main commit this row was built from. */
@@ -5646,6 +5806,9 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
     description: { type: String },
     hasManifestId: { type: Boolean, required: true, default: false },
     duplicateOf: { type: String },
+    aliases: { type: [String], default: [] },
+    indexAliases: { type: [String], default: [] },
+    supersededAliases: { type: [String], default: [] },
     schedules: {
       type: [
         new Schema(
@@ -5688,6 +5851,12 @@ export interface IAppIndexHead extends Document {
   schemaVersion?: number;
   /** Every folder in the app trees, as repo-relative paths (`apps/sales`). */
   folders: string[];
+  /**
+   * The main commit up to which git history was scanned for renamed
+   * manifests (index-side aliases). Absent until a scan succeeds; the next
+   * sync scans from here, or everything when it is missing.
+   */
+  historyScannedSha?: string;
   updatedAt: Date;
 }
 
@@ -5702,6 +5871,7 @@ const AppIndexHeadSchema = new Schema<IAppIndexHead>(
     sha: { type: String, required: true },
     schemaVersion: { type: Number },
     folders: { type: [String], default: [] },
+    historyScannedSha: { type: String },
   },
   { collection: "app_index_heads", timestamps: true },
 );
@@ -5825,4 +5995,45 @@ AppWorktreeSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 export const AppWorktree = mongoose.model<IAppWorktree>(
   "AppWorktree",
   AppWorktreeSchema,
+);
+
+/**
+ * An id that once named a flow or a dbt job that has since been deleted.
+ *
+ * A flow or job born from a pushed file gets an id DERIVED from its file
+ * name (`derivedFlowId` / `derivedJobId`), deterministic so that GET/list
+ * and the push sync agree on it before the row exists. Without a record of
+ * deletions, a NEW file pushed at a deleted object's name was handed the
+ * deleted object's id — and with it the old links (`/f/<id>`), the
+ * notification rules keyed by that id, the inbound webhook URL and, for a
+ * job, the run history. A retired id is never handed to another file.
+ */
+export interface IRetiredObjectId extends Document {
+  workspaceId: Types.ObjectId;
+  kind: "flow" | "dbt_job";
+  objectId: Types.ObjectId;
+  /** The slug it had when it was deleted (for the log; not a name). */
+  slug?: string;
+  retiredAt: Date;
+}
+
+const RetiredObjectIdSchema = new Schema<IRetiredObjectId>(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, required: true },
+    kind: { type: String, enum: ["flow", "dbt_job"], required: true },
+    objectId: { type: Schema.Types.ObjectId, required: true },
+    slug: { type: String },
+    retiredAt: { type: Date, required: true },
+  },
+  { collection: "retired_object_ids" },
+);
+
+RetiredObjectIdSchema.index(
+  { workspaceId: 1, kind: 1, objectId: 1 },
+  { unique: true },
+);
+
+export const RetiredObjectId = mongoose.model<IRetiredObjectId>(
+  "RetiredObjectId",
+  RetiredObjectIdSchema,
 );

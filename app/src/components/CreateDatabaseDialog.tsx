@@ -47,7 +47,9 @@ import { isMakoDesktop } from "../lib/desktop";
 import { useForm, Controller } from "react-hook-form";
 import { trackEvent } from "../lib/analytics";
 import {
+  connectionConfigUnchanged,
   interpretCloudSaveResponse,
+  type ConnectionConfigLike,
   type PersistOutcome,
 } from "../lib/connection-save";
 import {
@@ -132,6 +134,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   // Ref to prevent infinite loops in two-way binding
   const isUpdatingFromConnectionString = useRef(false);
   const isUpdatingFromFields = useRef(false);
+
+  // Edit mode: the config as loaded, so a save that changes only the name
+  // can skip the pre-save connection test (see connectionConfigUnchanged).
+  const loadedConfig = useRef<ConnectionConfigLike | null>(null);
 
   type FormValues = {
     name: string;
@@ -391,6 +397,13 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
               type: typedDb.type,
               connection: typedDb.connection || {},
             });
+            // A copy: the form must not be able to edit the baseline.
+            loadedConfig.current = {
+              type: typedDb.type,
+              connection: JSON.parse(
+                JSON.stringify(typedDb.connection || {}),
+              ) as Record<string, unknown>,
+            };
           }
         })
         .catch(err => {
@@ -402,6 +415,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
         });
     } else {
       // Create mode: reset form
+      loadedConfig.current = null;
       reset({ name: "", type: "", connection: {} });
       setStep("select");
       setError(null);
@@ -422,6 +436,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   ]);
 
   const handleClose = () => {
+    loadedConfig.current = null;
     reset({ name: "", type: "", connection: {} });
     setError(null);
     setStep("select");
@@ -529,7 +544,15 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setError(null);
     setTestResult(null);
     try {
-      const result = await persistConnection(values, { verify: true });
+      // Renaming an existing connection (same config as loaded) is not a
+      // reason to test it: the REST rename does not, and a database that is
+      // unreachable right now must not hold a new name hostage behind
+      // "Save anyways". Any config change is still tested first.
+      const renameOnly =
+        Boolean(databaseId) &&
+        loadedConfig.current !== null &&
+        connectionConfigUnchanged(loadedConfig.current, values);
+      const result = await persistConnection(values, { verify: !renameOnly });
       if (result.outcome === "test_failed") {
         setFailedTest({ open: true, values, error: result.error });
         return;

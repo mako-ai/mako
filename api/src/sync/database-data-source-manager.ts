@@ -1,4 +1,5 @@
 import { Db, ObjectId } from "mongodb";
+import type { ConnectionBinding } from "../connectors/workspace/resolver";
 import { decryptEncrypted } from "../services/crypto.service";
 import * as dotenv from "dotenv";
 import { syncConnectorRegistry } from "./connector-registry";
@@ -36,6 +37,8 @@ export interface SourceConnectionConfig {
    * its code, its spec and its secret fields are all per-workspace.
    */
   workspaceId?: string;
+  /** The ConnectorDefinition a `ws:` credential is bound to (by id). */
+  connectorDefinitionId?: string;
   active: boolean;
   connection: any;
   settings: {
@@ -100,6 +103,7 @@ class SourceConnectionManager {
   private async getConnectorSchema(
     connectorType: string,
     workspaceId?: string,
+    binding?: ConnectionBinding,
   ): Promise<ConnectorSchema | null> {
     // A BUILT-IN connector's schema is a static method on a class that is
     // fixed for the life of the process, so caching it is free. A workspace
@@ -121,6 +125,7 @@ class SourceConnectionManager {
     const schema = await syncConnectorRegistry.getConfigSchemaForType(
       connectorType,
       workspaceId,
+      binding,
     );
     if (schema && schema.fields) {
       if (!workspaceConnector) {
@@ -165,11 +170,18 @@ class SourceConnectionManager {
         workspaceId: source.workspaceId
           ? String(source.workspaceId)
           : undefined,
+        connectorDefinitionId: source.connectorDefinitionId
+          ? String(source.connectorDefinitionId)
+          : undefined,
         active: source.isActive,
         connection: await this.decryptConfig(
           source.config,
           source.type,
           source.workspaceId ? String(source.workspaceId) : undefined,
+          {
+            type: source.type,
+            connectorDefinitionId: source.connectorDefinitionId,
+          },
         ),
         settings: {
           sync_batch_size: source.settings?.sync_batch_size || 100,
@@ -215,11 +227,21 @@ class SourceConnectionManager {
       description: source.description,
       type: source.type,
       workspaceId: source.workspaceId ? String(source.workspaceId) : undefined,
+      // The definition this credential was saved under: the connector that
+      // runs it and the schema that decrypts it are resolved by THIS id,
+      // never by a name another folder could take over (resolver.ts).
+      connectorDefinitionId: source.connectorDefinitionId
+        ? String(source.connectorDefinitionId)
+        : undefined,
       active: source.isActive,
       connection: await this.decryptConfig(
         source.config,
         source.type,
         source.workspaceId ? String(source.workspaceId) : undefined,
+        {
+          type: source.type,
+          connectorDefinitionId: source.connectorDefinitionId,
+        },
       ),
       settings: {
         sync_batch_size: source.settings?.sync_batch_size || 100,
@@ -257,11 +279,18 @@ class SourceConnectionManager {
         workspaceId: source.workspaceId
           ? String(source.workspaceId)
           : undefined,
+        connectorDefinitionId: source.connectorDefinitionId
+          ? String(source.connectorDefinitionId)
+          : undefined,
         active: source.isActive,
         connection: await this.decryptConfig(
           source.config,
           source.type,
           source.workspaceId ? String(source.workspaceId) : undefined,
+          {
+            type: source.type,
+            connectorDefinitionId: source.connectorDefinitionId,
+          },
         ),
         settings: {
           sync_batch_size: source.settings?.sync_batch_size || 100,
@@ -347,10 +376,18 @@ class SourceConnectionManager {
     config: any,
     connectorType: string,
     workspaceId?: string,
+    binding?: ConnectionBinding,
   ): Promise<any> {
     if (!config) return config;
 
-    const schema = await this.getConnectorSchema(connectorType, workspaceId);
+    // Decryption resolves THROUGH the connection's binding: a credential is
+    // only ever decrypted by the field list of the connector it was entered
+    // for (resolver.ts findConnectorDefinitionFor).
+    const schema = await this.getConnectorSchema(
+      connectorType,
+      workspaceId,
+      binding,
+    );
     if (!schema) {
       logger.warn("No schema found for connector type, skipping decryption", {
         connectorType,

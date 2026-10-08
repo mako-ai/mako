@@ -14,7 +14,11 @@
  * "Changed" is decided by the app folder's git TREE oid, not by which paths a
  * diff lists: a folder moved to another place has the same tree, so filing an
  * app under `apps/sales/` rebuilds nothing — the deployment is keyed by the
- * app's id, which the manifest carries along.
+ * app's id, which the manifest carries along — for an app that already has
+ * one. Any `mako.json` write rebuilds the app once, because a changed
+ * manifest is a changed tree: RENAMING its folder (`apps/x` → `apps/y`)
+ * writes the old name in as an alias (worktree.service moveWritesUnder), a
+ * title change rewrites `title`, and a move of a pre-ids app stamps its id.
  */
 import { loggers } from "../logging";
 import { isAncestorCommit, runGit } from "./git";

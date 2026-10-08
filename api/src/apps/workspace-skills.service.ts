@@ -25,17 +25,27 @@ import {
   boundRepoDirIfExists,
 } from "./workspace-repo-required";
 import {
+  BlobPreconditionError,
   DEFAULT_BRANCH,
+  blobOidAt,
   commitBlobsOnBranch,
   globTree,
   listTree,
   readBlob,
+  readBlobsBatch,
   repoDirFor,
   resolveCommit,
+  treeOidAt,
   type GitAuthor,
+  type IndexEntry,
+  type IndexMode,
 } from "./repository.service";
+import { findRenamedFolder } from "../rename/git-renames";
+import { isUtf8Text } from "./text-bytes";
 import {
+  SKILLS_DIR,
   SKILLS_README,
+  editSkillFrontMatterChecked,
   SKILLS_README_PATH,
   SKILL_FILE_GLOB,
   SKILL_NAME_RE,
@@ -205,21 +215,125 @@ export function invalidateSkillCatalog(workspaceId: string): void {
   catalogCache.delete(workspaceId);
 }
 
+/**
+ * Lookup order for a name (api/src/rename/types.ts): the current name,
+ * then an alias — and an alias only when exactly ONE skill claims it. Two
+ * skills both claiming `old` (a rename, then a copy that kept the
+ * frontmatter) resolve to neither: an old link must not silently open the
+ * wrong playbook. A live name always beats an alias.
+ */
+export async function resolveSkillRef(
+  workspaceId: string,
+  name: string,
+): Promise<{ skill: WorkspaceSkill; via: "current" | "alias" } | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const catalog = await loadSkillCatalog(workspaceId);
+  const current = catalog.skills.find(skill => skill.name === trimmed);
+  const claimants = catalog.skills.filter(skill =>
+    (skill.aliases ?? []).includes(trimmed),
+  );
+  // A SUPPRESSED current-name skill — an agent's unapproved proposal saved
+  // under a name a live skill was renamed away from — does not beat that
+  // skill's alias: `load_skill("old")` must keep answering with the
+  // approved playbook, not the proposal's body. The proposal is still in
+  // the catalog (listed, approvable by id); approving it retires the alias
+  // and then the live name wins as usual.
+  // Likewise among alias claimants: a suppressed proposal that also lists
+  // the old name (it was saved there, then renamed) does not make the live
+  // skill's claim ambiguous — only live claimants compete.
+  const liveClaimants = claimants.filter(skill => !skill.suppressed);
+  const liveClaimant = liveClaimants.length === 1 ? liveClaimants[0] : null;
+  if (current && !(current.suppressed && liveClaimant)) {
+    return { skill: current, via: "current" };
+  }
+  if (liveClaimant) return { skill: liveClaimant, via: "alias" };
+  if (current) return { skill: current, via: "current" };
+  return claimants.length === 1 ? { skill: claimants[0], via: "alias" } : null;
+}
+
+/**
+ * Last resort for a name nothing claims: a folder renamed by a bare
+ * `git mv` (no `aliases` written) is still a rename to git. Follows
+ * `skills/<name>/SKILL.md` through main's rename history (bounded, see
+ * rename/git-renames.ts) to the skill that lives there now. Spawns git, so
+ * callers try `resolveSkillRef` first.
+ */
+export async function resolveSkillRefThroughHistory(
+  workspaceId: string,
+  name: string,
+): Promise<{ skill: WorkspaceSkill; via: "alias" } | null> {
+  const trimmed = name.trim();
+  if (!SKILL_NAME_RE.test(trimmed)) return null;
+  if (!(await getWorkspaceRepo(workspaceId))) return null;
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  if (repoDir == null) return null;
+  const head = await resolveCommit(repoDir, MAIN);
+  if (!head) return null;
+  // One git log per (main head, name): every `load_skill` of a system skill
+  // misses the workspace catalog first, and a scan per miss would be a
+  // process spawn per turn. The answer cannot change until main moves.
+  const key = `${workspaceId}\0${head}\0${trimmed}`;
+  let moved = historyCache.get(key);
+  if (moved === undefined) {
+    moved = await findRenamedFolder(
+      repoDir,
+      MAIN,
+      SKILLS_DIR,
+      trimmed,
+      "SKILL.md",
+    );
+    historyCache.set(key, moved);
+    while (historyCache.size > MAX_CACHED_HISTORY_LOOKUPS) {
+      const oldest = historyCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      historyCache.delete(oldest);
+    }
+  }
+  if (!moved || moved === trimmed) return null;
+  const catalog = await loadSkillCatalog(workspaceId);
+  const skill = catalog.skills.find(s => s.name === moved);
+  return skill ? { skill, via: "alias" } : null;
+}
+
+/** (workspace, main head, name) → where the folder went, or null. Bounded. */
+const MAX_CACHED_HISTORY_LOOKUPS = 512;
+const historyCache = new Map<string, string | null>();
+
+/** Skills whose `aliases` list `name` (a name another skill now holds). */
+export async function aliasClaimantsOf(
+  workspaceId: string,
+  name: string,
+): Promise<WorkspaceSkill[]> {
+  const catalog = await loadSkillCatalog(workspaceId);
+  return catalog.skills.filter(skill => (skill.aliases ?? []).includes(name));
+}
+
+/** A skill by its current name or (unambiguous) alias. */
 export async function findSkill(
   workspaceId: string,
   name: string,
 ): Promise<WorkspaceSkill | null> {
-  const trimmed = name.trim();
-  const catalog = await loadSkillCatalog(workspaceId);
-  return catalog.skills.find(skill => skill.name === trimmed) ?? null;
+  return (await resolveSkillRef(workspaceId, name))?.skill ?? null;
 }
 
+/**
+ * A skill by id. Ids are derived from the name (`skillId`), so a rename
+ * changes the id; an id minted from an old name (an open Skills panel, a
+ * tool result in a transcript) still resolves through the alias — with the
+ * same one-claimant rule as names.
+ */
 export async function findSkillById(
   workspaceId: string,
   id: string,
 ): Promise<WorkspaceSkill | null> {
   const catalog = await loadSkillCatalog(workspaceId);
-  return catalog.skills.find(skill => skill.id === id) ?? null;
+  const current = catalog.skills.find(skill => skill.id === id);
+  if (current) return current;
+  const claimants = catalog.skills.filter(skill =>
+    (skill.aliases ?? []).some(alias => skillId(workspaceId, alias) === id),
+  );
+  return claimants.length === 1 ? claimants[0] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +364,17 @@ export async function skillsAdopted(repoDir: string): Promise<boolean> {
 export async function commitSkillSave(
   workspaceId: string,
   skill: WorkspaceSkillFile,
-  options: { author?: GitAuthor } = {},
+  options: {
+    author?: GitAuthor;
+    /**
+     * A skill that still lists `skill.name` among its `aliases`: the new
+     * skill takes the name, so the alias is retired from that file in the
+     * same commit (a name must have one answer). Its file is rewritten
+     * only when it parses; otherwise the save is refused rather than
+     * leaving two claimants or clobbering a hand-written file.
+     */
+    retireAliasFrom?: string;
+  } = {},
 ): Promise<void> {
   const repoDir = await requireWorkspaceRepo(workspaceId);
   await freshenBeforeMainWrite(workspaceId);
@@ -259,12 +383,54 @@ export async function commitSkillSave(
     writes[SKILLS_README_PATH] = SKILLS_README;
   }
   writes[skillFilePath(skill.name)] = serializeSkillFile(skill);
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes },
-    { message: `Save skill "${skill.name}"`, author: options.author },
-  );
+  let message = `Save skill "${skill.name}"`;
+  const expectBlobs: Record<string, string | null> = {};
+  if (options.retireAliasFrom) {
+    const path = skillFilePath(options.retireAliasFrom);
+    // Pinned: the other skill's file is edited from what was read here,
+    // and a save racing this one must refuse, not be overwritten.
+    const head = await resolveCommit(repoDir, MAIN);
+    expectBlobs[path] = head ? await blobOidAt(repoDir, head, path) : null;
+    const raw = await readRepoFile(repoDir, path);
+    const parsed =
+      raw === null ? null : parseSkillFile(options.retireAliasFrom, raw);
+    if (!parsed) {
+      throw new Error(
+        `"${skill.name}" is a previous name of the skill "${options.retireAliasFrom}", whose SKILL.md does not parse; fix it before reusing the name`,
+      );
+    }
+    // A line edit of the front matter: the retired skill's file is one
+    // the user did not touch, and nothing but its alias list may change.
+    // Re-parsed before it is written — a file this cannot edit safely is
+    // refused, and the save does not happen.
+    const edited = editSkillFrontMatterChecked(
+      options.retireAliasFrom,
+      raw as string,
+      {
+        aliases: (parsed.aliases ?? []).filter(a => a !== skill.name),
+      },
+    );
+    if (!edited.ok) {
+      throw new Error(
+        `"${skill.name}" is a previous name of the skill "${options.retireAliasFrom}": ${edited.reason}`,
+      );
+    }
+    writes[path] = edited.contents;
+    message += ` (retires the alias from "${options.retireAliasFrom}")`;
+  }
+  try {
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes },
+      { message, author: options.author, expectBlobs },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new Error(`${error.path} changed on main while saving — retry.`);
+    }
+    throw error;
+  }
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
 }
@@ -313,6 +479,14 @@ export async function commitSkillFlags(
   name: string,
   flags: { suppressed?: boolean; pinned?: boolean },
   author?: GitAuthor,
+  options: {
+    /**
+     * Activating a proposal that was saved under a name another skill
+     * still lists as an alias: the activated skill takes the name, so
+     * that alias is retired in the same commit (see commitSkillSave).
+     */
+    retireAliasFrom?: string;
+  } = {},
 ): Promise<boolean> {
   if (!SKILL_NAME_RE.test(name)) return false;
   await requireWorkspaceRepo(workspaceId);
@@ -335,15 +509,248 @@ export async function commitSkillFlags(
     verbs.push(next.suppressed ? "Suppress" : "Unsuppress");
   }
   if (next.pinned !== parsed.pinned) verbs.push(next.pinned ? "Pin" : "Unpin");
-  await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    { writes: { [path]: serializeSkillFile(next) } },
-    { message: `${verbs.join(" + ")} skill "${name}"`, author },
-  );
+  const writes: Record<string, string> = { [path]: serializeSkillFile(next) };
+  let message = `${verbs.join(" + ")} skill "${name}"`;
+  const expectBlobs: Record<string, string | null> = {};
+  if (options.retireAliasFrom && !next.suppressed) {
+    const otherPath = skillFilePath(options.retireAliasFrom);
+    const head = await resolveCommit(repoDir, MAIN);
+    expectBlobs[otherPath] = head
+      ? await blobOidAt(repoDir, head, otherPath)
+      : null;
+    const otherRaw = await readRepoFile(repoDir, otherPath);
+    const other =
+      otherRaw === null
+        ? null
+        : parseSkillFile(options.retireAliasFrom, otherRaw);
+    const edited =
+      other && otherRaw !== null
+        ? editSkillFrontMatterChecked(options.retireAliasFrom, otherRaw, {
+            aliases: (other.aliases ?? []).filter(a => a !== name),
+          })
+        : ({
+            ok: false,
+            reason: `skills/${options.retireAliasFrom}/SKILL.md does not parse`,
+          } as const);
+    if (!edited.ok) {
+      throw new Error(
+        `"${name}" is a previous name of the skill "${options.retireAliasFrom}": ${edited.reason}; fix it before activating`,
+      );
+    }
+    writes[otherPath] = edited.contents;
+    message += ` (retires the alias from "${options.retireAliasFrom}")`;
+  }
+  try {
+    await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes },
+      { message, author, expectBlobs },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      throw new Error(`${error.path} changed on main while saving — retry.`);
+    }
+    throw error;
+  }
   invalidateSkillCatalog(workspaceId);
   queueMirrorPush(workspaceId);
   return true;
+}
+
+export type SkillRenameOutcome =
+  | { ok: true; commitOid: string; aliasesAdded: string[]; moved: string[] }
+  | {
+      ok: false;
+      status: 400 | 404 | 409;
+      error: string;
+    };
+
+/**
+ * Rename a skill: move `skills/<from>/` to `skills/<to>/` (every file in
+ * the folder, references included) and record `from` in the SKILL.md
+ * front matter `aliases`, in ONE commit on main. The old name keeps
+ * resolving (`resolveSkillRef`), and the record travels with the file.
+ *
+ * Refusals, in the order they are checked: bad names; `from` not a skill
+ * (by current name — an alias is not a thing to rename again); `to`
+ * already a skill's current name (never shadow a live one); `to` an alias
+ * of ANOTHER skill (its old links would start opening this one). Renaming
+ * back to one of the skill's OWN aliases is fine: the alias list just
+ * swaps. A SKILL.md that does not parse is refused rather than rewritten —
+ * a rename must not lose a byte of a playbook someone wrote by hand.
+ */
+export async function commitSkillRename(
+  workspaceId: string,
+  from: string,
+  to: string,
+  author?: GitAuthor,
+): Promise<SkillRenameOutcome> {
+  const fromName = from.trim();
+  const toName = to.trim();
+  if (!SKILL_NAME_RE.test(fromName) || !SKILL_NAME_RE.test(toName)) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Skill names must be lowercase snake_case (a-z, 0-9, _)",
+    };
+  }
+  if (fromName === toName) {
+    return { ok: false, status: 400, error: "The new name is the old name" };
+  }
+  await requireWorkspaceRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  await freshenBeforeMainWrite(workspaceId);
+  invalidateSkillCatalog(workspaceId);
+  const catalog = await loadSkillCatalog(workspaceId);
+  const current = catalog.skills.find(skill => skill.name === fromName);
+  if (!current) {
+    return { ok: false, status: 404, error: `No skill named "${fromName}"` };
+  }
+  if (catalog.skills.some(skill => skill.name === toName)) {
+    return {
+      ok: false,
+      status: 409,
+      error: `A skill named "${toName}" already exists`,
+    };
+  }
+  const claimant = catalog.skills.find(
+    skill => skill !== current && (skill.aliases ?? []).includes(toName),
+  );
+  if (claimant) {
+    return {
+      ok: false,
+      status: 409,
+      error: `"${toName}" is a previous name of the skill "${claimant.name}"; old links to it would open this skill instead`,
+    };
+  }
+  const head = await resolveCommit(repoDir, MAIN);
+  const oldEntries = head
+    ? (await listTree(repoDir, head)).filter(e =>
+        e.path.startsWith(`skills/${fromName}/`),
+      )
+    : [];
+  const oldPaths = oldEntries.map(e => e.path);
+  if (!head || oldPaths.length === 0) {
+    return {
+      ok: false,
+      status: 404,
+      error: `No files under skills/${fromName}/`,
+    };
+  }
+  if (
+    (await listTree(repoDir, head)).some(e =>
+      e.path.startsWith(`skills/${toName}/`),
+    )
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      error: `skills/${toName}/ already has files`,
+    };
+  }
+  // Read at the commit whose tree was listed — the same one the commit
+  // below pins — never at the live ref, which may already have moved.
+  let raw: string | null = null;
+  try {
+    const bytes = (
+      await readBlobsBatch(repoDir, head, [skillFilePath(fromName)])
+    ).get(skillFilePath(fromName));
+    if (bytes && !bytes.includes(0)) {
+      if (!isUtf8Text(bytes)) {
+        return {
+          ok: false,
+          status: 400,
+          error: `skills/${fromName}/SKILL.md is not UTF-8 text, so Mako cannot edit it without changing its bytes — rename it with git and add \`aliases: [${fromName}]\` by hand`,
+        };
+      }
+      raw = bytes.toString("utf8");
+    }
+  } catch {
+    raw = null;
+  }
+  const parsed = raw === null ? null : parseSkillFile(fromName, raw);
+  if (!parsed) {
+    return {
+      ok: false,
+      status: 400,
+      error: `skills/${fromName}/SKILL.md does not parse; fix its front matter before renaming so nothing is lost`,
+    };
+  }
+  const aliases = [...new Set([...(parsed.aliases ?? []), fromName])].filter(
+    alias => alias !== toName,
+  );
+  const aliasesAdded = aliases.filter(a => !(parsed.aliases ?? []).includes(a));
+  // Only `name` and `aliases` change; comments, license, allowed-tools,
+  // metadata and the body are the author's and are kept byte for byte.
+  // The moved file is re-parsed under its NEW folder name before anything
+  // is committed; a front matter the editor cannot handle is a 409 with
+  // the hand fix, and the folder stays where it is.
+  const renamedFile = editSkillFrontMatterChecked(toName, raw as string, {
+    name: toName,
+    aliases,
+  });
+  if (!renamedFile.ok) {
+    return { ok: false, status: 409, error: renamedFile.reason };
+  }
+
+  // Every file but SKILL.md moves by oid with its mode (an executable
+  // helper stays executable, a symlink stays a symlink); SKILL.md is the
+  // one rewrite. The commit pins the OLD FOLDER'S TREE oid as listed and
+  // requires the new folder absent: an edit, an added file or a delete
+  // landing in between changes that oid, so the rename is refused (409)
+  // instead of dropping or orphaning what landed.
+  const writes: Record<string, string | Buffer> = {};
+  const modes: Record<string, IndexMode> = {};
+  const entries: IndexEntry[] = [];
+  const expectBlobs: Record<string, string | null> = {
+    [`skills/${fromName}`]: await treeOidAt(
+      repoDir,
+      head,
+      `skills/${fromName}`,
+    ),
+    [`skills/${toName}`]: null,
+  };
+  const moved: string[] = [];
+  for (const entry of oldEntries) {
+    const newPath = `skills/${toName}/${entry.path.slice(`skills/${fromName}/`.length)}`;
+    if (entry.path === skillFilePath(fromName)) {
+      writes[newPath] = renamedFile.contents;
+      if (entry.mode !== "100644") modes[newPath] = entry.mode as IndexMode;
+    } else {
+      entries.push({
+        path: newPath,
+        oid: entry.oid,
+        mode: entry.mode as IndexMode,
+      });
+    }
+    moved.push(newPath);
+  }
+  let result: Awaited<ReturnType<typeof commitBlobsOnBranch>>;
+  try {
+    result = await commitBlobsOnBranch(
+      repoDir,
+      DEFAULT_BRANCH,
+      { writes, modes, entries, deletes: oldPaths },
+      {
+        message: `Rename skill "${fromName}" -> "${toName}"`,
+        author,
+        expectBlobs,
+      },
+    );
+  } catch (error) {
+    if (error instanceof BlobPreconditionError) {
+      return {
+        ok: false,
+        status: 409,
+        error: `${error.path} changed on main while renaming — retry.`,
+      };
+    }
+    throw error;
+  }
+  invalidateSkillCatalog(workspaceId);
+  queueMirrorPush(workspaceId);
+  return { ok: true, commitOid: result.commitOid, aliasesAdded, moved };
 }
 
 /** Kept for the suppress route and older callers. */

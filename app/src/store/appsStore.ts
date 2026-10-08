@@ -28,6 +28,7 @@ import {
 } from "../apps-runtime/shell";
 import { onRealtimeEvent } from "./lib/realtime-channel";
 import { useConsoleStore } from "./consoleStore";
+import { useRecentsStore } from "./recentsStore";
 import { useUIStore } from "./uiStore";
 import type { PublicShareInfo } from "./shareStore";
 
@@ -39,10 +40,18 @@ export function appRootOf(app: Pick<AppMeta, "id" | "slug" | "path">): string {
 /**
  * What an app's URL uses: its slug when it sits at the top of the workspace
  * tree (`/apps/report`, readable and stable), its id otherwise — a nested
- * folder name may be shared by another app, and an id never is.
+ * folder name may be shared by another app, and an id never is. A folder
+ * name that looks like an id (24 hex; Mako never gives one, a laptop might)
+ * is not a link either: every resolver reads it as an id first, so it
+ * would open another app, or none. Mirrors `appUrlFor` in
+ * api/src/rename/handlers/app.ts.
  */
 export function appUrlRef(app: Pick<AppMeta, "id" | "slug" | "path">): string {
-  return app.slug && appRootOf(app) === `apps/${app.slug}` ? app.slug : app.id;
+  return app.slug &&
+    appRootOf(app) === `apps/${app.slug}` &&
+    !/^[0-9a-f]{24}$/i.test(app.slug)
+    ? app.slug
+    : app.id;
 }
 
 /**
@@ -119,6 +128,12 @@ export interface AppMeta {
    * the server filed it under an id of its own and offers to stamp it.
    */
   duplicateOf?: string;
+  /**
+   * Previous slugs or repo paths of a renamed app (mako.json `aliases`,
+   * plus what the server's index learned from git). An old `/apps/<slug>`
+   * link resolves through them — see resolveAppRef and UrlSync.
+   */
+  aliases?: string[];
   title: string;
   description?: string;
   updatedAt?: string;
@@ -136,6 +151,11 @@ export interface AppMeta {
   owner_id?: string;
   /** What workspace members may do with a workspace-access app. */
   workspaceRole?: "viewer" | "editor";
+  /**
+   * Whether the viewer may write the app (rename, edit) — the server's
+   * ACL answer, which knows the shares this list does not carry.
+   */
+  canWrite?: boolean;
   /** Safe public-link metadata; password material never leaves the API. */
   publicShare?: PublicShareInfo;
 }
@@ -186,6 +206,11 @@ export interface AppsBoxState {
   status?: "online" | "offline";
   /** Open terminal session ids. */
   terminals?: string[] | null;
+  /**
+   * What a catch-up did with this person's uncommitted work (it followed a
+   * rename on main, or was saved on a `mako-drafts/…` branch). Shown once.
+   */
+  notice?: { at: number; message: string; draftsBranch?: string } | null;
   updatedAt: number;
 }
 
@@ -445,18 +470,26 @@ interface AppsStore {
     description?: string,
     /** Destination folder path (`apps`, `apps/Sales`, `users/<me>/apps`). */
     folder?: string,
-  ) => Promise<AppMeta | null>;
+  ) => Promise<{
+    app: AppMeta;
+    /** Its name was another app's old link, which opens it from now on. */
+    warnings: string[];
+  } | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
   /**
    * File an app in another folder (and/or rename its folder). One commit on
    * main; the app keeps its id so tabs, favourites and deployments follow.
+   */
+  /**
+   * The server's `warnings` when the move changed which app a link opens,
+   * or null when it failed (the store's `error` says why).
    */
   moveApp: (
     workspaceId: string,
     appId: string,
     folder: string,
     name?: string,
-  ) => Promise<boolean>;
+  ) => Promise<{ warnings: string[] } | null>;
   createAppFolder: (workspaceId: string, path: string) => Promise<boolean>;
   moveAppFolder: (
     workspaceId: string,
@@ -604,6 +637,8 @@ interface AppsStore {
   boxStatus?: "online" | "offline";
   boxSandboxId?: string | null;
   boxTerminals: string[];
+  /** When the last box notice shown was raised (each is shown once). */
+  boxNoticeAt: number;
   fetchRunningDevApps: (workspaceId: string) => Promise<void>;
   /** Deep sandbox stats (a live exec with a 1s CPU sample); null if no box. */
   fetchSandboxStats: (
@@ -700,6 +735,7 @@ export const useAppsStore = create<AppsStore>()(
       boxStatus: undefined,
       boxSandboxId: null,
       boxTerminals: [],
+      boxNoticeAt: 0,
       currentUserId: null,
       branchesByApp: {},
       terminalByApp: {},
@@ -937,9 +973,21 @@ export const useAppsStore = create<AppsStore>()(
           // Drop tabs pointing at apps this workspace does not have, so a
           // deleted app cannot leave a working-looking workspace view behind.
           reconcileAppsTabs(new Set(apps.map(a => a.id)));
-          // And keep the survivors' URL handles current: a push that moved
-          // an app changes what its tabs' links should say.
-          healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
+          // And keep the survivors' URL handles and titles current: a push
+          // that moved or renamed an app changes what its tabs' links and
+          // names should say. Recents reopen by id, so they heal the same way.
+          healAppsTabs(
+            new Map(apps.map(a => [a.id, appUrlSlug(a)])),
+            new Map(apps.map(a => [a.id, a.title])),
+          );
+          useRecentsStore
+            .getState()
+            .healApps(
+              workspaceId,
+              new Map(
+                apps.map(a => [a.id, { title: a.title, slug: appUrlSlug(a) }]),
+              ),
+            );
         } catch (e) {
           // GET /apps is 412 without a GitHub binding. That is an empty
           // explorer (disconnect, never linked), not a load failure. Keeping
@@ -992,12 +1040,12 @@ export const useAppsStore = create<AppsStore>()(
               params: { path: { workspaceId } },
               body: { title, description, ...(folder ? { folder } : {}) },
             }),
-          ) as { app?: AppMeta };
+          ) as { app?: AppMeta; warnings?: string[] };
           if (body.app) {
             set(s => {
               s.apps.unshift(body.app as AppMeta);
             });
-            return body.app;
+            return { app: body.app, warnings: body.warnings ?? [] };
           }
           return null;
         } catch (e) {
@@ -1015,7 +1063,7 @@ export const useAppsStore = create<AppsStore>()(
               params: { path: { workspaceId, id: appId } },
               body: { folder, ...(name ? { name } : {}) },
             }),
-          ) as { to?: string; app?: AppMeta };
+          ) as { to?: string; app?: AppMeta; warnings?: string[] };
           // Optimistic enough: the server answered with the new location, so
           // the row moves now and the full list catches up right behind it.
           set(s => {
@@ -1031,12 +1079,12 @@ export const useAppsStore = create<AppsStore>()(
           const moved = get().apps.find(a => a.id === appId);
           if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
           void get().fetchApps(workspaceId);
-          return true;
+          return { warnings: body.warnings ?? [] };
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to move app");
           });
-          return false;
+          return null;
         }
       },
 
@@ -2068,6 +2116,12 @@ export const useAppsStore = create<AppsStore>()(
           if (state.status) s.boxStatus = state.status;
           if (state.sandboxId !== undefined) s.boxSandboxId = state.sandboxId;
           if (state.terminals != null) s.boxTerminals = state.terminals;
+          // The sandbox caught up with main while this person had
+          // uncommitted work: say what became of it, once.
+          if (state.notice && state.notice.at > s.boxNoticeAt) {
+            s.boxNoticeAt = state.notice.at;
+            s.error = state.notice.message;
+          }
         });
         if (state.status === "offline") {
           // The box is gone — every dev-server URL now points at a dead sandbox.

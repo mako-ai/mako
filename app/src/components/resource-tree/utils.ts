@@ -12,6 +12,12 @@ export interface ResourceTreeLikeSection<
   nodes: TNode[];
   droppableId?: string;
   defaultAccess?: string;
+  /**
+   * Items listed here are not this person's to place (consoles' "Shared
+   * with me": another member's, in a folder of theirs): no "Move to…",
+   * no drag out.
+   */
+  noMoveOut?: boolean;
 }
 
 export interface ResourceTreeNodeLocation<
@@ -87,6 +93,21 @@ export function findNodeInSections<TNode extends ResourceTreeLikeNode>(
     }
   }
   return null;
+}
+
+/**
+ * Whether the node `id` may be moved from where it is listed: anywhere but
+ * a `noMoveOut` section (an admin's "Move Here" from "Shared with me" took
+ * the owner's console out of the owner's folder, unasked).
+ */
+export function canMoveFromSection<TNode extends ResourceTreeLikeNode>(
+  sections: ResourceTreeLikeSection<TNode>[],
+  id: string,
+): boolean {
+  const location = findNodeInSections(sections, id);
+  if (!location) return false;
+  const section = sections.find(s => s.key === location.sectionKey);
+  return !section?.noMoveOut;
 }
 
 export function findAncestorPaths<TNode extends ResourceTreeLikeNode>(
@@ -185,4 +206,23 @@ export function resolveTreeDropTarget<TNode extends ResourceTreeLikeNode>(
   }
 
   return null;
+}
+
+/**
+ * dnd-kit's drag attributes for a row. A row that cannot be DRAGGED (a
+ * console shared with this person, someone else's folder) still opens,
+ * renames and has a menu: dnd-kit's `aria-disabled="true"` told assistive
+ * tech the whole row was disabled, and its "draggable" role description
+ * and drag instructions described a gesture the row does not have.
+ */
+export function dragAttributes<A extends object>(
+  attributes: A,
+  disabled: boolean | undefined,
+): Partial<A> {
+  if (!disabled) return attributes;
+  const rest = { ...attributes } as Record<string, unknown>;
+  delete rest["aria-disabled"];
+  delete rest["aria-roledescription"];
+  delete rest["aria-describedby"];
+  return rest as Partial<A>;
 }

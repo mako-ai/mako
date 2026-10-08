@@ -18,6 +18,7 @@ import { createFlowFileTools } from "../../agent-lib/tools/flow-file-tools";
 import { createConnectorTools } from "../../agent-lib/tools/connector-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../../agent-lib/tools/web-tools";
+import { createRenameTools } from "../../agent-lib/tools/rename-tools";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 
 export const unifiedAgentMeta: AgentMeta = {
@@ -58,6 +59,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     chatId: context.chatId,
   });
   const webTools = createWebTools(context.toolExecutionContext);
+  const renameTools = createRenameTools(workspaceId, userId);
   const serverNotebookTools = createNotebookServerTools({
     workspaceId,
     userId,
@@ -98,6 +100,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     ...dashboardSearchTools,
     ...versionHistoryTools,
     ...webTools,
+    ...renameTools,
     // MCP tools (Close CRM etc.) resolved per request in agent.routes.ts.
     ...(context.mcpTools ?? {}),
   };

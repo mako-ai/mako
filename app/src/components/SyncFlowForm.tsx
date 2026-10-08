@@ -56,8 +56,10 @@ import {
 } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
+import { flowNameForSave } from "../lib/flow-auto-name";
 import { useSchemaStore, type TreeNode } from "../store/schemaStore";
 import {
+  cachedConnectorSchema,
   useConnectorCatalogStore,
   type WebhookCapabilities,
 } from "../store/connectorCatalogStore";
@@ -631,8 +633,10 @@ export function SyncFlowForm({
       setTransferQueriesSchema(null);
       return;
     }
-    const cachedSchema =
-      useConnectorCatalogStore.getState().schemas[selectedConnectorType];
+    const cachedSchema = cachedConnectorSchema(
+      useConnectorCatalogStore.getState().schemas,
+      selectedConnectorType,
+    );
     if (cachedSchema) {
       setTransferQueriesSchema(cachedSchema.transferQueries ?? null);
     }
@@ -953,10 +957,33 @@ export function SyncFlowForm({
       const selectedSource = connectors.find(
         ds => ds._id === data.dataSourceId,
       );
-      const selectedDatabase = databases.find(
-        db => db.id === data.destinationDatabaseId,
+      const autoName = (sourceId?: string, databaseId?: string) =>
+        `${connectors.find(ds => ds._id === sourceId)?.name || "Source"} → ${databases.find(db => db.id === databaseId)?.name || "Destination"}`;
+      const generatedName = autoName(
+        data.dataSourceId,
+        data.destinationDatabaseId,
       );
-      const generatedName = `${selectedSource?.name || "Source"} → ${selectedDatabase?.name || "Destination"}`;
+      // Only while nobody has set a name of their own: a renamed flow must
+      // not get "Source → Destination" back on its next save.
+      const existingFlow = currentFlowId
+        ? flows.find(flow => flow._id === currentFlowId)
+        : undefined;
+      const nameForSave = flowNameForSave({
+        existingName: existingFlow?.name,
+        previousAutoName: existingFlow
+          ? autoName(
+              (existingFlow.dataSourceId as { _id?: string } | undefined)
+                ?._id ?? (existingFlow.dataSourceId as string | undefined),
+              (
+                existingFlow.destinationDatabaseId as
+                  | { _id?: string }
+                  | undefined
+              )?._id ??
+                (existingFlow.destinationDatabaseId as string | undefined),
+            )
+          : undefined,
+        nextAutoName: generatedName,
+      });
 
       // Back-compat `type`: webhook-only syncs are "webhook"; anything with a
       // poll schedule is "scheduled" — EXCEPT hybrids, which must stay
@@ -965,7 +992,7 @@ export function SyncFlowForm({
       const flowType = data.webhookEnabled ? "webhook" : "scheduled";
 
       const payload: any = {
-        name: generatedName,
+        ...(nameForSave !== undefined ? { name: nameForSave } : {}),
         type: flowType,
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,

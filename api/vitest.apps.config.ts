@@ -16,9 +16,13 @@ export default defineConfig({
     environment: "node",
     include: [
       "src/apps/worktree.service.test.ts",
+      "src/rename/registry.test.ts",
+      "src/routes/objects.test.ts",
+      "src/sync/database-data-source-manager.binding.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
       "src/migrations/2026-09-02-110000_workspace_self_directive_to_git.test.ts",
+      "src/migrations/2026-10-06-150000_stamp_workspace_connector_definitions.test.ts",
       "src/services/skills.service.test.ts",
       "src/notebooks/notebook-git.service.test.ts",
       "src/apps/bindings.service.test.ts",
@@ -27,7 +31,20 @@ export default defineConfig({
       "src/apps/adversarial.test.ts",
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
+      // The editor's first save (PUT) is a compare-and-swap against main.
+      "src/routes/consoles-first-save.test.ts",
+      // Visibility changes only by the owner, on every console route.
+      "src/routes/consoles-scope.test.ts",
+      // A rename/move answers where the console is; a save never moves it back.
+      "src/routes/consoles-location.test.ts",
+      // Duplicate never commits an orphan; a copy is filed where the tree
+      // shows it; a console shared with me is under "Shared with me".
+      "src/routes/consoles-duplicate.test.ts",
+      // A console's history reads its own file only: never the console it
+      // was copied from, nor another console that held one of its names.
+      "src/routes/consoles-history.test.ts",
       "src/apps/workspace-skills.service.test.ts",
+      "src/apps/workspace-skills-rename.test.ts",
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
@@ -44,6 +61,8 @@ export default defineConfig({
       // GET/list from git at main; leftover local git without a binding
       // must not populate the list (issue #956).
       "src/services/flow-sync.repo.test.ts",
+      // Graceful rename of flows: resolution by old slug, one-commit move.
+      "src/rename/flow-rename.test.ts",
       // The live connector probe: its service (bounded, read-only, secrets
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",
@@ -66,6 +85,12 @@ export default defineConfig({
       // Apps in real folders: the index over the tree at main, manifest
       // identity, moves that keep it, and the folder commits.
       "src/apps/app-index.service.test.ts",
+      // Graceful rename of an app: one commit, the old slug an alias.
+      "src/rename/handlers/app.test.ts",
+      // The app rename scenario matrix (entry points × operations × roles ×
+      // links, hostile names, partial failures, races, scale): real git,
+      // real Mongo, a real laptop clone. One file per concern.
+      "src/apps/scenarios/*.scenarios.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       // A deploy's outcome as a GitHub commit status on the pushed sha.
@@ -79,9 +104,39 @@ export default defineConfig({
       // Workspace connectors: real git, real Mongo, and a real child process
       // per protocol command via the local sandbox provider.
       "src/connectors/workspace/workspace-connectors.test.ts",
+      "src/connectors/workspace/workspace-connectors-rename.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
+      // Graceful rename (api/src/rename): the console/notebook handlers
+      // drive real git + Mongo; dashboards and connections are Mongo-only.
+      "src/rename/handlers/console.test.ts",
+      "src/rename/handlers/notebook.test.ts",
+      "src/rename/handlers/dashboard.test.ts",
+      "src/rename/handlers/connection.test.ts",
+      // Exhaustive rename scenarios (#1037), one file per area: credentials
+      // of workspace connectors, connector renames, skills.
+      "src/rename/scenarios/connector-credentials.scenarios.test.ts",
+      "src/rename/scenarios/connector-rename.scenarios.test.ts",
+      "src/rename/scenarios/skill.scenarios.test.ts",
+      // Flows and dbt jobs: every entry point × operation × role, hostile
+      // names, partial failures, races, cycles and scale.
+      "src/rename/scenarios/flow-rename.scenarios.test.ts",
+      "src/rename/scenarios/flow-rename-hostile.scenarios.test.ts",
+      "src/rename/scenarios/dbt-job-rename.scenarios.test.ts",
+      "src/rename/scenarios/dbt-job-rename-hostile.scenarios.test.ts",
+      // The rename dialog's copy of the name rules equals the server's.
+      "src/rename/scenarios/name-rules-parity.test.ts",
+      // Exhaustive scenario suites (graceful rename, #1037): consoles,
+      // notebooks, dashboards and connections against the real routes,
+      // services, git and Mongo — the matrix of entry points × operations ×
+      // roles, hostile names, partial failures, races and scale.
+      "src/routes/scenarios/console-rename.scenarios.test.ts",
+      "src/routes/scenarios/console-visibility.scenarios.test.ts",
+      "src/routes/scenarios/console-hostile.scenarios.test.ts",
+      "src/routes/scenarios/console-robustness.scenarios.test.ts",
+      "src/routes/scenarios/notebook.scenarios.test.ts",
+      "src/routes/scenarios/dashboard-connection.scenarios.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

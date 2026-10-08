@@ -1664,6 +1664,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/objects/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve an object ref (id, name, or a previous name)
+         * @description What a link or name points at now. `via: alias` means the ref is an old name of a renamed object — redirect to `current.url`.
+         */
+        get: operations["get_api_workspaces_workspaceId_objects_resolve"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/objects/{kind}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rename an object; its old name keeps resolving */
+        post: operations["post_api_workspaces_workspaceId_objects_kind_rename"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/connections/sources": {
         parameters: {
             query?: never;
@@ -3790,7 +3827,7 @@ export interface paths {
         put?: never;
         /**
          * Create an Apps project
-         * @description Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold.
+         * @description Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold. `warnings` says when the new app's name was another app's old link, which opens the new app from now on.
          */
         post: operations["post_api_workspaces_workspaceId_apps"];
         delete?: never;
@@ -3832,7 +3869,7 @@ export interface paths {
         put?: never;
         /**
          * File the app in another folder (and/or rename its folder)
-         * @description One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it, and nothing is rebuilt. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.
+         * @description One commit on main moving the app's directory. The app keeps its id — stamped into mako.json if it had none — so deployments, sharing, env vars and favourites follow it. Filed elsewhere under the same name, an app that already has an id is not rebuilt (the index remembers the old path); any mako.json write — a stamp, a new alias, a title change — rebuilds it once. Renamed (`name`), the old folder name is recorded as an `aliases` entry in mako.json in the same commit, so the old /apps/<slug> link and old refs keep opening it. `warnings` lists any other app that loses a link: one whose old name the app now sits at or keeps as an alias. Moving into or out of the Workspace tree needs an editing role; a personal tree is its owner's.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_move"];
         delete?: never;
@@ -5868,6 +5905,7 @@ export interface components {
             folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
+            name?: string;
         };
         Error: {
             success?: boolean;
@@ -6136,6 +6174,7 @@ export interface components {
             folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
+            name?: string;
         };
         RestoreDashboardVersionRequest: {
             comment?: string;
@@ -6197,6 +6236,7 @@ export interface components {
             folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
+            name?: string;
         };
         NotebookExecuteRequest: {
             code: string;
@@ -11775,6 +11815,101 @@ export interface operations {
             content: {
                 "application/json": {
                     pinned?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_objects_resolve: {
+        parameters: {
+            query: {
+                kind: "app" | "console" | "notebook" | "dashboard" | "flow" | "dbt_file" | "dbt_job" | "skill" | "connector" | "connection";
+                ref: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_objects_kind_rename: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                kind: "app" | "console" | "notebook" | "dashboard" | "flow" | "dbt_file" | "dbt_job" | "skill" | "connector" | "connection";
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    ref: string;
+                    title?: string;
+                    slug?: string;
+                    options?: {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

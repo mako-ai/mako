@@ -102,7 +102,11 @@ import FileExplorerDialog from "./FileExplorerDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
-import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
+import {
+  isUnloadedConsoleTab,
+  useConsoleStore,
+  selectConsoleTabs,
+} from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
@@ -117,7 +121,20 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
-import { consoleLeafName } from "../lib/console-name";
+import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
+import { useConsoleTreeStore } from "../store/consoleTreeStore";
+import { accessForMove } from "../store/lib/createResourceTreeStore";
+import { findById } from "../store/lib/tree-helpers";
+import {
+  consoleCopiedNotice,
+  consolePlacement,
+  consoleSavedNotice,
+  locateInConsoleTree,
+  relocationScope,
+  renameMoveNotice,
+  renameMoveRequest,
+  type ConsoleTreeSpot,
+} from "../lib/console-relocation";
 import { generateObjectId } from "../utils/objectId";
 import {
   computeConsoleStateHash,
@@ -480,15 +497,33 @@ function Editor({
   //   "new"           — first-time save of a draft tab (POST with the tab's own id)
   //   "save-as-copy"  — create a brand-new console record (POST with a fresh id),
   //                     leaving the current tab untouched.
-  //   "rename-move"   — relocate an already-saved console (PUT via saveConsole)
-  //                     to a new path; current tab updates to the new path.
-  const [saveDialogMode, setSaveDialogMode] = useState<
-    "new" | "save-as-copy" | "rename-move"
-  >("new");
-  // Id that will be sent to the API. Same as saveDialogTabId for "new" and
-  // "rename-move"; a freshly-generated id for "save-as-copy".
+  // ("Rename / Move…" is NOT a save: it has its own dialog below and calls
+  // the move/rename routes, so the unsaved draft stays a draft.)
+  const [saveDialogMode, setSaveDialogMode] = useState<"new" | "save-as-copy">(
+    "new",
+  );
+  // Id that will be sent to the API. Same as saveDialogTabId for "new"; a
+  // freshly-generated id for "save-as-copy".
   const [saveDialogTargetId, setSaveDialogTargetId] = useState<string | null>(
     null,
+  );
+  // The console tab whose "Rename / Move…" dialog is open.
+  const [renameMoveTabId, setRenameMoveTabId] = useState<string | null>(null);
+  const consoleTreeMy = useConsoleTreeStore(state =>
+    currentWorkspace ? state.myItems[currentWorkspace.id] : undefined,
+  );
+  const consoleTreeWorkspace = useConsoleTreeStore(state =>
+    currentWorkspace ? state.workspaceItems[currentWorkspace.id] : undefined,
+  );
+  /** Where the tree lists a console (its real section and folder). */
+  const consoleSpot = useCallback(
+    (consoleId: string): ConsoleTreeSpot | null =>
+      locateInConsoleTree(
+        consoleTreeMy ?? [],
+        consoleTreeWorkspace ?? [],
+        consoleId,
+      ),
+    [consoleTreeMy, consoleTreeWorkspace],
   );
 
   // Save comment dialog state (version commit message)
@@ -1417,10 +1452,17 @@ function Editor({
     setIsSaving(true);
     let success = false;
     try {
-      const currentTab = tabs[tabId];
+      // Read the tab from the store, not the render's snapshot: a rename
+      // or move may have retargeted it since this save was started.
+      const currentTab = useConsoleStore.getState().tabs[tabId] ?? tabs[tabId];
       const connectionId = currentTab?.connectionId;
       const databaseId = currentTab?.databaseId;
       const databaseName = currentTab?.databaseName;
+      // A saved console is saved WHERE IT IS: no path, no access. A save is
+      // not a move — the path a tab holds can be stale (a rename in another
+      // window, its folder renamed), and sending it moved the console back
+      // ("move: Revenue Daily" undid a rename; "New Folder" re-created).
+      const keepPlace = !!currentTab?.isSaved && !!currentTab?.filePath;
 
       const result = await saveConsole(
         currentWorkspace.id,
@@ -1433,7 +1475,8 @@ function Editor({
         tabChartSpecs[tabId] ?? undefined,
         tabViewModes[tabId],
         comment,
-        currentTab?.access,
+        keepPlace ? undefined : currentTab?.access,
+        { keepPlace },
       );
 
       // Handle conflict - show resolution dialog
@@ -1473,11 +1516,16 @@ function Editor({
         return false;
       }
 
+      // Where and under which name the server saved it: a name may have
+      // been cleaned ("Q1: revenue" is saved as "Q1 - revenue").
+      const savedPath = result.path ?? savePath;
       if (result.success) {
-        // Update file path and title (title = canonical leaf name)
-        updateFilePath(tabId, savePath);
-        updateTitle(tabId, consoleLeafName(savePath));
-        updateAccess(tabId, currentTab?.access);
+        if (!keepPlace) {
+          // A first save placed it: title = the saved leaf name.
+          updateFilePath(tabId, savedPath);
+          updateTitle(tabId, result.name ?? consoleLeafName(savedPath));
+          updateAccess(tabId, currentTab?.access);
+        }
         updateDirty(tabId, true);
 
         // Update saved state (isSaved=true, new savedStateHash)
@@ -1493,18 +1541,27 @@ function Editor({
           console_id: tabId,
         });
 
-        setSnackbarMessage(`Console saved to '${savePath}.js'`);
+        // The place as the tab knows it (a saved console stays where it
+        // is), in the breadcrumb's words — no extension, and never the
+        // owner's folders of a console shared with this person.
+        const saved = useConsoleStore.getState().tabs[tabId];
+        setSnackbarMessage(
+          consoleSavedNotice({
+            access: saved?.access,
+            ownerId: saved?.owner_id,
+            currentUserId: user?.id,
+            filePath: (keepPlace ? saved?.filePath : undefined) ?? savedPath,
+            name: saved?.title,
+          }),
+        );
         setSnackbarOpen(true);
         success = true;
 
         // Add the console to the tree
         if (!currentTab?.filePath) {
-          const { useConsoleTreeStore } = await import(
-            "../store/consoleTreeStore"
-          );
           useConsoleTreeStore
             .getState()
-            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
+            .addConsole(currentWorkspace.id, savedPath ?? "", tabId);
         }
 
         if (currentTab?.metadata?.openScheduleOnSave) {
@@ -1540,7 +1597,12 @@ function Editor({
         );
         setSnackbarOpen(true);
       } else {
-        setErrorMessage(JSON.stringify(result.error, null, 2));
+        // The server's sentence as it said it (not a quoted JSON string).
+        setErrorMessage(
+          typeof result.error === "string"
+            ? result.error
+            : JSON.stringify(result.error, null, 2),
+        );
         setErrorModalOpen(true);
       }
     } catch (e: any) {
@@ -1550,6 +1612,21 @@ function Editor({
       setIsSaving(false);
     }
     return success;
+  };
+
+  /**
+   * A tab whose console has not loaded (its fetch failed or is in flight):
+   * say so and load it again — its "loading..." text is not a console to
+   * save, and the console is not new.
+   */
+  const reloadUnloadedConsole = (tabId: string) => {
+    setSnackbarMessage("This console has not loaded yet — loading it again.");
+    setSnackbarOpen(true);
+    if (currentWorkspace) {
+      void useConsoleStore
+        .getState()
+        .fetchConsoleContent(currentWorkspace.id, tabId);
+    }
   };
 
   const handleConsoleSave = async (
@@ -1564,6 +1641,12 @@ function Editor({
     }
 
     if (!currentPath) {
+      // A console that exists but has not loaded yet is not a new one:
+      // never a first save (of its "loading..." placeholder) — load it.
+      if (isUnloadedConsoleTab(tabId)) {
+        reloadUnloadedConsole(tabId);
+        return false;
+      }
       setSaveDialogMode("new");
       setSaveDialogTabId(tabId);
       setSaveDialogTargetId(tabId);
@@ -1837,10 +1920,11 @@ function Editor({
 
       if (result.success) {
         const tabId = pendingSaveData.tabId;
+        const savedPath = result.path ?? pendingSaveData.path;
 
-        // Update the tab properties
-        updateFilePath(tabId, pendingSaveData.path);
-        updateTitle(tabId, consoleLeafName(pendingSaveData.path));
+        // Update the tab properties — as the server saved it.
+        updateFilePath(tabId, savedPath);
+        updateTitle(tabId, result.name ?? consoleLeafName(savedPath));
         updateAccess(tabId, pendingSaveData.access);
         updateDirty(tabId, true);
 
@@ -1854,14 +1938,11 @@ function Editor({
         updateSavedState(tabId, true, newHash);
 
         // Update console tree
-        const { useConsoleTreeStore } = await import(
-          "../store/consoleTreeStore"
-        );
         useConsoleTreeStore
           .getState()
-          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
+          .addConsole(currentWorkspace.id, savedPath, tabId);
 
-        setSnackbarMessage(`Console saved at '${pendingSaveData.path}.js'`);
+        setSnackbarMessage(`Console saved at '${savedPath}'`);
         setSnackbarOpen(true);
 
         trackEvent("console_saved", {
@@ -1905,75 +1986,6 @@ function Editor({
       const databaseId = sourceTab?.databaseId;
       const databaseName = sourceTab?.databaseName;
 
-      if (mode === "rename-move") {
-        // PUT /consoles/:id — updates the existing console's path.
-        const result = await saveConsole(
-          currentWorkspace.id,
-          targetId,
-          saveDialogContent,
-          savePath,
-          connectionId,
-          databaseName,
-          databaseId,
-          tabChartSpecs[saveDialogTabId] ?? undefined,
-          tabViewModes[saveDialogTabId],
-          undefined,
-          section === "workspace" ? "workspace" : "private",
-        );
-
-        if (result.error === "conflict" && result.conflict) {
-          setPendingSaveData({
-            tabId: targetId,
-            content: saveDialogContent,
-            path: savePath,
-            connectionId,
-            databaseId,
-            databaseName,
-            access: section === "workspace" ? "workspace" : "private",
-          });
-          setConflictData(result.conflict);
-          setConflictDialogOpen(true);
-          setIsSaving(false);
-          return;
-        }
-
-        if (result.success) {
-          updateFilePath(targetId, savePath);
-          updateTitle(targetId, consoleLeafName(savePath));
-          updateAccess(
-            targetId,
-            section === "workspace" ? "workspace" : "private",
-          );
-          updateDirty(targetId, true);
-
-          const newHash = computeConsoleStateHash(
-            saveDialogContent,
-            connectionId,
-            databaseId,
-            databaseName,
-          );
-          updateSavedState(targetId, true, newHash);
-
-          trackEvent("console_renamed", {
-            console_id: targetId,
-            new_path: savePath,
-          });
-
-          setSnackbarMessage(`Renamed to '${savePath}.js'`);
-          setSnackbarOpen(true);
-
-          const { useConsoleTreeStore } = await import(
-            "../store/consoleTreeStore"
-          );
-          useConsoleTreeStore.getState().refresh(currentWorkspace.id);
-        } else {
-          setErrorMessage(JSON.stringify(result.error, null, 2));
-          setErrorModalOpen(true);
-        }
-
-        return;
-      }
-
       // Both "new" and "save-as-copy" use POST to create a new record.
       const response = await fetch(
         `/api/workspaces/${currentWorkspace.id}/consoles`,
@@ -2000,22 +2012,27 @@ function Editor({
 
       const result = await response.json();
 
-      if (response.status === 409 && result.error === "conflict") {
-        setPendingSaveData({
-          tabId: targetId,
-          content: saveDialogContent,
-          path: savePath,
-          connectionId,
-          databaseId,
-          databaseName,
-          access: section === "workspace" ? "workspace" : "private",
-        });
-        setConflictData(result.conflict);
-        setConflictDialogOpen(true);
-        setIsSaving(false);
+      if (response.status === 409) {
+        // The name is taken there (by a console the tree did not show yet,
+        // or a file pushed meanwhile): refused, never "replaced" — the old
+        // overwrite deleted the other console and saved this one at the
+        // ROOT, whatever folder had been picked.
+        setErrorMessage(
+          result.error === "conflict"
+            ? `A console named “${savePath}” already exists there. Choose another name.`
+            : result.error || "A console already exists there.",
+        );
+        setErrorModalOpen(true);
         return;
       }
 
+      // The name the server saved it under (a name may have been cleaned:
+      // "Q1: revenue" → "Q1 - revenue") — the tab, the tree and the notice
+      // say that one.
+      const savedName: string =
+        typeof result.data?.name === "string" ? result.data.name : savePath;
+      const savedPath: string =
+        typeof result.data?.path === "string" ? result.data.path : savePath;
       if (result.success) {
         if (mode === "save-as-copy") {
           // Do NOT mutate the source tab. Just refresh the tree so the copy
@@ -2025,12 +2042,28 @@ function Editor({
             source_console_id: saveDialogTabId,
             new_console_id: targetId,
           });
-          setSnackbarMessage(`Saved a copy as '${savePath}.js'`);
+          // Where the copy went, in the explorer's words — as Duplicate
+          // says it.
+          const folder = folderId
+            ? findById(
+                (section === "workspace"
+                  ? consoleTreeWorkspace
+                  : consoleTreeMy) ?? [],
+                folderId,
+              )
+            : null;
+          setSnackbarMessage(
+            consoleCopiedNotice({
+              section: section === "workspace" ? "Workspace" : "My Consoles",
+              path: folder?.path ? `${folder.path}/${savedName}` : savedName,
+              name: savedName,
+            }),
+          );
           setSnackbarOpen(true);
         } else {
           // "new" — first-time save of a draft; update the originating tab.
-          updateFilePath(targetId, savePath);
-          updateTitle(targetId, consoleLeafName(savePath));
+          updateFilePath(targetId, savedPath);
+          updateTitle(targetId, savedName);
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -2050,16 +2083,18 @@ function Editor({
             is_new: true,
           });
 
-          setSnackbarMessage(`Console saved as '${savePath}'`);
+          setSnackbarMessage(`Console saved as '${savedName}'`);
           setSnackbarOpen(true);
         }
 
-        const { useConsoleTreeStore } = await import(
-          "../store/consoleTreeStore"
-        );
         useConsoleTreeStore.getState().refresh(currentWorkspace.id);
       } else {
-        setErrorMessage(JSON.stringify(result.error, null, 2));
+        // The server's sentence as it said it (not a quoted JSON string).
+        setErrorMessage(
+          typeof result.error === "string"
+            ? result.error
+            : JSON.stringify(result.error, null, 2),
+        );
         setErrorModalOpen(true);
       }
     } catch (e: any) {
@@ -2102,6 +2137,10 @@ function Editor({
       return;
     }
     if (!currentPath) {
+      if (isUnloadedConsoleTab(tabId)) {
+        reloadUnloadedConsole(tabId);
+        return;
+      }
       // Nothing to rename yet — fall back to first-time save flow.
       setSaveDialogMode("new");
       setSaveDialogTabId(tabId);
@@ -2110,11 +2149,147 @@ function Editor({
       setSaveDialogOpen(true);
       return;
     }
-    setSaveDialogMode("rename-move");
-    setSaveDialogTabId(tabId);
-    setSaveDialogTargetId(tabId);
-    setSaveDialogContent(contentToSave);
-    setSaveDialogOpen(true);
+    // Its own dialog, on the console's real section and folder; it calls
+    // the rename/move routes — the editor's content is not saved (an
+    // unsaved draft stays a draft), and the tab is retargeted from the
+    // server's answer.
+    setRenameMoveTabId(tabId);
+  };
+
+  /**
+   * Where the save dialog opens. A copy starts next to its source when
+   * this person could have put it there; else in their own consoles (a
+   * copy of a console shared with them must not land in Workspace by
+   * default). A first save keeps the tab's section, at the root.
+   */
+  const saveDialogPlacement = ((): {
+    section: "my" | "workspace";
+    folderId: string | null;
+  } => {
+    const tab = saveDialogTabId ? tabs[saveDialogTabId] : undefined;
+    if (saveDialogMode !== "save-as-copy" || !tab) {
+      return {
+        section: tab?.access === "workspace" ? "workspace" : "my",
+        folderId: null,
+      };
+    }
+    const spot = consoleSpot(tab.id);
+    const mine =
+      (!!tab.owner_id && tab.owner_id === user?.id) ||
+      spot?.section === "my" ||
+      isWorkspaceAdmin;
+    return spot && mine ? spot : { section: "my", folderId: null };
+  })();
+
+  /** What the "Rename / Move…" dialog may offer for this console. */
+  const renameMoveContext = (() => {
+    if (!renameMoveTabId) return null;
+    const tab = tabs[renameMoveTabId];
+    if (!tab) return null;
+    const spot = consoleSpot(renameMoveTabId);
+    const ownerId = tab.owner_id;
+    const scope = relocationScope({
+      // Only its owner sees a console under "My Consoles".
+      isOwner: (!!ownerId && ownerId === user?.id) || spot?.section === "my",
+      isAdmin: isWorkspaceAdmin,
+      access: tab.access,
+      spot,
+    });
+    const section: "my" | "workspace" =
+      spot?.section ?? (tab.access === "workspace" ? "workspace" : "my");
+    const name = tab.title || consoleLeafName(tab.filePath);
+    // Where it is, in the breadcrumb's words — "Shared with me", never the
+    // owner's folder names.
+    const place = consolePlacement({
+      access: tab.access,
+      ownerId,
+      currentUserId: user?.id,
+      folders: consoleFolderTrail(tab.filePath ?? name, name),
+    });
+    return {
+      tab,
+      spot,
+      scope,
+      section,
+      folderId: spot?.folderId ?? null,
+      name,
+      location: [place.section, ...place.folders].join(" › "),
+    };
+  })();
+
+  const handleRenameMoveConfirm = async (
+    targetFolderId: string | null,
+    newName?: string,
+    section: "my" | "workspace" = "my",
+  ) => {
+    const ctx = renameMoveContext;
+    setRenameMoveTabId(null);
+    if (!ctx || !currentWorkspace) return;
+    const consoleId = ctx.tab.id;
+    const renamedTo = newName && newName !== ctx.name ? newName : undefined;
+    const tree = useConsoleTreeStore.getState();
+    // A name-only change is PATCH /rename, which keeps the console's
+    // folder — wherever it is, one this person may not see included; a
+    // move only when the folder or section changed (and the tree knows
+    // where it started). Re-scope only when the section changed (the
+    // owner's or an admin's call); one commit.
+    const request = renameMoveRequest({
+      scope: ctx.scope,
+      from: ctx.spot,
+      to: { section, folderId: targetFolderId },
+      renamedTo,
+    });
+    if (!request) return;
+    // Did the folder or section change? (A rename did not, and says
+    // "Renamed", wherever the console sits.)
+    const moved = request.route === "move";
+    const ok =
+      request.route === "rename"
+        ? await tree.renameItem(
+            currentWorkspace.id,
+            consoleId,
+            request.name,
+            false,
+          )
+        : await tree.moveItem(
+            currentWorkspace.id,
+            consoleId,
+            request.folderId,
+            accessForMove(ctx.section, request.section),
+            request.name,
+          );
+    if (!ok) {
+      // The server's reason (a name already taken there, a visibility
+      // change that is not theirs) — the tree has already snapped back.
+      const reason =
+        useConsoleTreeStore.getState().actionError[currentWorkspace.id] ??
+        "Could not rename or move the console.";
+      tree.clearActionError(currentWorkspace.id);
+      setErrorMessage(reason);
+      setErrorModalOpen(true);
+      return;
+    }
+    trackEvent("console_renamed", { console_id: consoleId });
+    // Where the server put it (the store retargeted the tab from its
+    // answer), in the breadcrumb's words — no extension, no repo path.
+    const now = useConsoleStore.getState().tabs[consoleId];
+    const name = now?.title || renamedTo || ctx.name;
+    const place = consolePlacement({
+      access: now?.access,
+      ownerId: now?.owner_id,
+      currentUserId: user?.id,
+      folders: consoleFolderTrail(now?.filePath ?? name, name),
+    });
+    setSnackbarMessage(
+      renameMoveNotice({
+        renamedTo,
+        moved,
+        section: place.section,
+        folders: place.folders,
+        name,
+      }),
+    );
+    setSnackbarOpen(true);
   };
 
   const handleConflictSaveAsNew = () => {
@@ -2568,6 +2743,7 @@ function Editor({
                   {tab.remoteUpdate && (
                     <ConsoleRemoteUpdateBanner
                       remoteUpdate={tab.remoteUpdate}
+                      currentUserId={user?.id}
                       onLoadLatest={() => {
                         if (!currentWorkspace?.id) return;
                         void useConsoleStore
@@ -3204,20 +3380,57 @@ function Editor({
           const tab = tabs[saveDialogTabId];
           if (!tab) return "";
           if (saveDialogMode === "save-as-copy") {
-            const base = tab.filePath || tab.title || "";
-            return base ? `${base} (copy)` : "";
-          }
-          if (saveDialogMode === "rename-move") {
-            return tab.filePath || tab.title || "";
+            // The NAME only — the folder is the picker's (prefilling
+            // "New Folder/x copy" re-created that folder by path). "x copy",
+            // as Duplicate names it.
+            const base = tab.title || consoleLeafName(tab.filePath);
+            return base ? `${base} copy` : "";
           }
           return tab.title || "";
         })()}
-        initialSection={
-          saveDialogTabId && tabs[saveDialogTabId]?.access === "workspace"
-            ? "workspace"
-            : "my"
-        }
+        initialSection={saveDialogPlacement.section}
+        initialFolderId={saveDialogPlacement.folderId}
         isSaving={isSaving}
+      />
+
+      {/* Rename / Move… — the move/rename routes, never a save */}
+      <FileExplorerDialog
+        open={renameMoveContext !== null}
+        onClose={() => setRenameMoveTabId(null)}
+        mode="move"
+        onMove={(folderId, newName, section) =>
+          void handleRenameMoveConfirm(folderId, newName, section)
+        }
+        itemName={renameMoveContext?.name ?? ""}
+        selfId={renameMoveContext?.tab.id}
+        title={
+          renameMoveContext?.scope.kind === "in-place"
+            ? `Rename "${renameMoveContext.name}"`
+            : `Rename / Move "${renameMoveContext?.name ?? ""}"`
+        }
+        confirmLabel={
+          renameMoveContext?.scope.kind === "in-place"
+            ? "Rename"
+            : "Rename / Move"
+        }
+        initialSection={renameMoveContext?.section}
+        initialFolderId={renameMoveContext?.folderId ?? null}
+        locationLockedReason={
+          renameMoveContext?.scope.kind === "in-place"
+            ? renameMoveContext.scope.reason
+            : null
+        }
+        locationLabel={renameMoveContext?.location}
+        lockedSection={
+          renameMoveContext?.scope.kind === "section"
+            ? renameMoveContext.scope.section
+            : null
+        }
+        sectionLockedReason={
+          renameMoveContext?.scope.kind === "section"
+            ? renameMoveContext.scope.reason
+            : null
+        }
       />
 
       {/* Save comment dialog (version commit message) */}
@@ -3238,7 +3451,14 @@ function Editor({
           workspaceId={currentWorkspace.id}
           consoleId={consoleHistory.tabId}
           onRestored={() =>
-            reloadConsole(currentWorkspace.id, consoleHistory.tabId)
+            // In place, editor included, clean afterwards — reloadConsole
+            // reopened the tab, which left Monaco on the old text.
+            void useConsoleStore
+              .getState()
+              .reloadConsoleFromServer(
+                currentWorkspace.id,
+                consoleHistory.tabId,
+              )
           }
         />
       )}

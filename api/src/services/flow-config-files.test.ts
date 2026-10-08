@@ -311,6 +311,26 @@ assert.equal(parseFlowFile("just a string"), null);
 assert.equal(parseFlowFile("name: no type here"), null);
 assert.equal(parseFlowFile("type: scheduled"), null); // no name
 
+// Graceful rename: the row's aliases are projected into the file (so a
+// write-through never drops an `aliases:` a rename wrote) and parse back.
+{
+  const renamed = {
+    ...flowWithTraps(),
+    aliases: ["old-slug", "older"],
+  } as IFlow;
+  const serialized = serializeFlowFile(flowToFile(renamed));
+  assert.ok(
+    serialized.includes("aliases:\n  - old-slug\n  - older"),
+    "aliases must be written to the file",
+  );
+  const back = parseFlowFile(serialized);
+  assert.deepEqual(back?.aliases, ["old-slug", "older"]);
+  // A row that was never renamed writes no `aliases:` key at all.
+  assert.ok(
+    !serializeFlowFile(flowToFile(flowWithTraps())).includes("aliases"),
+  );
+}
+
 console.log("flow-config-files tests passed");
 
 // ---- vocabulary: a connector is code, a connection is a credential --------

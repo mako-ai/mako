@@ -43,21 +43,63 @@ import {
 import { runGit } from "./git";
 import {
   adoptWorkspaceConsoles,
+  commitConsoleRelocation,
   commitConsoleState,
   consoleCommitChanges,
   consoleFileVersions,
   consoleHistory,
   deriveConsoleDescription,
+  derivedConsoleId,
   listConsoleDefinitionsAtMain,
+  loadLiveConsoleById,
+  loadLiveConsoles,
   projectSavedConsole,
   restoreConsoleTo,
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
-import { ConsoleManager, type ConsoleFile } from "../utils/console-manager";
+import {
+  ConsoleManager,
+  ConsolePathTakenError,
+  ConsoleScopeError,
+  type ConsoleFile,
+} from "../utils/console-manager";
 import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
 } from "./bind-test-workspace-repo";
+
+// Observability for the cost-bound paths: how often rename detection runs,
+// and how many syncs a stale-path heal queues. Both wrappers delegate to
+// the real implementation, so every other test here is unaffected.
+const spies = vi.hoisted(() => ({
+  detect: vi.fn<(...args: unknown[]) => unknown>(),
+  serialized: vi.fn<(key: string) => void>(),
+}));
+vi.mock("../rename/git-renames", async importOriginal => {
+  const actual = await importOriginal<typeof import("../rename/git-renames")>();
+  return {
+    ...actual,
+    detectRenamedPaths: (
+      ...args: Parameters<typeof actual.detectRenamedPaths>
+    ) => {
+      spies.detect(...args);
+      return actual.detectRenamedPaths(...args);
+    },
+  };
+});
+vi.mock("./serialized", async importOriginal => {
+  const actual = await importOriginal<typeof import("./serialized")>();
+  return {
+    ...actual,
+    createSerializer: () => {
+      const real = actual.createSerializer();
+      return <T>(key: string, fn: () => Promise<T>) => {
+        spies.serialized(key);
+        return real(key, fn);
+      };
+    },
+  };
+});
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -219,14 +261,17 @@ describe("write-through", () => {
     expect(paths).toContain("consoles/Team/b.sql");
     expect(paths).not.toContain("consoles/b.sql");
 
+    // A re-scope goes through the one relocation (the sharing dialog and
+    // "Move to…" both do).
     expect(
-      await manager.updateConsoleAccess(
+      await manager.moveConsole(
         saved._id.toString(),
         WS,
-        USER,
+        undefined,
         "private",
+        USER,
       ),
-    ).not.toBeNull();
+    ).toBe(true);
     paths = await treePaths();
     expect(paths).toContain(`users/${USER}/consoles/Team/b.sql`);
     expect(paths).not.toContain("consoles/Team/b.sql");
@@ -248,20 +293,936 @@ describe("write-through", () => {
       expect.arrayContaining([
         "rename: b",
         "move: b",
-        "access private: b",
         "delete: users/" + USER + "/consoles/Team/b.sql",
         "restore: b",
       ]),
     );
   });
 
+  it("a rename after a laptop move not yet synced follows the file; the draft is never projected", async () => {
+    const report = await manager.saveConsole(
+      "report",
+      "SELECT 'saved' AS r\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const reportPath = (await SavedConsole.findById(report._id))!.path!;
+    await SavedConsole.updateOne(
+      { _id: report._id },
+      {
+        $set: {
+          code: "SELECT 'UNREVIEWED agent draft' AS r\n",
+          lastDraftOrigin: "agent",
+        },
+      },
+    );
+    const content = (await fileAt(reportPath))!;
+    // laptop: git mv report.sql report-laptop.sql, pushed, sync not run
+    await externalCommit({ "consoles/report-laptop.sql": content }, [
+      reportPath,
+    ]);
+    const moved = await manager.relocateConsole(
+      report._id.toString(),
+      WS,
+      { name: "report-ui" },
+      { userId: USER },
+    );
+    expect(moved?.row.path).toBe("consoles/report-ui.sql");
+    expect(await fileAt("consoles/report-ui.sql")).toBe(content);
+    expect(await fileAt("consoles/report-laptop.sql")).toBeNull();
+    expect(await fileAt(reportPath)).toBeNull();
+    expect(await syncConsolesIndexFromRepo(WS, USER)).toMatchObject({
+      created: 0,
+      deleted: 0,
+      renamed: 0,
+    });
+    const rows = await SavedConsole.find({
+      workspaceId: new Types.ObjectId(WS),
+    });
+    expect(rows).toHaveLength(1);
+    // The sync that re-keyed the row took the file in (its standing rule
+    // for a laptop push); the draft was never committed anywhere.
+    expect(rows[0]?.code?.trim()).toBe("SELECT 'saved' AS r");
+    // One rename commit, moving the laptop's file; no commit carries the draft.
+    const history = await log(repoDirFor(WS), MAIN, 50);
+    expect(history[0]?.subject).toBe("rename: report-ui");
+    expect(history.filter(c => c.subject.startsWith("rename:"))).toHaveLength(
+      1,
+    );
+  });
+
+  it("a rename after a laptop EDIT not yet synced takes the edit in first (schedule, description, code)", async () => {
+    const report = await manager.saveConsole(
+      "report",
+      "SELECT 1 AS v\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const reportPath = (await SavedConsole.findById(report._id))!.path!;
+    const laptop = serializeConsoleFile({
+      name: "report",
+      language: "sql",
+      code: "SELECT 2 AS v_laptop\n",
+      databaseName: "analytics",
+      description: "laptop desc",
+      schedule: { cron: "0 6 * * *", timezone: "UTC" },
+    });
+    await externalCommit({ [reportPath]: laptop });
+    const moved = await manager.relocateConsole(
+      report._id.toString(),
+      WS,
+      { name: "report-renamed" },
+      { userId: USER },
+    );
+    expect(moved?.row.path).toBe("consoles/report-renamed.sql");
+    expect(await fileAt("consoles/report-renamed.sql")).toBe(laptop);
+    const row = await SavedConsole.findById(report._id);
+    expect(row?.code?.trim()).toBe("SELECT 2 AS v_laptop");
+    expect(row?.description).toBe("laptop desc");
+    expect(row?.schedule?.cron).toBe("0 6 * * *");
+    expect(row?.sourceBlobSha).toBe(blobOid(laptop));
+    expect(await syncConsolesIndexFromRepo(WS, USER)).toMatchObject({
+      skipped: 1,
+      updated: 0,
+      created: 0,
+    });
+  });
+
+  it("a rename after a laptop DELETE not yet synced is refused as not found; the console ends deleted", async () => {
+    const report = await manager.saveConsole(
+      "report",
+      "SELECT 1\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const reportPath = (await SavedConsole.findById(report._id))!.path!;
+    await externalCommit({}, [reportPath]);
+    const before = (await log(repoDirFor(WS), MAIN, 50)).length;
+    await expect(
+      manager.relocateConsole(
+        report._id.toString(),
+        WS,
+        { name: "renamed" },
+        { userId: USER },
+      ),
+    ).resolves.toBeNull(); // the sync in between soft-deleted it: 404, not a rename
+    expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(before);
+    expect((await SavedConsole.findById(report._id))?.is_deleted).toBe(true);
+    expect(await fileAt("consoles/renamed.sql")).toBeNull();
+  });
+
+  it("a folder rename after a laptop edit not yet synced takes the edit in first, never a draft", async () => {
+    const folder = await manager.createFolder(
+      "Team",
+      WS,
+      USER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const x = await manager.saveConsole(
+      "x",
+      "SELECT 1 AS committed\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "workspace", language: "sql", folderId: folder._id.toString() },
+    );
+    await SavedConsole.updateOne(
+      { _id: x._id },
+      {
+        $set: {
+          code: "SELECT 2 AS unsaved_agent_draft\n",
+          lastDraftOrigin: "agent",
+        },
+      },
+    );
+    const laptop = serializeConsoleFile({
+      name: "x",
+      language: "sql",
+      code: "SELECT 3 AS v_laptop\n",
+      databaseName: "analytics",
+    });
+    await externalCommit({ "consoles/Team/x.sql": laptop });
+    expect(
+      await manager.renameFolder(folder._id.toString(), "Team2", WS, USER),
+    ).toBe(true);
+    const row = await SavedConsole.findById(x._id);
+    expect(row?.path).toBe("consoles/Team2/x.sql");
+    expect(await fileAt("consoles/Team2/x.sql")).toBe(laptop);
+    expect(await fileAt("consoles/Team/x.sql")).toBeNull();
+    expect(row?.code?.trim()).toBe("SELECT 3 AS v_laptop");
+    expect(row?.sourceBlobSha).toBe(blobOid(laptop));
+    // The folder itself was renamed, not re-created by a sync in between.
+    expect(await ConsoleFolder.countDocuments({ workspaceId: WS })).toBe(1);
+    expect((await ConsoleFolder.findById(folder._id))?.name).toBe("Team2");
+  });
+
+  it("a refused folder move leaves no row re-scoped: private stays private, the other console's file is safe", async () => {
+    const OTHER = new Types.ObjectId().toString();
+    const wsFolder = await manager.createFolder(
+      "Scratch",
+      WS,
+      OTHER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const theirs = await manager.saveConsole(
+      "test",
+      "SELECT 'theirs'\n",
+      WS,
+      OTHER,
+      undefined,
+      undefined,
+      undefined,
+      {
+        access: "workspace",
+        language: "sql",
+        folderId: wsFolder._id.toString(),
+      },
+    );
+    expect(theirs.path).toBe("consoles/Scratch/test.sql");
+    const myFolder = await manager.createFolder(
+      "Scratch",
+      WS,
+      USER,
+      undefined,
+      false,
+      "private",
+    );
+    const mine = await manager.saveConsole(
+      "test",
+      "SELECT 'my secret'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql", folderId: myFolder._id.toString() },
+    );
+    expect(mine.path).toBe(`users/${USER}/consoles/Scratch/test.sql`);
+    // "Move to…" my folder into the Workspace section: the target file is theirs.
+    await expect(
+      manager.moveFolder(myFolder._id.toString(), WS, null, "workspace", USER),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    expect((await ConsoleFolder.findById(myFolder._id))?.access).toBe(
+      "private",
+    );
+    const row = await SavedConsole.findById(mine._id);
+    expect(row?.access).toBe("private");
+    expect(row?.isPrivate).toBe(true);
+    expect(row?.path).toBe(`users/${USER}/consoles/Scratch/test.sql`);
+    expect(await manager.canReadWithInheritance(row!, OTHER)).toBe(false);
+    // My next ordinary save stays on my file; theirs is untouched.
+    await manager.saveConsole(
+      "test",
+      "SELECT 'my secret v2'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      {
+        id: mine._id.toString(),
+        language: "sql",
+        folderId: myFolder._id.toString(),
+      },
+    );
+    expect(await fileAt("consoles/Scratch/test.sql")).toContain("'theirs'");
+    expect(await fileAt(`users/${USER}/consoles/Scratch/test.sql`)).toContain(
+      "my secret v2",
+    );
+    expect(
+      await SavedConsole.countDocuments({
+        path: "consoles/Scratch/test.sql",
+        is_deleted: { $ne: true },
+      }),
+    ).toBe(1);
+    // The same guard for a folder access change and a folder rename.
+    await expect(
+      manager.updateFolderAccess(
+        myFolder._id.toString(),
+        WS,
+        USER,
+        "workspace",
+      ),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    expect((await SavedConsole.findById(mine._id))?.access).toBe("private");
+    await manager.renameFolder(wsFolder._id.toString(), "Other", WS, OTHER);
+    await expect(
+      manager.renameFolder(wsFolder._id.toString(), "Scratch", WS, OTHER),
+    ).resolves.toBe(true); // back to its own name: free again
+  });
+
+  it("the editor's Rename / Move… save goes through the relocation: files at main count, scope is the owner's", async () => {
+    const OTHER = new Types.ObjectId().toString();
+    const x = await manager.saveConsole(
+      "x",
+      "SELECT 'x'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit({ "consoles/target.sql": "SELECT 'laptop work'\n" });
+    const row = (await SavedConsole.findById(x._id))!;
+    await expect(
+      manager.relocateForSave(
+        row,
+        { name: "target", folderId: undefined, access: "workspace" },
+        USER,
+      ),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    expect(await fileAt("consoles/target.sql")).toBe("SELECT 'laptop work'\n");
+    // Nothing to move: same name, same folder, same access → null.
+    expect(
+      await manager.relocateForSave(
+        row,
+        { name: "x", folderId: undefined, access: "workspace" },
+        USER,
+      ),
+    ).toBeNull();
+    // A shared editor cannot publish someone's private console through a save.
+    const mine = await manager.saveConsole(
+      "mine",
+      "SELECT 1\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await expect(
+      manager.relocateForSave(
+        (await SavedConsole.findById(mine._id))!,
+        { name: "mine", folderId: undefined, access: "workspace" },
+        OTHER,
+      ),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    expect((await SavedConsole.findById(mine._id))?.access).toBe("private");
+    // A plain move by the owner: the file moves (main's blob), revision untouched.
+    const before = (await SavedConsole.findById(x._id))!.draftRevision ?? 1;
+    const moved = await manager.relocateForSave(
+      row,
+      { name: "x-moved", folderId: undefined, access: undefined },
+      USER,
+    );
+    expect(moved?.row.path).toBe("consoles/x-moved.sql");
+    expect(await fileAt("consoles/x-moved.sql")).toContain("'x'");
+    expect(await fileAt("consoles/x.sql")).toBeNull();
+    expect((await SavedConsole.findById(x._id))!.draftRevision ?? 1).toBe(
+      before,
+    );
+  });
+
+  it("a folder flip to workspace never publishes someone else's private console, nor merges two onto one file", async () => {
+    const EDITOR = new Types.ObjectId().toString();
+    const team = await manager.createFolder(
+      "Team",
+      WS,
+      EDITOR,
+      undefined,
+      false,
+      "private",
+    );
+    const theirs = await manager.saveConsole(
+      "x",
+      "SELECT 'owner secret'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: theirs._id },
+      { $set: { sharedWith: [{ userId: EDITOR, role: "editor" }] } },
+    );
+    const mine = await manager.saveConsole(
+      "x",
+      "SELECT 'editor own'\n",
+      WS,
+      EDITOR,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql", folderId: team._id.toString() },
+    );
+    expect(mine.path).toBe(`users/${EDITOR}/consoles/Team/x.sql`);
+    // Filing the owner's console into the editor's private folder is
+    // refused now (a shared editor does not move it, and a private folder
+    // takes only its owner's consoles)…
+    await expect(
+      manager.moveConsole(
+        theirs._id.toString(),
+        WS,
+        team._id.toString(),
+        undefined,
+        EDITOR,
+      ),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    // …but rows filed that way before still exist: built here as they were.
+    const before = (await SavedConsole.findById(theirs._id))!;
+    const filed = await commitConsoleRelocation({
+      workspaceId: WS,
+      fromPath: before.path!,
+      toPath: `users/${USER}/consoles/Team/x.sql`,
+      message: "legacy: filed in another member's folder",
+      sourceBlobSha: before.sourceBlobSha,
+    });
+    await SavedConsole.updateOne(
+      { _id: theirs._id },
+      {
+        $set: {
+          folderId: team._id,
+          path: filed!.path,
+          sourceBlobSha: filed!.sourceBlobSha,
+        },
+      },
+    );
+    expect((await SavedConsole.findById(theirs._id))?.path).toBe(
+      `users/${USER}/consoles/Team/x.sql`,
+    );
+    // …then flips the folder to the workspace: refused — not theirs to publish.
+    await expect(
+      manager.moveFolder(team._id.toString(), WS, null, "workspace", EDITOR),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    const a = await SavedConsole.findById(theirs._id);
+    const b = await SavedConsole.findById(mine._id);
+    expect(a?.access).toBe("private");
+    expect(b?.access).toBe("private");
+    expect(
+      await manager.canReadWithInheritance(a!, new Types.ObjectId().toString()),
+    ).toBe(false);
+    expect(await fileAt("consoles/Team/x.sql")).toBeNull();
+    expect(await fileAt(`users/${USER}/consoles/Team/x.sql`)).toContain(
+      "owner secret",
+    );
+    // Same owner, two "y" that would meet in the workspace tree: refused.
+    // (A workspace console filed into a private folder keeps its scope and
+    // its workspace path; flipping the folder would land the private one
+    // on that very file.)
+    const own = await manager.createFolder(
+      "Mine",
+      WS,
+      USER,
+      undefined,
+      false,
+      "private",
+    );
+    const priv = await manager.saveConsole(
+      "y",
+      "SELECT 'private y'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql", folderId: own._id.toString() },
+    );
+    const pub = await manager.saveConsole(
+      "y",
+      "SELECT 'public y'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    expect(
+      await manager.moveConsole(
+        pub._id.toString(),
+        WS,
+        own._id.toString(),
+        undefined,
+        USER,
+      ),
+    ).toBe(true);
+    expect((await SavedConsole.findById(priv._id))?.path).toBe(
+      `users/${USER}/consoles/Mine/y.sql`,
+    );
+    expect((await SavedConsole.findById(pub._id))?.path).toBe(
+      "consoles/Mine/y.sql",
+    );
+    await expect(
+      manager.moveFolder(own._id.toString(), WS, null, "workspace", USER),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    expect((await SavedConsole.findById(priv._id))?.access).toBe("private");
+    expect(await fileAt("consoles/Mine/y.sql")).toContain("public y");
+    expect(await fileAt(`users/${USER}/consoles/Mine/y.sql`)).toContain(
+      "private y",
+    );
+  });
+
+  it("a shared editor cannot move the owner's private console where the workspace sees it", async () => {
+    const EDITOR = new Types.ObjectId().toString();
+    const OTHER = new Types.ObjectId().toString();
+    const pub = await manager.createFolder(
+      "Public",
+      WS,
+      OTHER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const c = await manager.saveConsole(
+      "secret",
+      "SELECT 'secret'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: c._id },
+      { $set: { sharedWith: [{ userId: EDITOR, role: "editor" }] } },
+    );
+    // "Move to…" into a workspace folder with no access sent: the folder
+    // would publish it by inheritance — the owner's call, not the editor's.
+    await expect(
+      manager.moveConsole(
+        c._id.toString(),
+        WS,
+        pub._id.toString(),
+        undefined,
+        EDITOR,
+      ),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    const row = await SavedConsole.findById(c._id);
+    expect(row?.folderId).toBeFalsy();
+    expect(await manager.canReadWithInheritance(row!, OTHER)).toBe(false);
+    // The editor may still rename it where it is — but not move it, not
+    // even into a private folder of their own (another member's folder).
+    expect(
+      await manager.renameConsole(c._id.toString(), "secret-2", WS, EDITOR),
+    ).toBe(true);
+    const own = await manager.createFolder(
+      "Mine",
+      WS,
+      EDITOR,
+      undefined,
+      false,
+      "private",
+    );
+    await expect(
+      manager.moveConsole(
+        c._id.toString(),
+        WS,
+        own._id.toString(),
+        undefined,
+        EDITOR,
+      ),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    expect((await SavedConsole.findById(c._id))?.folderId).toBeFalsy();
+    expect(
+      await manager.canReadWithInheritance(
+        (await SavedConsole.findById(c._id))!,
+        OTHER,
+      ),
+    ).toBe(false);
+    // The owner may publish it.
+    expect(
+      await manager.moveConsole(
+        c._id.toString(),
+        WS,
+        pub._id.toString(),
+        undefined,
+        USER,
+      ),
+    ).toBe(true);
+    expect(
+      await manager.canReadWithInheritance(
+        (await SavedConsole.findById(c._id))!,
+        OTHER,
+      ),
+    ).toBe(true);
+  });
+
+  it("'Move to…' with a new name is ONE commit (rename + move together)", async () => {
+    const saved = await manager.saveConsole(
+      "draft name",
+      "SELECT 2",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const folder = await manager.createFolder(
+      "Archive",
+      WS,
+      USER,
+      undefined,
+      false,
+    );
+    const before = (await log(repoDirFor(WS), MAIN, 50)).length;
+    expect(
+      await manager.moveConsole(
+        saved._id.toString(),
+        WS,
+        folder._id.toString(),
+        undefined,
+        USER,
+        "final name",
+      ),
+    ).toBe(true);
+    const history = await log(repoDirFor(WS), MAIN, 50);
+    expect(history.length).toBe(before + 1);
+    expect(history[0]?.subject).toBe("move: final name");
+    const paths = await treePaths();
+    expect(paths).toContain("consoles/Archive/final name.sql");
+    expect(paths).not.toContain("consoles/draft name.sql");
+    const row = await SavedConsole.findById(saved._id);
+    expect(row?.name).toBe("final name");
+    expect(row?.path).toBe("consoles/Archive/final name.sql");
+  });
+
+  it("a rename moves the file AS IT IS AT MAIN; the row's unsaved draft stays a draft", async () => {
+    const saved = await manager.saveConsole(
+      "x",
+      "SELECT 1 AS committed\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const committed = (await fileAt("consoles/x.sql"))!;
+    // An agent (or an autosave) left an unreviewed draft on the row.
+    await SavedConsole.updateOne(
+      { _id: saved._id },
+      {
+        $set: { code: "SELECT 2 AS unsaved_draft\n", lastDraftOrigin: "agent" },
+      },
+    );
+    expect(
+      await manager.renameConsole(saved._id.toString(), "y", WS, USER),
+    ).toBe(true);
+    expect(await fileAt("consoles/y.sql")).toBe(committed);
+    expect(await fileAt("consoles/x.sql")).toBeNull();
+    const row = await SavedConsole.findById(saved._id);
+    expect(row?.code).toBe("SELECT 2 AS unsaved_draft\n");
+    expect(row?.path).toBe("consoles/y.sql");
+    expect(row?.sourceBlobSha).toBe(saved.sourceBlobSha);
+    // The same holds for "Move to…" (one commit, main's blob, draft kept).
+    const folder = await manager.createFolder(
+      "Team",
+      WS,
+      USER,
+      undefined,
+      false,
+    );
+    await manager.moveConsole(
+      saved._id.toString(),
+      WS,
+      folder._id.toString(),
+      undefined,
+      USER,
+      "z",
+    );
+    expect(await fileAt("consoles/Team/z.sql")).toBe(committed);
+    expect((await SavedConsole.findById(saved._id))?.code).toBe(
+      "SELECT 2 AS unsaved_draft\n",
+    );
+  });
+
+  it("a rename or move onto a taken file is refused (409), never an overwrite", async () => {
+    const a = await manager.saveConsole(
+      "a",
+      "SELECT 'A content' AS a\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const b = await manager.saveConsole(
+      "b",
+      "SELECT 'B content' AS b\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const aContents = (await fileAt("consoles/a.sql"))!;
+    await expect(
+      manager.relocateConsole(
+        b._id.toString(),
+        WS,
+        { name: "a" },
+        { userId: USER },
+      ),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    // Names are sanitized into file names: " a " is the same file as "a".
+    await expect(
+      manager.renameConsole(b._id.toString(), " a ", WS, USER),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    const folder = await manager.createFolder(
+      "Team",
+      WS,
+      USER,
+      undefined,
+      false,
+    );
+    await manager.moveConsole(
+      a._id.toString(),
+      WS,
+      folder._id.toString(),
+      undefined,
+      USER,
+    );
+    await expect(
+      manager.moveConsole(
+        b._id.toString(),
+        WS,
+        folder._id.toString(),
+        undefined,
+        USER,
+        "a",
+      ),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    expect(await fileAt("consoles/Team/a.sql")).toBe(aContents);
+    expect(await fileAt("consoles/b.sql")).toContain("B content");
+    expect((await SavedConsole.findById(b._id))?.path).toBe("consoles/b.sql");
+    const hit = await loadLiveConsoleById(WS, a._id.toString());
+    expect(hit && "live" in hit ? hit.live.parsed.code : null).toContain(
+      "A content",
+    );
+  });
+
+  it("two renames racing for one free name: exactly one wins, nothing is overwritten", async () => {
+    const a = await manager.saveConsole(
+      "a",
+      "SELECT 'A' AS a\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const b = await manager.saveConsole(
+      "b",
+      "SELECT 'B' AS b\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const results = await Promise.allSettled([
+      manager.relocateConsole(
+        a._id.toString(),
+        WS,
+        { name: "c" },
+        { userId: USER },
+      ),
+      manager.relocateConsole(
+        b._id.toString(),
+        WS,
+        { name: "c" },
+        { userId: USER },
+      ),
+    ]);
+    const won = results.filter(r => r.status === "fulfilled");
+    const lost = results.filter(r => r.status === "rejected");
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      ConsolePathTakenError,
+    );
+    const rows = await SavedConsole.find({
+      workspaceId: new Types.ObjectId(WS),
+    });
+    const paths = rows.map(r => r.path).sort();
+    expect(new Set(paths).size).toBe(2);
+    expect(paths).toContain("consoles/c.sql");
+    const winner = rows.find(r => r.path === "consoles/c.sql")!;
+    const loser = rows.find(r => r.path !== "consoles/c.sql")!;
+    expect(await fileAt("consoles/c.sql")).toContain(
+      winner.name === "c" ? "SELECT" : "SELECT",
+    );
+    expect(await fileAt(loser.path!)).toContain(
+      loser.name === "a" ? "'A'" : "'B'",
+    );
+    expect(await fileAt("consoles/c.sql")).toContain(
+      winner._id.equals(a._id) ? "'A'" : "'B'",
+    );
+  });
+
+  it("a target that a laptop pushed (no row yet) is never overwritten by a rename", async () => {
+    const a = await manager.saveConsole(
+      "a",
+      "SELECT 'A' AS a\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit({ "consoles/c.sql": "SELECT 'laptop' AS c\n" });
+    await expect(
+      manager.relocateConsole(
+        a._id.toString(),
+        WS,
+        { name: "c" },
+        { userId: USER },
+      ),
+    ).rejects.toBeInstanceOf(ConsolePathTakenError);
+    expect(await fileAt("consoles/c.sql")).toBe("SELECT 'laptop' AS c\n");
+    expect(await fileAt("consoles/a.sql")).toContain("'A'");
+  });
+
+  it("a folder rename/move/access change moves each file AS IT IS AT MAIN; drafts stay drafts", async () => {
+    const folder = await manager.createFolder(
+      "Team",
+      WS,
+      USER,
+      undefined,
+      false,
+      "workspace",
+    );
+    const x = await manager.saveConsole(
+      "x",
+      "SELECT 1 AS committed\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql", folderId: folder._id.toString() },
+    );
+    const committed = (await fileAt("consoles/Team/x.sql"))!;
+    await SavedConsole.updateOne(
+      { _id: x._id },
+      {
+        $set: {
+          code: "SELECT 2 AS unsaved_agent_draft\n",
+          lastDraftOrigin: "agent",
+        },
+      },
+    );
+    expect(
+      await manager.renameFolder(folder._id.toString(), "Team2", WS, USER),
+    ).toBe(true);
+    let row = await SavedConsole.findById(x._id);
+    expect(row?.path).toBe("consoles/Team2/x.sql");
+    expect(await fileAt("consoles/Team2/x.sql")).toBe(committed);
+    expect(row?.code).toBe("SELECT 2 AS unsaved_agent_draft\n");
+    const parent = await manager.createFolder(
+      "Parent",
+      WS,
+      USER,
+      undefined,
+      false,
+      "workspace",
+    );
+    expect(
+      await manager.moveFolder(
+        folder._id.toString(),
+        WS,
+        parent._id.toString(),
+        undefined,
+        USER,
+      ),
+    ).toBe(true);
+    row = await SavedConsole.findById(x._id);
+    expect(row?.path).toBe("consoles/Parent/Team2/x.sql");
+    expect(await fileAt("consoles/Parent/Team2/x.sql")).toBe(committed);
+    expect(row?.code).toBe("SELECT 2 AS unsaved_agent_draft\n");
+  });
+
+  it("a shared editor may move a console but not flip its scope; the owner may", async () => {
+    const OTHER = new Types.ObjectId().toString();
+    const mine = await manager.saveConsole(
+      "mine",
+      "SELECT 1\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const folder = await manager.createFolder(
+      "Team",
+      WS,
+      USER,
+      undefined,
+      false,
+      "workspace",
+    );
+    await expect(
+      manager.moveConsole(
+        mine._id.toString(),
+        WS,
+        folder._id.toString(),
+        "private",
+        OTHER,
+      ),
+    ).rejects.toBeInstanceOf(ConsoleScopeError);
+    expect((await SavedConsole.findById(mine._id))?.path).toBe(
+      "consoles/mine.sql",
+    );
+    expect(
+      await manager.moveConsole(
+        mine._id.toString(),
+        WS,
+        folder._id.toString(),
+        undefined,
+        OTHER,
+      ),
+    ).toBe(true);
+    expect((await SavedConsole.findById(mine._id))?.path).toBe(
+      "consoles/Team/mine.sql",
+    );
+    expect(
+      await manager.moveConsole(mine._id.toString(), WS, null, "private", USER),
+    ).toBe(true);
+    expect((await SavedConsole.findById(mine._id))?.path).toBe(
+      `users/${USER}/consoles/mine.sql`,
+    );
+  });
+
   it("renaming a folder moves every console under it in one commit", async () => {
+    // Workspace folders: a workspace console's "Old/x" is the workspace
+    // "Old" (folder chains are found in the console's scope).
     const folder = await manager.createFolder(
       "Old",
       WS,
       USER,
       undefined,
       false,
+      "workspace",
     );
     const sub = await manager.createFolder(
       "Sub",
@@ -516,6 +1477,558 @@ describe("sync from repo", () => {
     // Same content → the derivation stays current: no re-embed needed.
     expect(row?.descriptionSourceSha).toBe(row?.sourceBlobSha);
     expect(await SavedConsole.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+
+  it("a rename PLUS an edit in one push keeps the row (git -M), so /c/<id> survives", async () => {
+    const saved = await manager.saveConsole(
+      "weekly report",
+      "SELECT country, count(*) AS n\nFROM leads\nGROUP BY 1\nORDER BY 2 DESC\n-- weekly\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: saved._id },
+      { $set: { executionCount: 3 } },
+    );
+    const contents = (await fileAt("consoles/weekly report.sql"))!;
+    // `git mv` + a tweak, pushed together: the blob changes, the path too.
+    await externalCommit(
+      {
+        "consoles/Reports/weekly leads.sql": contents.replace(
+          "-- weekly",
+          "-- weekly, by country",
+        ),
+      },
+      ["consoles/weekly report.sql"],
+      "laptop: move and edit",
+    );
+    const stats = await syncConsolesIndexFromRepo(WS, USER);
+    expect(stats).toMatchObject({ renamed: 1, created: 0, deleted: 0 });
+    const row = await SavedConsole.findById(saved._id);
+    expect(row?.path).toBe("consoles/Reports/weekly leads.sql");
+    expect(row?.name).toBe("weekly leads");
+    expect(row?.code).toContain("-- weekly, by country");
+    expect(row?.executionCount).toBe(3);
+    expect(row?.is_deleted).not.toBe(true);
+    expect(await SavedConsole.countDocuments({ workspaceId: WS })).toBe(1);
+    // The id still resolves to the live file at its new path.
+    const hit = await loadLiveConsoleById(WS, saved._id.toString());
+    expect(hit && "live" in hit ? hit.live.path : null).toBe(
+      "consoles/Reports/weekly leads.sql",
+    );
+  });
+
+  it("a long-deleted console is never resurrected onto another user's later, merely similar file", async () => {
+    const U2 = new Types.ObjectId().toString();
+    const rev = await manager.saveConsole(
+      "revenue",
+      "SELECT date_trunc('month', created_at) AS month, sum(amount) AS revenue\nFROM orders\nWHERE status = 'paid'\nGROUP BY 1\nORDER BY 1\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: rev._id },
+      { $set: { sharedWith: [{ userId: "collab", role: "editor" }] } },
+    );
+    await externalCommit({}, ["consoles/revenue.sql"]);
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect((await SavedConsole.findById(rev._id))?.is_deleted).toBe(true);
+    await externalCommit({ "consoles/other1.sql": "SELECT 1\n" });
+    await syncConsolesIndexFromRepo(WS, USER);
+    const privatePath = `users/${U2}/consoles/refunds.sql`;
+    await externalCommit({
+      [privatePath]:
+        "-- database: analytics\nSELECT date_trunc('month', created_at) AS month, sum(amount) AS refunds\nFROM orders\nWHERE status = 'refunded'\nGROUP BY 1\nORDER BY 1\n",
+    });
+    const stats = await syncConsolesIndexFromRepo(WS, U2);
+    expect(stats).toMatchObject({ renamed: 0, created: 1 });
+    const old = await SavedConsole.findById(rev._id);
+    expect(old?.is_deleted).toBe(true);
+    expect(old?.path).toBe("consoles/revenue.sql");
+    const fresh = await SavedConsole.findOne({
+      workspaceId: WS,
+      path: privatePath,
+    });
+    expect(fresh?._id.toString()).not.toBe(rev._id.toString());
+    expect(fresh?.owner_id).toBe(U2);
+    expect(fresh?.sharedWith ?? []).toEqual([]);
+  });
+
+  it("an identical blob never resurrects a soft-deleted row; only its own path restores it", async () => {
+    const U2 = new Types.ObjectId().toString();
+    const rev = await manager.saveConsole(
+      "revenue",
+      "SELECT sum(amount) FROM orders\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: rev._id },
+      {
+        $set: {
+          sharedWith: [{ userId: "collab", role: "editor" }],
+          executionCount: 7,
+        },
+      },
+    );
+    const content = (await fileAt("consoles/revenue.sql"))!;
+    await externalCommit({}, ["consoles/revenue.sql"]);
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect((await SavedConsole.findById(rev._id))?.is_deleted).toBe(true);
+    // The same query, pushed later by another member under a new name.
+    await externalCommit({ "consoles/u2-sum.sql": content });
+    const stats = await syncConsolesIndexFromRepo(WS, U2);
+    expect(stats).toMatchObject({ renamed: 0, created: 1, restored: 0 });
+    const old = await SavedConsole.findById(rev._id);
+    expect(old?.is_deleted).toBe(true);
+    expect(old?.path).toBe("consoles/revenue.sql");
+    const fresh = await SavedConsole.findOne({
+      workspaceId: WS,
+      path: "consoles/u2-sum.sql",
+    });
+    expect(fresh?._id.toString()).not.toBe(rev._id.toString());
+    expect(fresh?.sharedWith ?? []).toEqual([]);
+    // Back at its OWN path, the row is restored (id, shares, telemetry).
+    await externalCommit({ "consoles/revenue.sql": content });
+    expect(await syncConsolesIndexFromRepo(WS, USER)).toMatchObject({
+      restored: 1,
+      created: 0,
+    });
+    const back = await SavedConsole.findById(rev._id);
+    expect(back?.is_deleted).toBe(false);
+    expect(back?.executionCount).toBe(7);
+  });
+
+  it("LAPTOP: a live console moved onto a soft-deleted console's path keeps its own row; the dead row lets go", async () => {
+    const old = await manager.saveConsole(
+      "old",
+      "SELECT 'old' AS o\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: old._id },
+      { $set: { sharedWith: [{ userId: "collab1", role: "viewer" }] } },
+    );
+    const oldPath = (await SavedConsole.findById(old._id))!.path!;
+    await externalCommit({}, [oldPath]);
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect((await SavedConsole.findById(old._id))?.is_deleted).toBe(true);
+    const report = await manager.saveConsole(
+      "report",
+      "SELECT 'secret report' AS r\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    const reportPath = (await SavedConsole.findById(report._id))!.path!;
+    const content = (await fileAt(reportPath))!;
+    // git mv report.sql old.sql
+    await externalCommit({ [oldPath]: content }, [reportPath]);
+    const stats = await syncConsolesIndexFromRepo(WS, USER);
+    expect(stats).toMatchObject({
+      renamed: 1,
+      restored: 0,
+      deleted: 0,
+      created: 0,
+    });
+    const r = await SavedConsole.findById(report._id);
+    expect(r?.path).toBe(oldPath);
+    expect(r?.is_deleted).not.toBe(true);
+    expect(r?.sharedWith ?? []).toEqual([]);
+    const o = await SavedConsole.findById(old._id);
+    expect(o?.is_deleted).toBe(true);
+    expect(o?.path).toBeUndefined();
+    expect((await loadLiveConsoles(WS)).map(l => l.id.toString())).toEqual([
+      report._id.toString(),
+    ]);
+  });
+
+  it("UI: renaming onto a soft-deleted console's name takes the path for good; a restore picks a free name", async () => {
+    const report = await manager.saveConsole(
+      "report",
+      "SELECT 'report' AS r\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    const old = await manager.saveConsole(
+      "old",
+      "SELECT 'old' AS o\n",
+      WS,
+      USER,
+      undefined,
+      "analytics",
+      undefined,
+      { access: "private", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: old._id },
+      { $set: { sharedWith: [{ userId: "collab1", role: "viewer" }] } },
+    );
+    const oldPath = (await SavedConsole.findById(old._id))!.path!;
+    await externalCommit({}, [oldPath]);
+    await syncConsolesIndexFromRepo(WS, USER);
+    const moved = await manager.relocateConsole(
+      report._id.toString(),
+      WS,
+      { name: "old" },
+      { userId: USER },
+    );
+    expect(moved?.row.path).toBe(oldPath);
+    expect((await SavedConsole.findById(old._id))?.path).toBeUndefined();
+    // The next push restores nothing: one live row on the file.
+    await externalCommit({ "README2.md": "y\n" });
+    expect(await syncConsolesIndexFromRepo(WS, USER)).toMatchObject({
+      restored: 0,
+      deleted: 0,
+      created: 0,
+    });
+    const live = await loadLiveConsoles(WS);
+    expect(live.map(l => [l.path, l.id.toString()])).toEqual([
+      [oldPath, report._id.toString()],
+    ]);
+    expect(await fileAt(oldPath)).toContain("'report'");
+    // Restoring the deleted console does not overwrite that file.
+    expect(await manager.restoreConsole(old._id.toString(), WS, USER)).toBe(
+      true,
+    );
+    const restored = await SavedConsole.findById(old._id);
+    expect(restored?.is_deleted).toBe(false);
+    expect(restored?.name).toBe("old (2)");
+    expect(restored?.path).toBe(`users/${USER}/consoles/old (2).sql`);
+    expect(await fileAt(oldPath)).toContain("'report'");
+    expect(await fileAt(`users/${USER}/consoles/old (2).sql`)).toContain(
+      "'old'",
+    );
+  });
+
+  it("a new file at a renamed git-born console's old path gets its own row (derived id generations)", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    await externalCommit({ "consoles/report.sql": "SELECT 'original'\n" });
+    await syncConsolesIndexFromRepo(WS, USER);
+    const derived = derivedConsoleId(WS, "consoles/report.sql").toString();
+    expect((await SavedConsole.findById(derived))?.path).toBe(
+      "consoles/report.sql",
+    );
+    await manager.relocateConsole(
+      derived,
+      WS,
+      { name: "report-old" },
+      { userId: USER },
+    );
+    expect((await SavedConsole.findById(derived))?.path).toBe(
+      "consoles/report-old.sql",
+    );
+    // Before any sync, the list already hands the new file its own id…
+    await externalCommit({ "consoles/report.sql": "SELECT 'brand new'\n" });
+    const listed = await loadLiveConsoles(WS);
+    const newListed = listed.find(l => l.path === "consoles/report.sql");
+    expect(newListed?.id.toString()).not.toBe(derived);
+    expect(newListed?.id.toString()).toBe(
+      derivedConsoleId(WS, "consoles/report.sql", 2).toString(),
+    );
+    // …and the sync creates the row under that very id.
+    expect(await syncConsolesIndexFromRepo(WS, USER)).toMatchObject({
+      created: 1,
+      renamed: 0,
+      deleted: 0,
+    });
+    const fresh = await SavedConsole.find({ path: "consoles/report.sql" });
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]?._id.toString()).toBe(newListed?.id.toString());
+    expect((await SavedConsole.findById(derived))?.path).toBe(
+      "consoles/report-old.sql",
+    );
+    expect(
+      (await loadLiveConsoles(WS))
+        .map(l => `${l.path}->${l.id.toString() === derived ? "old" : "new"}`)
+        .sort(),
+    ).toEqual(["consoles/report-old.sql->old", "consoles/report.sql->new"]);
+  });
+
+  it("a soft-deleted console cannot be renamed: nothing is committed, nothing comes back", async () => {
+    const a = await manager.saveConsole(
+      "a",
+      "SELECT 'saved a'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: a._id },
+      { $set: { code: "SELECT 'UNSAVED DRAFT of a'\n" } },
+    );
+    await manager.softDeleteConsole(a._id.toString(), WS, USER);
+    const b = await manager.saveConsole(
+      "b",
+      "SELECT 'b'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await manager.relocateConsole(
+      b._id.toString(),
+      WS,
+      { name: "a" },
+      { userId: USER },
+    );
+    expect((await SavedConsole.findById(a._id))?.path).toBeUndefined();
+    const before = (await log(repoDirFor(WS), MAIN, 50)).length;
+    expect(
+      await manager.renameConsole(a._id.toString(), "a-again", WS, USER),
+    ).toBe(false);
+    expect(
+      await manager.relocateConsole(
+        a._id.toString(),
+        WS,
+        { name: "a-again" },
+        { userId: USER },
+      ),
+    ).toBeNull();
+    expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(before);
+    expect(await fileAt("consoles/a-again.sql")).toBeNull();
+    await syncConsolesIndexFromRepo(WS, USER);
+    const row = await SavedConsole.findById(a._id);
+    expect(row?.is_deleted).toBe(true);
+    expect(row?.path).toBeUndefined();
+  });
+
+  it("a rename pair never crosses an ownership boundary, even for an identical blob", async () => {
+    const U2 = new Types.ObjectId().toString();
+    const shared = await manager.saveConsole(
+      "team metrics",
+      "SELECT team, count(*) FROM members GROUP BY 1\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await SavedConsole.updateOne(
+      { _id: shared._id },
+      { $set: { sharedWith: [{ userId: "collab", role: "editor" }] } },
+    );
+    const contents = (await fileAt("consoles/team metrics.sql"))!;
+    // Someone moves the file into U2's private tree in one push.
+    await externalCommit(
+      { [`users/${U2}/consoles/team metrics.sql`]: contents },
+      ["consoles/team metrics.sql"],
+    );
+    const stats = await syncConsolesIndexFromRepo(WS, U2);
+    expect(stats).toMatchObject({ renamed: 0, created: 1, deleted: 1 });
+    expect((await SavedConsole.findById(shared._id))?.is_deleted).toBe(true);
+    const mine = await SavedConsole.findOne({
+      workspaceId: WS,
+      path: `users/${U2}/consoles/team metrics.sql`,
+    });
+    expect(mine?.owner_id).toBe(U2);
+    expect(mine?.sharedWith ?? []).toEqual([]);
+  });
+
+  it("rename detection runs only when a live orphan AND an unclaimed new file coexist", async () => {
+    const gone = await manager.saveConsole(
+      "gone",
+      "SELECT 'gone'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit({}, ["consoles/gone.sql"]);
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect((await SavedConsole.findById(gone._id))?.is_deleted).toBe(true);
+    spies.detect.mockClear();
+    // A soft-deleted orphan plus a brand-new file: nothing to detect.
+    await externalCommit({ "consoles/fresh.sql": "SELECT 'fresh'\n" });
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect(spies.detect).not.toHaveBeenCalled();
+    // A live orphan but no unclaimed file (a plain deletion): nothing either.
+    const live = await manager.saveConsole(
+      "live",
+      "SELECT 'live'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit({}, ["consoles/live.sql"]);
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect(spies.detect).not.toHaveBeenCalled();
+    expect((await SavedConsole.findById(live._id))?.is_deleted).toBe(true);
+    // Both at once: one detection, scoped to the live orphan only.
+    const moving = await manager.saveConsole(
+      "moving",
+      "SELECT country, count(*) AS n\nFROM leads\nWHERE created_at > now() - interval '7 days'\nGROUP BY 1\nORDER BY 2 DESC\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit(
+      {
+        "consoles/moved.sql":
+          "SELECT country, count(*) AS n\nFROM leads\nWHERE created_at > now() - interval '14 days'\nGROUP BY 1\nORDER BY 2 DESC\n",
+      },
+      ["consoles/moving.sql"],
+    );
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect(spies.detect).toHaveBeenCalledTimes(1);
+    expect(spies.detect.mock.calls[0]?.[2]).toEqual(["consoles/moving.sql"]);
+    expect((await SavedConsole.findById(moving._id))?.path).toBe(
+      "consoles/moved.sql",
+    );
+  });
+
+  it("a GET of a soft-deleted console never syncs; concurrent stale reads share one sync", async () => {
+    const dead = await manager.saveConsole(
+      "dead",
+      "SELECT 'dead'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit({}, ["consoles/dead.sql"]);
+    await syncConsolesIndexFromRepo(WS, USER);
+    expect((await SavedConsole.findById(dead._id))?.is_deleted).toBe(true);
+    spies.serialized.mockClear();
+    expect(await loadLiveConsoleById(WS, dead._id.toString())).toBeNull();
+    expect(await loadLiveConsoleById(WS, dead._id.toString())).toBeNull();
+    expect(spies.serialized).not.toHaveBeenCalled();
+
+    const stale = await manager.saveConsole(
+      "stale2",
+      "SELECT 'stale'\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const contents = (await fileAt("consoles/stale2.sql"))!;
+    await externalCommit({ "consoles/Moved/stale2.sql": contents }, [
+      "consoles/stale2.sql",
+    ]);
+    spies.serialized.mockClear();
+    const hits = await Promise.all([
+      loadLiveConsoleById(WS, stale._id.toString()),
+      loadLiveConsoleById(WS, stale._id.toString()),
+      loadLiveConsoleById(WS, stale._id.toString()),
+    ]);
+    for (const hit of hits) {
+      expect(hit && "live" in hit ? hit.live.path : null).toBe(
+        "consoles/Moved/stale2.sql",
+      );
+    }
+    expect(spies.serialized).toHaveBeenCalledTimes(1);
+
+    // A row a sync cannot heal (here: the repo is no longer adopted, so the
+    // sync is a no-op) is not re-synced per read while main has not moved.
+    await externalCommit({ "consoles/Elsewhere/stale2.sql": contents }, [
+      "consoles/Moved/stale2.sql",
+      CONSOLES_README_PATH,
+    ]);
+    spies.serialized.mockClear();
+    expect(await loadLiveConsoleById(WS, stale._id.toString())).toBeNull();
+    expect(await loadLiveConsoleById(WS, stale._id.toString())).toBeNull();
+    expect(spies.serialized).toHaveBeenCalledTimes(1);
+    // …and a new push (main moved) is tried again.
+    await externalCommit({ "README.md": "y\n" });
+    expect(await loadLiveConsoleById(WS, stale._id.toString())).toBeNull();
+    expect(spies.serialized).toHaveBeenCalledTimes(2);
+  });
+
+  it("a rewritten file (nothing like the old one) is a delete + create, not a guess", async () => {
+    const saved = await manager.saveConsole(
+      "alpha",
+      "SELECT 1 AS alpha_only_marker_row\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    await externalCommit(
+      {
+        "consoles/beta.sql":
+          "-- entirely different content\nSELECT id, name, email, created_at FROM customers WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 100\n",
+      },
+      ["consoles/alpha.sql"],
+    );
+    const stats = await syncConsolesIndexFromRepo(WS, USER);
+    expect(stats).toMatchObject({ renamed: 0, created: 1, deleted: 1 });
+    expect((await SavedConsole.findById(saved._id))?.is_deleted).toBe(true);
+  });
+
+  it("a GET by id between a push and its sync heals the stale path instead of 404ing", async () => {
+    const saved = await manager.saveConsole(
+      "stale",
+      "SELECT 'between push and sync' AS note\n",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const contents = (await fileAt("consoles/stale.sql"))!;
+    await externalCommit({ "consoles/Moved/stale.sql": contents }, [
+      "consoles/stale.sql",
+    ]);
+    // No sync ran: the row still says consoles/stale.sql.
+    expect((await SavedConsole.findById(saved._id))?.path).toBe(
+      "consoles/stale.sql",
+    );
+    const hit = await loadLiveConsoleById(WS, saved._id.toString());
+    expect(hit && "live" in hit ? hit.live.path : null).toBe(
+      "consoles/Moved/stale.sql",
+    );
+    expect((await SavedConsole.findById(saved._id))?.path).toBe(
+      "consoles/Moved/stale.sql",
+    );
+    // A row whose file really is gone still answers null.
+    await externalCommit({}, ["consoles/Moved/stale.sql"]);
+    expect(await loadLiveConsoleById(WS, saved._id.toString())).toBeNull();
   });
 
   it("never touches a workspace that has not adopted", async () => {
@@ -813,6 +2326,96 @@ describe("history — the apps surface for a console", () => {
     expect(subjects[0]).toMatch(/^Restore "create: h" \(/);
     expect(subjects).toHaveLength(3);
     expect(await fileAt("consoles/h.sql")).toContain("SELECT 1");
+  });
+
+  it("follows the file across a rename and a move: every commit, the name it had, its diff", async () => {
+    const saved = await manager.saveConsole(
+      "first",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const v1 = (await SavedConsole.findById(saved._id))!;
+    v1.code = "SELECT 2";
+    const second = await commitConsoleState({
+      row: v1,
+      previousPath: v1.path,
+      actorUserId: USER,
+      message: "second",
+    });
+    await SavedConsole.updateOne(
+      { _id: saved._id },
+      { $set: { code: "SELECT 2", sourceBlobSha: second.sourceBlobSha } },
+    );
+    expect(
+      await manager.renameConsole(saved._id.toString(), "renamed", WS, USER),
+    ).toBe(true);
+    const folder = await manager.createFolder(
+      "Finance",
+      WS,
+      USER,
+      undefined,
+      false,
+      "workspace",
+    );
+    expect(
+      await manager.moveConsole(
+        saved._id.toString(),
+        WS,
+        folder._id.toString(),
+        undefined,
+        USER,
+      ),
+    ).toBe(true);
+
+    const row = (await SavedConsole.findById(saved._id))!;
+    expect(row.path).toBe("consoles/Finance/renamed.sql");
+    const history = await consoleHistory(row);
+    // Before: only the move commit (the file's history "started" at its
+    // current path). Now every commit, newest first, each with its name.
+    expect(history.map(c => c.subject)).toEqual([
+      "move: renamed",
+      "rename: renamed",
+      "second",
+      "create: first",
+    ]);
+    expect(history.map(c => c.path)).toEqual([
+      "consoles/Finance/renamed.sql",
+      "consoles/renamed.sql",
+      "consoles/first.sql",
+      "consoles/first.sql",
+    ]);
+    expect(history[0].previousPath).toBe("consoles/renamed.sql");
+    expect(history[1].previousPath).toBe("consoles/first.sql");
+
+    // An old commit shows the file under the name it had then.
+    const old = await consoleCommitChanges(row, history[2].oid);
+    expect(old.files).toEqual([
+      { path: "consoles/first.sql", status: "modified" },
+    ]);
+    const oldVersions = await consoleFileVersions(
+      row,
+      history[2].oid,
+      "consoles/first.sql",
+    );
+    expect(oldVersions.before).toContain("SELECT 1");
+    expect(oldVersions.after).toContain("SELECT 2");
+    // The rename commit diffs against the old name: unchanged content.
+    const renameVersions = await consoleFileVersions(
+      row,
+      history[1].oid,
+      "consoles/renamed.sql",
+    );
+    expect(renameVersions.before).toContain("SELECT 2");
+    expect(renameVersions.after).toContain("SELECT 2");
+    // Restoring a version from before the rename reads it at its old name.
+    const restored = await restoreConsoleTo(row, history[3].oid, USER);
+    expect(restored.unchanged).toBe(false);
+    expect(await fileAt("consoles/Finance/renamed.sql")).toContain("SELECT 1");
   });
 
   it("does not list leftover local git history when no GitHub repo is bound", async () => {

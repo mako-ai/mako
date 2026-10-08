@@ -296,10 +296,10 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
           });
         }
         // Reflect a rename in the explorer tree without a full reload storm.
+        // The PATCH above already renamed it server-side; `renameItem` would
+        // send a second, identical PATCH (and a second checkpoint commit).
         if (doc && patch.name !== undefined && ws) {
-          void useNotebookTreeStore
-            .getState()
-            .renameItem(ws, id, doc.name, false);
+          useNotebookTreeStore.getState().reflectRename(ws, id, doc.name);
         }
         return doc;
       } catch (e) {

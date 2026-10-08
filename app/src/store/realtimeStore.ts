@@ -15,6 +15,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
+import { takeDeletedHere } from "./lib/console-local-deletes";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import {
@@ -22,6 +23,7 @@ import {
   hasUnsavedLocalEdits,
   hasBlockedDraftSave,
   hasPendingAgentReview,
+  remoteEntryMatchesBaseline,
 } from "./consoleStore";
 import { useNotebookStore } from "./notebookStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
@@ -43,6 +45,7 @@ import "./dashboardStore";
 import "./dbtStore";
 import "./notebookPresenceStore";
 import "./notebookTreeStore";
+import "./schemaStore";
 
 export type { RealtimeEvent } from "./lib/realtime-channel";
 
@@ -120,6 +123,31 @@ const DEFERRED_RESYNC_MS = 3_500;
 
 /** Last known writer per console (from pokes) — labels the dirty affordance. */
 const lastUpdatedByConsole = new Map<string, string>();
+/**
+ * Consoles whose last poke came from a git push (the index sync), not from
+ * a window of the app: the banner says so ("updated from a git push"), and
+ * not "in another window" when the pusher is this same person.
+ */
+const lastViaByConsole = new Map<string, "git">();
+
+/** Who last changed `id`, as the remote-update banner words it. */
+function lastWriter(id: string): { updatedBy?: string; via?: "git" } {
+  const via = lastViaByConsole.get(id);
+  return {
+    updatedBy: lastUpdatedByConsole.get(id),
+    ...(via ? { via } : {}),
+  };
+}
+
+function rememberWriter(
+  id: string,
+  updatedBy: string | undefined,
+  via: "git" | undefined,
+): void {
+  if (updatedBy) lastUpdatedByConsole.set(id, updatedBy);
+  if (via) lastViaByConsole.set(id, via);
+  else lastViaByConsole.delete(id);
+}
 
 /**
  * Consoles whose most recent poke was an agent (modify_console) edit. The
@@ -186,7 +214,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
       // Suppress our own echo — this tab already has the content it wrote.
       if (event.clientId && event.clientId === realtimeClientId) return;
 
-      lastUpdatedByConsole.set(event.consoleId, event.updatedBy);
+      rememberWriter(event.consoleId, event.updatedBy, event.via);
 
       // Explicit saves can change names/paths in the explorer tree.
       if (event.origin === "save") {
@@ -222,11 +250,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (workspaceId) {
         void useConsoleTreeStore.getState().fetchTree(workspaceId);
       }
+      rememberWriter(event.consoleId, undefined, event.via);
       const consoleStore = useConsoleStore.getState();
+      const here = takeDeletedHere(event.consoleId);
       if (consoleStore.tabs[event.consoleId]) {
         consoleStore.setRemoteUpdate(event.consoleId, {
           draftRevision: Number.MAX_SAFE_INTEGER,
-          updatedBy: lastUpdatedByConsole.get(event.consoleId),
+          ...(here ? { here: true as const } : lastWriter(event.consoleId)),
           kind: "deleted",
         });
       }
@@ -606,15 +636,24 @@ export const useRealtimeStore = create<RealtimeStore>()(
               continue;
             }
 
+            const unsavedLocalEdits = hasUnsavedLocalEdits(entry.id);
             const decision = decideRemoteApply({
               tabExists: Boolean(tab),
               tabRevision: tab?.draftRevision,
               entryRevision: entry.draftRevision,
               contentMatches: tab?.content === entry.content,
-              unsavedLocalEdits: hasUnsavedLocalEdits(entry.id),
+              unsavedLocalEdits,
+              serverContentUnchanged:
+                unsavedLocalEdits && remoteEntryMatchesBaseline(entry),
             });
             switch (decision) {
               case "skip":
+                break;
+              case "metadata":
+                // The revision moved for a rename / move / run, not for
+                // content: retarget the tab (name, breadcrumb, visibility,
+                // revision base) and leave the unsaved edits alone.
+                store.fastForwardRemoteMetadata(entry);
                 break;
               case "fast-forward":
                 // Server content already matches this tab (echoed write from
@@ -628,9 +667,21 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 // (recent keystrokes, queued/blocked autosave, or an unsaved
                 // explicit-save delta). Never merge silently — surface the
                 // affordance; revision-checked writes backstop the rest.
+                // WHERE the console is follows the server all the same: a
+                // laptop rename (git mv + push) left this tab, its
+                // breadcrumb and its next save's snackbar on the old name
+                // while the tree showed the new one. Name, place and
+                // visibility only — never the content, the dirty state or
+                // the revision base (the banner still decides those).
+                store.retargetConsoleTab(entry.id, {
+                  name: entry.name,
+                  path: entry.path,
+                  access: entry.access,
+                  isSaved: entry.isSaved,
+                });
                 store.setRemoteUpdate(entry.id, {
                   draftRevision: entry.draftRevision,
-                  updatedBy: lastUpdatedByConsole.get(entry.id),
+                  ...lastWriter(entry.id),
                   kind: "updated",
                 });
                 // Transient deferral (typing recency / autosave in flight)
@@ -658,7 +709,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
             if (!tab || !tab.isSaved) continue;
             store.setRemoteUpdate(deletedId, {
               draftRevision: Number.MAX_SAFE_INTEGER,
-              updatedBy: lastUpdatedByConsole.get(deletedId),
+              ...lastWriter(deletedId),
               kind: "deleted",
             });
           }

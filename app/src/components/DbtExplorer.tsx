@@ -68,7 +68,13 @@ import {
   DBT_RUNS_SEP,
 } from "../lib/explorer-reveal";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DbtFileRenameDialog } from "./DbtFileRenameDialog";
+import { DbtRenameWarnings } from "./DbtRenameWarnings";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import {
+  RenameObjectDialog,
+  type RenameObjectDialogTarget,
+} from "./RenameObjectDialog";
 import ExplorerShell from "./ExplorerShell";
 import { dirname } from "../utils/path";
 
@@ -308,7 +314,19 @@ export function DbtExplorer() {
     parsed: ParsedNode;
     name: string;
   } | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  // Job rename: display name + file name through the graceful-rename
+  // service (api/src/rename), so the job keeps its id and the old slug
+  // keeps resolving. dbt FILES use the dialog above (a model's name is its
+  // table name; that rename has its own route).
+  const [renameJobTarget, setRenameJobTarget] =
+    useState<RenameObjectDialogTarget | null>(null);
+  // What the server could not fix (a config that stops applying, the old
+  // warehouse relation, consoles still naming it): shown after the rename
+  // until dismissed.
+  const [renameWarnings, setRenameWarnings] = useState<{
+    warnings: string[];
+    renamedTo: string;
+  } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{
     parsed: ParsedNode;
     name: string;
@@ -579,7 +597,6 @@ export function DbtExplorer() {
             key="rename"
             onClick={() => {
               setRenameTarget({ parsed, name: node.name });
-              setRenameValue(node.name);
               helpers.closeMenu();
             }}
           >
@@ -589,6 +606,41 @@ export function DbtExplorer() {
             Rename
           </MenuItem>,
         );
+      }
+
+      if (parsed.kind === "job") {
+        const job = (jobsByProject[parsed.projectId] ?? []).find(
+          j => j._id === parsed.path,
+        );
+        if (job) {
+          items.push(
+            <MenuItem
+              key="rename-job"
+              // A file at main whose push has not been synced has no row to
+              // re-key; the rename service would refuse it.
+              disabled={job.gitOnly === true}
+              title={
+                job.gitOnly
+                  ? "This job's push has not been synced yet"
+                  : undefined
+              }
+              onClick={() => {
+                setRenameJobTarget({
+                  kind: "dbt_job",
+                  ref: job._id,
+                  title: job.name,
+                  slug: job.slug ?? undefined,
+                });
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <RenameIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              {job.gitOnly ? "Rename… (push not synced yet)" : "Rename…"}
+            </MenuItem>,
+          );
+        }
       }
 
       if (
@@ -613,7 +665,33 @@ export function DbtExplorer() {
       }
       return items;
     },
-    [handleItemClick, openProjectSettingsFromMenu, projects, handleNewJob],
+    [
+      handleItemClick,
+      openProjectSettingsFromMenu,
+      projects,
+      handleNewJob,
+      jobsByProject,
+    ],
+  );
+
+  const handleJobRenamed = useCallback(
+    (result: { id: string; after: { title?: string } }) => {
+      if (!workspaceId || !renameJobTarget) return;
+      const title = result.after.title;
+      if (title) {
+        const store = useConsoleStore.getState();
+        for (const [tabId, tab] of Object.entries(store.tabs)) {
+          if (tab.kind === "dbt-job" && tab.metadata?.jobId === result.id) {
+            store.updateTitle(tabId, title);
+          }
+        }
+      }
+      const projectId = Object.keys(jobsByProject).find(pid =>
+        (jobsByProject[pid] ?? []).some(j => j._id === result.id),
+      );
+      if (projectId) void fetchJobs(workspaceId, projectId);
+    },
+    [workspaceId, renameJobTarget, jobsByProject, fetchJobs],
   );
 
   // Hover kebab: same actions as the right-click menu, but discoverable.
@@ -657,17 +735,35 @@ export function DbtExplorer() {
     setNewFileTarget(null);
   }, [workspaceId, newFileTarget, newFileName, createFile]);
 
-  const handleRenameConfirm = useCallback(async () => {
-    if (!renameTarget || !workspaceId) return;
-    const next = renameValue.trim();
-    const { parsed } = renameTarget;
-    if (next && next !== renameTarget.name && parsed.kind === "file") {
-      const dir = dirname(parsed.path);
-      const newPath = dir ? `${dir}/${next}` : next;
-      await renameFile(workspaceId, parsed.projectId, parsed.path, newPath);
-    }
-    setRenameTarget(null);
-  }, [renameTarget, renameValue, workspaceId, renameFile]);
+  // The dialog sends the full project path it validated; a refusal from
+  // the server comes back as text and stays in the dialog.
+  const handleRenameConfirm = useCallback(
+    async (toPath: string, updateRefs: boolean): Promise<string | null> => {
+      if (!renameTarget || !workspaceId) return null;
+      const { parsed } = renameTarget;
+      if (parsed.kind !== "file") return null;
+      const outcome = await renameFile(
+        workspaceId,
+        parsed.projectId,
+        parsed.path,
+        toPath,
+        { updateRefs },
+      );
+      if (!outcome) {
+        return (
+          useDbtStore.getState().error[
+            `file:${parsed.projectId}:${parsed.path}`
+          ] ?? "The file could not be renamed."
+        );
+      }
+      setRenameTarget(null);
+      if (outcome.warnings.length > 0) {
+        setRenameWarnings({ warnings: outcome.warnings, renamedTo: toPath });
+      }
+      return null;
+    },
+    [renameTarget, workspaceId, renameFile],
+  );
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget || !workspaceId) return;
@@ -1010,6 +1106,15 @@ export function DbtExplorer() {
                           onClick={() =>
                             focusDbtJobTab(activeProject._id, job._id, job.name)
                           }
+                          // Right-click opens the same actions as the kebab
+                          // (Open, Rename…, Delete) — it used to open nothing.
+                          onContextMenu={e => {
+                            e.preventDefault();
+                            setKebabMenu({
+                              anchorEl: e.currentTarget,
+                              node: jobNode,
+                            });
+                          }}
                           onKeyDown={e => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
@@ -1235,32 +1340,33 @@ export function DbtExplorer() {
         </DialogActions>
       </Dialog>
 
-      {/* Rename dialog */}
-      <Dialog
-        open={!!renameTarget}
+      {/* Rename / move dialog: the full project path, checked as typed. */}
+      <DbtFileRenameDialog
+        open={!!renameTarget && renameTarget.parsed.kind === "file"}
+        fromPath={
+          renameTarget?.parsed.kind === "file" ? renameTarget.parsed.path : ""
+        }
+        existingPaths={
+          (renameTarget && filePathsByProject[renameTarget.parsed.projectId]) ||
+          []
+        }
         onClose={() => setRenameTarget(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Rename file</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            value={renameValue}
-            onChange={e => setRenameValue(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleRenameConfirm();
-            }}
-            sx={{ mt: 1 }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRenameTarget(null)}>Cancel</Button>
-          <Button onClick={handleRenameConfirm}>Rename</Button>
-        </DialogActions>
-      </Dialog>
+        onConfirm={handleRenameConfirm}
+      />
+
+      <RenameObjectDialog
+        workspaceId={workspaceId}
+        target={renameJobTarget}
+        onClose={() => setRenameJobTarget(null)}
+        onRenamed={handleJobRenamed}
+      />
+
+      {/* After a rename: what the server could not fix for you. */}
+      <DbtRenameWarnings
+        warnings={renameWarnings?.warnings ?? null}
+        renamedTo={renameWarnings?.renamedTo}
+        onClose={() => setRenameWarnings(null)}
+      />
 
       {/* Hover kebab menu — reuses the right-click action items */}
       <Menu

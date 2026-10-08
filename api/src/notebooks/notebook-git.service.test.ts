@@ -5,10 +5,52 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { NotebookIndex } from "../database/workspace-schema";
+
+// The mirror fetch a move must do before choosing its file name. The hook
+// stands in for "what the fetch brings in": a test commits a laptop-made
+// file from inside it, exactly as a push this instance had not seen would
+// appear. Delegates to the real freshen afterwards.
+const hooks = vi.hoisted(() => ({
+  freshen: vi.fn<(workspaceId: string) => Promise<void> | void>(),
+  // Runs inside the window between a checkpoint's name choice and its
+  // commit (`authorForUser` is awaited exactly there): a test lands a
+  // laptop file from here to exercise the commit's precondition.
+  beforeCommit: vi.fn<() => Promise<void> | void>(),
+}));
+vi.mock("../apps/workspace-consoles.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/workspace-consoles.service")>();
+  return {
+    ...actual,
+    authorForUser: async (...args: Parameters<typeof actual.authorForUser>) => {
+      await hooks.beforeCommit();
+      return actual.authorForUser(...args);
+    },
+  };
+});
+vi.mock("../apps/cloud-repo.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../apps/cloud-repo.service")>();
+  return {
+    ...actual,
+    freshenBeforeMainWrite: async (workspaceId: string) => {
+      await hooks.freshen(workspaceId);
+      return actual.freshenBeforeMainWrite(workspaceId);
+    },
+  };
+});
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -226,7 +268,229 @@ describe("push-sync", () => {
   });
 });
 
+describe("laptop renames (git mv pushed from a checkout)", () => {
+  it("a moved .deepnote re-keys its index row by the id the file carries, and the path sticks", async () => {
+    const id = await seedNotebook("Quarterly", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    const raw = (await fileAt("notebooks/quarterly.deepnote"))!;
+    // `git mv notebooks/quarterly.deepnote notebooks/q3-review.deepnote`
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "notebooks/q3-review.deepnote": raw },
+        deletes: ["notebooks/quarterly.deepnote"],
+      },
+      { message: "laptop rename" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: id });
+    expect(index?.path).toBe("notebooks/q3-review.deepnote");
+    expect(index?.name).toBe("Quarterly");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+    // The next checkpoint must NOT move the file back to the name's slug.
+    const result = await checkpointNotebook(WS, id, "u1");
+    expect(result.committed).toBe(false);
+    expect(await fileAt("notebooks/q3-review.deepnote")).not.toBeNull();
+    expect(await fileAt("notebooks/quarterly.deepnote")).toBeNull();
+    // …until the name itself changes in the UI, which derives a new path.
+    await NotebookIndex.updateOne({ notebookId: id }, { name: "Q3 Review" });
+    const moved = await checkpointNotebook(WS, id, "u1");
+    expect(moved.committed).toBe(true);
+    expect(moved.commitOid).toMatch(/^[0-9a-f]{40}$/);
+    expect(await fileAt("notebooks/q3-review.deepnote")).not.toBeNull();
+    expect((await NotebookIndex.findOne({ notebookId: id }))?.path).toBe(
+      "notebooks/q3-review.deepnote",
+    );
+  });
+
+  it("a moved AND edited file keeps its row by the id it carries (rename + edit in one push)", async () => {
+    const id = await seedNotebook("Research notes", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    const raw = (await fileAt("notebooks/research-notes.deepnote"))!;
+    const edited = raw.replace("# Research notes", "# Research notes (v2)");
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "notebooks/research.deepnote": edited },
+        deletes: ["notebooks/research-notes.deepnote"],
+      },
+      { message: "laptop move + edit" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: id });
+    expect(index?.path).toBe("notebooks/research.deepnote");
+    const doc = await getNotebookStore().get(WS, id);
+    expect(doc?.blocks[0]?.source).toBe("# Research notes (v2)");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+
+  it("a file with a DIFFERENT id is never paired with a vanished row, however similar", async () => {
+    const id = await seedNotebook("Team plan", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    const raw = (await fileAt("notebooks/team-plan.deepnote"))!;
+    const other = raw.replaceAll(id, "00000000-0000-4000-8000-000000000001");
+    // Same content, new id, old path gone — in one push.
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      {
+        writes: { "notebooks/team-plan-copy.deepnote": other },
+        deletes: ["notebooks/team-plan.deepnote"],
+      },
+      { message: "a copy under a new id replaces the file" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: id });
+    expect(index?.path).toBe("notebooks/team-plan.deepnote");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+
+  it("a move fetches main before choosing its name: a laptop file arriving in that fetch is seen, not overwritten", async () => {
+    const id = await seedNotebook("Alpha", "workspace");
+    await checkpointNotebook(WS, id, "u1");
+    hooks.freshen.mockClear();
+    // A plain checkpoint (same path) never fetches — they are frequent.
+    await getNotebookStore().update(WS, id, {
+      blocks: [{ id: "b1", type: "markdown", source: "# Alpha, edited" }],
+    });
+    expect((await checkpointNotebook(WS, id, "u1")).committed).toBe(true);
+    expect(hooks.freshen).not.toHaveBeenCalled();
+    // A rename moves the file: the fetch brings in a notebook someone pushed
+    // from a laptop under the very name being chosen.
+    const laptopId = "33333333-3333-4333-8333-333333333333";
+    const laptop = serializeNotebookFile({
+      id: laptopId,
+      name: "Beta",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      version: 1,
+      blocks: [{ id: "b1", type: "markdown", source: "# laptop beta" }],
+    } as never);
+    hooks.freshen.mockImplementationOnce(async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "notebooks/beta.deepnote": laptop } },
+        { message: "arrives with the fetch" },
+      );
+    });
+    await NotebookIndex.updateOne({ notebookId: id }, { name: "Beta" });
+    const moved = await checkpointNotebook(WS, id, "u1");
+    expect(hooks.freshen).toHaveBeenCalledTimes(1);
+    expect(moved.committed).toBe(true);
+    expect((await NotebookIndex.findOne({ notebookId: id }))?.path).toBe(
+      "notebooks/beta-2.deepnote",
+    );
+    expect(
+      parseNotebookFile((await fileAt("notebooks/beta.deepnote"))!)?.id,
+    ).toBe(laptopId);
+    expect(
+      parseNotebookFile((await fileAt("notebooks/beta-2.deepnote"))!)?.id,
+    ).toBe(id);
+    expect(await fileAt("notebooks/alpha.deepnote")).toBeNull();
+  });
+
+  it("a FIRST checkpoint also refuses to overwrite a file that lands at its path before the commit", async () => {
+    const id = await seedNotebook("Alpha", "workspace");
+    const laptopId = "44444444-4444-4444-8444-444444444444";
+    const laptop = serializeNotebookFile({
+      id: laptopId,
+      name: "Alpha",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      version: 1,
+      blocks: [{ id: "b1", type: "markdown", source: "# laptop alpha" }],
+    } as never);
+    // The name was chosen (alpha.deepnote, free); a push lands a different
+    // notebook there just before the commit.
+    hooks.beforeCommit.mockImplementationOnce(async () => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes: { "notebooks/alpha.deepnote": laptop } },
+        { message: "lands in the window" },
+      );
+    });
+    const first = await checkpointNotebook(WS, id, "u1");
+    expect(first).toEqual({ committed: false, skippedReason: "target_taken" });
+    expect(
+      parseNotebookFile((await fileAt("notebooks/alpha.deepnote"))!)?.id,
+    ).toBe(laptopId);
+    expect(
+      (await NotebookIndex.findOne({ notebookId: id }))?.path,
+    ).toBeUndefined();
+    // The next checkpoint sees the file and takes the next free name.
+    const second = await checkpointNotebook(WS, id, "u1");
+    expect(second.committed).toBe(true);
+    expect((await NotebookIndex.findOne({ notebookId: id }))?.path).toBe(
+      "notebooks/alpha-2.deepnote",
+    );
+    expect(
+      parseNotebookFile((await fileAt("notebooks/alpha-2.deepnote"))!)?.id,
+    ).toBe(id);
+    expect(
+      parseNotebookFile((await fileAt("notebooks/alpha.deepnote"))!)?.id,
+    ).toBe(laptopId);
+  });
+
+  it("a later file with its OWN id never takes over a live notebook whose file vanished", async () => {
+    const alpha = await seedNotebook("Alpha", "workspace");
+    await checkpointNotebook(WS, alpha, "u1");
+    // A second notebook's file, captured, then its row dropped: an external
+    // file with an id Mako does not know.
+    const beta = await seedNotebook("Beta", "workspace");
+    await checkpointNotebook(WS, beta, "u1");
+    const betaRaw = (await fileAt("notebooks/beta.deepnote"))!;
+    await NotebookIndex.deleteOne({ notebookId: beta });
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { deletes: ["notebooks/beta.deepnote", "notebooks/alpha.deepnote"] },
+      { message: "files removed from git; alpha lives on in the app" },
+    );
+    await syncNotebooksFromRepo(WS);
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "notebooks/beta-new.deepnote": betaRaw } },
+      { message: "a different notebook lands later" },
+    );
+    await syncNotebooksFromRepo(WS);
+    const index = await NotebookIndex.findOne({ notebookId: alpha });
+    expect(index?.path).toBe("notebooks/alpha.deepnote");
+    expect(index?.name).toBe("Alpha");
+    const doc = await getNotebookStore().get(WS, alpha);
+    expect(doc?.name).toBe("Alpha");
+    expect(doc?.blocks[0]?.source).toBe("# Alpha");
+    expect(await NotebookIndex.countDocuments({ workspaceId: WS })).toBe(1);
+  });
+});
+
 describe("adoption", () => {
+  it("two unadopted notebooks with one name get two files", async () => {
+    const a = await seedNotebook("Same", "workspace");
+    const b = await seedNotebook("Same", "workspace");
+    const result = await adoptWorkspaceNotebooks(WS);
+    expect(result.written).toBe(2);
+    const paths = (await NotebookIndex.find({ workspaceId: WS }))
+      .map(i => i.path)
+      .sort();
+    expect(paths).toEqual([
+      "notebooks/same-2.deepnote",
+      "notebooks/same.deepnote",
+    ]);
+    const ids = new Set(
+      await Promise.all(
+        paths.map(
+          async p => parseNotebookFile((await fileAt(p as string))!)?.id,
+        ),
+      ),
+    );
+    expect(ids).toEqual(new Set([a, b]));
+  });
+
   it("checkpoints every notebook once, re-runnable", async () => {
     await seedNotebook("First", "workspace");
     await seedNotebook("Second", "private");

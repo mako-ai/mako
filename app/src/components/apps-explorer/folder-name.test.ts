@@ -4,7 +4,7 @@
  * leading dot, no trailing dot or space, at most 100 characters.
  */
 import { describe, expect, it } from "vitest";
-import { isValidFolderName } from "./AppFolderDialogs";
+import { folderNameProblem, isValidFolderName } from "./AppFolderDialogs";
 
 describe("isValidFolderName", () => {
   it("accepts what git and a URL accept, Unicode included", () => {
@@ -25,5 +25,17 @@ describe("isValidFolderName", () => {
     expect(isValidFolderName("ends.")).toBe(false);
     expect(isValidFolderName("x".repeat(101))).toBe(false);
     expect(isValidFolderName("-leading-dash")).toBe(false);
+  });
+
+  it("says why, in the server's words, and refuses what Windows or a resolver cannot take", () => {
+    expect(folderNameProblem("CON")).toBe(
+      "Not allowed on Windows: CON — pick another folder name.",
+    );
+    expect(folderNameProblem("0123456789abcdef01234567")).toBe(
+      "This looks like an app id, so it can't be a folder name — pick another.",
+    );
+    // Reserved words are app LINKS only: a folder may be called "link".
+    expect(folderNameProblem("link")).toBeNull();
+    expect(isValidFolderName("cafe\u0301")).toBe(true);
   });
 });

@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   APP_FOLDER_ENTITY,
+  appMoveRefusal,
+  appRenameRights,
   buildAppTree,
   folderNodeId,
+  folderMoveRefusal,
   folderPathFromNodeId,
   parentPathOf,
   resolveAppRef,
+  resolveAppRefVia,
 } from "./apps-explorer-tree";
 
 const apps = [
@@ -128,5 +132,294 @@ describe("resolveAppRef", () => {
     ).toBeNull();
     expect(resolveAppRef(list, "")).toBeNull();
     expect(resolveAppRef(list, "nope")).toBeNull();
+  });
+
+  it("reads a name typed in NFD as the NFC name it is stored under, as the server does", () => {
+    const withCafe = [
+      ...list,
+      { id: "6aaaed797eb3d8d53c497fc8", slug: "café", path: "apps/café" },
+    ];
+    expect(resolveAppRef(withCafe, "cafe\u0301")?.path).toBe("apps/café");
+    expect(resolveAppRef(withCafe, "apps/cafe\u0301")?.path).toBe("apps/café");
+  });
+});
+
+describe("resolveAppRef aliases (the server's findAppInSnapshot, mirrored)", () => {
+  const live = { id: "6aaaed797eb3d8d53c497fd1", slug: "y", path: "apps/y" };
+  const renamed = {
+    id: "6aaaed797eb3d8d53c497fd2",
+    slug: "x",
+    path: "apps/x",
+    aliases: ["y", "old", "apps/Sales/old"],
+  };
+  const list = [live, renamed];
+
+  it("lets a current name beat an alias, always", () => {
+    expect(resolveAppRefVia(list, "y")).toEqual({ app: live, via: "current" });
+    expect(resolveAppRef(list, "apps/y")).toBe(live);
+  });
+
+  it("resolves an alias nothing current claims, bare or with apps/", () => {
+    expect(resolveAppRefVia(list, "old")).toEqual({
+      app: renamed,
+      via: "alias",
+    });
+    expect(resolveAppRef(list, "apps/old")).toBe(renamed);
+    expect(resolveAppRef(list, "/old/")).toBe(renamed);
+    // A path alias answers its path forms only.
+    expect(resolveAppRef(list, "apps/Sales/old")).toBe(renamed);
+    expect(resolveAppRef(list, "Sales/old")).toBe(renamed);
+    expect(resolveAppRef(list, "nope")).toBeNull();
+  });
+
+  it("resolves an alias two apps claim to neither", () => {
+    const other = {
+      id: "6aaaed797eb3d8d53c497fd3",
+      slug: "z",
+      path: "apps/z",
+      aliases: ["old"],
+    };
+    expect(resolveAppRef([...list, other], "old")).toBeNull();
+    expect(resolveAppRef([...list, other], "apps/Sales/old")).toBe(renamed);
+  });
+
+  it("lets a renamed top-level app keep its link over a nested app that took the bare name", () => {
+    const moved = {
+      id: "6aaaed797eb3d8d53c497fd4",
+      slug: "report-v2",
+      path: "apps/report-v2",
+      aliases: ["report"],
+    };
+    const nested = {
+      id: "6aaaed797eb3d8d53c497fd5",
+      slug: "report",
+      path: "apps/Sales/report",
+    };
+    expect(resolveAppRefVia([moved, nested], "report")).toEqual({
+      app: moved,
+      via: "alias",
+    });
+    expect(resolveAppRef([moved, nested], "Sales/report")).toBe(nested);
+    expect(resolveAppRef([nested], "report")).toBe(nested);
+    // A nested app's path alias never answers the bare name.
+    expect(
+      resolveAppRef(
+        [
+          {
+            id: "6aaaed797eb3d8d53c497fd6",
+            path: "apps/x",
+            aliases: ["apps/Sales/report"],
+          },
+        ],
+        "report",
+      ),
+    ).toBeNull();
+  });
+
+  it("treats a bare name several nested apps share as final, with no fall-through to an alias", () => {
+    const apps = [
+      { id: "6aaaed797eb3d8d53c497fd7", path: "apps/Sales/kpi" },
+      { id: "6aaaed797eb3d8d53c497fd8", path: "apps/Ops/kpi" },
+      {
+        id: "6aaaed797eb3d8d53c497fd9",
+        path: "apps/Finance/kpi-v2",
+        aliases: ["apps/Finance/kpi"],
+      },
+    ];
+    expect(resolveAppRef(apps, "kpi")).toBeNull();
+    expect(resolveAppRef(apps, "Finance/kpi")?.path).toBe(
+      "apps/Finance/kpi-v2",
+    );
+  });
+});
+
+describe("appRenameRights (the rename route's rules, mirrored)", () => {
+  const me = "u1";
+  const member = { userId: me, role: "member" };
+  const full = { kind: "full" };
+
+  it("lets a member rename an app they OWN, even once shared with the workspace", () => {
+    // createProject makes a new app private and owned by its creator; the
+    // owner then shares it with the workspace as viewers.
+    const own = {
+      id: "a",
+      path: "apps/report",
+      access: "workspace" as const,
+      owner_id: me,
+      workspaceRole: "viewer" as const,
+    };
+    expect(appRenameRights(own, member)).toEqual(full);
+    // …and the server, which says so in `canWrite`, agrees.
+    expect(appRenameRights({ ...own, canWrite: true }, member)).toEqual(full);
+    // A private app of their own too.
+    expect(
+      appRenameRights({ ...own, access: "private" as const }, member),
+    ).toEqual(full);
+  });
+
+  it("follows the server's canWrite for a share the list cannot see", () => {
+    // Someone else's private app in the WORKSPACE tree, shared with this
+    // member as an editor: only the server knows the share.
+    const shared = {
+      id: "b",
+      path: "apps/Sales/b",
+      access: "private" as const,
+      owner_id: "u2",
+    };
+    expect(appRenameRights({ ...shared, canWrite: true }, member)).toEqual(
+      full,
+    );
+    expect(appRenameRights({ ...shared, canWrite: false }, member)).toEqual({
+      kind: "none",
+      reason: expect.stringMatching(/read-only/),
+    });
+    expect(appRenameRights(shared, member).kind).toBe("none");
+  });
+
+  it("falls back to the workspace role without canWrite", () => {
+    const app = { id: "c", path: "apps/c", access: "workspace" as const };
+    expect(appRenameRights(app, { userId: me, role: "admin" })).toEqual(full);
+    expect(appRenameRights(app, member).kind).toBe("none");
+    expect(
+      appRenameRights({ ...app, workspaceRole: "editor" as const }, member),
+    ).toEqual(full);
+    expect(
+      appRenameRights(
+        { ...app, workspaceRole: "editor" as const },
+        { userId: me, role: "viewer" },
+      ).kind,
+    ).toBe("none");
+  });
+
+  it("offers the NAME only where the tree rule locks the link: someone else's personal folder", () => {
+    // u2's personal app, shared with u1 as an editor: the server renames
+    // its title (canWriteResource) but refuses a folder move out of u2's
+    // tree (authorizeAppMove).
+    const theirs = {
+      id: "e",
+      path: "users/u2/apps/theirs",
+      access: "private" as const,
+      owner_id: "u2",
+      canWrite: true,
+    };
+    expect(
+      appRenameRights(theirs, {
+        ...member,
+        nameOf: id => (id === "u2" ? "ana@example.com" : undefined),
+      }),
+    ).toEqual({
+      kind: "title",
+      linkReason: "Only ana@example.com can change this app's link.",
+    });
+    // No name to show: still title only.
+    expect(appRenameRights(theirs, member)).toEqual({
+      kind: "title",
+      linkReason: "Only its owner can change this app's link.",
+    });
+    // Shared as a viewer: nothing at all.
+    expect(appRenameRights({ ...theirs, canWrite: false }, member).kind).toBe(
+      "none",
+    );
+    // The owner, in their own folder, whatever their workspace role: all.
+    expect(
+      appRenameRights(
+        { id: "d", path: `users/${me}/apps/scratch`, canWrite: true },
+        { userId: me, role: "viewer" },
+      ),
+    ).toEqual(full);
+  });
+
+  it("offers the NAME only to a writer whose role does not organise the Workspace tree", () => {
+    expect(
+      appRenameRights(
+        { id: "f", path: "apps/f", canWrite: true },
+        { userId: me, role: "viewer" },
+      ),
+    ).toEqual({
+      kind: "title",
+      linkReason: "Only workspace editors can change this app's link.",
+    });
+  });
+});
+
+describe("appMoveRefusal — the server's move rules, so a refused drop is never sent", () => {
+  const me = "u1";
+  const mine = { id: "1", path: "apps/mine", owner_id: me };
+  const theirs = { id: "2", path: "apps/theirs", owner_id: "u2" };
+  const shared = { id: "3", path: "apps/shared" }; // folder-only, no owner
+  const personalOfU2 = { id: "4", path: "users/u2/apps/p", owner_id: "u2" };
+  const myPersonal = { id: "5", path: `users/${me}/apps/p`, owner_id: me };
+
+  it("into my personal folder: only an app I own — or as a workspace owner/admin", () => {
+    expect(
+      appMoveRefusal(mine, `users/${me}/apps`, { userId: me, role: "member" }),
+    ).toBeNull();
+    for (const app of [theirs, shared]) {
+      expect(
+        appMoveRefusal(app, `users/${me}/apps`, { userId: me, role: "member" }),
+      ).toMatch(/owner or a workspace admin/);
+      expect(
+        appMoveRefusal(app, `users/${me}/apps/Sub`, {
+          userId: me,
+          role: "admin",
+        }),
+      ).toBeNull();
+      expect(
+        appMoveRefusal(app, `users/${me}/apps`, { userId: me, role: "owner" }),
+      ).toBeNull();
+    }
+  });
+
+  it("never into someone else's personal folder, never out of someone else's", () => {
+    expect(
+      appMoveRefusal(mine, "users/u2/apps", { userId: me, role: "admin" }),
+    ).toMatch(/your own personal folders/);
+    expect(
+      appMoveRefusal(personalOfU2, "apps", { userId: me, role: "admin" }),
+    ).toMatch(/Only the owner/);
+    expect(
+      appMoveRefusal(myPersonal, "apps/Sales", { userId: me, role: "member" }),
+    ).toBeNull();
+    expect(
+      appMoveRefusal(myPersonal, "apps", { userId: me, role: "viewer" }),
+    ).toMatch(/editors/);
+  });
+
+  it("the Workspace tree is organised by editing members, never a viewer", () => {
+    expect(
+      appMoveRefusal(theirs, "apps/Sales", { userId: me, role: "member" }),
+    ).toBeNull();
+    expect(
+      appMoveRefusal(theirs, "apps/Sales", { userId: me, role: "viewer" }),
+    ).toMatch(/editors/);
+    expect(appMoveRefusal(theirs, "apps/Sales", { userId: me })).toMatch(
+      /editors/,
+    );
+    expect(appMoveRefusal(mine, `users/${me}/apps`, {})).toMatch(/signed-in/);
+  });
+
+  it("a folder move answers for every app it carries", () => {
+    const apps = [
+      { id: "6", path: "apps/Team/a", owner_id: me },
+      { id: "7", path: "apps/Team/b", owner_id: "u2" },
+    ];
+    expect(
+      folderMoveRefusal(apps, "apps/Team", `users/${me}/apps`, {
+        userId: me,
+        role: "member",
+      }),
+    ).toMatch(/^apps\/Team\/b: .*owner or a workspace admin/);
+    expect(
+      folderMoveRefusal(apps, "apps/Team", "apps/Ops", {
+        userId: me,
+        role: "member",
+      }),
+    ).toBeNull();
+    expect(
+      folderMoveRefusal(apps, "apps/Team", `users/${me}/apps`, {
+        userId: me,
+        role: "admin",
+      }),
+    ).toBeNull();
   });
 });

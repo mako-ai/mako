@@ -14,6 +14,10 @@
  * applyModification used by Monaco.
  */
 import { tool } from "ai";
+import {
+  cleanDerivedConsoleName,
+  splitConsoleFileName,
+} from "../../apps/console-files";
 import { Types } from "mongoose";
 import {
   modifyConsoleSchema,
@@ -34,7 +38,11 @@ import {
   DatabaseConnection,
   type ISavedConsole,
 } from "../../database/workspace-schema";
-import { ConsoleManager } from "../../utils/console-manager";
+import {
+  ConsoleManager,
+  ConsoleConflictError,
+  ConsoleScopeError,
+} from "../../utils/console-manager";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { workspaceService } from "../../services/workspace.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
@@ -92,9 +100,16 @@ const RUN_PREVIEW_MAX_ROWS = 50;
  * shows `name` verbatim as the title/breadcrumb leaf/tree row.
  */
 function leafConsoleName(raw: string | undefined): string {
-  const value = raw ?? "";
-  const parts = value.split("/").filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : value;
+  const value = (raw ?? "").trim();
+  // A repo path ("consoles/Team/report.sql") names its file: its leaf,
+  // without the extension. Anything else IS the title — "A/B test" and
+  // "Q1: revenue" are names people and agents type; the characters a file
+  // name cannot carry get a visible stand-in (cleanDerivedConsoleName).
+  if (/^(consoles|users\/[^/]+\/consoles)\//.test(value)) {
+    const leaf = value.split("/").filter(Boolean).pop() ?? "";
+    return splitConsoleFileName(leaf)?.name ?? leaf;
+  }
+  return value ? cleanDerivedConsoleName(value) : value;
 }
 
 const consoleManager = new ConsoleManager();
@@ -335,13 +350,53 @@ export function createServerConsoleTools({
                 };
               }
 
+              // A title is a RENAME, not a field: the console's name is its
+              // file name in the repo, so it goes through the same service
+              // as the explorer's rename (one commit moving the file as it
+              // is at main, id kept, old file removed; the draft written
+              // below stays a draft). It runs BEFORE the content write:
+              // a taken name fails the call with nothing applied, so a
+              // retry cannot double-apply an append or insert.
+              const leaf = title ? leafConsoleName(title) || title : "";
+              let revisionAfterRename: number | undefined;
+              if (leaf && leaf !== doc.name) {
+                let renamed: Awaited<
+                  ReturnType<typeof consoleManager.relocateConsole>
+                >;
+                try {
+                  renamed = await consoleManager.relocateConsole(
+                    consoleId,
+                    workspaceId,
+                    { name: leaf },
+                    { userId, verb: "rename", publish: false },
+                  );
+                } catch (error) {
+                  if (
+                    error instanceof ConsoleConflictError ||
+                    error instanceof ConsoleScopeError
+                  ) {
+                    return { success: false, error: error.message };
+                  }
+                  throw error;
+                }
+                if (!renamed) {
+                  return {
+                    success: false,
+                    error: `Console with ID ${consoleId} not found.`,
+                  };
+                }
+                doc.name = renamed.row.name;
+                revisionAfterRename = renamed.row.draftRevision ?? 1;
+              }
+
               const currentContent = doc.code || "";
               const newContent = applyModification(
                 currentContent,
                 modification,
               );
               const diff = buildModificationDiff(currentContent, modification);
-              const currentRevision = doc.draftRevision ?? 1;
+              const currentRevision =
+                revisionAfterRename ?? doc.draftRevision ?? 1;
 
               const setFields: Record<string, unknown> = {
                 code: newContent,
@@ -359,7 +414,6 @@ export function createServerConsoleTools({
                 // exceeds what the client has.
                 draftRevision: currentRevision + 1,
               };
-              if (title) setFields.name = leafConsoleName(title) || title;
 
               const updated = await SavedConsole.findOneAndUpdate(
                 {
@@ -382,6 +436,7 @@ export function createServerConsoleTools({
                 continue;
               }
 
+              // One poke for the whole step (the rename above stayed quiet).
               publishUpdated(updated);
               return {
                 success: true,

@@ -43,7 +43,7 @@ export type FolderOpContext = ResourceOpContext;
 /** What a backend op reports; the registrar turns it into the envelope. */
 export type FolderOpResult =
   | { ok: true; data?: Record<string, unknown> }
-  | { ok: false; status: 400 | 403 | 404; error: string };
+  | { ok: false; status: 400 | 403 | 404 | 409; error: string };
 
 export interface FolderBackend {
   createFolder(
@@ -76,6 +76,12 @@ export interface FolderBackend {
       itemId: string;
       folderId: string | null | undefined;
       access: FolderAccessLevel | undefined;
+      /**
+       * A new name applied in the same operation ("Move to…" lets the user
+       * rename while moving). Backends whose move is a git commit must make
+       * the two one commit; others may ignore it.
+       */
+      name?: string;
     },
   ): Promise<FolderOpResult>;
 }
@@ -307,6 +313,7 @@ export function registerFolderRoutes(
             .object({
               folderId: z.string().nullable().optional(),
               access: ACCESS.optional(),
+              name: z.string().min(1).max(200).optional(),
             })
             .openapi(`Move${schemaPrefix}Request`),
           true,
@@ -318,11 +325,20 @@ export function registerFolderRoutes(
       const body = await readBody(c);
       const folderId = body.folderId as string | null | undefined;
       const access = body.access as FolderAccessLevel | undefined;
+      const name =
+        typeof body.name === "string" && body.name.trim()
+          ? body.name.trim()
+          : undefined;
       return run(c, async ctx => {
         if (typeof folderId === "string" && !Types.ObjectId.isValid(folderId)) {
           return { ok: false, status: 400, error: "Invalid folderId" };
         }
-        return backend.moveItem(ctx, { itemId, folderId, access });
+        return backend.moveItem(ctx, {
+          itemId,
+          folderId,
+          access,
+          ...(name ? { name } : {}),
+        });
       });
     },
   );

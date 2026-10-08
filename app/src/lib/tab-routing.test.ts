@@ -3,6 +3,7 @@ import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
   encodePathSegments,
+  legacyAppPathname,
   tabUrlPath,
 } from "./tab-routing";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
@@ -215,5 +216,64 @@ describe("decodeUrlSegment", () => {
     const { decodeUrlSegment } = await import("./tab-routing");
     expect(decodeUrlSegment("100%")).toBe("100%");
     expect(decodeUrlSegment("%E0%A4%A")).toBe("%E0%A4%A");
+  });
+});
+
+describe("legacy app links", () => {
+  it("maps /a/<ref> and /a2/<ref> (and their file links) to /apps/<ref>", () => {
+    expect(legacyAppPathname("/a/6aaaed797eb3d8d53c497fd1")).toBe(
+      "/apps/6aaaed797eb3d8d53c497fd1",
+    );
+    expect(legacyAppPathname("/a2/seller-media/")).toBe("/apps/seller-media");
+    expect(legacyAppPathname("/a/seller-media/file/src/main.tsx")).toBe(
+      "/apps/seller-media/file/src/main.tsx",
+    );
+  });
+
+  it("leaves every other path alone", () => {
+    expect(legacyAppPathname("/apps/seller-media")).toBeNull();
+    expect(legacyAppPathname("/a/")).toBeNull();
+    expect(legacyAppPathname("/a/x/y")).toBeNull();
+    expect(legacyAppPathname("/c/abc")).toBeNull();
+    expect(legacyAppPathname("/")).toBeNull();
+  });
+});
+
+describe("legacy run-notification deep links", () => {
+  // Emails and Slack messages used to link to `/workspace/<ws>/flows/<id>`
+  // and `/workspace/<ws>/console/<id>`, which were never routes. They must
+  // keep opening the right tab; only the id is captured.
+  it("maps /workspace/:ws/flows/:id to the flow editor", () => {
+    const m = "/workspace/66f000000000000000000009/flows/flow-1".match(
+      TAB_DEEP_LINK_PATTERNS["flow-editor"],
+    );
+    expect(m?.[1]).toBe("flow-1");
+    expect(
+      "/workspace/66f000000000000000000009/flows/flow-1".match(
+        TAB_DEEP_LINK_PATTERNS.console,
+      ),
+    ).toBeNull();
+  });
+
+  it("maps /workspace/:ws/console/:id to a console", () => {
+    const m = "/workspace/66f000000000000000000009/console/abc123".match(
+      TAB_DEEP_LINK_PATTERNS.console,
+    );
+    expect(m?.[1]).toBe("abc123");
+    expect(
+      "/workspace/66f000000000000000000009/console/abc123".match(
+        TAB_DEEP_LINK_PATTERNS["flow-editor"],
+      ),
+    ).toBeNull();
+  });
+
+  it("still captures the id from the canonical forms", () => {
+    expect("/f/flow-1".match(TAB_DEEP_LINK_PATTERNS["flow-editor"])?.[1]).toBe(
+      "flow-1",
+    );
+    expect("/c/abc".match(TAB_DEEP_LINK_PATTERNS.console)?.[1]).toBe("abc");
+    expect(
+      "/workspace/x/flows".match(TAB_DEEP_LINK_PATTERNS["flow-editor"]),
+    ).toBeNull();
   });
 });

@@ -15,6 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import { Types } from "mongoose";
+import { appNameProblem, isSafeAppSegment } from "@mako/schemas";
 
 export const APPS_DIR = "apps";
 export const USERS_DIR = "users";
@@ -34,22 +35,36 @@ export interface AppRepoLocation {
   slug: string;
 }
 
-// Unicode letters and digits: `apps/café` is a folder people already have,
-// and dropping it from discovery left it published but unlisted. Slashes,
-// control characters and leading dots stay out.
-const SEGMENT_RE = /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u;
+// The naming rules themselves live in @mako/schemas (app-names.ts), shared
+// with the client's rename and folder dialogs so both refuse the same names
+// in the same words. Re-exported here under the names the API uses.
+export {
+  MAX_APP_TITLE_LENGTH,
+  RESERVED_APP_SLUGS,
+  appTitleProblem,
+  isSafeAppSegment as isSafeSegment,
+  isWindowsDeviceName,
+  normalizeAppName as normalizeName,
+} from "@mako/schemas";
+
 const USER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
-/** A folder or app name git and every URL are happy with. */
-export function isSafeSegment(segment: string): boolean {
-  return (
-    SEGMENT_RE.test(segment) &&
-    segment !== "." &&
-    segment !== ".." &&
-    !segment.endsWith(".") &&
-    !segment.endsWith(" ") &&
-    segment.length <= 100
-  );
+/**
+ * Why `segment` cannot be a NEW folder name, or null when it can (the
+ * shared rule: a Windows device name, an id look-alike, characters git or
+ * a URL would choke on). An existing folder pushed from a laptop is held
+ * to isSafeSegment only, so it keeps working.
+ */
+export function newSegmentProblem(segment: string): string | null {
+  return appNameProblem(segment, "folder");
+}
+
+/**
+ * Why `slug` cannot be a NEW app link (its folder name), or null when it
+ * can: the folder rules, plus the words the apps API keeps for itself.
+ */
+export function newAppSlugProblem(slug: string): string | null {
+  return appNameProblem(slug, "link");
 }
 
 /** Root folder of a tree: `apps` or `users/<id>/apps`. */
@@ -86,7 +101,7 @@ export function parseAppRepoPath(path: string): AppRepoLocation | null {
   } else {
     return null;
   }
-  if (rest.length === 0 || rest.some(s => !isSafeSegment(s))) return null;
+  if (rest.length === 0 || rest.some(s => !isSafeAppSegment(s))) return null;
   const slug = rest[rest.length - 1];
   return { scope, ownerId, folderSegments: rest.slice(0, -1), slug };
 }
@@ -94,8 +109,10 @@ export function parseAppRepoPath(path: string): AppRepoLocation | null {
 /** Inverse of {@link parseAppRepoPath}. */
 export function appRepoPath(location: AppRepoLocation): string {
   for (const seg of [...location.folderSegments, location.slug]) {
-    if (!isSafeSegment(seg)) {
-      throw new Error(`Invalid folder name: ${JSON.stringify(seg)}`);
+    if (!isSafeAppSegment(seg)) {
+      throw new Error(
+        appNameProblem(seg, "folder") ?? `"${seg}" can't be a folder name.`,
+      );
     }
   }
   return [
@@ -163,8 +180,48 @@ export interface AppManifest {
   id?: string;
   title: string;
   description?: string;
+  /**
+   * Previous slugs (`report`) or repo paths (`apps/Sales/report`) of this
+   * app: old links resolve to it when nothing current claims them. Moves
+   * append to it automatically. Normalized and deduplicated.
+   */
+  aliases: string[];
+  /** `aliases` entries that were not usable (ignored, never fatal). */
+  rejectedAliases: unknown[];
   /** Raw parse, for callers that need the rest (entry, bindings, …). */
   raw: Record<string, unknown>;
+}
+
+/**
+ * Normalize a manifest's `aliases`: trimmed strings, no slash at either end,
+ * no empty, `.` or `..` segment, each once. Anything else is returned in
+ * `rejected` so the caller can warn — a bad alias must never hide the app.
+ */
+export function parseAppAliases(value: unknown): {
+  aliases: string[];
+  rejected: unknown[];
+} {
+  if (value === undefined || value === null) {
+    return { aliases: [], rejected: [] };
+  }
+  if (!Array.isArray(value)) return { aliases: [], rejected: [value] };
+  const aliases: string[] = [];
+  const rejected: unknown[] = [];
+  for (const entry of value) {
+    const clean =
+      typeof entry === "string"
+        ? entry.trim().replace(/^\/+/, "").replace(/\/+$/, "")
+        : "";
+    const ok =
+      clean.length > 0 &&
+      clean.length <= 500 &&
+      // eslint-disable-next-line no-control-regex
+      !/[\u0000-\u001f\u007f]/.test(clean) &&
+      clean.split("/").every(seg => seg !== "" && seg !== "." && seg !== "..");
+    if (!ok) rejected.push(entry);
+    else if (!aliases.includes(clean)) aliases.push(clean);
+  }
+  return { aliases, rejected };
 }
 
 /**
@@ -195,7 +252,8 @@ export function parseAppManifest(
     typeof raw.id === "string" && isAppId(raw.id)
       ? raw.id.toLowerCase()
       : undefined;
-  return { id, title, description, raw };
+  const { aliases, rejected } = parseAppAliases(raw.aliases);
+  return { id, title, description, aliases, rejectedAliases: rejected, raw };
 }
 
 /**
@@ -221,4 +279,107 @@ export function stampManifestId(
   const { id: _old, ...rest } = raw;
   void _old;
   return `${JSON.stringify({ id, ...rest }, null, 2)}\n`;
+}
+
+/**
+ * Add `add` to a manifest's `aliases` (after the ones it has, each once) and
+ * drop any equal to `drop` (the app's own current slug and path — an alias
+ * naming the app's present location is noise). Unusable entries already in
+ * the list are dropped too: the index ignores them anyway. Returns the
+ * contents unchanged when nothing changes, and `null` when the manifest
+ * cannot be parsed — writing a new one over it would lose the user's work.
+ */
+export function addManifestAliases(
+  contents: string | null | undefined,
+  add: readonly string[],
+  drop: readonly string[] = [],
+  /**
+   * Keep only the newest this many (the list is oldest first). A name
+   * older than the index serves (MAX_ALIASES_PER_APP) opens nothing, and
+   * a list that grows on every rename forever is a file nobody reads.
+   */
+  max = Infinity,
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const current = parseAppAliases(raw.aliases);
+  const all = parseAppAliases([...current.aliases, ...add]).aliases.filter(
+    a => !drop.includes(a),
+  );
+  const next = all.length > max ? all.slice(all.length - max) : all;
+  const unchanged =
+    current.rejected.length === 0 &&
+    next.length === current.aliases.length &&
+    next.every((a, i) => a === current.aliases[i]);
+  if (unchanged) return contents ?? null;
+  if (next.length === 0) {
+    const { aliases: _gone, ...rest } = raw;
+    void _gone;
+    return `${JSON.stringify(rest, null, 2)}\n`;
+  }
+  // An existing key keeps its place; a new one goes last.
+  return `${JSON.stringify({ ...raw, aliases: next }, null, 2)}\n`;
+}
+
+/**
+ * Remove a manifest's `aliases` altogether: a COPY of an app that gets an
+ * id of its own must not keep claiming the original's old names (a name two
+ * apps claim resolves to neither). `null` when the manifest cannot be
+ * parsed; the contents unchanged when there is nothing to remove.
+ */
+export function stripManifestAliases(
+  contents: string | null | undefined,
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!("aliases" in raw)) return contents ?? null;
+  const { aliases: _gone, ...rest } = raw;
+  void _gone;
+  return `${JSON.stringify(rest, null, 2)}\n`;
+}
+
+/**
+ * Write `title` into a manifest, keeping everything else where it is. Same
+ * contract as {@link stampManifestId}: unchanged contents when the title
+ * already reads so, `null` when the manifest cannot be parsed — a rename
+ * must never overwrite a file it could not read.
+ */
+export function setManifestTitle(
+  contents: string | null | undefined,
+  title: string,
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (raw.title === title) return contents ?? null;
+  // A manifest that never had a title gets it right after the id, where the
+  // scaffold puts it; one that had it keeps its place.
+  if ("title" in raw) {
+    return `${JSON.stringify({ ...raw, title }, null, 2)}\n`;
+  }
+  const { id, ...rest } = raw;
+  return `${JSON.stringify(id === undefined ? { title, ...rest } : { id, title, ...rest }, null, 2)}\n`;
 }

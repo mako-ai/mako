@@ -280,10 +280,261 @@ export function blobOid(contents: string | Buffer): string {
 }
 
 export interface BlobMutation {
-  /** repo-relative path → full contents. */
-  writes?: Record<string, string>;
+  /** repo-relative path → full contents (a Buffer for a binary blob). */
+  writes?: Record<string, string | Buffer>;
   /** repo-relative paths to remove; absent paths are ignored. */
   deletes?: string[];
+  /**
+   * Index entries written AS THEY ARE — an existing blob oid with its
+   * mode — so a move keeps the executable bit and keeps a symlink a
+   * symlink (`120000`) instead of re-hashing its target as a regular
+   * file. A rename of a folder is `entries` for every untouched file plus
+   * `writes` for the one it edits.
+   */
+  entries?: IndexEntry[];
+  /** Mode for a path in `writes` (default `100644`). */
+  modes?: Record<string, IndexMode>;
+}
+
+/** The blob modes git stores: regular, executable, symlink. */
+export type IndexMode = "100644" | "100755" | "120000";
+
+export interface IndexEntry {
+  path: string;
+  oid: string;
+  mode: IndexMode;
+}
+
+const INDEX_MODES: ReadonlySet<string> = new Set([
+  "100644",
+  "100755",
+  "120000",
+]);
+
+/**
+ * Thrown by `commitBlobsOnBranch` when an `expectBlobs` precondition fails:
+ * the branch moved and the file the caller read is no longer what is at
+ * head. The caller re-reads and retries (or reports a conflict); it must
+ * not re-apply a mutation decided from stale content.
+ */
+export class BlobPreconditionError extends Error {
+  constructor(
+    readonly path: string,
+    readonly expected: string | null,
+    readonly actual: string | null,
+    /**
+     * A path that must be absent was free, but a file beside it differing
+     * only in letter case is in the way (`foldCase`): that file.
+     */
+    readonly takenAs?: string,
+  ) {
+    super(
+      `${path} changed on ${DEFAULT_BRANCH} since it was read (expected ${expected ?? "absent"}, found ${actual ?? "absent"})`,
+    );
+    this.name = "BlobPreconditionError";
+  }
+}
+
+/**
+ * The text of a blob by its oid, or null when it is not in the object
+ * store or is binary. A deleted file's blob outlives the deletion.
+ */
+export async function readBlobByOid(
+  repoDir: string,
+  oid: string,
+): Promise<string | null> {
+  if (!/^[0-9a-f]{40}$/.test(oid)) return null;
+  try {
+    const { stdout } = await runGit(["-C", repoDir, "cat-file", "-p", oid]);
+    return stdout.includes("\0") ? null : stdout;
+  } catch {
+    return null;
+  }
+}
+
+/** Blob oid of `path` at `commit`, or null when the path is absent. */
+export async function blobOidAt(
+  repoDir: string,
+  commit: string,
+  relPath: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "rev-parse",
+      "--verify",
+      "-q",
+      `${commit}:${assertSafeRelPath(relPath)}`,
+    ]);
+    const oid = stdout.trim();
+    return /^[0-9a-f]{40}$/.test(oid) ? oid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Oid of the TREE at `relPath` in `commit` (null when absent). `rev-parse
+ * commit:path` names whatever object sits there, so `blobOidAt` already
+ * does this; the name says what a caller means when it pins a folder: one
+ * oid that changes if anything inside is added, edited or removed —
+ * exactly the precondition a folder move needs.
+ */
+export async function treeOidAt(
+  repoDir: string,
+  commit: string,
+  relPath: string,
+): Promise<string | null> {
+  return blobOidAt(repoDir, commit, relPath);
+}
+
+/**
+ * Thrown by `commitBlobsOnBranch` when a written path collides with the
+ * tree: a parent of it is an existing FILE, or it is itself an existing
+ * DIRECTORY. `update-index` would silently replace the one with the other
+ * (`models/a.sql` → `models/a.sql/b.sql` deletes `a.sql`), so it is refused.
+ */
+export class PathConflictError extends Error {
+  constructor(
+    readonly path: string,
+    readonly conflict: string,
+    readonly kind: "file" | "directory",
+  ) {
+    super(
+      kind === "file"
+        ? `${path}: ${conflict} is an existing file, not a folder`
+        : `${path} is an existing folder, not a file`,
+    );
+    this.name = "PathConflictError";
+  }
+}
+
+/** `blob` | `tree` | null for what sits at `path` in `commit`. */
+async function objectTypeAt(
+  repoDir: string,
+  commit: string,
+  relPath: string,
+): Promise<"blob" | "tree" | null> {
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "cat-file",
+      "-t",
+      `${commit}:${relPath}`,
+    ]);
+    const type = stdout.trim();
+    return type === "blob" || type === "tree" ? type : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The file beside `rel` at `ref` whose path differs from it only in letter
+ * case (and is not in `ignore`), or null. Same folder only: its listing is
+ * one `ls-tree` of that directory.
+ */
+export async function caseVariantOf(
+  repoDir: string,
+  ref: string,
+  rel: string,
+  ignore: ReadonlySet<string> = new Set(),
+): Promise<string | null> {
+  const slash = rel.lastIndexOf("/");
+  const dir = slash === -1 ? "" : rel.slice(0, slash + 1);
+  const args = ["-C", repoDir, "ls-tree", "-z", "--name-only", ref];
+  if (dir) args.push("--", assertSafeRelPath(dir.slice(0, -1)) + "/");
+  const { stdout } = await runGit(args);
+  const wanted = rel.toLowerCase();
+  for (const entry of stdout.split("\0")) {
+    if (!entry || entry === rel || ignore.has(entry)) continue;
+    if (entry.toLowerCase() === wanted) return entry;
+  }
+  return null;
+}
+
+/**
+ * `objectTypeAt` for many paths in one `cat-file --batch-check`. A path
+ * the batch protocol cannot carry (a line break in it) is asked alone.
+ */
+async function objectTypesAt(
+  repoDir: string,
+  commit: string,
+  relPaths: string[],
+): Promise<Map<string, "blob" | "tree" | null>> {
+  const out = new Map<string, "blob" | "tree" | null>();
+  const batchable: string[] = [];
+  for (const p of relPaths) {
+    if (/[\r\n]/.test(p)) {
+      out.set(p, await objectTypeAt(repoDir, commit, p));
+    } else {
+      batchable.push(p);
+    }
+  }
+  if (batchable.length === 0) return out;
+  const { stdout } = await runGit(
+    ["-C", repoDir, "cat-file", "--batch-check=%(objecttype)"],
+    { stdin: batchable.map(p => `${commit}:${p}`).join("\n") + "\n" },
+  );
+  const lines = stdout.split("\n");
+  batchable.forEach((p, i) => {
+    const type = lines[i]?.trim();
+    out.set(p, type === "blob" || type === "tree" ? type : null);
+  });
+  return out;
+}
+
+/**
+ * Refuse a mutation that would turn a file into a folder or a folder into
+ * a file, unless the mutation itself deletes what is in the way.
+ */
+async function assertNoPathConflicts(
+  repoDir: string,
+  head: string,
+  targets: string[],
+  deletes: string[],
+): Promise<void> {
+  const deleted = new Set(deletes);
+  // Every path the checks below ask about, typed in ONE git process (it
+  // was a spawn per folder level per file: ~3 per written file, most of a
+  // large commit's time). Same answers, same order of refusals.
+  const asked = new Set<string>();
+  for (const target of targets) {
+    const segments = target.split("/");
+    for (let i = 1; i < segments.length; i++) {
+      const parent = segments.slice(0, i).join("/");
+      if (!deleted.has(parent)) asked.add(parent);
+    }
+    asked.add(target);
+  }
+  const types = await objectTypesAt(repoDir, head, [...asked]);
+  for (const target of targets) {
+    const segments = target.split("/");
+    for (let i = 1; i < segments.length; i++) {
+      const parent = segments.slice(0, i).join("/");
+      if (deleted.has(parent)) continue;
+      if (types.get(parent) === "blob") {
+        throw new PathConflictError(target, parent, "file");
+      }
+    }
+    if (types.get(target) === "tree") {
+      const { stdout } = await runGit([
+        "-C",
+        repoDir,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        `${head}:${target}`,
+      ]);
+      const inside = stdout.split("\0").filter(Boolean);
+      if (inside.some(rel => !deleted.has(`${target}/${rel}`))) {
+        throw new PathConflictError(target, target, "directory");
+      }
+    }
+  }
 }
 
 /**
@@ -301,35 +552,142 @@ export interface BlobMutation {
  * predecessor still happened (its author, date and message are the record),
  * and dropping it would silently renumber history (§13.18 doctrine).
  */
+/**
+ * Write blobs into the object store, byte for byte, and return their oids
+ * in order. ONE git process however many there are: each used to be its
+ * own `hash-object` spawn (~30ms), so a dbt model rename rewriting 1500
+ * files spent ~50s here. The bytes go through temp files to
+ * `hash-object --stdin-paths`, which prints one oid per path, in order.
+ *
+ * `--no-filters`: the stored blob is exactly these bytes. (The per-file
+ * `--path` this replaces asked git to apply attributes for the repo path;
+ * a bare repo reads none from its tree, so the only ones that could ever
+ * apply were a machine's global attributes file — a CRLF or clean filter
+ * there would have silently changed what Mako committed, and broken every
+ * caller that pins content by its raw blob oid.)
+ */
+export async function writeBlobs(
+  repoDir: string,
+  contents: ReadonlyArray<string | Buffer>,
+): Promise<string[]> {
+  if (contents.length === 0) return [];
+  if (contents.length === 1) {
+    const { stdout } = await runGit(
+      ["-C", repoDir, "hash-object", "-w", "--no-filters", "--stdin"],
+      { stdin: contents[0] },
+    );
+    return [stdout.trim()];
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mako-blobs-"));
+  try {
+    const files = contents.map((_, i) => path.join(dir, String(i)));
+    await Promise.all(files.map((file, i) => fs.writeFile(file, contents[i])));
+    const { stdout } = await runGit(
+      ["-C", repoDir, "hash-object", "-w", "--no-filters", "--stdin-paths"],
+      { stdin: files.join("\n") + "\n" },
+    );
+    const oids = stdout.split("\n").filter(Boolean);
+    if (oids.length !== contents.length || !oids.every(isOid)) {
+      throw new Error(
+        `hash-object wrote ${oids.length} blobs for ${contents.length} files`,
+      );
+    }
+    return oids;
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 export async function commitBlobsOnBranch(
   repoDir: string,
   branch: string,
   mutation: BlobMutation,
-  options: { message: string; author?: GitAuthor; allowEmpty?: boolean },
+  options: {
+    message: string;
+    author?: GitAuthor;
+    allowEmpty?: boolean;
+    /**
+     * Compare-and-swap on content: path → the blob oid the caller read
+     * there (`null` = the path must be absent). Checked against the head
+     * each attempt, BEFORE the tree is built, so a mutation decided from a
+     * file that has since changed or moved is refused
+     * (`BlobPreconditionError`) rather than re-applied on the new head —
+     * which is what the CAS on the ref alone cannot see.
+     */
+    expectBlobs?: Record<string, string | null>;
+    /**
+     * An `expectBlobs` path that must be absent must also have no sibling
+     * that differs from it only in letter case (other than one this
+     * mutation deletes — a case-only rename of the same file). Two such
+     * files make a checkout on a case-insensitive file system (macOS,
+     * Windows) unusable: one overwrites the other, a phantom change, pulls
+     * abort.
+     */
+    foldCase?: boolean;
+  },
 ): Promise<{ commitOid: string; previousHead: string; unchanged: boolean }> {
   const writes = Object.entries(mutation.writes ?? {}).map(
     ([rel, contents]) => [assertSafeRelPath(rel), contents] as const,
   );
   const deletes = (mutation.deletes ?? []).map(p => assertSafeRelPath(p));
+  const modeOf = (rel: string): IndexMode => {
+    const mode = mutation.modes?.[rel] ?? "100644";
+    if (!INDEX_MODES.has(mode)) {
+      throw new Error(`Unsupported mode ${mode} for ${rel}`);
+    }
+    return mode;
+  };
+  const entries = (mutation.entries ?? []).map(entry => {
+    if (!isOid(entry.oid)) throw new Error(`Not a blob oid: ${entry.oid}`);
+    if (!INDEX_MODES.has(entry.mode)) {
+      throw new Error(`Unsupported mode ${entry.mode} for ${entry.path}`);
+    }
+    return { ...entry, path: assertSafeRelPath(entry.path) };
+  });
   // Blobs first: they are content-addressed, so writing them before knowing
   // the head is safe and keeps the CAS window short.
-  const oids = new Map<string, string>();
-  for (const [rel, contents] of writes) {
-    const { stdout } = await runGit(
-      ["-C", repoDir, "hash-object", "-w", "--stdin", "--path", rel],
-      { stdin: contents },
-    );
-    oids.set(rel, stdout.trim());
-  }
+  const oids = await writeBlobs(
+    repoDir,
+    writes.map(([, contents]) => contents),
+  ).then(list => new Map(writes.map(([rel], i) => [rel, list[i]])));
   const indexInfo =
     [
       ...deletes.map(rel => `0 ${ZERO_OID}\t${rel}`),
-      ...writes.map(([rel]) => `100644 ${oids.get(rel)}\t${rel}`),
+      ...entries.map(e => `${e.mode} ${e.oid}\t${e.path}`),
+      ...writes.map(([rel]) => `${modeOf(rel)} ${oids.get(rel)}\t${rel}`),
     ].join("\n") + "\n";
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
     if (!head) throw new Error(`Branch ${branch} is missing`);
+    for (const [rel, expected] of Object.entries(options.expectBlobs ?? {})) {
+      const actual = await blobOidAt(repoDir, head, rel);
+      if (actual !== expected) {
+        throw new BlobPreconditionError(rel, expected, actual);
+      }
+      if (expected === null && options.foldCase) {
+        const variant = await caseVariantOf(
+          repoDir,
+          head,
+          rel,
+          new Set(deletes),
+        );
+        if (variant) {
+          throw new BlobPreconditionError(
+            rel,
+            null,
+            await blobOidAt(repoDir, head, variant),
+            variant,
+          );
+        }
+      }
+    }
+    await assertNoPathConflicts(
+      repoDir,
+      head,
+      [...writes.map(([rel]) => rel), ...entries.map(e => e.path)],
+      deletes,
+    );
     const headTree = await treeOfCommit(repoDir, head);
     const indexFile = path.join(
       os.tmpdir(),
@@ -379,7 +737,15 @@ export async function commitTree(
 ): Promise<string> {
   const args = ["-C", repoDir, "commit-tree", input.treeOid];
   for (const p of input.parents) args.push("-p", p);
-  args.push("-m", input.message || "(no message)");
+  // Messages carry user text (an app, console or notebook name): a NUL
+  // cannot travel in a process argument (spawn throws — a 500 on a save),
+  // and other control characters have no business in a commit message.
+  // Line breaks and tabs stay.
+  const message = Array.from(input.message || "", ch => {
+    const code = ch.charCodeAt(0);
+    return (code < 32 && ch !== "\n" && ch !== "\t") || code === 127 ? " " : ch;
+  }).join("");
+  args.push("-m", message.trim() ? message : "(no message)");
   const { stdout } = await runGit(args, { env: authorEnv(input.author) });
   return stdout.trim();
 }
@@ -581,6 +947,15 @@ export interface BlobContent {
   contents: string;
   isBinary: boolean;
   size: number;
+  /**
+   * Git's own blob id, computed from the RAW bytes. `blobOid(contents)` is
+   * NOT the same thing for a file that is not valid UTF-8: decoding it
+   * replaces the bad bytes, and the sha of the re-encoded text is one git
+   * has never seen — a row that stores it can never satisfy a
+   * compare-and-swap against the repo. Anything that stores or compares a
+   * sha for a file read from git uses this.
+   */
+  oid: string;
 }
 
 /** Read a file at a ref. Throws when the path does not exist at that ref. */
@@ -601,6 +976,7 @@ export async function readBlob(
     contents: isBinary ? buf.toString("base64") : buf.toString("utf8"),
     isBinary,
     size: buf.length,
+    oid: blobOid(buf),
   };
 }
 
@@ -683,6 +1059,143 @@ export async function log(
       const [oid, author, at, subject] = line.split("\0");
       return { oid, author, timestamp: Number(at) * 1000, subject };
     });
+}
+
+/** One commit of a file's history, with where the file was in it. */
+export interface FollowedCommit extends CommitInfo {
+  /** The file's path in this commit (after it, for a rename). */
+  path: string;
+  /** For the commit that renamed/moved the file: where it came from. */
+  previousPath?: string;
+  /**
+   * The commit that created the file (added, or added as a copy of another
+   * file): the oldest entry of its history — nothing before it was this
+   * file.
+   */
+  created?: true;
+}
+
+/**
+ * Parse `git log --follow --format=%x01%H%x00%an%x00%at%x00%s
+ * --name-status -z`: each commit is `\x01<sha>\0<author>\0<at>\0<subject>\0`
+ * then `\n<status>\0<path>\0` (`R<score>\0<from>\0<to>\0` for a rename).
+ * Newest first; `path` is the file's name at HEAD, carried backwards
+ * through each rename so a commit without a status line (a merge) still
+ * says where the file was.
+ *
+ * Only the file's OWN lineage — its rename chain — is kept. `--follow`
+ * cannot be told to skip copies (it always runs copy detection, with
+ * `--find-copies-harder`, and git has no `--no-find-copies`), and it keeps
+ * listing whatever else ever lived at a path. So the walk ends:
+ * - AT a copy (`C`): the file was created as a copy of ANOTHER file, which
+ *   is not its history (a workspace copy of a private console must not
+ *   list or read the private one);
+ * - AT an add (`A`): the file's creation — older commits at that path are
+ *   a previous occupant (a console deleted or moved away before this one
+ *   took the name);
+ * - BEFORE a delete (`D`) once the file has been seen: that is the previous
+ *   occupant leaving. A delete as the NEWEST entry is the file's own
+ *   (absent at the ref) and the walk goes on.
+ */
+export function parseFollowLog(stdout: string, path: string): FollowedCommit[] {
+  const commits: FollowedCommit[] = [];
+  let current = path;
+  for (const chunk of stdout.split("\x01")) {
+    if (!chunk) continue;
+    const fields = chunk.split("\0");
+    const [oid, author, at, subject] = fields;
+    if (!oid) continue;
+    const status = (fields[4] ?? "").trim();
+    const commit: FollowedCommit = {
+      oid,
+      author: author ?? "",
+      timestamp: Number(at) * 1000,
+      subject: subject ?? "",
+      path: current,
+    };
+    if (status.startsWith("R")) {
+      const from = fields[5];
+      const to = fields[6];
+      if (to) commit.path = to;
+      if (from) {
+        commit.previousPath = from;
+        current = from;
+      }
+    } else if (status.startsWith("C")) {
+      // Created as a copy of another file: its creation, and the end of it.
+      const to = fields[6];
+      if (to) commit.path = to;
+      commit.created = true;
+      commits.push(commit);
+      break;
+    } else if (status.startsWith("A")) {
+      if (fields[5]) commit.path = fields[5];
+      commit.created = true;
+      commits.push(commit);
+      break;
+    } else if (status.startsWith("D")) {
+      // A previous occupant of the path leaving: not this file.
+      if (commits.length > 0) break;
+      if (fields[5]) commit.path = fields[5];
+    } else if (status && fields[5]) {
+      commit.path = fields[5];
+      current = fields[5];
+    }
+    commits.push(commit);
+  }
+  return commits;
+}
+
+/**
+ * A file's history ACROSS renames and moves (`git log --follow`): a
+ * console renamed in the explorer is the same file under a new name, and
+ * its history did not start at the rename. Each entry says where the file
+ * was in that commit. Its own rename chain only — never the file it was
+ * copied from, nor an earlier file at the same path (`parseFollowLog`).
+ */
+export async function logFollow(
+  repoDir: string,
+  refOrOid: string,
+  limit: number,
+  path: string,
+): Promise<FollowedCommit[]> {
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "log",
+    "--follow",
+    "-M",
+    "--format=%x01%H%x00%an%x00%at%x00%s",
+    "--name-status",
+    "-z",
+    "-n",
+    String(Math.max(1, Math.min(limit, 200))),
+    refOrOid,
+    "--",
+    path,
+  ]);
+  return parseFollowLog(stdout, path);
+}
+
+/** The newest commit of `refOrOid` that deleted `path` (null: none). */
+export async function lastDeletionCommit(
+  repoDir: string,
+  refOrOid: string,
+  path: string,
+): Promise<string | null> {
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "log",
+    "-1",
+    "--format=%H",
+    "--diff-filter=D",
+    refOrOid,
+    "--",
+    assertSafeRelPath(path),
+  ]);
+  const oid = stdout.trim();
+  return isOid(oid) ? oid : null;
 }
 
 export interface ChangedFile {

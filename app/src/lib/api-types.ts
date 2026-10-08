@@ -82,6 +82,8 @@ export interface ConsoleVersionConflict {
 export interface ConsoleSaveResponse {
   success: boolean;
   path?: string;
+  /** The name it was saved under (see `console`). */
+  name?: string;
   error?: string;
   /** Machine-readable failure code (e.g. "github_required", apps.md §17). */
   code?: string;
@@ -99,6 +101,11 @@ export interface ConsoleSaveResponse {
   };
   /** Concurrent-edit conflict: the console changed since this client loaded it. */
   versionConflict?: ConsoleVersionConflict;
+  /**
+   * The console as saved: its name and its `Folder/name` place — the name
+   * may have been cleaned ("Q1: revenue" is saved as "Q1 - revenue").
+   */
+  console?: { id: string; name?: string; path?: string };
   /** Stale draft autosave: the draft changed since this tab last synced. */
   draftConflict?: {
     currentDraftRevision: number;
@@ -108,11 +115,33 @@ export interface ConsoleSaveResponse {
   };
 }
 
+/**
+ * Where a console is, as the server answers a rename (`PATCH /:id/rename`
+ * → `console`) or a move (`PATCH /:id/move` → `data`): an open tab
+ * retargets from this, never from a path the client computed.
+ */
+export interface ConsoleLocation {
+  id: string;
+  name: string;
+  /** `Folder/Sub/name` (`name` at the root). */
+  path: string;
+  folderId: string | null;
+  /** Its EFFECTIVE visibility (its own access or a workspace folder's). */
+  access: "private" | "workspace";
+  draftRevision: number;
+  isSaved: boolean;
+}
+
 /** One changed console returned by POST /consoles/revisions-sync. */
 export interface ConsoleRevisionSyncEntry {
   id: string;
   draftRevision: number;
   name?: string;
+  /** Where it is now: `Folder/Sub/name` (a rename or move bumps the revision). */
+  path?: string;
+  folderId?: string | null;
+  /** Its EFFECTIVE visibility (its own access or a workspace folder's). */
+  access?: "private" | "workspace";
   content: string;
   connectionId?: string;
   databaseId?: string;

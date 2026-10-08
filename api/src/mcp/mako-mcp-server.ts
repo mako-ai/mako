@@ -53,6 +53,7 @@ import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
+import { createRenameTools } from "../agent-lib/tools/rename-tools";
 import {
   getSystemSkillIndex,
   getSystemSkillFullText,
@@ -217,7 +218,10 @@ export function buildMakoMcpCandidateTools(
   // Gated by the members-write grant AND a live owner/admin check inside the
   // tools themselves — a key outlives the membership that justified it.
   const memberTools = createMemberTools(workspaceId, userId);
+  // Graceful rename for every kind (old names keep resolving).
+  const renameTools = createRenameTools(workspaceId, userId);
   return {
+    ...renameTools,
     ...connectorTools,
     ...flowFileTools,
     ...appsTools,

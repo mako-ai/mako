@@ -101,6 +101,8 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // restore_version pair (which takes an entityType + entityId ref).
   dashboard_save_version: "dashboards",
   dashboard_restore_version: "dashboards",
+  // Graceful rename of any workspace object (api/src/rename).
+  rename_object: "workspace",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(

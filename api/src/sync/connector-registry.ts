@@ -9,7 +9,11 @@ import {
   SandboxedConnector,
   slugFromType,
 } from "../connectors/workspace/SandboxedConnector";
-import { loadConnectorDefinition } from "../connectors/workspace/resolver";
+import {
+  loadConnectorDefinition,
+  loadConnectorDefinitionFor,
+  type ConnectionBinding,
+} from "../connectors/workspace/resolver";
 import { connectionSpecificationToForm } from "../connectors/workspace/spec-translation";
 
 const logger = loggers.sync("connector-registry");
@@ -44,6 +48,7 @@ function asSourceConnection(
     config: connection.connection,
     settings: connection.settings,
     workspaceId: connection.workspaceId,
+    connectorDefinitionId: connection.connectorDefinitionId,
   } as unknown as ISourceConnection;
 }
 
@@ -76,6 +81,14 @@ class SyncConnectorRegistry {
   async getConfigSchemaForType(
     type: string,
     workspaceId?: string,
+    /**
+     * The connection the schema is for. Given, the definition is resolved
+     * THROUGH its binding (by stamped id; by current slug only when
+     * unstamped) and never through an alias — this schema decides which
+     * values are secrets. Omitted only where there is no connection yet
+     * (the picker's form, a create before the row exists).
+     */
+    binding?: ConnectionBinding,
   ): Promise<any | null> {
     if (isWorkspaceConnectorType(type)) {
       if (!workspaceId) {
@@ -84,10 +97,12 @@ class SyncConnectorRegistry {
             `Without one, secret fields cannot be identified and the credential would be stored in plaintext.`,
         );
       }
-      const definition = await loadConnectorDefinition(
-        workspaceId,
-        slugFromType(type),
-      );
+      const definition = binding
+        ? await loadConnectorDefinitionFor(workspaceId, {
+            type,
+            connectorDefinitionId: binding.connectorDefinitionId,
+          })
+        : await loadConnectorDefinition(workspaceId, slugFromType(type));
       return connectionSpecificationToForm(
         (definition.spec as any)?.connectionSpecification,
       );

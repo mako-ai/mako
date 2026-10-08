@@ -23,7 +23,7 @@ import {
   Flow,
   type IFlow,
 } from "../database/workspace-schema";
-import { reserveSlug, slugifyName } from "../utils/slugify";
+import { reserveSlug, slugifyName, unsafeSlugReason } from "../utils/slugify";
 
 /** The `source → destination` label flows have always shown. */
 export async function deriveFlowDisplayName(
@@ -105,7 +105,9 @@ export function slugifyFlowName(name: string): string {
 
 /**
  * Reserve a slug unique within the workspace. Called once per flow, at
- * creation (or by the backfill); never on rename.
+ * creation (or by the backfill). A rename goes through api/src/rename, which
+ * validates a caller-chosen slug against the same space: current slugs,
+ * files at main, and the old names renamed flows still answer to.
  */
 export async function reserveFlowSlug(
   workspaceId: Types.ObjectId | string,
@@ -125,7 +127,17 @@ export async function reserveFlowSlug(
     slugifyFlowName(name),
     async candidate =>
       takenAtMain.has(candidate) ||
-      Boolean(await Flow.exists({ workspaceId: wsId, slug: candidate })),
+      // A Windows device name or an id lookalike is never a file name
+      // (`unsafeSlugReason`): "CON" becomes `con-2`.
+      unsafeSlugReason(candidate) !== null ||
+      // An old name of a renamed flow is taken too: a new flow under it
+      // would win every lookup (current beats alias) and strand old links.
+      Boolean(
+        await Flow.exists({
+          workspaceId: wsId,
+          $or: [{ slug: candidate }, { aliases: candidate }],
+        }),
+      ),
     { label: `flow "${name}"` },
   );
 }

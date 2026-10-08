@@ -15,12 +15,19 @@
 import yaml from "js-yaml";
 
 import { slugifyName } from "../utils/slugify";
+import { capAliases } from "../rename/alias-cap";
 
 export const DBT_JOBS_DIR = "dbt/jobs";
 export const DBT_ENVIRONMENTS_PATH = "dbt/environments.yml";
 
 export interface DbtJobFile {
   name: string;
+  /**
+   * Previous file slugs of this job (graceful rename, api/src/rename): an
+   * old `dbt/jobs/<alias>.yml` name resolves to the row, and the push-sync
+   * pairs a moved file with the row it used to be instead of recreating it.
+   */
+  aliases?: string[];
   environment: string;
   commands: string[];
   schedule?: { cron: string; timezone: string } | null;
@@ -46,6 +53,23 @@ export function jobFilePath(slug: string): string {
   return `${DBT_JOBS_DIR}/${slug}.yml`;
 }
 
+/** The shape a slug (and so an alias) must have to be a job file name. */
+export const JOB_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * What a job does, as one comparable string: its environment and commands.
+ * Two files that build different things are different jobs however alike
+ * their YAML is; the rename pairing (api/src/rename) pairs only equal targets.
+ */
+export function jobRenameTarget(file: DbtJobFile): string {
+  return JSON.stringify([file.environment, file.commands]);
+}
+
+/** Whether `slug` could have been minted by {@link slugifyJobName}. */
+export function isValidJobSlug(slug: string): boolean {
+  return JOB_SLUG_RE.test(slug) && slugifyJobName(slug) === slug;
+}
+
 export function slugFromJobFilePath(repoRelative: string): string | null {
   const m = repoRelative.match(/^dbt\/jobs\/([a-z0-9][a-z0-9-]*)\.yml$/);
   return m ? m[1] : null;
@@ -59,6 +83,7 @@ export function slugifyJobName(name: string): string {
 export function serializeJobFile(job: DbtJobFile): string {
   const doc: Record<string, unknown> = {
     name: job.name,
+    ...(job.aliases?.length ? { aliases: [...new Set(job.aliases)] } : {}),
     environment: job.environment,
     commands: job.commands,
   };
@@ -89,6 +114,21 @@ export function parseJobFile(contents: string): DbtJobFile | null {
     ? doc.commands.filter((c): c is string => typeof c === "string" && !!c)
     : [];
   if (!name || !environment || commands.length === 0) return null;
+  // `aliases:` is optional; when present it must be a list of slugs. A
+  // malformed list is a broken file, not "no aliases" — an alias dropped
+  // silently is an old link that silently stops resolving.
+  let aliases: string[] | undefined;
+  if (doc.aliases !== undefined && doc.aliases !== null) {
+    if (
+      !Array.isArray(doc.aliases) ||
+      doc.aliases.some(a => typeof a !== "string" || !JOB_SLUG_RE.test(a))
+    ) {
+      return null;
+    }
+    // Only the newest MAX_ALIASES count (rename/alias-cap.ts).
+    const unique = capAliases([...new Set(doc.aliases as string[])]);
+    if (unique.length > 0) aliases = unique;
+  }
   let schedule: DbtJobFile["schedule"] = null;
   const s = doc.schedule as Record<string, unknown> | undefined;
   if (s && typeof s === "object") {
@@ -100,6 +140,7 @@ export function parseJobFile(contents: string): DbtJobFile | null {
   }
   return {
     name,
+    ...(aliases ? { aliases } : {}),
     environment,
     commands: commands.slice(0, 10),
     schedule,

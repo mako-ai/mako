@@ -47,7 +47,7 @@ import {
   WorktreeConflictError,
   commitWorktree,
   catchUpLiveBox,
-  createProject,
+  createProjectWith,
   listAppFolders,
   ensureWorktree,
   execInWorktree,
@@ -68,6 +68,7 @@ import {
   listAppFolderPaths,
   moveProject,
   resolveProjectRef,
+  supersessionWarnings,
   writeWorktreeScratchFile,
   type AppFolderTarget,
 } from "../../apps/worktree.service";
@@ -271,7 +272,7 @@ export function createAppsTools({
 
     app_create_app: tool({
       description:
-        "Create a new app: a real Vite + React + TypeScript project scaffolded into a folder of the workspace repo (apps/<name>/ by default; `folder` files it under apps/<folder>/… or the user's personal users/<id>/apps/). The FOLDER is the app — creating one is just committing that directory, and you can equally create it yourself with app_bash + app_write_file (give its mako.json an `id`). Returns the app id and path that every other app_* tool takes.",
+        "Create a new app: a real Vite + React + TypeScript project scaffolded into a folder of the workspace repo (apps/<name>/ by default; `folder` files it under apps/<folder>/… or the user's personal users/<id>/apps/). The FOLDER is the app — creating one is just committing that directory, and you can equally create it yourself with app_bash + app_write_file (give its mako.json an `id`). Returns the app id and path that every other app_* tool takes, and `warnings` when its name was another app's old link (that link opens the new app from now on).",
       inputSchema: z.object({
         title: z.string().min(1).describe("Human-readable app title"),
         description: z.string().optional(),
@@ -297,7 +298,7 @@ export function createAppsTools({
             );
             if (denied) return { success: false, error: denied };
           }
-          const project = await createProject({
+          const { project, takenOver } = await createProjectWith({
             workspaceId,
             title,
             description,
@@ -317,6 +318,14 @@ export function createAppsTools({
             path: appRootFor(project),
             title: project.title,
             files: entries.map(e => e.path),
+            // Its name was another app's old link, which opens it now.
+            warnings: await supersessionWarnings(
+              workspaceId,
+              userId,
+              await memberRole(),
+              project.title,
+              takenOver,
+            ),
             note: "Real project: use app_bash for shell commands (ls, grep, npm install, npm run build, ...), app_write_file/app_edit_file for edits, app_commit to commit.",
           };
         } catch (error) {
@@ -1060,7 +1069,7 @@ export function createAppsTools({
 
     app_move_app: tool({
       description:
-        "File an app in another folder of the workspace repo, or rename its folder — one commit on main moving the directory (`git mv`). The app keeps its id, so its deployment, sharing, env vars and everyone's favourites follow it and nothing is rebuilt. Workspace folders need an editing role; `users/<userId>/apps/…` is that person's own tree.",
+        "File an app in another folder of the workspace repo, or rename its folder — one commit on main moving the directory (`git mv`). The app keeps its id, so its deployment, sharing, env vars and everyone's favourites follow it. Filed elsewhere under the same name, an app that already has an id is not rebuilt and old refs keep resolving (the index remembers the old path); any mako.json write — a stamp, a new alias, a title change — rebuilds it once. Renamed (`name`), the old folder name is recorded as an `aliases` entry in mako.json in the same commit, so the old /apps/<slug> link and old refs keep working. The result's `warnings` lists any other app that loses a link: one whose old name the app now sits at or keeps as an alias. Workspace folders need an editing role; `users/<userId>/apps/…` is that person's own tree. To change the display name (title), use rename_object.",
       inputSchema: z.object({
         appId: z.string(),
         folder: z
@@ -1084,12 +1093,13 @@ export function createAppsTools({
             target,
             userId,
             await memberRole(),
+            loaded.project,
           );
           if (denied) return { success: false, error: denied };
           const moved = await moveProject(
             loaded.project,
             { ...target, slug: name },
-            { userId },
+            { userId, role: await memberRole() },
           );
           return {
             success: true,

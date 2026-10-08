@@ -7,6 +7,7 @@
  * from them.
  */
 import yaml from "js-yaml";
+import { yamlScalar } from "../../rename/yaml-name-aliases";
 
 /** The runtimes that exist. Only `node` runs today; the rest are named so a
  * folder declaring one gets a straight answer instead of a parse error. */
@@ -26,6 +27,13 @@ export interface ConnectorFile {
   /** Entry file for the `node` runtime, relative to the folder. */
   entry: string;
   page?: { vendor?: string; category?: string; docs?: string };
+  /**
+   * Previous folder slugs. A rename writes the old slug here so every
+   * `SourceConnection.type = "ws:<old>"` keeps resolving to this
+   * definition (api/src/rename). Lives in the file so a clone or a laptop
+   * `git mv` that keeps it behaves exactly like a UI rename.
+   */
+  aliases: string[];
 }
 
 export type ParseResult =
@@ -116,14 +124,166 @@ export function parseConnectorFile(contents: string): ParseResult {
     };
   }
 
+  const rawAliases = raw.aliases;
+  if (
+    rawAliases !== undefined &&
+    (!Array.isArray(rawAliases) ||
+      rawAliases.some(a => typeof a !== "string" || !isValidSlug(a)))
+  ) {
+    return {
+      ok: false,
+      reason:
+        "`aliases` must be a list of previous folder slugs, e.g. `aliases: [acme]`.",
+    };
+  }
+  const aliases = [...new Set((rawAliases as string[] | undefined) ?? [])];
+
   return {
     ok: true,
     value: {
       runtime: runtime as ConnectorRuntime,
       entry,
       page: page as ConnectorFile["page"],
+      aliases,
     },
   };
+}
+
+/**
+ * `connector.yaml` with `alias` added to its `aliases`, as text. The file
+ * is the author's, so this is a line edit, never a re-dump: a missing
+ * `aliases` key is appended; a block list (`aliases:` + `  - x` lines)
+ * gets one more item at the same indent; a flow list (`aliases: [x]`)
+ * gets `, alias` before the `]`. Every other byte — comments included —
+ * is kept. Null when the file does not parse, or when its `aliases` is
+ * written in a way this cannot extend in place (an anchor, a multi-line
+ * flow list): a rename must not overwrite what it cannot read.
+ */
+export function withConnectorAlias(
+  contents: string,
+  alias: string,
+): string | null {
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(contents);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const doc = parsed as Record<string, unknown>;
+  const existing = Array.isArray(doc.aliases)
+    ? doc.aliases.filter((a): a is string => typeof a === "string")
+    : null;
+  if (existing && existing.includes(alias)) return contents;
+  // The old slug as a scalar every reader takes back as that string: a
+  // slug like `true`, `no` or `null` written bare is a boolean / null, the
+  // re-parse below refused it, and the rename answered 409.
+  const item = yamlScalar(alias);
+  if (item === null) return null;
+  const nl = contents.includes("\r\n") ? "\r\n" : "\n";
+  if (existing === null) {
+    if (doc.aliases !== undefined) return null; // present but not a list
+    // The appended block keeps the file's own ending — after a final line
+    // break it ends with one; on a file without one it is introduced by one
+    // and ends without — so `stripConnectorAliases` (which drops the block's
+    // lines and nothing else) gives back these exact bytes, and the identity
+    // hash does not move. Appending `\n` to a file that had none was a byte
+    // the strip could not remove: every rename looked like new code.
+    const block = `aliases:${nl}  - ${item}`;
+    return checkedAliasEdit(
+      contents,
+      contents === "" || contents.endsWith(nl)
+        ? `${contents}${block}${nl}`
+        : `${contents}${nl}${block}`,
+      alias,
+    );
+  }
+  const lines = contents.split(nl);
+  const keyAt = lines.findIndex(l => /^aliases:\s*(\[.*\])?\s*(#.*)?$/.test(l));
+  if (keyAt < 0) return null;
+  const flow = /^(aliases:\s*\[)(.*)(\]\s*(?:#.*)?)$/.exec(lines[keyAt]);
+  if (flow) {
+    const inner = flow[2].trim();
+    lines[keyAt] = `${flow[1]}${inner ? `${inner}, ${item}` : item}${flow[3]}`;
+    return checkedAliasEdit(contents, lines.join(nl), alias);
+  }
+  // Block list: items follow the key, each `<indent>- value` — the indent
+  // may be none at all (`- acme` right under the key is valid YAML).
+  let last = keyAt;
+  let indent: string | null = null;
+  for (let i = keyAt + 1; i < lines.length; i++) {
+    const item = /^(\s*)-\s/.exec(lines[i]);
+    if (!item || (indent !== null && item[1] !== indent)) break;
+    indent = item[1];
+    last = i;
+  }
+  if (indent === null) return null; // `aliases:` with items we could not see
+  lines.splice(last + 1, 0, `${indent}- ${item}`);
+  return checkedAliasEdit(contents, lines.join(nl), alias);
+}
+
+/**
+ * The guard behind every path above: the edited yaml must still parse as
+ * a connector file AND carry the alias. A shape the line edit did not
+ * foresee (a multi-line flow list, an anchor) would otherwise be
+ * committed broken — and a connector whose yaml does not parse is
+ * blocked, with every connection of it stranded.
+ */
+function checkedAliasEdit(
+  original: string,
+  edited: string,
+  alias: string,
+): string | null {
+  const before = parseConnectorFile(original);
+  const after = parseConnectorFile(edited);
+  if (!before.ok || !after.ok) return null;
+  if (!after.value.aliases.includes(alias)) return null;
+  // Everything but `aliases` must read exactly as it did.
+  const rest = (v: ConnectorFile) =>
+    JSON.stringify({ ...v, aliases: undefined });
+  return rest(before.value) === rest(after.value) ? edited : null;
+}
+
+/**
+ * `connector.yaml` with its `aliases` entry removed, as text — the exact
+ * inverse of `withConnectorAlias`. Line-based so the result is byte-equal
+ * to the file before any alias was written.
+ */
+export function stripConnectorAliases(contents: string): string {
+  const nl = contents.includes("\r\n") ? "\r\n" : "\n";
+  const lines = contents.split(nl);
+  const keyAt = lines.findIndex(l => /^aliases:/.test(l));
+  if (keyAt < 0) return contents;
+  let end = keyAt + 1;
+  if (!/^aliases:\s*\[/.test(lines[keyAt])) {
+    while (end < lines.length && /^\s*-\s/.test(lines[end])) end++;
+  }
+  lines.splice(keyAt, end - keyAt);
+  const stripped = lines.join(nl);
+  // A shape the line edit did not foresee: hash the raw bytes instead (at
+  // worst a spec re-run on rename) rather than hash something that is
+  // not the file minus its aliases — the rest must read exactly the same.
+  const before = parseConnectorFile(contents);
+  const after = parseConnectorFile(stripped);
+  if (!before.ok || !after.ok || after.value.aliases.length > 0) {
+    return contents;
+  }
+  const rest = (v: ConnectorFile) =>
+    JSON.stringify({ ...v, aliases: undefined });
+  return rest(before.value) === rest(after.value) ? stripped : contents;
+}
+
+/**
+ * The YAML's identity for the content hash: the file with `aliases`
+ * removed. A rename writes an alias and nothing else; hashing it would
+ * make every rename look like new code (spec re-run, `verified` lost).
+ * A file with no `aliases` hashes exactly as it always did — its raw
+ * bytes — so deploying this re-indexes nothing.
+ */
+export function connectorFileIdentity(contents: string): string {
+  return stripConnectorAliases(contents);
 }
 
 /**

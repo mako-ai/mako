@@ -6,6 +6,7 @@ import { realtimeRoutes } from "./realtime";
 import { sourceConnectionRoutes } from "./source-connections";
 import { customPromptRoutes } from "./custom-prompt";
 import { skillsRoutes } from "./skills";
+import { objectRoutes } from "./objects";
 import { dbtRoutes } from "./dbt.routes";
 import { githubRoutes } from "./github.routes";
 import { chatsRoutes } from "./chats";
@@ -69,6 +70,8 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/chat-images", chatImagesRoutes);
   app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
   app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
+  // Graceful rename + old-link resolution for every object kind.
+  app.route("/api/workspaces/:workspaceId/objects", objectRoutes);
   app.route("/api/workspaces/:workspaceId/dbt", dbtRoutes);
   // GitHub App install callback (session-authed, workspace via state param).
   app.route("/api/github", githubRoutes);

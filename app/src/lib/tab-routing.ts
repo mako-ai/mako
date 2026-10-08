@@ -47,9 +47,17 @@ export function decodePathSegments(encoded: string): string {
  * deciding its pattern is a compile error.
  */
 export const TAB_DEEP_LINK_PATTERNS = {
-  console: /^\/c\/([a-zA-Z0-9-]+)/,
+  // `/c/:id` is the route. The `/workspace/<ws>/console/:id` alternative is
+  // a LEGACY shape that run-notification emails and Slack messages carried
+  // for a while although it was never routed; those links are still in
+  // inboxes, so it keeps opening the console. The workspace segment is
+  // ignored (the active workspace comes from local state). Only the id is
+  // captured, so consumers see the same groups either way, and the address
+  // bar is rewritten to the canonical form once the tab is active.
+  console: /^\/(?:c|workspace\/[^/]+\/console)\/([a-zA-Z0-9-]+)/,
   connectors: /^\/cx\/([a-zA-Z0-9-]+)/,
-  "flow-editor": /^\/f\/([a-zA-Z0-9-]+)/,
+  // Same legacy alternative for `/workspace/<ws>/flows/:id` (see `console`).
+  "flow-editor": /^\/(?:f|workspace\/[^/]+\/flows)\/([a-zA-Z0-9-]+)/,
   dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
   "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
@@ -75,6 +83,17 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dbt-console": /^\/x\/([a-zA-Z0-9-]+)\/?$/,
   notebook: /^\/n\/([a-zA-Z0-9-]+)\/?$/,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
+
+/**
+ * Apps v1 lived at `/a/<ref>` and, for a while, `/a2/<ref>`; links with
+ * those prefixes still exist in chats, docs and the ChatGPT connector's
+ * older answers. They mean `/apps/<ref>` (and `/apps/<ref>/file/<path>`).
+ * Returns the modern pathname, or `null` for anything else.
+ */
+export function legacyAppPathname(pathname: string): string | null {
+  const m = pathname.match(/^\/a2?\/([^/?#]+)((?:\/file\/.+)?)\/?$/);
+  return m ? `/apps/${m[1]}${m[2]}` : null;
+}
 
 /**
  * The URL (pathname + optional query string) owned by a tab, or `null` when

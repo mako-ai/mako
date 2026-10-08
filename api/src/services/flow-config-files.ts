@@ -3,8 +3,10 @@
  *
  * - `flows/<slug>.yml` — ONE file per flow. A central registry would be a
  *   merge-conflict magnet; per-file is the recorded doctrine (apps.md §23).
- * - The filename slug is the flow's identity and never moves; `name:`
- *   inside is the editable display name.
+ * - The filename slug is the flow's identity; `name:` inside is the editable
+ *   display name. A rename (api/src/rename) moves the file AND records the
+ *   old slug under `aliases:`, so an old name keeps resolving from every
+ *   clone of the repo (see `types.ts` there for the lookup rule).
  *
  * **What must never appear here** — the Flow schema interleaves runtime
  * state inside definition objects, so the split is per-field, not
@@ -34,6 +36,7 @@ import yaml from "js-yaml";
 // be exercised without booting the git/mongo stack.
 import type { IFlow } from "../database/workspace-schema";
 import { slugifyName } from "../utils/slugify";
+import { capAliases } from "../rename/alias-cap";
 
 export const FLOWS_DIR = "flows";
 
@@ -44,6 +47,46 @@ export function flowFilePath(slug: string): string {
 export function slugFromFlowFilePath(repoRelative: string): string | null {
   const m = repoRelative.match(/^flows\/([a-z0-9][a-z0-9-]*)\.yml$/);
   return m ? m[1] : null;
+}
+
+/** The shape a slug (and so an alias) must have to be a file name here. */
+export const FLOW_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Whether `slug` could have been minted by {@link slugifyFlowName}: the same
+ * character set, no doubled or trailing dashes, within the length cap. A
+ * rename accepts a slug from the caller instead of deriving one, so it is
+ * held to the rules creation applies rather than to the looser file regex.
+ */
+export function isValidFlowSlug(slug: string): boolean {
+  return FLOW_SLUG_RE.test(slug) && slugifyFlowName(slug) === slug;
+}
+
+/**
+ * What a flow points at, as one comparable string: its source connection and
+ * its destination (connection, database, table connection/database/schema/
+ * table). Two files with different targets are different streams however
+ * alike their YAML is — the rename pairing (api/src/rename) refuses to treat
+ * one as the other renamed, because that would hand a new stream another's
+ * checkpoints. `null` when the file has no source or destination to speak of.
+ */
+export function flowRenameTarget(file: FlowFile): string | null {
+  const source =
+    file.source.type === "database"
+      ? ["db", file.source.connectionId ?? "", file.source.database ?? ""]
+      : ["connector", file.source.connectionId];
+  if (!source[1]) return null;
+  const t = file.destination.table;
+  const destination = [
+    file.destination.connectionId,
+    file.destination.databaseName ?? "",
+    t?.connectionId ?? "",
+    t?.database ?? "",
+    t?.schema ?? "",
+    t?.tableName ?? "",
+  ];
+  if (!destination[0]) return null;
+  return JSON.stringify([source, destination]);
 }
 
 /** Stable filename identity for a flow, derived once from its name. */
@@ -64,6 +107,12 @@ export interface FlowFileBackfillSchedule extends FlowFileSchedule {
 export interface FlowFile {
   name: string;
   type: "scheduled" | "webhook";
+  /**
+   * Previous file slugs of this flow. Written by a rename; read so an old
+   * `flows/<alias>.yml` name resolves to the row, and so the push reactor
+   * can pair a moved file with the row it used to be (never a teardown).
+   */
+  aliases?: string[];
   source: /**
    * A source connection (a credential configured with a connector). On
    * disk this is `source.connection_id`; `connector_id` is the older key
@@ -209,6 +258,7 @@ function omitEmpty(obj: Record<string, unknown>): Record<string, unknown> {
 
 export function serializeFlowFile(flow: FlowFile): string {
   const doc: Record<string, unknown> = { name: flow.name, type: flow.type };
+  if (flow.aliases?.length) doc.aliases = [...new Set(flow.aliases)];
 
   doc.source =
     flow.source.type === "database"
@@ -376,6 +426,32 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     };
   }
 
+  // `aliases:` is optional; when present it must be a list of slug-shaped
+  // strings. Anything else is refused rather than dropped: an alias that
+  // silently fails to parse is an old link that silently stops resolving.
+  let aliases: string[] | undefined;
+  if (doc.aliases !== undefined && doc.aliases !== null) {
+    if (!Array.isArray(doc.aliases)) {
+      return {
+        ok: false,
+        reason: "`aliases:` must be a list of previous slugs (file names)",
+      };
+    }
+    const bad = doc.aliases.find(
+      a => typeof a !== "string" || !FLOW_SLUG_RE.test(a),
+    );
+    if (bad !== undefined) {
+      return {
+        ok: false,
+        reason: `\`aliases:\` entry ${JSON.stringify(bad)} is not a slug (lowercase letters, digits and dashes)`,
+      };
+    }
+    // Only the newest MAX_ALIASES count (rename/alias-cap.ts): an older
+    // name in a hand-written file resolves to nothing, as a dropped one.
+    const unique = capAliases([...new Set(doc.aliases as string[])]);
+    if (unique.length > 0) aliases = unique;
+  }
+
   const srcDoc = (doc.source ?? {}) as Record<string, unknown>;
   const source: FlowFile["source"] =
     str(srcDoc.type) === "database"
@@ -427,6 +503,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
   const file: FlowFile = {
     name,
     type,
+    ...(aliases ? { aliases } : {}),
     source,
     destination,
     schedule: scheduleFrom(doc.schedule),
@@ -503,9 +580,13 @@ export function flowToFile(flow: IFlow): FlowFile {
         };
 
   const t = flow.tableDestination;
+  const aliases = plain<string[]>(flow.aliases);
   return {
     name: flow.name ?? "",
     type: flow.type,
+    // The row's aliases ride along so a write-through (which regenerates
+    // the whole file from the row) never drops an `aliases:` a rename wrote.
+    ...(aliases?.length ? { aliases } : {}),
     source,
     destination: {
       connectionId: flow.destinationDatabaseId?.toString() ?? "",

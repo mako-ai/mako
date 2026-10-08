@@ -28,6 +28,7 @@ import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
+import { createRenameTools } from "../agent-lib/tools/rename-tools";
 import { CORE_ALWAYS_TOOL_NAMES, modeRegistry } from "../agents/modes/registry";
 
 /** Stable dummy workspace id for definition-only factory calls. */
@@ -94,6 +95,7 @@ export function collectLiveAgentToolNames(): string[] {
   // and the bridge policy classifies them, so the inventory has to know them.
   add(keysOf(createMemberTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createWebTools()));
+  add(keysOf(createRenameTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createDbtServerTools(INVENTORY_WORKSPACE_ID)));
   add(
     keysOf(
