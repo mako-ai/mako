@@ -100,10 +100,6 @@ export async function gkeClients(): Promise<{
 export class GKEKernelProvider implements KernelProvider {
   readonly name = "gke";
 
-  private clients(): Promise<{ core: CoreV1Api; apps: AppsV1Api }> {
-    return gkeClients();
-  }
-
   private async findReadyPod(core: CoreV1Api): Promise<KernelEndpoint | null> {
     const list = await core.listNamespacedPod({
       namespace: NAMESPACE,
@@ -137,7 +133,7 @@ export class GKEKernelProvider implements KernelProvider {
   }
 
   async acquire(opts: AcquireOptions): Promise<KernelEndpoint> {
-    const { core, apps } = await this.clients();
+    const { core, apps } = await gkeClients();
 
     const ready = await this.findReadyPod(core);
     if (ready) {

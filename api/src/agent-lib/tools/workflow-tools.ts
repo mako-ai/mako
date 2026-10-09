@@ -19,7 +19,6 @@ import { z } from "zod";
 
 import { workspaceService } from "../../services/workspace.service";
 import {
-  HatchetError,
   isHatchetId,
   readWorkspaceTenant,
   triggerRun,
@@ -35,10 +34,7 @@ const RECENT_RUNS = 10;
 
 const failure = (error: unknown) => ({
   success: false as const,
-  error:
-    error instanceof HatchetError || error instanceof Error
-      ? error.message
-      : String(error),
+  error: error instanceof Error ? error.message : String(error),
 });
 
 const NOT_SET_UP =

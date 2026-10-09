@@ -226,24 +226,17 @@ export async function ensureWorkspaceTenant(
 
 // --- Tenant calls -----------------------------------------------------------
 
-function tenantFetch(
-  tenant: WorkspaceTenant,
-  path: string,
-  req: HatchetRequest = {},
-): Promise<Response> {
-  return send(
-    `${tenant.apiUrl}${path}`,
-    { Authorization: `Bearer ${tenant.token}` },
-    req,
-  );
-}
-
 export async function tenantJson<T>(
   tenant: WorkspaceTenant,
   path: string,
   req: HatchetRequest = {},
 ): Promise<T> {
-  return parse<T>(await tenantFetch(tenant, path, req), `Hatchet ${path}`);
+  const res = await send(
+    `${tenant.apiUrl}${path}`,
+    { Authorization: `Bearer ${tenant.token}` },
+    req,
+  );
+  return parse<T>(res, `Hatchet ${path}`);
 }
 
 /** A Hatchet id: a UUID. Checked before one is put in a Hatchet path. */

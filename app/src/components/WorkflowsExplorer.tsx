@@ -10,7 +10,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
-  Chip,
   Divider,
   IconButton,
   Tooltip,
@@ -25,13 +24,12 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { EXPLORER_ICONS } from "../lib/entity-icons";
-import {
-  selectTabBySettingsSection,
-  useConsoleStore,
-} from "../store/consoleStore";
-import { SECTION_LABELS } from "../pages/settings/sections";
+import { openSettingsSection } from "../lib/command-palette/commands";
+import { useConsoleStore } from "../store/consoleStore";
 import { useWorkflowsStore } from "../store/workflowsStore";
+import { SectionHeader } from "./DbtExplorer";
 import ExplorerShell from "./ExplorerShell";
+import { VersionChip } from "./WorkflowView";
 
 const WorkflowIcon = EXPLORER_ICONS.workflows;
 const POLL_INTERVAL_MS = 8_000;
@@ -50,54 +48,14 @@ const ROW_SX = {
   "&:hover": { bgcolor: "action.hover" },
 } as const;
 
-function SectionHeader({
-  label,
-  open,
-  onToggle,
-}: {
-  label: string;
-  open: boolean;
-  onToggle: () => void;
-}) {
+function Empty({ children }: { children: string }) {
   return (
-    <Box
-      role="button"
-      tabIndex={0}
-      onClick={onToggle}
-      onKeyDown={e => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
-      sx={{
-        display: "flex",
-        alignItems: "center",
-        gap: 0.5,
-        px: 1,
-        py: 0.5,
-        cursor: "pointer",
-        userSelect: "none",
-      }}
+    <Typography
+      variant="caption"
+      sx={{ display: "block", px: 1.5, py: 0.5, color: "text.secondary" }}
     >
-      {open ? (
-        <ChevronDownIcon size={14} strokeWidth={2} />
-      ) : (
-        <ChevronRightIcon size={14} strokeWidth={2} />
-      )}
-      <Typography
-        variant="caption"
-        sx={{
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: 0.4,
-          color: "text.secondary",
-          fontSize: "0.68rem",
-        }}
-      >
-        {label}
-      </Typography>
-    </Box>
+      {children}
+    </Typography>
   );
 }
 
@@ -165,46 +123,16 @@ export function WorkflowsExplorer() {
     return { folders: [...folders.entries()], rootFiles };
   }, [files]);
 
+  const openTab = (metadata: Record<string, string>, title: string) =>
+    focusOrOpenTab(
+      { kind: "workflow", metadata },
+      () => ({ title, content: "", kind: "workflow", metadata }),
+      KEEP_OTHER_TABS,
+    );
   const openWorkflow = (workflowId: string) =>
-    focusOrOpenTab(
-      { kind: "workflow", metadata: { workflowId } },
-      () => ({
-        title: workflowId,
-        content: "",
-        kind: "workflow",
-        metadata: { workflowId },
-      }),
-      KEEP_OTHER_TABS,
-    );
-
+    openTab({ workflowId }, workflowId);
   const openFile = (path: string) =>
-    focusOrOpenTab(
-      { kind: "workflow", metadata: { path } },
-      () => ({
-        title: path.split("/").pop() ?? path,
-        content: "",
-        kind: "workflow",
-        metadata: { path },
-      }),
-      KEEP_OTHER_TABS,
-    );
-
-  const openGitHubSettings = () => {
-    const state = useConsoleStore.getState();
-    const existing = selectTabBySettingsSection("github")(state);
-    if (existing) {
-      state.setActiveTab(existing.id);
-      return;
-    }
-    state.setActiveTab(
-      state.openTab({
-        title: SECTION_LABELS.github,
-        content: "",
-        kind: "settings",
-        settingsSection: "github",
-      }),
-    );
-  };
+    openTab({ path }, path.split("/").pop() ?? path);
 
   const deployment = overview?.deployment;
   const buildError = deployment?.buildError
@@ -259,13 +187,13 @@ export function WorkflowsExplorer() {
               size="small"
               startIcon={<LinkIcon size={16} />}
               sx={{ mt: 1 }}
-              onClick={openGitHubSettings}
+              onClick={() => openSettingsSection("github")}
             >
               Link a GitHub repo
             </Button>
           </Box>
         ) : (
-          <Box sx={{ whiteSpace: "pre-wrap" }}>
+          <>
             <SectionHeader
               label="Workflows"
               open={workflowsOpen}
@@ -274,17 +202,7 @@ export function WorkflowsExplorer() {
             {workflowsOpen && (
               <Box sx={{ pb: 1 }}>
                 {workflows.length === 0 ? (
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      display: "block",
-                      px: 1.5,
-                      py: 0.5,
-                      color: "text.secondary",
-                    }}
-                  >
-                    No workflows yet.
-                  </Typography>
+                  <Empty>No workflows yet.</Empty>
                 ) : (
                   workflows.map(w => (
                     <Box
@@ -303,19 +221,7 @@ export function WorkflowsExplorer() {
                     >
                       <WorkflowIcon size={16} strokeWidth={1.5} />
                       <Box component="span">{w.id}</Box>
-                      {w.previewOnly && (
-                        <Chip
-                          label="preview"
-                          size="small"
-                          variant="outlined"
-                          color="info"
-                          sx={{
-                            height: 16,
-                            fontSize: "0.62rem",
-                            "& .MuiChip-label": { px: 0.5 },
-                          }}
-                        />
-                      )}
+                      {w.previewOnly && <VersionChip preview small />}
                     </Box>
                   ))
                 )}
@@ -332,33 +238,20 @@ export function WorkflowsExplorer() {
             {filesOpen && (
               <Box sx={{ pb: 1 }}>
                 {(files ?? []).length === 0 ? (
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      display: "block",
-                      px: 1.5,
-                      py: 0.5,
-                      color: "text.secondary",
-                    }}
-                  >
-                    No files yet.
-                  </Typography>
+                  <Empty>No files yet.</Empty>
                 ) : (
                   <>
                     {tree.folders.map(([folder, paths]) => {
                       const open = !!openFolders[folder];
+                      const toggle = () =>
+                        setOpenFolders(f => ({ ...f, [folder]: !open }));
                       return (
                         <Box key={folder}>
                           <Box
                             role="button"
                             tabIndex={0}
-                            onClick={() =>
-                              setOpenFolders(f => ({ ...f, [folder]: !open }))
-                            }
-                            onKeyDown={e =>
-                              e.key === "Enter" &&
-                              setOpenFolders(f => ({ ...f, [folder]: !open }))
-                            }
+                            onClick={toggle}
+                            onKeyDown={e => e.key === "Enter" && toggle()}
                             sx={ROW_SX}
                           >
                             {open ? (
@@ -377,7 +270,7 @@ export function WorkflowsExplorer() {
                 )}
               </Box>
             )}
-          </Box>
+          </>
         )
       }
     </ExplorerShell>

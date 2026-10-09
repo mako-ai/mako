@@ -49,11 +49,7 @@ async function report(slot, sha, error) {
   await mako("/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sha,
-      ...(error === undefined ? {} : { error }),
-      ...(slot.preview ? { preview: true } : {}),
-    }),
+    body: JSON.stringify({ sha, error, preview: slot.preview }),
   }).catch(err => console.error("Could not report to Mako:", err.message));
 }
 

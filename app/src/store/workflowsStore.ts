@@ -11,7 +11,6 @@ import { api, unwrapBody, toErrorMessage as message } from "../api";
 export interface WorkflowDeployment {
   liveSha: string | null;
   targetSha: string | null;
-  deploying: boolean;
   buildError: string | null;
 }
 
@@ -25,7 +24,6 @@ export interface WorkflowRunSummary {
   durationMs?: number;
   error?: string;
   trigger?: string;
-  triggeredBy?: string;
 }
 
 export interface WorkflowRunStep {
@@ -52,7 +50,6 @@ export interface WorkflowsOverview {
   repoLinked: boolean;
   deployment: WorkflowDeployment;
   preview: (WorkflowDeployment & { branch: string }) | null;
-  dashboardUrl: string | null;
   workflows?: Array<{ workflowId: string; preview: boolean }>;
   schedules?: Array<{ workflowId: string; cron: string }>;
   recentRuns?: WorkflowRunSummary[];
@@ -64,8 +61,6 @@ interface WorkflowsState {
   overviewByWorkspace: Record<string, WorkflowsOverview>;
   runsById: Record<string, WorkflowRun>;
   filesByWorkspace: Record<string, string[]>;
-  error: string | null;
-
   fetchOverview: (workspaceId: string) => Promise<void>;
   fetchRun: (workspaceId: string, runId: string) => Promise<void>;
   fetchFiles: (workspaceId: string) => Promise<void>;
@@ -110,8 +105,6 @@ export const useWorkflowsStore = create<WorkflowsState>()(
       overviewByWorkspace: {},
       runsById: {},
       filesByWorkspace: {},
-      error: null,
-
       fetchOverview: async workspaceId => {
         try {
           const body = unwrapBody(
@@ -121,12 +114,9 @@ export const useWorkflowsStore = create<WorkflowsState>()(
           ) as unknown as WorkflowsOverview;
           set(s => {
             s.overviewByWorkspace[workspaceId] = body;
-            s.error = null;
           });
-        } catch (e) {
-          set(s => {
-            s.error = message(e, "Failed to load workflows");
-          });
+        } catch {
+          // The screens keep what they last saw; the next poll tries again.
         }
       },
 

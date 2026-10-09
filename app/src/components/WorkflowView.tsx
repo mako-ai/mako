@@ -64,7 +64,7 @@ const SMALL_CHIP_SX = {
   "& .MuiChip-label": { px: 0.5 },
 } as const;
 
-function VersionChip({
+export function VersionChip({
   preview,
   small,
 }: {
@@ -79,6 +79,16 @@ function VersionChip({
       color={preview ? "info" : "default"}
       sx={small ? SMALL_CHIP_SX : { height: 20 }}
     />
+  );
+}
+
+function Note({ children }: { children: string }) {
+  return (
+    <Box sx={{ p: 2 }}>
+      <Typography variant="caption" color="text.secondary">
+        {children}
+      </Typography>
+    </Box>
   );
 }
 
@@ -112,13 +122,7 @@ function FileView({
     );
   }
   if (contents === null) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <Typography variant="caption" color="text.secondary">
-          This file is not on the branch you are on.
-        </Typography>
-      </Box>
-    );
+    return <Note>This file is not on the branch you are on.</Note>;
   }
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -338,7 +342,6 @@ function RunsView({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Toolbar: start a run, and what is deployed. */}
       <Box
         sx={{
           display: "flex",
@@ -399,7 +402,6 @@ function RunsView({
       </Box>
 
       <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-        {/* Runs */}
         <Box
           sx={{
             width: 280,
@@ -410,11 +412,7 @@ function RunsView({
           }}
         >
           {runs.length === 0 ? (
-            <Box sx={{ p: 2 }}>
-              <Typography variant="caption" color="text.secondary">
-                No runs yet.
-              </Typography>
-            </Box>
+            <Note>No runs yet.</Note>
           ) : (
             runs.map(run => {
               const status = statusOf(run.status);
@@ -502,15 +500,12 @@ function RunsView({
           )}
         </Box>
 
-        {/* The selected run */}
         {!selectedSummary ? (
-          <Box sx={{ p: 2 }}>
-            <Typography variant="caption" color="text.secondary">
-              {runs.length === 0
-                ? "Start a run, or wait for the schedule."
-                : "Select a run to see details."}
-            </Typography>
-          </Box>
+          <Note>
+            {runs.length === 0
+              ? "Start a run, or wait for the schedule."
+              : "Select a run to see details."}
+          </Note>
         ) : (
           <Box
             sx={{
@@ -589,7 +584,6 @@ function RunsView({
               )}
             </Box>
 
-            {/* Steps */}
             <Box
               sx={{
                 borderBottom: "1px solid",
@@ -681,23 +675,17 @@ function RunsView({
                   {selectedStatus === "QUEUED" ? "Run queued…" : "No logs."}
                 </Typography>
               ) : (
-                selectedRun.steps.flatMap(step => [
-                  ...step.logs.map((line, index) => (
-                    <Box key={`${step.step}-${index}`}>
-                      <Box
-                        component="span"
-                        sx={{ color: "text.secondary", mr: 1 }}
-                      >
-                        {step.step}
-                      </Box>
-                      {line}
-                    </Box>
-                  )),
-                  ...(step.error
-                    ? [
+                selectedRun.steps.flatMap(step =>
+                  [...step.logs, step.error].map(
+                    (line, index) =>
+                      line && (
                         <Box
-                          key={`${step.step}-error`}
-                          sx={{ color: "error.main" }}
+                          key={`${step.step}-${index}`}
+                          sx={
+                            index === step.logs.length
+                              ? { color: "error.main" }
+                              : undefined
+                          }
                         >
                           <Box
                             component="span"
@@ -705,11 +693,11 @@ function RunsView({
                           >
                             {step.step}
                           </Box>
-                          {step.error}
-                        </Box>,
-                      ]
-                    : []),
-                ])
+                          {line}
+                        </Box>
+                      ),
+                  ),
+                )
               )}
             </Box>
           </Box>

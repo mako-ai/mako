@@ -189,7 +189,7 @@ function scheduleSummary(job: DbtJobItem): string {
 }
 
 /** Collapsible section header (dbt Studio "File explorer" / "Jobs & runs"). */
-function SectionHeader({
+export function SectionHeader({
   label,
   open,
   onToggle,

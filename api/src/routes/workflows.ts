@@ -109,20 +109,11 @@ function fail(c: Context, error: unknown): Response {
   );
 }
 
-/** The workspace's tenant, or a response saying why there is none. */
-async function tenantOr(
-  c: Context,
-  workspaceId: string,
-): Promise<WorkspaceTenant | Response> {
+/** The workspace's tenant; without one the route answers 404. */
+async function tenantOf(workspaceId: string): Promise<WorkspaceTenant> {
   const tenant = await readWorkspaceTenant(workspaceId);
   if (!tenant) {
-    return c.json(
-      {
-        success: false,
-        error: "Workflows are not set up for this workspace.",
-      },
-      404,
-    );
+    throw new HatchetError("Workflows are not set up for this workspace.", 404);
   }
   return tenant;
 }
@@ -180,8 +171,7 @@ workflowRoutes.openapi(
       if (!isHatchetId(id)) {
         return c.json({ success: false, error: "Invalid run id" }, 400);
       }
-      const tenant = await tenantOr(c, workspaceId);
-      if (tenant instanceof Response) return tenant;
+      const tenant = await tenantOf(workspaceId);
       return c.json(
         { success: true as const, run: await readRun(tenant, id) },
         200,
@@ -297,8 +287,7 @@ workflowRoutes.openapi(
           403,
         );
       }
-      const tenant = await tenantOr(c, workspaceId);
-      if (tenant instanceof Response) return tenant;
+      const tenant = await tenantOf(workspaceId);
       const body = await c.req.json().catch(() => ({}));
       const run = await triggerRun(tenant, name, body?.input ?? {}, {
         trigger: c.get("authType") === "session" ? "ui" : "api",
@@ -334,8 +323,7 @@ for (const action of ["cancel", "replay"] as const) {
             403,
           );
         }
-        const tenant = await tenantOr(c, workspaceId);
-        if (tenant instanceof Response) return tenant;
+        const tenant = await tenantOf(workspaceId);
         const result = await runAction(tenant, action, id);
         return c.json({ success: true as const, result }, 200);
       } catch (error) {
