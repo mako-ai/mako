@@ -157,9 +157,10 @@ paid model call. Use plain `call` or `query` when no judgement is needed.
 ## What starts a run
 
 - A schedule: `on: { cron: "0 6 * * *" }` in the workflow (UTC).
-- A webhook: off until a person adds one on the workflow's tab ("Add
-  webhook"). That gives a URL; a POST to it starts a run with the JSON body
-  as input. Nothing to write in the code.
+- A webhook: off until it is added, by you with `workflows_webhook` or by a
+  person on the workflow's tab. That gives a URL; a POST to it starts a run
+  with the JSON body as input. Nothing to write in the code. Give the user
+  the URL and tell them it is a secret.
 - A person (Run) or you (`workflows_run`).
 
 A preview has no schedule and no webhook; it runs only when started.

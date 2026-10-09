@@ -103,6 +103,7 @@ async function main() {
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
   process.env.HATCHET_CLIENT_TOKEN = TOKEN;
+  process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   try {
     const id = new Types.ObjectId();
     await Workspace.collection.insertOne({
@@ -137,7 +138,8 @@ async function main() {
     assert.equal(overview.preview.branch, "workflow/x");
     assert.equal(overview.preview.buildError, "error TS2322");
     assert.deepEqual(overview.workflows, [
-      { workflowId: "daily-digest", preview: false },
+      // No webhook yet. A preview never has one.
+      { workflowId: "daily-digest", preview: false, webhookUrl: null },
       { workflowId: "daily-digest", preview: true },
     ]);
     assert.deepEqual(overview.schedules, [
@@ -210,6 +212,43 @@ async function main() {
     });
     assert.equal(refused.success, false);
     assert.equal(requests.length, before + 3, "no run was started");
+
+    // A webhook is added per workflow, and a viewer neither adds nor sees one.
+    const webhook = { workflowId: "daily-digest", enabled: true };
+    assert.equal(
+      (await call(viewer, "workflows_webhook", webhook)).success,
+      false,
+    );
+    const added = await call(tools, "workflows_webhook", webhook);
+    assert.match(
+      added.webhookUrl,
+      /\/api\/workflows\/hooks\/.+\/daily-digest\/[0-9a-f]{48}$/,
+    );
+    const isLive = (w: { preview: boolean }) => !w.preview;
+    assert.equal(
+      (await call(tools, "workflows_status", {})).workflows.find(isLive)
+        .webhookUrl,
+      added.webhookUrl,
+    );
+    assert.equal(
+      "webhookUrl" in
+        (await call(viewer, "workflows_status", {})).workflows.find(isLive),
+      false,
+    );
+    const removed = await call(tools, "workflows_webhook", {
+      ...webhook,
+      enabled: false,
+    });
+    assert.equal(removed.webhookUrl, null);
+    assert.equal(
+      (
+        await call(tools, "workflows_webhook", {
+          workflowId: "preview_daily-digest",
+          enabled: true,
+        })
+      ).success,
+      false,
+    );
 
     // A Hatchet failure is an answer, not a throw.
     const missing = await call(tools, "workflows_run", { workflowId: "nope" });

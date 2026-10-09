@@ -251,12 +251,13 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
 
 /**
  * Workflows are files, so the mode is mostly the shell, file and git tools the
- * app mode has, pointed at a workflow folder (`workflowId`), plus the two
- * tools that look at and start runs.
+ * app mode has, pointed at a workflow folder (`workflowId`), plus the tools
+ * that look at runs, start one, and give a workflow a webhook.
  */
 const WORKFLOW_MODE_TOOL_NAMES: string[] = [
   "workflows_status",
   "workflows_run",
+  "workflows_webhook",
   "app_bash",
   "app_read_file",
   "app_write_file",

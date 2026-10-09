@@ -10,6 +10,10 @@ import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
 import { decryptString, encryptString } from "../services/crypto.service";
 
+/** A live workflow's name, safe as a key and in a URL. A preview has no webhook. */
+export const mayHaveWebhook = (name: string) =>
+  /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name) && !name.startsWith("preview_");
+
 function urlOf(workspaceId: string, name: string, secret: string): string {
   const base = (
     process.env.API_BASE_URL ||

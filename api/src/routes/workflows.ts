@@ -46,12 +46,12 @@ import {
   triggerRun,
   type WorkspaceTenant,
 } from "../workflows/hatchet";
+import { readRun, readWorkflowsOverview } from "../workflows/runs";
 import {
-  PREVIEW_PREFIX,
-  readRun,
-  readWorkflowsOverview,
-} from "../workflows/runs";
-import { isWebhookSecret, setWebhook } from "../workflows/webhook";
+  isWebhookSecret,
+  mayHaveWebhook,
+  setWebhook,
+} from "../workflows/webhook";
 
 const logger = loggers.api("workflows");
 
@@ -118,10 +118,6 @@ async function tenantOf(workspaceId: string): Promise<WorkspaceTenant> {
   }
   return tenant;
 }
-
-/** A live workflow's name, safe as a key and in a URL. A preview has no webhook. */
-const mayHaveWebhook = (name: string) =>
-  /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name) && !name.startsWith(PREVIEW_PREFIX);
 
 /** Viewers read runs; starting and cancelling need a member. */
 async function mayRun(c: AuthenticatedContext): Promise<boolean> {

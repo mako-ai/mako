@@ -325,6 +325,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // data access, so it is bridged like the other tools that act.
   workflows_status: bridge(),
   workflows_run: bridge(),
+  // A webhook URL starts runs, so it is no more than workflows_run already gives.
+  workflows_webhook: bridge(),
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",

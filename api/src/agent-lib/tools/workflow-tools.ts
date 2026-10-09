@@ -13,6 +13,7 @@ import {
   readWorkspaceTenant,
   triggerRun,
 } from "../../workflows/hatchet";
+import { mayHaveWebhook, setWebhook } from "../../workflows/webhook";
 import {
   PREVIEW_PREFIX,
   readRun,
@@ -37,10 +38,15 @@ export function createWorkflowTools({
   workspaceId: string;
   userId?: string;
 }): ToolSet {
+  /** Viewers look; starting runs and changing webhooks need a member. */
+  const mayRun = async () =>
+    !userId ||
+    workspaceService.hasRole(workspaceId, userId, ["owner", "admin", "member"]);
+
   return {
     workflows_status: tool({
       description:
-        "Look at this workspace's workflows. Without runId: what is deployed (`deployment` is the live code on main; `preview` is the unmerged branch last pushed, registered as its own copy with schedules off), the build error if a commit did not start (`buildError` — the old code keeps running), the workflows and schedules, and the last runs. With runId: that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger). While `liveSha` is not yet `targetSha` the worker has not switched to the new commit; call again in a few seconds.",
+        "Look at this workspace's workflows. Without runId: what is deployed (`deployment` is the live code on main; `preview` is the unmerged branch last pushed, registered as its own copy with schedules off), the build error if a commit did not start (`buildError` — the old code keeps running), the workflows (with `webhookUrl` when one has a webhook) and schedules, and the last runs. With runId: that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger). While `liveSha` is not yet `targetSha` the worker has not switched to the new commit; call again in a few seconds.",
       inputSchema: z.object({
         runId: z
           .string()
@@ -57,6 +63,7 @@ export function createWorkflowTools({
                 workspaceId,
                 tenant,
                 RECENT_RUNS,
+                await mayRun(),
               )),
             };
           }
@@ -92,14 +99,7 @@ export function createWorkflowTools({
       }),
       execute: async ({ workflowId, input, preview }) => {
         try {
-          if (
-            userId &&
-            !(await workspaceService.hasRole(workspaceId, userId, [
-              "owner",
-              "admin",
-              "member",
-            ]))
-          ) {
+          if (!(await mayRun())) {
             return { success: false, error: "Viewers cannot start runs." };
           }
           const tenant = await readWorkspaceTenant(workspaceId);
@@ -117,6 +117,32 @@ export function createWorkflowTools({
             runId: run.run?.metadata?.id,
             workflowId,
             preview: preview === true,
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    workflows_webhook: tool({
+      description:
+        "Give a live workflow a webhook, or remove it. With `enabled: true` it returns a new URL: a POST to it starts a run with the request's JSON body as the input. The URL carries its own secret; removing the webhook and adding it again gives a new URL and the old one stops working. A schedule is not set here: write `on: { cron }` in the workflow's code.",
+      inputSchema: z.object({
+        workflowId: z.string().describe("The workflow's name"),
+        enabled: z.boolean(),
+      }),
+      execute: async ({ workflowId, enabled }) => {
+        try {
+          if (!mayHaveWebhook(workflowId)) {
+            return { success: false, error: `Invalid workflow: ${workflowId}` };
+          }
+          if (!(await mayRun())) {
+            return { success: false, error: "Viewers cannot change webhooks." };
+          }
+          return {
+            success: true,
+            workflowId,
+            webhookUrl: await setWebhook(workspaceId, workflowId, enabled),
           };
         } catch (error) {
           return failure(error);
