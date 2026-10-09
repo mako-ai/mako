@@ -4,25 +4,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-process.env.SESSION_SECRET = "test-secret";
-process.env.BASE_URL = "https://mako.example/";
+process.env.ENCRYPTION_KEY ??= "0".repeat(64);
 
-const WS = "6846e6a01b05af0948070582";
-
-void test("a webhook URL opens its own workflow and no other", async () => {
-  const { isWebhookSecret, webhookUrl } = await import("./webhook");
-  const url = webhookUrl(WS, "daily-digest");
-  assert.ok(url?.startsWith(`https://mako.example/api/workflows/hooks/${WS}/`));
-  const secret = url?.split("/").pop() ?? "";
-  assert.equal(isWebhookSecret(WS, "daily-digest", secret), true);
-  assert.equal(isWebhookSecret(WS, "other", secret), false);
-  assert.equal(isWebhookSecret("0".repeat(24), "daily-digest", secret), false);
-  assert.equal(isWebhookSecret(WS, "daily-digest", ""), false);
-});
-
-void test("without SESSION_SECRET there is no webhook", async () => {
-  const { isWebhookSecret, webhookUrl } = await import("./webhook");
-  delete process.env.SESSION_SECRET;
-  assert.equal(webhookUrl(WS, "daily-digest"), null);
-  assert.equal(isWebhookSecret(WS, "daily-digest", ""), false);
+void test("only the saved secret opens a webhook", async () => {
+  const { encryptString } = await import("../services/crypto.service");
+  const { isWebhookSecret } = await import("./webhook");
+  const stored = encryptString("s3cret");
+  assert.equal(isWebhookSecret(stored, "s3cret"), true);
+  assert.equal(isWebhookSecret(stored, "s3creT"), false);
+  assert.equal(isWebhookSecret(stored, ""), false);
+  // No webhook turned on for the workflow: nothing opens it.
+  assert.equal(isWebhookSecret(undefined, "s3cret"), false);
+  assert.equal(isWebhookSecret(undefined, ""), false);
 });

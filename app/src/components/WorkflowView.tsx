@@ -269,6 +269,7 @@ function RunsView({
   const fetchRun = useWorkflowsStore(s => s.fetchRun);
   const startRun = useWorkflowsStore(s => s.run);
   const cancelRun = useWorkflowsStore(s => s.cancel);
+  const setWebhook = useWorkflowsStore(s => s.setWebhook);
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -333,6 +334,11 @@ function RunsView({
       : null;
   const deployment = overview?.deployment;
 
+  const toggleWebhook = async (enabled: boolean) => {
+    await setWebhook(workspaceId, workflowId, enabled);
+    void fetchOverview(workspaceId);
+  };
+
   const act = async (action: typeof cancelRun, runId: string) => {
     const result = await action(workspaceId, runId);
     setActionError(result.ok ? null : (result.error ?? "Failed"));
@@ -365,18 +371,30 @@ function RunsView({
         <Typography variant="caption" color="text.secondary">
           {schedule ? `Schedule: ${schedule.cron} (UTC)` : "No schedule"}
         </Typography>
+        {webhookUrl === null && (
+          <Chip
+            icon={<WebhookIcon size={12} />}
+            label="Add webhook"
+            size="small"
+            variant="outlined"
+            onClick={() => void toggleWebhook(true)}
+            sx={{ height: 20, borderStyle: "dashed" }}
+          />
+        )}
         {webhookUrl && (
-          <Tooltip title="POST JSON to this URL to start a run. Click to copy it.">
+          <Tooltip title="POST JSON to this URL to start a run. Click to copy it; ✕ removes it.">
             <Chip
               icon={<WebhookIcon size={12} />}
               label={copied ? "Copied" : "Webhook"}
               size="small"
               variant="outlined"
+              color="primary"
               onClick={() => {
                 void navigator.clipboard.writeText(webhookUrl);
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1500);
               }}
+              onDelete={() => void toggleWebhook(false)}
               sx={{ height: 20 }}
             />
           </Tooltip>

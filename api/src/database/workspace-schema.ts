@@ -179,6 +179,8 @@ export interface IWorkspaceWorkflows {
   preview?: { branch: string; sha: string; tree: string };
   previewLive?: { sha: string };
   previewFailed?: { sha: string; error: string };
+  /** Workflows with a webhook turned on: name → its URL's secret, encrypted. */
+  webhooks?: Record<string, string>;
 }
 
 export interface IWorkspaceRepoBinding {
@@ -1422,6 +1424,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         },
         previewLive: { type: { sha: String }, _id: false },
         previewFailed: { type: { sha: String, error: String }, _id: false },
+        webhooks: { type: Schema.Types.Mixed },
       },
       default: undefined,
       _id: false,

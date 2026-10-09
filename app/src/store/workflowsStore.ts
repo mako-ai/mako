@@ -52,7 +52,7 @@ export interface WorkflowsOverview {
   preview: (WorkflowDeployment & { branch: string }) | null;
   /** Where an admin opens the Hatchet dashboard, when the installation has one. */
   dashboardUrl: string | null;
-  /** `webhookUrl` is there for a live workflow, for who may start runs. */
+  /** `webhookUrl`: set for who may start runs, on a live workflow; null while off. */
   workflows?: Array<{
     workflowId: string;
     preview: boolean;
@@ -79,6 +79,11 @@ interface WorkflowsState {
     preview: boolean,
   ) => Promise<Result>;
   cancel: (workspaceId: string, runId: string) => Promise<Result>;
+  setWebhook: (
+    workspaceId: string,
+    workflowId: string,
+    enabled: boolean,
+  ) => Promise<Result>;
   /** Turn workflows on for the workspace. Staff only. */
   enable: (workspaceId: string) => Promise<Result>;
 }
@@ -186,6 +191,26 @@ export const useWorkflowsStore = create<WorkflowsState>()(
           return { ok: true };
         } catch (e) {
           return { ok: false, error: message(e, "Failed to cancel the run") };
+        }
+      },
+
+      setWebhook: async (workspaceId, workflowId, enabled) => {
+        try {
+          unwrapBody(
+            await api.PUT(
+              "/api/workspaces/{workspaceId}/workflows/{name}/webhook",
+              {
+                params: { path: { workspaceId, name: workflowId } },
+                body: { enabled },
+              },
+            ),
+          );
+          return { ok: true };
+        } catch (e) {
+          return {
+            ok: false,
+            error: message(e, "Failed to change the webhook"),
+          };
         }
       },
 

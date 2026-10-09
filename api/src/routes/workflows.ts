@@ -51,7 +51,7 @@ import {
   readRun,
   readWorkflowsOverview,
 } from "../workflows/runs";
-import { isWebhookSecret } from "../workflows/webhook";
+import { isWebhookSecret, setWebhook } from "../workflows/webhook";
 
 const logger = loggers.api("workflows");
 
@@ -118,6 +118,10 @@ async function tenantOf(workspaceId: string): Promise<WorkspaceTenant> {
   }
   return tenant;
 }
+
+/** A live workflow's name, safe as a key and in a URL. A preview has no webhook. */
+const mayHaveWebhook = (name: string) =>
+  /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name) && !name.startsWith(PREVIEW_PREFIX);
 
 /** Viewers read runs; starting and cancelling need a member. */
 async function mayRun(c: AuthenticatedContext): Promise<boolean> {
@@ -308,6 +312,50 @@ workflowRoutes.openapi(
 
 workflowRoutes.openapi(
   createRoute({
+    method: "put",
+    path: "/{name}/webhook",
+    tags: ["Workflows"],
+    summary: "Turn a workflow's webhook on (a new URL) or off",
+    security: AUTH_SECURITY,
+    request: {
+      params: NameParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": { schema: z.object({ enabled: z.boolean() }) },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId, name } = c.req.valid("param");
+      if (!mayHaveWebhook(name)) {
+        return c.json({ success: false, error: "Invalid workflow name" }, 400);
+      }
+      if (!(await mayRun(c))) {
+        return c.json(
+          { success: false, error: "Viewers cannot change webhooks" },
+          403,
+        );
+      }
+      const { enabled } = c.req.valid("json");
+      return c.json(
+        {
+          success: true as const,
+          webhookUrl: await setWebhook(workspaceId, name, enabled),
+        },
+        200,
+      );
+    } catch (error) {
+      return fail(c, error);
+    }
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
     method: "post",
     path: "/runs/{id}/cancel",
     tags: ["Workflows"],
@@ -344,18 +392,15 @@ workflowHookRoutes.post("/:workspaceId/:name/:secret", async c => {
   const { workspaceId, name, secret } = c.req.param();
   // One answer for every wrong URL: it does not say which part was wrong.
   const notFound = () => c.json({ error: "Not found" }, 404);
-  if (
-    !Types.ObjectId.isValid(workspaceId) ||
-    name.startsWith(PREVIEW_PREFIX) ||
-    !isWebhookSecret(workspaceId, name, secret)
-  ) {
+  if (!Types.ObjectId.isValid(workspaceId) || !mayHaveWebhook(name)) {
     return notFound();
   }
   const workspace = await Workspace.findById(workspaceId)
-    .select("workflows.enabled")
+    .select("workflows.enabled workflows.webhooks")
     .lean();
+  const state = workspace?.workflows;
   const tenant =
-    workspace?.workflows?.enabled === true
+    state?.enabled === true && isWebhookSecret(state.webhooks?.[name], secret)
       ? await readWorkspaceTenant(workspaceId)
       : null;
   if (!tenant) return notFound();

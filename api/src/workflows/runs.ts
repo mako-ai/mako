@@ -6,7 +6,7 @@
  */
 import { tenantJson, type WorkspaceTenant } from "./hatchet";
 import { readWorkflowsStatus } from "./status";
-import { webhookUrl } from "./webhook";
+import { readWebhookUrls } from "./webhook";
 
 /** Preview workflows are registered in Hatchet under this prefix (worker.mjs). */
 export const PREVIEW_PREFIX = "preview_";
@@ -84,14 +84,15 @@ export async function readWorkflowsOverview(
   workspaceId: string,
   tenant: WorkspaceTenant | null,
   limit: number,
-  /** Include each live workflow's webhook URL: only for who may start runs. */
+  /** Include each live workflow's webhook URL (null when off): only for who may start runs. */
   withWebhooks = false,
 ) {
   const status = await readWorkflowsStatus(workspaceId);
   if (!tenant) return status;
   const base = `/api/v1/tenants/${tenant.tenantId}`;
   const since = new Date(Date.now() - RECENT_RUNS_DAYS * 864e5).toISOString();
-  const [workflows, crons, runs] = await Promise.all([
+  const [webhooks, workflows, crons, runs] = await Promise.all([
+    withWebhooks ? readWebhookUrls(workspaceId) : null,
     tenantJson<Rows>(tenant, `${base}/workflows`),
     tenantJson<Rows>(tenant, `${base}/workflows/crons`),
     tenantJson<Rows>(
@@ -110,11 +111,8 @@ export async function readWorkflowsOverview(
     ...status,
     workflows: (workflows.rows ?? []).map(w => {
       const workflow = splitName(w.name);
-      return withWebhooks && !workflow.preview
-        ? {
-            ...workflow,
-            webhookUrl: webhookUrl(workspaceId, workflow.workflowId),
-          }
+      return webhooks && !workflow.preview
+        ? { ...workflow, webhookUrl: webhooks[workflow.workflowId] ?? null }
         : workflow;
     }),
     schedules: (crons.rows ?? []).map(c => ({

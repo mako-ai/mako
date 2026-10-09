@@ -41,14 +41,14 @@ Every folder with a `workflow.ts` is picked up. There is no list to keep.
 
 ## What starts a run
 
-| Trigger  | How                                                                                                              |
-| -------- | ---------------------------------------------------------------------------------------------------------------- |
-| Schedule | `on: { cron: "0 7 * * 1-5" }` in the workflow, in UTC                                                            |
-| Webhook  | Every live workflow has a URL: the Webhook chip on its tab copies it. A POST starts a run with the JSON as input |
-| A person | The Run button, with a JSON input                                                                                |
-| An agent | `workflows_run`                                                                                                  |
+| Trigger  | How                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------ |
+| Schedule | `on: { cron: "0 7 * * 1-5" }` in the workflow, in UTC                                                  |
+| Webhook  | **Add webhook** on a live workflow's tab gives a URL. A POST to it starts a run with the JSON as input |
+| A person | The Run button, with a JSON input                                                                      |
+| An agent | `workflows_run`                                                                                        |
 
-The webhook URL carries its own secret, so treat it like a password. A preview has no schedule and no webhook.
+A webhook is off until someone adds it on the workflow's tab. Its URL carries its own secret, so treat it like a password; removing the webhook and adding it again gives a new URL. A preview has no schedule and no webhook.
 
 ## Using Mako from a step
 
