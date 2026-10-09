@@ -41,6 +41,9 @@ const failure = (error: unknown) => ({
       : String(error),
 });
 
+const NOT_SET_UP =
+  "Nothing is deployed yet. Commit a workflow first; if one is committed, its deploy failed (is Hatchet reachable?).";
+
 export function createWorkflowTools({
   workspaceId,
   userId,
@@ -75,7 +78,7 @@ export function createWorkflowTools({
             return { success: false, error: `Invalid run id: ${runId}` };
           }
           if (!tenant) {
-            return { success: false, error: "Workflows are not set up." };
+            return { success: false, error: NOT_SET_UP };
           }
           return { success: true, run: await readRun(tenant, runId) };
         } catch (error) {
@@ -115,7 +118,7 @@ export function createWorkflowTools({
           }
           const tenant = await readWorkspaceTenant(workspaceId);
           if (!tenant) {
-            return { success: false, error: "Workflows are not set up." };
+            return { success: false, error: NOT_SET_UP };
           }
           const run = (await triggerRun(
             tenant,

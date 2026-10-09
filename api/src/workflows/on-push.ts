@@ -208,7 +208,8 @@ async function deployWorkflowsNow(
         .select("branch")
         .lean()
     : null;
-  const branch = worktree?.branch;
+  // Without a pusher (a merge), look again at the branch already previewed.
+  const branch = worktree?.branch ?? state.preview?.branch;
   const pushed =
     branch && branch !== DEFAULT_BRANCH
       ? await workflowsAt(repoDir, branch)

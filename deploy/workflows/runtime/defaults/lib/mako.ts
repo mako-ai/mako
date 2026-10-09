@@ -17,14 +17,28 @@ export async function tools() {
   return mcp.tools();
 }
 
-/** Run SQL on a workspace connection. Read-only unless the key and connection allow writes. */
-export async function query(connection: string, sql: string): Promise<unknown> {
-  const t = await tools();
-  const tool = t.sql_execute_query;
-  if (!tool?.execute)
-    throw new Error("sql_execute_query is not available to this key");
-  return tool.execute({ connectionId: connection, query: sql }, {
-    toolCallId: "query",
+/** Call one Mako tool by name and return its result, e.g. `call("app_materialize", { appId, name })`. */
+export async function call(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
+  const tool = (await tools())[name];
+  if (!tool?.execute) throw new Error(`${name} is not available to this key`);
+  const result = (await tool.execute(input, {
+    toolCallId: name,
     messages: [],
-  } as never);
+  } as never)) as { content?: { text?: string }[]; isError?: boolean };
+  // A tool answers with text; Mako's tools put their JSON result in it.
+  const text = result.content?.map(part => part.text ?? "").join("") ?? "";
+  if (result.isError) throw new Error(text || `${name} failed`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/** Run SQL on a workspace connection. Read-only unless the key and connection allow writes. */
+export function query(connection: string, sql: string): Promise<unknown> {
+  return call("sql_execute_query", { connectionId: connection, query: sql });
 }

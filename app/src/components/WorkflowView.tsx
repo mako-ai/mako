@@ -152,6 +152,7 @@ function RunDialog({
   open,
   workflowId,
   previewBranch,
+  live,
   initialInput,
   onClose,
   onRun,
@@ -160,6 +161,8 @@ function RunDialog({
   workflowId: string;
   /** Set when unmerged code of this workflow can be run. */
   previewBranch: string | null;
+  /** False while the workflow exists only on the previewed branch. */
+  live: boolean;
   initialInput: string;
   onClose: () => void;
   onRun: (
@@ -174,10 +177,11 @@ function RunDialog({
 
   useEffect(() => {
     if (open) {
+      setVersion(live ? "live" : "preview");
       setInput(initialInput);
       setError(null);
     }
-  }, [open, initialInput]);
+  }, [open, live, initialInput]);
 
   const submit = async () => {
     let parsed: unknown;
@@ -217,11 +221,15 @@ function RunDialog({
             onChange={(_event, value) => value && setVersion(value)}
             aria-label="Version"
           >
-            <ToggleButton value="live" sx={{ textTransform: "none" }}>
+            <ToggleButton
+              value="live"
+              disabled={!live}
+              sx={{ textTransform: "none" }}
+            >
               Live
             </ToggleButton>
             <ToggleButton value="preview" sx={{ textTransform: "none" }}>
-              Preview · {previewBranch}
+              Preview
             </ToggleButton>
           </ToggleButtonGroup>
         )}
@@ -712,6 +720,11 @@ function RunsView({
         open={dialogOpen}
         workflowId={workflowId}
         previewBranch={previewBranch}
+        live={Boolean(
+          overview?.workflows?.some(
+            w => !w.preview && w.workflowId === workflowId,
+          ),
+        )}
         initialInput={formatInput(selectedRun?.input)}
         onClose={() => setDialogOpen(false)}
         onRun={async (input, preview) => {

@@ -120,6 +120,19 @@ Find the connection id and check the SQL first with `list_connections`,
 `inspect_table` and `sql_execute_query`. Queries from a workflow are
 read-only.
 
+## Calling a Mako tool in a step
+
+Any Mako tool can be called by name with `call`. To refresh an app's data on
+a schedule, rebuild its bindings:
+
+```ts
+import { call } from "../lib/mako";
+
+await call("app_materialize", { appId: "<appId>", name: "<binding>" });
+```
+
+Use `call`, not `tools()`, unless a step hands the tools to a model.
+
 ## When something is wrong
 
 | You see | It means |

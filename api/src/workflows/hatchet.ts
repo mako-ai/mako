@@ -261,7 +261,16 @@ export function triggerRun(
     tenant,
     `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs/trigger`,
     { method: "POST", body: { workflowName, input, additionalMetadata } },
-  );
+  ).catch(error => {
+    // Hatchet answers 500 for a name no worker has registered.
+    if (error instanceof HatchetError && error.status === 500) {
+      throw new HatchetError(
+        `"${workflowName}" is not running. Its last commit may not have built: check the status.`,
+        409,
+      );
+    }
+    throw error;
+  });
 }
 
 /** Cancel or replay a run. The two Hatchet calls differ only in their path. */

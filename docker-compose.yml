@@ -87,6 +87,7 @@ services:
       MAKO_API_KEY: ${WORKFLOWS_WORKER_KEY:-}
       # Hatchet Lite advertises localhost:7077, which is this container here.
       HATCHET_CLIENT_HOST_PORT: hatchet:7077
+      HATCHET_CLIENT_API_URL: http://hatchet:8888
       HATCHET_CLIENT_TLS_STRATEGY: none
     extra_hosts:
       - "host.docker.internal:host-gateway"
