@@ -15,14 +15,33 @@
  * and writes nothing. It is a read of external data, so like
  * `sql_execute_query` it is hidden from credentials without query access.
  *
+ * `create_connection` is the one write: it stores a new SOURCE connection
+ * (a credential) for a connector, so an agent can go from "this connector
+ * exists" to probing it without a human round-trip through the UI. It is
+ * external-MCP only: every MCP/CLI credential holds its grant
+ * (`connections-write`), and the caller's live role must be at least member,
+ * as in the UI. It is kept out of the in-product chat so a prompt-injected
+ * page cannot plant a credential the workspace then syncs from.
+ *
  * Deliberately NOT the same thing as the dashboard `list_data_sources` /
  * `create_data_source` family, which operate on in-browser DuckDB
  * materializations. The similar naming has already misled one design
  * document into believing connector creation was a policy line away.
  */
-import { ALL_AGENT_SURFACES, type AgentCapabilityDefinition } from "./types";
+import {
+  ALL_AGENT_SURFACES,
+  type AgentCapabilityDefinition,
+  type AgentSurface,
+} from "./types";
 
-export type ConnectorCapabilityPack = "connector-discovery" | "connector-probe";
+const EXTERNAL_MCP_ONLY = [
+  "external-mcp",
+] as const satisfies readonly AgentSurface[];
+
+export type ConnectorCapabilityPack =
+  | "connector-discovery"
+  | "connector-probe"
+  | "connector-admin";
 
 export type ConnectorCapabilityDefinition = AgentCapabilityDefinition<
   "connectors",
@@ -62,5 +81,16 @@ export const CONNECTOR_CAPABILITIES = [
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
     requiresQueryAccess: true,
+  }),
+  define({
+    name: "create_connection",
+    pack: "connector-admin",
+    risk: "write",
+    requiredGrant: "connections-write",
+    // Anyone who can create a connection in the UI (any member) — never a
+    // viewer, and re-checked against the live role on every call.
+    minimumWorkspaceRole: "member",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
   }),
 ] as const satisfies readonly ConnectorCapabilityDefinition[];

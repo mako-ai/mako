@@ -2,10 +2,9 @@
  * The MCP OAuth consent screen: which client, which workspace, what it may
  * do. Pure (params in, HTML out) so the page is tested without a session.
  *
- * Optional scopes are shown only when the client requested them, and a
- * requested one arrives TICKED — `mako login --warehouse-write` asked for it
- * on purpose — while staying uncheckable: what is granted is what is still
- * ticked when Allow is pressed (resolveMcpOAuthConsentScopes).
+ * There are no per-permission options: a connected client can do
+ * everything the person's workspace role allows (parseMcpOAuthScopes), so
+ * the page lists what that is and asks only "this workspace, this client?".
  */
 import type { WorkspaceApiKeyScope } from "./api-key-scopes";
 import { authPage, escapeHtml, iconSvg } from "./auth-page";
@@ -76,17 +75,7 @@ const CONSENT_CSS = `
   .perms li { display: flex; gap: 10px; align-items: flex-start; font-size: 14px;
     line-height: 1.5; padding: 6px 0; }
   .perms .icon { width: 16px; height: 16px; flex: none; margin-top: 2px; color: var(--accent); }
-  .perms li.off { color: var(--muted); }
-  .perms li.off .icon { color: var(--muted); }
-  .option { display: flex; gap: 12px; align-items: flex-start; margin-top: 12px;
-    padding: 14px; border: 1px solid var(--border); cursor: pointer; }
-  .option:has(input:checked) { border-color: var(--accent); background: var(--tint); }
-  .option input { margin: 3px 0 0; width: 16px; height: 16px; flex: none; accent-color: var(--accent); }
-  .option strong { display: block; font-size: 14px; margin-bottom: 2px; }
-  .option span { font-size: 13px; line-height: 1.6; color: var(--muted); }
-  .option .requested { display: inline-block; margin-left: 6px; white-space: nowrap; padding: 1px 6px;
-    font: 500 10px ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--accent); border: 1px solid var(--accent); vertical-align: 2px; }
+  .note { margin: 10px 0 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
   .actions { display: flex; gap: 8px; margin-top: 28px; }
   button { flex: 1; padding: 12px 16px; font: inherit; font-size: 14px;
     font-weight: 500; cursor: pointer; border: 1px solid var(--ink);
@@ -131,7 +120,6 @@ export function consentPage(input: {
 }): string {
   const { clientName, params, workspaces } = input;
   const client = escapeHtml(clientName);
-  const warehouseWrite = params.scopes.includes("warehouse:write");
   const hidden = (name: string, value?: string) =>
     value
       ? `<input type="hidden" name="${name}" value="${escapeHtml(value)}" />`
@@ -149,13 +137,6 @@ export function consentPage(input: {
     )
     .join("");
   const check = iconSvg("check");
-  const warehouse = warehouseWrite
-    ? `<label class="option">
-        <input type="checkbox" name="grant_warehouse_write" value="yes" checked />
-        <span><strong>Allow warehouse execution<em class="requested">requested</em></strong>
-        Build, run and cancel dbt models and jobs. These can create, replace or modify tables in your warehouse. Untick to connect read-only.</span>
-      </label>`
-    : `<ul class="perms"><li class="off">${iconSvg("cross")}<span>Cannot run dbt or change warehouse data (not requested).</span></li></ul>`;
 
   const body = `<p class="lede"><strong>${client}</strong> wants to connect to a Mako workspace.</p>
   <div class="client">${iconSvg("link")}<span>Approving returns you to <code>${escapeHtml(describeRedirect(params.redirectUri))}</code></span></div>
@@ -174,8 +155,10 @@ export function consentPage(input: {
       <ul class="perms">
         <li>${check}<span>Explore schemas and run read-only queries</span></li>
         <li>${check}<span>Create and edit Mako apps, notebooks and dbt files</span></li>
+        <li>${check}<span>Run dbt models and jobs in your warehouse</span></li>
+        <li>${check}<span>Create source connections (API keys) and check them</span></li>
       </ul>
-      ${warehouse}
+      <p class="note">Whatever your role in the workspace you pick allows: a viewer stays read-only.</p>
     </div>
     <div class="actions">
       <button class="deny" type="submit" name="decision" value="deny">Deny</button>

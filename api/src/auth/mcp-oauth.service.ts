@@ -4,9 +4,10 @@
  * Public clients only (token_endpoint_auth_method "none") with mandatory
  * PKCE S256 — exactly what the MCP spec's auth profile and every major MCP
  * client (Claude, Cursor, Codex) implement. Tokens are opaque `mcpat_`/
- * `mcprt_` strings. OAuth grants default to the read-only MCP set; clients
- * may explicitly request the narrower `warehouse:write` scope for governed
- * dbt execution, which is shown prominently on the consent screen.
+ * `mcprt_` strings. Every grant carries the full MCP scope set
+ * (MCP_OAUTH_SCOPES): connecting a client gives it everything its owner's
+ * workspace role allows, with no per-permission consent option. Roles, not
+ * scopes, keep viewers read-only.
  */
 import * as crypto from "crypto";
 
@@ -16,7 +17,6 @@ import {
   McpOAuthToken,
 } from "../database/mcp-oauth-schema";
 import {
-  DEFAULT_WORKSPACE_API_KEY_SCOPES,
   type WorkspaceApiKeyScope,
   resolveWorkspaceApiKeyScopes,
 } from "./api-key-scopes";
@@ -35,50 +35,22 @@ const LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
 
 const MAX_REDIRECT_URIS = 10;
 
-/** Public scopes the browser OAuth flow may grant to an MCP client. */
+/** The scopes every browser OAuth grant carries (see parseMcpOAuthScopes). */
 export const MCP_OAUTH_SCOPES = [
   "mcp",
   "query:read",
   "warehouse:write",
+  "connections:write",
 ] as const satisfies readonly WorkspaceApiKeyScope[];
 
-const MCP_OAUTH_SCOPE_SET = new Set<string>(MCP_OAUTH_SCOPES);
-
 /**
- * Parse the OAuth `scope` parameter. Baseline MCP/read scopes are always
- * present so a client asking only for the optional dbt execution permission
- * still receives a useful MCP grant. Omitted scope preserves the historical
- * read-only default.
- *
- * Scopes Mako does not know (`offline_access`, `openid`, a client's own
- * defaults — the reference MCP SDK sends some of these) are dropped rather
- * than rejected: RFC 6749 §3.3 lets the server narrow the grant, the token
- * response reports the scope actually issued, and refusing the whole flow
- * would break clients that connected fine before scopes were parsed at all.
+ * The scopes an OAuth grant carries: always the full MCP set, whatever the
+ * client asked for. The `scope` parameter is accepted (older CLIs send
+ * `warehouse:write`, the reference MCP SDK adds `offline_access`) but no
+ * longer narrows or widens anything; the token response reports this set.
  */
-export function parseMcpOAuthScopes(value?: string): WorkspaceApiKeyScope[] {
-  if (!value?.trim()) return [...DEFAULT_WORKSPACE_API_KEY_SCOPES];
-
-  const requested = [...new Set(value.trim().split(/\s+/))].filter(scope =>
-    MCP_OAUTH_SCOPE_SET.has(scope),
-  );
-
-  return [
-    ...DEFAULT_WORKSPACE_API_KEY_SCOPES,
-    ...(requested.includes("warehouse:write")
-      ? (["warehouse:write"] as const)
-      : []),
-  ];
-}
-
-/** Never turn a client request into warehouse authority without user opt-in. */
-export function resolveMcpOAuthConsentScopes(
-  requested: readonly WorkspaceApiKeyScope[],
-  warehouseWriteApproved: boolean,
-): WorkspaceApiKeyScope[] {
-  return requested.filter(
-    scope => scope !== "warehouse:write" || warehouseWriteApproved,
-  );
+export function parseMcpOAuthScopes(_value?: string): WorkspaceApiKeyScope[] {
+  return [...MCP_OAUTH_SCOPES];
 }
 
 function sha256(value: string): string {
@@ -245,7 +217,7 @@ export async function mintMcpAccessTokenForUser(input: {
     clientId: ACP_MCP_CLIENT_ID,
     userId: input.userId,
     workspaceId: input.workspaceId,
-    scopes: [...DEFAULT_WORKSPACE_API_KEY_SCOPES],
+    scopes: [...MCP_OAUTH_SCOPES],
     agentSessionId,
   });
 }

@@ -207,7 +207,9 @@ Which git tree a run builds (repo-bound projects) — never mix these up:
 
 Jobs: create or edit saved jobs with \`dbt_create_job\` / \`dbt_update_job\` (add a cron schedule
 only when the user asks for a recurring run), and remove one with \`dbt_delete_job\` — only delete
-a job when the user explicitly asks. Trigger a saved job with \`dbt_run_job\` — never run
+a job when the user explicitly asks. Jobs are durable entries in the user's Transforms list:
+never create a job just to perform a one-off prod operation (a single refresh, rebuild or
+backfill). Run an existing job that covers it, or ask the user before saving a new reusable job. Trigger a saved job with \`dbt_run_job\` — never run
 a job (possibly prod) without the user explicitly confirming it. \`dbt_run_job\` only QUEUES the
 run; always follow up with \`dbt_get_run\` to report whether it actually passed or failed.
 
