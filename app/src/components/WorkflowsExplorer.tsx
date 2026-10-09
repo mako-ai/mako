@@ -1,10 +1,8 @@
 /**
- * Workflows explorer — the workspace's workflows, and the files under
- * `workflows/` (the same two-section shape as the Transforms explorer).
- *
- * A workflow opens its runs; a file opens read-only. Both are the one
- * `workflow` tab kind, told apart by `metadata.path`. When the last merge did
- * not build, the shell's error slot says so: the previous version stays live.
+ * Workflows explorer: one tree, like Apps. A workflow is a row that opens its
+ * runs; its chevron shows its files, which open read-only. Shared folders and
+ * files under `workflows/` follow. When the last merge did not build, the
+ * shell's error slot says so: the previous version stays live.
  */
 import {
   useCallback,
@@ -13,19 +11,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  Box,
-  Button,
-  Divider,
-  IconButton,
-  Tooltip,
-  Typography,
-} from "@mui/material";
+import { Box, Button, IconButton, Tooltip, Typography } from "@mui/material";
 import {
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
   ExternalLink as DashboardIcon,
   FileCode as FileIcon,
+  Folder as FolderIcon,
   Github as LinkIcon,
   RefreshCw as RefreshIcon,
 } from "lucide-react";
@@ -34,7 +26,6 @@ import { EXPLORER_ICONS } from "../lib/entity-icons";
 import { openSettingsSection } from "../lib/command-palette/commands";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkflowsStore } from "../store/workflowsStore";
-import { SectionHeader } from "./DbtExplorer";
 import ExplorerShell from "./ExplorerShell";
 import { VersionChip } from "./WorkflowView";
 
@@ -117,8 +108,6 @@ export function WorkflowsExplorer() {
     return tab?.kind === "workflow" ? tab.metadata : undefined;
   });
 
-  const [workflowsOpen, setWorkflowsOpen] = useState(true);
-  const [filesOpen, setFilesOpen] = useState(true);
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(() => {
@@ -133,22 +122,18 @@ export function WorkflowsExplorer() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  // One row per workflow. A workflow that exists only on the previewed branch
-  // is marked: it is not live yet.
-  const workflows = useMemo(() => {
+  // One row per folder under `workflows/` and per registered workflow, with
+  // the folder's files. A workflow only on the previewed branch is marked.
+  const tree = useMemo(() => {
     const live = new Set<string>();
-    const all = new Set<string>();
+    const registered = new Set<string>();
     for (const w of overview?.workflows ?? []) {
-      all.add(w.workflowId);
+      registered.add(w.workflowId);
       if (!w.preview) live.add(w.workflowId);
     }
-    return [...all].sort().map(id => ({ id, previewOnly: !live.has(id) }));
-  }, [overview?.workflows]);
-
-  // `workflows/` is two levels deep: a folder per workflow, and shared files.
-  const tree = useMemo(() => {
     const folders = new Map<string, string[]>();
     const rootFiles: string[] = [];
+    for (const id of registered) folders.set(id, []);
     for (const path of [...(files ?? [])].sort()) {
       const slash = path.indexOf("/");
       if (slash < 0) rootFiles.push(path);
@@ -157,8 +142,22 @@ export function WorkflowsExplorer() {
         folders.set(folder, [...(folders.get(folder) ?? []), path]);
       }
     }
-    return { folders: [...folders.entries()], rootFiles };
-  }, [files]);
+    const rows = [...folders.entries()]
+      .map(([name, paths]) => ({
+        name,
+        paths,
+        isWorkflow:
+          registered.has(name) || paths.includes(`${name}/workflow.ts`),
+        previewOnly: registered.has(name) && !live.has(name),
+      }))
+      // Workflows first, then shared folders such as `lib`.
+      .sort(
+        (a, b) =>
+          Number(b.isWorkflow) - Number(a.isWorkflow) ||
+          a.name.localeCompare(b.name),
+      );
+    return { rows, rootFiles };
+  }, [overview?.workflows, files]);
 
   const openTab = (metadata: Record<string, string>, title: string) =>
     focusOrOpenTab(
@@ -180,7 +179,7 @@ export function WorkflowsExplorer() {
       }\n${deployment.buildError}`
     : null;
 
-  const fileRow = (path: string, indent: number) => (
+  const fileRow = (path: string, indent: number, label = path) => (
     <Box
       key={path}
       role="button"
@@ -194,7 +193,7 @@ export function WorkflowsExplorer() {
       }}
     >
       <FileIcon size={16} strokeWidth={1.5} />
-      <Box component="span">{path.split("/").pop()}</Box>
+      <Box component="span">{label}</Box>
     </Box>
   );
 
@@ -244,84 +243,59 @@ export function WorkflowsExplorer() {
             onClick={() => openSettingsSection("github")}
           />
         ) : (
-          <>
-            <SectionHeader
-              label="Workflows"
-              open={workflowsOpen}
-              onToggle={() => setWorkflowsOpen(o => !o)}
-            />
-            {workflowsOpen && (
-              <Box sx={{ pb: 1 }}>
-                {workflows.length === 0 ? (
-                  <Empty>No workflows yet.</Empty>
-                ) : (
-                  workflows.map(w => (
-                    <Box
-                      key={w.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => openWorkflow(w.id)}
-                      onKeyDown={e => e.key === "Enter" && openWorkflow(w.id)}
-                      sx={{
-                        ...ROW_SX,
-                        bgcolor:
-                          activeMeta?.workflowId === w.id
-                            ? "action.selected"
-                            : "transparent",
+          <Box sx={{ py: 0.5 }}>
+            {tree.rows.length + tree.rootFiles.length === 0 && (
+              <Empty>No workflows yet.</Empty>
+            )}
+            {tree.rows.map(row => {
+              const open = !!openFolders[row.name];
+              const toggle = () =>
+                setOpenFolders(f => ({ ...f, [row.name]: !open }));
+              // A workflow opens its runs; a shared folder only unfolds.
+              const activate = row.isWorkflow
+                ? () => openWorkflow(row.name)
+                : toggle;
+              const Chevron = open ? ChevronDownIcon : ChevronRightIcon;
+              return (
+                <Box key={row.name}>
+                  <Box
+                    role="button"
+                    tabIndex={0}
+                    onClick={activate}
+                    onKeyDown={e => e.key === "Enter" && activate()}
+                    sx={{
+                      ...ROW_SX,
+                      bgcolor:
+                        row.isWorkflow && activeMeta?.workflowId === row.name
+                          ? "action.selected"
+                          : "transparent",
+                    }}
+                  >
+                    <Chevron
+                      size={14}
+                      strokeWidth={2}
+                      onClick={e => {
+                        e.stopPropagation();
+                        toggle();
                       }}
-                    >
+                    />
+                    {row.isWorkflow ? (
                       <WorkflowIcon size={16} strokeWidth={1.5} />
-                      <Box component="span">{w.id}</Box>
-                      {w.previewOnly && <VersionChip preview small />}
-                    </Box>
-                  ))
-                )}
-              </Box>
-            )}
-
-            <Divider />
-
-            <SectionHeader
-              label="Files"
-              open={filesOpen}
-              onToggle={() => setFilesOpen(o => !o)}
-            />
-            {filesOpen && (
-              <Box sx={{ pb: 1 }}>
-                {(files ?? []).length === 0 ? (
-                  <Empty>No files yet.</Empty>
-                ) : (
-                  <>
-                    {tree.folders.map(([folder, paths]) => {
-                      const open = !!openFolders[folder];
-                      const toggle = () =>
-                        setOpenFolders(f => ({ ...f, [folder]: !open }));
-                      return (
-                        <Box key={folder}>
-                          <Box
-                            role="button"
-                            tabIndex={0}
-                            onClick={toggle}
-                            onKeyDown={e => e.key === "Enter" && toggle()}
-                            sx={ROW_SX}
-                          >
-                            {open ? (
-                              <ChevronDownIcon size={14} strokeWidth={2} />
-                            ) : (
-                              <ChevronRightIcon size={14} strokeWidth={2} />
-                            )}
-                            <Box component="span">{folder}</Box>
-                          </Box>
-                          {open && paths.map(path => fileRow(path, 4.25))}
-                        </Box>
-                      );
-                    })}
-                    {tree.rootFiles.map(path => fileRow(path, 1.75))}
-                  </>
-                )}
-              </Box>
-            )}
-          </>
+                    ) : (
+                      <FolderIcon size={16} strokeWidth={1.5} />
+                    )}
+                    <Box component="span">{row.name}</Box>
+                    {row.previewOnly && <VersionChip preview small />}
+                  </Box>
+                  {open &&
+                    row.paths.map(path =>
+                      fileRow(path, 5.25, path.slice(row.name.length + 1)),
+                    )}
+                </Box>
+              );
+            })}
+            {tree.rootFiles.map(path => fileRow(path, 3.75))}
+          </Box>
         )
       }
     </ExplorerShell>
