@@ -10,10 +10,8 @@ import { hasInstanceHatchet } from "./hatchet";
 export interface Deployment {
   /** The commit the worker reports running. Null before the first good deploy. */
   liveSha: string | null;
-  /** The commit the worker should run. Differs from live while switching. */
+  /** The commit the worker should run. Differs from live until it switches. */
   targetSha: string | null;
-  /** True while the worker has not yet switched to `targetSha`. */
-  deploying: boolean;
   /** The build output when `targetSha` could not be started. */
   buildError: string | null;
 }
@@ -30,7 +28,6 @@ function deployment(
   return {
     liveSha,
     targetSha,
-    deploying: targetSha !== liveSha && !buildError,
     buildError,
   };
 }

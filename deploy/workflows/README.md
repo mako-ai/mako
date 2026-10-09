@@ -13,7 +13,6 @@ installation needs none of it.
 | `hatchet-values.yaml` | Helm values for `hatchet/hatchet-stack` 0.19.0: Cloud SQL Postgres, Postgres queue, nothing exposed                                                                                   |
 | `k8s/`                | Namespace, quota and network policy for worker pods                                                                                                                                   |
 | `runtime/`            | The worker image: follow the commit Mako names, typecheck it, run a Hatchet worker. `runtime/defaults/` are the shared files (`hatchet.ts`, `lib/mako.ts`) it supplies to every repo. |
-| `template/workflows/` | Two example workflows, one folder each.                                                                                                                                               |
 
 ## Environments
 

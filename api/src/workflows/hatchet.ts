@@ -1,21 +1,10 @@
 /**
  * Hatchet access for workspace workflows (docs/src/content/docs/workflows.md).
  *
- * A workspace's connection to Hatchet is one API token. The token is a JWT
- * that names its tenant and the Hatchet API's address, so nothing else is
- * configured or stored. It works the same against Hatchet Cloud, a
- * self-hosted Hatchet and the Hatchet Lite in docker-compose, and Hatchet
- * itself keeps one tenant's token from reading another tenant.
- *
- * Where the token comes from:
- *   - HATCHET_CLIENT_TOKEN: one tenant for the whole installation, or
- *   - created by Mako when HATCHET_ADMIN_PASSWORD is set: Mako logs in to a
- *     Hatchet it operates, creates a tenant for the workspace and saves its
- *     token on the workspace (Mako's own cloud, and the local docker-compose
- *     setup). A saved token wins over the installation's.
- *
- * Mako stores no workflow state: registered workflows, crons, runs, tasks and
- * logs are read from Hatchet on demand, in Hatchet's own response shapes.
+ * A workspace's connection is one API token: a JWT naming its tenant and the
+ * Hatchet API's address. It is the installation's (HATCHET_CLIENT_TOKEN), or
+ * one Mako creates and saves on the workspace when it operates the Hatchet
+ * (HATCHET_ADMIN_PASSWORD). Mako stores no workflow state; it reads Hatchet.
  */
 import { Types } from "mongoose";
 
@@ -266,15 +255,13 @@ export function triggerRun(
   });
 }
 
-/** Cancel or replay a run. The two Hatchet calls differ only in their path. */
-export function runAction(
+export function cancelRun(
   tenant: WorkspaceTenant,
-  action: "cancel" | "replay",
   runId: string,
 ): Promise<unknown> {
   return tenantJson(
     tenant,
-    `/api/v1/stable/tenants/${tenant.tenantId}/tasks/${action}`,
+    `/api/v1/stable/tenants/${tenant.tenantId}/tasks/cancel`,
     { method: "POST", body: { externalIds: [runId] } },
   );
 }

@@ -4,6 +4,7 @@
  * phone's Browse grid (MobileBrowse), so the two can never disagree.
  */
 import { useEffect, useMemo } from "react";
+import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useWorkflowsStore } from "../store/workflowsStore";
 import { EXPLORER_ICONS } from "./entity-icons";
@@ -55,10 +56,11 @@ export const bottomNavigationItems: {
 /**
  * The rail for this workspace: Workflows is listed only where they are set
  * up and turned on, so an installation without them never shows an entry
- * that leads nowhere.
+ * that leads nowhere. Staff see it before that, to turn it on.
  */
 export function useNavigationItems(): typeof topNavigationItems {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
   const overview = useWorkflowsStore(s =>
     workspaceId ? s.overviewByWorkspace[workspaceId] : undefined,
@@ -67,7 +69,9 @@ export function useNavigationItems(): typeof topNavigationItems {
   useEffect(() => {
     if (workspaceId) void fetchOverview(workspaceId);
   }, [workspaceId, fetchOverview]);
-  const available = Boolean(overview?.configured && overview.enabled);
+  const available = Boolean(
+    overview?.configured && (overview.enabled || user?.isSuperAdmin),
+  );
   return useMemo(
     () =>
       available

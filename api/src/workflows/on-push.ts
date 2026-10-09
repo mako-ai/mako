@@ -1,19 +1,11 @@
 /**
- * Deploy a workspace's workflows when `main` moves (docs/src/content/docs/workflows.md).
+ * Deploy a workspace's workflows when its repo moves
+ * (docs/src/content/docs/workflows.md).
  *
- * Called from `syncRepoBackedResources`, so it runs for a push through Mako's
- * git endpoint and for a push made directly on GitHub. A deploy is one write:
- * the commit and tree of `workflows/` at `main`, saved as the workspace's
- * target. The worker asks Mako for its target, typechecks it and switches to
- * it, so a push that touches only apps or dbt changes nothing, and a commit
- * that does not build never replaces the running code.
- *
- * A push to another branch is saved the same way as the workspace's preview.
- * The worker runs it next to the live code, under prefixed names and with
- * schedules off, so unmerged work can be run before it is merged.
- *
- * Before the first deploy this also makes sure the workspace has a Hatchet
- * token and a worker: its Mako API key, and under the `gke` provider its pod.
+ * A deploy is one write: the commit and tree of `workflows/` at `main`, saved
+ * as the workspace's target; another branch is saved as its preview. The
+ * worker asks for both and switches to what builds. Before the first deploy
+ * this also gives the workspace its Hatchet token and its worker.
  */
 import { Types } from "mongoose";
 

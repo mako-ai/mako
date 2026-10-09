@@ -1,13 +1,7 @@
-// One Hatchet worker running the workflows of one commit. Started and stopped
-// by entrypoint.mjs, which passes the source directory and the commit.
-//
-// A workflow is a folder: `workflows/<name>/workflow.ts`, whose default export
-// is the Hatchet workflow named `<name>`. Folders without that file (shared
-// code such as `lib/`) are not workflows.
-//
-// A preview (PREVIEW=1) is unmerged work: the Hatchet client prefixes every
-// name through HATCHET_CLIENT_NAMESPACE, and schedules and event triggers are
-// dropped here so a preview only ever runs when someone starts it.
+// One Hatchet worker running the workflows of one commit, started by
+// entrypoint.mjs. A workflow is `workflows/<name>/workflow.ts` whose default
+// export is the workflow named `<name>`. A preview (PREVIEW=1) gets prefixed
+// names and no schedules or event triggers: it runs only when started.
 //
 // Env: WORKFLOWS_ROOT, GIT_SHA, HATCHET_CLIENT_TOKEN, optional WORKER_SLOTS.
 import { existsSync, readdirSync } from "node:fs";

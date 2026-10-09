@@ -138,10 +138,7 @@ async function main() {
     assert.equal(status.deployment.buildError, null);
     await call("/status", WORKER_KEY, { sha: SHA_A, preview: true });
     status = await readWorkflowsStatus(id.toString());
-    assert.deepEqual(
-      [status.preview?.liveSha, status.preview?.deploying],
-      [SHA_A, false],
-    );
+    assert.equal(status.preview?.liveSha, SHA_A);
     assert.equal(status.deployment.liveSha, SHA_B);
 
     // A commit must be a full SHA.

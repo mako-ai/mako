@@ -1,18 +1,8 @@
 /**
- * Workflow agent tools (docs/src/content/docs/workflows.md).
- *
- * Two tools, because everything else an agent does to a workflow it does to
- * files: it writes `workflows/<name>/workflow.ts` with the shell, file and
- * git tools (`workflowId` on the `app_*` tools), and a merge to main is the
- * deploy. What is left is to look and to start:
- *
- *   workflows_status — what runs (live, and the preview of a branch), the
- *                      build error if a commit did not start, the workflows,
- *                      the recent runs; or one run in detail
- *   workflows_run    — start a run of the live code or of the preview
- *
- * Runs, steps and logs are read from Hatchet as the workspace's tenant and
- * trimmed to what a model needs; nothing is stored here.
+ * Workflow agent tools (docs/src/content/docs/workflows.md). An agent writes
+ * a workflow with the `app_*` shell, file and git tools (`workflowId`), and a
+ * merge is the deploy. What is left is to look (`workflows_status`) and to
+ * start a run (`workflows_run`).
  */
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
@@ -50,7 +40,7 @@ export function createWorkflowTools({
   return {
     workflows_status: tool({
       description:
-        "Look at this workspace's workflows. Without runId: what is deployed (`deployment` is the live code on main; `preview` is the unmerged branch last pushed, registered as its own copy with schedules off), the build error if a commit did not start (`buildError` — the old code keeps running), the workflows and schedules, and the last runs. With runId: that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger). `deploying: true` means the worker has not switched to the new commit yet; call again in a few seconds.",
+        "Look at this workspace's workflows. Without runId: what is deployed (`deployment` is the live code on main; `preview` is the unmerged branch last pushed, registered as its own copy with schedules off), the build error if a commit did not start (`buildError` — the old code keeps running), the workflows and schedules, and the last runs. With runId: that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger). While `liveSha` is not yet `targetSha` the worker has not switched to the new commit; call again in a few seconds.",
       inputSchema: z.object({
         runId: z
           .string()

@@ -1,14 +1,8 @@
 /**
- * The `gke` worker provider: one sandboxed worker pod per workspace
- * (docs/src/content/docs/workflows.md). For hosting workflows written by people the
- * operator does not know. An installation that runs its own code uses the
- * `static` provider instead and needs none of this.
- *
- * Each workspace has one Secret and one Deployment named `wf-<prefix><id>` in
- * the `mako-workflows` namespace, on the gVisor node pool the notebook
- * kernels use. The pod is created once. It holds one credential, its Mako API
- * key, and asks Mako which commit to run, so deploying a commit never touches
- * Kubernetes.
+ * The `gke` worker provider: one sandboxed pod per workspace, for workflows
+ * written by people the operator does not know. A Secret and a Deployment
+ * named `wf-<prefix><id>`, created once: the pod holds its Mako API key and
+ * asks Mako which commit to run, so a deploy never touches Kubernetes.
  */
 import type { V1Deployment } from "@kubernetes/client-node";
 

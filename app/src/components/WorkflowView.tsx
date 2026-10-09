@@ -1,12 +1,7 @@
 /**
- * WorkflowView — the `workflow` tab.
- *
- * For a workflow: its runs on the left and the selected run on the right
- * (status, steps, logs), laid out like the Transforms run history so the two
- * read the same. For a file under `workflows/` (`path`): the file, read-only.
- *
- * Self-polls while it is on screen: quickly while a run is active, slowly
- * otherwise, so scheduled and agent-started runs appear without a refresh.
+ * The `workflow` tab. For a workflow: its runs and the selected run, laid out
+ * like the Transforms run history. For a file under `workflows/`: the file,
+ * read-only. Polls while on screen, faster while a run is active.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -21,13 +16,14 @@ import {
   TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
 import {
   Play as RunIcon,
-  RotateCcw as ReplayIcon,
   Square as StopIcon,
+  Webhook as WebhookIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
@@ -273,11 +269,11 @@ function RunsView({
   const fetchRun = useWorkflowsStore(s => s.fetchRun);
   const startRun = useWorkflowsStore(s => s.run);
   const cancelRun = useWorkflowsStore(s => s.cancel);
-  const replayRun = useWorkflowsStore(s => s.replay);
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const selectedRun = useWorkflowsStore(s =>
     selectedRunId ? s.runsById[selectedRunId] : undefined,
   );
@@ -326,6 +322,9 @@ function RunsView({
   }, [workspaceId, selectedRunId, selectedSummary?.status, fetchRun]);
 
   const schedule = overview?.schedules?.find(s => s.workflowId === workflowId);
+  const webhookUrl = overview?.workflows?.find(
+    w => !w.preview && w.workflowId === workflowId,
+  )?.webhookUrl;
   const previewBranch =
     overview?.preview &&
     !overview.preview.buildError &&
@@ -366,6 +365,22 @@ function RunsView({
         <Typography variant="caption" color="text.secondary">
           {schedule ? `Schedule: ${schedule.cron} (UTC)` : "No schedule"}
         </Typography>
+        {webhookUrl && (
+          <Tooltip title="POST JSON to this URL to start a run. Click to copy it.">
+            <Chip
+              icon={<WebhookIcon size={12} />}
+              label={copied ? "Copied" : "Webhook"}
+              size="small"
+              variant="outlined"
+              onClick={() => {
+                void navigator.clipboard.writeText(webhookUrl);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+              sx={{ height: 20 }}
+            />
+          </Tooltip>
+        )}
         <Box sx={{ ml: "auto", display: "flex", gap: 1, flexWrap: "wrap" }}>
           {deployment?.liveSha && (
             <>
@@ -560,7 +575,7 @@ function RunsView({
                   {actionError}
                 </Typography>
               )}
-              {isActiveRun(selectedStatus) ? (
+              {isActiveRun(selectedStatus) && (
                 <Button
                   size="small"
                   color="warning"
@@ -570,16 +585,6 @@ function RunsView({
                   sx={{ ml: "auto", textTransform: "none" }}
                 >
                   Cancel
-                </Button>
-              ) : (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<ReplayIcon size={14} />}
-                  onClick={() => void act(replayRun, selectedSummary.runId)}
-                  sx={{ ml: "auto", textTransform: "none" }}
-                >
-                  Run again
                 </Button>
               )}
             </Box>

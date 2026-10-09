@@ -1,17 +1,11 @@
 /**
- * Workflows — `/api/workspaces/:workspaceId/workflows` for people, and
- * `/api/workflows/runtime` for a workspace's worker
- * (docs/src/content/docs/workflows.md).
+ * Workflows (docs/src/content/docs/workflows.md): the workspace routes for
+ * people, a webhook per workflow, and the runtime routes for the worker.
  *
- * Mako keeps no copy of workflows, runs or logs: those handlers read Hatchet
- * and return it trimmed, the same way the agent tools do (workflows/runs.ts).
- * What Mako does keep is the deploy
- * state on the workspace: the commit the worker should run, the commit it
- * reports running, and the last build error.
- *
- * The runtime routes accept only a workspace API key carrying the
- * `workflows:runtime` scope, which a person cannot put on a key. The key
- * decides the workspace; no id is taken from the request.
+ * Workflows, runs and logs are read from Hatchet and trimmed
+ * (workflows/runs.ts); Mako keeps only the deploy state on the workspace. The
+ * runtime routes accept a workspace API key with the `workflows:runtime`
+ * scope, which a person cannot put on a key; the key decides the workspace.
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
@@ -37,20 +31,27 @@ import {
   resolveWorkspaceApiKeyScopes,
 } from "../auth/api-key-scopes";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { checkBillingLimits } from "../billing/usage-limit.middleware";
 import { AppWorktree, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { trackUsage } from "../services/llm-usage.service";
 import { workspaceService } from "../services/workspace.service";
 import {
   HatchetError,
   isHatchetId,
   readWorkspaceTenant,
-  runAction,
+  cancelRun,
   triggerRun,
   type WorkspaceTenant,
 } from "../workflows/hatchet";
-import { readRun, readWorkflowsOverview } from "../workflows/runs";
+import {
+  PREVIEW_PREFIX,
+  readRun,
+  readWorkflowsOverview,
+} from "../workflows/runs";
+import { isWebhookSecret } from "../workflows/webhook";
 
 const logger = loggers.api("workflows");
 
@@ -118,7 +119,7 @@ async function tenantOf(workspaceId: string): Promise<WorkspaceTenant> {
   return tenant;
 }
 
-/** Viewers read runs; starting, cancelling and replaying need a member. */
+/** Viewers read runs; starting and cancelling need a member. */
 async function mayRun(c: AuthenticatedContext): Promise<boolean> {
   return workspaceService.hasRole(
     c.req.param("workspaceId") as string,
@@ -145,7 +146,12 @@ workflowRoutes.openapi(
       return c.json(
         {
           success: true as const,
-          ...(await readWorkflowsOverview(workspaceId, tenant, RUNS_SHOWN)),
+          ...(await readWorkflowsOverview(
+            workspaceId,
+            tenant,
+            RUNS_SHOWN,
+            await mayRun(c),
+          )),
         },
         200,
       );
@@ -300,44 +306,80 @@ workflowRoutes.openapi(
   },
 );
 
-for (const action of ["cancel", "replay"] as const) {
-  workflowRoutes.openapi(
-    createRoute({
-      method: "post",
-      path: `/runs/{id}/${action}`,
-      tags: ["Workflows"],
-      summary: action === "cancel" ? "Cancel a run" : "Replay a run",
-      security: AUTH_SECURITY,
-      request: { params: RunParam },
-      responses: OPEN_RESPONSES,
-    }),
-    async c => {
-      try {
-        const { workspaceId, id } = c.req.valid("param");
-        if (!isHatchetId(id)) {
-          return c.json({ success: false, error: "Invalid run id" }, 400);
-        }
-        if (!(await mayRun(c))) {
-          return c.json(
-            { success: false, error: `Viewers cannot ${action} runs` },
-            403,
-          );
-        }
-        const tenant = await tenantOf(workspaceId);
-        const result = await runAction(tenant, action, id);
-        return c.json({ success: true as const, result }, 200);
-      } catch (error) {
-        return fail(c, error);
+workflowRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/runs/{id}/cancel",
+    tags: ["Workflows"],
+    summary: "Cancel a run",
+    security: AUTH_SECURITY,
+    request: { params: RunParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId, id } = c.req.valid("param");
+      if (!isHatchetId(id)) {
+        return c.json({ success: false, error: "Invalid run id" }, 400);
       }
-    },
-  );
-}
+      if (!(await mayRun(c))) {
+        return c.json(
+          { success: false, error: "Viewers cannot cancel runs" },
+          403,
+        );
+      }
+      const result = await cancelRun(await tenantOf(workspaceId), id);
+      return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return fail(c, error);
+    }
+  },
+);
+
+// --- Webhooks (public; the URL is the credential) ----------------------------
+
+export const workflowHookRoutes = createRouter();
+
+workflowHookRoutes.post("/:workspaceId/:name/:secret", async c => {
+  const { workspaceId, name, secret } = c.req.param();
+  // One answer for every wrong URL: it does not say which part was wrong.
+  const notFound = () => c.json({ error: "Not found" }, 404);
+  if (
+    !Types.ObjectId.isValid(workspaceId) ||
+    name.startsWith(PREVIEW_PREFIX) ||
+    !isWebhookSecret(workspaceId, name, secret)
+  ) {
+    return notFound();
+  }
+  const workspace = await Workspace.findById(workspaceId)
+    .select("workflows.enabled")
+    .lean();
+  const tenant =
+    workspace?.workflows?.enabled === true
+      ? await readWorkspaceTenant(workspaceId)
+      : null;
+  if (!tenant) return notFound();
+  const body: unknown = await c.req.json().catch(() => ({}));
+  const input =
+    body && typeof body === "object" && !Array.isArray(body) ? body : { body };
+  try {
+    const run = (await triggerRun(tenant, name, input, {
+      trigger: "webhook",
+    })) as { run?: { metadata?: { id?: string } } };
+    return c.json({ runId: run.run?.metadata?.id }, 202);
+  } catch (error) {
+    return fail(c, error);
+  }
+});
 
 // --- Runtime routes (the worker only) ----------------------------------------
 
 export const workflowRuntimeRoutes = createRouter();
 
 const MAX_BUILD_ERROR_CHARS = 8000;
+const GATEWAY_BASE_URL = (
+  process.env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1/ai"
+).replace(/\/+$/, "");
 
 /** The workspace a worker key belongs to, or null when the key is not one. */
 async function workerWorkspaceId(c: Context): Promise<string | null> {
@@ -417,6 +459,79 @@ workflowRuntimeRoutes.post("/status", async c => {
 
 // `workflows/` at a commit, as a gzipped tarball. The key limits the worker to
 // its own workspace's repository.
+// Model calls from a step go through Mako to the AI gateway: the worker holds
+// no provider key, and the call is checked against the workspace's plan and
+// counted in its usage like a chat turn.
+workflowRuntimeRoutes.post("/ai/*", async c => {
+  const workspaceId = await workerWorkspaceId(c);
+  if (!workspaceId) return c.json({ error: "Invalid worker key" }, 401);
+  const modelId = c.req.header("ai-language-model-id") ?? "";
+  if (c.req.header("ai-language-model-streaming") === "true") {
+    return c.json(
+      { error: "Streaming is not available in a step; use generateText." },
+      400,
+    );
+  }
+  const limits = await checkBillingLimits(workspaceId, modelId);
+  if (!limits.allowed) {
+    return c.json(
+      { error: limits.error?.message ?? "Usage limit reached" },
+      (limits.statusCode ?? 402) as 402,
+    );
+  }
+  const headers = new Headers({
+    Authorization: `Bearer ${process.env.AI_GATEWAY_API_KEY ?? ""}`,
+  });
+  c.req.raw.headers.forEach((value, name) => {
+    // The gateway's own protocol headers and the content type, nothing else.
+    if (name === "content-type" || name.startsWith("ai-")) {
+      headers.set(name, value);
+    }
+  });
+  const startedAt = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(
+      `${GATEWAY_BASE_URL}/${c.req.path.split("/runtime/ai/")[1] ?? ""}`,
+      { method: "POST", headers, body: await c.req.arrayBuffer() },
+    );
+  } catch (error) {
+    logger.warn("Workflow model call failed", { workspaceId, error });
+    return c.json({ error: "The AI gateway is unreachable" }, 502);
+  }
+  const body = await res.text();
+  if (res.ok) {
+    const tokens = (value: unknown): number =>
+      typeof value === "number"
+        ? value
+        : ((value as { total?: number } | undefined)?.total ?? 0);
+    let usage: { inputTokens?: unknown; outputTokens?: unknown } = {};
+    try {
+      usage = (JSON.parse(body) as { usage?: typeof usage }).usage ?? {};
+    } catch {
+      // Not a generation result: nothing to count.
+    }
+    const inputTokens = tokens(usage.inputTokens);
+    const outputTokens = tokens(usage.outputTokens);
+    void trackUsage({
+      workspaceId,
+      userId: "workflow",
+      invocationType: "workflow",
+      modelId,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      durationMs: Date.now() - startedAt,
+    });
+  }
+  return new Response(body, {
+    status: res.status,
+    headers: {
+      "Content-Type": res.headers.get("Content-Type") ?? "application/json",
+    },
+  });
+});
+
 workflowRuntimeRoutes.get("/source/:sha", async c => {
   try {
     const workspaceId = await workerWorkspaceId(c);

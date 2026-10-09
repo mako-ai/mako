@@ -1,21 +1,10 @@
-// Workflow worker entrypoint. One container serves one workspace and follows
-// the commit Mako names for it:
+// Workflow worker entrypoint. One container serves one workspace: it asks
+// Mako which commit to run (GET /api/workflows/runtime/head), fetches and
+// typechecks `workflows/` at it, starts a worker, stops the old one, and
+// reports. A commit that does not build is reported and the previous one
+// keeps running. A preview commit runs the same way in a second process.
 //
-//   1. ask Mako what to run:   GET /api/workflows/runtime/head
-//   2. when the commit changes, fetch `workflows/` at it and typecheck it
-//   3. start a worker for the new commit; once it is up, tell the old worker
-//      to finish its running tasks and exit
-//   4. report the commit now running, or the build error, to Mako
-//
-// A commit that fails its typecheck or cannot start is reported and skipped,
-// and the worker for the previous commit keeps running.
-//
-// Mako may also name a preview commit: unmerged work. It runs the same way in
-// a second process, next to the live one, with its workflows registered as
-// `preview_<name>` and their schedules off.
-//
-// Env: MAKO_URL, MAKO_API_KEY. The Hatchet token comes from Mako, so the
-// container holds one credential.
+// Env: MAKO_URL, MAKO_API_KEY. The Hatchet token comes from Mako.
 import { execFileSync, fork } from "node:child_process";
 import {
   copyFileSync,

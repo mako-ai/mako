@@ -1,11 +1,18 @@
-// Mako access for workflow code: data tools and SQL.
+// Mako access for workflow code: models, Mako's tools, and SQL.
 // Credentials come from the worker's environment; nothing is hardcoded.
+import { createGateway } from "@ai-sdk/gateway";
 import { createMCPClient } from "@ai-sdk/mcp";
 
 const url = process.env.MAKO_URL ?? "http://localhost:8080";
 const key = process.env.MAKO_API_KEY ?? "";
 
-/** Mako MCP tools (queries, table inspection, skills, web search) as AI SDK tools. */
+/** A model, e.g. `model("anthropic/claude-sonnet-4.5")`. Counted in the workspace's usage. */
+export const model = createGateway({
+  baseURL: `${url}/api/workflows/runtime/ai`,
+  apiKey: key,
+});
+
+/** Mako's tools (queries, table inspection, apps, web search) for a model to use. */
 export async function tools() {
   const mcp = await createMCPClient({
     transport: {

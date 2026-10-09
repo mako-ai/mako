@@ -50,7 +50,14 @@ export interface WorkflowsOverview {
   repoLinked: boolean;
   deployment: WorkflowDeployment;
   preview: (WorkflowDeployment & { branch: string }) | null;
-  workflows?: Array<{ workflowId: string; preview: boolean }>;
+  /** Where an admin opens the Hatchet dashboard, when the installation has one. */
+  dashboardUrl: string | null;
+  /** `webhookUrl` is there for a live workflow, for who may start runs. */
+  workflows?: Array<{
+    workflowId: string;
+    preview: boolean;
+    webhookUrl?: string | null;
+  }>;
   schedules?: Array<{ workflowId: string; cron: string }>;
   recentRuns?: WorkflowRunSummary[];
 }
@@ -72,7 +79,8 @@ interface WorkflowsState {
     preview: boolean,
   ) => Promise<Result>;
   cancel: (workspaceId: string, runId: string) => Promise<Result>;
-  replay: (workspaceId: string, runId: string) => Promise<Result>;
+  /** Turn workflows on for the workspace. Staff only. */
+  enable: (workspaceId: string) => Promise<Result>;
 }
 
 /** Preview workflows are registered under this prefix (see the worker). */
@@ -83,24 +91,6 @@ export const isActiveRun = (status?: string) =>
 
 export const useWorkflowsStore = create<WorkflowsState>()(
   immer(set => {
-    const runAction = async (
-      workspaceId: string,
-      runId: string,
-      action: "cancel" | "replay",
-    ): Promise<Result> => {
-      try {
-        unwrapBody(
-          await api.POST(
-            `/api/workspaces/{workspaceId}/workflows/runs/{id}/${action}`,
-            { params: { path: { workspaceId, id: runId } } },
-          ),
-        );
-        return { ok: true };
-      } catch (e) {
-        return { ok: false, error: message(e, `Failed to ${action} the run`) };
-      }
-    };
-
     return {
       overviewByWorkspace: {},
       runsById: {},
@@ -185,8 +175,36 @@ export const useWorkflowsStore = create<WorkflowsState>()(
         }
       },
 
-      cancel: (workspaceId, runId) => runAction(workspaceId, runId, "cancel"),
-      replay: (workspaceId, runId) => runAction(workspaceId, runId, "replay"),
+      cancel: async (workspaceId, runId) => {
+        try {
+          unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/workflows/runs/{id}/cancel",
+              { params: { path: { workspaceId, id: runId } } },
+            ),
+          );
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: message(e, "Failed to cancel the run") };
+        }
+      },
+
+      enable: async workspaceId => {
+        try {
+          unwrapBody(
+            await api.PUT("/api/admin/workspaces/{workspaceId}/workflows", {
+              params: { path: { workspaceId } },
+              body: { enabled: true },
+            }),
+          );
+          return { ok: true };
+        } catch (e) {
+          return {
+            ok: false,
+            error: message(e, "Failed to turn workflows on"),
+          };
+        }
+      },
     };
   }),
 );

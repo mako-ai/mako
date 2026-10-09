@@ -46,7 +46,7 @@ Main is live: a merge to main is the deploy. So never write on main.
 3. `app_commit` with the same `workflowId`. The commit is pushed, and the
    branch becomes the workspace's **preview**: the same code, registered next
    to the live one, with schedules off.
-4. `workflows_status`. Wait until `preview.deploying` is false. If
+4. `workflows_status`. Wait until `preview.liveSha` is your commit. If
    `preview.buildError` is set, read it, fix the file, commit again.
 5. `workflows_run` with `preview: true` and an input.
 6. `workflows_status` with the `runId`: each step's status, output, error and
@@ -113,7 +113,10 @@ Rules:
 ```ts
 import { query } from "../lib/mako";
 
-const rows = await query("<connectionId>", "select id, name from customers limit 100");
+const rows = await query(
+  "<connectionId>",
+  "select id, name from customers limit 100",
+);
 ```
 
 Find the connection id and check the SQL first with `list_connections`,
@@ -131,14 +134,49 @@ import { call } from "../lib/mako";
 await call("app_materialize", { appId: "<appId>", name: "<binding>" });
 ```
 
-Use `call`, not `tools()`, unless a step hands the tools to a model.
+## A model in a step
+
+A step can think: give a model Mako's tools and a goal. The call goes through
+Mako and counts in the workspace's usage, like a chat turn.
+
+```ts
+import { generateText, stepCountIs } from "ai";
+import { model, tools } from "../lib/mako";
+
+const { text } = await generateText({
+  model: model("anthropic/claude-sonnet-4.5"),
+  tools: await tools(),
+  stopWhen: stepCountIs(8),
+  prompt: "Which accounts stopped using the product this week, and why?",
+});
+```
+
+Use `generateText`, not `streamText`. Keep `stepCountIs` low: every step is a
+paid model call. Use plain `call` or `query` when no judgement is needed.
+
+## What starts a run
+
+- A schedule: `on: { cron: "0 6 * * *" }` in the workflow (UTC).
+- A webhook: every live workflow has a URL (the Webhook chip on its tab). A
+  POST to it starts a run with the JSON body as input. Nothing to write in
+  the code.
+- A person (Run) or you (`workflows_run`).
+
+A preview has no schedule and no webhook; it runs only when started.
+
+## Hatchet's own documentation
+
+For anything Hatchet does that is not shown here (child workflows, DAGs,
+concurrency, rate limits, durable sleep), read its docs before guessing: fetch
+`https://docs.hatchet.run/llms.txt` for the index, then the page you need as
+markdown (`https://docs.hatchet.run/llms/<section>/<page>.md`).
 
 ## When something is wrong
 
-| You see | It means |
-| --- | --- |
-| `buildError` with `error TS…` | The commit does not typecheck. The previous code keeps running. Fix and commit. |
-| `buildError` with `must default-export the workflow named …` | Folder name and `name` differ, or the export is not the default. |
-| `deploying: true` for more than a minute | The worker is not running. Tell the user. |
-| A run stays `QUEUED` | No worker has that workflow: its build failed, or (for `preview: true`) there is no preview. Check `workflows_status`. |
-| Step `FAILED` | Read that step's `error` and `logs` in `workflows_status({ runId })`. |
+| You see                                                          | It means                                                                                                               |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `buildError` with `error TS…`                                    | The commit does not typecheck. The previous code keeps running. Fix and commit.                                        |
+| `buildError` with `must default-export the workflow named …`     | Folder name and `name` differ, or the export is not the default.                                                       |
+| `liveSha` is not `targetSha` after a minute, and no `buildError` | The worker is not running. Tell the user.                                                                              |
+| A run stays `QUEUED`                                             | No worker has that workflow: its build failed, or (for `preview: true`) there is no preview. Check `workflows_status`. |
+| Step `FAILED`                                                    | Read that step's `error` and `logs` in `workflows_status({ runId })`.                                                  |

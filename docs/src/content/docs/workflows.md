@@ -39,7 +39,37 @@ export default dailyDigest;
 
 Every folder with a `workflow.ts` is picked up. There is no list to keep.
 
-Examples are in the Mako repository under `deploy/workflows/template/workflows/`.
+## What starts a run
+
+| Trigger  | How                                                                                                              |
+| -------- | ---------------------------------------------------------------------------------------------------------------- |
+| Schedule | `on: { cron: "0 7 * * 1-5" }` in the workflow, in UTC                                                            |
+| Webhook  | Every live workflow has a URL: the Webhook chip on its tab copies it. A POST starts a run with the JSON as input |
+| A person | The Run button, with a JSON input                                                                                |
+| An agent | `workflows_run`                                                                                                  |
+
+The webhook URL carries its own secret, so treat it like a password. A preview has no schedule and no webhook.
+
+## Using Mako from a step
+
+```ts
+import { generateText, stepCountIs } from "ai";
+import { call, model, query, tools } from "../lib/mako";
+
+// SQL on a workspace connection (read-only).
+const rows = await query("<connectionId>", "select count(*) from orders");
+
+// Any Mako tool by name: here, rebuild an app's data.
+await call("app_materialize", { appId: "<appId>", name: "orders_daily" });
+
+// A model with Mako's tools. Counted in the workspace's usage.
+const { text } = await generateText({
+  model: model("anthropic/claude-sonnet-4.5"),
+  tools: await tools(),
+  stopWhen: stepCountIs(8),
+  prompt: "Which accounts stopped using the product this week, and why?",
+});
+```
 
 ## How a deploy works
 
@@ -63,19 +93,11 @@ Mako needs two things: a Hatchet API token, and a worker.
    docker compose --profile workflows up -d
    ```
 
-3. Turn workflows on for a workspace. Signed in to Mako as a super admin (`SUPER_ADMIN_EMAILS`), run this in the browser console:
+3. Turn workflows on for a workspace: signed in as a super admin (`SUPER_ADMIN_EMAILS`), open Workflows in the left bar and click **Turn on workflows**.
 
-   ```js
-   await fetch("/api/admin/workspaces/<workspaceId>/workflows", {
-     method: "PUT",
-     headers: { "Content-Type": "application/json" },
-     body: JSON.stringify({ enabled: true }),
-   }).then(r => r.json());
-   ```
+4. Ask the agent for a workflow, or add `workflows/<name>/workflow.ts` to the workspace repo and merge to `main`.
 
-4. Copy the starter files into your workspace repo as `workflows/` and merge to `main`.
-
-Hatchet dashboard: `http://localhost:8086` (`admin@example.com` / `Admin123!!`). This bundled Hatchet is for testing, not for production.
+Hatchet dashboard: `http://localhost:8086` (`admin@example.com` / `Admin123!!`). The link icon in the Workflows panel opens it. This bundled Hatchet is for testing, not for production.
 
 ### Production
 

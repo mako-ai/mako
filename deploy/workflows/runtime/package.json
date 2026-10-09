@@ -4,6 +4,7 @@
   "description": "Runtime image for workspace workflows: follow the commit Mako names, typecheck it, run a Hatchet worker. Workflow code can import exactly these packages.",
   "type": "module",
   "dependencies": {
+    "@ai-sdk/gateway": "3.0.210",
     "@ai-sdk/mcp": "1.0.91",
     "@hatchet-dev/typescript-sdk": "1.36.0",
     "@types/node": "20.17.57",

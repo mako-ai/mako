@@ -6,7 +6,13 @@
  * `workflow` tab kind, told apart by `metadata.path`. When the last merge did
  * not build, the shell's error slot says so: the previous version stays live.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Box,
   Button,
@@ -18,6 +24,7 @@ import {
 import {
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
+  ExternalLink as DashboardIcon,
   FileCode as FileIcon,
   Github as LinkIcon,
   RefreshCw as RefreshIcon,
@@ -59,6 +66,35 @@ function Empty({ children }: { children: string }) {
   );
 }
 
+function Prompt({
+  text,
+  action,
+  icon,
+  onClick,
+}: {
+  text: string;
+  action: string;
+  icon?: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <Box sx={{ p: 2 }}>
+      <Typography variant="body2" color="text.secondary" gutterBottom>
+        {text}
+      </Typography>
+      <Button
+        variant="contained"
+        size="small"
+        startIcon={icon}
+        sx={{ mt: 1 }}
+        onClick={onClick}
+      >
+        {action}
+      </Button>
+    </Box>
+  );
+}
+
 const short = (sha: string | null | undefined) => (sha ?? "").slice(0, 7);
 
 export function WorkflowsExplorer() {
@@ -73,6 +109,7 @@ export function WorkflowsExplorer() {
   );
   const fetchOverview = useWorkflowsStore(s => s.fetchOverview);
   const fetchFiles = useWorkflowsStore(s => s.fetchFiles);
+  const enable = useWorkflowsStore(s => s.enable);
 
   const focusOrOpenTab = useConsoleStore(s => s.focusOrOpenTab);
   const activeMeta = useConsoleStore(s => {
@@ -167,31 +204,45 @@ export function WorkflowsExplorer() {
       error={buildError}
       loading={!overview}
       actions={
-        <Tooltip title="Refresh">
-          <IconButton size="small" onClick={refresh}>
-            <RefreshIcon size={20} strokeWidth={2} />
-          </IconButton>
-        </Tooltip>
+        <>
+          {overview?.dashboardUrl && (
+            <Tooltip title="Open the Hatchet dashboard">
+              <IconButton
+                size="small"
+                component="a"
+                href={overview.dashboardUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <DashboardIcon size={20} strokeWidth={2} />
+              </IconButton>
+            </Tooltip>
+          )}
+          <Tooltip title="Refresh">
+            <IconButton size="small" onClick={refresh}>
+              <RefreshIcon size={20} strokeWidth={2} />
+            </IconButton>
+          </Tooltip>
+        </>
       }
     >
       {() =>
-        overview?.repoLinked === false ? (
-          <Box sx={{ p: 2 }}>
-            <Typography variant="body2" color="text.secondary" gutterBottom>
-              Workflows live in a GitHub repository. Link one to get started —
-              each workflow is a folder in the repo, and merging to the default
-              branch puts it live.
-            </Typography>
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={<LinkIcon size={16} />}
-              sx={{ mt: 1 }}
-              onClick={() => openSettingsSection("github")}
-            >
-              Link a GitHub repo
-            </Button>
-          </Box>
+        overview?.enabled === false ? (
+          // Only staff get this far: the rail hides Workflows until it is on.
+          <Prompt
+            text="Workflows are off for this workspace."
+            action="Turn on workflows"
+            onClick={() =>
+              workspaceId && void enable(workspaceId).then(refresh)
+            }
+          />
+        ) : overview?.repoLinked === false ? (
+          <Prompt
+            text="Workflows live in a GitHub repository. Link one to get started — each workflow is a folder in the repo, and merging to the default branch puts it live."
+            action="Link a GitHub repo"
+            icon={<LinkIcon size={16} />}
+            onClick={() => openSettingsSection("github")}
+          />
         ) : (
           <>
             <SectionHeader

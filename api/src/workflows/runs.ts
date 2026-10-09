@@ -6,6 +6,7 @@
  */
 import { tenantJson, type WorkspaceTenant } from "./hatchet";
 import { readWorkflowsStatus } from "./status";
+import { webhookUrl } from "./webhook";
 
 /** Preview workflows are registered in Hatchet under this prefix (worker.mjs). */
 export const PREVIEW_PREFIX = "preview_";
@@ -83,6 +84,8 @@ export async function readWorkflowsOverview(
   workspaceId: string,
   tenant: WorkspaceTenant | null,
   limit: number,
+  /** Include each live workflow's webhook URL: only for who may start runs. */
+  withWebhooks = false,
 ) {
   const status = await readWorkflowsStatus(workspaceId);
   if (!tenant) return status;
@@ -105,7 +108,15 @@ export async function readWorkflowsOverview(
   ]);
   return {
     ...status,
-    workflows: (workflows.rows ?? []).map(w => splitName(w.name)),
+    workflows: (workflows.rows ?? []).map(w => {
+      const workflow = splitName(w.name);
+      return withWebhooks && !workflow.preview
+        ? {
+            ...workflow,
+            webhookUrl: webhookUrl(workspaceId, workflow.workflowId),
+          }
+        : workflow;
+    }),
     schedules: (crons.rows ?? []).map(c => ({
       workflowId: c.workflowName,
       cron: c.cron,
