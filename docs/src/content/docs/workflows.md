@@ -75,7 +75,7 @@ Mako needs two things: a Hatchet API token, and a worker.
 
 4. Copy the starter files into your workspace repo as `workflows/` and merge to `main`.
 
-Hatchet dashboard: `http://localhost:8085` (`admin@example.com` / `Admin123!!`). This bundled Hatchet is for testing, not for production.
+Hatchet dashboard: `http://localhost:8086` (`admin@example.com` / `Admin123!!`). This bundled Hatchet is for testing, not for production.
 
 ### Production
 

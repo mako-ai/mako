@@ -8,7 +8,7 @@
 # Workspace workflows (docs/src/content/docs/workflows.md) are optional and off by
 # default. `docker compose --profile workflows up -d` adds Hatchet Lite, its
 # Postgres and the workflow worker, for local testing only. Hatchet dashboard
-# and REST API: http://localhost:8085 (admin@example.com / Admin123!!).
+# and REST API: http://localhost:8086 (admin@example.com / Admin123!!).
 #
 # The dev database is hosted MongoDB Atlas (via DATABASE_URL), so it is not a
 # compose service.
@@ -53,11 +53,12 @@ services:
     depends_on:
       - hatchet-postgres
     ports:
-      - "8085:8888"
+      # Not 8085: `gcloud auth login` answers on that port.
+      - "8086:8888"
       - "7077:7077"
     environment:
       DATABASE_URL: postgresql://hatchet:hatchet@hatchet-postgres:5432/hatchet?sslmode=disable
-      SERVER_URL: http://localhost:8085
+      SERVER_URL: http://localhost:8086
       SERVER_AUTH_COOKIE_DOMAIN: localhost
       SERVER_AUTH_COOKIE_INSECURE: "t"
       SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
