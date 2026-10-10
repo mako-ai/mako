@@ -40,3 +40,13 @@ on the direct endpoint, so the tables are created in `public`, the engine logs
 - Secret `wf-<prefix><workspaceId>`: the worker's Mako API key
 - Deployment `wf-<prefix><workspaceId>`: one replica of the runtime image.
   Created once, replaced only for a new image.
+
+## PR previews
+
+A preview runs several API instances with ephemeral disks and never pushes
+to the workspace's mirror, so a commit exists only on the instance that took
+the push. The worker's source fetch for it answers `That commit is not on
+this instance` from the others and is retried on every poll. The preview
+slot usually works (one push, one fetch, moments apart); the live slot after
+a merge may not. Production pushes to the mirror, which every instance can
+fetch from.

@@ -15,7 +15,7 @@ import { Types } from "mongoose";
 import { WORKFLOWS_DIR } from "../apps/app-paths";
 import { ensureCommitLocally } from "../apps/cloud-repo.service";
 import { isOid, runGitBuffer } from "../apps/git";
-import { repoDirFor } from "../apps/repository.service";
+import { repoDirFor, resolveCommit } from "../apps/repository.service";
 import { listFiles, readFile } from "../apps/worktree.service";
 import {
   hasWorkspaceApiKeyScope,
@@ -488,9 +488,16 @@ workflowRuntimeRoutes.get(
       sha,
       preview?.sha === sha ? preview.branch : undefined,
     );
+    const repoDir = repoDirFor(workspaceId);
+    const present = await resolveCommit(repoDir, sha).catch(() => null);
+    if (!present) {
+      // Another instance took the push and the mirror does not have it yet
+      // (previews never push to the mirror): the worker asks again later.
+      return c.json({ error: "That commit is not on this instance" }, 404);
+    }
     const tarball = await runGitBuffer([
       "-C",
-      repoDirFor(workspaceId),
+      repoDir,
       "archive",
       "--format=tar.gz",
       sha,
