@@ -30,7 +30,7 @@ import {
 import { runCell } from "../notebook-runtime/run";
 import { stopKernelSession } from "../notebook-runtime/kernel";
 import NotebookCell from "./NotebookCell";
-import NotebookHistoryPopover from "./NotebookHistoryPopover";
+import EntityHistoryPopover from "./EntityHistoryPopover";
 import { useNotebookPresence } from "../notebook-runtime/presence";
 import {
   presenceColor,
@@ -299,11 +299,12 @@ export default function NotebookRenderer({
       </Box>
 
       {workspaceId && (
-        <NotebookHistoryPopover
+        <EntityHistoryPopover
           anchorEl={historyAnchor}
           onClose={() => setHistoryAnchor(null)}
           workspaceId={workspaceId}
-          notebookId={notebookId}
+          entity="notebook"
+          id={notebookId}
         />
       )}
 

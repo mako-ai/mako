@@ -38,6 +38,7 @@ import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { RepoRequiredError } from "../apps/config";
+import { NotEntityPathError } from "../apps/entity-git-history";
 import {
   notebookCommitChanges,
   notebookFileVersions,
@@ -435,8 +436,18 @@ notebookRoutes.openapi(
     const loaded = await loadReadableNotebook(c, "read");
     if ("errorResponse" in loaded) return loaded.errorResponse;
     const { sha, path: relPath } = c.req.valid("query");
-    const versions = await notebookFileVersions(loaded.index, sha, relPath);
-    return c.json({ success: true as const, versions });
+    try {
+      const versions = await notebookFileVersions(loaded.index, sha, relPath);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      if (error instanceof NotEntityPathError) {
+        return c.json(
+          { success: false, error: "Path is not this notebook" },
+          403,
+        );
+      }
+      throw error;
+    }
   },
 );
 

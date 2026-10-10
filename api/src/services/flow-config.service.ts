@@ -37,7 +37,11 @@ import {
 
 const logger = loggers.api("flow-config");
 
-async function commitConfig(
+/**
+ * Commit whole-file writes/deletes onto main and queue the mirror push.
+ * Shared by flow saves and history restores (flows, workspace connectors).
+ */
+export async function commitConfigToMain(
   workspaceId: string,
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
@@ -80,7 +84,7 @@ export async function commitFlowFile(
     return { ok: true, changed: false, sourceBlobSha: sha };
   }
   try {
-    await commitConfig(
+    await commitConfigToMain(
       flow.workspaceId.toString(),
       { writes: { [flowFilePath(flow.slug)]: contents } },
       messageOverride ?? `flow: "${flow.name ?? flow.slug}" (${flow.slug})`,
@@ -105,7 +109,7 @@ export async function deleteFlowFile(
   actorUserId?: string,
 ): Promise<void> {
   if (!flow.slug) return;
-  await commitConfig(
+  await commitConfigToMain(
     flow.workspaceId.toString(),
     { deletes: [flowFilePath(flow.slug)] },
     `flow: delete "${flow.name ?? flow.slug}" (${flow.slug})`,
@@ -214,7 +218,7 @@ export async function exportWorkspaceFlows(
   let commitMade = false;
   if (Object.keys(writes).length > 0) {
     try {
-      await commitConfig(
+      await commitConfigToMain(
         workspaceId,
         { writes },
         `flows: export ${Object.keys(writes).length} definition(s)`,

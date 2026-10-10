@@ -1,26 +1,31 @@
 /**
- * What one commit did to a console's file — opened from the console History
+ * What one commit did to one of an entity's files — opened from its History
  * popover, the same way an app commit opens its file diffs. A commit is
  * immutable, so this reads once from the repo.
  */
 import { useEffect, useState } from "react";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useConsoleHistoryStore } from "../store/consoleHistoryStore";
+import {
+  useEntityHistoryStore,
+  type HistoryEntityKind,
+} from "../store/entityHistoryStore";
 import type { AppCommitFileVersions } from "../store/appsStore";
 import { GitFileDiffView } from "./GitFileDiffView";
 
-export default function ConsoleDiffTab({
-  consoleId,
+export default function HistoryDiffTab({
+  entity,
+  id,
   path,
   sha,
 }: {
-  consoleId: string;
+  entity: HistoryEntityKind;
+  id: string;
   path: string;
   sha: string;
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const fetchCommitFileVersions = useConsoleHistoryStore(
+  const fetchCommitFileVersions = useEntityHistoryStore(
     s => s.fetchCommitFileVersions,
   );
   const [versions, setVersions] = useState<AppCommitFileVersions | null>(null);
@@ -30,7 +35,7 @@ export default function ConsoleDiffTab({
     if (!workspaceId) return;
     let cancelled = false;
     setLoading(true);
-    void fetchCommitFileVersions(workspaceId, consoleId, sha, path).then(v => {
+    void fetchCommitFileVersions(entity, workspaceId, id, sha, path).then(v => {
       if (cancelled) return;
       setVersions(v);
       setLoading(false);
@@ -38,7 +43,7 @@ export default function ConsoleDiffTab({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, consoleId, sha, path, fetchCommitFileVersions]);
+  }, [entity, workspaceId, id, sha, path, fetchCommitFileVersions]);
 
   return (
     <GitFileDiffView

@@ -1,12 +1,12 @@
 /**
- * A notebook's commit history, from the notebook toolbar — the apps History
- * popover for a notebook (apps.md §16): the same rows, the same actions.
+ * An entity's commit history — consoles, notebooks, flows, workspace
+ * connectors — the apps History popover (apps.md §16): the same rows, the
+ * same actions, for anything whose definition is files in the workspace repo.
  *
- * Every commit can be inspected (its file, opening the real diff for that
- * commit) and restored (a NEW commit that sets the notebook back to that
- * content — history is append-only, so nothing is lost). Saved notebooks are
- * files in the workspace repo, so edits pushed from a clone or a terminal
- * appear here alongside saves made in the app.
+ * Every commit can be inspected (its files, each opening the real diff for
+ * that commit) and restored (a NEW commit that sets the entity back to that
+ * content — history is append-only, so nothing is lost). Edits pushed from a
+ * clone, a terminal or an agent appear here alongside saves made in the app.
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -33,7 +33,11 @@ import {
   Undo2 as RestoreIcon,
 } from "lucide-react";
 import type { AppCommit } from "../store/appsStore";
-import { useNotebookHistoryStore } from "../store/notebookHistoryStore";
+import {
+  historyKey,
+  useEntityHistoryStore,
+  type HistoryEntityKind,
+} from "../store/entityHistoryStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { CommitChip, CommitRow } from "./CommitRow";
 
@@ -46,43 +50,50 @@ function basename(p: string): string {
 }
 
 /** Open (or focus) the diff tab for one file of one commit. */
-function focusNotebookDiffTab(notebookId: string, path: string, sha: string) {
+function focusHistoryDiffTab(
+  entity: HistoryEntityKind,
+  id: string,
+  path: string,
+  sha: string,
+) {
   return useConsoleStore.getState().focusOrOpenTab(
     {
-      kind: "notebook-diff",
-      metadata: { notebookId, path, sha },
+      kind: "history-diff",
+      metadata: { entity, id, path, sha },
     },
     () => ({
       title: `${basename(path)} (${sha.slice(0, 7)})`,
       content: "",
-      kind: "notebook-diff",
-      metadata: { notebookId, path, sha },
+      kind: "history-diff",
+      metadata: { entity, id, path, sha },
     }),
   );
 }
 
-export default function NotebookHistoryPopover({
+export default function EntityHistoryPopover({
   anchorEl,
   onClose,
   workspaceId,
-  notebookId,
+  entity,
+  id,
   onRestored,
 }: {
   anchorEl: HTMLElement | null;
   onClose: () => void;
   workspaceId: string;
-  notebookId: string;
-  /** The notebook's content changed on the server: reload the open tab. */
+  entity: HistoryEntityKind;
+  /** Console/notebook/flow id, or the connector's folder slug. */
+  id: string;
+  /** The entity changed on the server: reload whatever shows it. */
   onRestored?: () => void;
 }) {
-  const history = useNotebookHistoryStore(s => s.historyByNotebook[notebookId]);
-  const repoPath = useNotebookHistoryStore(s => s.pathByNotebook[notebookId]);
-  const commitFiles = useNotebookHistoryStore(
-    s => s.commitFilesByNotebook[notebookId],
-  );
-  const fetchHistory = useNotebookHistoryStore(s => s.fetchHistory);
-  const fetchCommitFiles = useNotebookHistoryStore(s => s.fetchCommitFiles);
-  const restoreVersion = useNotebookHistoryStore(s => s.restoreVersion);
+  const key = historyKey(entity, id);
+  const history = useEntityHistoryStore(s => s.history[key]);
+  const repoPath = useEntityHistoryStore(s => s.path[key]);
+  const commitFiles = useEntityHistoryStore(s => s.commitFiles[key]);
+  const fetchHistory = useEntityHistoryStore(s => s.fetchHistory);
+  const fetchCommitFiles = useEntityHistoryStore(s => s.fetchCommitFiles);
+  const restoreVersion = useEntityHistoryStore(s => s.restoreVersion);
 
   const [expanded, setExpanded] = useState<string | null>(null);
   const [menu, setMenu] = useState<{
@@ -96,21 +107,21 @@ export default function NotebookHistoryPopover({
 
   const open = Boolean(anchorEl);
   useEffect(() => {
-    if (open) void fetchHistory(workspaceId, notebookId);
+    if (open) void fetchHistory(entity, workspaceId, id);
     else {
       setExpanded(null);
       setMenu(null);
       setError(null);
     }
-  }, [open, workspaceId, notebookId, fetchHistory]);
+  }, [open, entity, workspaceId, id, fetchHistory]);
 
   const toggleFiles = useCallback(
     (oid: string) => {
       const next = expanded === oid ? null : oid;
       setExpanded(next);
-      if (next) void fetchCommitFiles(workspaceId, notebookId, next);
+      if (next) void fetchCommitFiles(entity, workspaceId, id, next);
     },
-    [expanded, fetchCommitFiles, workspaceId, notebookId],
+    [expanded, fetchCommitFiles, entity, workspaceId, id],
   );
 
   const runConfirmed = useCallback(async () => {
@@ -118,7 +129,7 @@ export default function NotebookHistoryPopover({
     setBusy(true);
     setError(null);
     try {
-      await restoreVersion(workspaceId, notebookId, confirm.oid);
+      await restoreVersion(entity, workspaceId, id, confirm.oid);
       setNotice(`Restored "${confirm.subject}" as a new commit on main.`);
       setConfirm(null);
       onRestored?.();
@@ -127,7 +138,7 @@ export default function NotebookHistoryPopover({
     } finally {
       setBusy(false);
     }
-  }, [confirm, restoreVersion, workspaceId, notebookId, onRestored]);
+  }, [confirm, restoreVersion, entity, workspaceId, id, onRestored]);
 
   const commits = history ?? [];
   const headOid = commits[0]?.oid;
@@ -202,7 +213,7 @@ export default function NotebookHistoryPopover({
             >
               {repoPath
                 ? "No commits yet."
-                : "This notebook is not in the workspace repo yet — save it once to start its history."}
+                : `This ${entity} is not in the workspace repo yet — save it once to start its history.`}
             </Typography>
           )}
           {commits.map(c => (
@@ -213,7 +224,7 @@ export default function NotebookHistoryPopover({
               onToggle={() => toggleFiles(c.oid)}
               files={commitFiles?.[c.oid]}
               onFileClick={f => {
-                focusNotebookDiffTab(notebookId, f.path, c.oid);
+                focusHistoryDiffTab(entity, id, f.path, c.oid);
                 onClose();
               }}
               onMenu={anchor => setMenu({ anchor, commit: c })}
@@ -277,7 +288,7 @@ export default function NotebookHistoryPopover({
           <DialogContentText>
             {confirm && (
               <>
-                The notebook goes back to what it was in{" "}
+                The {entity} goes back to what it was in{" "}
                 <b>{confirm.subject}</b> (<code>{confirm.oid.slice(0, 7)}</code>
                 ), as a new commit on <b>main</b>. Everything after it stays in
                 the history, so this can itself be undone.

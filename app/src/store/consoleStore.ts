@@ -2146,6 +2146,23 @@ export const useConsoleStore = create<ConsoleStore>()(
                 if (tab.isSaved === undefined) {
                   tab.isSaved = !!tab.filePath;
                 }
+                // Console/notebook diff tabs became one kind shared with
+                // flows and connectors; carry open ones across the rename.
+                if (
+                  tab.kind === "console-diff" ||
+                  tab.kind === "notebook-diff"
+                ) {
+                  const entity =
+                    tab.kind === "console-diff" ? "console" : "notebook";
+                  const meta = tab.metadata ?? {};
+                  tab.kind = "history-diff";
+                  tab.metadata = {
+                    entity,
+                    id: meta.consoleId ?? meta.notebookId,
+                    path: meta.path,
+                    sha: meta.sha,
+                  };
+                }
                 delete tab.initialContent;
                 delete tab.dbContentHash;
                 delete tab.savedConnectionId;

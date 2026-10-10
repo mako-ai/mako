@@ -46,6 +46,8 @@ export default defineConfig({
       // GET/list from git at main; leftover local git without a binding
       // must not populate the list (issue #956).
       "src/services/flow-sync.repo.test.ts",
+      // Flow + connector git history and restore-as-new-commit.
+      "src/services/repo-entity-restore.service.test.ts",
       // The live connector probe: its service (bounded, read-only, secrets
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",

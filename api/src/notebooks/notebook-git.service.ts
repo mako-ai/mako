@@ -27,15 +27,23 @@ import { ensureLocalRepo, queueMirrorPush } from "../apps/cloud-repo.service";
 import { RepoRequiredError } from "../apps/config";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
+  NotEntityPathError,
+  entityCommitChanges,
+  entityFileVersions,
+  entityHistory,
+  fileScope,
+  type CommitChanges,
+  type EntityGitScope,
+  type FileVersions,
+} from "../apps/entity-git-history";
+import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
   diffNameStatus,
   listTree,
-  log as repoLog,
   readBlob,
   resolveCommit,
-  type ChangedFile,
   type CommitInfo,
 } from "../apps/repository.service";
 import { EMPTY_TREE } from "../apps/git";
@@ -395,63 +403,52 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
 
 // ---------------------------------------------------------------------------
 // History: the SAME shapes the apps/consoles History popover consumes
-// (apps.md §24) — one component, three content kinds.
+// (apps.md §24) — reads shared via entity-git-history.
 // ---------------------------------------------------------------------------
 
-const MAIN_REF = `refs/heads/${DEFAULT_BRANCH}`;
+function notebookScope(
+  index: Pick<INotebookIndex, "workspaceId" | "path">,
+): EntityGitScope | null {
+  return index.path
+    ? fileScope(index.workspaceId.toString(), index.path)
+    : null;
+}
 
 /** Commits that touched this notebook's file (moves included via its path). */
 export async function notebookHistory(
   index: Pick<INotebookIndex, "workspaceId" | "path">,
   limit = 50,
 ): Promise<CommitInfo[]> {
-  if (!index.path) return [];
-  const repoDir = await boundRepoDirIfExists(index.workspaceId.toString());
-  if (repoDir == null) return [];
-  if (!(await resolveCommit(repoDir, MAIN_REF))) return [];
-  return repoLog(repoDir, MAIN_REF, limit, index.path);
+  const scope = notebookScope(index);
+  return scope ? entityHistory(scope, limit) : [];
 }
 
 /** What one commit did to this notebook's file. */
 export async function notebookCommitChanges(
   index: Pick<INotebookIndex, "workspaceId" | "path">,
   sha: string,
-): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
-  const repoDir = await boundRepoDirIfExists(index.workspaceId.toString());
-  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
-  const oid = await resolveCommit(repoDir, sha);
-  if (!oid) throw new Error(`No such commit: ${sha}`);
-  const parent = await resolveCommit(repoDir, `${oid}^`);
-  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
-  const mine = new Set(index.path ? [index.path] : []);
-  return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
+): Promise<CommitChanges> {
+  const scope = notebookScope(index) ?? {
+    workspaceId: index.workspaceId.toString(),
+    pathspec: "",
+    owns: () => false,
+  };
+  return entityCommitChanges(scope, sha);
 }
 
-/** A repo path before and after one commit (null = absent on that side). */
+/**
+ * The notebook's file before and after one commit. Any other path throws
+ * {@link NotEntityPathError}: the repo also holds other members' private
+ * files, and this route must not read them.
+ */
 export async function notebookFileVersions(
-  index: Pick<INotebookIndex, "workspaceId">,
+  index: Pick<INotebookIndex, "workspaceId" | "path">,
   sha: string,
   relPath: string,
-): Promise<{ before: string | null; after: string | null; binary: boolean }> {
-  const repoDir = await boundRepoDirIfExists(index.workspaceId.toString());
-  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
-  const oid = await resolveCommit(repoDir, sha);
-  if (!oid) throw new Error(`No such commit: ${sha}`);
-  const parent = await resolveCommit(repoDir, `${oid}^`);
-  const read = async (ref: string | null) => {
-    if (!ref) return null;
-    try {
-      return await readBlob(repoDir, ref, relPath);
-    } catch {
-      return null;
-    }
-  };
-  const [before, after] = await Promise.all([read(parent), read(oid)]);
-  return {
-    before: before?.isBinary ? null : (before?.contents ?? null),
-    after: after?.isBinary ? null : (after?.contents ?? null),
-    binary: Boolean(before?.isBinary || after?.isBinary),
-  };
+): Promise<FileVersions> {
+  const scope = notebookScope(index);
+  if (!scope) throw new NotEntityPathError(relPath);
+  return entityFileVersions(scope, sha, relPath);
 }
 
 /**
