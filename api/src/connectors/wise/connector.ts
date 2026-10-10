@@ -188,6 +188,26 @@ function moneyValue(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * A PEM key as pasted into a single-line secret field: line breaks become
+ * spaces, vanish, or arrive as literal "\n". Rebuild the PEM (header, base64
+ * body in 64-character lines, footer) so node's crypto can read it.
+ */
+export function normalizePemKey(raw: string): string {
+  const text = raw.replace(/\\n/g, "\n").trim();
+  const match = text.match(
+    /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/,
+  );
+  if (!match) return text;
+  const body = match[2].replace(/\s+/g, "");
+  const lines = body.match(/.{1,64}/g) ?? [];
+  return (
+    [`-----BEGIN ${match[1]}-----`, ...lines, `-----END ${match[1]}-----`].join(
+      "\n",
+    ) + "\n"
+  );
+}
+
 /** One balance-statement transaction as a flat record keyed per balance. */
 export function toStatementRecord(
   transaction: Record<string, unknown>,
@@ -245,7 +265,9 @@ export class WiseConnector extends BaseConnector {
         {
           name: "sca_private_key",
           label: "SCA Private Key",
-          type: "password",
+          type: "textarea",
+          rows: 6,
+          encrypted: true,
           required: false,
           helperText:
             "Optional. PEM private key whose public key is registered in Wise (Settings → API tokens → Manage public keys). Wise asks for it (strong customer authentication) before it serves balance statements on some profiles.",
@@ -992,7 +1014,7 @@ export class WiseConnector extends BaseConnector {
       const signature = crypto
         .createSign("SHA256")
         .update(approval)
-        .sign(privateKey.trim(), "base64");
+        .sign(normalizePemKey(privateKey), "base64");
       return this.executeWithRetry(() =>
         api.get(path, {
           params,

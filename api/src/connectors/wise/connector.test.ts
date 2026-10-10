@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import axios from "axios";
-import { WiseConnector } from "./connector";
+import { WiseConnector, normalizePemKey } from "./connector";
 
 function createConnector(config: Record<string, unknown> = {}) {
   return new WiseConnector({
@@ -905,6 +905,25 @@ async function testBalanceStatementsScaWithoutKeyExplains() {
   );
 }
 
+function testNormalizePemKeyRebuildsPastedKeys() {
+  const { privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  for (const pasted of [
+    pem,
+    pem.replace(/\n/g, " "),
+    pem.replace(/\n/g, ""),
+    pem.replace(/\n/g, "\\n"),
+  ]) {
+    const signature = crypto
+      .createSign("SHA256")
+      .update("token")
+      .sign(normalizePemKey(pasted), "base64");
+    assert.ok(signature.length > 0);
+  }
+}
+
 async function main() {
   testConfigValidationRequiresApiKey();
   testConfigValidationRejectsNonNumericProfileId();
@@ -935,6 +954,7 @@ async function main() {
   await testBalanceStatementsIncrementalStartsBeforeSince();
   await testBalanceStatementsSignsScaChallenge();
   await testBalanceStatementsScaWithoutKeyExplains();
+  testNormalizePemKeyRebuildsPastedKeys();
 }
 
 main().catch((error: unknown) => {
