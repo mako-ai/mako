@@ -21,6 +21,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore, type FlowExecutionHistory } from "../store/flowStore";
+import { EntityHistoryButton } from "./EntityHistoryButton";
 import { ResultBadge, SpinnerRingBadge, StatusPill } from "./bui-status";
 
 interface FlowDetails {
@@ -271,6 +272,15 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
             >
               {isRunning ? "Cancel" : "Run now"}
             </Button>
+          )}
+          {currentWorkspace && (
+            <EntityHistoryButton
+              entity="flow"
+              id={flowId}
+              onRestored={() =>
+                void useFlowStore.getState().refresh(currentWorkspace.id)
+              }
+            />
           )}
           {onEdit && (
             <Button

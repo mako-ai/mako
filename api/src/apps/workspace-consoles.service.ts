@@ -99,13 +99,22 @@ import {
   readBlobsBatch,
   resolveCommit,
   type BlobMutation,
-  type ChangedFile,
   type CommitInfo,
   type GitAuthor,
   type TreeEntry,
 } from "./repository.service";
 import { commitBranchFor } from "./branch-policy";
 import { EMPTY_TREE } from "./git";
+import {
+  NotEntityPathError,
+  entityCommitChanges,
+  entityFileVersions,
+  entityHistory,
+  fileScope,
+  type CommitChanges,
+  type EntityGitScope,
+  type FileVersions,
+} from "./entity-git-history";
 
 const logger = loggers.api("consoles-git");
 
@@ -1636,58 +1645,52 @@ export async function projectSavedConsole(input: {
 // History: the same shapes the apps History popover consumes
 // ---------------------------------------------------------------------------
 
+/** The console's file and chart sidecar, as one history scope. */
+function consoleScope(
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
+): EntityGitScope | null {
+  if (!row.path) return null;
+  return fileScope(
+    row.workspaceId.toString(),
+    row.path,
+    chartSidecarPath(row.path),
+  );
+}
+
 /** Commits that touched a console's file (renames included via its row path). */
 export async function consoleHistory(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
   limit = 50,
 ): Promise<CommitInfo[]> {
-  if (!row.path) return [];
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
-  if (repoDir == null) return [];
-  if (!(await resolveCommit(repoDir, MAIN))) return [];
-  return repoLog(repoDir, MAIN, limit, row.path);
+  const scope = consoleScope(row);
+  return scope ? entityHistory(scope, limit) : [];
 }
 
 /** What one commit did to this console (its file and chart sidecar). */
 export async function consoleCommitChanges(
   row: Pick<ISavedConsole, "workspaceId" | "path">,
   sha: string,
-): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
-  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
-  const oid = await resolveCommit(repoDir, sha);
-  if (!oid) throw new Error(`No such commit: ${sha}`);
-  const parent = await resolveCommit(repoDir, `${oid}^`);
-  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
-  const mine = new Set(row.path ? [row.path, chartSidecarPath(row.path)] : []);
-  return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
+): Promise<CommitChanges> {
+  const scope = consoleScope(row) ?? {
+    workspaceId: row.workspaceId.toString(),
+    pathspec: "",
+    owns: () => false,
+  };
+  return entityCommitChanges(scope, sha);
 }
 
-/** A repo path before and after one commit (null = absent on that side). */
+/**
+ * The console's file (or chart sidecar) before and after one commit.
+ * Throws {@link NotEntityPathError} for any other path.
+ */
 export async function consoleFileVersions(
-  row: Pick<ISavedConsole, "workspaceId">,
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
   sha: string,
   relPath: string,
-): Promise<{ before: string | null; after: string | null; binary: boolean }> {
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
-  if (repoDir == null) throw new Error(`No such commit: ${sha}`);
-  const oid = await resolveCommit(repoDir, sha);
-  if (!oid) throw new Error(`No such commit: ${sha}`);
-  const parent = await resolveCommit(repoDir, `${oid}^`);
-  const read = async (ref: string | null) => {
-    if (!ref) return null;
-    try {
-      return await readBlob(repoDir, ref, relPath);
-    } catch {
-      return null;
-    }
-  };
-  const [before, after] = await Promise.all([read(parent), read(oid)]);
-  return {
-    before: before?.isBinary ? null : (before?.contents ?? null),
-    after: after?.isBinary ? null : (after?.contents ?? null),
-    binary: Boolean(before?.isBinary || after?.isBinary),
-  };
+): Promise<FileVersions> {
+  const scope = consoleScope(row);
+  if (!scope) throw new NotEntityPathError(relPath);
+  return entityFileVersions(scope, sha, relPath);
 }
 
 /**

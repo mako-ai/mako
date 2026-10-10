@@ -72,10 +72,10 @@ import AppWorkspace from "./AppWorkspace";
 import { useAppsStore } from "../store/appsStore";
 import AppFileEditor from "./AppFileEditor";
 import AppDiffTab from "./AppDiffTab";
-import ConsoleDiffTab from "./ConsoleDiffTab";
-import NotebookDiffTab from "./NotebookDiffTab";
+import HistoryDiffTab from "./HistoryDiffTab";
+import type { HistoryEntityKind } from "../store/entityHistoryStore";
 import RepoDiffTab from "./RepoDiffTab";
-import ConsoleHistoryPopover from "./ConsoleHistoryPopover";
+import EntityHistoryPopover from "./EntityHistoryPopover";
 import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
@@ -2954,15 +2954,10 @@ function Editor({
                       appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
                     />
-                  ) : tab.kind === "notebook-diff" ? (
-                    <NotebookDiffTab
-                      notebookId={tab.metadata?.notebookId as string}
-                      path={tab.metadata?.path as string}
-                      sha={tab.metadata?.sha as string}
-                    />
-                  ) : tab.kind === "console-diff" ? (
-                    <ConsoleDiffTab
-                      consoleId={tab.metadata?.consoleId as string}
+                  ) : tab.kind === "history-diff" ? (
+                    <HistoryDiffTab
+                      entity={tab.metadata?.entity as HistoryEntityKind}
+                      id={tab.metadata?.id as string}
                       path={tab.metadata?.path as string}
                       sha={tab.metadata?.sha as string}
                     />
@@ -3232,11 +3227,12 @@ function Editor({
       />
 
       {consoleHistory && currentWorkspace && (
-        <ConsoleHistoryPopover
+        <EntityHistoryPopover
           anchorEl={consoleHistory.anchor}
           onClose={() => setConsoleHistory(null)}
           workspaceId={currentWorkspace.id}
-          consoleId={consoleHistory.tabId}
+          entity="console"
+          id={consoleHistory.tabId}
           onRestored={() =>
             reloadConsole(currentWorkspace.id, consoleHistory.tabId)
           }

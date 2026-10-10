@@ -60,9 +60,8 @@ export const TAB_DEEP_LINK_PATTERNS = {
   app: /^\/apps\/([^/?#]+)\/?$/,
   "app-file": /^\/apps\/([^/?#]+)\/file\/(.+)$/,
   "app-diff": null,
-  "console-diff": null,
+  "history-diff": null,
   "repo-diff": null,
-  "notebook-diff": null,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
@@ -145,9 +144,8 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         : null;
     }
     case "app-diff":
-    case "console-diff":
+    case "history-diff":
     case "repo-diff":
-    case "notebook-diff":
       // Diffs are transient views of the working copy: no deep link.
       return null;
     case "plan": {

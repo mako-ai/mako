@@ -93,11 +93,7 @@ function segmentsForTab(
       const path = (tab.metadata?.path as string | undefined) || "";
       return plain(["Apps", ctx.appTitle, ...path.split("/").filter(Boolean)]);
     }
-    case "console-diff": {
-      const path = (tab.metadata?.path as string | undefined) || "";
-      return plain(["History", ...path.split("/").filter(Boolean)]);
-    }
-    case "notebook-diff": {
+    case "history-diff": {
       const path = (tab.metadata?.path as string | undefined) || "";
       return plain(["History", ...path.split("/").filter(Boolean)]);
     }

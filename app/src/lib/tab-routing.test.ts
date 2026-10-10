@@ -61,25 +61,18 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
       mode: "working",
     },
   }),
-  "console-diff": baseTab({
-    kind: "console-diff",
+  "history-diff": baseTab({
+    kind: "history-diff",
     metadata: {
-      appId: "66f000000000000000000001",
-      path: "apps/x/src/App.tsx",
-      mode: "working",
+      entity: "flow",
+      id: "66f000000000000000000001",
+      path: "flows/leads.yml",
+      sha: "abc1234",
     },
   }),
   "repo-diff": baseTab({
     kind: "repo-diff",
     metadata: { path: "consoles/revenue.sql", mode: "working" },
-  }),
-  "notebook-diff": baseTab({
-    kind: "notebook-diff",
-    metadata: {
-      notebookId: "nb-1",
-      path: "notebooks/revenue.deepnote",
-      sha: "abc1234",
-    },
   }),
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),

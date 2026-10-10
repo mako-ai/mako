@@ -69,6 +69,14 @@ import { resolveDefaultSyncEngine } from "../services/flow-triggers.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { connectorRegistry } from "../connectors/registry";
 import {
+  registerGitHistoryRoutes,
+  type GitHistoryEntity,
+} from "./lib/git-history-routes";
+import {
+  flowGitScope,
+  restoreFlowTo,
+} from "../services/repo-entity-restore.service";
+import {
   validateSyncConfig,
   type IncrementalCapabilities,
 } from "@mako/schemas";
@@ -5245,3 +5253,38 @@ flowRoutes.openapi(
     }
   },
 );
+
+// Git history of the definition file `flows/<slug>.yml` — the same History
+// surface consoles and apps have. Under `/git/` because `/{flowId}/history`
+// is the run history. Saving a flow needs no role beyond membership (PUT),
+// so neither does restoring one.
+registerGitHistoryRoutes<GitHistoryEntity & { slug: string }>(flowRoutes, {
+  tag: "Flows",
+  noun: "flow",
+  idParam: "flowId",
+  base: "/{flowId}/git",
+  load: async c => {
+    const workspaceId = c.req.param("workspaceId") as string;
+    // The same resolution as GET /{flowId}: ids in the list may be derived
+    // from a file that has no row yet.
+    const live = await loadLiveFlowById(
+      workspaceId,
+      c.req.param("flowId") ?? "",
+    );
+    if (!live) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+    return {
+      scope: flowGitScope(workspaceId, live.def.slug),
+      userId: c.get("user")?.id,
+      workspaceId,
+      slug: live.def.slug,
+    };
+  },
+  restore: async (flow, sha) => {
+    await assertFlowRepo(flow.workspaceId);
+    return {
+      ...(await restoreFlowTo({ ...flow, sha, actorUserId: flow.userId })),
+    };
+  },
+});

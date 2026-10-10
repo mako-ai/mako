@@ -19,6 +19,7 @@ import {
   workspaceExecuteRoutes,
 } from "./workspace-databases";
 import { connectorRoutes } from "./connectors";
+import { connectorDefinitionRoutes } from "./connector-definitions";
 import { databaseSchemaRoutes } from "./database-schemas";
 import { databaseTreeRoutes } from "./database-tree";
 import { flowRoutes } from "./flows";
@@ -144,6 +145,11 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/agent", agentRoutes);
   app.route("/api/admin", adminRoutes);
   app.route("/api/connectors", connectorRoutes);
+  // A workspace's own connector definitions (authenticated; git history).
+  app.route(
+    "/api/workspaces/:workspaceId/connector-definitions",
+    connectorDefinitionRoutes,
+  );
   app.route("/api/databases", databaseSchemaRoutes);
   app.route("/api/workspaces/:workspaceId/databases", databaseTreeRoutes);
   app.route("/api", webhookRoutes);

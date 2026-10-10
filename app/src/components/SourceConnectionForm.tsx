@@ -34,6 +34,10 @@ import {
 import { useSourceConnectionStore } from "../store/sourceConnectionStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { connectorIconUrl } from "../lib/connector-icon";
+import { EntityHistoryButton } from "./EntityHistoryButton";
+
+/** `ws:acme` — a connector defined in the workspace repo (`connectors/acme/`). */
+const WORKSPACE_TYPE_PREFIX = "ws:";
 
 export interface ConnectorFieldSchema {
   name: string;
@@ -1119,6 +1123,24 @@ function SourceConnectionForm({
                 {connectorTypes.find(c => c.type === selectedType)?.description}
               </Typography>
             </Box>
+            {selectedType.startsWith(WORKSPACE_TYPE_PREFIX) && (
+              <Box sx={{ ml: "auto", flexShrink: 0 }}>
+                {/* The definition's folder in the workspace repo, not this
+                    connection: connections are credentials, not files. */}
+                <EntityHistoryButton
+                  entity="connector"
+                  id={selectedType.slice(WORKSPACE_TYPE_PREFIX.length)}
+                  onRestored={() => {
+                    if (currentWorkspace) {
+                      void useConnectorCatalogStore
+                        .getState()
+                        .fetchCatalog(currentWorkspace.id, true);
+                    }
+                    void fetchSchema(selectedType, true);
+                  }}
+                />
+              </Box>
+            )}
           </Box>
 
           {basicInformationSection}

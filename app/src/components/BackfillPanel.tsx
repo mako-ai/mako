@@ -50,6 +50,7 @@ import {
 } from "./bui-status";
 import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { EntityHistoryButton } from "./EntityHistoryButton";
 
 interface BackfillPanelProps {
   workspaceId: string;
@@ -973,6 +974,11 @@ export function BackfillPanel({
         >
           Reset
         </Button>
+        <EntityHistoryButton
+          entity="flow"
+          id={flowId}
+          onRestored={() => void useFlowStore.getState().refresh(workspaceId)}
+        />
         {onEdit && (
           <Button
             size="small"
