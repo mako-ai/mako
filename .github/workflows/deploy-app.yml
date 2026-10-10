@@ -1052,7 +1052,7 @@ jobs:
             --memory=4Gi \
             --concurrency=80 \
             --min-instances=3 \
-            --max-instances=15 \
+            --max-instances=30 \
             --allow-unauthenticated \
             --network=mako-vpc \
             --subnet=mako-subnet \
