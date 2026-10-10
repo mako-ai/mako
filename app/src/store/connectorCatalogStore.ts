@@ -71,6 +71,9 @@ interface CatalogState {
   clearTypes: () => void;
 }
 
+// Connector types whose persisted schema was refetched since the page loaded
+const revalidated = new Set<string>();
+
 export const useConnectorCatalogStore = create<CatalogState>()(
   persist(
     immer((set, get) => ({
@@ -113,8 +116,17 @@ export const useConnectorCatalogStore = create<CatalogState>()(
       fetchSchema: async (type: string, force = false) => {
         const stateSnapshot = get();
         if (stateSnapshot.schemas[type] && !force) {
+          // Stale-while-revalidate: the persisted schema renders at once, and
+          // is refetched once per page load so a connector's changed fields
+          // (a password field becoming a textarea) reach the form without a
+          // version bump.
+          if (!revalidated.has(type)) {
+            revalidated.add(type);
+            void get().fetchSchema(type, true);
+          }
           return stateSnapshot.schemas[type];
         }
+        revalidated.add(type);
         if (stateSnapshot.schemaLoading[type]) return null;
 
         set(state => {
@@ -152,7 +164,9 @@ export const useConnectorCatalogStore = create<CatalogState>()(
       name: "connector-catalog-store",
       // v3: invalidate schemas cached before PostHog transferQueries became
       // optional — a stale required:true blocks saving builtin-only flows.
-      version: 3,
+      // v4: Wise's SCA private key became a multi-line field; from v4 on,
+      // fetchSchema revalidates persisted schemas once per page load.
+      version: 4,
       partialize: state => ({ schemas: state.schemas }), // Only persist schemas, not types
     },
   ),

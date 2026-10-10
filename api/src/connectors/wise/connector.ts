@@ -208,6 +208,14 @@ export function normalizePemKey(raw: string): string {
   );
 }
 
+/** SHA-256 of a private key's public half (DER), hex: identifies the key, reveals nothing. */
+export function publicKeyFingerprint(privatePem: string): string {
+  const der = crypto
+    .createPublicKey(privatePem)
+    .export({ type: "spki", format: "der" });
+  return crypto.createHash("sha256").update(der).digest("hex").slice(0, 16);
+}
+
 /** One balance-statement transaction as a flat record keyed per balance. */
 export function toStatementRecord(
   transaction: Record<string, unknown>,
@@ -1003,7 +1011,15 @@ export class WiseConnector extends BaseConnector {
               "x-2fa-approval",
             )
           : undefined;
-      if (!approval) throw error;
+      if (!approval) {
+        if (response?.status === 403) {
+          throw new Error(
+            "Wise refused the request with HTTP 403 and no SCA challenge (x-2fa-approval): " +
+              "the API token itself may lack access to balance statements (a read-only token, or a user without access to the profile)",
+          );
+        }
+        throw error;
+      }
 
       const privateKey = this.dataSource.config.sca_private_key;
       if (typeof privateKey !== "string" || privateKey.trim().length === 0) {
@@ -1011,16 +1027,40 @@ export class WiseConnector extends BaseConnector {
           "Wise requires strong customer authentication for balance statements: add an SCA private key to this connection and register its public key in Wise (Settings → API tokens → Manage public keys)",
         );
       }
+      const pem = normalizePemKey(privateKey);
       const signature = crypto
         .createSign("SHA256")
         .update(approval)
-        .sign(normalizePemKey(privateKey), "base64");
-      return this.executeWithRetry(() =>
-        api.get(path, {
-          params,
-          headers: { "x-2fa-approval": approval, "X-Signature": signature },
-        }),
-      );
+        .sign(pem, "base64");
+      try {
+        return await this.executeWithRetry(() =>
+          api.get(path, {
+            params,
+            headers: { "x-2fa-approval": approval, "X-Signature": signature },
+          }),
+        );
+      } catch (signedError) {
+        // Wise says why it refused a signed request in x-2fa-approval-result;
+        // the key's fingerprint (SHA-256 of its public key, never the key)
+        // tells which key signed, to compare with the one registered in Wise
+        const signedResponse = axios.isAxiosError(signedError)
+          ? signedError.response
+          : undefined;
+        const result = this.headerValue(
+          (signedResponse?.headers ?? {}) as Record<string, string | undefined>,
+          "x-2fa-approval-result",
+        );
+        const body =
+          typeof signedResponse?.data === "string"
+            ? signedResponse.data
+            : JSON.stringify(signedResponse?.data ?? "");
+        throw new Error(
+          `Wise refused the signed (SCA) request: HTTP ${signedResponse?.status ?? "?"}` +
+            `, x-2fa-approval-result: ${result ?? "none"}` +
+            `, signed with key ${publicKeyFingerprint(pem)}` +
+            (body && body !== '""' ? `, body: ${body.slice(0, 300)}` : ""),
+        );
+      }
     }
   }
 
