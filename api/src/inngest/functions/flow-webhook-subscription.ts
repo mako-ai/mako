@@ -1,6 +1,10 @@
 import { inngest } from "../client";
 import { Flow } from "../../database/workspace-schema";
-import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscription.service";
+import {
+  removeFlowWebhookSubscription,
+  syncFlowWebhookSubscription,
+  type FlowWebhookTeardownTarget,
+} from "../../services/flow-webhook-subscription.service";
 
 /**
  * Retarget a flow's provider-side webhook subscription after its entity
@@ -24,6 +28,31 @@ export const flowWebhookResubscribeFunction = inngest.createFunction(
       if (outcome.status === "failed" || outcome.status === "not_found") {
         logger.warn("Flow webhook subscription not retargeted", {
           flowId,
+          outcome,
+        });
+      }
+      return outcome;
+    });
+  },
+);
+
+/**
+ * Remove a deleted flow's provider-side webhook subscription(s). Dispatched by
+ * `teardownFlow` with what the row held, since the row is gone by now.
+ */
+export const flowWebhookUnsubscribeFunction = inngest.createFunction(
+  {
+    id: "flow-webhook-unsubscribe",
+    name: "Remove Flow Webhook Subscription",
+    triggers: { event: "flow.webhook.unsubscribe" },
+  },
+  async ({ event, step, logger }) => {
+    const target = event.data as FlowWebhookTeardownTarget;
+    return step.run("remove-webhook-subscription", async () => {
+      const outcome = await removeFlowWebhookSubscription(target);
+      if (outcome.status === "failed") {
+        logger.warn("Deleted flow's webhook subscription not removed", {
+          flowId: target.flowId,
           outcome,
         });
       }

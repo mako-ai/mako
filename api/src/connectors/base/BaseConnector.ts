@@ -94,6 +94,13 @@ export interface UpdateWebhookSubscriptionOptions
   providerWebhookId?: string;
 }
 
+export interface DeleteWebhookSubscriptionOptions {
+  /** The flow's inbound URL: every provider subscription POSTing to it goes. */
+  endpointUrl: string;
+  /** Id stored from an earlier provisioning, when known. */
+  providerWebhookId?: string;
+}
+
 export interface ProvisionWebhookResult {
   providerWebhookId: string;
   endpointUrl: string;
@@ -435,6 +442,25 @@ export abstract class BaseConnector {
     _options: UpdateWebhookSubscriptionOptions,
   ): Promise<ProvisionWebhookResult | null> {
     return null;
+  }
+
+  /**
+   * Whether `deleteWebhookSubscription` can remove the provider-side
+   * subscription(s) of a flow that is being deleted.
+   */
+  supportsWebhookSubscriptionDelete(): boolean {
+    return false;
+  }
+
+  /**
+   * Remove every provider-side subscription that delivers to
+   * `options.endpointUrl`. Resolves to how many were removed (0 when none
+   * existed).
+   */
+  async deleteWebhookSubscription(
+    _options: DeleteWebhookSubscriptionOptions,
+  ): Promise<number> {
+    return 0;
   }
 
   /**
