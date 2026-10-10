@@ -29,6 +29,13 @@ const SANDBOX_HOST_MARKERS = [
 const TRANSFER_PAGE_LIMIT = 100;
 const RECIPIENT_PAGE_LIMIT = 100;
 const ACTIVITY_PAGE_LIMIT = 50;
+// Balance statements: one request per balance per window. Wise caps a
+// statement at 469 days; 90 keeps each response small.
+const STATEMENT_WINDOW_DAYS = 90;
+// Incremental pulls restart a few days before `since`: transactions that
+// settle late land in an earlier window (upserts dedupe them).
+const STATEMENT_OVERLAP_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Wise signs webhooks with RSA-SHA256 (not a shared HMAC secret).
 // https://docs.wise.com/guides/developer/webhooks/event-handling
@@ -59,6 +66,7 @@ const SUPPORTED_ENTITIES = [
   "transfers",
   "recipients",
   "activities",
+  "balance_statements",
 ] as const;
 
 type SupportedEntity = (typeof SUPPORTED_ENTITIES)[number];
@@ -77,6 +85,12 @@ const SUPPORTED_WEBHOOK_EVENTS = [
 type WiseProfile = {
   id: number | string;
   [key: string]: unknown;
+};
+
+type StatementBalance = {
+  id: string;
+  currency: string;
+  start: string;
 };
 
 type MultiProfileState = {
@@ -163,6 +177,48 @@ function formatDateParam(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+function moneyValue(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value === "number") return value;
+  if (typeof value === "object" && "value" in (value as object)) {
+    const v = (value as { value?: unknown }).value;
+    return typeof v === "number" ? v : v == null ? null : Number(v);
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** One balance-statement transaction as a flat record keyed per balance. */
+export function toStatementRecord(
+  transaction: Record<string, unknown>,
+  balance: { id: string; currency: string },
+  profileId: string,
+): Record<string, unknown> {
+  const details = (transaction.details ?? {}) as Record<string, unknown>;
+  const reference = String(transaction.referenceNumber ?? "");
+  const type = String(transaction.type ?? "");
+  const date = String(transaction.date ?? "");
+  return {
+    // a reference can appear on several balances (a conversion debits one
+    // and credits another) and twice on one (a card payment and its refund)
+    id: `${balance.id}:${reference}:${type}:${date}`,
+    profileId,
+    balanceId: balance.id,
+    currency: balance.currency,
+    referenceNumber: reference || null,
+    type: type || null,
+    date: date || null,
+    amount: moneyValue(transaction.amount),
+    totalFees: moneyValue(transaction.totalFees),
+    runningBalance: moneyValue(transaction.runningBalance),
+    detailsType: typeof details.type === "string" ? details.type : null,
+    description:
+      typeof details.description === "string" ? details.description : null,
+    details: transaction.details ?? null,
+    exchangeDetails: transaction.exchangeDetails ?? null,
+  };
+}
+
 export class WiseConnector extends BaseConnector {
   private wiseApi: AxiosInstance | null = null;
   private cachedProfiles: WiseProfile[] | null = null;
@@ -187,6 +243,14 @@ export class WiseConnector extends BaseConnector {
             "Optional. Restrict sync to one Wise profile. Leave blank to sync every profile the token can access.",
         },
         {
+          name: "sca_private_key",
+          label: "SCA Private Key",
+          type: "password",
+          required: false,
+          helperText:
+            "Optional. PEM private key whose public key is registered in Wise (Settings → API tokens → Manage public keys). Wise asks for it (strong customer authentication) before it serves balance statements on some profiles.",
+        },
+        {
           name: "api_base_url",
           label: "API Base URL",
           type: "string",
@@ -204,7 +268,7 @@ export class WiseConnector extends BaseConnector {
       name: "Wise",
       version: "1.0.0",
       description:
-        "Connector for Wise (TransferWise): profiles, balances, transfers, recipients, and activities. CDC via Wise webhooks (RSA-SHA256).",
+        "Connector for Wise (TransferWise): profiles, balances, balance statements, transfers, recipients, and activities. CDC via Wise webhooks (RSA-SHA256).",
       supportedEntities: [...SUPPORTED_ENTITIES],
     };
   }
@@ -395,6 +459,7 @@ export class WiseConnector extends BaseConnector {
       payload?.creationTime,
       payload?.created,
       payload?.sent_at,
+      payload?.date,
     ];
 
     for (const candidate of candidates) {
@@ -505,6 +570,13 @@ export class WiseConnector extends BaseConnector {
         description: "Profile activity feed (card payments, transfers, etc.)",
         layoutSuggestion: layout("createdOn"),
       },
+      {
+        name: "balance_statements",
+        label: "Balance Statements",
+        description:
+          "Every transaction of every balance (all currencies) from Wise's balance statement, with fees and the running balance after it",
+        layoutSuggestion: layout("date"),
+      },
     ];
   }
 
@@ -536,6 +608,8 @@ export class WiseConnector extends BaseConnector {
         return this.fetchRecipientsChunk(options);
       case "activities":
         return this.fetchActivitiesChunk(options);
+      case "balance_statements":
+        return this.fetchBalanceStatementsChunk(options);
       default:
         throw new Error(`Unsupported entity for Wise connector: ${entity}`);
     }
@@ -886,6 +960,188 @@ export class WiseConnector extends BaseConnector {
     };
   }
 
+  /**
+   * GET that answers Wise's strong customer authentication: a 403 carrying
+   * `x-2fa-approval` is retried once with that one-time token signed
+   * (SHA256withRSA) by `sca_private_key`.
+   */
+  private async getWithSca(
+    path: string,
+    params: Record<string, string | number>,
+  ): Promise<{ data: unknown }> {
+    const api = this.getClient();
+    try {
+      return await this.executeWithRetry(() => api.get(path, { params }));
+    } catch (error) {
+      const response = axios.isAxiosError(error) ? error.response : undefined;
+      const approval =
+        response?.status === 403
+          ? this.headerValue(
+              (response.headers ?? {}) as Record<string, string | undefined>,
+              "x-2fa-approval",
+            )
+          : undefined;
+      if (!approval) throw error;
+
+      const privateKey = this.dataSource.config.sca_private_key;
+      if (typeof privateKey !== "string" || privateKey.trim().length === 0) {
+        throw new Error(
+          "Wise requires strong customer authentication for balance statements: add an SCA private key to this connection and register its public key in Wise (Settings → API tokens → Manage public keys)",
+        );
+      }
+      const signature = crypto
+        .createSign("SHA256")
+        .update(approval)
+        .sign(privateKey.trim(), "base64");
+      return this.executeWithRetry(() =>
+        api.get(path, {
+          params,
+          headers: { "x-2fa-approval": approval, "X-Signature": signature },
+        }),
+      );
+    }
+  }
+
+  private async listStatementBalances(
+    profileId: string,
+  ): Promise<StatementBalance[]> {
+    const api = this.getClient();
+    const response = await this.executeWithRetry(() =>
+      api.get(`/v4/profiles/${encodeURIComponent(profileId)}/balances`, {
+        params: { types: "STANDARD" },
+      }),
+    );
+    const balances = Array.isArray(response.data)
+      ? (response.data as Array<Record<string, unknown>>)
+      : [];
+    return balances
+      .filter(balance => balance.id != null && balance.currency != null)
+      .map(balance => ({
+        id: String(balance.id),
+        currency: String(balance.currency),
+        start: (
+          parseWiseDate(balance.creationTime) ??
+          new Date("2011-01-01T00:00:00Z")
+        ).toISOString(),
+      }));
+  }
+
+  /**
+   * Every balance of every profile (one per currency), its statement in
+   * windows of STATEMENT_WINDOW_DAYS from the balance's creation (or from
+   * `since`, less an overlap) to now. One request per window.
+   */
+  private async fetchBalanceStatementsChunk(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, since, state } = options;
+    const maxIterations = options.maxIterations ?? 10;
+    const multi = await this.initMultiProfileState(state);
+    let profileIndex = multi.profileIndex;
+    let balances = Array.isArray(state?.metadata?.balances)
+      ? (state.metadata.balances as StatementBalance[])
+      : null;
+    let balanceIndex =
+      typeof state?.metadata?.balanceIndex === "number"
+        ? state.metadata.balanceIndex
+        : 0;
+    let windowStart =
+      typeof state?.metadata?.windowStart === "string"
+        ? state.metadata.windowStart
+        : null;
+    let recordCount = state?.totalProcessed ?? 0;
+    let iterations = 0;
+    const now = new Date();
+    const from =
+      since instanceof Date
+        ? new Date(since.getTime() - STATEMENT_OVERLAP_DAYS * DAY_MS)
+        : null;
+
+    while (
+      profileIndex < multi.profileIds.length &&
+      iterations < maxIterations
+    ) {
+      const profileId = multi.profileIds[profileIndex];
+      if (!balances) {
+        balances = await this.listStatementBalances(profileId);
+        balanceIndex = 0;
+        windowStart = null;
+      }
+      if (balanceIndex >= balances.length) {
+        profileIndex++;
+        balances = null;
+        continue;
+      }
+
+      const balance = balances[balanceIndex];
+      const created = new Date(balance.start);
+      const start = windowStart
+        ? new Date(windowStart)
+        : from && from > created
+          ? from
+          : created;
+      if (start >= now) {
+        balanceIndex++;
+        windowStart = null;
+        continue;
+      }
+      const end = new Date(
+        Math.min(
+          start.getTime() + STATEMENT_WINDOW_DAYS * DAY_MS,
+          now.getTime(),
+        ),
+      );
+
+      const response = await this.getWithSca(
+        `/v1/profiles/${encodeURIComponent(profileId)}/balance-statements/${encodeURIComponent(balance.id)}/statement.json`,
+        {
+          currency: balance.currency,
+          intervalStart: start.toISOString(),
+          intervalEnd: end.toISOString(),
+          type: "COMPACT",
+        },
+      );
+      const body = (response.data ?? {}) as {
+        transactions?: Array<Record<string, unknown>>;
+      };
+      const transactions = Array.isArray(body.transactions)
+        ? body.transactions
+        : [];
+      const records = transactions.map(transaction =>
+        toStatementRecord(transaction, balance, String(profileId)),
+      );
+
+      if (records.length > 0) {
+        await onBatch(records);
+        recordCount += records.length;
+        onProgress?.(recordCount, undefined);
+      }
+
+      iterations++;
+      if (end >= now) {
+        balanceIndex++;
+        windowStart = null;
+      } else {
+        windowStart = end.toISOString();
+      }
+
+      await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
+    }
+
+    return {
+      totalProcessed: recordCount,
+      hasMore: profileIndex < multi.profileIds.length,
+      iterationsInChunk: iterations,
+      metadata: {
+        profileIds: multi.profileIds,
+        profileIndex,
+        balances,
+        balanceIndex,
+        windowStart,
+      },
+    };
+  }
+
   async fetchEntity(options: FetchOptions): Promise<void> {
     let state: FetchState | undefined;
     do {
@@ -939,6 +1195,12 @@ export class WiseConnector extends BaseConnector {
         activities: {
           mode: "native",
           anchorField: "since",
+        },
+        // Statements take a date interval: incremental pulls start at
+        // `since` less a few days of overlap.
+        balance_statements: {
+          mode: "native",
+          anchorField: "intervalStart",
         },
       },
       warning:

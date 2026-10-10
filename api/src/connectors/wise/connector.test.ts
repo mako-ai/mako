@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import axios from "axios";
 import { WiseConnector } from "./connector";
 
 function createConnector(config: Record<string, unknown> = {}) {
@@ -38,6 +39,7 @@ function testAvailableEntities() {
     "transfers",
     "recipients",
     "activities",
+    "balance_statements",
   ]) {
     assert.ok(entities.includes(entity), `missing entity ${entity}`);
   }
@@ -242,6 +244,7 @@ function testIncrementalCapabilitiesHonest() {
   assert.equal(caps.perEntity?.transfers?.anchorField, "createdDateStart");
   assert.equal(caps.perEntity?.activities?.mode, "native");
   assert.equal(caps.perEntity?.activities?.anchorField, "since");
+  assert.equal(caps.perEntity?.balance_statements?.mode, "native");
   assert.equal(caps.perEntity?.profiles, undefined);
   assert.equal(caps.perEntity?.balances, undefined);
   assert.equal(caps.perEntity?.recipients, undefined);
@@ -688,6 +691,220 @@ async function testProfilesChunkFiltersConfiguredProfile() {
   assert.equal(state.hasMore, false);
 }
 
+function statementApi(
+  calls: Array<{
+    path: string;
+    params: Record<string, unknown>;
+    headers?: Record<string, string>;
+  }>,
+  respond: (
+    path: string,
+    params: Record<string, unknown>,
+    call: number,
+  ) => unknown,
+) {
+  return {
+    get: async (
+      path: string,
+      config?: {
+        params?: Record<string, unknown>;
+        headers?: Record<string, string>;
+      },
+    ) => {
+      calls.push({
+        path,
+        params: config?.params ?? {},
+        headers: config?.headers,
+      });
+      if (path.endsWith("/balances")) {
+        return {
+          data: [
+            { id: 11, currency: "CHF", creationTime: "2026-01-01T00:00:00Z" },
+            { id: 12, currency: "PLN", creationTime: "2026-07-07T15:15:14Z" },
+          ],
+        };
+      }
+      return { data: respond(path, config?.params ?? {}, calls.length) };
+    },
+  };
+}
+
+async function testBalanceStatementsEveryCurrencyInWindows() {
+  const connector = createConnector({ profile_id: "12636519" });
+  const calls: Array<{ path: string; params: Record<string, unknown> }> = [];
+  (connector as any).wiseApi = statementApi(calls, (path, params) => ({
+    transactions: [
+      {
+        type: "DEBIT",
+        date: params.intervalStart,
+        amount: { value: -10, currency: params.currency },
+        totalFees: { value: 0.5, currency: params.currency },
+        runningBalance: { value: 100, currency: params.currency },
+        referenceNumber: `REF-${path.split("/")[5]}`,
+        details: { type: "CARD", description: "Card transaction" },
+      },
+    ],
+  }));
+
+  const batches: Array<Record<string, unknown>> = [];
+  let state: any;
+  do {
+    state = await connector.fetchEntityChunk({
+      entity: "balance_statements",
+      maxIterations: 50,
+      rateLimitDelay: 0,
+      state,
+      onBatch: async (batch: Array<Record<string, unknown>>) => {
+        batches.push(...batch);
+      },
+    } as any);
+  } while (state.hasMore);
+
+  const statements = calls.filter(c => c.path.includes("/balance-statements/"));
+  const currencies = new Set(statements.map(c => c.params.currency));
+  assert.deepEqual([...currencies].sort(), ["CHF", "PLN"]);
+  assert.ok(
+    statements.every(c =>
+      c.path.startsWith("/v1/profiles/12636519/balance-statements/1"),
+    ),
+  );
+  // CHF from 2026-01-01 needs several 90-day windows; each window starts
+  // where the previous ended, the first at the balance's creation
+  const chf = statements.filter(c => c.params.currency === "CHF");
+  assert.ok(chf.length >= 3);
+  assert.equal(chf[0].params.intervalStart, "2026-01-01T00:00:00.000Z");
+  for (let k = 1; k < chf.length; k++) {
+    assert.equal(chf[k].params.intervalStart, chf[k - 1].params.intervalEnd);
+  }
+  assert.equal(chf[0].params.type, "COMPACT");
+
+  const first = batches[0];
+  assert.equal(first.balanceId, "11");
+  assert.equal(first.currency, "CHF");
+  assert.equal(first.amount, -10);
+  assert.equal(first.totalFees, 0.5);
+  assert.equal(first.runningBalance, 100);
+  assert.equal(first.detailsType, "CARD");
+  assert.equal(first.id, `11:REF-11:DEBIT:2026-01-01T00:00:00.000Z`);
+  assert.equal(batches.length, statements.length);
+}
+
+async function testBalanceStatementsIncrementalStartsBeforeSince() {
+  const connector = createConnector({ profile_id: "12636519" });
+  const calls: Array<{ path: string; params: Record<string, unknown> }> = [];
+  (connector as any).wiseApi = statementApi(calls, () => ({
+    transactions: [],
+  }));
+
+  await connector.fetchEntityChunk({
+    entity: "balance_statements",
+    since: new Date("2026-09-15T00:00:00.000Z"),
+    maxIterations: 1,
+    rateLimitDelay: 0,
+    onBatch: async () => {},
+  } as any);
+
+  const statement = calls.find(c => c.path.includes("/balance-statements/"));
+  assert.equal(statement?.params.intervalStart, "2026-09-08T00:00:00.000Z");
+}
+
+async function testBalanceStatementsSignsScaChallenge() {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const connector = createConnector({ profile_id: "1", sca_private_key: pem });
+  const calls: Array<{
+    path: string;
+    params: Record<string, unknown>;
+    headers?: Record<string, string>;
+  }> = [];
+  (connector as any).wiseApi = {
+    get: async (
+      path: string,
+      config?: {
+        params?: Record<string, unknown>;
+        headers?: Record<string, string>;
+      },
+    ) => {
+      calls.push({
+        path,
+        params: config?.params ?? {},
+        headers: config?.headers,
+      });
+      if (path.endsWith("/balances")) {
+        return {
+          data: [
+            {
+              id: 5,
+              currency: "EUR",
+              creationTime: new Date(Date.now() - 86400000).toISOString(),
+            },
+          ],
+        };
+      }
+      if (!config?.headers?.["X-Signature"]) {
+        const error = new axios.AxiosError("Forbidden", "403");
+        error.response = {
+          status: 403,
+          headers: { "x-2fa-approval": "one-time-token" },
+          data: {},
+        } as any;
+        throw error;
+      }
+      return { data: { transactions: [] } };
+    },
+  };
+
+  await connector.fetchEntityChunk({
+    entity: "balance_statements",
+    maxIterations: 1,
+    rateLimitDelay: 0,
+    onBatch: async () => {},
+  } as any);
+
+  const signed = calls.find(c => c.headers?.["X-Signature"]);
+  assert.ok(signed, "expected a signed retry");
+  assert.equal(signed?.headers?.["x-2fa-approval"], "one-time-token");
+  const ok = crypto
+    .createVerify("SHA256")
+    .update("one-time-token")
+    .verify(publicKey, signed?.headers?.["X-Signature"] ?? "", "base64");
+  assert.ok(ok, "signature must verify with the registered public key");
+}
+
+async function testBalanceStatementsScaWithoutKeyExplains() {
+  const connector = createConnector({ profile_id: "1" });
+  (connector as any).wiseApi = {
+    get: async (path: string) => {
+      if (path.endsWith("/balances")) {
+        return {
+          data: [
+            { id: 5, currency: "EUR", creationTime: "2026-10-01T00:00:00Z" },
+          ],
+        };
+      }
+      const error = new axios.AxiosError("Forbidden", "403");
+      error.response = {
+        status: 403,
+        headers: { "x-2fa-approval": "t" },
+        data: {},
+      } as any;
+      throw error;
+    },
+  };
+
+  await assert.rejects(
+    connector.fetchEntityChunk({
+      entity: "balance_statements",
+      maxIterations: 1,
+      rateLimitDelay: 0,
+      onBatch: async () => {},
+    } as any),
+    /SCA private key/,
+  );
+}
+
 async function main() {
   testConfigValidationRequiresApiKey();
   testConfigValidationRejectsNonNumericProfileId();
@@ -714,6 +931,10 @@ async function main() {
   await testActivitiesStopsWhenCursorDoesNotAdvance();
   await testActivitiesIncrementalPassesNativeSince();
   await testProfilesChunkFiltersConfiguredProfile();
+  await testBalanceStatementsEveryCurrencyInWindows();
+  await testBalanceStatementsIncrementalStartsBeforeSince();
+  await testBalanceStatementsSignsScaChallenge();
+  await testBalanceStatementsScaWithoutKeyExplains();
 }
 
 main().catch((error: unknown) => {
