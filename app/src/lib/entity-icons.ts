@@ -16,8 +16,8 @@
  */
 
 import {
+  Repeat,
   AppWindowMac,
-  ArrowLeftRight,
   BookOpen,
   Bot,
   BrainCircuit,
@@ -62,7 +62,7 @@ import type {
 export const EXPLORER_ICONS = {
   databases: Database,
   consoles: SquareChevronRight,
-  flows: ArrowLeftRight,
+  flows: Repeat,
   // The dbt mark itself (the extension's activity-bar icon), not a generic
   // git glyph — GitBranch now belongs to Source Control, where it means what
   // it says.
@@ -89,7 +89,7 @@ export const TAB_KIND_ICONS = {
   settings: Settings,
   connectors: CloudUpload,
   members: Users,
-  "flow-editor": ArrowLeftRight,
+  "flow-editor": Repeat,
   dashboard: ChartPie,
   "dashboard-data-source": Database,
   "table-data": Table,
