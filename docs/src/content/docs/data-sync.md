@@ -58,6 +58,14 @@ backfill_schedule:
 
 This uses the same scoped path as the per-entity **Sync** button. Leave `entities` out (or empty) for a full backfill. Schedules saved from the UI keep the list.
 
+### Webhook Subscriptions Follow Flow Entities
+
+For connectors that can update their provider-side webhook subscription (Stripe today), Mako keeps the subscription's event list in step with the flow's enabled entities:
+
+- Re-running **Provision** on a flow that already has a signing secret updates the existing endpoint in place (same URL, same secret) instead of creating a second one. The UI labels the action **Update in <provider>**. Pass `recreate: true` to the provision route to force a fresh endpoint, for example when the stored secret is wrong.
+- Saving a flow with a changed entity selection retargets the subscription automatically. Failures surface as save warnings, never errors; re-provision from the Triggers step to fix them.
+- A push to `flows/<slug>.yml` that changes entities emits a `flow.webhook.resubscribe` Inngest event that does the same.
+
 ### Schema Evolution (BigQuery)
 
 When a connector's expected column types drift from the live BigQuery table (for example, a column created as `STRING` in a legacy run that should now be `TIMESTAMP`), Mako auto-corrects the drift before merging CDC events. This prevents merge failures from type mismatches.
@@ -110,7 +118,10 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
   such as `stripe`, or `ws:<slug>` for one your workspace ships under
   `connectors/<slug>/`, see [Connectors](/connectors/)). Webhook secrets and
   endpoints are minted in Mongo on first create and are never read from or
-  written to the file.
+  written to the file. The one exception is the provider-side subscription id
+  (for example Stripe's `we_…`), which is not a credential and is recorded as
+  `webhook.provider_webhook_id` so a later re-provision or entity change can
+  update that subscription in place.
 - **The connection must already exist.** No MCP tool or CLI creates one: ask
   for it to be configured in Mako (Sources → Add), find its id with
   `list_connections({ kind: "source" })`, confirm it works with
