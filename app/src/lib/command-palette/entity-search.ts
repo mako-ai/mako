@@ -149,7 +149,7 @@ export function searchFlows(
       item: {
         id: `flow:${flow._id}`,
         title,
-        section: "Sync",
+        section: "Flows",
         icon: EXPLORER_ICONS.flows,
         run: () => {
           useFlowStore.getState().selectFlow(flow._id);

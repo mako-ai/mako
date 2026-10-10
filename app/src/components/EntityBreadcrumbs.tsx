@@ -112,7 +112,7 @@ function segmentsForTab(
     case "connectors":
       return plain(["Sources", tab.title || "New source connection"]);
     case "flow-editor":
-      return plain(["Sync", tab.title || "New flow"]);
+      return plain(["Flows", tab.title || "New flow"]);
     case "settings":
       return plain([
         "Settings",

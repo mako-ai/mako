@@ -37,7 +37,7 @@ export const topNavigationItems: {
     label: "Source Control",
   },
   { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
-  { view: "flows", icon: EXPLORER_ICONS.flows, label: "Sync" },
+  { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
   { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
   { view: "workflows", icon: EXPLORER_ICONS.workflows, label: "Workflows" },
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Sources" },
