@@ -137,8 +137,8 @@ To keep agent context lean, agents can pass `includeScreenshot: false` to `app_b
 
 Every workspace repo carries a small template Mako keeps current: `AGENTS.md`
 (imported by `CLAUDE.md`) telling your agent what the repo is and how to work
-in it, `.mcp.json` wiring the `mako` MCP server, `.envrc` for direnv, and the
-vendored `@makoai/app-sdk`. The whole setup, no key to paste:
+in it, `.mcp.json` wiring the `mako` MCP server, and `.envrc` for direnv. Apps
+depend on the published `@makoai/app-sdk` from npm. The whole setup, no key to paste:
 
 ```bash
 git clone <your workspace repo> && cd <repo>
