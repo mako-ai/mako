@@ -122,6 +122,14 @@ async function parse<T>(res: Response, what: string): Promise<T> {
 
 // --- The workspace's token ---------------------------------------------------
 
+/** The tenant for a workspace's saved token, else the installation's. */
+export function tenantOfToken(stored?: string): WorkspaceTenant | null {
+  const token = stored
+    ? decryptString(stored)
+    : process.env.HATCHET_CLIENT_TOKEN;
+  return token ? tenantFromToken(token) : null;
+}
+
 /** The workspace's tenant, or null when it has no token and none is shared. */
 export async function readWorkspaceTenant(
   workspaceId: string,
@@ -129,11 +137,21 @@ export async function readWorkspaceTenant(
   const workspace = await Workspace.findById(workspaceId)
     .select("workflows.hatchetToken")
     .lean();
-  const stored = workspace?.workflows?.hatchetToken;
-  const token = stored
-    ? decryptString(stored)
-    : process.env.HATCHET_CLIENT_TOKEN;
-  return token ? tenantFromToken(token) : null;
+  return tenantOfToken(workspace?.workflows?.hatchetToken);
+}
+
+/** The workspace's tenant; without one there is nothing to look at or run. */
+export async function requireTenant(
+  workspaceId: string,
+): Promise<WorkspaceTenant> {
+  const tenant = await readWorkspaceTenant(workspaceId);
+  if (!tenant) {
+    throw new HatchetError(
+      "Nothing is deployed yet. Commit a workflow first; if one is committed, its deploy failed (is Hatchet reachable?).",
+      404,
+    );
+  }
+  return tenant;
 }
 
 /**
@@ -233,16 +251,27 @@ export function isHatchetId(value: string): boolean {
   return /^[0-9a-fA-F-]{36}$/.test(value);
 }
 
-export function triggerRun(
+/** Preview workflows are registered in Hatchet under this prefix (worker.mjs). */
+export const PREVIEW_PREFIX = "preview_";
+
+/** Start a run of the live workflow, or of its preview. Returns the run's id. */
+export async function startRun(
   tenant: WorkspaceTenant,
-  workflowName: string,
-  input: object,
-  additionalMetadata: Record<string, string>,
-): Promise<unknown> {
-  return tenantJson(
+  workflowId: string,
+  run: { input?: object; preview?: boolean; trigger: string },
+): Promise<string | undefined> {
+  const workflowName = `${run.preview ? PREVIEW_PREFIX : ""}${workflowId}`;
+  const started = await tenantJson<{ run?: { metadata?: { id?: string } } }>(
     tenant,
     `/api/v1/stable/tenants/${tenant.tenantId}/workflow-runs/trigger`,
-    { method: "POST", body: { workflowName, input, additionalMetadata } },
+    {
+      method: "POST",
+      body: {
+        workflowName,
+        input: run.input ?? {},
+        additionalMetadata: { trigger: run.trigger },
+      },
+    },
   ).catch(error => {
     // Hatchet answers 500 for a name no worker has registered.
     if (error instanceof HatchetError && error.status === 500) {
@@ -253,15 +282,5 @@ export function triggerRun(
     }
     throw error;
   });
-}
-
-export function cancelRun(
-  tenant: WorkspaceTenant,
-  runId: string,
-): Promise<unknown> {
-  return tenantJson(
-    tenant,
-    `/api/v1/stable/tenants/${tenant.tenantId}/tasks/cancel`,
-    { method: "POST", body: { externalIds: [runId] } },
-  );
+  return started.run?.metadata?.id;
 }

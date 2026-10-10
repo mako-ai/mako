@@ -164,8 +164,6 @@ export interface IWorkspaceWorkflows {
    * Absent when the installation shares one token (HATCHET_CLIENT_TOKEN).
    */
   hatchetToken?: string;
-  /** The worker's key in `apiKeys` (scope `workflows:runtime`). */
-  workerApiKeyId?: Types.ObjectId;
   /** The commit the worker should run: where `workflows/` last changed on main. */
   target?: { sha: string; tree: string };
   /** The commit the worker reports it is running. */
@@ -1416,7 +1414,6 @@ const WorkspaceSchema = new Schema<IWorkspace>(
       type: {
         enabled: { type: Boolean, default: false },
         hatchetToken: { type: String },
-        workerApiKeyId: { type: Schema.Types.ObjectId },
         target: { type: { sha: String, tree: String }, _id: false },
         live: { type: { sha: String }, _id: false },
         failed: { type: { sha: String, error: String }, _id: false },

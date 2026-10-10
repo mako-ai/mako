@@ -36,11 +36,8 @@ function runtimeImage(): string | undefined {
  * is behind Cloudflare, which blocks requests from the cluster.
  */
 function makoUrl(): string {
-  const url =
-    process.env.WORKFLOWS_MAKO_URL ||
-    process.env.NOTEBOOK_KERNEL_API_URL ||
-    process.env.BASE_URL;
-  if (!url) throw new Error("Set WORKFLOWS_MAKO_URL or BASE_URL");
+  const url = process.env.NOTEBOOK_KERNEL_API_URL || process.env.BASE_URL;
+  if (!url) throw new Error("Set NOTEBOOK_KERNEL_API_URL or BASE_URL");
   return url.replace(/\/+$/, "");
 }
 

@@ -20,14 +20,11 @@ import {
   Typography,
 } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
-import {
-  Play as RunIcon,
-  Square as StopIcon,
-  Webhook as WebhookIcon,
-} from "lucide-react";
+import { Play as RunIcon, Webhook as WebhookIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
+  fetchWorkflowFile,
   isActiveRun,
   useWorkflowsStore,
   type WorkflowRunSummary,
@@ -95,20 +92,19 @@ function FileView({
   workspaceId: string;
   path: string;
 }) {
-  const fetchFile = useWorkflowsStore(s => s.fetchFile);
   const monacoTheme = useMonacoTheme();
   const [contents, setContents] = useState<string | null | undefined>();
 
   useEffect(() => {
     let current = true;
     setContents(undefined);
-    void fetchFile(workspaceId, path).then(text => {
+    void fetchWorkflowFile(workspaceId, path).then(text => {
       if (current) setContents(text);
     });
     return () => {
       current = false;
     };
-  }, [workspaceId, path, fetchFile]);
+  }, [workspaceId, path]);
 
   if (contents === undefined) {
     return (
@@ -151,7 +147,7 @@ function FileView({
 function RunDialog({
   open,
   workflowId,
-  previewBranch,
+  hasPreview,
   live,
   initialInput,
   onClose,
@@ -159,8 +155,8 @@ function RunDialog({
 }: {
   open: boolean;
   workflowId: string;
-  /** Set when unmerged code of this workflow can be run. */
-  previewBranch: string | null;
+  /** Unmerged code of this workflow can be run. */
+  hasPreview: boolean;
   /** False while the workflow exists only on the previewed branch. */
   live: boolean;
   initialInput: string;
@@ -211,7 +207,7 @@ function RunDialog({
       <DialogContent
         sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}
       >
-        {previewBranch && (
+        {hasPreview && (
           <ToggleButtonGroup
             exclusive
             fullWidth
@@ -268,12 +264,10 @@ function RunsView({
   const fetchOverview = useWorkflowsStore(s => s.fetchOverview);
   const fetchRun = useWorkflowsStore(s => s.fetchRun);
   const startRun = useWorkflowsStore(s => s.run);
-  const cancelRun = useWorkflowsStore(s => s.cancel);
   const setWebhook = useWorkflowsStore(s => s.setWebhook);
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const selectedRun = useWorkflowsStore(s =>
     selectedRunId ? s.runsById[selectedRunId] : undefined,
@@ -323,25 +317,19 @@ function RunsView({
   }, [workspaceId, selectedRunId, selectedSummary?.status, fetchRun]);
 
   const schedule = overview?.schedules?.find(s => s.workflowId === workflowId);
-  const webhookUrl = overview?.workflows?.find(
-    w => !w.preview && w.workflowId === workflowId,
-  )?.webhookUrl;
-  const previewBranch =
-    overview?.preview &&
-    !overview.preview.buildError &&
-    overview.workflows?.some(w => w.preview && w.workflowId === workflowId)
-      ? overview.preview.branch
-      : null;
+  const entry = (preview: boolean) =>
+    overview?.workflows?.find(
+      w => w.preview === preview && w.workflowId === workflowId,
+    );
+  const live = entry(false);
+  const webhookUrl = live?.webhookUrl;
+  const hasPreview = Boolean(
+    overview?.preview && !overview.preview.buildError && entry(true),
+  );
   const deployment = overview?.deployment;
 
   const toggleWebhook = async (enabled: boolean) => {
     await setWebhook(workspaceId, workflowId, enabled);
-    void fetchOverview(workspaceId);
-  };
-
-  const act = async (action: typeof cancelRun, runId: string) => {
-    const result = await action(workspaceId, runId);
-    setActionError(result.ok ? null : (result.error ?? "Failed"));
     void fetchOverview(workspaceId);
   };
 
@@ -588,23 +576,6 @@ function RunsView({
               <Typography variant="caption" color="text.secondary">
                 {selectedSummary.trigger ?? "schedule"}
               </Typography>
-              {actionError && (
-                <Typography variant="caption" color="error">
-                  {actionError}
-                </Typography>
-              )}
-              {isActiveRun(selectedStatus) && (
-                <Button
-                  size="small"
-                  color="warning"
-                  variant="outlined"
-                  startIcon={<StopIcon size={14} />}
-                  onClick={() => void act(cancelRun, selectedSummary.runId)}
-                  sx={{ ml: "auto", textTransform: "none" }}
-                >
-                  Cancel
-                </Button>
-              )}
             </Box>
 
             <Box
@@ -730,12 +701,8 @@ function RunsView({
       <RunDialog
         open={dialogOpen}
         workflowId={workflowId}
-        previewBranch={previewBranch}
-        live={Boolean(
-          overview?.workflows?.some(
-            w => !w.preview && w.workflowId === workflowId,
-          ),
-        )}
+        hasPreview={hasPreview}
+        live={Boolean(live)}
         initialInput={formatInput(selectedRun?.input)}
         onClose={() => setDialogOpen(false)}
         onRun={async (input, preview) => {

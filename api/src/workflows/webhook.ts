@@ -9,10 +9,9 @@ import { Types } from "mongoose";
 
 import { Workspace } from "../database/workspace-schema";
 import { decryptString, encryptString } from "../services/crypto.service";
+import { HatchetError, PREVIEW_PREFIX } from "./hatchet";
 
-/** A live workflow's name, safe as a key and in a URL. A preview has no webhook. */
-export const mayHaveWebhook = (name: string) =>
-  /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name) && !name.startsWith("preview_");
+type Webhooks = Record<string, string> | undefined;
 
 function urlOf(workspaceId: string, name: string, secret: string): string {
   const base = (
@@ -30,6 +29,13 @@ export async function setWebhook(
   name: string,
   enabled: boolean,
 ): Promise<string | null> {
+  // The name becomes a key and a URL segment. A preview has no webhook.
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name) ||
+    name.startsWith(PREVIEW_PREFIX)
+  ) {
+    throw new HatchetError(`Invalid workflow: ${name}`, 400);
+  }
   const path = `workflows.webhooks.${name}`;
   const secret = randomBytes(24).toString("hex");
   await Workspace.updateOne(
@@ -42,29 +48,27 @@ export async function setWebhook(
 }
 
 /** The workspace's webhook URLs, by workflow. */
-export async function readWebhookUrls(
+export function webhookUrls(
   workspaceId: string,
-): Promise<Record<string, string>> {
-  const workspace = await Workspace.findById(workspaceId)
-    .select("workflows.webhooks")
-    .lean();
+  webhooks: Webhooks,
+): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(workspace?.workflows?.webhooks ?? {}).map(
-      ([name, stored]) => [
-        name,
-        urlOf(workspaceId, name, decryptString(stored)),
-      ],
-    ),
+    Object.entries(webhooks ?? {}).map(([name, stored]) => [
+      name,
+      urlOf(workspaceId, name, decryptString(stored)),
+    ]),
   );
 }
 
-/** Whether `given` is the secret saved (encrypted) as `stored`. */
+/** Whether `given` is the secret of the webhook turned on for `name`. */
 export function isWebhookSecret(
-  stored: string | undefined,
+  webhooks: Webhooks,
+  name: string,
   given: string,
 ): boolean {
-  if (!stored) return false;
-  const expected = Buffer.from(decryptString(stored));
+  // Own keys only: `constructor` is not a workflow.
+  if (!webhooks || !Object.hasOwn(webhooks, name)) return false;
+  const expected = Buffer.from(decryptString(webhooks[name]));
   const actual = Buffer.from(given);
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }

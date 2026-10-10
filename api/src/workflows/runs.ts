@@ -1,15 +1,26 @@
 /**
- * Runs of a workspace's workflows, read from Hatchet as the workspace's tenant
- * and trimmed to what a person or a model needs. Shared by the Workflows
- * screens (routes/workflows.ts) and the agent tools
- * (agent-lib/tools/workflow-tools.ts), so both show the same thing.
+ * What a screen or an agent sees of a workspace's workflows: what is deployed
+ * (the deploy state on the workspace, kept by on-push.ts and the worker's
+ * reports) and the workflows, schedules and runs, read from Hatchet as the
+ * workspace's tenant and trimmed. Shared by routes/workflows.ts and
+ * agent-lib/tools/workflow-tools.ts, so both show the same thing.
  */
-import { tenantJson, type WorkspaceTenant } from "./hatchet";
-import { readWorkflowsStatus } from "./status";
-import { readWebhookUrls } from "./webhook";
+import {
+  type IWorkspaceWorkflows,
+  Workspace,
+} from "../database/workspace-schema";
+import { getWorkspaceRepo } from "../services/workspace-repos.service";
+import {
+  HatchetError,
+  PREVIEW_PREFIX,
+  hasInstanceHatchet,
+  isHatchetId,
+  tenantJson,
+  tenantOfToken,
+  type WorkspaceTenant,
+} from "./hatchet";
+import { webhookUrls } from "./webhook";
 
-/** Preview workflows are registered in Hatchet under this prefix (worker.mjs). */
-export const PREVIEW_PREFIX = "preview_";
 const RECENT_RUNS_DAYS = 30;
 const LOG_LINES_PER_STEP = 20;
 const MAX_TEXT_CHARS = 2000;
@@ -61,7 +72,7 @@ function inputOf(value: unknown): unknown {
 }
 
 const metadataOf = (run: Row) =>
-  (run.additionalMetadata ?? {}) as { trigger?: string; triggeredBy?: string };
+  (run.additionalMetadata ?? {}) as { trigger?: string };
 
 const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   runId: idOf(run),
@@ -73,8 +84,61 @@ const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   // Set by Mako when a person or an agent starts the run; a scheduled run
   // has neither.
   trigger: metadataOf(run).trigger,
-  triggeredBy: metadataOf(run).triggeredBy,
 });
+
+type Commit = { sha: string };
+
+/** One deployed slot: the commit running, the commit wanted, the build error. */
+function deployment(
+  target?: Commit,
+  live?: Commit,
+  failed?: Commit & { error: string },
+) {
+  const targetSha = target?.sha ?? null;
+  return {
+    /** The commit the worker reports running. Null before the first good deploy. */
+    liveSha: live?.sha ?? null,
+    /** The commit the worker should run. Differs from live until it switches. */
+    targetSha,
+    /** The build output when `targetSha` could not be started. */
+    buildError: targetSha && failed?.sha === targetSha ? failed.error : null,
+  };
+}
+
+function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {
+  return {
+    // Workflows are files in the workspace's repository; without one linked
+    // there is nowhere to write them, and the screen says so.
+    repoLinked,
+    enabled: state?.enabled === true,
+    // False when no Hatchet token exists for this workspace and the
+    // installation has none to share: the UI hides Workflows.
+    configured: Boolean(state?.hatchetToken) || hasInstanceHatchet(),
+    deployment: deployment(state?.target, state?.live, state?.failed),
+    /** Unmerged work running next to live, or null when there is none. */
+    preview: state?.preview
+      ? {
+          branch: state.preview.branch,
+          ...deployment(state.preview, state.previewLive, state.previewFailed),
+        }
+      : null,
+    dashboardUrl: process.env.HATCHET_DASHBOARD_URL ?? null,
+  };
+}
+
+async function loadState(workspaceId: string) {
+  const [workspace, repo] = await Promise.all([
+    Workspace.findById(workspaceId).select("workflows").lean(),
+    getWorkspaceRepo(workspaceId),
+  ]);
+  return { state: workspace?.workflows, repoLinked: Boolean(repo) };
+}
+
+/** What is deployed for a workspace: the live code and, if any, its preview. */
+export async function readWorkflowsStatus(workspaceId: string) {
+  const { state, repoLinked } = await loadState(workspaceId);
+  return statusOf(state, repoLinked);
+}
 
 /**
  * Everything a screen or an agent shows first: what is deployed, the
@@ -82,17 +146,20 @@ const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
  */
 export async function readWorkflowsOverview(
   workspaceId: string,
-  tenant: WorkspaceTenant | null,
   limit: number,
   /** Include each live workflow's webhook URL (null when off): only for who may start runs. */
   withWebhooks = false,
 ) {
-  const status = await readWorkflowsStatus(workspaceId);
+  const { state, repoLinked } = await loadState(workspaceId);
+  const status = statusOf(state, repoLinked);
+  const tenant = tenantOfToken(state?.hatchetToken);
   if (!tenant) return status;
+  const webhooks = withWebhooks
+    ? webhookUrls(workspaceId, state?.webhooks)
+    : null;
   const base = `/api/v1/tenants/${tenant.tenantId}`;
   const since = new Date(Date.now() - RECENT_RUNS_DAYS * 864e5).toISOString();
-  const [webhooks, workflows, crons, runs] = await Promise.all([
-    withWebhooks ? readWebhookUrls(workspaceId) : null,
+  const [workflows, crons, runs] = await Promise.all([
     tenantJson<Rows>(tenant, `${base}/workflows`),
     tenantJson<Rows>(tenant, `${base}/workflows/crons`),
     tenantJson<Rows>(
@@ -125,6 +192,7 @@ export async function readWorkflowsOverview(
 
 /** One run: its steps in order, each with status, output, error and logs. */
 export async function readRun(tenant: WorkspaceTenant, runId: string) {
+  if (!isHatchetId(runId)) throw new HatchetError("Invalid run id", 400);
   const detail = await tenantJson<{ run?: Row; tasks?: Row[] }>(
     tenant,
     `/api/v1/stable/workflow-runs/${runId}`,

@@ -11,7 +11,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 
 import { hashApiKey } from "../auth/api-key.middleware";
 import { Workspace } from "../database/workspace-schema";
-import { readWorkflowsStatus } from "../workflows/status";
+import { readWorkflowsStatus } from "../workflows/runs";
 import { workflowRuntimeRoutes } from "./workflows";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -73,6 +73,11 @@ async function main() {
     assert.equal((await call("/agent", OTHER_KEY, { goal: "x" })).status, 401);
     assert.equal((await call("/ai/language-model", OTHER_KEY, {})).status, 401);
     assert.equal((await call("/agent", WORKER_KEY, {})).status, 400);
+    // Only the gateway call that can be counted is forwarded.
+    assert.equal(
+      (await call("/ai/embedding-model", WORKER_KEY, {})).status,
+      404,
+    );
     assert.equal(
       (await call("/status", OTHER_KEY, { sha: SHA_A })).status,
       401,

@@ -39,17 +39,6 @@ const WORKER_KEY_SCOPES: WorkspaceApiKeyScope[] = [
   "workflows:runtime",
 ];
 
-/**
- * Who runs the worker. `gke`: Mako creates a sandboxed pod per workspace.
- * `static`: the operator runs the runtime image themselves (docker-compose,
- * or anywhere) with WORKFLOWS_WORKER_KEY, and Mako creates nothing.
- */
-export function workerProvider(): "gke" | "static" {
-  const explicit = process.env.WORKFLOWS_WORKER_PROVIDER;
-  if (explicit === "gke" || explicit === "static") return explicit;
-  return isGkeWorkerConfigured() ? "gke" : "static";
-}
-
 /** The tree id of `workflows/` at a commit, or null when it has none. */
 async function workflowsTree(
   repoDir: string,
@@ -87,21 +76,17 @@ async function setWorkerKey(
       "WORKFLOWS_WORKER_KEY already belongs to another workspace. A static worker serves one workspace.",
     );
   }
-  const keyId = new Types.ObjectId();
-  const workspace = await Workspace.findById(_id).select("workflows").lean();
-  const previous = workspace?.workflows?.workerApiKeyId;
-  if (previous) {
-    await Workspace.updateOne(
-      { _id },
-      { $pull: { apiKeys: { _id: previous } } },
-    );
-  }
+  // The scope is the worker's alone, so it finds the key being replaced.
+  await Workspace.updateOne(
+    { _id },
+    { $pull: { apiKeys: { scopes: "workflows:runtime" } } },
+  );
   await Workspace.updateOne(
     { _id },
     {
       $push: {
         apiKeys: {
-          _id: keyId,
+          _id: new Types.ObjectId(),
           name: WORKER_KEY_NAME,
           keyHash,
           prefix: key.substring(0, 14),
@@ -110,17 +95,20 @@ async function setWorkerKey(
           createdBy: userId,
         },
       },
-      $set: { "workflows.workerApiKeyId": keyId },
     },
   );
 }
 
-/** Make sure the workspace's worker can sign in to Mako, and exists. */
+/**
+ * Make sure the workspace's worker can sign in to Mako, and exists. Where
+ * this API can create pods (`gke`) it makes one per workspace; elsewhere the
+ * operator runs the runtime image with WORKFLOWS_WORKER_KEY (`static`).
+ */
 async function ensureWorker(
   workspaceId: string,
   userId: string,
 ): Promise<void> {
-  if (workerProvider() === "static") {
+  if (!isGkeWorkerConfigured()) {
     const key = process.env.WORKFLOWS_WORKER_KEY;
     if (!key?.startsWith("revops_")) {
       logger.warn(
@@ -142,10 +130,6 @@ async function ensureWorker(
   await ensureWorkerDeployment(workspaceId);
 }
 
-export type WorkflowsDeployResult =
-  | { deployed: true; sha: string }
-  | { deployed: false; reason: string };
-
 type Commit = { sha: string; tree: string };
 
 /** `workflows/` on a branch, or null when the branch or the folder is missing. */
@@ -158,38 +142,39 @@ async function workflowsAt(
   return sha && tree ? { sha, tree } : null;
 }
 
-const deployInFlight = new Map<string, Promise<WorkflowsDeployResult>>();
+const deploys = new Map<string, Promise<void>>();
 
-/** Point the worker at `workflows/` on `main`, and at the pusher's branch. */
+/**
+ * Point the worker at `workflows/` on `main`, and at the pusher's branch. One
+ * at a time per workspace, in order: a push that lands during a deploy is
+ * deployed after it, not dropped.
+ */
 export function deployWorkflowsFromRepo(
   workspaceId: string,
   userId?: string,
-): Promise<WorkflowsDeployResult> {
-  const running = deployInFlight.get(workspaceId);
-  if (running) return running;
-  const run = deployWorkflowsNow(workspaceId, userId).finally(() => {
-    deployInFlight.delete(workspaceId);
-  });
-  deployInFlight.set(workspaceId, run);
+): Promise<void> {
+  const run = (deploys.get(workspaceId) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => deployWorkflowsNow(workspaceId, userId))
+    .finally(() => {
+      if (deploys.get(workspaceId) === run) deploys.delete(workspaceId);
+    });
+  deploys.set(workspaceId, run);
   return run;
 }
 
 async function deployWorkflowsNow(
   workspaceId: string,
   userId?: string,
-): Promise<WorkflowsDeployResult> {
+): Promise<void> {
   const workspace = await Workspace.findById(workspaceId)
     .select("workflows createdBy")
     .lean();
   const state = workspace?.workflows;
-  if (!workspace || !state?.enabled) {
-    return { deployed: false, reason: "Workflows are not enabled" };
-  }
+  if (!workspace || !state?.enabled) return;
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
-    return { deployed: false, reason: "The workspace has no repository" };
-  }
+  if (!(await repoExists(repoDir))) return;
   const main = await workflowsAt(repoDir, DEFAULT_BRANCH);
 
   // The pusher's branch is the workspace's one preview: the last branch
@@ -208,25 +193,23 @@ async function deployWorkflowsNow(
       : null;
   const preview = pushed && pushed.tree !== main?.tree ? pushed : null;
 
-  if (!main && !preview) {
-    return { deployed: false, reason: "No workflows/ folder" };
+  if (main || preview) {
+    await ensureWorkspaceTenant(workspaceId);
+    await ensureWorker(workspaceId, userId ?? workspace.createdBy);
   }
-  await ensureWorkspaceTenant(workspaceId);
-  await ensureWorker(workspaceId, userId ?? workspace.createdBy);
 
+  // A slot follows what the repository holds: gone from the repository
+  // (`workflows/` deleted on main, a preview merged) is gone from the worker.
   const set: Record<string, unknown> = {};
   const unset: Record<string, ""> = {};
-  if (main && state.target?.tree !== main.tree) {
-    set["workflows.target"] = main;
-  }
+  if (main && state.target?.tree !== main.tree) set["workflows.target"] = main;
+  if (!main && state.target) unset["workflows.target"] = "";
   if (preview && branch && state.preview?.tree !== preview.tree) {
     set["workflows.preview"] = { branch, ...preview };
   } else if (!preview && branch && state.preview?.branch === branch) {
     unset["workflows.preview"] = "";
   }
-  if (Object.keys(set).length + Object.keys(unset).length === 0) {
-    return { deployed: false, reason: "workflows/ is unchanged" };
-  }
+  if (Object.keys(set).length + Object.keys(unset).length === 0) return;
   await Workspace.updateOne(
     { _id: workspace._id },
     {
@@ -234,6 +217,5 @@ async function deployWorkflowsNow(
       ...(Object.keys(unset).length ? { $unset: unset } : {}),
     },
   );
-  logger.info("Set workflows target", { workspaceId, ...set });
-  return { deployed: true, sha: (preview ?? main)?.sha ?? "" };
+  logger.info("Set workflows target", { workspaceId, ...set, unset });
 }

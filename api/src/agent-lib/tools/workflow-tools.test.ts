@@ -154,7 +154,6 @@ async function main() {
       durationMs: 1200,
       error: "boom",
       trigger: "agent",
-      triggeredBy: "member",
     });
     assert.ok(!JSON.stringify(overview).includes(TOKEN));
 
@@ -169,10 +168,7 @@ async function main() {
     );
     assert.equal(requests.at(-1)?.body.workflowName, "daily-digest");
     assert.deepEqual(requests.at(-1)?.body.input, { limit: 5 });
-    assert.equal(
-      requests.at(-1)?.body.additionalMetadata.triggeredBy,
-      "member",
-    );
+    assert.equal(requests.at(-1)?.body.additionalMetadata.trigger, "agent");
     await call(tools, "workflows_run", {
       workflowId: "daily-digest",
       preview: true,

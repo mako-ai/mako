@@ -40,16 +40,19 @@ export const model = createGateway({
   apiKey: key,
 });
 
+let mcp: ReturnType<typeof createMCPClient> | undefined;
+
 /** Mako's tools (queries, table inspection, apps, web search) for a model to use. */
 export async function tools() {
-  const mcp = await createMCPClient({
+  // One connection for the process, opened on first use.
+  mcp ??= createMCPClient({
     transport: {
       type: "http",
       url: `${url}/api/mcp`,
       headers: { Authorization: `Bearer ${key}` },
     },
   });
-  return mcp.tools();
+  return (await mcp).tools();
 }
 
 /** Call one Mako tool by name and return its result, e.g. `call("app_materialize", { appId, name })`. */

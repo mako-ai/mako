@@ -5117,7 +5117,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a run of a workflow */
+        /** Start a run of a workflow, or of its preview */
         post: operations["post_api_workspaces_workspaceId_workflows_name_run"];
         delete?: never;
         options?: never;
@@ -5136,23 +5136,6 @@ export interface paths {
         /** Turn a workflow's webhook on (a new URL) or off */
         put: operations["put_api_workspaces_workspaceId_workflows_name_webhook"];
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/workflows/runs/{id}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel a run */
-        post: operations["post_api_workspaces_workspaceId_workflows_runs_id_cancel"];
         delete?: never;
         options?: never;
         head?: never;
@@ -22545,6 +22528,7 @@ export interface operations {
                     input?: {
                         [key: string]: unknown;
                     };
+                    preview?: boolean;
                 };
             };
         };
@@ -22595,47 +22579,6 @@ export interface operations {
                 };
             };
         };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_workspaces_workspaceId_workflows_runs_id_cancel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             /** @description Successful response */
             "2XX": {

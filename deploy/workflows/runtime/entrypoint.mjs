@@ -18,10 +18,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RUNTIME_DIR = dirname(fileURLToPath(import.meta.url));
-const TMP_DIR = process.env.WORKFLOWS_TMP_DIR ?? "/tmp";
-const READY_FILE = join(TMP_DIR, "ready");
-const SOURCE_ROOT = join(TMP_DIR, "src");
-const POLL_MS = Number(process.env.WORKFLOWS_POLL_MS ?? 10_000);
+const READY_FILE = "/tmp/ready";
+const SOURCE_ROOT = "/tmp/src";
+const POLL_MS = 10_000;
 const START_TIMEOUT_MS = 60_000;
 // Preview workflows are registered in Hatchet as `preview_<name>`.
 const PREVIEW_PREFIX = "preview_";
@@ -147,11 +146,6 @@ const slots = {
   preview: { preview: true, current: null, failed: null },
 };
 
-function stop(slot) {
-  slot.current?.child.kill("SIGTERM");
-  slot.current = null;
-}
-
 async function switchTo(slot, target, hatchetToken) {
   const key = `${target.tree}:${hatchetToken}`;
   if (slot.current?.key === key || slot.failed === key) return;
@@ -165,9 +159,12 @@ async function switchTo(slot, target, hatchetToken) {
     if (errors) throw new Error(errors);
     child = await startWorker(slot, root, target.sha, hatchetToken);
   } catch (err) {
-    slot.failed = key;
-    if (root) rmSync(root, { recursive: true, force: true });
     console.error(`Build failed (${label}) at ${target.sha}:\n${err.message}`);
+    // Source that could not be fetched is tried again on the next poll; a
+    // commit that does not build is reported once and left alone.
+    if (!root) return;
+    slot.failed = key;
+    rmSync(root, { recursive: true, force: true });
     await report(slot, target.sha, err.message);
     return;
   }
@@ -190,11 +187,17 @@ async function poll() {
     if (!res.ok) throw new Error(`head: ${res.status} ${await res.text()}`);
     const head = await res.json();
     if (!head.hatchetToken) return;
-    if (head.sha) await switchTo(slots.live, head, head.hatchetToken);
-    if (head.preview) {
-      await switchTo(slots.preview, head.preview, head.hatchetToken);
-    } else {
-      stop(slots.preview);
+    // A slot Mako no longer names (the preview was merged, `workflows/` was
+    // deleted) stops.
+    for (const [slot, target] of [
+      [slots.live, head.sha ? head : null],
+      [slots.preview, head.preview],
+    ]) {
+      if (target) await switchTo(slot, target, head.hatchetToken);
+      else {
+        slot.current?.child.kill("SIGTERM");
+        slot.current = null;
+      }
     }
   } catch (err) {
     console.error("Poll failed:", err.message);

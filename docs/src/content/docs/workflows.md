@@ -5,7 +5,7 @@ description: Write scheduled and multi-step jobs as TypeScript files in your wor
 
 A workflow is a TypeScript file in your workspace repo, in the `workflows/` folder, written with [Hatchet](https://hatchet.run)'s own SDK. Merge to `main` and it is deployed. Hatchet runs it: schedules, retries and timeouts are Hatchet's.
 
-**Preview.** Workflows are optional, off by default, and have no screens in Mako yet. You start and inspect runs through the API or the Hatchet dashboard.
+**Preview.** Workflows are optional and off by default. Once on, they have their own panel in Mako: the workflows, their files and their runs.
 
 ## A workflow
 
@@ -140,3 +140,5 @@ All under `/api/workspaces/<workspaceId>/workflows`:
 | `GET /`                                | What is deployed (live and preview), build errors, the workflows, schedules and recent runs |
 | `GET /runs/<id>`                       | One run: its steps in order, with status, output, error and logs                            |
 | `GET /files`, `GET /files?path=<file>` | The files under `workflows/`, or one file's contents                                        |
+| `POST /<name>/run`                     | Start a run: `{ input, preview }`                                                           |
+| `PUT /<name>/webhook`                  | Add or remove the workflow's webhook: `{ enabled }`                                         |

@@ -297,15 +297,13 @@ adminRoutes.openapi(
       if (result.matchedCount === 0) {
         return c.json({ success: false, error: "Workspace not found" }, 404);
       }
-      const deploy = enabled
-        ? await deployWorkflowsFromRepo(workspaceId, c.get("user")?.id).catch(
-            error => ({
-              deployed: false as const,
-              reason: error instanceof Error ? error.message : String(error),
-            }),
-          )
-        : null;
-      return c.json({ success: true as const, enabled, deploy }, 200);
+      if (enabled) {
+        await deployWorkflowsFromRepo(workspaceId, c.get("user")?.id).catch(
+          error =>
+            logger.warn("Workflows deploy failed", { workspaceId, error }),
+        );
+      }
+      return c.json({ success: true as const, enabled }, 200);
     } catch (error) {
       logger.error("Failed to set the workflows flag", { error });
       return c.json({ success: false, error: "Failed to update" }, 500);

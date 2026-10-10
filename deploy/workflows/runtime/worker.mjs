@@ -3,7 +3,7 @@
 // export is the workflow named `<name>`. A preview (PREVIEW=1) gets prefixed
 // names and no schedules or event triggers: it runs only when started.
 //
-// Env: WORKFLOWS_ROOT, GIT_SHA, HATCHET_CLIENT_TOKEN, optional WORKER_SLOTS.
+// Env: WORKFLOWS_ROOT, GIT_SHA, HATCHET_CLIENT_TOKEN.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -56,7 +56,7 @@ if (workflows.length === 0) {
 
 const worker = await hatchet.worker("workspace", {
   workflows,
-  slots: Number(process.env.WORKER_SLOTS ?? 50),
+  slots: 50,
   labels: { git_sha: process.env.GIT_SHA },
 });
 

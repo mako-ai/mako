@@ -8,17 +8,9 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 
 import { workspaceService } from "../../services/workspace.service";
-import {
-  isHatchetId,
-  readWorkspaceTenant,
-  triggerRun,
-} from "../../workflows/hatchet";
-import { mayHaveWebhook, setWebhook } from "../../workflows/webhook";
-import {
-  PREVIEW_PREFIX,
-  readRun,
-  readWorkflowsOverview,
-} from "../../workflows/runs";
+import { requireTenant, startRun } from "../../workflows/hatchet";
+import { readRun, readWorkflowsOverview } from "../../workflows/runs";
+import { setWebhook } from "../../workflows/webhook";
 
 /** How many recent runs an agent is shown. */
 const RECENT_RUNS = 10;
@@ -27,9 +19,6 @@ const failure = (error: unknown) => ({
   success: false as const,
   error: error instanceof Error ? error.message : String(error),
 });
-
-const NOT_SET_UP =
-  "Nothing is deployed yet. Commit a workflow first; if one is committed, its deploy failed (is Hatchet reachable?).";
 
 export function createWorkflowTools({
   workspaceId,
@@ -55,24 +44,17 @@ export function createWorkflowTools({
       }),
       execute: async ({ runId }) => {
         try {
-          const tenant = await readWorkspaceTenant(workspaceId);
           if (!runId) {
             return {
               success: true,
               ...(await readWorkflowsOverview(
                 workspaceId,
-                tenant,
                 RECENT_RUNS,
                 await mayRun(),
               )),
             };
           }
-          if (!isHatchetId(runId)) {
-            return { success: false, error: `Invalid run id: ${runId}` };
-          }
-          if (!tenant) {
-            return { success: false, error: NOT_SET_UP };
-          }
+          const tenant = await requireTenant(workspaceId);
           return { success: true, run: await readRun(tenant, runId) };
         } catch (error) {
           return failure(error);
@@ -102,19 +84,14 @@ export function createWorkflowTools({
           if (!(await mayRun())) {
             return { success: false, error: "Viewers cannot start runs." };
           }
-          const tenant = await readWorkspaceTenant(workspaceId);
-          if (!tenant) {
-            return { success: false, error: NOT_SET_UP };
-          }
-          const run = (await triggerRun(
-            tenant,
-            `${preview ? PREVIEW_PREFIX : ""}${workflowId}`,
-            input ?? {},
-            { trigger: "agent", triggeredBy: userId ?? "api-key" },
-          )) as { run?: { metadata?: { id?: string } } };
+          const runId = await startRun(
+            await requireTenant(workspaceId),
+            workflowId,
+            { input, preview, trigger: "agent" },
+          );
           return {
             success: true,
-            runId: run.run?.metadata?.id,
+            runId,
             workflowId,
             preview: preview === true,
           };
@@ -133,9 +110,6 @@ export function createWorkflowTools({
       }),
       execute: async ({ workflowId, enabled }) => {
         try {
-          if (!mayHaveWebhook(workflowId)) {
-            return { success: false, error: `Invalid workflow: ${workflowId}` };
-          }
           if (!(await mayRun())) {
             return { success: false, error: "Viewers cannot change webhooks." };
           }

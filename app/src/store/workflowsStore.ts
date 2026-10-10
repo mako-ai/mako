@@ -71,165 +71,120 @@ interface WorkflowsState {
   fetchOverview: (workspaceId: string) => Promise<void>;
   fetchRun: (workspaceId: string, runId: string) => Promise<void>;
   fetchFiles: (workspaceId: string) => Promise<void>;
-  fetchFile: (workspaceId: string, path: string) => Promise<string | null>;
   run: (
     workspaceId: string,
     workflowId: string,
     input: Record<string, unknown>,
     preview: boolean,
   ) => Promise<Result>;
-  cancel: (workspaceId: string, runId: string) => Promise<Result>;
   setWebhook: (
     workspaceId: string,
     workflowId: string,
     enabled: boolean,
-  ) => Promise<Result>;
+  ) => Promise<void>;
   /** Turn workflows on for the workspace. Staff only. */
-  enable: (workspaceId: string) => Promise<Result>;
+  enable: (workspaceId: string) => Promise<void>;
 }
-
-/** Preview workflows are registered under this prefix (see the worker). */
-const PREVIEW_PREFIX = "preview_";
 
 export const isActiveRun = (status?: string) =>
   status === "RUNNING" || status === "QUEUED";
 
+/** One file under `workflows/`, or null when it is not on the branch. */
+export async function fetchWorkflowFile(
+  workspaceId: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    const body = unwrapBody(
+      await api.GET("/api/workspaces/{workspaceId}/workflows/files", {
+        params: { path: { workspaceId }, query: { path } },
+      }),
+    ) as { contents?: string };
+    return body.contents ?? "";
+  } catch {
+    return null;
+  }
+}
+
 export const useWorkflowsStore = create<WorkflowsState>()(
-  immer(set => {
-    return {
-      overviewByWorkspace: {},
-      runsById: {},
-      filesByWorkspace: {},
-      fetchOverview: async workspaceId => {
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/workflows", {
-              params: { path: { workspaceId } },
-            }),
-          ) as unknown as WorkflowsOverview;
-          set(s => {
-            s.overviewByWorkspace[workspaceId] = body;
-          });
-        } catch {
-          // The screens keep what they last saw; the next poll tries again.
-        }
-      },
+  immer(set => ({
+    overviewByWorkspace: {},
+    runsById: {},
+    filesByWorkspace: {},
 
-      fetchRun: async (workspaceId, runId) => {
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/workflows/runs/{id}", {
-              params: { path: { workspaceId, id: runId } },
-            }),
-          ) as unknown as { run: WorkflowRun };
-          set(s => {
-            s.runsById[runId] = body.run;
-          });
-        } catch {
-          // The list still shows the run; its detail is retried on the next poll.
-        }
-      },
+    // The three reads keep what the screens last saw when a poll fails: the
+    // next poll tries again.
+    fetchOverview: async workspaceId => {
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/workflows", {
+            params: { path: { workspaceId } },
+          }),
+        ) as WorkflowsOverview;
+        set(s => {
+          s.overviewByWorkspace[workspaceId] = body;
+        });
+      } catch {
+        // See above.
+      }
+    },
 
-      fetchFiles: async workspaceId => {
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/workflows/files", {
-              params: { path: { workspaceId }, query: {} },
-            }),
-          ) as unknown as { files?: string[] };
-          set(s => {
-            s.filesByWorkspace[workspaceId] = body.files ?? [];
-          });
-        } catch {
-          // Files are a convenience next to the runs; an empty tree is fine.
-        }
-      },
+    fetchRun: async (workspaceId, runId) => {
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/workflows/runs/{id}", {
+            params: { path: { workspaceId, id: runId } },
+          }),
+        ) as { run: WorkflowRun };
+        set(s => {
+          s.runsById[runId] = body.run;
+        });
+      } catch {
+        // See above.
+      }
+    },
 
-      fetchFile: async (workspaceId, path) => {
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/workflows/files", {
-              params: { path: { workspaceId }, query: { path } },
-            }),
-          ) as unknown as { contents?: string };
-          return body.contents ?? "";
-        } catch {
-          return null;
-        }
-      },
+    fetchFiles: async workspaceId => {
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/workflows/files", {
+            params: { path: { workspaceId }, query: {} },
+          }),
+        ) as { files?: string[] };
+        set(s => {
+          s.filesByWorkspace[workspaceId] = body.files ?? [];
+        });
+      } catch {
+        // See above.
+      }
+    },
 
-      run: async (workspaceId, workflowId, input, preview) => {
-        try {
-          const body = unwrapBody(
-            await api.POST(
-              "/api/workspaces/{workspaceId}/workflows/{name}/run",
-              {
-                params: {
-                  path: {
-                    workspaceId,
-                    name: `${preview ? PREVIEW_PREFIX : ""}${workflowId}`,
-                  },
-                },
-                body: { input },
-              },
-            ),
-          ) as unknown as { run?: { run?: { metadata?: { id?: string } } } };
-          return { ok: true, runId: body.run?.run?.metadata?.id };
-        } catch (e) {
-          return { ok: false, error: message(e, "Failed to start the run") };
-        }
-      },
+    run: async (workspaceId, workflowId, input, preview) => {
+      try {
+        const body = unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/workflows/{name}/run", {
+            params: { path: { workspaceId, name: workflowId } },
+            body: { input, preview },
+          }),
+        ) as { runId?: string };
+        return { ok: true, runId: body.runId };
+      } catch (e) {
+        return { ok: false, error: message(e, "Failed to start the run") };
+      }
+    },
 
-      cancel: async (workspaceId, runId) => {
-        try {
-          unwrapBody(
-            await api.POST(
-              "/api/workspaces/{workspaceId}/workflows/runs/{id}/cancel",
-              { params: { path: { workspaceId, id: runId } } },
-            ),
-          );
-          return { ok: true };
-        } catch (e) {
-          return { ok: false, error: message(e, "Failed to cancel the run") };
-        }
-      },
+    setWebhook: async (workspaceId, workflowId, enabled) => {
+      await api.PUT("/api/workspaces/{workspaceId}/workflows/{name}/webhook", {
+        params: { path: { workspaceId, name: workflowId } },
+        body: { enabled },
+      });
+    },
 
-      setWebhook: async (workspaceId, workflowId, enabled) => {
-        try {
-          unwrapBody(
-            await api.PUT(
-              "/api/workspaces/{workspaceId}/workflows/{name}/webhook",
-              {
-                params: { path: { workspaceId, name: workflowId } },
-                body: { enabled },
-              },
-            ),
-          );
-          return { ok: true };
-        } catch (e) {
-          return {
-            ok: false,
-            error: message(e, "Failed to change the webhook"),
-          };
-        }
-      },
-
-      enable: async workspaceId => {
-        try {
-          unwrapBody(
-            await api.PUT("/api/admin/workspaces/{workspaceId}/workflows", {
-              params: { path: { workspaceId } },
-              body: { enabled: true },
-            }),
-          );
-          return { ok: true };
-        } catch (e) {
-          return {
-            ok: false,
-            error: message(e, "Failed to turn workflows on"),
-          };
-        }
-      },
-    };
-  }),
+    enable: async workspaceId => {
+      await api.PUT("/api/admin/workspaces/{workspaceId}/workflows", {
+        params: { path: { workspaceId } },
+        body: { enabled: true },
+      });
+    },
+  })),
 );
