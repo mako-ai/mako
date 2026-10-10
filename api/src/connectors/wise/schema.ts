@@ -188,6 +188,24 @@ export const ACTIVITY_SCHEMA: Record<string, ConnectorFieldSchema> = {
   ...MAKO_SYSTEM_FIELDS,
 };
 
+export const BALANCE_STATEMENT_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  id: { type: "string", required: true },
+  profileId: s(),
+  balanceId: s(),
+  currency: s(),
+  referenceNumber: s(),
+  type: s(),
+  date: ts(),
+  amount: n(),
+  totalFees: n(),
+  runningBalance: n(),
+  detailsType: s(),
+  description: s(),
+  details: j(),
+  exchangeDetails: j(),
+  ...MAKO_SYSTEM_FIELDS,
+};
+
 export const WISE_ENTITY_SCHEMA_MAP: Record<
   string,
   Record<string, ConnectorFieldSchema>
@@ -198,6 +216,7 @@ export const WISE_ENTITY_SCHEMA_MAP: Record<
   transfers: TRANSFER_SCHEMA,
   recipients: RECIPIENT_SCHEMA,
   activities: ACTIVITY_SCHEMA,
+  balance_statements: BALANCE_STATEMENT_SCHEMA,
 };
 
 export function resolveWiseEntitySchema(
