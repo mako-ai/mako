@@ -69,6 +69,10 @@ async function main() {
     assert.equal((await call("/head", "")).status, 401);
     assert.equal((await call("/head", OTHER_KEY)).status, 401);
     assert.equal((await call("/head", "revops_unknown")).status, 401);
+    // The agent and the model are behind the same key; a goal is required.
+    assert.equal((await call("/agent", OTHER_KEY, { goal: "x" })).status, 401);
+    assert.equal((await call("/ai/language-model", OTHER_KEY, {})).status, 401);
+    assert.equal((await call("/agent", WORKER_KEY, {})).status, 400);
     assert.equal(
       (await call("/status", OTHER_KEY, { sha: SHA_A })).status,
       401,

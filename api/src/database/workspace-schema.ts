@@ -770,6 +770,8 @@ export interface IChat extends Document {
   pinnedConsoleId?: string; // Console ID that this chat session is bound to
   createdBy: string;
   titleGenerated: boolean;
+  /** Set on a run of Mako's agent from a workflow step: kept, not listed. */
+  source?: "workflow";
   // Resume pointer for in-flight turns: the resumable-stream ID clients can
   // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
   activeStreamId?: string | null;
@@ -2178,6 +2180,7 @@ const ChatSchema = new Schema<IChat>(
       type: Boolean,
       default: false,
     },
+    source: { type: String, enum: ["workflow"] },
     activeStreamId: {
       type: String,
       default: null,

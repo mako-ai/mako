@@ -53,8 +53,8 @@ A webhook is off until someone adds it on the workflow's tab. Its URL carries it
 ## Using Mako from a step
 
 ```ts
-import { generateText, stepCountIs } from "ai";
-import { call, model, query, tools } from "../lib/mako";
+import { generateText } from "ai";
+import { agent, call, model, query } from "../lib/mako";
 
 // SQL on a workspace connection (read-only).
 const rows = await query("<connectionId>", "select count(*) from orders");
@@ -62,12 +62,15 @@ const rows = await query("<connectionId>", "select count(*) from orders");
 // Any Mako tool by name: here, rebuild an app's data.
 await call("app_materialize", { appId: "<appId>", name: "orders_daily" });
 
-// A model with Mako's tools. Counted in the workspace's usage.
-const { text } = await generateText({
-  model: model("anthropic/claude-sonnet-4.5"),
-  tools: await tools(),
-  stopWhen: stepCountIs(8),
-  prompt: "Which accounts stopped using the product this week, and why?",
+// Mako's own agent, as in chat: a goal in, the answer out.
+const { text, toolCalls } = await agent(
+  "Which accounts stopped using the product this week, and why?",
+);
+
+// A plain model call, with Mako's tools if you pass them.
+const summary = await generateText({
+  model: model("anthropic/claude-haiku-4.5"),
+  prompt: `Summarize in one line: ${text}`,
 });
 ```
 

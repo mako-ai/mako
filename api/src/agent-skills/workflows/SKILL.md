@@ -134,25 +134,41 @@ import { call } from "../lib/mako";
 await call("app_materialize", { appId: "<appId>", name: "<binding>" });
 ```
 
-## A model in a step
+## Thinking in a step
 
-A step can think: give a model Mako's tools and a goal. The call goes through
-Mako and counts in the workspace's usage, like a chat turn.
+Two ways. Both count in the workspace's usage, like a chat turn.
+
+**Mako's agent**, for a job that needs judgement: the same agent as in chat,
+with its skills and tools. A goal in, the answer out.
 
 ```ts
-import { generateText, stepCountIs } from "ai";
-import { model, tools } from "../lib/mako";
+import { agent } from "../lib/mako";
+
+const { text, toolCalls } = await agent(
+  "Which accounts stopped using the product this week, and why?",
+);
+ctx.logger.info(`used: ${toolCalls.join(", ")}`);
+```
+
+Write the goal as you would brief a colleague: what to find, where, and what
+to answer with. It acts as the person who set workflows up and can change
+things in Mako, so say so when it should only read.
+
+**A plain model call**, for one small judgement on data you already hold
+(classify, summarize, extract). No tools unless you pass some.
+
+```ts
+import { generateText } from "ai";
+import { model } from "../lib/mako";
 
 const { text } = await generateText({
-  model: model("anthropic/claude-sonnet-4.5"),
-  tools: await tools(),
-  stopWhen: stepCountIs(8),
-  prompt: "Which accounts stopped using the product this week, and why?",
+  model: model("anthropic/claude-haiku-4.5"),
+  prompt: `Summarize in one line: ${notes}`,
 });
 ```
 
-Use `generateText`, not `streamText`. Keep `stepCountIs` low: every step is a
-paid model call. Use plain `call` or `query` when no judgement is needed.
+Use `generateText`, not `streamText`. Use plain `call` or `query` when no
+judgement is needed.
 
 ## What starts a run
 

@@ -1,10 +1,38 @@
-// Mako access for workflow code: models, Mako's tools, and SQL.
+// Mako access for workflow code: Mako's agent, models, Mako's tools, and SQL.
 // Credentials come from the worker's environment; nothing is hardcoded.
 import { createGateway } from "@ai-sdk/gateway";
 import { createMCPClient } from "@ai-sdk/mcp";
 
 const url = process.env.MAKO_URL ?? "http://localhost:8080";
 const key = process.env.MAKO_API_KEY ?? "";
+
+/**
+ * Mako's own agent: give it a goal, it works with Mako's tools and skills and
+ * answers. `toolCalls` names what it used, in order; `chatId` is the run,
+ * kept in Mako. Counted in the workspace's usage.
+ */
+export async function agent(
+  goal: string,
+  options: { model?: string; maxSteps?: number } = {},
+): Promise<{ text: string; toolCalls: string[]; chatId: string }> {
+  const res = await fetch(`${url}/api/workflows/runtime/agent`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ goal, ...options }),
+  });
+  const body = (await res.json()) as {
+    text: string;
+    toolCalls: string[];
+    chatId: string;
+    error?: string;
+  };
+  if (!res.ok)
+    throw new Error(body.error ?? `The agent failed (${res.status})`);
+  return body;
+}
 
 /** A model, e.g. `model("anthropic/claude-sonnet-4.5")`. Counted in the workspace's usage. */
 export const model = createGateway({

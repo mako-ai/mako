@@ -38,6 +38,7 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { trackUsage } from "../services/llm-usage.service";
 import { workspaceService } from "../services/workspace.service";
+import { runStepAgent } from "../workflows/agent";
 import {
   HatchetError,
   isHatchetId,
@@ -423,7 +424,13 @@ const GATEWAY_BASE_URL = (
 ).replace(/\/+$/, "");
 
 /** The workspace a worker key belongs to, or null when the key is not one. */
-async function workerWorkspaceId(c: Context): Promise<string | null> {
+const workerWorkspaceId = async (c: Context) =>
+  (await workerOf(c))?.workspaceId ?? null;
+
+/** A worker key's workspace and the person who set the worker up. */
+async function workerOf(
+  c: Context,
+): Promise<{ workspaceId: string; userId: string } | null> {
   const header = c.req.header("Authorization");
   if (!header?.startsWith("Bearer revops_")) return null;
   const keyHash = hashApiKey(header.substring(7));
@@ -434,7 +441,7 @@ async function workerWorkspaceId(c: Context): Promise<string | null> {
   if (!workspace || !key || workspace.workflows?.enabled !== true) return null;
   const scopes = resolveWorkspaceApiKeyScopes(key.scopes);
   if (!hasWorkspaceApiKeyScope(scopes, "workflows:runtime")) return null;
-  return workspace._id.toString();
+  return { workspaceId: workspace._id.toString(), userId: key.createdBy };
 }
 
 // What the worker should run. It polls this: the commit to switch to, the
@@ -571,6 +578,41 @@ workflowRuntimeRoutes.post("/ai/*", async c => {
       "Content-Type": res.headers.get("Content-Type") ?? "application/json",
     },
   });
+});
+
+// Mako's own agent for a step (lib/mako `agent()`): a goal in, the answer and
+// the tools it used out. It acts as the person who set the worker up.
+workflowRuntimeRoutes.post("/agent", async c => {
+  const worker = await workerOf(c);
+  if (!worker) return c.json({ error: "Invalid worker key" }, 401);
+  const body = (await c.req.json().catch(() => null)) as {
+    goal?: unknown;
+    model?: unknown;
+    maxSteps?: unknown;
+  } | null;
+  if (typeof body?.goal !== "string" || !body.goal.trim()) {
+    return c.json({ error: "A goal is required" }, 400);
+  }
+  try {
+    return c.json(
+      await runStepAgent({
+        ...worker,
+        goal: body.goal,
+        modelId: typeof body.model === "string" ? body.model : undefined,
+        maxSteps: typeof body.maxSteps === "number" ? body.maxSteps : undefined,
+      }),
+    );
+  } catch (error) {
+    logger.warn("Workflow agent call failed", {
+      workspaceId: worker.workspaceId,
+      error,
+    });
+    const status = error instanceof HatchetError ? error.status : 502;
+    return c.json(
+      { error: error instanceof Error ? error.message : "The agent failed" },
+      status as 502,
+    );
+  }
 });
 
 workflowRuntimeRoutes.get("/source/:sha", async c => {
