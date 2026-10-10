@@ -671,6 +671,25 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
           },
         },
       },
+      MuiAlert: {
+        styleOverrides: {
+          // MUI 7.1 paints a filled alert with `palette[color].dark` in dark
+          // mode but picks its text by contrast with `.main`, a light shade,
+          // so it chooses black: black text on a mid-blue info toast. Pick
+          // the text against the colour actually painted.
+          root: ({ theme, ownerState }: any) => {
+            if (
+              ownerState.variant !== "filled" ||
+              theme.palette.mode !== "dark"
+            ) {
+              return {};
+            }
+            const color = ownerState.color ?? ownerState.severity ?? "success";
+            const bg = theme.palette[color]?.dark;
+            return bg ? { color: theme.palette.getContrastText(bg) } : {};
+          },
+        },
+      },
     },
   });
 
