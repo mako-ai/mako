@@ -24,10 +24,9 @@ import { AppWorktree, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { ensureWorkspaceTenant, hasInstanceHatchet } from "./hatchet";
 import {
-  createWorkerSecret,
   ensureWorkerDeployment,
   isGkeWorkerConfigured,
-  workerSecretExists,
+  writeWorkerSecret,
 } from "./kube";
 
 const logger = loggers.api("workflows-on-push");
@@ -120,12 +119,20 @@ async function ensureWorker(
     await setWorkerKey(workspaceId, userId, key);
     return;
   }
-  // The key can be read only when it is created, so a missing Secret means a
-  // new key, written to Kubernetes in the same step.
-  if (!(await workerSecretExists(workspaceId))) {
+  // The key can be read only when it is created. Mako's record of it is the
+  // workspace's key with the worker scope; without one (a first deploy, or a
+  // database restored from before the worker existed) a new key is made and
+  // written to the Secret, replacing whatever the pod held.
+  const workspace = await Workspace.findById(workspaceId)
+    .select("apiKeys.scopes")
+    .lean();
+  const hasKey = workspace?.apiKeys?.some(k =>
+    k.scopes?.includes("workflows:runtime"),
+  );
+  if (!hasKey) {
     const { key } = generateApiKey();
     await setWorkerKey(workspaceId, userId, key);
-    await createWorkerSecret(workspaceId, key);
+    await writeWorkerSecret(workspaceId, key);
   }
   await ensureWorkerDeployment(workspaceId);
 }

@@ -77,22 +77,44 @@ export async function workerSecretExists(
   }
 }
 
-/** Create the worker's credential. Called only when the Secret is missing. */
-export async function createWorkerSecret(
+/**
+ * Write the worker's credential, replacing an earlier one. A pod reads the
+ * Secret at start, so a worker that already runs is restarted afterwards.
+ */
+export async function writeWorkerSecret(
   workspaceId: string,
   makoApiKey: string,
 ): Promise<void> {
-  const { core } = await gkeClients();
-  await core.createNamespacedSecret({
-    namespace: NAMESPACE,
-    body: {
-      metadata: {
-        name: workerName(workspaceId),
-        labels: resourceLabels(workspaceId),
-      },
-      stringData: { MAKO_API_KEY: makoApiKey },
-    },
-  });
+  const { core, apps } = await gkeClients();
+  const name = workerName(workspaceId);
+  const body = {
+    metadata: { name, labels: resourceLabels(workspaceId) },
+    stringData: { MAKO_API_KEY: makoApiKey },
+  };
+  if (await workerSecretExists(workspaceId)) {
+    await core.replaceNamespacedSecret({ name, namespace: NAMESPACE, body });
+    await apps
+      .patchNamespacedDeployment({
+        name,
+        namespace: NAMESPACE,
+        body: {
+          spec: {
+            template: {
+              metadata: {
+                annotations: {
+                  "mako.ai/key-rotated": new Date().toISOString(),
+                },
+              },
+            },
+          },
+        },
+      })
+      .catch(error => {
+        if (!isNotFound(error)) throw error;
+      });
+    return;
+  }
+  await core.createNamespacedSecret({ namespace: NAMESPACE, body });
 }
 
 function deploymentBody(workspaceId: string): V1Deployment {
