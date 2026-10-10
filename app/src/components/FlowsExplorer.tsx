@@ -271,10 +271,10 @@ export function FlowsExplorer() {
               textTransform: "uppercase",
             }}
           >
-            Sync
+            Flows
           </Typography>
           <Box sx={{ display: "flex", gap: 0 }}>
-            <Tooltip title="Add sync">
+            <Tooltip title="Add Flow">
               <IconButton
                 size="small"
                 onClick={event => setAnchorEl(event.currentTarget)}
@@ -317,7 +317,7 @@ export function FlowsExplorer() {
           </Box>
         ) : sections.length === 0 ? (
           <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-            <Typography variant="body2">Nothing to sync yet.</Typography>
+            <Typography variant="body2">No flows configured.</Typography>
           </Box>
         ) : (
           <ResourceTree
