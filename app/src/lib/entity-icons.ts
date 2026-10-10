@@ -35,6 +35,7 @@ import {
   MessageCircleMore,
   MessageSquareText,
   Notebook,
+  Workflow,
   Palette,
   Plug,
   Gauge,
@@ -66,6 +67,7 @@ export const EXPLORER_ICONS = {
   // git glyph — GitBranch now belongs to Source Control, where it means what
   // it says.
   dbt: DbtIcon,
+  workflows: Workflow,
   "source-control": GitBranch,
   connectors: Plug,
   dashboards: ChartPie,
@@ -102,6 +104,7 @@ export const TAB_KIND_ICONS = {
   "dbt-job": CalendarClock,
   "dbt-console": Terminal,
   "dbt-runs": History,
+  workflow: Workflow,
   notebook: Notebook,
 } as const satisfies Record<NonNullable<TabKind>, LucideIcon>;
 

@@ -29,6 +29,7 @@ const SYNCS = [
   "syncDbtConfigFromRepo",
   "syncNotebooksFromRepo",
   "syncConnectorsFromRepo",
+  "deployWorkflowsFromRepo",
 ];
 
 const shared = worktree.slice(

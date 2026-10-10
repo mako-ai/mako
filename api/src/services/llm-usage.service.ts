@@ -22,7 +22,8 @@ export interface TrackUsageParams {
     | "description_generation"
     | "embedding"
     | "version_comment"
-    | "commit_message";
+    | "commit_message"
+    | "workflow";
   modelId: string;
   inputTokens: number;
   outputTokens: number;

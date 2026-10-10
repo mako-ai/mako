@@ -26,7 +26,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
-  topNavigationItems,
+  useNavigationItems,
   bottomNavigationItems,
   type NavigationView,
 } from "../lib/explorer-nav";
@@ -210,6 +210,7 @@ export function SidebarUserMenu({
 }
 
 function Sidebar() {
+  const navigationItems = useNavigationItems();
   // `activeExplorer` is the explorer that's actually visible on the left
   // (null when the pane is collapsed). Use this — not `leftPane`, which is
   // the last-selected view retained across collapse — to decide which icon
@@ -274,7 +275,7 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {topNavigationItems.map(item => {
+          {navigationItems.map(item => {
             const Icon = item.icon;
             const isActive = activeExplorer === item.view;
 

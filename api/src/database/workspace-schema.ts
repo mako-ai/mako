@@ -148,6 +148,37 @@ export interface IWorkspace extends Document {
   workspaceRepos?: IWorkspaceRepoBinding[];
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
   appsRepo?: IWorkspaceRepoBinding;
+  /**
+   * Workflows as code (docs/src/content/docs/workflows.md). Mako stores how to reach
+   * the workspace's Hatchet tenant and which commit its worker runs.
+   * Workflows and schedules live in git; runs and logs live in Hatchet.
+   */
+  workflows?: IWorkspaceWorkflows;
+}
+
+/**
+ * One deployed version of `workflows/`: the commit the worker should run,
+ * the commit it reports running, and the last commit it could not start.
+ */
+export interface IWorkflowSlot {
+  sha: string;
+  tree: string;
+  running?: { sha: string };
+  failed?: { sha: string; error: string };
+}
+
+export interface IWorkspaceWorkflows {
+  /**
+   * The workspace's Hatchet API token, encrypted like connection secrets.
+   * Absent when the installation shares one token (HATCHET_CLIENT_TOKEN).
+   */
+  hatchetToken?: string;
+  /** `workflows/` on main. */
+  live?: IWorkflowSlot;
+  /** Unmerged work run next to live: the last branch pushed with changes. */
+  preview?: IWorkflowSlot & { branch: string };
+  /** Workflows with a webhook turned on: name → its URL's secret, encrypted. */
+  webhooks?: Record<string, string>;
 }
 
 export interface IWorkspaceRepoBinding {
@@ -737,6 +768,8 @@ export interface IChat extends Document {
   pinnedConsoleId?: string; // Console ID that this chat session is bound to
   createdBy: string;
   titleGenerated: boolean;
+  /** Set on a run of Mako's agent from a workflow step: kept, not listed. */
+  source?: "workflow";
   // Resume pointer for in-flight turns: the resumable-stream ID clients can
   // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
   activeStreamId?: string | null;
@@ -1276,6 +1309,13 @@ export interface IConnectionVerification extends Document {
 /**
  * Workspace Schema
  */
+const WorkflowSlotFields = {
+  sha: String,
+  tree: String,
+  running: { type: { sha: String }, _id: false },
+  failed: { type: { sha: String, error: String }, _id: false },
+};
+
 const WorkspaceSchema = new Schema<IWorkspace>(
   {
     name: {
@@ -1376,6 +1416,19 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         ),
       ],
       default: undefined,
+    },
+    workflows: {
+      type: {
+        hatchetToken: { type: String },
+        live: { type: WorkflowSlotFields, _id: false },
+        preview: {
+          type: { ...WorkflowSlotFields, branch: String },
+          _id: false,
+        },
+        webhooks: { type: Schema.Types.Mixed },
+      },
+      default: undefined,
+      _id: false,
     },
     appsRepo: {
       type: {
@@ -2126,6 +2179,7 @@ const ChatSchema = new Schema<IChat>(
       type: Boolean,
       default: false,
     },
+    source: { type: String, enum: ["workflow"] },
     activeStreamId: {
       type: String,
       default: null,

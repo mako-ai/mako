@@ -40,12 +40,13 @@ const EXPLORER_VIEWS: Array<{ view: LeftPaneView; label: string }> = [
   { view: "dashboards", label: "Dashboards" },
   { view: "apps", label: "Apps" },
   { view: "dbt", label: "Transforms" },
+  { view: "workflows", label: "Workflows" },
   { view: "flows", label: "Flows" },
   { view: "connectors", label: "Sources" },
   { view: "settings", label: "Settings" },
 ];
 
-function openSettingsSection(section: SettingsSection): void {
+export function openSettingsSection(section: SettingsSection): void {
   const state = useConsoleStore.getState();
   const existing = selectTabBySettingsSection(section)(state);
   if (existing) {

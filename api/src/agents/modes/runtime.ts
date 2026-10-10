@@ -466,8 +466,14 @@ export function buildUnifiedModeRuntime(params: {
   tabKind?: string;
   /** Gateway model id (e.g. "xai/grok-4.5") — drives the provider tool cap. */
   modelId?: string;
+  /**
+   * A turn nobody is watching (a workflow step). Tools that run in a browser
+   * or wait for a person have no `execute` here and would never return, so
+   * they are left out.
+   */
+  headless?: boolean;
 }): UnifiedModeRuntime {
-  const { context, messages, tabKind, modelId } = params;
+  const { context, messages, tabKind, modelId, headless } = params;
 
   const defaultMode = defaultExpertiseMode(context, tabKind);
   const modeState = deriveModeState(messages, defaultMode);
@@ -524,17 +530,27 @@ export function buildUnifiedModeRuntime(params: {
         context.workspaceId,
         context.userId,
       );
-      return member?.role ?? null;
+      const role = member?.role ?? null;
+      // Workflow code of any member runs as the person who set the worker
+      // up: it gets that person's data access, never their admin rights.
+      return headless && (role === "owner" || role === "admin")
+        ? "member"
+        : role;
     })();
     return liveRolePromise;
   };
+  const offered = {
+    ...domainTools,
+    ...clientPlanTools,
+    ...modeTools,
+    ...discoveryTools,
+  } as ToolSet;
   const tools: ToolSet = enforceCapabilityGrantsAtExecution(
-    {
-      ...domainTools,
-      ...clientPlanTools,
-      ...modeTools,
-      ...discoveryTools,
-    } as ToolSet,
+    headless
+      ? Object.fromEntries(
+          Object.entries(offered).filter(([, tool]) => tool.execute),
+        )
+      : offered,
     () => nativeCapabilityGrants(modeState),
     liveRole,
   );

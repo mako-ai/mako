@@ -47,6 +47,7 @@ export default defineConfig({
             { label: "Version History", slug: "version-history" },
             { label: "Apps", slug: "apps" },
             { label: "Transforms (dbt)", slug: "transforms" },
+            { label: "Workflows (preview)", slug: "workflows" },
             { label: "Query Runner", slug: "query-runner" },
             { label: "Notebooks", slug: "notebooks" },
             { label: "Self-Directive", slug: "self-directive" },

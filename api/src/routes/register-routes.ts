@@ -45,6 +45,11 @@ import { appsGitRoutes } from "./apps-git";
 import { appsBoxRoutes } from "./apps-box";
 import { appsPreviewRoutes } from "./apps-preview";
 import { favouriteRoutes } from "./favourites";
+import {
+  workflowHookRoutes,
+  workflowRoutes,
+  workflowRuntimeRoutes,
+} from "./workflows";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -117,6 +122,12 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // part of any entity's surface: it stores a view and can never change an
   // entity's identity, folder, sharing or deployment.
   app.route("/api/workspaces/:workspaceId/favourites", favouriteRoutes);
+  app.route("/api/workspaces/:workspaceId/workflows", workflowRoutes);
+  // Worker pods only: `workflows/` source and model calls, keyed by the
+  // workspace's `workflows:runtime` API key.
+  app.route("/api/workflows/runtime", workflowRuntimeRoutes);
+  // Public: a workflow's webhook URL, which carries its own secret.
+  app.route("/api/workflows/hooks", workflowHookRoutes);
   app.route("/api/apps-preview", appsPreviewRoutes);
   // Intentionally public: the workspace repo over git's own HTTP protocol,
   // authorized by a scoped `mgt_` token. This is what makes a sandbox a

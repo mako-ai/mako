@@ -317,6 +317,10 @@ export function syncRepoBackedResources(
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  // Workflows (`workflows/`, docs/src/content/docs/workflows.md): a change at main
+  // rolls the workspace's worker to the new commit. A commit that fails its
+  // typecheck never becomes ready, so the previous worker keeps running.
+  deployWorkflows(workspaceId, userId);
   // Flow definitions (RFC #904 block 3): `flows/<slug>.yml` is authoritative,
   // so an external edit reconfigures a live CDC stream and a removed file
   // tears one down. Caught like the others — one resource's bad YAML must not
@@ -333,6 +337,18 @@ export function syncRepoBackedResources(
     })
     .catch(error => {
       logger.warn("Flow sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
+
+/** Roll the workspace's workflow worker to what `main` and the branch hold. */
+function deployWorkflows(workspaceId: string, userId?: string): void {
+  void import("../workflows/on-push")
+    .then(m => m.deployWorkflowsFromRepo(workspaceId, userId))
+    .catch(error => {
+      logger.warn("Workflows deploy failed", {
         workspaceId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -2575,6 +2591,8 @@ export async function mergeBranchToMain(
     queueMirrorPush(scope.workspaceId);
     pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
     invalidatePullThrottle();
+    // A merge writes main here, not through the git endpoint.
+    deployWorkflows(scope.workspaceId);
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
     if (error instanceof WorktreeConflictError) throw error;
@@ -2608,6 +2626,7 @@ export async function mergeBranchToMain(
   queueMirrorPush(scope.workspaceId);
   pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
   invalidatePullThrottle();
+  deployWorkflows(scope.workspaceId);
   return { merged: true, commitOid, fastForward: false };
 }
 

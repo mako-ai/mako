@@ -28,6 +28,7 @@ export type TabKind =
   | "dbt-job"
   | "dbt-console"
   | "dbt-runs"
+  | "workflow"
   | "notebook";
 
 /**
@@ -190,6 +191,7 @@ export type LeftPaneView =
   | "apps"
   | "notebooks"
   | "dbt"
+  | "workflows"
   | "source-control"
   | "settings";
 

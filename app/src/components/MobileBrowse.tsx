@@ -22,7 +22,11 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import { SidebarUserMenu } from "./Sidebar";
-import { topNavigationItems, type NavigationView } from "../lib/explorer-nav";
+import {
+  topNavigationItems,
+  useNavigationItems,
+  type NavigationView,
+} from "../lib/explorer-nav";
 import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useUIStore, selectActiveExplorer } from "../store/uiStore";
@@ -160,6 +164,7 @@ export default function MobileBrowse({
   /** The active explorer's panel — the same element the desktop pane shows. */
   explorer: React.ReactNode;
 }) {
+  const navigationItems = useNavigationItems();
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
   const browseView = useUIStore(state => state.mobileBrowseView);
@@ -332,7 +337,7 @@ export default function MobileBrowse({
             px: 0.5,
           }}
         >
-          {topNavigationItems.map(item => {
+          {navigationItems.map(item => {
             const Icon = item.icon;
             return (
               <ButtonBase

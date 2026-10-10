@@ -141,6 +141,14 @@ function segmentsForTab(
       return plain(["Transforms", ctx.dbtProjectName, tab.title || "Console"]);
     case "dbt-runs":
       return plain(["Transforms", ctx.dbtProjectName, tab.title || "Runs"]);
+    case "workflow": {
+      // A workflow's runs, or a file under workflows/ (metadata.path).
+      const path = (tab.metadata?.path as string | undefined) || "";
+      return plain([
+        "Workflows",
+        ...(path ? path.split("/") : [tab.title || "Workflow"]),
+      ]);
+    }
     case "notebook":
       return plain(["Notebooks", tab.title || "Notebook"]);
     default: {

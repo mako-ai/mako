@@ -74,6 +74,8 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dbt-runs": /^\/x\/([a-zA-Z0-9-]+)\/runs\/?$/,
   "dbt-console": /^\/x\/([a-zA-Z0-9-]+)\/?$/,
   notebook: /^\/n\/([a-zA-Z0-9-]+)\/?$/,
+  // No deep link yet: a workflow tab is reopened from the explorer.
+  workflow: null,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -184,6 +186,8 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const notebookId = tab.metadata?.notebookId as string | undefined;
       return notebookId ? `/n/${notebookId}` : null;
     }
+    case "workflow":
+      return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;

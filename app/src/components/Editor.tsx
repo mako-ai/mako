@@ -82,6 +82,7 @@ import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
 import DbtConsoleView from "./DbtConsoleView";
 import DbtRunsView from "./DbtRunsView";
+import WorkflowView from "./WorkflowView";
 import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -3022,6 +3023,13 @@ function Editor({
                       focusRunId={
                         tab.metadata?.focusRunId as string | undefined
                       }
+                    />
+                  ) : tab.kind === "workflow" ? (
+                    <WorkflowView
+                      workflowId={
+                        tab.metadata?.workflowId as string | undefined
+                      }
+                      path={tab.metadata?.path as string | undefined}
                     />
                   ) : tab.kind === "dashboard-data-source" ? (
                     <DashboardDataSourceEditor

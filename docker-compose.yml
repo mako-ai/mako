@@ -1,9 +1,14 @@
 # Local development services.
 #
-# Currently this runs the notebook Python kernel so `code` cells execute
+# Runs the notebook Python kernel so `code` cells execute
 # locally: the API's StaticKernelProvider (KERNEL_GATEWAY_URL, see .env.example)
 # drives this sidecar's Jupyter Kernel Gateway. In deployed environments the
 # GKE KernelProvider is used instead — this is dev-only.
+#
+# Workspace workflows (docs/src/content/docs/workflows.md) are optional and off by
+# default. `docker compose --profile workflows up -d` adds Hatchet Lite, its
+# Postgres and the workflow worker, for local testing only. Hatchet dashboard
+# and REST API: http://localhost:8086 (admin@example.com / Admin123!!).
 #
 # The dev database is hosted MongoDB Atlas (via DATABASE_URL), so it is not a
 # compose service.
@@ -28,3 +33,66 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+  hatchet-postgres:
+    profiles: ["workflows"]
+    image: postgres:16-alpine
+    container_name: mako-hatchet-postgres
+    environment:
+      POSTGRES_USER: hatchet
+      POSTGRES_PASSWORD: hatchet
+      POSTGRES_DB: hatchet
+    volumes:
+      - hatchet-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  hatchet:
+    profiles: ["workflows"]
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.107.0
+    container_name: mako-hatchet
+    depends_on:
+      - hatchet-postgres
+    ports:
+      # Not 8085: `gcloud auth login` answers on that port.
+      - "8086:8888"
+      - "7077:7077"
+    environment:
+      DATABASE_URL: postgresql://hatchet:hatchet@hatchet-postgres:5432/hatchet?sslmode=disable
+      SERVER_URL: http://localhost:8086
+      SERVER_AUTH_COOKIE_DOMAIN: localhost
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_GRPC_PORT: "7077"
+      SERVER_GRPC_BIND_ADDRESS: 0.0.0.0
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: localhost:7077
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: localhost:7077
+      SERVER_DEFAULT_ENGINE_VERSION: V1
+    restart: unless-stopped
+
+  # The workflow worker: follows the commit Mako names for the workspace that
+  # holds WORKFLOWS_WORKER_KEY, and runs its workflows/. No sandbox: this is
+  # for an operator's own code.
+  workflows-worker:
+    profiles: ["workflows"]
+    build:
+      context: .
+      dockerfile: deploy/workflows/runtime/Dockerfile
+    image: mako-workflows-runtime:local
+    container_name: mako-workflows-worker
+    depends_on:
+      - hatchet
+    environment:
+      MAKO_URL: http://host.docker.internal:8080
+      # Same value as WORKFLOWS_WORKER_KEY in the API's .env.
+      MAKO_API_KEY: ${WORKFLOWS_WORKER_KEY:-}
+      # Hatchet Lite advertises localhost:7077, which is this container here.
+      HATCHET_CLIENT_HOST_PORT: hatchet:7077
+      HATCHET_CLIENT_API_URL: http://hatchet:8888
+      HATCHET_CLIENT_TLS_STRATEGY: none
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  hatchet-postgres:

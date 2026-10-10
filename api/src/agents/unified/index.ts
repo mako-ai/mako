@@ -15,6 +15,7 @@ import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-t
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
 import { createFlowFileTools } from "../../agent-lib/tools/flow-file-tools";
+import { createWorkflowTools } from "../../agent-lib/tools/workflow-tools";
 import { createConnectorTools } from "../../agent-lib/tools/connector-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../../agent-lib/tools/web-tools";
@@ -41,6 +42,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
   const flowFileTools = createFlowFileTools(workspaceId);
+  const workflowTools = createWorkflowTools({ workspaceId, userId });
   // Connector discovery + the live probe (deferred: loaded on demand).
   const connectorTools = createConnectorTools(workspaceId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
@@ -91,6 +93,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     ...serverNotebookTools,
     ...flowUniqueTools,
     ...flowFileTools,
+    ...workflowTools,
     ...connectorTools,
     ...selfDirectiveTools,
     ...skillTools,
