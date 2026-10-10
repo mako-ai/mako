@@ -284,14 +284,12 @@ workflowHookRoutes.post(
     const { workspaceId, name, secret } = c.req.param();
     const workspace = Types.ObjectId.isValid(workspaceId)
       ? await Workspace.findById(workspaceId)
-          .select("workflows.enabled workflows.webhooks")
+          .select("workflows.webhooks")
           .lean()
       : null;
-    const state = workspace?.workflows;
-    const tenant =
-      state?.enabled === true && isWebhookSecret(state.webhooks, name, secret)
-        ? await readWorkspaceTenant(workspaceId)
-        : null;
+    const tenant = isWebhookSecret(workspace?.workflows?.webhooks, name, secret)
+      ? await readWorkspaceTenant(workspaceId)
+      : null;
     // One answer for every wrong URL: it does not say which part was wrong.
     if (!tenant) return c.json({ error: "Not found" }, 404);
     const body: unknown = await c.req.json().catch(() => ({}));
@@ -322,10 +320,10 @@ async function workerOf(c: Context): Promise<Worker | null> {
   if (!header?.startsWith("Bearer revops_")) return null;
   const keyHash = hashApiKey(header.substring(7));
   const workspace = await Workspace.findOne({ "apiKeys.keyHash": keyHash })
-    .select("apiKeys workflows.enabled")
+    .select("apiKeys")
     .lean();
   const key = workspace?.apiKeys?.find(k => k.keyHash === keyHash);
-  if (!workspace || !key || workspace.workflows?.enabled !== true) return null;
+  if (!workspace || !key) return null;
   const scopes = resolveWorkspaceApiKeyScopes(key.scopes);
   if (!hasWorkspaceApiKeyScope(scopes, "workflows:runtime")) return null;
   return { workspaceId: workspace._id.toString(), userId: key.createdBy };

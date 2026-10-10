@@ -112,7 +112,6 @@ async function main() {
       slug: `t-${id}`,
       createdBy: "tester",
       workflows: {
-        enabled: true,
         target: { sha: SHA_A, tree: "ta" },
         live: { sha: SHA_A },
         preview: { branch: "workflow/x", sha: SHA_B, tree: "tb" },

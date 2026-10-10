@@ -157,8 +157,6 @@ export interface IWorkspace extends Document {
 }
 
 export interface IWorkspaceWorkflows {
-  /** Staff-set feature flag. Nothing deploys while this is not true. */
-  enabled: boolean;
   /**
    * The workspace's Hatchet API token, encrypted like connection secrets.
    * Absent when the installation shares one token (HATCHET_CLIENT_TOKEN).
@@ -1412,7 +1410,6 @@ const WorkspaceSchema = new Schema<IWorkspace>(
     },
     workflows: {
       type: {
-        enabled: { type: Boolean, default: false },
         hatchetToken: { type: String },
         target: { type: { sha: String, tree: String }, _id: false },
         live: { type: { sha: String }, _id: false },

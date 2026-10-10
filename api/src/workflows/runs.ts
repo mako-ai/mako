@@ -110,7 +110,6 @@ function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {
     // Workflows are files in the workspace's repository; without one linked
     // there is nowhere to write them, and the screen says so.
     repoLinked,
-    enabled: state?.enabled === true,
     // False when no Hatchet token exists for this workspace and the
     // installation has none to share: the UI hides Workflows.
     configured: Boolean(state?.hatchetToken) || hasInstanceHatchet(),

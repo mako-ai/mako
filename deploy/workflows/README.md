@@ -34,9 +34,6 @@ their schema with the `search_path` connection parameter. Neon drops it, also
 on the direct endpoint, so the tables are created in `public`, the engine logs
 `relation "outbox.messages" does not exist`, and runs stay `QUEUED`.
 
-Workflows stay off for a workspace until staff turn them on:
-`PUT /api/admin/workspaces/:workspaceId/workflows` with `{ "enabled": true }`.
-
 ## Per-workspace objects (created by the Mako API, not by hand)
 
 - a Hatchet tenant and API token, saved on the workspace

@@ -60,7 +60,7 @@ async function main() {
         key("worker", WORKER_KEY, ["mcp", "query:read", "workflows:runtime"]),
         key("ordinary", OTHER_KEY, ["mcp", "query:read"]),
       ],
-      workflows: { enabled: true, target: { sha: SHA_A, tree: "tree-a" } },
+      workflows: { target: { sha: SHA_A, tree: "tree-a" } },
     });
     const state = async () =>
       (await Workspace.findById(id).select("workflows").lean())?.workflows;
@@ -156,13 +156,6 @@ async function main() {
       400,
     );
     assert.equal((await call("/source/main", WORKER_KEY)).status, 400);
-
-    // Turning workflows off locks the worker out.
-    await Workspace.updateOne(
-      { _id: id },
-      { $set: { "workflows.enabled": false } },
-    );
-    assert.equal((await call("/head", WORKER_KEY)).status, 401);
 
     console.log("workflows runtime route tests passed");
   } finally {

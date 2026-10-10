@@ -43,7 +43,6 @@ export interface WorkflowRun extends WorkflowRunSummary {
 }
 
 export interface WorkflowsOverview {
-  enabled: boolean;
   /** False when this installation has no Hatchet: the section is hidden. */
   configured: boolean;
   /** False when the workspace has no repository to keep workflow files in. */
@@ -82,8 +81,6 @@ interface WorkflowsState {
     workflowId: string,
     enabled: boolean,
   ) => Promise<void>;
-  /** Turn workflows on for the workspace. Staff only. */
-  enable: (workspaceId: string) => Promise<void>;
 }
 
 export const isActiveRun = (status?: string) =>
@@ -177,13 +174,6 @@ export const useWorkflowsStore = create<WorkflowsState>()(
       await api.PUT("/api/workspaces/{workspaceId}/workflows/{name}/webhook", {
         params: { path: { workspaceId, name: workflowId } },
         body: { enabled },
-      });
-    },
-
-    enable: async workspaceId => {
-      await api.PUT("/api/admin/workspaces/{workspaceId}/workflows", {
-        params: { path: { workspaceId } },
-        body: { enabled: true },
       });
     },
   })),

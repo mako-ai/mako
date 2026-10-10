@@ -5,7 +5,7 @@ description: Write scheduled and multi-step jobs as TypeScript files in your wor
 
 A workflow is a TypeScript file in your workspace repo, in the `workflows/` folder, written with [Hatchet](https://hatchet.run)'s own SDK. Merge to `main` and it is deployed. Hatchet runs it: schedules, retries and timeouts are Hatchet's.
 
-**Preview.** Workflows are optional and off by default. Once on, they have their own panel in Mako: the workflows, their files and their runs.
+**Preview.** Workflows are optional: an installation without a Hatchet runs without them. With one, they have their own panel in Mako: the workflows, their files and their runs.
 
 ## A workflow
 
@@ -96,9 +96,7 @@ Mako needs two things: a Hatchet API token, and a worker.
    docker compose --profile workflows up -d
    ```
 
-3. Turn workflows on for a workspace: signed in as a super admin (`SUPER_ADMIN_EMAILS`), open Workflows in the left bar and click **Turn on workflows**.
-
-4. Ask the agent for a workflow, or add `workflows/<name>/workflow.ts` to the workspace repo and merge to `main`.
+3. Ask the agent for a workflow, or add `workflows/<name>/workflow.ts` to the workspace repo and merge to `main`.
 
 Hatchet dashboard: `http://localhost:8086` (`admin@example.com` / `Admin123!!`). The link icon in the Workflows panel opens it. This bundled Hatchet is for testing, not for production.
 

@@ -100,7 +100,6 @@ export function WorkflowsExplorer() {
   );
   const fetchOverview = useWorkflowsStore(s => s.fetchOverview);
   const fetchFiles = useWorkflowsStore(s => s.fetchFiles);
-  const enable = useWorkflowsStore(s => s.enable);
 
   const focusOrOpenTab = useConsoleStore(s => s.focusOrOpenTab);
   const activeMeta = useConsoleStore(s => {
@@ -226,16 +225,7 @@ export function WorkflowsExplorer() {
       }
     >
       {() =>
-        overview?.enabled === false ? (
-          // Only staff get this far: the rail hides Workflows until it is on.
-          <Prompt
-            text="Workflows are off for this workspace."
-            action="Turn on workflows"
-            onClick={() =>
-              workspaceId && void enable(workspaceId).then(refresh)
-            }
-          />
-        ) : overview?.repoLinked === false ? (
+        overview?.repoLinked === false ? (
           <Prompt
             text="Workflows live in a GitHub repository. Link one to get started — each workflow is a folder in the repo, and merging to the default branch puts it live."
             action="Link a GitHub repo"

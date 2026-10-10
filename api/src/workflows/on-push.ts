@@ -22,7 +22,7 @@ import { generateApiKey, hashApiKey } from "../auth/api-key.middleware";
 import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
 import { AppWorktree, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { ensureWorkspaceTenant } from "./hatchet";
+import { ensureWorkspaceTenant, hasInstanceHatchet } from "./hatchet";
 import {
   createWorkerSecret,
   ensureWorkerDeployment,
@@ -170,8 +170,9 @@ async function deployWorkflowsNow(
   const workspace = await Workspace.findById(workspaceId)
     .select("workflows createdBy")
     .lean();
-  const state = workspace?.workflows;
-  if (!workspace || !state?.enabled) return;
+  // Nothing to deploy to without a Hatchet: Mako runs without workflows.
+  const state = workspace?.workflows ?? {};
+  if (!workspace || !(state.hatchetToken || hasInstanceHatchet())) return;
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) return;
