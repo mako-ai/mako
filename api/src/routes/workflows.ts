@@ -13,27 +13,17 @@ import { bodyLimit } from "hono/body-limit";
 import { Types } from "mongoose";
 
 import { WORKFLOWS_DIR } from "../apps/app-paths";
-import {
-  ensureCommitLocally,
-  ensureLocalRepo,
-} from "../apps/cloud-repo.service";
-import { GitError, assertSafeRelPath, isOid, runGitBuffer } from "../apps/git";
-import {
-  DEFAULT_BRANCH,
-  listTree,
-  readBlob,
-  repoDirFor,
-  repoExists,
-  resolveCommit,
-} from "../apps/repository.service";
-import { hashApiKey } from "../auth/api-key.middleware";
+import { ensureCommitLocally } from "../apps/cloud-repo.service";
+import { isOid, runGitBuffer } from "../apps/git";
+import { repoDirFor } from "../apps/repository.service";
+import { listFiles, readFile } from "../apps/worktree.service";
 import {
   hasWorkspaceApiKeyScope,
   resolveWorkspaceApiKeyScopes,
 } from "../auth/api-key-scopes";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
-import { AppWorktree, Workspace } from "../database/workspace-schema";
+import { AppProject, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
   AuthenticatedContext,
@@ -62,9 +52,6 @@ function fail(error: unknown, c: Context): Response {
     const status =
       error.status >= 400 && error.status < 500 ? error.status : 502;
     return c.json({ success: false, error: error.message }, status as 502);
-  }
-  if (error instanceof GitError) {
-    return c.json({ success: false, error: "File not found" }, 404);
   }
   logger.error("Workflows route error", { error });
   return c.json(
@@ -150,29 +137,18 @@ workflowRoutes.openapi(
 );
 
 /**
- * The commit a person's view of `workflows/` is read from: the branch their
- * checkout is on, so they see the work they are previewing, else main.
+ * `workflows/` as an app-shaped project, so the Apps file functions read it:
+ * the person's own branch, from their sandbox while it runs.
  */
-async function filesRef(
-  workspaceId: string,
-  userId: string,
-): Promise<{ repoDir: string; ref: string } | null> {
-  await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return null;
-  const worktree = await AppWorktree.findOne({
+const workflowsProject = (workspaceId: string, userId: string) =>
+  new AppProject({
     workspaceId: new Types.ObjectId(workspaceId),
-    userId,
-  })
-    .select("branch")
-    .lean();
-  for (const branch of [worktree?.branch, DEFAULT_BRANCH]) {
-    if (!branch) continue;
-    const ref = await resolveCommit(repoDir, `refs/heads/${branch}`);
-    if (ref) return { repoDir, ref };
-  }
-  return null;
-}
+    title: WORKFLOWS_DIR,
+    slug: WORKFLOWS_DIR,
+    path: WORKFLOWS_DIR,
+    access: "workspace",
+    createdBy: userId,
+  });
 
 workflowRoutes.openapi(
   createRoute({
@@ -190,21 +166,15 @@ workflowRoutes.openapi(
   async c => {
     const { workspaceId } = c.req.valid("param");
     const { path } = c.req.valid("query");
-    const source = await filesRef(workspaceId, String(c.get("user")?.id));
-    if (!source) return c.json({ success: true as const, files: [] }, 200);
-    const prefix = `${WORKFLOWS_DIR}/`;
+    const userId = String(c.get("user")?.id);
+    const project = workflowsProject(workspaceId, userId);
     if (!path) {
-      const files = (await listTree(source.repoDir, source.ref))
-        .map(entry => entry.path)
-        .filter(file => file.startsWith(prefix))
-        .map(file => file.slice(prefix.length));
+      const listing = await listFiles(project, userId).catch(() => null);
+      const files = listing?.entries.map(entry => entry.path) ?? [];
       return c.json({ success: true as const, files }, 200);
     }
-    const file = await readBlob(
-      source.repoDir,
-      source.ref,
-      `${prefix}${assertSafeRelPath(path)}`,
-    );
+    const file = await readFile(project, path, userId).catch(() => null);
+    if (!file) return c.json({ success: false, error: "File not found" }, 404);
     return c.json(
       { success: true as const, contents: file.isBinary ? "" : file.contents },
       200,
@@ -314,26 +284,30 @@ const GATEWAY_BASE_URL = (
 
 type Worker = { workspaceId: string; userId: string };
 
-/** A worker key's workspace and the person who set the worker up. */
-async function workerOf(c: Context): Promise<Worker | null> {
-  const header = c.req.header("Authorization");
-  if (!header?.startsWith("Bearer revops_")) return null;
-  const keyHash = hashApiKey(header.substring(7));
-  const workspace = await Workspace.findOne({ "apiKeys.keyHash": keyHash })
-    .select("apiKeys")
-    .lean();
-  const key = workspace?.apiKeys?.find(k => k.keyHash === keyHash);
-  if (!workspace || !key) return null;
+// Mako's own auth resolves the key; a session or a key without the worker's
+// scope is turned away here (scoped-key-routes.ts already refuses the latter).
+workflowRuntimeRoutes.use("*", unifiedAuthMiddleware);
+
+/** The worker behind the request: its workspace and who set it up. */
+function workerOf(c: AuthenticatedContext): Worker | null {
+  const key = c.get("apiKey") as
+    | { scopes?: string[]; createdBy?: string }
+    | undefined;
+  const workspace = c.get("workspace");
+  if (c.get("authType") !== "apiKey" || !key || !workspace) return null;
   const scopes = resolveWorkspaceApiKeyScopes(key.scopes);
   if (!hasWorkspaceApiKeyScope(scopes, "workflows:runtime")) return null;
-  return { workspaceId: workspace._id.toString(), userId: key.createdBy };
+  return {
+    workspaceId: workspace._id.toString(),
+    userId: String(key.createdBy),
+  };
 }
 
 /** A runtime handler: it runs only for a worker key, and is given its worker. */
 const asWorker =
   (handler: (c: Context, worker: Worker) => Promise<Response>) =>
-  async (c: Context) => {
-    const worker = await workerOf(c);
+  async (c: AuthenticatedContext) => {
+    const worker = workerOf(c);
     return worker
       ? handler(c, worker)
       : c.json({ error: "Invalid worker key" }, 401);

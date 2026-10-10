@@ -10,6 +10,7 @@ import mongoose, { Types } from "mongoose";
 import { OpenAPIHono } from "@hono/zod-openapi";
 
 import { hashApiKey } from "../auth/api-key.middleware";
+import { User } from "../database/schema";
 import { Workspace } from "../database/workspace-schema";
 import { readWorkflowsStatus } from "../workflows/runs";
 import { workflowRuntimeRoutes } from "./workflows";
@@ -42,6 +43,7 @@ async function main() {
   process.env.HATCHET_CLIENT_TOKEN = HATCHET_TOKEN;
   try {
     const id = new Types.ObjectId();
+    await User.create({ _id: "tester", email: "tester@example.com" });
     const key = (name: string, value: string, scopes: string[]) => ({
       _id: new Types.ObjectId(),
       name,
@@ -67,11 +69,11 @@ async function main() {
 
     // Only the worker's key gets in: no key, an ordinary key, a wrong key.
     assert.equal((await call("/head", "")).status, 401);
-    assert.equal((await call("/head", OTHER_KEY)).status, 401);
+    assert.equal((await call("/head", OTHER_KEY)).status, 403);
     assert.equal((await call("/head", "revops_unknown")).status, 401);
     // The agent and the model are behind the same key; a goal is required.
-    assert.equal((await call("/agent", OTHER_KEY, { goal: "x" })).status, 401);
-    assert.equal((await call("/ai/language-model", OTHER_KEY, {})).status, 401);
+    assert.equal((await call("/agent", OTHER_KEY, { goal: "x" })).status, 403);
+    assert.equal((await call("/ai/language-model", OTHER_KEY, {})).status, 403);
     assert.equal((await call("/agent", WORKER_KEY, {})).status, 400);
     // Only the gateway call that can be counted is forwarded.
     assert.equal(
@@ -80,7 +82,7 @@ async function main() {
     );
     assert.equal(
       (await call("/status", OTHER_KEY, { slot: "live", sha: SHA_A })).status,
-      401,
+      403,
     );
 
     // The worker learns its commit and its Hatchet token in one call.

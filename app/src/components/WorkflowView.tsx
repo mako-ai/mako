@@ -3,7 +3,7 @@
  * like the Transforms run history. For a file under `workflows/`: the file,
  * read-only. Polls while on screen, faster while a run is active.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Box,
   Button,
@@ -31,6 +31,24 @@ import {
 } from "../store/workflowsStore";
 import { formatDuration } from "../utils/format";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
+
+/** A toolbar or header: a padded row closed by a divider. */
+const BAR_SX = {
+  display: "flex",
+  alignItems: "center",
+  flexWrap: "wrap",
+  gap: 1.5,
+  px: 1.5,
+  py: 0.75,
+  borderBottom: "1px solid",
+  borderColor: "divider",
+} as const;
+
+const Dim = ({ children }: { children: ReactNode }) => (
+  <Typography variant="caption" color="text.secondary">
+    {children}
+  </Typography>
+);
 
 const ACTIVE_POLL_INTERVAL_MS = 3_000;
 const IDLE_POLL_INTERVAL_MS = 8_000;
@@ -78,9 +96,7 @@ export function VersionChip({
 function Note({ children }: { children: string }) {
   return (
     <Box sx={{ p: 2 }}>
-      <Typography variant="caption" color="text.secondary">
-        {children}
-      </Typography>
+      <Dim>{children}</Dim>
     </Box>
   );
 }
@@ -118,17 +134,10 @@ function FileView({
   }
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <Box
-        sx={{
-          px: 1.5,
-          py: 0.5,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Typography variant="caption" color="text.secondary">
+      <Box sx={BAR_SX}>
+        <Dim>
           Read-only. Change it with the Mako agent or in the repository.
-        </Typography>
+        </Dim>
       </Box>
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <MonacoEditor
@@ -145,7 +154,6 @@ function FileView({
 }
 
 function RunDialog({
-  open,
   workflowId,
   hasPreview,
   live,
@@ -153,7 +161,6 @@ function RunDialog({
   onClose,
   onRun,
 }: {
-  open: boolean;
   workflowId: string;
   /** Unmerged code of this workflow can be run. */
   hasPreview: boolean;
@@ -166,18 +173,13 @@ function RunDialog({
     preview: boolean,
   ) => Promise<string | null>;
 }) {
-  const [version, setVersion] = useState<"live" | "preview">("live");
+  // Mounted only while open, so the initial state is the dialog's state.
+  const [version, setVersion] = useState<"live" | "preview">(
+    live ? "live" : "preview",
+  );
   const [input, setInput] = useState(initialInput);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setVersion(live ? "live" : "preview");
-      setInput(initialInput);
-      setError(null);
-    }
-  }, [open, live, initialInput]);
 
   const submit = async () => {
     let parsed: unknown;
@@ -202,7 +204,7 @@ function RunDialog({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+    <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle>Run {workflowId}</DialogTitle>
       <DialogContent
         sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}
@@ -285,13 +287,16 @@ function RunsView({
   const selectedStatus = selectedRun?.status ?? selectedSummary?.status;
   const hasActive = runs.some(run => isActiveRun(run.status));
 
-  // Poll the list, and the open run while it is still going.
+  // Poll the list, and the selected run while it is still going: the first
+  // tick after a selection loads that run whatever its state.
   useEffect(() => {
+    let first = true;
     const tick = () => {
       void fetchOverview(workspaceId);
-      if (selectedRunId && isActiveRun(selectedStatus)) {
+      if (selectedRunId && (first || isActiveRun(selectedStatus))) {
         void fetchRun(workspaceId, selectedRunId);
       }
+      first = false;
     };
     tick();
     const timer = setInterval(
@@ -308,13 +313,10 @@ function RunsView({
     fetchRun,
   ]);
 
-  // Land on the newest run, and load whichever run is selected.
+  // Land on the newest run.
   useEffect(() => {
     if (!selectedRunId && runs.length > 0) setSelectedRunId(runs[0].runId);
   }, [selectedRunId, runs]);
-  useEffect(() => {
-    if (selectedRunId) void fetchRun(workspaceId, selectedRunId);
-  }, [workspaceId, selectedRunId, selectedSummary?.status, fetchRun]);
 
   const schedule = overview?.schedules?.find(s => s.workflowId === workflowId);
   const entry = (preview: boolean) =>
@@ -335,18 +337,7 @@ function RunsView({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1.5,
-          px: 1.5,
-          py: 0.75,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          flexWrap: "wrap",
-        }}
-      >
+      <Box sx={BAR_SX}>
         <Button
           size="small"
           variant="contained"
@@ -356,9 +347,9 @@ function RunsView({
         >
           Run
         </Button>
-        <Typography variant="caption" color="text.secondary">
+        <Dim>
           {schedule ? `Schedule: ${schedule.cron} (UTC)` : "No schedule"}
-        </Typography>
+        </Dim>
         {webhookUrl === null && (
           <Chip
             icon={<WebhookIcon size={12} />}
@@ -487,9 +478,7 @@ function RunsView({
                     </Typography>
                     <VersionChip preview={run.preview} small />
                     {run.durationMs !== undefined && (
-                      <Typography variant="caption" color="text.secondary">
-                        {formatDuration(run.durationMs)}
-                      </Typography>
+                      <Dim>{formatDuration(run.durationMs)}</Dim>
                     )}
                   </Box>
                   <Box
@@ -536,18 +525,7 @@ function RunsView({
               flexDirection: "column",
             }}
           >
-            <Box
-              sx={{
-                display: "flex",
-                gap: 2,
-                alignItems: "center",
-                px: 1.5,
-                py: 0.75,
-                borderBottom: "1px solid",
-                borderColor: "divider",
-                flexWrap: "wrap",
-              }}
-            >
+            <Box sx={{ ...BAR_SX, gap: 2 }}>
               <Chip
                 size="small"
                 variant="outlined"
@@ -565,17 +543,13 @@ function RunsView({
                 }}
               />
               <VersionChip preview={selectedSummary.preview} />
-              <Typography variant="caption" color="text.secondary">
-                {formatRelativeTimeCompact(selectedSummary.startedAt)}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
+              <Dim>{formatRelativeTimeCompact(selectedSummary.startedAt)}</Dim>
+              <Dim>
                 {formatDuration(
                   selectedRun?.durationMs ?? selectedSummary.durationMs,
                 )}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {selectedSummary.trigger ?? "schedule"}
-              </Typography>
+              </Dim>
+              <Dim>{selectedSummary.trigger ?? "schedule"}</Dim>
             </Box>
 
             <Box
@@ -665,9 +639,9 @@ function RunsView({
               ) : selectedRun.steps.every(
                   step => step.logs.length === 0 && !step.error,
                 ) ? (
-                <Typography variant="caption" color="text.secondary">
+                <Dim>
                   {selectedStatus === "QUEUED" ? "Run queued…" : "No logs."}
-                </Typography>
+                </Dim>
               ) : (
                 selectedRun.steps.flatMap(step =>
                   [...step.logs, step.error].map(
@@ -698,26 +672,27 @@ function RunsView({
         )}
       </Box>
 
-      <RunDialog
-        open={dialogOpen}
-        workflowId={workflowId}
-        hasPreview={hasPreview}
-        live={Boolean(live)}
-        initialInput={formatInput(selectedRun?.input)}
-        onClose={() => setDialogOpen(false)}
-        onRun={async (input, preview) => {
-          const result = await startRun(
-            workspaceId,
-            workflowId,
-            input,
-            preview,
-          );
-          if (!result.ok) return result.error ?? "Failed to start the run";
-          await fetchOverview(workspaceId);
-          if (result.runId) setSelectedRunId(result.runId);
-          return null;
-        }}
-      />
+      {dialogOpen && (
+        <RunDialog
+          workflowId={workflowId}
+          hasPreview={hasPreview}
+          live={Boolean(live)}
+          initialInput={formatInput(selectedRun?.input)}
+          onClose={() => setDialogOpen(false)}
+          onRun={async (input, preview) => {
+            const result = await startRun(
+              workspaceId,
+              workflowId,
+              input,
+              preview,
+            );
+            if (!result.ok) return result.error ?? "Failed to start the run";
+            await fetchOverview(workspaceId);
+            if (result.runId) setSelectedRunId(result.runId);
+            return null;
+          }}
+        />
+      )}
     </Box>
   );
 }
