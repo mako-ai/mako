@@ -104,6 +104,57 @@ export async function syncFlowWebhookSubscription(
   }
 }
 
+/** What a deleted webhook flow leaves behind to unsubscribe. */
+export interface FlowWebhookTeardownTarget {
+  flowId: string;
+  dataSourceId: string;
+  endpoint: string;
+  providerWebhookId?: string;
+}
+
+export type FlowWebhookSubscriptionRemoveResult =
+  | { status: "removed"; count: number }
+  | { status: "skipped"; reason: string }
+  | { status: "failed"; error: string };
+
+/**
+ * Remove the provider-side subscription(s) of a flow that was deleted, so the
+ * provider stops POSTing to a URL that now answers 404. Runs after the row is
+ * gone, from what `teardownFlow` captured. Best-effort, like the sync above.
+ */
+export async function removeFlowWebhookSubscription(
+  target: FlowWebhookTeardownTarget,
+): Promise<FlowWebhookSubscriptionRemoveResult> {
+  try {
+    const source = await sourceConnectionManager.getSourceConnection(
+      target.dataSourceId,
+    );
+    if (!source) {
+      return { status: "skipped", reason: "connector not found" };
+    }
+    const connector = await syncConnectorRegistry.getConnectorFor(source);
+    if (!connector?.supportsWebhookSubscriptionDelete()) {
+      return { status: "skipped", reason: "connector cannot delete webhooks" };
+    }
+    const count = await connector.deleteWebhookSubscription({
+      endpointUrl: target.endpoint,
+      providerWebhookId: target.providerWebhookId,
+    });
+    logger.info("Provider webhook subscription removed with its flow", {
+      flowId: target.flowId,
+      count,
+    });
+    return { status: "removed", count };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("Could not remove provider webhook subscription", {
+      flowId: target.flowId,
+      error: message,
+    });
+    return { status: "failed", error: message };
+  }
+}
+
 /**
  * Commit the id to the flow file first; only a committed definition reaches
  * the Mongo index. A failed commit leaves both untouched — the provider is

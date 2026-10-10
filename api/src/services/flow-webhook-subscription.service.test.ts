@@ -4,8 +4,10 @@ import { Types } from "mongoose";
 import { Flow } from "../database/workspace-schema";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
+import { WiseConnector } from "../connectors/wise/connector";
 import {
   flowEntitySignature,
+  removeFlowWebhookSubscription,
   syncFlowWebhookSubscription,
 } from "./flow-webhook-subscription.service";
 
@@ -205,6 +207,114 @@ async function testReportsMissingSubscriptionAndProviderErrors() {
   );
 }
 
+async function testRemoveDeletesThroughTheConnector() {
+  const deleted: unknown[] = [];
+  (sourceConnectionManager as any).getSourceConnection = async () => ({
+    id: String(DATA_SOURCE_ID),
+    type: "wise",
+    config: {},
+  });
+  (syncConnectorRegistry as any).getConnectorFor = async () => ({
+    supportsWebhookSubscriptionDelete: () => true,
+    deleteWebhookSubscription: async (options: unknown) => {
+      deleted.push(options);
+      return 2;
+    },
+  });
+  const target = {
+    flowId: String(FLOW_ID),
+    dataSourceId: String(DATA_SOURCE_ID),
+    endpoint: ENDPOINT,
+    providerWebhookId: "10:a,20:b",
+  };
+  assert.deepEqual(await removeFlowWebhookSubscription(target), {
+    status: "removed",
+    count: 2,
+  });
+  assert.deepEqual(deleted, [
+    { endpointUrl: ENDPOINT, providerWebhookId: "10:a,20:b" },
+  ]);
+
+  (syncConnectorRegistry as any).getConnectorFor = async () => ({
+    supportsWebhookSubscriptionDelete: () => false,
+  });
+  assert.equal((await removeFlowWebhookSubscription(target)).status, "skipped");
+
+  (syncConnectorRegistry as any).getConnectorFor = async () => ({
+    supportsWebhookSubscriptionDelete: () => true,
+    deleteWebhookSubscription: async () => {
+      throw new Error("Wise is down");
+    },
+  });
+  const failed = await removeFlowWebhookSubscription(target);
+  assert.equal(failed.status, "failed");
+}
+
+/**
+ * The real Wise connector behind the generic service: enabling `transfers`
+ * on a flow provisioned for `balance_updates` subscribes the transfer events
+ * on the same URL and commits the new id set to the flow file.
+ */
+async function testWiseFlowRetargetsThroughTheService() {
+  const subscriptions: Array<Record<string, any>> = [
+    {
+      id: "bal",
+      trigger_on: "balances#update",
+      delivery: { version: "4.0.0", url: ENDPOINT },
+    },
+  ];
+  let next = 1;
+  const connector = new WiseConnector({
+    id: String(DATA_SOURCE_ID),
+    name: "Wise",
+    type: "wise",
+    config: { api_key: "t", profile_id: "10" },
+  } as any);
+  (connector as any).wiseApi = {
+    get: async () => ({ data: [...subscriptions] }),
+    post: async (_path: string, body: Record<string, unknown>) => {
+      const created = { id: `t${next++}`, ...body };
+      subscriptions.push(created);
+      return { data: created };
+    },
+    delete: async () => ({ data: undefined }),
+  };
+  (sourceConnectionManager as any).getSourceConnection = async () => ({
+    id: String(DATA_SOURCE_ID),
+    type: "wise",
+    config: {},
+  });
+  (syncConnectorRegistry as any).getConnectorFor = async () => connector;
+  (Flow as any).updateOne = async () => ({ acknowledged: true });
+  const { commits, deps } = stubCommit({ ok: true });
+
+  const flow = webhookFlow({
+    entityLayouts: [
+      { entity: "balance_updates", enabled: true },
+      { entity: "transfers", enabled: true },
+    ],
+    webhookConfig: {
+      endpoint: ENDPOINT,
+      secret: "production",
+      providerWebhookId: "10:bal",
+      enabled: true,
+      totalReceived: 0,
+    },
+  });
+  const result = await syncFlowWebhookSubscription(flow, deps);
+
+  assert.equal(result.status, "updated");
+  assert.deepEqual(subscriptions.map(s => s.trigger_on).sort(), [
+    "balances#update",
+    "transfers#active-cases",
+    "transfers#payout-failure",
+    "transfers#refund",
+    "transfers#state-change",
+  ]);
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0].providerWebhookId, "10:bal,10:t1,10:t2,10:t3,10:t4");
+}
+
 async function main() {
   testEntitySignatureIgnoresOrderAndDisabled();
   await testSkipsFlowsThatWereNeverProvisioned();
@@ -212,6 +322,8 @@ async function main() {
   await testFailedCommitLeavesIndexUntouched();
   await testUnchangedIdIsNotRewritten();
   await testReportsMissingSubscriptionAndProviderErrors();
+  await testRemoveDeletesThroughTheConnector();
+  await testWiseFlowRetargetsThroughTheService();
 }
 
 main().catch((error: unknown) => {

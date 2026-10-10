@@ -14,6 +14,10 @@ import {
   type WebhookCapabilities,
   type IncrementalCapabilities,
   type ConnectorEntitySchema,
+  type DeleteWebhookSubscriptionOptions,
+  type ProvisionWebhookOptions,
+  type ProvisionWebhookResult,
+  type UpdateWebhookSubscriptionOptions,
 } from "../base/BaseConnector";
 import { resolveWiseEntitySchema } from "./schema";
 import { loggers } from "../../logging";
@@ -81,6 +85,35 @@ const SUPPORTED_WEBHOOK_EVENTS = [
   "profiles#state-change",
   "recipients#state-change",
 ] as const;
+
+/**
+ * Events a PROFILE-level subscription may carry, with the schema version
+ * Mako asks for (the latest each event documents). `balances#account-state-
+ * change` and `profiles#state-change` are application-level only, so a token
+ * acting for a profile cannot subscribe to them.
+ * https://docs.wise.com/api-reference/webhook-event
+ */
+const PROFILE_WEBHOOK_SCHEMA_VERSIONS: Record<string, string> = {
+  "transfers#state-change": "4.0.0",
+  "transfers#refund": "4.0.0",
+  "transfers#payout-failure": "5.0.0",
+  "transfers#active-cases": "4.0.0",
+  "balances#update": "4.0.0",
+  "recipients#state-change": "4.0.0",
+};
+
+/** Event type a Wise test notification is recorded under (maps to nothing). */
+const WISE_TEST_NOTIFICATION_EVENT = "wise#test-notification";
+
+/** Name Mako gives the subscriptions it creates, so they read as its own. */
+const MAKO_SUBSCRIPTION_NAME_PREFIX = "Mako";
+
+type WiseSubscription = {
+  id: string;
+  name?: string;
+  trigger_on?: string;
+  delivery?: { version?: string; url?: string };
+};
 
 type WiseProfile = {
   id: number | string;
@@ -991,17 +1024,37 @@ export class WiseConnector extends BaseConnector {
   }
 
   /**
-   * GET that answers Wise's strong customer authentication: a 403 carrying
-   * `x-2fa-approval` is retried once with that one-time token signed
-   * (SHA256withRSA) by `sca_private_key`.
+   * GET that answers Wise's strong customer authentication (see `withSca`).
    */
   private async getWithSca(
     path: string,
     params: Record<string, string | number>,
   ): Promise<{ data: unknown }> {
     const api = this.getClient();
+    return this.withSca(
+      headers => api.get(path, { params, ...(headers && { headers }) }),
+      {
+        noChallenge:
+          "Wise refused the request with HTTP 403 and no SCA challenge (x-2fa-approval): " +
+          "the API token itself may lack access to balance statements (a read-only token, or a user without access to the profile)",
+        noKey:
+          "Wise requires strong customer authentication for balance statements: add an SCA private key to this connection and register its public key in Wise (Settings → API tokens → Manage public keys)",
+      },
+    );
+  }
+
+  /**
+   * Send a request, answering Wise's strong customer authentication: a 403
+   * carrying `x-2fa-approval` is retried once with that one-time token signed
+   * (SHA256withRSA) by `sca_private_key`. `messages` explain the two refusals
+   * Mako cannot answer itself (no challenge to sign, no key to sign with).
+   */
+  private async withSca<T>(
+    send: (headers?: Record<string, string>) => Promise<T>,
+    messages: { noChallenge: string; noKey: string },
+  ): Promise<T> {
     try {
-      return await this.executeWithRetry(() => api.get(path, { params }));
+      return await this.executeWithRetry(() => send());
     } catch (error) {
       const response = axios.isAxiosError(error) ? error.response : undefined;
       const approval =
@@ -1013,19 +1066,14 @@ export class WiseConnector extends BaseConnector {
           : undefined;
       if (!approval) {
         if (response?.status === 403) {
-          throw new Error(
-            "Wise refused the request with HTTP 403 and no SCA challenge (x-2fa-approval): " +
-              "the API token itself may lack access to balance statements (a read-only token, or a user without access to the profile)",
-          );
+          throw new Error(messages.noChallenge);
         }
         throw error;
       }
 
       const privateKey = this.dataSource.config.sca_private_key;
       if (typeof privateKey !== "string" || privateKey.trim().length === 0) {
-        throw new Error(
-          "Wise requires strong customer authentication for balance statements: add an SCA private key to this connection and register its public key in Wise (Settings → API tokens → Manage public keys)",
-        );
+        throw new Error(messages.noKey);
       }
       const pem = normalizePemKey(privateKey);
       const signature = crypto
@@ -1034,10 +1082,7 @@ export class WiseConnector extends BaseConnector {
         .sign(pem, "base64");
       try {
         return await this.executeWithRetry(() =>
-          api.get(path, {
-            params,
-            headers: { "x-2fa-approval": approval, "X-Signature": signature },
-          }),
+          send({ "x-2fa-approval": approval, "X-Signature": signature }),
         );
       } catch (signedError) {
         // Wise says why it refused a signed request in x-2fa-approval-result;
@@ -1220,24 +1265,326 @@ export class WiseConnector extends BaseConnector {
   }
 
   supportsWebhookProvisioning(): boolean {
-    // Personal API tokens cannot create subscriptions (403). Users must
-    // register the Mako webhook URL in the Wise Developer Hub manually.
-    return false;
+    // Profile-level subscriptions through `/v3/profiles/{id}/subscriptions`.
+    // Wise only lets a token allowed to manage the profile's webhooks do it;
+    // a refusal is explained by `subscriptionRefusal`.
+    return true;
   }
 
   getWebhookCapabilities(): WebhookCapabilities {
     return {
       supported: true,
       provisioning: {
-        supported: false,
+        supported: true,
         providerLabel: "Wise",
-        storesSecretAutomatically: false,
+        // Wise signs with its own RSA keys: "provisioning stores the secret"
+        // means it records which key set verifies (production or sandbox).
+        storesSecretAutomatically: true,
         actionHint:
-          "Subscribe manually in Wise Developer Hub (profile-level webhooks)",
+          "on every profile this connection syncs and records which Wise signing key verifies it",
       },
       secretHelpText:
-        'Optional. Wise verifies webhooks with RSA public keys (not a shared secret). Leave blank for production, or set to "sandbox" when using the sandbox API.',
+        'Wise signs webhooks with its RSA public keys, not a shared secret: this field only names the key set — "production" (or blank) or "sandbox". Creating the webhook in Wise fills it in.',
     };
+  }
+
+  /**
+   * The value stored as the flow's webhook "secret": which Wise public key
+   * set verifies deliveries (see `getWebhookPublicKeys`).
+   */
+  private webhookKeySet(): string {
+    return this.isSandboxBaseUrl() ? "sandbox" : "production";
+  }
+
+  /**
+   * Events a profile subscription should carry: the explicitly requested
+   * ones, else those of the flow's enabled entities — restricted to the
+   * events Wise offers at profile level. Throws when nothing remains, naming
+   * the application-only events that were asked for.
+   */
+  private resolveProfileWebhookEvents(
+    options: ProvisionWebhookOptions,
+  ): string[] {
+    const requested = Array.isArray(options.events)
+      ? options.events.map(event => event.trim()).filter(Boolean)
+      : [];
+    const wanted =
+      requested.length > 0
+        ? requested
+        : this.getWebhookEventsForEntities(options.enabledEntities ?? []);
+    const supported = new Set(this.getSupportedWebhookEvents());
+    const profileLevel = wanted.filter(
+      event => supported.has(event) && event in PROFILE_WEBHOOK_SCHEMA_VERSIONS,
+    );
+    if (profileLevel.length === 0) {
+      const applicationOnly = wanted.filter(
+        event =>
+          supported.has(event) && !(event in PROFILE_WEBHOOK_SCHEMA_VERSIONS),
+      );
+      throw new Error(
+        applicationOnly.length > 0
+          ? `Wise offers ${applicationOnly.join(", ")} to application-level subscriptions only, which a profile token cannot create. Enable an entity with a profile-level event (balance_updates, transfers or recipients), or keep the scheduled sync for these entities.`
+          : requested.length > 0
+            ? `No valid Wise webhook events requested. Unsupported events: ${requested.join(", ")}`
+            : "No Wise webhook events resolved for the selected entities",
+      );
+    }
+    return profileLevel;
+  }
+
+  /**
+   * Turn a Wise refusal of a subscription call into what the user must do.
+   * Wise documents profile subscriptions for user tokens; personal API tokens
+   * are documented for quotes, recipients, transfers and transfer tracking
+   * only, and a token with limited (read-only) permissions is refused.
+   */
+  private subscriptionRefusal(
+    status: number | undefined,
+    detail: string,
+    action: string,
+    profileId: string,
+    options: { endpointUrl: string; events?: string[] },
+  ): Error {
+    if (status !== 401 && status !== 403) {
+      return new Error(
+        `Failed to ${action} Wise webhook subscriptions on profile ${profileId}: ${detail}`,
+      );
+    }
+    const events = options.events?.length
+      ? options.events.join(", ")
+      : "the events you need";
+    return new Error(
+      `Wise refused to ${action} webhook subscriptions on profile ${profileId} (${detail}). ` +
+        "Wise lets only a token allowed to manage the profile's webhooks do this: an OAuth user access token, " +
+        "or a personal API token with full access — a token with limited (read-only) permissions is refused. " +
+        "Either replace this connection's API token with a full-access one (Wise → Your account → " +
+        "Integrations and tools → API tokens) and try again, or create the subscription by hand in Wise " +
+        "(Your account → Integrations and tools → Developer tools → Webhooks → Create a new webhook) " +
+        `with URL ${options.endpointUrl} for ${events}, then set this flow's Webhook Secret to "${this.webhookKeySet()}".`,
+    );
+  }
+
+  /** A Wise subscription call, with SCA answered and refusals explained. */
+  private async subscriptionCall<T>(
+    action: string,
+    profileId: string,
+    options: { endpointUrl: string; events?: string[] },
+    send: (headers?: Record<string, string>) => Promise<T>,
+  ): Promise<T> {
+    const noChallenge = "HTTP 403 without an SCA challenge";
+    try {
+      return await this.withSca(send, {
+        noChallenge,
+        noKey: `Wise requires strong customer authentication to ${action} webhook subscriptions: add an SCA private key to this connection and register its public key in Wise (Settings → API tokens → Manage public keys)`,
+      });
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        throw this.subscriptionRefusal(
+          error.response?.status,
+          formatWiseApiError(error),
+          action,
+          profileId,
+          options,
+        );
+      }
+      if (error instanceof Error && error.message === noChallenge) {
+        throw this.subscriptionRefusal(
+          403,
+          noChallenge,
+          action,
+          profileId,
+          options,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async listProfileSubscriptions(
+    profileId: string,
+    options: { endpointUrl: string; events?: string[] },
+  ): Promise<WiseSubscription[]> {
+    const api = this.getClient();
+    const response = await this.subscriptionCall(
+      "list",
+      profileId,
+      options,
+      headers =>
+        api.get(
+          `/v3/profiles/${profileId}/subscriptions`,
+          headers ? { headers } : undefined,
+        ),
+    );
+    const data = response.data as unknown;
+    return Array.isArray(data) ? (data as WiseSubscription[]) : [];
+  }
+
+  /**
+   * Make each synced profile carry exactly one subscription per needed event
+   * on `endpointUrl`: reuse what exists (same URL + event), create what is
+   * missing, delete duplicates and events the flow no longer needs. Only
+   * subscriptions delivering to this flow's URL are ever touched.
+   *
+   * `createWhenAbsent: false` leaves profiles alone when none of them has a
+   * subscription on the URL yet, and resolves to `null` (the
+   * `updateWebhookSubscription` contract).
+   */
+  private async reconcileProfileSubscriptions(
+    options: ProvisionWebhookOptions,
+    createWhenAbsent: boolean,
+  ): Promise<ProvisionWebhookResult | null> {
+    const events = this.resolveProfileWebhookEvents(options);
+    const context = { endpointUrl: options.endpointUrl, events };
+    const profileIds = await this.resolveProfileIds();
+    if (profileIds.length === 0) {
+      throw new Error(
+        "The Wise API token sees no profile to subscribe: set Profile ID on the connection or check the token",
+      );
+    }
+
+    const existingByProfile = new Map<string, WiseSubscription[]>();
+    for (const profileId of profileIds) {
+      const subscriptions = await this.listProfileSubscriptions(
+        profileId,
+        context,
+      );
+      existingByProfile.set(
+        profileId,
+        subscriptions.filter(
+          subscription => subscription.delivery?.url === options.endpointUrl,
+        ),
+      );
+    }
+    const anyExisting = [...existingByProfile.values()].some(
+      list => list.length > 0,
+    );
+    if (!createWhenAbsent && !anyExisting) {
+      return null;
+    }
+
+    const api = this.getClient();
+    const kept: string[] = [];
+    for (const profileId of profileIds) {
+      const ours = existingByProfile.get(profileId) ?? [];
+      const keptHere = new Set<string>();
+      for (const event of events) {
+        const match = ours.find(
+          subscription =>
+            subscription.trigger_on === event && !keptHere.has(subscription.id),
+        );
+        if (match) {
+          keptHere.add(match.id);
+          kept.push(`${profileId}:${match.id}`);
+          continue;
+        }
+        const body = {
+          name: `${MAKO_SUBSCRIPTION_NAME_PREFIX} ${event}`,
+          trigger_on: event,
+          delivery: {
+            version: PROFILE_WEBHOOK_SCHEMA_VERSIONS[event],
+            url: options.endpointUrl,
+          },
+        };
+        const created = await this.subscriptionCall(
+          "create",
+          profileId,
+          context,
+          headers =>
+            api.post(
+              `/v3/profiles/${profileId}/subscriptions`,
+              body,
+              headers ? { headers } : undefined,
+            ),
+        );
+        const id = (created.data as WiseSubscription | undefined)?.id;
+        if (!id) {
+          throw new Error(
+            `Wise created no subscription id for ${event} on profile ${profileId}`,
+          );
+        }
+        keptHere.add(id);
+        kept.push(`${profileId}:${id}`);
+      }
+
+      // Duplicates and events no longer needed: each would POST to the flow
+      // for nothing (or twice).
+      for (const subscription of ours) {
+        if (keptHere.has(subscription.id)) continue;
+        await this.subscriptionCall("delete", profileId, context, headers =>
+          api.delete(
+            `/v3/profiles/${profileId}/subscriptions/${subscription.id}`,
+            headers ? { headers } : undefined,
+          ),
+        );
+      }
+    }
+
+    return {
+      // Every subscription, as `profileId:subscriptionId`, sorted so the flow
+      // file only changes when the set does.
+      providerWebhookId: kept.sort().join(","),
+      endpointUrl: options.endpointUrl,
+    };
+  }
+
+  /**
+   * Subscribe `endpointUrl` to the flow's events on every profile the
+   * connection syncs (`profile_id`, or every profile the token sees).
+   * Idempotent: an existing subscription with the same URL and event is
+   * reused, so clicking "Create in Wise" twice creates nothing new.
+   */
+  async createWebhookSubscription(
+    options: ProvisionWebhookOptions,
+  ): Promise<ProvisionWebhookResult> {
+    const result = await this.reconcileProfileSubscriptions(options, true);
+    if (!result) {
+      throw new Error("Wise webhook subscriptions could not be created");
+    }
+    return { ...result, signingSecret: this.webhookKeySet() };
+  }
+
+  supportsWebhookSubscriptionUpdate(): boolean {
+    return true;
+  }
+
+  /**
+   * Retarget the subscriptions on `endpointUrl` to the flow's current
+   * events. `null` when no profile has one yet (the caller creates them).
+   */
+  async updateWebhookSubscription(
+    options: UpdateWebhookSubscriptionOptions,
+  ): Promise<ProvisionWebhookResult | null> {
+    return this.reconcileProfileSubscriptions(options, false);
+  }
+
+  supportsWebhookSubscriptionDelete(): boolean {
+    return true;
+  }
+
+  /** Remove every subscription delivering to `endpointUrl`, on every profile. */
+  async deleteWebhookSubscription(
+    options: DeleteWebhookSubscriptionOptions,
+  ): Promise<number> {
+    const context = { endpointUrl: options.endpointUrl };
+    const api = this.getClient();
+    let removed = 0;
+    for (const profileId of await this.resolveProfileIds()) {
+      const subscriptions = await this.listProfileSubscriptions(
+        profileId,
+        context,
+      );
+      for (const subscription of subscriptions) {
+        if (subscription.delivery?.url !== options.endpointUrl) continue;
+        await this.subscriptionCall("delete", profileId, context, headers =>
+          api.delete(
+            `/v3/profiles/${profileId}/subscriptions/${subscription.id}`,
+            headers ? { headers } : undefined,
+          ),
+        );
+        removed++;
+      }
+    }
+    return removed;
   }
 
   getIncrementalCapabilities(): IncrementalCapabilities {
@@ -1274,6 +1621,23 @@ export class WiseConnector extends BaseConnector {
     options: WebhookHandlerOptions,
   ): Promise<WebhookVerificationResult> {
     const { payload, headers, secret } = options;
+
+    // Creating a subscription makes Wise POST a test notification (dummy
+    // data, `X-Test-Notification: true`) to check the URL answers. Answer it
+    // whatever its signature, as an event no entity maps: its dummy record
+    // must never land in a table, and refusing it could fail the creation.
+    const testNotification = this.headerValue(headers, "X-Test-Notification");
+    if (testNotification?.trim().toLowerCase() === "true") {
+      const deliveryId = this.headerValue(headers, "X-Delivery-Id");
+      return {
+        valid: true,
+        event: {
+          type: WISE_TEST_NOTIFICATION_EVENT,
+          event_type: WISE_TEST_NOTIFICATION_EVENT,
+          id: deliveryId ? `test:${deliveryId}` : `test:${crypto.randomUUID()}`,
+        },
+      };
+    }
 
     const signature = this.headerValue(headers, "X-Signature-SHA256");
     if (!signature) {
@@ -1453,13 +1817,15 @@ export class WiseConnector extends BaseConnector {
       eventType === "transfers#payout-failure" ||
       eventType === "transfers#active-cases"
     ) {
-      if (resource.id == null) return null;
-      const id = String(resource.id);
+      // payout-failure 5.0.0 has no `resource`: `data.transfer_id` instead
+      const transferId = resource.id ?? data.transfer_id;
+      if (transferId == null) return null;
+      const id = String(transferId);
       return {
         id,
         data: withStringId({
           id,
-          profile_id: resource.profile_id ?? null,
+          profile_id: resource.profile_id ?? data.profile_id ?? null,
           account_id: resource.account_id ?? null,
           status: data.current_state ?? data.status ?? null,
           current_state: data.current_state ?? null,
@@ -1469,8 +1835,13 @@ export class WiseConnector extends BaseConnector {
             data.failure_reason_code ?? data.failureReasonCode ?? null,
           failure_description:
             data.failure_description ?? data.failureDescription ?? null,
-          refund_amount: data.amount ?? data.refund_amount ?? null,
-          refund_currency: data.currency ?? data.refund_currency ?? null,
+          refund_amount:
+            resource.refund_amount ?? data.amount ?? data.refund_amount ?? null,
+          refund_currency:
+            resource.refund_currency ??
+            data.currency ??
+            data.refund_currency ??
+            null,
           hasActiveIssues:
             data.has_active_issues ?? data.hasActiveIssues ?? null,
           details: data.details ?? data.active_cases ?? null,
@@ -1511,16 +1882,21 @@ export class WiseConnector extends BaseConnector {
     }
 
     if (eventType === "recipients#state-change") {
-      const recipientId = resource.id ?? data.account_id ?? data.id;
+      // 4.0.0 nests the recipient under `resource.data`; `resource.id` there
+      // is the event's own id, not the recipient's
+      const nested = (resource.data ?? {}) as Record<string, unknown>;
+      const recipientId =
+        nested.recipientId ?? resource.id ?? data.account_id ?? data.id;
       if (recipientId == null) return null;
       return {
         id: String(recipientId),
         data: withStringId({
           id: String(recipientId),
-          profileId: resource.profile_id ?? data.profile_id ?? null,
-          current_state: data.current_state ?? null,
+          profileId:
+            nested.profileId ?? resource.profile_id ?? data.profile_id ?? null,
+          current_state: nested.state ?? data.current_state ?? null,
           previous_state: data.previous_state ?? null,
-          occurred_at: data.occurred_at ?? null,
+          occurred_at: resource.occurred_at ?? data.occurred_at ?? null,
           ...data,
         }),
       };
