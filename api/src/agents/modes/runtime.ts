@@ -530,7 +530,12 @@ export function buildUnifiedModeRuntime(params: {
         context.workspaceId,
         context.userId,
       );
-      return member?.role ?? null;
+      const role = member?.role ?? null;
+      // Workflow code of any member runs as the person who set the worker
+      // up: it gets that person's data access, never their admin rights.
+      return headless && (role === "owner" || role === "admin")
+        ? "member"
+        : role;
     })();
     return liveRolePromise;
   };

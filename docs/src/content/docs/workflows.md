@@ -119,13 +119,13 @@ A worker run this way serves one workspace and has **no sandbox**: workflow code
 
 ## Settings
 
-| Variable                                                           | Set on                                | What                                                                                                      |
-| ------------------------------------------------------------------ | ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `HATCHET_CLIENT_TOKEN`                                             | API                                   | The Hatchet token for the installation                                                                    |
-| `HATCHET_DASHBOARD_URL`                                            | API                                   | Where Mako links admins to the Hatchet dashboard                                                          |
-| `WORKFLOWS_WORKER_KEY`                                             | API, and the worker as `MAKO_API_KEY` | The worker's Mako API key                                                                                 |
-| `MAKO_URL`, `MAKO_API_KEY`                                         | Worker                                | All the worker needs. It gets the Hatchet token from Mako.                                                |
-| `HATCHET_API_URL`, `HATCHET_ADMIN_EMAIL`, `HATCHET_ADMIN_PASSWORD` | API                                   | Only for a Hatchet you operate: lets Mako create a Hatchet tenant per workspace. Used by the local setup. |
+| Variable                                                           | Set on                                | What                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `HATCHET_CLIENT_TOKEN`                                             | API                                   | One Hatchet tenant for the whole installation: every workspace sees the same runs, so for a single workspace only. Multi-workspace installs set the admin variables below instead, and Mako makes a tenant per workspace |
+| `HATCHET_DASHBOARD_URL`                                            | API                                   | Where Mako links admins to the Hatchet dashboard                                                                                                                                                                         |
+| `WORKFLOWS_WORKER_KEY`                                             | API, and the worker as `MAKO_API_KEY` | The worker's Mako API key                                                                                                                                                                                                |
+| `MAKO_URL`, `MAKO_API_KEY`                                         | Worker                                | All the worker needs. It gets the Hatchet token from Mako.                                                                                                                                                               |
+| `HATCHET_API_URL`, `HATCHET_ADMIN_EMAIL`, `HATCHET_ADMIN_PASSWORD` | API                                   | Only for a Hatchet you operate: lets Mako create a Hatchet tenant per workspace. Used by the local setup.                                                                                                                |
 
 With none of these set, Mako runs without workflows.
 

@@ -480,9 +480,13 @@ workflowRuntimeRoutes.get(
     // A fresh API instance has an empty disk: restore the repository and this
     // commit from the mirror first. A preview's commit is on its own branch.
     const workspace = await Workspace.findById(workspaceId)
-      .select("workflows.preview")
+      .select("workflows.live workflows.preview")
       .lean();
-    const preview = workspace?.workflows?.preview;
+    const { live, preview } = workspace?.workflows ?? {};
+    // Only what the worker was told to run: no browsing the repository.
+    if (sha !== live?.sha && sha !== preview?.sha) {
+      return c.json({ error: "Not a deployed commit" }, 404);
+    }
     await ensureCommitLocally(
       workspaceId,
       sha,

@@ -14,6 +14,9 @@ const dir = join(process.env.WORKFLOWS_ROOT, "workflows");
 const load = file => import(pathToFileURL(join(dir, file)).href);
 
 const { hatchet } = await load("hatchet.ts");
+// The client has the token now; workflow code must not. A preview could
+// otherwise make its own client without the preview namespace.
+delete process.env.HATCHET_CLIENT_TOKEN;
 if (!hatchet) {
   console.error("workflows/hatchet.ts must export { hatchet }");
   process.exit(1);

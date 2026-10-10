@@ -22,16 +22,22 @@ import { generateApiKey, hashApiKey } from "../auth/api-key.middleware";
 import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
 import { AppWorktree, Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { ensureWorkspaceTenant, hasInstanceHatchet } from "./hatchet";
+import {
+  ensureWorkspaceTenant,
+  hasInstanceHatchet,
+  workflowsNamePrefix,
+} from "./hatchet";
 import {
   ensureWorkerDeployment,
   isGkeWorkerConfigured,
+  workerSecretExists,
   writeWorkerSecret,
 } from "./kube";
 
 const logger = loggers.api("workflows-on-push");
 
-const WORKER_KEY_NAME = "Workflows worker";
+/** One key per environment that runs a worker: previews share a database. */
+const workerKeyName = () => `Workflows worker ${workflowsNamePrefix()}`.trim();
 const WORKER_KEY_SCOPES: WorkspaceApiKeyScope[] = [
   "mcp",
   "query:read",
@@ -78,7 +84,7 @@ async function setWorkerKey(
   // The scope is the worker's alone, so it finds the key being replaced.
   await Workspace.updateOne(
     { _id },
-    { $pull: { apiKeys: { scopes: "workflows:runtime" } } },
+    { $pull: { apiKeys: { name: workerKeyName() } } },
   );
   await Workspace.updateOne(
     { _id },
@@ -86,7 +92,7 @@ async function setWorkerKey(
       $push: {
         apiKeys: {
           _id: new Types.ObjectId(),
-          name: WORKER_KEY_NAME,
+          name: workerKeyName(),
           keyHash,
           prefix: key.substring(0, 14),
           scopes: WORKER_KEY_SCOPES,
@@ -119,17 +125,15 @@ async function ensureWorker(
     await setWorkerKey(workspaceId, userId, key);
     return;
   }
-  // The key can be read only when it is created. Mako's record of it is the
-  // workspace's key with the worker scope; without one (a first deploy, or a
-  // database restored from before the worker existed) a new key is made and
-  // written to the Secret, replacing whatever the pod held.
+  // The key can be read only when it is created, and it lives in two places:
+  // this environment's key on the workspace, and the pod's Secret. Either
+  // missing (a first deploy, a database restored from before the worker, a
+  // new cluster) means a new key written to both, replacing what the pod held.
   const workspace = await Workspace.findById(workspaceId)
-    .select("apiKeys.scopes")
+    .select("apiKeys.name")
     .lean();
-  const hasKey = workspace?.apiKeys?.some(k =>
-    k.scopes?.includes("workflows:runtime"),
-  );
-  if (!hasKey) {
+  const hasKey = workspace?.apiKeys?.some(k => k.name === workerKeyName());
+  if (!hasKey || !(await workerSecretExists(workspaceId))) {
     const { key } = generateApiKey();
     await setWorkerKey(workspaceId, userId, key);
     await writeWorkerSecret(workspaceId, key);

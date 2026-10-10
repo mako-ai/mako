@@ -162,10 +162,18 @@ export async function requireTenant(
 export async function ensureWorkspaceTenant(
   workspaceId: string,
 ): Promise<WorkspaceTenant> {
-  const existing = await readWorkspaceTenant(workspaceId);
-  if (existing) return existing;
+  const workspace = await Workspace.findById(workspaceId)
+    .select("workflows.hatchetToken")
+    .lean();
+  const stored = workspace?.workflows?.hatchetToken;
+  if (stored) return tenantOfToken(stored)!;
   const adminUrl = process.env.HATCHET_API_URL?.replace(/\/+$/, "");
   if (!process.env.HATCHET_ADMIN_PASSWORD || !adminUrl) {
+    // One tenant for the whole installation: every workspace sees the same
+    // runs. Fine for a single-workspace install, and all it can be without
+    // admin access to a Hatchet.
+    const shared = tenantOfToken(undefined);
+    if (shared) return shared;
     throw new HatchetError("No Hatchet token. Set HATCHET_CLIENT_TOKEN.", 400);
   }
 
