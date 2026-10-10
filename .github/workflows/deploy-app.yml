@@ -919,6 +919,10 @@ jobs:
       KERNEL_PROVIDER: gke
       KERNEL_GKE_ENDPOINT: ${{ vars.KERNEL_GKE_ENDPOINT }}
       KERNEL_GKE_CA_CERT: ${{ vars.KERNEL_GKE_CA_CERT }}
+      # Workflows (deploy/workflows): the prod Hatchet behind its internal load
+      # balancer, and the runtime image the prod registry publishes from master.
+      WORKFLOWS_RUNTIME_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ fromJSON(vars.GCP_PROD_DEPLOY_CONFIG).project_id }}/${{ fromJSON(vars.GCP_PROD_DEPLOY_CONFIG).artifact_repository }}/workflows-runtime:latest
+      HATCHET_API_URL: ${{ vars.PROD_HATCHET_API_URL }}
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
@@ -1133,6 +1137,10 @@ jobs:
             --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
             --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
             --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
+            --set-env-vars WORKFLOWS_RUNTIME_IMAGE=${WORKFLOWS_RUNTIME_IMAGE} \
+            --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
+            --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
             --quiet
 
       - name: Finalize Cloud Run direct URL
