@@ -265,7 +265,9 @@ export class WiseConnector extends BaseConnector {
         {
           name: "sca_private_key",
           label: "SCA Private Key",
-          type: "password",
+          type: "textarea",
+          rows: 6,
+          encrypted: true,
           required: false,
           helperText:
             "Optional. PEM private key whose public key is registered in Wise (Settings → API tokens → Manage public keys). Wise asks for it (strong customer authentication) before it serves balance statements on some profiles.",
