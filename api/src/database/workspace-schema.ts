@@ -156,25 +156,27 @@ export interface IWorkspace extends Document {
   workflows?: IWorkspaceWorkflows;
 }
 
+/**
+ * One deployed version of `workflows/`: the commit the worker should run,
+ * the commit it reports running, and the last commit it could not start.
+ */
+export interface IWorkflowSlot {
+  sha: string;
+  tree: string;
+  running?: { sha: string };
+  failed?: { sha: string; error: string };
+}
+
 export interface IWorkspaceWorkflows {
   /**
    * The workspace's Hatchet API token, encrypted like connection secrets.
    * Absent when the installation shares one token (HATCHET_CLIENT_TOKEN).
    */
   hatchetToken?: string;
-  /** The commit the worker should run: where `workflows/` last changed on main. */
-  target?: { sha: string; tree: string };
-  /** The commit the worker reports it is running. */
-  live?: { sha: string };
-  /** The last commit the worker could not start, with its build output. */
-  failed?: { sha: string; error: string };
-  /**
-   * Unmerged work to run next to the live code: the last branch pushed with
-   * workflow changes. Same three facts as above, for that branch.
-   */
-  preview?: { branch: string; sha: string; tree: string };
-  previewLive?: { sha: string };
-  previewFailed?: { sha: string; error: string };
+  /** `workflows/` on main. */
+  live?: IWorkflowSlot;
+  /** Unmerged work run next to live: the last branch pushed with changes. */
+  preview?: IWorkflowSlot & { branch: string };
   /** Workflows with a webhook turned on: name → its URL's secret, encrypted. */
   webhooks?: Record<string, string>;
 }
@@ -1307,6 +1309,13 @@ export interface IConnectionVerification extends Document {
 /**
  * Workspace Schema
  */
+const WorkflowSlotFields = {
+  sha: String,
+  tree: String,
+  running: { type: { sha: String }, _id: false },
+  failed: { type: { sha: String, error: String }, _id: false },
+};
+
 const WorkspaceSchema = new Schema<IWorkspace>(
   {
     name: {
@@ -1411,15 +1420,11 @@ const WorkspaceSchema = new Schema<IWorkspace>(
     workflows: {
       type: {
         hatchetToken: { type: String },
-        target: { type: { sha: String, tree: String }, _id: false },
-        live: { type: { sha: String }, _id: false },
-        failed: { type: { sha: String, error: String }, _id: false },
+        live: { type: WorkflowSlotFields, _id: false },
         preview: {
-          type: { branch: String, sha: String, tree: String },
+          type: { ...WorkflowSlotFields, branch: String },
           _id: false,
         },
-        previewLive: { type: { sha: String }, _id: false },
-        previewFailed: { type: { sha: String, error: String }, _id: false },
         webhooks: { type: Schema.Types.Mixed },
       },
       default: undefined,

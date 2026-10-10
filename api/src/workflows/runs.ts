@@ -6,6 +6,7 @@
  * agent-lib/tools/workflow-tools.ts, so both show the same thing.
  */
 import {
+  type IWorkflowSlot,
   type IWorkspaceWorkflows,
   Workspace,
 } from "../database/workspace-schema";
@@ -86,22 +87,16 @@ const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
   trigger: metadataOf(run).trigger,
 });
 
-type Commit = { sha: string };
-
-/** One deployed slot: the commit running, the commit wanted, the build error. */
-function deployment(
-  target?: Commit,
-  live?: Commit,
-  failed?: Commit & { error: string },
-) {
-  const targetSha = target?.sha ?? null;
+/** What a screen shows of one slot. */
+function deployment(slot?: IWorkflowSlot) {
   return {
     /** The commit the worker reports running. Null before the first good deploy. */
-    liveSha: live?.sha ?? null,
+    liveSha: slot?.running?.sha ?? null,
     /** The commit the worker should run. Differs from live until it switches. */
-    targetSha,
-    /** The build output when `targetSha` could not be started. */
-    buildError: targetSha && failed?.sha === targetSha ? failed.error : null,
+    targetSha: slot?.sha ?? null,
+    /** The build output when the wanted commit could not be started. */
+    buildError:
+      slot && slot.failed?.sha === slot.sha ? slot.failed.error : null,
   };
 }
 
@@ -113,13 +108,10 @@ function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {
     // False when no Hatchet token exists for this workspace and the
     // installation has none to share: the UI hides Workflows.
     configured: Boolean(state?.hatchetToken) || hasInstanceHatchet(),
-    deployment: deployment(state?.target, state?.live, state?.failed),
+    deployment: deployment(state?.live),
     /** Unmerged work running next to live, or null when there is none. */
     preview: state?.preview
-      ? {
-          branch: state.preview.branch,
-          ...deployment(state.preview, state.previewLive, state.previewFailed),
-        }
+      ? { branch: state.preview.branch, ...deployment(state.preview) }
       : null,
     dashboardUrl: process.env.HATCHET_DASHBOARD_URL ?? null,
   };

@@ -60,7 +60,7 @@ async function main() {
         key("worker", WORKER_KEY, ["mcp", "query:read", "workflows:runtime"]),
         key("ordinary", OTHER_KEY, ["mcp", "query:read"]),
       ],
-      workflows: { target: { sha: SHA_A, tree: "tree-a" } },
+      workflows: { live: { sha: SHA_A, tree: "tree-a" } },
     });
     const state = async () =>
       (await Workspace.findById(id).select("workflows").lean())?.workflows;
@@ -79,7 +79,7 @@ async function main() {
       404,
     );
     assert.equal(
-      (await call("/status", OTHER_KEY, { sha: SHA_A })).status,
+      (await call("/status", OTHER_KEY, { slot: "live", sha: SHA_A })).status,
       401,
     );
 
@@ -87,35 +87,42 @@ async function main() {
     const head = await call("/head", WORKER_KEY);
     assert.equal(head.status, 200);
     assert.deepEqual(await head.json(), {
-      sha: SHA_A,
-      tree: "tree-a",
       hatchetToken: HATCHET_TOKEN,
+      live: { sha: SHA_A, tree: "tree-a" },
       preview: null,
     });
 
     // It reports the commit it runs.
     assert.equal(
-      (await call("/status", WORKER_KEY, { sha: SHA_A })).status,
+      (await call("/status", WORKER_KEY, { slot: "live", sha: SHA_A })).status,
       200,
     );
-    assert.deepEqual((await state())?.live, { sha: SHA_A });
+    assert.deepEqual((await state())?.live?.running, { sha: SHA_A });
 
     // A build error is recorded and leaves the live commit alone.
     assert.equal(
-      (await call("/status", WORKER_KEY, { sha: SHA_B, error: "TS2322" }))
-        .status,
+      (
+        await call("/status", WORKER_KEY, {
+          slot: "live",
+          sha: SHA_B,
+          error: "TS2322",
+        })
+      ).status,
       200,
     );
-    assert.deepEqual((await state())?.live, { sha: SHA_A });
-    assert.deepEqual((await state())?.failed, { sha: SHA_B, error: "TS2322" });
+    assert.deepEqual((await state())?.live?.running, { sha: SHA_A });
+    assert.deepEqual((await state())?.live?.failed, {
+      sha: SHA_B,
+      error: "TS2322",
+    });
 
     // The next good commit clears the error.
     assert.equal(
-      (await call("/status", WORKER_KEY, { sha: SHA_B })).status,
+      (await call("/status", WORKER_KEY, { slot: "live", sha: SHA_B })).status,
       200,
     );
-    assert.deepEqual((await state())?.live, { sha: SHA_B });
-    assert.equal((await state())?.failed, undefined);
+    assert.deepEqual((await state())?.live?.running, { sha: SHA_B });
+    assert.equal((await state())?.live?.failed, undefined);
 
     // A preview is unmerged work next to live: the worker is told about it,
     // and its reports never touch the live commit.
@@ -132,20 +139,20 @@ async function main() {
     };
     assert.deepEqual(withPreview.preview, { sha: SHA_A, tree: "tree-p" });
     await call("/status", WORKER_KEY, {
-      sha: SHA_A,
-      error: "TS1005",
-      preview: true,
-    });
-    assert.deepEqual((await state())?.previewFailed, {
+      slot: "preview",
       sha: SHA_A,
       error: "TS1005",
     });
-    assert.deepEqual((await state())?.live, { sha: SHA_B });
+    assert.deepEqual((await state())?.preview?.failed, {
+      sha: SHA_A,
+      error: "TS1005",
+    });
+    assert.deepEqual((await state())?.live?.running, { sha: SHA_B });
     let status = await readWorkflowsStatus(id.toString());
     assert.equal(status.preview?.branch, "jo/x");
     assert.equal(status.preview?.buildError, "TS1005");
     assert.equal(status.deployment.buildError, null);
-    await call("/status", WORKER_KEY, { sha: SHA_A, preview: true });
+    await call("/status", WORKER_KEY, { slot: "preview", sha: SHA_A });
     status = await readWorkflowsStatus(id.toString());
     assert.equal(status.preview?.liveSha, SHA_A);
     assert.equal(status.deployment.liveSha, SHA_B);

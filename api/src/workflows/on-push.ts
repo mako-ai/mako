@@ -201,12 +201,19 @@ async function deployWorkflowsNow(
 
   // A slot follows what the repository holds: gone from the repository
   // (`workflows/` deleted on main, a preview merged) is gone from the worker.
+  // The commit changes under the slot; what the worker reported for the old
+  // one stays until it reports again, so the screen shows old-live, new-wanted.
   const set: Record<string, unknown> = {};
   const unset: Record<string, ""> = {};
-  if (main && state.target?.tree !== main.tree) set["workflows.target"] = main;
-  if (!main && state.target) unset["workflows.target"] = "";
+  if (main && state.live?.tree !== main.tree) {
+    set["workflows.live.sha"] = main.sha;
+    set["workflows.live.tree"] = main.tree;
+  }
+  if (!main && state.live) unset["workflows.live"] = "";
   if (preview && branch && state.preview?.tree !== preview.tree) {
-    set["workflows.preview"] = { branch, ...preview };
+    set["workflows.preview.sha"] = preview.sha;
+    set["workflows.preview.tree"] = preview.tree;
+    set["workflows.preview.branch"] = branch;
   } else if (!preview && branch && state.preview?.branch === branch) {
     unset["workflows.preview"] = "";
   }

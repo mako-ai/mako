@@ -339,59 +339,61 @@ const asWorker =
       : c.json({ error: "Invalid worker key" }, 401);
   };
 
-// What the worker should run. It polls this: the commit to switch to, the
-// preview commit if there is one, and the Hatchet token to connect with, so
-// the worker holds one credential only.
+const SLOTS = ["live", "preview"] as const;
+type Slot = (typeof SLOTS)[number];
+
+// What the worker should run. It polls this: the commit for each slot, and
+// the Hatchet token to connect with, so the worker holds one credential only.
 workflowRuntimeRoutes.get(
   "/head",
   asWorker(async (c, { workspaceId }) => {
     const [workspace, tenant] = await Promise.all([
       Workspace.findById(workspaceId)
-        .select("workflows.target workflows.preview")
+        .select("workflows.live workflows.preview")
         .lean(),
       readWorkspaceTenant(workspaceId),
     ]);
-    const { target, preview } = workspace?.workflows ?? {};
+    const slot = (name: Slot) => {
+      const wanted = workspace?.workflows?.[name];
+      return wanted ? { sha: wanted.sha, tree: wanted.tree } : null;
+    };
     return c.json({
-      sha: target?.sha ?? null,
-      tree: target?.tree ?? null,
       hatchetToken: tenant?.token ?? null,
-      // Unmerged work to run next to the live code, or null.
-      preview: preview ? { sha: preview.sha, tree: preview.tree } : null,
+      live: slot("live"),
+      preview: slot("preview"),
     });
   }),
 );
 
-// The worker reports each switch, for the live code or the preview: the
-// commit it now runs, or the commit it could not start and why. This is what
-// the UI shows as live and build error.
+// The worker reports each switch of a slot: the commit it now runs, or the
+// commit it could not start and why. This is what the UI shows as live and
+// build error.
 workflowRuntimeRoutes.post(
   "/status",
   asWorker(async (c, { workspaceId }) => {
     const body = (await c.req.json().catch(() => null)) as {
+      slot?: unknown;
       sha?: unknown;
       error?: unknown;
-      preview?: unknown;
     } | null;
-    if (typeof body?.sha !== "string" || !isOid(body.sha)) {
-      return c.json({ error: "Invalid commit" }, 400);
+    const slot = SLOTS.find(name => name === body?.slot);
+    if (!slot || typeof body?.sha !== "string" || !isOid(body.sha)) {
+      return c.json({ error: "Invalid report" }, 400);
     }
-    const live = body.preview === true ? "previewLive" : "live";
-    const failed = body.preview === true ? "previewFailed" : "failed";
     await Workspace.updateOne(
       { _id: new Types.ObjectId(workspaceId) },
       typeof body.error === "string"
         ? {
             $set: {
-              [`workflows.${failed}`]: {
+              [`workflows.${slot}.failed`]: {
                 sha: body.sha,
                 error: body.error.slice(-MAX_BUILD_ERROR_CHARS),
               },
             },
           }
         : {
-            $set: { [`workflows.${live}`]: { sha: body.sha } },
-            $unset: { [`workflows.${failed}`]: "" },
+            $set: { [`workflows.${slot}.running`]: { sha: body.sha } },
+            $unset: { [`workflows.${slot}.failed`]: "" },
           },
     );
     return c.json({ ok: true });

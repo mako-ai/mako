@@ -37,7 +37,7 @@ async function report(slot, sha, error) {
   await mako("/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sha, error, preview: slot.preview }),
+    body: JSON.stringify({ slot: slot.name, sha, error }),
   }).catch(err => console.error("Could not report to Mako:", err.message));
 }
 
@@ -113,7 +113,7 @@ function startWorker(slot, root, sha, hatchetToken) {
         WORKFLOWS_ROOT: root,
         GIT_SHA: sha,
         HATCHET_CLIENT_TOKEN: hatchetToken,
-        ...(slot.preview
+        ...(slot.name === "preview"
           ? { PREVIEW: "1", HATCHET_CLIENT_NAMESPACE: PREVIEW_PREFIX }
           : {}),
       },
@@ -142,15 +142,14 @@ function startWorker(slot, root, sha, hatchetToken) {
  * failed (`failed`), so a broken commit is not rebuilt on every poll.
  */
 const slots = {
-  live: { preview: false, current: null, failed: null },
-  preview: { preview: true, current: null, failed: null },
+  live: { name: "live", current: null, failed: null },
+  preview: { name: "preview", current: null, failed: null },
 };
 
 async function switchTo(slot, target, hatchetToken) {
   const key = `${target.tree}:${hatchetToken}`;
   if (slot.current?.key === key || slot.failed === key) return;
-  const label = slot.preview ? "preview" : "live";
-  console.log(`Switching ${label} to ${target.sha}`);
+  console.log(`Switching ${slot.name} to ${target.sha}`);
   let root;
   let child;
   try {
@@ -159,7 +158,9 @@ async function switchTo(slot, target, hatchetToken) {
     if (errors) throw new Error(errors);
     child = await startWorker(slot, root, target.sha, hatchetToken);
   } catch (err) {
-    console.error(`Build failed (${label}) at ${target.sha}:\n${err.message}`);
+    console.error(
+      `Build failed (${slot.name}) at ${target.sha}:\n${err.message}`,
+    );
     // Source that could not be fetched is tried again on the next poll; a
     // commit that does not build is reported once and left alone.
     if (!root) return;
@@ -189,10 +190,8 @@ async function poll() {
     if (!head.hatchetToken) return;
     // A slot Mako no longer names (the preview was merged, `workflows/` was
     // deleted) stops.
-    for (const [slot, target] of [
-      [slots.live, head.sha ? head : null],
-      [slots.preview, head.preview],
-    ]) {
+    for (const slot of Object.values(slots)) {
+      const target = head[slot.name];
       if (target) await switchTo(slot, target, head.hatchetToken);
       else {
         slot.current?.child.kill("SIGTERM");
