@@ -15,6 +15,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { Navigate, useLocation, useParams } from "react-router";
@@ -32,7 +33,40 @@ import { appViewerKey, useAppViewerStore } from "../store/appViewerStore";
 import { AppChatPanel } from "../components/AppChatPanel";
 
 const CHAT_OPEN_KEY = "mako:app-viewer-chat-open";
-const PANEL_WIDTH = 400;
+const CHAT_WIDTH_KEY = "mako:app-viewer-chat-width";
+// Same bounds feel as the shell's chat pane; the app keeps at least
+// APP_MIN_WIDTH so the panel can never squeeze it away.
+const PANEL_DEFAULT_WIDTH = 420;
+const PANEL_MIN_WIDTH = 320;
+const PANEL_MAX_WIDTH = 760;
+const APP_MIN_WIDTH = 320;
+
+function clampWidth(width: number): number {
+  const viewportMax =
+    typeof window === "undefined"
+      ? PANEL_MAX_WIDTH
+      : window.innerWidth - APP_MIN_WIDTH;
+  return Math.round(
+    Math.max(PANEL_MIN_WIDTH, Math.min(width, PANEL_MAX_WIDTH, viewportMax)),
+  );
+}
+
+function readChatWidth(): number {
+  try {
+    const stored = Number(localStorage.getItem(CHAT_WIDTH_KEY));
+    return stored > 0 ? clampWidth(stored) : PANEL_DEFAULT_WIDTH;
+  } catch {
+    return PANEL_DEFAULT_WIDTH;
+  }
+}
+
+function writeChatWidth(width: number) {
+  try {
+    localStorage.setItem(CHAT_WIDTH_KEY, String(width));
+  } catch {
+    // Storage unavailable: the width just resets next visit.
+  }
+}
 
 function readChatOpen(): boolean {
   try {
@@ -145,6 +179,45 @@ export default function AppViewerPage() {
 
   const getAppSearch = useCallback(() => appSearchRef.current, []);
 
+  // Drag-to-resize, like the shell's chat pane divider. While dragging, the
+  // iframe stops taking pointer events — otherwise it swallows the
+  // pointermove events the moment the cursor crosses into the app.
+  const [chatWidth, setChatWidth] = useState(readChatWidth);
+  const [resizing, setResizing] = useState(false);
+  const startResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const handle = event.currentTarget;
+      handle.setPointerCapture(event.pointerId);
+      const startX = event.clientX;
+      const startWidth = chatWidth;
+      let latest = startWidth;
+      setResizing(true);
+      const onMove = (e: PointerEvent) => {
+        latest = clampWidth(startWidth + (startX - e.clientX));
+        setChatWidth(latest);
+      };
+      const onUp = () => {
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        handle.removeEventListener("pointercancel", onUp);
+        setResizing(false);
+        writeChatWidth(latest);
+      };
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+      handle.addEventListener("pointercancel", onUp);
+    },
+    [chatWidth],
+  );
+  const nudgeWidth = useCallback((delta: number) => {
+    setChatWidth(width => {
+      const next = clampWidth(width + delta);
+      writeChatWidth(next);
+      return next;
+    });
+  }, []);
+
   if (authLoading) return centered(<CircularProgress />);
   if (!user) {
     const returnTo = `${location.pathname}${location.search}`;
@@ -192,6 +265,7 @@ export default function AppViewerPage() {
               display: "block",
               opacity: frameLoaded ? 1 : 0,
               transition: "opacity 150ms ease",
+              pointerEvents: resizing ? "none" : undefined,
             }}
           />
         )}
@@ -221,17 +295,45 @@ export default function AppViewerPage() {
           </Fab>
         )}
       </Box>
+      {app?.chatEnabled && chatOpen && !isMobile && (
+        <Box
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat"
+          aria-valuenow={chatWidth}
+          aria-valuemin={PANEL_MIN_WIDTH}
+          aria-valuemax={PANEL_MAX_WIDTH}
+          tabIndex={0}
+          onPointerDown={startResize}
+          onDoubleClick={() => {
+            setChatWidth(PANEL_DEFAULT_WIDTH);
+            writeChatWidth(PANEL_DEFAULT_WIDTH);
+          }}
+          onKeyDown={e => {
+            if (e.key === "ArrowLeft") nudgeWidth(24);
+            if (e.key === "ArrowRight") nudgeWidth(-24);
+          }}
+          sx={{
+            flex: "0 0 4px",
+            width: "4px",
+            alignSelf: "stretch",
+            cursor: "col-resize",
+            touchAction: "none",
+            bgcolor: resizing ? "primary.main" : "divider",
+            transition: "background-color 0.2s ease",
+            "&:hover, &:focus-visible": {
+              bgcolor: "primary.main",
+              outline: "none",
+            },
+          }}
+        />
+      )}
       {app?.chatEnabled && chatOpen && (
         <Box
           sx={
             isMobile
               ? { position: "fixed", inset: 0, zIndex: theme.zIndex.modal }
-              : {
-                  width: PANEL_WIDTH,
-                  flexShrink: 0,
-                  borderLeft: 1,
-                  borderColor: "divider",
-                }
+              : { width: chatWidth, flexShrink: 0, minWidth: 0 }
           }
         >
           <AppChatPanel
