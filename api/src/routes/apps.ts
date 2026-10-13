@@ -14,6 +14,7 @@ import { eyesShotKey } from "../apps/eyes.service";
 import { Types } from "mongoose";
 import {
   AppProject,
+  Chat,
   GitHubInstallation,
   type IAppProject,
 } from "../database/workspace-schema";
@@ -140,6 +141,7 @@ import {
   type ViewerIdentity,
 } from "../apps/app-viewer.service";
 import { ensureAutoJoin } from "../services/auto-join.service";
+import { liveViewerRedirect } from "../apps/live-viewer-redirect";
 import {
   forgetTerminalCaches,
   killAllTerminalSessions,
@@ -3061,6 +3063,15 @@ appsRoutes.openapi(
  * published counterpart to the preview's token-gated data path.
  */
 async function serveLive(c: AuthenticatedContext): Promise<Response> {
+  const viewerPage = liveViewerRedirect({
+    fetchDest: c.req.header("sec-fetch-dest"),
+    fetchMode: c.req.header("sec-fetch-mode"),
+    workspaceId: c.req.param("workspaceId"),
+    ref: c.req.param("id"),
+    path: c.req.path,
+    url: c.req.url,
+  });
+  if (viewerPage) return c.redirect(viewerPage, 302);
   const loaded = await loadProject(c, { write: false });
   if ("errorResponse" in loaded) return loaded.errorResponse;
   const project = loaded.project;
@@ -3354,6 +3365,55 @@ appsRoutes.openapi(
             "Cache-Control": "private, max-age=31536000, immutable",
           },
         },
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/chats",
+    tags: ["Apps"],
+    summary: "List my chats with a published app",
+    description:
+      'The caller\'s own "chat with app" conversations about this app, newest first (without messages — load one through the chats API). Read access to the app is enough: these are the chats its live-link viewers have with it.',
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      if (!loaded.userId) {
+        return c.json({ success: false, error: "Sign in to chat" }, 403);
+      }
+      const chats = await Chat.find(
+        {
+          workspaceId: loaded.project.workspaceId,
+          appId: loaded.project._id.toString(),
+          createdBy: loaded.userId,
+        },
+        { title: 1, updatedAt: 1, createdAt: 1, activeStreamId: 1 },
+      )
+        .sort({ updatedAt: -1 })
+        .limit(50)
+        .lean();
+      return c.json(
+        {
+          success: true as const,
+          chats: chats.map(chat => ({
+            id: chat._id.toString(),
+            title: chat.title,
+            createdAt: chat.createdAt,
+            updatedAt: chat.updatedAt,
+            streaming: !!chat.activeStreamId,
+          })),
+        },
+        200,
       );
     } catch (error) {
       return handleError(c, error);

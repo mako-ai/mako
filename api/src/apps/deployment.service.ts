@@ -88,7 +88,7 @@ interface StoredDeploymentAsset {
 }
 
 /** The writable store first, then the optional read-only canonical source. */
-async function artifactStoreForRead(
+export async function artifactStoreForRead(
   key: string,
 ): Promise<DashboardArtifactStore | null> {
   const primary = getDashboardArtifactStore();

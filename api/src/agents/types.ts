@@ -9,6 +9,7 @@
 import type { SystemModelMessage, ToolSet } from "ai";
 import type { ConsoleDataV2 } from "../agent-lib/types";
 import type { McpToolCatalogInfo } from "../services/mcp-client.service";
+import type { IAppProject } from "../database/workspace-schema";
 
 export interface AgentToolExecutionContext {
   /** Abort signal for the active chat request */
@@ -71,12 +72,7 @@ export interface AgentContext {
   chatId?: string;
   /** What the user is currently looking at (the active editor tab's kind) */
   activeView?:
-    | "console"
-    | "dashboard"
-    | "flow-editor"
-    | "app"
-    | "dbt"
-    | "empty";
+    "console" | "dashboard" | "flow-editor" | "app" | "dbt" | "empty";
   /**
    * Which left-pane explorer is currently open and visible, or `null` if the
    * left pane is collapsed. Use this when guiding the user to a specific
@@ -216,6 +212,16 @@ export interface AgentContext {
    * or API-key requests act as workspace-scoped automation (same as HTTP schedule routes).
    */
   canManageScheduledQueries?: boolean;
+  /**
+   * "Chat with app" (agent `app_chat`): the published app this chat is
+   * about. The route sets it only after checking the caller can read the app.
+   */
+  appChat?: {
+    project: IAppProject;
+    title: string;
+    /** The app's query string as the viewer currently sees it (filters). */
+    search?: string;
+  };
 }
 
 /**

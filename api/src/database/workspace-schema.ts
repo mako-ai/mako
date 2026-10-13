@@ -727,6 +727,12 @@ export interface IChat extends Document {
   }>;
   activeAgent?: "mongo" | "bigquery" | "triage"; // Pinned specialist for this thread
   pinnedConsoleId?: string; // Console ID that this chat session is bound to
+  /**
+   * "Chat with app": the published app (AppProject id) this chat is about.
+   * Set at creation; such a chat only ever runs the closed app_chat agent
+   * and lives in the app's chat history, not the workspace's.
+   */
+  appId?: string;
   createdBy: string;
   titleGenerated: boolean;
   // Resume pointer for in-flight turns: the resumable-stream ID clients can
@@ -2100,6 +2106,10 @@ const ChatSchema = new Schema<IChat>(
       type: String,
       required: false,
     },
+    appId: {
+      type: String,
+      required: false,
+    },
     createdBy: {
       type: String,
       ref: "User",
@@ -2214,6 +2224,10 @@ const ChatSchema = new Schema<IChat>(
 ChatSchema.index({ workspaceId: 1 });
 ChatSchema.index({ workspaceId: 1, title: 1 });
 ChatSchema.index({ workspaceId: 1, createdBy: 1 }); // For user-specific chat queries
+ChatSchema.index(
+  { workspaceId: 1, appId: 1, createdBy: 1, updatedAt: -1 },
+  { partialFilterExpression: { appId: { $type: "string" } } },
+); // An app's chat history, per viewer
 
 /**
  * Chat Attachment Schema

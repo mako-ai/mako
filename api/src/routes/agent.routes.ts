@@ -113,6 +113,7 @@ import {
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { commitAgentTurn } from "../apps/worktree.service";
+import { authorizeAppChat } from "../apps/app-chat.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -441,6 +442,8 @@ agentRoutes.openapi(
       flowFormState,
       activeDashboardContext,
       screenshotVisionAttachments,
+      appId,
+      appSearch,
     } = body as {
       messages?: UIMessage[];
       chatId?: string;
@@ -459,6 +462,10 @@ agentRoutes.openapi(
       flowType?: string;
       flowFormState?: Record<string, unknown>;
       screenshotVisionAttachments?: ScreenshotVisionAttachment[];
+      /** "Chat with app" (agentId "app_chat"): the published app. */
+      appId?: string;
+      /** The app's query string as the viewer sees it (filters, tabs). */
+      appSearch?: string;
       activeDashboardContext?: {
         dashboardId: string;
         title: string;
@@ -516,6 +523,30 @@ agentRoutes.openapi(
     // Only enrich logging context after authorization succeeds
     enrichContextWithWorkspace(workspaceId);
 
+    // "Chat with app": the closed app_chat agent, offered to anyone who can
+    // read the app (its live-link audience), so it is gated on the app's own
+    // access check rather than on what a workspace member may do.
+    const isAppChat = agentId === "app_chat";
+    let appChat: AgentContext["appChat"];
+    if (isAppChat) {
+      if (!user || workspace) {
+        return c.json({ error: "App chat requires a signed-in user" }, 403);
+      }
+      const access = await authorizeAppChat(
+        workspaceId,
+        typeof appId === "string" ? appId : "",
+        user.id,
+      );
+      if (!access.ok) {
+        return c.json({ error: access.error }, access.status);
+      }
+      appChat = {
+        project: access.project,
+        title: access.title,
+        search: typeof appSearch === "string" ? appSearch : undefined,
+      };
+    }
+
     let canManageScheduledQueries = false;
     if (workspace) {
       canManageScheduledQueries = true;
@@ -559,6 +590,27 @@ agentRoutes.openapi(
     const existingChat = await Chat.findById(chatId);
     const isNewChat = !existingChat;
 
+    // An app chat stays its viewer's, about its app, under its agent — the
+    // closed agent must not be steered onto someone else's chat, and an app
+    // chat must not be continued by an agent with workspace-wide tools.
+    if (existingChat) {
+      const boundAppId = existingChat.appId ?? null;
+      if (appChat) {
+        if (
+          existingChat.workspaceId.toString() !== workspaceId ||
+          existingChat.createdBy !== actorId ||
+          boundAppId !== appChat.project._id.toString()
+        ) {
+          return c.json({ error: "Cannot access chat" }, 403);
+        }
+      } else if (boundAppId) {
+        return c.json(
+          { error: "This chat belongs to an app; continue it from the app" },
+          400,
+        );
+      }
+    }
+
     // For new chats: create chat document immediately, then fire-and-forget title generation
     // IMPORTANT: Title generation uses generateText() which would interfere with the main
     // streamText() response if awaited. We fire-and-forget to keep streams separate.
@@ -568,6 +620,7 @@ agentRoutes.openapi(
         _id: new ObjectId(chatId),
         workspaceId: new ObjectId(workspaceId),
         createdBy: actorId,
+        ...(appChat ? { appId: appChat.project._id.toString() } : {}),
         title: "New Chat",
         titleGenerated: false,
         messages: [],
@@ -854,6 +907,7 @@ agentRoutes.openapi(
       mcpReadOnlyToolNames: mcpChatTools.readOnlyToolNames,
       mcpToolNames: mcpChatTools.allToolNames,
       mcpToolCatalog: mcpChatTools.catalog,
+      appChat,
     };
 
     // Create agent configuration.

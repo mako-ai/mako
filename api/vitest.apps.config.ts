@@ -63,6 +63,10 @@ export default defineConfig({
       // Viewer identity (apps.md §28): who an app is talking to, and the
       // domain auto-join that lets a link-clicker become a member.
       "src/apps/app-viewer.service.test.ts",
+      // Chat with app: locked-down DuckDB over binding parquet, and who may
+      // chat (the live link's audience).
+      "src/apps/app-chat-query.test.ts",
+      "src/apps/app-chat.service.test.ts",
       "src/services/auto-join.service.test.ts",
       "src/apps/deploy-on-push.test.ts",
       // What is live for an app: the published chip and app_publish_status.
