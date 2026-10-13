@@ -30,6 +30,10 @@ import {
   appsDeployFunction,
   appsDeployReconcileFunction,
 } from "./functions/apps-deploy";
+import {
+  workflowsDeployFunction,
+  workflowsDeployReconcileFunction,
+} from "./functions/workflows-deploy";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
@@ -67,6 +71,7 @@ const baseFunctions = [
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsDeployFunction,
+  workflowsDeployFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
@@ -114,6 +119,7 @@ export function getFunctions() {
         appsBindingSchedulerFunction,
         appsBindingJobSweeperFunction,
         appsDeployReconcileFunction,
+        workflowsDeployReconcileFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
       ];

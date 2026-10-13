@@ -17,6 +17,8 @@ import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 
 export const APPS_DIR = "apps";
+/** Workflows live next to apps: `workflows/<name>/workflow.ts`. */
+export const WORKFLOWS_DIR = "workflows";
 export const USERS_DIR = "users";
 export const APP_MANIFEST = "mako.json";
 /** A committed marker that keeps an otherwise empty folder in git. */

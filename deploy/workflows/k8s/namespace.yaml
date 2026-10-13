@@ -1,0 +1,40 @@
+# Namespace for per-workspace workflow workers (Deployment `wf-<prefix><ws>`),
+# created and rolled by the Mako API. Runs on the notebook-kernels gVisor pool.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mako-workflows
+  labels:
+    app.kubernetes.io/part-of: mako-workflows
+---
+# Ceiling for the whole workflow plane; raise alongside the node pool.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: mako-workflows-quota
+  namespace: mako-workflows
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "32"
+    limits.memory: 64Gi
+    pods: "60"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: mako-workflows-limits
+  namespace: mako-workflows
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+      max:
+        cpu: "2"
+        memory: 4Gi

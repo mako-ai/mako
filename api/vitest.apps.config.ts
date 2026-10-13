@@ -25,6 +25,7 @@ export default defineConfig({
       "src/apps/env.service.test.ts",
       "src/apps/cloud-repo.service.test.ts",
       "src/apps/adversarial.test.ts",
+      "src/agent-lib/tools/apps-tools-workflow-target.test.ts",
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
       "src/apps/workspace-skills.service.test.ts",

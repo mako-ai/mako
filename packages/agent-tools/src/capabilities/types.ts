@@ -17,7 +17,8 @@ export type CapabilityGrant =
   | "git-write"
   | "members-write"
   | "schedule-write"
-  | "warehouse-write";
+  | "warehouse-write"
+  | "workflows-run";
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
@@ -30,6 +31,9 @@ export const CAPABILITY_GRANTS = [
   "members-write",
   "schedule-write",
   "warehouse-write",
+  // Start a workflow run or give a workflow a webhook: that executes the
+  // workspace's own code. An explicit per-key scope (`workflows:run`).
+  "workflows-run",
 ] as const satisfies readonly CapabilityGrant[];
 
 export type CapabilityResultKind = "data" | "artifact" | "run" | "ui-effect";

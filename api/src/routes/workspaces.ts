@@ -110,6 +110,7 @@ const AcpPlanDecisionBody = jsonBody(
           "warehouse-write",
           "git-write",
           "schedule-write",
+          "workflows-run",
         ]),
       )
       .optional(),

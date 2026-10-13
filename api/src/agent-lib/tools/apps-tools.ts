@@ -41,6 +41,7 @@ import {
   pageLines,
 } from "./shared/output-cap";
 import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { requireWorkspaceRepo } from "../../apps/workspace-repo-required";
 import { workspaceService } from "../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import {
@@ -71,7 +72,11 @@ import {
   writeWorktreeScratchFile,
   type AppFolderTarget,
 } from "../../apps/worktree.service";
-import { parseAppRepoPath } from "../../apps/app-paths";
+import {
+  WORKFLOWS_DIR,
+  isSafeSegment,
+  parseAppRepoPath,
+} from "../../apps/app-paths";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
@@ -128,12 +133,74 @@ export interface AppsToolsOptions {
 
 type LoadResult = { project: IAppProject } | { error: string };
 
-export function createAppsTools({
-  workspaceId,
-  userId,
-  supportsVision,
-  touchedPaths,
-}: AppsToolsOptions): ToolSet {
+/**
+ * What the shell, file and git tools work on. An `app_*` tool names an app
+ * (`appId`), a `workflow_*` tool a workflow folder (`workflowId`); each
+ * tool's schema holds the one its kind takes, and requires it.
+ */
+type TargetKind = "app" | "workflow";
+type TargetInput = {
+  appId: z.ZodOptional<z.ZodString>;
+  workflowId: z.ZodOptional<z.ZodString>;
+};
+const APP_ID_DESCRIPTION =
+  'The app\'s folder name under apps/ — e.g. "hello-world" for apps/hello-world. That folder IS the app. A legacy id also resolves.';
+const WORKFLOW_ID_DESCRIPTION =
+  'The workflow\'s folder name under workflows/ — e.g. "daily-digest" for workflows/daily-digest. Use "lib" for shared code. A new name creates the folder on first write.';
+/**
+ * The one key a kind's tools take. Typed as both, optional, so one tool body
+ * reads either: the other is never in the schema, so never in the input.
+ */
+const targetInputFor = (kind: TargetKind, describe = true): TargetInput => {
+  const [key, description] =
+    kind === "app"
+      ? ["appId", APP_ID_DESCRIPTION]
+      : ["workflowId", WORKFLOW_ID_DESCRIPTION];
+  const id = z.string();
+  return {
+    [key]: describe || kind === "workflow" ? id.describe(description) : id,
+  } as unknown as TargetInput;
+};
+
+/** The `workflow_*` tools: the app tool each one is, and what it says it does. */
+const WORKFLOW_TOOLS: Record<string, string> = {
+  bash: "Run a bash command in your sandbox. cwd is the workflow's folder (workflows/<workflowId>) inside the workspace repo. Use it for git (status, checkout, pull, push) and for looking around; run a workflow with workflows_run, not from here.",
+  read_file:
+    "Read a file of a workflow, uncommitted edits included. Paths are relative to the workflow's folder. Returns line-numbered content.",
+  glob: "Find files of a workflow by glob pattern (e.g. `**/*.ts`).",
+  grep: "Search a workflow's files with a regex. Returns path:line:text matches.",
+  write_file:
+    "Create or fully overwrite a file of a workflow in your checkout. Uncommitted until you commit. For small edits prefer workflow_edit_file.",
+  edit_file:
+    "Anchored string-replacement edit of a workflow's file. oldString must match exactly once unless replaceAll is set.",
+  status:
+    "Show the checkout's git state for a workflow: branch, base commit, and changed files.",
+  commit:
+    "Commit this workflow's uncommitted work onto the current branch with a message. A commit on main is the deploy.",
+  merge_to_main:
+    "Merge a branch into main. For workflows, main is what is deployed, and only workspace admins may put workflow changes there.",
+};
+
+export function createAppsTools(options: AppsToolsOptions): ToolSet {
+  // One implementation, two names: a workflow is a folder like an app is, so
+  // each `workflow_*` tool is the app tool built to take a `workflowId`.
+  const forWorkflows = buildTools(options, "workflow");
+  return {
+    ...buildTools(options, "app"),
+    ...Object.fromEntries(
+      Object.entries(WORKFLOW_TOOLS).map(([name, description]) => [
+        `workflow_${name}`,
+        { ...forWorkflows[`app_${name}`], description } as ToolSet[string],
+      ]),
+    ),
+  };
+}
+
+function buildTools(
+  { workspaceId, userId, supportsVision, touchedPaths }: AppsToolsOptions,
+  kind: TargetKind,
+): ToolSet {
+  const targetInput = targetInputFor(kind, false);
   // A conversation is not a line of work.
   //
   // Chats used to get their own `chat/<chatId>` branch. That made opening a
@@ -166,10 +233,12 @@ export function createAppsTools({
   // safe (they fail on a bad anchor) so they don't require a prior read.
   // Scoped to this tool-factory instance = the current turn.
   const readThisTurn = new Set<string>();
-  const markRead = (appId: string, path: string) =>
-    readThisTurn.add(`${appId}\u0000${path}`);
-  const wasRead = (appId: string, path: string) =>
-    readThisTurn.has(`${appId}\u0000${path}`);
+  const readKey = (project: IAppProject, path: string) =>
+    `${appRootFor(project)}\u0000${path}`;
+  const markRead = (project: IAppProject, path: string) =>
+    readThisTurn.add(readKey(project, path));
+  const wasRead = (project: IAppProject, path: string) =>
+    readThisTurn.has(readKey(project, path));
 
   let cachedRole: string | undefined | null = null;
   const memberRole = async (): Promise<string | undefined> => {
@@ -215,6 +284,62 @@ export function createAppsTools({
       }
     }
     return { project };
+  };
+
+  // A workflow is a folder too: `workflows/<workflowId>`, with no row behind
+  // it. The shell, file and git tools take one as their target the way they
+  // take an app, through an unsaved app document that only says where the
+  // folder is. Nothing below persists it or looks it up.
+  const workflowFolders = new WeakSet<IAppProject>();
+  const loadTarget = async (
+    target: { appId?: string; workflowId?: string },
+    opts: { write: boolean },
+  ): Promise<LoadResult> => {
+    if (!target.workflowId) return loadProject(target.appId ?? "", opts);
+    if (!isSafeSegment(target.workflowId)) {
+      return { error: `Invalid workflow: ${target.workflowId}` };
+    }
+    const role = userId ? await memberRole() : "owner";
+    if (!role) return { error: "You cannot see workflows in this workspace." };
+    if (opts.write && role === "viewer") {
+      return { error: "Viewers cannot change workflows." };
+    }
+    // The first workflow may be the first thing in the workspace's repo.
+    // Same gate as every other content write: a connected repository.
+    if (opts.write) {
+      try {
+        await requireWorkspaceRepo(workspaceId);
+      } catch (error) {
+        return { error: errorMessage(error) };
+      }
+    }
+    const project = new AppProject({
+      workspaceId: new Types.ObjectId(workspaceId),
+      title: target.workflowId,
+      slug: target.workflowId,
+      path: `${WORKFLOWS_DIR}/${target.workflowId}`,
+      access: "workspace",
+      createdBy: actorId,
+    });
+    workflowFolders.add(project);
+    return { project };
+  };
+  /**
+   * Paths are relative to the target's folder. An agent that knows the repo
+   * layout tends to pass `workflows/<id>/workflow.ts` for a workflow anyway;
+   * read that as the file it means, not as a folder nested in itself.
+   */
+  const toRelPath = (project: IAppProject, path: string): string => {
+    if (!workflowFolders.has(project)) return path;
+    const prefix = `${appRootFor(project)}/`;
+    return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  };
+  /** An app's scope names its row; a workflow folder has no row to name. */
+  const scopeFor = (project: IAppProject) => {
+    const scope = scopeOf(project);
+    return workflowFolders.has(project)
+      ? { ...scope, projectId: undefined }
+      : scope;
   };
 
   const errorMessage = (error: unknown): string => {
@@ -330,11 +455,7 @@ export function createAppsTools({
       description:
         "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Git is fully yours: commit with app_commit or run git yourself — branch, checkout, merge, push; the sandbox is a real clone with a real remote. Note the checkout is SHARED with the user AND their other concurrent chats: a branch switch changes what everyone sees (do it when the task calls for it, and say so), and dirty files or 'Mako Agent' commits you don't recognize are someone else's in-flight work — normal, not corruption; leave them alone. Your end-of-turn auto-commit only includes apps YOU touched this turn. Output is capped (start + end kept); when it is cut, the full output is saved to a file in the sandbox whose path is returned — grep/tail/sed that file instead of re-running the command. Pipe noisy commands (installs, builds) through `| tail -n 50` or `| grep` up front.",
       inputSchema: z.object({
-        appId: z
-          .string()
-          .describe(
-            'The app\'s folder name under apps/ — e.g. "hello-world" for apps/hello-world. That folder IS the app. A legacy id also resolves.',
-          ),
+        ...targetInputFor(kind),
         command: z.string().min(1).describe("Bash command line to execute"),
         cwd: z
           .string()
@@ -349,10 +470,10 @@ export function createAppsTools({
           .describe("Kill the command after this many seconds (default 120)"),
       }),
       execute: async (
-        { appId, command, cwd, timeoutSeconds },
+        { appId, workflowId, command, cwd, timeoutSeconds },
         { toolCallId },
       ) => {
-        const loaded = await loadProject(appId, { write: true });
+        const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const handle = await ensureActorWorktree(loaded.project);
@@ -416,7 +537,7 @@ export function createAppsTools({
     app_read_file: tool({
       description: `Read a file from an Apps project at the latest durable state (committed + uncommitted). Prefer this over \`app_bash cat\` for single files. Returns line-numbered content by default so you can make precise anchored edits. Returns up to ${READ_DEFAULT_LIMIT_LINES} lines or ~${READ_MAX_CHARS / 1000}k chars per call (lines over ${READ_MAX_LINE_CHARS} chars are shortened); when more remains, the result has \`nextOffset\` — pass it as \`offset\` to continue, or use app_grep to find the part you need.`,
       inputSchema: z.object({
-        appId: z.string(),
+        ...targetInput,
         path: z
           .string()
           .min(1)
@@ -442,13 +563,18 @@ export function createAppsTools({
       }),
       execute: async ({
         appId,
-        path: relPath,
+        workflowId,
+        path: givenPath,
         withLineNumbers,
         offset,
         limit,
       }) => {
-        const loaded = await loadProject(appId, { write: false });
+        const loaded = await loadTarget(
+          { appId, workflowId },
+          { write: false },
+        );
         if ("error" in loaded) return { success: false, error: loaded.error };
+        const relPath = toRelPath(loaded.project, givenPath);
         try {
           const file = await readFile(loaded.project, relPath, actorId);
           if (file.isBinary) {
@@ -457,7 +583,7 @@ export function createAppsTools({
               error: `${relPath} is binary (${file.size} bytes)`,
             };
           }
-          markRead(appId, file.path);
+          markRead(loaded.project, file.path);
           const numbered = withLineNumbers !== false;
           const page = pageLines(file.contents, { offset, limit });
           const contents = numbered
@@ -505,11 +631,14 @@ export function createAppsTools({
       description:
         "Find files by glob pattern in an Apps project (e.g. `src/**/*.tsx`, `**/*.css`). Reads from git, so it works even when the sandbox is paused or dead. Fast way to locate files before reading/editing.",
       inputSchema: z.object({
-        appId: z.string(),
+        ...targetInput,
         pattern: z.string().min(1).describe("Glob, e.g. src/**/*.ts"),
       }),
-      execute: async ({ appId, pattern }) => {
-        const loaded = await loadProject(appId, { write: false });
+      execute: async ({ appId, workflowId, pattern }) => {
+        const loaded = await loadTarget(
+          { appId, workflowId },
+          { write: false },
+        );
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const paths = await globFiles(loaded.project, pattern, actorId);
@@ -524,7 +653,7 @@ export function createAppsTools({
       description:
         "Search file contents in an Apps project with a regex (extended). Returns path:line:text matches. Reads from git (sandbox-independent). Prefer this over `app_bash grep` for codebase search.",
       inputSchema: z.object({
-        appId: z.string(),
+        ...targetInput,
         pattern: z.string().min(1).describe("Extended-regex pattern"),
         ignoreCase: z.boolean().optional(),
         pathspec: z
@@ -532,8 +661,11 @@ export function createAppsTools({
           .optional()
           .describe("Limit to a path glob, e.g. 'src/'"),
       }),
-      execute: async ({ appId, pattern, ignoreCase, pathspec }) => {
-        const loaded = await loadProject(appId, { write: false });
+      execute: async ({ appId, workflowId, pattern, ignoreCase, pathspec }) => {
+        const loaded = await loadTarget(
+          { appId, workflowId },
+          { write: false },
+        );
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           // One extra match tells us whether the cap cut anything.
@@ -567,19 +699,20 @@ export function createAppsTools({
       description:
         "Create or fully overwrite a file in an Apps project's working copy. Uncommitted until you commit, like any checkout. For surgical edits prefer app_edit_file.",
       inputSchema: z.object({
-        appId: z.string(),
+        ...targetInput,
         path: z.string().min(1),
         contents: z.string(),
       }),
-      execute: async ({ appId, path: relPath, contents }) => {
-        const loaded = await loadProject(appId, { write: true });
+      execute: async ({ appId, workflowId, path: givenPath, contents }) => {
+        const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
+        const relPath = toRelPath(loaded.project, givenPath);
         try {
           // Read-before-overwrite guard (Claude Code hallmark): a full rewrite
           // of an EXISTING file it hasn't read this turn risks clobbering
           // content blindly. Creating a new file is fine. Anchored edits are
           // exempt (they fail safely on a bad anchor).
-          if (!wasRead(appId, relPath)) {
+          if (!wasRead(loaded.project, relPath)) {
             let exists = false;
             try {
               await readFile(loaded.project, relPath, actorId);
@@ -597,7 +730,7 @@ export function createAppsTools({
           const handle = await ensureActorWorktree(loaded.project);
           markTouched(loaded.project);
           await writeFile(handle, relPath, contents);
-          markRead(appId, relPath);
+          markRead(loaded.project, relPath);
           return { success: true, path: relPath };
         } catch (error) {
           logger.error("app_write_file failed", { error, appId });
@@ -610,7 +743,7 @@ export function createAppsTools({
       description:
         "Anchored string-replacement edit of a file in an Apps project (like str_replace). oldString must match exactly once unless replaceAll is set. Flushed to the durable WIP snapshot immediately.",
       inputSchema: z.object({
-        appId: z.string(),
+        ...targetInput,
         path: z.string().min(1),
         oldString: z.string().min(1),
         newString: z.string(),
@@ -618,13 +751,15 @@ export function createAppsTools({
       }),
       execute: async ({
         appId,
-        path: relPath,
+        workflowId,
+        path: givenPath,
         oldString,
         newString,
         replaceAll,
       }) => {
-        const loaded = await loadProject(appId, { write: true });
+        const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
+        const relPath = toRelPath(loaded.project, givenPath);
         try {
           const handle = await ensureActorWorktree(loaded.project);
           let current: string;
@@ -665,12 +800,18 @@ export function createAppsTools({
         "Show an Apps worktree's durable status: base commit, WIP snapshot, changed files vs base, and whether the branch has moved. " +
         "`changes` is THIS app's uncommitted slice; `repoChanges` is the whole shared working copy — entries outside this app usually belong to the user or one of their other chats, and are not yours to commit, revert, or clean. " +
         "This is the SANDBOX's git state, not what is deployed — for the live app's published commit, use app_publish_status.",
-      inputSchema: z.object({ appId: z.string() }),
-      execute: async ({ appId }) => {
-        const loaded = await loadProject(appId, { write: false });
+      inputSchema: z.object(targetInput),
+      execute: async ({ appId, workflowId }) => {
+        const loaded = await loadTarget(
+          { appId, workflowId },
+          { write: false },
+        );
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const status = await worktreeStatus(scopeOf(loaded.project), actorId);
+          const status = await worktreeStatus(
+            scopeFor(loaded.project),
+            actorId,
+          );
           // The working copy is shared (user + their other chats), so foreign
           // WIP is normal. Say so explicitly — without this, agents read a
           // stranger's dirty files (or a turn commit they didn't make) as
@@ -744,9 +885,8 @@ export function createAppsTools({
           if (!sha) {
             return { success: false, error: `branch ${branch} has no commits` };
           }
-          const { requestAppDeploys } = await import(
-            "../../inngest/functions/apps-deploy"
-          );
+          const { requestAppDeploys } =
+            await import("../../inngest/functions/apps-deploy");
           await requestAppDeploys(
             project.workspaceId.toString(),
             [project._id.toString()],
@@ -1126,14 +1266,14 @@ export function createAppsTools({
       description:
         "Merge a branch of an Apps project into main (fast-forward when possible, real merge commit otherwise; refuses on conflicts). Use when the user is happy with the changes and wants them on main. Omit `branch` to merge the branch you are working on.",
       inputSchema: z.object({
-        appId: z.string(),
+        ...targetInput,
         branch: z
           .string()
           .optional()
           .describe("Branch to merge (defaults to the branch you are on)"),
       }),
-      execute: async ({ appId, branch }) => {
-        const loaded = await loadProject(appId, { write: true });
+      execute: async ({ appId, workflowId, branch }) => {
+        const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         const target = branch ?? (await currentActorBranch(loaded.project));
         if (target === (loaded.project.defaultBranch || "main")) {
@@ -1145,8 +1285,10 @@ export function createAppsTools({
         }
         try {
           const result = await mergeBranchToMain(
-            scopeOf(loaded.project),
+            scopeFor(loaded.project),
             target,
+            undefined,
+            userId,
           );
           return { success: result.merged, ...result, branch: target };
         } catch (error) {
@@ -1189,11 +1331,11 @@ export function createAppsTools({
       description:
         "Commit THIS app's uncommitted work (scoped to its apps/<slug> folder — other apps' and other chats' in-flight files in the shared checkout are untouched) onto the current branch with a message. Note: apps you touched are auto-committed at the end of every turn anyway; use this for meaningful mid-turn checkpoints with a good message.",
       inputSchema: z.object({
-        appId: z.string(),
+        ...targetInput,
         message: z.string().min(1).describe("Commit message"),
       }),
-      execute: async ({ appId, message }) => {
-        const loaded = await loadProject(appId, { write: true });
+      execute: async ({ appId, workflowId, message }) => {
+        const loaded = await loadTarget({ appId, workflowId }, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const handle = await ensureActorWorktree(loaded.project);

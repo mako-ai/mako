@@ -136,6 +136,8 @@ chatsRoutes.openapi(
           workspaceId: new ObjectId(workspaceId),
           createdBy: userId.toString(),
           appId: { $exists: false },
+          // Agent runs from workflow steps are opened from their run.
+          source: { $ne: "workflow" },
         },
         { messages: 0 },
       ).sort({ updatedAt: -1 });

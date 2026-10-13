@@ -143,7 +143,11 @@ interface AcpState {
     decision: "approve" | "request_changes" | "cancel";
     planMarkdown?: string;
     grants?: Array<
-      "artifact-write" | "warehouse-write" | "git-write" | "schedule-write"
+      | "artifact-write"
+      | "warehouse-write"
+      | "git-write"
+      | "schedule-write"
+      | "workflows-run"
     >;
   }) => Promise<void>;
   revokeSessionGrant: (sessionId: string) => Promise<void>;

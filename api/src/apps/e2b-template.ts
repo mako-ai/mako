@@ -19,6 +19,10 @@ import path from "node:path";
 import { Template } from "e2b";
 import { createAppsScaffold } from "./scaffold";
 import { PNPM_VERSION } from "./package-manager";
+import {
+  RUNTIME_IN_BOX,
+  installRuntimeCommand,
+} from "../workflows/runtime-files";
 
 const DEFAULT_ALIAS = "mako-apps";
 
@@ -142,7 +146,21 @@ export const ZSHRC = [
 const b64 = (text: string): string =>
   Buffer.from(text, "utf8").toString("base64");
 
+/**
+ * The apps template plus the workflow runtime already installed, with the
+ * embedded engine and its Postgres fetched (the version is run.mjs's), so a
+ * box's first sandbox run does not start with an install
+ * (api/src/workflows/sandbox.ts does it on demand otherwise).
+ */
 export function createAppsE2BTemplate() {
+  return appsTemplate()
+    .runCmd(installRuntimeCommand())
+    .runCmd(
+      `cd /tmp && node --input-type=module -e 'import { startEmbeddedSidecar } from "'${RUNTIME_IN_BOX}'/node_modules/@hatchet-dev/typescript-sdk/v1/embedded.js"; setInterval(() => {}, 60000); const engine = await startEmbeddedSidecar({ version: "v0.110.5" }); await engine.stop(); process.exit(0);'`,
+    );
+}
+
+function appsTemplate() {
   // Warm the npm cache with the exact dependency set new apps scaffold with.
   const scaffoldPkg = createAppsScaffold({ title: "warmup" })["package.json"];
 

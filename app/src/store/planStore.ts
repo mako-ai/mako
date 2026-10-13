@@ -123,6 +123,7 @@ const CAPABILITY_GRANTS = new Set([
   "warehouse-write",
   "git-write",
   "schedule-write",
+  "workflows-run",
 ]);
 
 const normalizeTodos = (todos: unknown): PlanTodo[] => {

@@ -112,6 +112,10 @@ export function scopedKeyMayAccess(
       hasWorkspaceApiKeyScope(scopes, scope),
     );
   }
+  // The workflow worker's own routes: source, reports, model calls, the agent.
+  if (/^\/api\/workflows\/runtime\//.test(path)) {
+    return hasWorkspaceApiKeyScope(scopes, "workflows:runtime");
+  }
   return BINDING_ROUTES.some(
     route =>
       route.method === verb &&

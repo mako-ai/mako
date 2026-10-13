@@ -9,6 +9,7 @@ import {
   DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
   APP_MODE_SYSTEM_PROMPT,
+  WORKFLOW_MODE_SYSTEM_PROMPT,
   TRANSFORM_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
   NOTEBOOK_MODE_SYSTEM_PROMPT,
@@ -248,6 +249,34 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "cancel_query",
 ];
 
+/**
+ * Workflows are files, so the mode is mostly the shell, file and git tools the
+ * app mode has, built to take a workflow folder (`workflow_*`, apps-tools.ts),
+ * plus the tools that look at runs, start one, and switch a workflow on.
+ */
+const WORKFLOW_MODE_TOOL_NAMES: string[] = [
+  "workflows_status",
+  "workflows_run",
+  "workflows_triggers",
+  "workflow_bash",
+  "workflow_read_file",
+  "workflow_write_file",
+  "workflow_edit_file",
+  "workflow_glob",
+  "workflow_grep",
+  "workflow_status",
+  "workflow_commit",
+  "workflow_merge_to_main",
+  // Discovery: look at the data before writing a query into a step.
+  "list_connections",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
+  "sql_execute_query",
+  "check_query_status",
+  "cancel_query",
+];
+
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_connections",
   "list_databases",
@@ -344,6 +373,19 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Inspect the source tables for the model",
       "Write the model SQL + schema.yml entries",
       "Verify with dbt_parse, dbt_compile_model, then dbt_run_model on dev",
+    ],
+  },
+  workflow: {
+    id: "workflow",
+    name: "Workflow",
+    routingPrompt:
+      "Write, test and deploy workflows: scheduled or multi-step jobs as TypeScript files in the workspace repo, run by Hatchet.",
+    systemPrompt: WORKFLOW_MODE_SYSTEM_PROMPT,
+    toolNames: WORKFLOW_MODE_TOOL_NAMES,
+    trajectories: [
+      "Write the workflow's folder, then run it in the sandbox and read the steps",
+      "Fix until the sandbox run succeeds, then commit to main",
+      "Ask before switching its schedule and webhook on",
     ],
   },
   notebook: {

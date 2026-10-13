@@ -8,6 +8,7 @@
 
 import type { SystemModelMessage, ToolSet } from "ai";
 import type { ConsoleDataV2 } from "../agent-lib/types";
+import type { QueryAccess } from "../auth/api-key-scopes";
 import type { McpToolCatalogInfo } from "../services/mcp-client.service";
 import type { IAppProject } from "../database/workspace-schema";
 
@@ -46,6 +47,11 @@ export interface AgentMeta {
  * Runtime context passed to agent factory
  */
 export interface AgentContext {
+  /**
+   * What SQL the turn may run. A chat writes; a run nobody is watching (a
+   * workflow step) reads, like the worker's own key.
+   */
+  queryAccess?: QueryAccess;
   /** Branch of the caller's Apps checkout — saves the agent a `git status` round trip. */
   appsBranch?: string;
   /**

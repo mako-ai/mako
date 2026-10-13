@@ -109,6 +109,7 @@ import {
   APP_MANIFEST,
   APPS_DIR,
   FOLDER_KEEP_FILE,
+  WORKFLOWS_DIR,
   appRepoPath,
   parseAppRepoPath,
   appTreeRoot,
@@ -119,6 +120,8 @@ import {
   type AppScope,
 } from "./app-paths";
 import { appSdkDependency } from "./app-sdk-package";
+import { workspaceService } from "../services/workspace.service";
+import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 
 // Identity helpers moved to app-paths.ts (pure); re-exported so existing
 // importers keep working.
@@ -317,6 +320,10 @@ export function syncRepoBackedResources(
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  // Workflows (`workflows/`, docs/src/content/docs/workflows.md): a change at main
+  // rolls the workspace's worker to the new commit. A commit that fails its
+  // typecheck never becomes ready, so the previous worker keeps running.
+  deployWorkflows(workspaceId, userId);
   // Flow definitions (RFC #904 block 3): `flows/<slug>.yml` is authoritative,
   // so an external edit reconfigures a live CDC stream and a removed file
   // tears one down. Caught like the others — one resource's bad YAML must not
@@ -333,6 +340,30 @@ export function syncRepoBackedResources(
     })
     .catch(error => {
       logger.warn("Flow sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
+
+/**
+ * Ask for the workspace's workflows to be deployed from `main`, durably
+ * (inngest/functions/workflows-deploy.ts): the request that moved main
+ * returns now, and the deploy runs to completion elsewhere. A workspace
+ * with no workflows asks for nothing.
+ */
+function deployWorkflows(workspaceId: string, userId?: string): void {
+  void Promise.all([
+    import("../workflows/on-push"),
+    import("../inngest/functions/workflows-deploy"),
+  ])
+    .then(async ([onPush, deploy]) => {
+      if (await onPush.hasWorkflowsToDeploy(workspaceId)) {
+        await deploy.requestWorkflowsDeploy(workspaceId, userId, "push");
+      }
+    })
+    .catch(error => {
+      logger.warn("Workflows deploy request failed", {
         workspaceId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -2538,6 +2569,8 @@ export async function mergeBranchToMain(
   scope: RepoScope,
   branch: string,
   author?: GitAuthor,
+  /** Who merges. Given, a branch that changes `workflows/` needs an admin. */
+  actorUserId?: string,
 ): Promise<MergeResult> {
   const repoDir = await repoForWorkspace(scope.workspaceId);
   const defaultBranch = scope.defaultBranch;
@@ -2559,6 +2592,25 @@ export async function mergeBranchToMain(
   if (branchHead === mainHead) {
     return { merged: false, reason: "Already up to date" };
   }
+  // Main is where workflows go live. The git endpoint lets only admins push
+  // workflow changes; the merge, which does not run hooks, asks the same.
+  if (actorUserId) {
+    const { stdout } = await runGit([
+      // Three dots: what the branch changed since it left main, not what
+      // main changed meanwhile.
+      ...["-C", repoDir, "diff", "--name-only", `${mainHead}...${branchHead}`],
+      ...["--", `${WORKFLOWS_DIR}/`],
+    ]);
+    if (stdout.trim()) {
+      const member = await workspaceService.getMember(
+        scope.workspaceId,
+        actorUserId,
+      );
+      if (!mayChangeWorkflows(member?.role)) {
+        throw new WorktreeConflictError(WORKFLOWS_ADMIN_ONLY);
+      }
+    }
+  }
 
   // Fast-forward when main is an ancestor of the branch.
   try {
@@ -2577,6 +2629,8 @@ export async function mergeBranchToMain(
     queueMirrorPush(scope.workspaceId);
     pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
     invalidatePullThrottle();
+    // A merge writes main here, not through the git endpoint.
+    deployWorkflows(scope.workspaceId);
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
     if (error instanceof WorktreeConflictError) throw error;
@@ -2610,6 +2664,7 @@ export async function mergeBranchToMain(
   queueMirrorPush(scope.workspaceId);
   pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
   invalidatePullThrottle();
+  deployWorkflows(scope.workspaceId);
   return { merged: true, commitOid, fastForward: false };
 }
 

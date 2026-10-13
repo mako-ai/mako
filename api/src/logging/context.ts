@@ -3,6 +3,14 @@ import { getLogger, withContext } from "@logtape/logtape";
 import type { Context, Next } from "hono";
 
 /**
+ * A URL as it may be logged. A workflow's webhook URL ends in its secret
+ * (routes/workflows.ts): the log keeps the workflow and drops the secret.
+ */
+function withoutSecrets(url: string): string {
+  return url.replace(/(\/api\/workflows\/hooks\/[^/]+\/[^/]+\/)[^/?#]+/, "$1…");
+}
+
+/**
  * Request context that gets attached to all logs within a request
  */
 export interface RequestContext {
@@ -168,7 +176,7 @@ export function loggingMiddleware(options: HttpLoggingOptions = {}) {
       spanId,
       requestId,
       method: c.req.method,
-      path: c.req.path,
+      path: withoutSecrets(c.req.path),
       startTime,
     };
 
@@ -221,7 +229,7 @@ export function loggingMiddleware(options: HttpLoggingOptions = {}) {
               workspaceId: context.workspaceId,
               httpRequest: {
                 requestMethod: method,
-                requestUrl: c.req.url,
+                requestUrl: withoutSecrets(c.req.url),
                 status,
                 userAgent: c.req.header("user-agent"),
                 remoteIp:
@@ -246,7 +254,7 @@ export function loggingMiddleware(options: HttpLoggingOptions = {}) {
             error,
             httpRequest: {
               requestMethod: method,
-              requestUrl: c.req.url,
+              requestUrl: withoutSecrets(c.req.url),
               userAgent: c.req.header("user-agent"),
               remoteIp:
                 c.req.header("x-forwarded-for") ||

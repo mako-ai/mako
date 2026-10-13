@@ -98,6 +98,7 @@ async function main() {
     "query:read",
     "warehouse:write",
     "connections:write",
+    "workflows:run",
   ];
   for (const requested of [
     undefined,
@@ -119,6 +120,7 @@ async function main() {
     "query:read",
     "warehouse:write",
     "connections:write",
+    "workflows:run",
   ]);
   // The scope names still map to their grants (stored keys keep parsing),
   // though every MCP session now holds these grants implicitly.
@@ -177,6 +179,11 @@ async function main() {
     ["warehouse-write"],
   );
   assert.deepEqual(capabilityGrantsFromScopes(["mcp", "query:read"]), []);
+  // Starting workflow runs is an opt-in for API keys, like warehouse:write.
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "workflows:run"]),
+    ["workflows-run"],
+  );
   assert.deepEqual(
     capabilityGrantsFromScopes(["mcp", "query:read", "git:write"]),
     ["git-write"],

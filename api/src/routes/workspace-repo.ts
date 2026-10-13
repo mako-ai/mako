@@ -385,6 +385,7 @@ workspaceRepoRoutes.openapi(
         workspaceScope(workspaceId),
         branch,
         user?.email ? { name: user.email, email: user.email } : undefined,
+        user?.id,
       );
       return c.json({ success: true as const, result }, 200);
     } catch (error) {

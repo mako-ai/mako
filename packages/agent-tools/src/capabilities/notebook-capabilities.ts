@@ -5,10 +5,7 @@
  * is exposed on every surface. Cell runs execute real queries / kernel code
  * and carry the query envelope where warehouse access is involved.
  */
-import {
-  ALL_AGENT_SURFACES,
-  type AgentCapabilityDefinition,
-} from "./types";
+import { ALL_AGENT_SURFACES, type AgentCapabilityDefinition } from "./types";
 
 export type NotebookCapabilityPack =
   | "notebook-orient"

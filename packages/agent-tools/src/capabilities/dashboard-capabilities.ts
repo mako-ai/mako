@@ -6,10 +6,7 @@
  * and keep their hand-maintained entries in the MCP bridge policy until they
  * grow server legs.
  */
-import {
-  ALL_AGENT_SURFACES,
-  type AgentCapabilityDefinition,
-} from "./types";
+import { ALL_AGENT_SURFACES, type AgentCapabilityDefinition } from "./types";
 
 export type DashboardCapabilityPack = "dashboard-data";
 

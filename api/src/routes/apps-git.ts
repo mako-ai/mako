@@ -38,6 +38,7 @@ import {
 import { DEFAULT_BRANCH, repoExists } from "../apps/repository.service";
 import { GitTokenError, verifyGitToken } from "../apps/git-token.service";
 import { notifyRepoPushed } from "../apps/worktree.service";
+import { workspaceService } from "../services/workspace.service";
 import { createRouter } from "../openapi/core";
 import { loggers } from "../logging";
 
@@ -113,6 +114,20 @@ while read old new ref; do
         exit 1
       fi
     done
+  fi
+
+  # Workflows: what is on main is deployed and, once activated, runs on a
+  # schedule with the workspace's data. A push to main that changes
+  # workflows/ comes from a workspace admin (MAKO_WORKFLOWS_ADMIN, set by the
+  # endpoint from the member's role). Any member pushes workflow changes to
+  # a branch.
+  if [ "$ref" = "refs/heads/${DEFAULT_BRANCH}" ] && [ "$new" != "$zero" ] && [ "$MAKO_WORKFLOWS_ADMIN" != "1" ]; then
+    base="$old"
+    [ "$base" = "$zero" ] && base=$(git hash-object -t tree /dev/null)
+    if [ -n "$(git diff --name-only "$base" "$new" -- workflows/)" ]; then
+      echo "mako: refusing $ref - only workspace admins put workflows on ${DEFAULT_BRANCH}. Push a branch and ask an admin to merge." >&2
+      exit 1
+    fi
   fi
 done
 exit 0
@@ -264,6 +279,13 @@ async function serveGit(c: Context): Promise<Response> {
     // legacy tokens minted before authorship was bound in; the hook then falls
     // back to attribution-without-enforcement rather than blocking the push.
     authorEmail: payload.email,
+    // The role as it is now, not as it was when the token was minted: a
+    // demoted admin stops changing workflows with the next push.
+    workflowsAdmin:
+      isReceivePack &&
+      (await workspaceService
+        .isAdmin(payload.wsId, payload.userId)
+        .catch(() => false)),
     body: c.req.method === "POST" ? c.req.raw.body : null,
     onSuccess: isReceivePack
       ? () => notifyRepoPushed(payload.wsId, payload.userId)
@@ -284,6 +306,8 @@ interface BackendInput {
   remoteUser: string;
   /** Email the pushed commits must be authored by; undefined disables the check. */
   authorEmail?: string;
+  /** Whether the pusher may change `workflows/` (a workspace admin). */
+  workflowsAdmin?: boolean;
   /** Request body, streamed — a push can be arbitrarily large. */
   body: ReadableStream<Uint8Array> | null;
   /** Called once when a receive-pack completed cleanly (see module doc). */
@@ -313,6 +337,7 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       // when the token carried it, so old tokens skip the check (fail-open on
       // a missing identity, never on a mismatch).
       ...(input.authorEmail ? { MAKO_AUTHOR_EMAIL: input.authorEmail } : {}),
+      ...(input.workflowsAdmin ? { MAKO_WORKFLOWS_ADMIN: "1" } : {}),
       // Config injected per invocation instead of written into the repo:
       // it applies to exactly this serving path (updateRefCas and the mirror
       // push never see it), and there is no migration to run over existing

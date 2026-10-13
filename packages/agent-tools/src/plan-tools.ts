@@ -35,9 +35,7 @@ export const clarifyingQuestionSchema = z.object({
   allowMultiple: z
     .boolean()
     .optional()
-    .describe(
-      "For 'choice' questions, allow selecting more than one option.",
-    ),
+    .describe("For 'choice' questions, allow selecting more than one option."),
   allowOther: z
     .boolean()
     .optional()
@@ -91,6 +89,7 @@ export const submitPlanSchema = z.object({
         "warehouse-write",
         "git-write",
         "schedule-write",
+        "workflows-run",
       ]),
     )
     .optional()
@@ -161,9 +160,7 @@ export type HitlToolName = keyof typeof HITL_TOOL_JSON_SCHEMAS;
 export function validateHitlToolArguments(
   tool: HitlToolName,
   args: unknown,
-):
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; error: string } {
+): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
   const schema =
     tool === "submit_plan" ? submitPlanSchema : askClarifyingQuestionsSchema;
   const parsed = schema.safeParse(args);

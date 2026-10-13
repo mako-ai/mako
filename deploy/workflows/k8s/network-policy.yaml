@@ -1,0 +1,49 @@
+# Egress lockdown for workflow workers: untrusted workspace code runs here.
+# Same shape as deploy/notebook-kernels/k8s/network-policy.yaml (HTTPS out to
+# the internet, which includes the Mako API; nothing private; no metadata
+# server), plus the one in-cluster destination a worker needs: Hatchet.
+# No ingress at all — nothing calls into a worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workflow-worker-lockdown
+  namespace: mako-workflows
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mako-workflow-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # DNS resolution.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Hatchet engine (gRPC) and API (REST), in-cluster.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hatchet
+      ports:
+        - protocol: TCP
+          port: 7070
+        - protocol: TCP
+          port: 8080
+    # HTTPS to the public internet only (Mako API, model gateway, vendor APIs).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443

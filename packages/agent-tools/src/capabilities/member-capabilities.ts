@@ -20,12 +20,11 @@
  *     expires. The danger is escalation, not loss, and the grant is what
  *     addresses escalation.
  */
-import {
-  type AgentCapabilityDefinition,
-  type AgentSurface,
-} from "./types";
+import { type AgentCapabilityDefinition, type AgentSurface } from "./types";
 
-const EXTERNAL_MCP_ONLY = ["external-mcp"] as const satisfies readonly AgentSurface[];
+const EXTERNAL_MCP_ONLY = [
+  "external-mcp",
+] as const satisfies readonly AgentSurface[];
 
 export type MemberCapabilityPack = "members-admin";
 

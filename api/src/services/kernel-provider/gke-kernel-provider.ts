@@ -62,35 +62,43 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Kubernetes clients for the mako-notebooks cluster, authenticated with a
+ * fresh ADC token. Shared with the workflows worker Deployments
+ * (`workflows/kube.ts`), which live on the same cluster.
+ */
+export async function gkeClients(): Promise<{
+  core: CoreV1Api;
+  apps: AppsV1Api;
+}> {
+  const endpoint = process.env.KERNEL_GKE_ENDPOINT;
+  const caData = process.env.KERNEL_GKE_CA_CERT;
+  if (!endpoint || !caData) {
+    throw new Error(
+      "GKE kernel provider not configured (KERNEL_GKE_ENDPOINT / KERNEL_GKE_CA_CERT)",
+    );
+  }
+  const token = await auth()
+    .getClient()
+    .then(c => c.getAccessToken())
+    .then(t => t.token);
+  if (!token) throw new Error("failed to mint a Google access token for GKE");
+
+  const kc = new KubeConfig();
+  kc.loadFromOptions({
+    clusters: [{ name: "mako", server: endpoint, caData }],
+    users: [{ name: "mako", token }],
+    contexts: [{ name: "mako", cluster: "mako", user: "mako" }],
+    currentContext: "mako",
+  });
+  return {
+    core: kc.makeApiClient(CoreV1Api),
+    apps: kc.makeApiClient(AppsV1Api),
+  };
+}
+
 export class GKEKernelProvider implements KernelProvider {
   readonly name = "gke";
-
-  private async clients(): Promise<{ core: CoreV1Api; apps: AppsV1Api }> {
-    const endpoint = process.env.KERNEL_GKE_ENDPOINT;
-    const caData = process.env.KERNEL_GKE_CA_CERT;
-    if (!endpoint || !caData) {
-      throw new Error(
-        "GKE kernel provider not configured (KERNEL_GKE_ENDPOINT / KERNEL_GKE_CA_CERT)",
-      );
-    }
-    const token = await auth()
-      .getClient()
-      .then(c => c.getAccessToken())
-      .then(t => t.token);
-    if (!token) throw new Error("failed to mint a Google access token for GKE");
-
-    const kc = new KubeConfig();
-    kc.loadFromOptions({
-      clusters: [{ name: "mako", server: endpoint, caData }],
-      users: [{ name: "mako", token }],
-      contexts: [{ name: "mako", cluster: "mako", user: "mako" }],
-      currentContext: "mako",
-    });
-    return {
-      core: kc.makeApiClient(CoreV1Api),
-      apps: kc.makeApiClient(AppsV1Api),
-    };
-  }
 
   private async findReadyPod(core: CoreV1Api): Promise<KernelEndpoint | null> {
     const list = await core.listNamespacedPod({
@@ -125,7 +133,7 @@ export class GKEKernelProvider implements KernelProvider {
   }
 
   async acquire(opts: AcquireOptions): Promise<KernelEndpoint> {
-    const { core, apps } = await this.clients();
+    const { core, apps } = await gkeClients();
 
     const ready = await this.findReadyPod(core);
     if (ready) {

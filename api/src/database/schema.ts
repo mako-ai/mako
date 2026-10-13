@@ -442,6 +442,7 @@ export interface ILlmUsage extends Document {
     | "description_generation"
     | "embedding"
     | "version_comment"
+    | "workflow"
     | "commit_message";
   modelId: string;
   inputTokens: number;
@@ -488,6 +489,7 @@ const LlmUsageSchema = new Schema<ILlmUsage>(
         "description_generation",
         "embedding",
         "version_comment",
+        "workflow",
         "commit_message",
       ],
     },

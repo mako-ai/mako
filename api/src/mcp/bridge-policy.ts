@@ -20,10 +20,7 @@ import {
 
 /** Why a tool is kept off the MCP surface. */
 export type McpBridgeExclusionWhy =
-  | "client-only"
-  | "security"
-  | "in-product-only"
-  | "deferred";
+  "client-only" | "security" | "in-product-only" | "deferred";
 
 export type McpBridgeEntry =
   | {
@@ -320,6 +317,24 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // next to the discovery pair it completes: discover ids, write the file,
   // check it, then push.
   check_flow_files: bridge(),
+  // Workflows: look at what runs and at one run (reads Hatchet), and start a
+  // run. Starting one executes the workspace's own workflow code with its
+  // data access, so it is bridged like the other tools that act.
+  // The shell, file and git tools on a workflow folder: the app tools under
+  // another name (apps-tools.ts), bridged the same.
+  workflow_bash: bridge(),
+  workflow_commit: bridge(),
+  workflow_edit_file: bridge(),
+  workflow_glob: bridge(),
+  workflow_grep: bridge(),
+  workflow_merge_to_main: bridge(),
+  workflow_read_file: bridge(),
+  workflow_status: bridge(),
+  workflow_write_file: bridge(),
+  workflows_status: bridge(),
+  workflows_run: bridge(),
+  // A webhook URL starts runs, so it is no more than workflows_run already gives.
+  workflows_triggers: bridge(),
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
