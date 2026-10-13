@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useWorkspace } from "../../contexts/workspace-context";
+import { useOptionalWorkspace } from "../../contexts/workspace-context";
 import {
   Box,
   IconButton,
@@ -41,6 +41,12 @@ interface ChatInputAreaProps {
   chatId: string;
   /** Selected model runs locally, so its turns are not metered. */
   isLocalAgent?: boolean;
+  /** Overrides the default "Ask Chat..." placeholder. */
+  placeholder?: string;
+  /** Model picker + usage badge (off where the server picks the model). */
+  showModelControls?: boolean;
+  /** Image attachments (off where the server does not accept them). */
+  allowAttachments?: boolean;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -65,6 +71,9 @@ export const ChatInputArea = React.memo(
     planFeedbackMode = false,
     chatId,
     isLocalAgent = false,
+    placeholder = "Ask Chat...",
+    showModelControls = true,
+    allowAttachments = true,
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -82,7 +91,7 @@ export const ChatInputArea = React.memo(
     // Onboarding hands the user's "what do you want to build?" answer to
     // the composer through this key — their first prompt, where it belongs
     // (users used to type it into the workspace-name field).
-    const { currentWorkspace } = useWorkspace();
+    const currentWorkspace = useOptionalWorkspace()?.currentWorkspace;
     useEffect(() => {
       if (!currentWorkspace?.id) return;
       try {
@@ -161,7 +170,7 @@ export const ChatInputArea = React.memo(
     const handlePaste = useCallback(
       (e: React.ClipboardEvent) => {
         const items = e.clipboardData?.items;
-        if (!items) return;
+        if (!items || !allowAttachments) return;
         const files: File[] = [];
         for (const item of items) {
           if (item.kind === "file" && item.type.startsWith("image/")) {
@@ -174,7 +183,7 @@ export const ChatInputArea = React.memo(
           addImages(files);
         }
       },
-      [addImages],
+      [addImages, allowAttachments],
     );
 
     const submitMessage = useCallback(async () => {
@@ -370,7 +379,7 @@ export const ChatInputArea = React.memo(
                 ? "Edit queued message..."
                 : planFeedbackMode
                   ? "Suggest changes to the plan..."
-                  : "Ask Chat..."
+                  : placeholder
             }
             value={input}
             onChange={e => setInput(e.target.value)}
@@ -451,30 +460,39 @@ export const ChatInputArea = React.memo(
                 minWidth: 0,
               }}
             >
-              <ModelSelector />
-              <SessionUsageBadge chatId={chatId} isLocalAgent={isLocalAgent} />
+              {showModelControls && (
+                <>
+                  <ModelSelector />
+                  <SessionUsageBadge
+                    chatId={chatId}
+                    isLocalAgent={isLocalAgent}
+                  />
+                </>
+              )}
             </Box>
 
-            <Tooltip title="Attach image" placement="top">
-              <IconButton
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                size="small"
-                disabled={isPreparingSubmission || disabled || isLoading}
-                sx={{
-                  width: 28,
-                  height: 28,
-                  flexShrink: 0,
-                  color: "var(--bui-ink-3)",
-                  "&:hover": {
-                    color: "var(--bui-ink)",
-                    backgroundColor: "var(--bui-hover)",
-                  },
-                }}
-              >
-                <ImagePlus size={16} />
-              </IconButton>
-            </Tooltip>
+            {allowAttachments && (
+              <Tooltip title="Attach image" placement="top">
+                <IconButton
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  size="small"
+                  disabled={isPreparingSubmission || disabled || isLoading}
+                  sx={{
+                    width: 28,
+                    height: 28,
+                    flexShrink: 0,
+                    color: "var(--bui-ink-3)",
+                    "&:hover": {
+                      color: "var(--bui-ink)",
+                      backgroundColor: "var(--bui-hover)",
+                    },
+                  }}
+                >
+                  <ImagePlus size={16} />
+                </IconButton>
+              </Tooltip>
+            )}
 
             {isLoading ? (
               <IconButton

@@ -514,6 +514,32 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
+  // "Chat with app" (the app_chat agent on a published app's viewer page).
+  describe_app_data: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const binding = (input as Record<string, unknown>)?.binding;
+      return binding ? `Looking at ${binding}` : "Looking at the app's data";
+    },
+    icon: "database",
+  },
+  query_app_data: {
+    domain: "app",
+    execution: "server",
+    getLabel: () => "Querying the app's data",
+    icon: "play",
+    preview: { field: "sql", language: "sql" },
+  },
+  read_app_source: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Reading ${path}` : "Listing the app's files";
+    },
+    icon: "eye",
+  },
   // These names are shared by the git-backed app_* toolset, so the cards
   // label both historical v1 calls and current server-side app edits.
   app_write_file: {

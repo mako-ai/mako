@@ -40,6 +40,12 @@ interface AppViewerStoreState {
   ) => Promise<StoredAppChat | null>;
   /** Abort the chat's in-flight generation server-side. */
   stopChat: (chatId: string) => Promise<void>;
+  /** Delete one of the caller's chats with this app; true on success. */
+  deleteChat: (
+    workspaceId: string,
+    appId: string,
+    chatId: string,
+  ) => Promise<boolean>;
 }
 
 export const appViewerKey = (workspaceId: string, appId: string) =>
@@ -129,6 +135,25 @@ export const useAppViewerStore = create<AppViewerStoreState>()(
         };
       } catch {
         return null;
+      }
+    },
+
+    deleteChat: async (workspaceId, appId, chatId) => {
+      try {
+        const { response } = await api.DELETE(
+          "/api/workspaces/{workspaceId}/chats/{id}",
+          { params: { path: { workspaceId, id: chatId } } },
+        );
+        if (!response.ok) return false;
+        set(s => {
+          const key = appViewerKey(workspaceId, appId);
+          s.chatsByApp[key] = (s.chatsByApp[key] ?? []).filter(
+            chat => chat.id !== chatId,
+          );
+        });
+        return true;
+      } catch {
+        return false;
       }
     },
 

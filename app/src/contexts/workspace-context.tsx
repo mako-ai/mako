@@ -574,6 +574,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   );
 }
 
+/**
+ * The workspace context when rendered inside a WorkspaceProvider, else
+ * undefined — for shared components that also render outside the shell
+ * (the app viewer's chat).
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useOptionalWorkspace() {
+  return useContext(WorkspaceContext);
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function useWorkspace() {
   const context = useContext(WorkspaceContext);

@@ -25,12 +25,18 @@ interface ChatEmptyStateProps {
   isMobile: boolean;
   disabled: boolean;
   onSelect: (prompt: string) => void;
+  title?: string;
+  subtitle?: string;
+  suggestions?: readonly string[];
 }
 
 export const ChatEmptyState = React.memo(function ChatEmptyState({
   isMobile,
   disabled,
   onSelect,
+  title = "Ask your data",
+  subtitle = "Ask a question in plain English — Mako writes and runs the query for you.",
+  suggestions = ASK_SUGGESTIONS,
 }: ChatEmptyStateProps) {
   return (
     <Box
@@ -99,7 +105,7 @@ export const ChatEmptyState = React.memo(function ChatEmptyState({
               variant={isMobile ? "h5" : "h6"}
               sx={{ fontWeight: 700 }}
             >
-              Ask your data
+              {title}
             </Typography>
             <Typography
               variant="body2"
@@ -109,8 +115,7 @@ export const ChatEmptyState = React.memo(function ChatEmptyState({
                 maxWidth: 360,
               }}
             >
-              Ask a question in plain English — Mako writes and runs the query
-              for you.
+              {subtitle}
             </Typography>
           </Box>
         </Box>
@@ -125,7 +130,7 @@ export const ChatEmptyState = React.memo(function ChatEmptyState({
               maxWidth: 440,
             }}
           >
-            {ASK_SUGGESTIONS.map(suggestion => (
+            {suggestions.map(suggestion => (
               <Chip
                 key={suggestion}
                 label={suggestion}
@@ -155,7 +160,7 @@ export const ChatEmptyState = React.memo(function ChatEmptyState({
               maxWidth: 380,
             }}
           >
-            {ASK_SUGGESTIONS.map(suggestion => (
+            {suggestions.map(suggestion => (
               <ButtonBase
                 key={suggestion}
                 disabled={disabled}

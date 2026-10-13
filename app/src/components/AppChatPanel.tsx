@@ -1,37 +1,52 @@
 /**
  * "Chat with app": the chat beside a published app on its viewer page.
  *
- * A slim sibling of Chat.tsx — no consoles, tabs, model picker or client
- * tools. Every turn goes to the closed `app_chat` agent with the app's id, so
- * the server answers only from this app's published data, and only for
- * someone who can read the app. Chats are kept per viewer, per app.
+ * Built from Chat.tsx's own pieces — the same header, empty state, message
+ * list, composer and history menu — so it looks and behaves like Mako's chat.
+ * What it leaves out is everything workspace-bound: consoles, tabs, client
+ * tools, the model picker and attachments. Every turn goes to the closed
+ * `app_chat` agent with the app's id, so the server answers only from this
+ * app's published data, and only for someone who can read the app. Chats are
+ * kept per viewer, per app.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
 import {
   Alert,
   Box,
-  Button,
   IconButton,
-  ListItemText,
-  Menu,
-  MenuItem,
-  TextField,
+  Snackbar,
   Tooltip,
   Typography,
   useTheme,
 } from "@mui/material";
-import { ArrowUp, History, Plus, Square, X } from "lucide-react";
+import { ChevronDown, History, Plus, X } from "lucide-react";
 import {
   appViewerKey,
   useAppViewerStore,
   type AppChatSummary,
 } from "../store/appViewerStore";
 import { generateObjectId } from "../utils/objectId";
-import { ChatMessageRow } from "./chat/ChatMessageRow";
+import { useIsMobile } from "../hooks/useIsMobile";
+import { useConfirm } from "./ConfirmDialog";
+import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
+import { ChatMessageErrorBoundary } from "./chat/ChatMessageErrorBoundary";
+import { ChatEmptyState } from "./chat/ChatEmptyState";
+import { ChatInputArea } from "./chat/ChatInputArea";
+import { ChatHistoryMenu } from "./chat/ChatHistoryMenu";
 import { ToolDetailsDialog } from "./chat/ToolDetailsDialog";
 import { convertStoredMessages } from "./chat/convert-stored-messages";
+import { useChatScroll } from "./chat/hooks/useChatScroll";
+import type { ChatSessionMeta } from "./chat/hooks/useChatSessions";
+import type { ChatMessageRowProps } from "./chat-message-comparator";
 import type { ToolInvocationInfo } from "./chat/tool-presentation";
 
 interface AppChatPanelProps {
@@ -47,11 +62,33 @@ const SUGGESTIONS = [
   "Summarize what this app shows",
   "What stands out in the data?",
   "How are the main numbers calculated?",
-];
+] as const;
+
+// Same bridge as Chat.tsx: Virtuoso types `List`'s ref as a LegacyRef.
+const messageVirtuosoComponents: Components<ChatMessageRowProps["message"]> = {
+  List: MessageVirtuosoList as Components<
+    ChatMessageRowProps["message"]
+  >["List"],
+};
 
 const EMPTY_ICONS: ReadonlyMap<string, string> = new Map();
 const EMPTY_HISTORY: AppChatSummary[] = [];
 const noop = () => undefined;
+
+/** A server error body (JSON envelope or text) as one readable line. */
+function readableError(message: string): string {
+  try {
+    const parsed = JSON.parse(message) as {
+      message?: unknown;
+      error?: unknown;
+    };
+    if (typeof parsed.message === "string") return parsed.message;
+    if (typeof parsed.error === "string") return parsed.error;
+  } catch {
+    // Not JSON.
+  }
+  return message || "Something went wrong. Try again.";
+}
 
 export function AppChatPanel({
   workspaceId,
@@ -62,6 +99,8 @@ export function AppChatPanel({
 }: AppChatPanelProps) {
   const theme = useTheme();
   const paletteMode = theme.palette.mode;
+  const isMobile = useIsMobile();
+  const confirm = useConfirm();
   const [chatId, setChatId] = useState(generateObjectId);
   const chatIdRef = useRef(chatId);
   chatIdRef.current = chatId;
@@ -69,21 +108,21 @@ export function AppChatPanel({
   getAppSearchRef.current = getAppSearch;
   // A chat picked from history whose messages still have to be loaded.
   const pendingLoadRef = useRef<string | null>(null);
+  const [focusKey, setFocusKey] = useState(0);
 
-  const history: AppChatSummary[] =
+  const history =
     useAppViewerStore(s => s.chatsByApp[appViewerKey(workspaceId, appId)]) ??
     EMPTY_HISTORY;
   const fetchChats = useAppViewerStore(s => s.fetchChats);
   const loadChat = useAppViewerStore(s => s.loadChat);
   const stopChat = useAppViewerStore(s => s.stopChat);
+  const deleteChat = useAppViewerStore(s => s.deleteChat);
   const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
-  const [input, setInput] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [toolDetails, setToolDetails] = useState<ToolInvocationInfo | null>(
     null,
   );
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const pinnedToBottomRef = useRef(true);
 
   const fetchHistory = useCallback(
     () => fetchChats(workspaceId, appId),
@@ -93,6 +132,18 @@ export function AppChatPanel({
   useEffect(() => {
     void fetchHistory();
   }, [fetchHistory]);
+
+  // ChatHistoryMenu speaks the workspace chat list's shape.
+  const sessions: ChatSessionMeta[] = useMemo(
+    () =>
+      history.map(chat => ({
+        _id: chat.id,
+        title: chat.title,
+        updatedAt: chat.updatedAt,
+        activeStreamId: chat.streaming ? "streaming" : null,
+      })),
+    [history],
+  );
 
   const transport = useMemo(
     () =>
@@ -158,24 +209,21 @@ export function AppChatPanel({
   }, [chatId, workspaceId, loadChat, setMessages, resumeStream]);
 
   const isLoading = status === "streaming" || status === "submitted";
+  const isLoadingRef = useRef(isLoading);
+  isLoadingRef.current = isLoading;
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  const { isAtBottom, setIsAtBottom, scrollerElRef, handleListHeightChanged } =
+    useChatScroll({ isLoading, isLoadingRef, virtuosoRef });
 
-  // Follow the conversation while the reader is at the bottom.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el && pinnedToBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [messages, status]);
-
-  const send = useCallback(
+  const handleSubmit = useCallback(
     (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || isLoading) return;
+      if (!trimmed || isLoadingRef.current) return;
       clearError();
       setLoadError(null);
-      pinnedToBottomRef.current = true;
       void sendMessage({ text: trimmed });
-      setInput("");
     },
-    [clearError, isLoading, sendMessage],
+    [clearError, sendMessage],
   );
 
   const handleStop = useCallback(() => {
@@ -184,30 +232,52 @@ export function AppChatPanel({
   }, [stop, stopChat]);
 
   const startNewChat = useCallback(() => {
-    if (isLoading) void stop();
+    if (isLoadingRef.current) void stop();
+    clearError();
     setLoadError(null);
     setChatId(generateObjectId());
-  }, [isLoading, stop]);
+    setFocusKey(k => k + 1);
+  }, [clearError, stop]);
 
   const openChat = useCallback(
     (id: string) => {
       setHistoryAnchor(null);
       if (id === chatIdRef.current) return;
-      if (isLoading) void stop();
+      if (isLoadingRef.current) void stop();
+      clearError();
       setLoadError(null);
       pendingLoadRef.current = id;
       setChatId(id);
     },
-    [isLoading, stop],
+    [clearError, stop],
   );
 
-  const errorText =
-    loadError ??
-    (error
-      ? /403|404|Cannot access/i.test(error.message)
-        ? "You no longer have access to this app's chat."
-        : "Something went wrong. Try again."
-      : null);
+  const handleDelete = useCallback(
+    async (id: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      const ok = await confirm({
+        title: "Delete this chat?",
+        body: "The conversation and its history are removed for good.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
+      if (!ok) return;
+      if (!(await deleteChat(workspaceId, appId, id))) {
+        setActionError("Could not delete that chat. Please try again.");
+        return;
+      }
+      if (id === chatIdRef.current) startNewChat();
+    },
+    [appId, confirm, deleteChat, startNewChat, workspaceId],
+  );
+
+  const isSessionStreaming = useCallback(
+    (session: ChatSessionMeta) =>
+      session._id === chatId ? isLoading : Boolean(session.activeStreamId),
+    [chatId, isLoading],
+  );
+
+  const errorText = loadError ?? (error ? readableError(error.message) : null);
 
   return (
     <Box
@@ -219,175 +289,195 @@ export function AppChatPanel({
         bgcolor: "background.paper",
       }}
     >
+      {/* Header — Chat.tsx's, titled for the app. */}
       <Box
         sx={{
+          px: 1,
+          py: isMobile ? 0.75 : 0.25,
+          minHeight: isMobile ? 52 : 37,
+          borderBottom: 1,
+          borderColor: "divider",
           display: "flex",
           alignItems: "center",
           gap: 0.5,
-          px: 1.5,
-          py: 1,
-          borderBottom: 1,
-          borderColor: "divider",
         }}
       >
-        <Typography variant="subtitle2" noWrap sx={{ flex: 1, minWidth: 0 }}>
-          Ask about {appTitle}
+        <Typography
+          variant="h6"
+          sx={{
+            flexGrow: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          Ask {appTitle}
         </Typography>
-        <Tooltip title="Previous conversations">
-          <span>
-            <IconButton
-              size="small"
-              aria-label="Previous conversations"
-              disabled={history.length === 0}
-              onClick={e => setHistoryAnchor(e.currentTarget)}
-            >
-              <History size={16} />
-            </IconButton>
-          </span>
+        <Tooltip title="New chat">
+          <IconButton size="small" aria-label="New chat" onClick={startNewChat}>
+            <Plus size={20} />
+          </IconButton>
         </Tooltip>
-        <Tooltip title="New conversation">
+        <Tooltip title="Chat history">
           <IconButton
             size="small"
-            aria-label="New conversation"
-            onClick={startNewChat}
+            aria-label="Chat history"
+            onClick={e => setHistoryAnchor(e.currentTarget)}
           >
-            <Plus size={16} />
+            <History size={20} />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Close">
+        <Tooltip title="Close chat">
           <IconButton size="small" aria-label="Close chat" onClick={onClose}>
-            <X size={16} />
+            <X size={20} />
           </IconButton>
         </Tooltip>
-        <Menu
-          anchorEl={historyAnchor}
-          open={!!historyAnchor}
-          onClose={() => setHistoryAnchor(null)}
-          slotProps={{ paper: { sx: { maxHeight: 360, width: 300 } } }}
-        >
-          {history.map(chat => (
-            <MenuItem
-              key={chat.id}
-              selected={chat.id === chatId}
-              onClick={() => openChat(chat.id)}
-            >
-              <ListItemText
-                primary={chat.title}
-                secondary={new Date(chat.updatedAt).toLocaleString()}
-                slotProps={{
-                  primary: { noWrap: true, variant: "body2" },
-                  secondary: { variant: "caption" },
-                }}
-              />
-            </MenuItem>
-          ))}
-        </Menu>
       </Box>
 
-      <Box
-        ref={scrollRef}
-        onScroll={e => {
-          const el = e.currentTarget;
-          pinnedToBottomRef.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-        }}
-        sx={{ flex: 1, minHeight: 0, overflowY: "auto", px: 2, py: 1 }}
-      >
-        {messages.length === 0 ? (
-          <Box sx={{ pt: 4, display: "flex", flexDirection: "column", gap: 1 }}>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              Ask a question about this app. Answers come from the data the app
-              has published.
-            </Typography>
-            {SUGGESTIONS.map(suggestion => (
-              <Button
-                key={suggestion}
-                variant="outlined"
-                size="small"
-                onClick={() => send(suggestion)}
-                sx={{ justifyContent: "flex-start", textTransform: "none" }}
-              >
-                {suggestion}
-              </Button>
-            ))}
-          </Box>
-        ) : (
-          messages.map((message, index) => (
-            <ChatMessageRow
-              key={message.id}
-              message={
-                message as unknown as Parameters<
-                  typeof ChatMessageRow
-                >[0]["message"]
-              }
-              isLastMessage={index === messages.length - 1}
-              isStreaming={isLoading && index === messages.length - 1}
-              onToolClick={setToolDetails}
-              onConsoleTitleClick={noop}
-              onMcpApprovalResponse={noop}
-              connectionIconById={EMPTY_ICONS}
-              paletteMode={paletteMode}
-            />
-          ))
-        )}
-        {errorText && (
-          <Alert severity="error" sx={{ mt: 2 }}>
+      <ChatHistoryMenu
+        anchorEl={historyAnchor}
+        open={!!historyAnchor}
+        onClose={() => setHistoryAnchor(null)}
+        sessions={sessions}
+        currentChatId={chatId}
+        isSessionStreaming={isSessionStreaming}
+        onSelect={openChat}
+        onDelete={(id, e) => void handleDelete(id, e)}
+      />
+
+      {errorText && (
+        <Box sx={{ p: 1 }}>
+          <Alert
+            severity="error"
+            onClose={() => {
+              clearError();
+              setLoadError(null);
+            }}
+            sx={{ fontSize: "0.875rem" }}
+          >
             {errorText}
           </Alert>
+        </Box>
+      )}
+
+      {/* Messages — the same virtual list, rows and scroll pinning as Chat. */}
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          position: "relative",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        {messages.length === 0 && (
+          <ChatEmptyState
+            isMobile={isMobile}
+            disabled={false}
+            onSelect={handleSubmit}
+            title={`Ask ${appTitle}`}
+            subtitle="Ask a question in plain English — answers come from the data this app has published."
+            suggestions={SUGGESTIONS}
+          />
+        )}
+
+        <Virtuoso<ChatMessageRowProps["message"]>
+          ref={virtuosoRef}
+          data={messages as unknown as ChatMessageRowProps["message"][]}
+          computeItemKey={(_index, message) => message.id}
+          followOutput={false}
+          scrollerRef={el => {
+            scrollerElRef.current = el;
+          }}
+          totalListHeightChanged={handleListHeightChanged}
+          initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+          atBottomStateChange={setIsAtBottom}
+          atBottomThreshold={120}
+          increaseViewportBy={{ top: 600, bottom: 900 }}
+          components={messageVirtuosoComponents}
+          style={{ flex: 1, paddingBottom: 24 }}
+          itemContent={(msgIdx, message) => (
+            <ChatMessageErrorBoundary
+              messageId={message.id}
+              messageRevision={message}
+            >
+              <ChatMessageRow
+                message={message}
+                isLastMessage={msgIdx === messages.length - 1}
+                isStreaming={status === "streaming"}
+                onToolClick={setToolDetails}
+                onConsoleTitleClick={noop}
+                onMcpApprovalResponse={noop}
+                connectionIconById={EMPTY_ICONS}
+                paletteMode={paletteMode}
+              />
+            </ChatMessageErrorBoundary>
+          )}
+        />
+
+        {!isAtBottom && messages.length > 0 && (
+          <Tooltip title="Scroll to latest" placement="top">
+            <IconButton
+              aria-label="Scroll to latest message"
+              onClick={() =>
+                virtuosoRef.current?.scrollToIndex({
+                  index: messages.length - 1,
+                  align: "end",
+                  behavior: "smooth",
+                })
+              }
+              size="small"
+              sx={{
+                position: "absolute",
+                bottom: 8,
+                left: "50%",
+                transform: "translateX(-50%)",
+                zIndex: 1,
+                backgroundColor: "background.paper",
+                border: 1,
+                borderColor: "divider",
+                boxShadow: 2,
+                "&:hover": { backgroundColor: "action.hover" },
+                width: 32,
+                height: 32,
+              }}
+            >
+              <ChevronDown size={18} />
+            </IconButton>
+          </Tooltip>
         )}
       </Box>
 
-      <Box
-        component="form"
-        onSubmit={e => {
-          e.preventDefault();
-          send(input);
-        }}
-        sx={{
-          display: "flex",
-          alignItems: "flex-end",
-          gap: 1,
-          p: 1.5,
-          borderTop: 1,
-          borderColor: "divider",
-        }}
+      <ChatInputArea
+        onSubmit={handleSubmit}
+        onStop={handleStop}
+        isLoading={isLoading}
+        disabled={false}
+        focusKey={focusKey}
+        chatId={chatId}
+        paletteMode={paletteMode}
+        editingPrompt={null}
+        onCancelEdit={noop}
+        placeholder={`Ask about ${appTitle}...`}
+        showModelControls={false}
+        allowAttachments={false}
+      />
+
+      <Snackbar
+        open={actionError !== null}
+        autoHideDuration={5000}
+        onClose={() => setActionError(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       >
-        <TextField
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => {
-            if (
-              e.key === "Enter" &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing
-            ) {
-              e.preventDefault();
-              send(input);
-            }
-          }}
-          placeholder="Ask a question…"
-          multiline
-          maxRows={6}
-          size="small"
-          fullWidth
-          autoFocus
-          slotProps={{ htmlInput: { "aria-label": "Ask a question" } }}
-        />
-        {isLoading ? (
-          <IconButton aria-label="Stop" onClick={handleStop} color="primary">
-            <Square size={16} />
-          </IconButton>
-        ) : (
-          <IconButton
-            aria-label="Send"
-            type="submit"
-            color="primary"
-            disabled={!input.trim()}
-          >
-            <ArrowUp size={18} />
-          </IconButton>
-        )}
-      </Box>
+        <Alert
+          severity="error"
+          variant="filled"
+          onClose={() => setActionError(null)}
+        >
+          {actionError}
+        </Alert>
+      </Snackbar>
 
       <ToolDetailsDialog
         open={!!toolDetails}
