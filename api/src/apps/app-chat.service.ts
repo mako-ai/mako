@@ -92,7 +92,8 @@ export async function authorizeAppChat(
       error: "This app has not been published yet",
     };
   }
-  if (project.chatEnabled === false) {
+  // Off unless the owner turned it on (Share dialog).
+  if (project.chatEnabled !== true) {
     return {
       ok: false,
       status: 403,

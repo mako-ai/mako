@@ -5464,8 +5464,8 @@ export interface IAppProject extends Document {
   /** Commit SHA of the last published deployment (§13.3). */
   publishedSha?: string;
   /**
-   * "Chat with app" on the live link. Unset = on; `false` turns the chat
-   * off for everyone viewing the app (set from the Share dialog).
+   * "Chat with app" on the live link. Off unless `true` — the owner (or a
+   * workspace admin) opts each app in from the Share dialog.
    */
   chatEnabled?: boolean;
   /** When publishedSha was last repointed (publish or rollback). */

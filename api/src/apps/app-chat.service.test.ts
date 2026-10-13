@@ -42,6 +42,7 @@ function app(overrides: Partial<IAppProject> = {}): IAppProject {
     owner_id: "owner",
     sharedWith: [],
     publishedSha: "abc123",
+    chatEnabled: true,
     ...overrides,
   } as unknown as IAppProject;
 }
@@ -90,6 +91,15 @@ describe("authorizeAppChat", () => {
     expect(await authorizeAppChat(WS, "sales", "u1")).toMatchObject({
       ok: false,
       status: 400,
+    });
+  });
+
+  it("is off until the owner turns it on", async () => {
+    resolveProjectRef.mockResolvedValue(app({ chatEnabled: undefined }));
+    getMember.mockResolvedValue({ role: "member" });
+    expect(await authorizeAppChat(WS, "sales", "u1")).toMatchObject({
+      ok: false,
+      status: 403,
     });
   });
 

@@ -86,7 +86,7 @@ export const useAppViewerStore = create<AppViewerStoreState>()(
         const viewUrl = (token.data as { url?: string } | undefined)?.url;
         const chatEnabled =
           (meta.data as { app?: { chatEnabled?: boolean } } | undefined)?.app
-            ?.chatEnabled !== false;
+            ?.chatEnabled === true;
         if (!meta.response.ok || !token.response.ok || !viewUrl) {
           const error = openError(meta.response.status, token.response.status);
           set(s => {

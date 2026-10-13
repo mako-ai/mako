@@ -117,7 +117,7 @@ export default function AppViewerPage() {
       ? {
           title: viewer.title ?? "App",
           viewUrl: viewer.viewUrl,
-          chatEnabled: viewer.chatEnabled !== false,
+          chatEnabled: viewer.chatEnabled === true,
         }
       : null;
   const error = viewer?.status === "error" ? viewer.error : null;

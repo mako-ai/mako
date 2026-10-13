@@ -324,7 +324,7 @@ function toProjectJson(
     defaultBranch: p.defaultBranch,
     publishedSha: p.publishedSha,
     publishedAt: p.publishedAt,
-    chatEnabled: p.chatEnabled !== false,
+    chatEnabled: p.chatEnabled === true,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
@@ -774,7 +774,7 @@ appsRoutes.openapi(
             publicShare: serializePublicShare(state?.publicShare),
             publishedSha: state?.publishedSha,
             publishedAt: state?.publishedAt,
-            chatEnabled: state?.chatEnabled !== false,
+            chatEnabled: state?.chatEnabled === true,
             // A copied app that still declares its source's id: the index
             // filed it under its own derived id; the UI offers to stamp one.
             duplicateOf: folder.duplicateOf,

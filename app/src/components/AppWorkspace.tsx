@@ -1832,7 +1832,7 @@ export default function AppWorkspace({
           access={app.access ?? "workspace"}
           workspaceRole={app.workspaceRole ?? "viewer"}
           publicShare={app.publicShare}
-          chatEnabled={app.chatEnabled !== false}
+          chatEnabled={app.chatEnabled === true}
           canManage={
             !app.owner_id || app.owner_id === user?.id || isWorkspaceAdmin
           }

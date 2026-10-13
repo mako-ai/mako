@@ -23,7 +23,7 @@ describe("appViewerStore.openViewer", () => {
   });
 
   it("holds the published app's title and view URL", async () => {
-    GET.mockResolvedValue(ok({ app: { title: "Sales" } }));
+    GET.mockResolvedValue(ok({ app: { title: "Sales", chatEnabled: true } }));
     POST.mockResolvedValue(ok({ url: "/api/apps-preview/tok/" }));
     await useAppViewerStore.getState().openViewer("ws", "sales");
     expect(useAppViewerStore.getState().viewerByApp[KEY]).toEqual({
@@ -34,8 +34,8 @@ describe("appViewerStore.openViewer", () => {
     });
   });
 
-  it("reports chat as off when the owner turned it off", async () => {
-    GET.mockResolvedValue(ok({ app: { title: "Sales", chatEnabled: false } }));
+  it("reports chat as off unless the owner turned it on", async () => {
+    GET.mockResolvedValue(ok({ app: { title: "Sales" } }));
     POST.mockResolvedValue(ok({ url: "/api/apps-preview/tok/" }));
     await useAppViewerStore.getState().openViewer("ws", "sales");
     expect(useAppViewerStore.getState().viewerByApp[KEY]?.chatEnabled).toBe(

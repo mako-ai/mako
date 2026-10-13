@@ -255,7 +255,7 @@ export default function ShareDialog({
   access: accessProp,
   workspaceRole: workspaceRoleProp,
   publicShare: publicShareProp,
-  chatEnabled: chatEnabledProp = true,
+  chatEnabled: chatEnabledProp = false,
   canManage = false,
   onSharingChanged,
 }: ShareDialogProps) {

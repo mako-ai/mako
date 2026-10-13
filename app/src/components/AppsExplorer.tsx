@@ -1560,7 +1560,7 @@ export default function AppsExplorer() {
           access={shareApp.access ?? "workspace"}
           workspaceRole={shareApp.workspaceRole ?? "viewer"}
           publicShare={shareApp.publicShare}
-          chatEnabled={shareApp.chatEnabled !== false}
+          chatEnabled={shareApp.chatEnabled === true}
           canManage={
             !shareApp.owner_id ||
             shareApp.owner_id === userId ||
