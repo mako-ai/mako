@@ -80,7 +80,11 @@ export default function AppViewerPage() {
   const openViewer = useAppViewerStore(s => s.openViewer);
   const app =
     viewer?.status === "ready" && viewer.viewUrl
-      ? { title: viewer.title ?? "App", viewUrl: viewer.viewUrl }
+      ? {
+          title: viewer.title ?? "App",
+          viewUrl: viewer.viewUrl,
+          chatEnabled: viewer.chatEnabled !== false,
+        }
       : null;
   const error = viewer?.status === "error" ? viewer.error : null;
   const [frameLoaded, setFrameLoaded] = useState(false);
@@ -204,7 +208,7 @@ export default function AppViewerPage() {
             <CircularProgress />
           </Box>
         )}
-        {app && !chatOpen && (
+        {app?.chatEnabled && !chatOpen && (
           <Fab
             variant="extended"
             color="primary"
@@ -217,7 +221,7 @@ export default function AppViewerPage() {
           </Fab>
         )}
       </Box>
-      {app && chatOpen && (
+      {app?.chatEnabled && chatOpen && (
         <Box
           sx={
             isMobile

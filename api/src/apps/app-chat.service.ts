@@ -92,6 +92,13 @@ export async function authorizeAppChat(
       error: "This app has not been published yet",
     };
   }
+  if (project.chatEnabled === false) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Chat is turned off for this app",
+    };
+  }
   const folder = await resolveAppRef(workspaceId, project._id.toString()).catch(
     () => null,
   );

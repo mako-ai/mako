@@ -138,6 +138,8 @@ export interface AppMeta {
   workspaceRole?: "viewer" | "editor";
   /** Safe public-link metadata; password material never leaves the API. */
   publicShare?: PublicShareInfo;
+  /** Whether live-link viewers can chat with the app (default on). */
+  chatEnabled?: boolean;
 }
 
 export interface AppFileEntry {

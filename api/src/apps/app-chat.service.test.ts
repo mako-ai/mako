@@ -93,6 +93,16 @@ describe("authorizeAppChat", () => {
     });
   });
 
+  it("refuses when the app's chat is turned off", async () => {
+    resolveProjectRef.mockResolvedValue(app({ chatEnabled: false }));
+    getMember.mockResolvedValue({ role: "member" });
+    expect(await authorizeAppChat(WS, "sales", "u1")).toMatchObject({
+      ok: false,
+      status: 403,
+      error: "Chat is turned off for this app",
+    });
+  });
+
   it("404s an unknown app and 400s a missing id", async () => {
     resolveProjectRef.mockResolvedValue(null);
     expect(await authorizeAppChat(WS, "nope", "u1")).toMatchObject({

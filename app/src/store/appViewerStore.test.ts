@@ -30,7 +30,17 @@ describe("appViewerStore.openViewer", () => {
       status: "ready",
       title: "Sales",
       viewUrl: "/api/apps-preview/tok/",
+      chatEnabled: true,
     });
+  });
+
+  it("reports chat as off when the owner turned it off", async () => {
+    GET.mockResolvedValue(ok({ app: { title: "Sales", chatEnabled: false } }));
+    POST.mockResolvedValue(ok({ url: "/api/apps-preview/tok/" }));
+    await useAppViewerStore.getState().openViewer("ws", "sales");
+    expect(useAppViewerStore.getState().viewerByApp[KEY]?.chatEnabled).toBe(
+      false,
+    );
   });
 
   it("says the app is unpublished when only the token is refused", async () => {

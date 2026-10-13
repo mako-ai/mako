@@ -59,12 +59,15 @@ export interface ShareDialogProps {
   access?: ShareAccess;
   workspaceRole?: ShareRole;
   publicShare?: PublicShareInfo;
+  /** Apps only: whether viewers of the live link can chat with the app. */
+  chatEnabled?: boolean;
   /** Whether the current user can manage sharing (owner or workspace admin). */
   canManage?: boolean;
   onSharingChanged?: (changes: {
     access?: ShareAccess;
     workspaceRole?: ShareRole;
     publicShare?: PublicShareInfo;
+    chatEnabled?: boolean;
   }) => void;
 }
 
@@ -252,6 +255,7 @@ export default function ShareDialog({
   access: accessProp,
   workspaceRole: workspaceRoleProp,
   publicShare: publicShareProp,
+  chatEnabled: chatEnabledProp = true,
   canManage = false,
   onSharingChanged,
 }: ShareDialogProps) {
@@ -275,6 +279,7 @@ export default function ShareDialog({
   const updatePublicShare = useShareStore(s => s.updatePublicShare);
   const disablePublicShare = useShareStore(s => s.disablePublicShare);
   const getPublicSharePassword = useShareStore(s => s.getPublicSharePassword);
+  const updateAppChat = useShareStore(s => s.updateAppChat);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -285,6 +290,7 @@ export default function ShareDialog({
   const [publicShare, setPublicShare] = useState<PublicShareInfo>(
     publicShareProp ?? { enabled: false },
   );
+  const [chatEnabled, setChatEnabled] = useState(chatEnabledProp);
   const [password, setPassword] = useState("");
   const [copied, setCopied] = useState(false);
   const [internalCopied, setInternalCopied] = useState(false);
@@ -320,6 +326,7 @@ export default function ShareDialog({
     setAccess(accessProp ?? "private");
     setWorkspaceRole(workspaceRoleProp ?? "viewer");
     setPublicShare(publicShareProp ?? { enabled: false });
+    setChatEnabled(chatEnabledProp);
     void loadMembers();
     if (workspaceId && resourceId) {
       void loadCollaborators(resourceType, workspaceId, resourceId);
@@ -544,6 +551,19 @@ export default function ShareDialog({
       if (result.ok && result.publicShare) {
         setPublicShare(result.publicShare);
         onSharingChanged?.({ publicShare: result.publicShare });
+      }
+      return result;
+    });
+  };
+
+  // Apps only: the "Ask" chat on the live link's viewer page.
+  const handleChatEnabled = async (enabled: boolean) => {
+    if (!workspaceId || !resourceId) return;
+    await run(async () => {
+      const result = await updateAppChat(workspaceId, resourceId, enabled);
+      if (result.ok) {
+        setChatEnabled(enabled);
+        onSharingChanged?.({ chatEnabled: enabled });
       }
       return result;
     });
@@ -960,6 +980,36 @@ export default function ShareDialog({
                   }}
                 />
               )}
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                mt: 2,
+              }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="body2" sx={{ display: "block" }}>
+                  Let viewers chat with this app
+                </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{ color: "text.secondary", display: "block" }}
+                >
+                  Adds an Ask button to the live link. Answers come only from
+                  the app&apos;s published data.
+                </Typography>
+              </Box>
+              <Switch
+                size="small"
+                checked={chatEnabled}
+                disabled={!canManage || busy}
+                slotProps={{
+                  input: { "aria-label": "Let viewers chat with this app" },
+                }}
+                onChange={e => void handleChatEnabled(e.target.checked)}
+              />
+            </Box>
           </>
         ) : (
           <>

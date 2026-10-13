@@ -4818,6 +4818,23 @@ export interface paths {
         patch: operations["patch_api_workspaces_workspaceId_apps_id_sharing"];
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/{id}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Turn chat with a published app on or off */
+        patch: operations["patch_api_workspaces_workspaceId_apps_id_chat"];
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps/{id}/public-share": {
         parameters: {
             query?: never;
@@ -21703,6 +21720,53 @@ export interface operations {
                     access?: "private" | "workspace";
                     /** @enum {string} */
                     workspaceRole?: "viewer" | "editor";
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_apps_id_chat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enabled: boolean;
                 };
             };
         };

@@ -11,6 +11,8 @@ export interface AppViewerState {
   title?: string;
   /** Cookie-free view-token URL for the sandboxed iframe. */
   viewUrl?: string;
+  /** Whether the app's owner allows chatting with it. */
+  chatEnabled?: boolean;
   error?: string;
 }
 
@@ -82,6 +84,9 @@ export const useAppViewerStore = create<AppViewerStoreState>()(
           (meta.data as { app?: { title?: string } } | undefined)?.app?.title ||
           "App";
         const viewUrl = (token.data as { url?: string } | undefined)?.url;
+        const chatEnabled =
+          (meta.data as { app?: { chatEnabled?: boolean } } | undefined)?.app
+            ?.chatEnabled !== false;
         if (!meta.response.ok || !token.response.ok || !viewUrl) {
           const error = openError(meta.response.status, token.response.status);
           set(s => {
@@ -90,7 +95,7 @@ export const useAppViewerStore = create<AppViewerStoreState>()(
           return;
         }
         set(s => {
-          s.viewerByApp[key] = { status: "ready", title, viewUrl };
+          s.viewerByApp[key] = { status: "ready", title, viewUrl, chatEnabled };
         });
       } catch {
         set(s => {

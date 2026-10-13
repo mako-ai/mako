@@ -324,6 +324,7 @@ function toProjectJson(
     defaultBranch: p.defaultBranch,
     publishedSha: p.publishedSha,
     publishedAt: p.publishedAt,
+    chatEnabled: p.chatEnabled !== false,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
@@ -773,6 +774,7 @@ appsRoutes.openapi(
             publicShare: serializePublicShare(state?.publicShare),
             publishedSha: state?.publishedSha,
             publishedAt: state?.publishedAt,
+            chatEnabled: state?.chatEnabled !== false,
             // A copied app that still declares its source's id: the index
             // filed it under its own derived id; the UI offers to stamp one.
             duplicateOf: folder.duplicateOf,
@@ -3485,6 +3487,59 @@ registerSharingSettingsRoutes(appsRoutes, {
   resourceName: "App",
   load: loadShareableApp,
 });
+
+// "Chat with app" on/off — beside the other link settings, with the same
+// gate: the owner or a workspace admin.
+appsRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/{id}/chat",
+    tags: ["Apps"],
+    summary: "Turn chat with a published app on or off",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ enabled: z.boolean() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const userId = actingUserId(c);
+      if (!userId) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      const { enabled } = c.req.valid("json");
+      const doc = await loadShareableApp(c);
+      if (!doc) {
+        return c.json({ success: false, error: "App not found" }, 404);
+      }
+      const workspaceId = c.req.param("workspaceId") as string;
+      const role = await memberRoleFor(workspaceId, userId);
+      if (!canManageSharing(doc, userId, role)) {
+        return c.json(
+          {
+            success: false,
+            error: "Only the owner or an admin can turn chat on or off",
+          },
+          403,
+        );
+      }
+      doc.chatEnabled = enabled;
+      await doc.save();
+      return c.json({ success: true as const, chatEnabled: enabled }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
 registerPublicShareRoutes(appsRoutes, {
   resourceName: "App",
   load: loadShareableApp,

@@ -1832,6 +1832,7 @@ export default function AppWorkspace({
           access={app.access ?? "workspace"}
           workspaceRole={app.workspaceRole ?? "viewer"}
           publicShare={app.publicShare}
+          chatEnabled={app.chatEnabled !== false}
           canManage={
             !app.owner_id || app.owner_id === user?.id || isWorkspaceAdmin
           }
@@ -1845,6 +1846,9 @@ export default function AppWorkspace({
               }
               if (changes.publicShare) {
                 currentApp.publicShare = changes.publicShare;
+              }
+              if (changes.chatEnabled !== undefined) {
+                currentApp.chatEnabled = changes.chatEnabled;
               }
             });
           }}

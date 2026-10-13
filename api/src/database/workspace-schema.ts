@@ -5463,6 +5463,11 @@ export interface IAppProject extends Document {
   cloudRepo?: { owner: string; repo: string };
   /** Commit SHA of the last published deployment (§13.3). */
   publishedSha?: string;
+  /**
+   * "Chat with app" on the live link. Unset = on; `false` turns the chat
+   * off for everyone viewing the app (set from the Share dialog).
+   */
+  chatEnabled?: boolean;
   /** When publishedSha was last repointed (publish or rollback). */
   publishedAt?: Date;
   /**
@@ -5527,6 +5532,7 @@ const AppProjectSchema = new Schema<IAppProject>(
       default: undefined,
     },
     publishedSha: { type: String },
+    chatEnabled: { type: Boolean },
     publishedAt: { type: Date },
     lastDeployError: {
       type: new Schema(

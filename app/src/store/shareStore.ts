@@ -171,6 +171,12 @@ interface ShareStoreState {
     workspaceId: string,
     resourceId: string,
   ) => Promise<Result>;
+  /** Apps only: turn "chat with app" on the live link on or off. */
+  updateAppChat: (
+    workspaceId: string,
+    appId: string,
+    enabled: boolean,
+  ) => Promise<Result>;
   /** Owner/admin only: reveal the public link password in plain text. */
   getPublicSharePassword: (
     type: ShareResourceType,
@@ -310,6 +316,23 @@ export const useShareStore = create<ShareStoreState>()(
         return {
           ok: false,
           error: errMessage(error, "Failed to enable public sharing"),
+        };
+      }
+    },
+
+    updateAppChat: async (workspaceId, appId, enabled) => {
+      try {
+        unwrap(
+          await api.PATCH("/api/workspaces/{workspaceId}/apps/{id}/chat", {
+            params: { path: { workspaceId, id: appId } },
+            body: { enabled },
+          }),
+        );
+        return { ok: true };
+      } catch (error) {
+        return {
+          ok: false,
+          error: errMessage(error, "Failed to update chat setting"),
         };
       }
     },
