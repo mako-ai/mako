@@ -6,6 +6,7 @@ import { dev } from "./dev.js";
 import { status } from "./status.js";
 import { publish } from "./publish.js";
 import { connector } from "./connector.js";
+import { connection } from "./connection.js";
 import { dbt } from "./dbt.js";
 import { whoami } from "./whoami.js";
 
@@ -18,8 +19,8 @@ const HELP = `mako — Mako from your terminal
   mako dev     [<app>] [--port <n>] [--open]      run apps/<app> locally with real data
   mako status  [<app>]                            what is LIVE: published commit vs the tip of main
   mako publish [<app>]                            deploy the app's main branch now (enqueue + wait)
-  mako connector test [<path>] [--config <file>]  run a connector's own contract against it
-  mako connector probe <id|name> [--entity <e>]   run a configured connector live: check + one page, written nowhere
+  mako connector test [<path>] [--config <file>]  run a connector's code (connectors/<slug>) against its own contract
+  mako connection probe <id|name> [--entity <e>]  run a configured connection live: check + one page, written nowhere
   mako dbt run|build|test -s <selector> [--env <name>] [--full-refresh] [--no-defer]
                                                   run dbt in Mako's runner on this checkout's dbt/ (uncommitted
                                                   edits included); default: your personal environment
@@ -57,6 +58,8 @@ export async function main(argv, io = { log: console.log }) {
       return publish(ctx, positional, io);
     case "connector":
       return connector(ctx, positional, flags, io);
+    case "connection":
+      return connection(ctx, positional, flags, io);
     case "dbt":
       return dbt(ctx, positional, flags, io);
     default:
