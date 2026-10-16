@@ -65,12 +65,7 @@ export interface FlowFileBackfillSchedule extends FlowFileSchedule {
 
 export interface FlowFile {
   name: string;
-  /**
-   * Retired: read from older files (`type: webhook` with no `webhook:`
-   * stanza means webhooks on) and written back only for a row that still
-   * carries it, so an existing file does not change. Never decides anything.
-   */
-  type?: "scheduled" | "webhook";
+  type: "scheduled" | "webhook";
   source:
     /**
      * A source connection (a credential configured with a connector). On
@@ -215,56 +210,8 @@ function omitEmpty(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-/**
- * Whether two parsed flow files mean the same flow: equal once the retired
- * `type` and a connector flow's `sync.engine` (always CDC) are set aside.
- * Format 1 and format 2 of one flow compare equal.
- */
-export function sameFlowMeaning(a: FlowFile, b: FlowFile): boolean {
-  const norm = (f: FlowFile) => {
-    const { type: _type, ...rest } = f;
-    const o = JSON.parse(JSON.stringify(rest)) as Record<string, any>;
-    if (o.source?.type === "connector" && o.sync) delete o.sync.engine;
-    return JSON.stringify(sortDeep(o));
-  };
-  return norm(a) === norm(b);
-}
-
-function sortDeep(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(sortDeep);
-  if (v && typeof v === "object") {
-    return Object.fromEntries(
-      Object.keys(v as Record<string, unknown>)
-        .sort()
-        .map(k => [k, sortDeep((v as Record<string, unknown>)[k])]),
-    );
-  }
-  return v;
-}
-
-/**
- * The flow file as written today (format 2): triggers are `live` (poll
- * cadence, webhooks on/off) and `resync` (the periodic full re-read). No
- * `type`, and no `sync.engine` for a connector flow (CDC is its only engine).
- * Older files (format 1: `type`, `schedule`, `webhook`, `backfill_schedule`,
- * `sync.engine`) are read forever; see {@link serializeFlowFileV1}.
- */
 export function serializeFlowFile(flow: FlowFile): string {
-  return renderFlowFile(flow, 2);
-}
-
-/**
- * Format 1, as files were written before triggers replaced `type`. Only used
- * to recognise a file on main that already says the same thing in the old
- * words, so it is not rewritten for its format alone (commitFlowFile).
- */
-export function serializeFlowFileV1(flow: FlowFile): string {
-  return renderFlowFile(flow, 1);
-}
-
-function renderFlowFile(flow: FlowFile, format: 1 | 2): string {
-  const doc: Record<string, unknown> = { name: flow.name };
-  if (format === 1 && flow.type) doc.type = flow.type;
+  const doc: Record<string, unknown> = { name: flow.name, type: flow.type };
 
   doc.source =
     flow.source.type === "database"
@@ -300,67 +247,36 @@ function renderFlowFile(flow: FlowFile, format: 1 | 2): string {
       : undefined,
   });
 
-  if (format === 2) {
-    // Live updates: polling (a cron, or off) and, once a flow has had
-    // webhooks switched on, webhooks on or off. Webhooks only add speed:
-    // polling runs whenever it is on.
-    const live: Record<string, unknown> = {
-      poll: flow.schedule ? flow.schedule.cron : "off",
+  if (flow.schedule) {
+    doc.schedule = {
+      cron: flow.schedule.cron,
+      timezone: flow.schedule.timezone,
     };
-    if (flow.schedule) live.timezone = flow.schedule.timezone;
-    if (flow.webhookEnabled !== undefined) {
-      live.webhook = flow.webhookEnabled !== false ? "on" : "off";
-    }
-    if (flow.webhookProviderId) {
-      live.provider_webhook_id = flow.webhookProviderId;
-    }
-    doc.live = live;
-    // The periodic full re-read that repairs whatever live updates missed.
-    doc.resync = flow.backfillSchedule
-      ? {
-          cron: flow.backfillSchedule.cron,
-          timezone: flow.backfillSchedule.timezone,
-          ...(flow.backfillSchedule.entities?.length
-            ? { entities: flow.backfillSchedule.entities }
-            : {}),
-        }
-      : "off";
-  } else {
-    if (flow.schedule) {
-      doc.schedule = {
-        cron: flow.schedule.cron,
-        timezone: flow.schedule.timezone,
-      };
-    }
-    if (flow.backfillSchedule) {
-      doc.backfill_schedule = {
-        cron: flow.backfillSchedule.cron,
-        timezone: flow.backfillSchedule.timezone,
-        ...(flow.backfillSchedule.entities?.length
-          ? { entities: flow.backfillSchedule.entities }
-          : {}),
-      };
-    }
-    // A scheduled flow with webhooks on carries the stanza too; a flow that
-    // never had webhooks switched on writes none.
-    if (flow.webhookEnabled !== undefined) {
-      doc.webhook = {
-        enabled: flow.webhookEnabled !== false,
-        ...(flow.webhookProviderId
-          ? { provider_webhook_id: flow.webhookProviderId }
-          : {}),
-      };
-    }
+  }
+  if (flow.backfillSchedule) {
+    doc.backfill_schedule = {
+      cron: flow.backfillSchedule.cron,
+      timezone: flow.backfillSchedule.timezone,
+      ...(flow.backfillSchedule.entities?.length
+        ? { entities: flow.backfillSchedule.entities }
+        : {}),
+    };
+  }
+  // A scheduled flow with webhooks on carries the stanza too; a flow that
+  // never had webhooks switched on writes none, so its file does not change.
+  if (flow.type === "webhook" || flow.webhookEnabled !== undefined) {
+    doc.webhook = {
+      enabled: flow.webhookEnabled !== false,
+      ...(flow.webhookProviderId
+        ? { provider_webhook_id: flow.webhookProviderId }
+        : {}),
+    };
   }
 
   const sync = omitEmpty({
     mode: flow.sync.mode,
     write_mode: flow.sync.writeMode,
-    // CDC is a connector flow's only engine: format 2 does not repeat it.
-    engine:
-      format === 2 && flow.source.type === "connector"
-        ? undefined
-        : flow.sync.engine,
+    engine: flow.sync.engine,
     delete_mode: flow.sync.deleteMode,
     batch_size: flow.sync.batchSize,
   });
@@ -407,29 +323,6 @@ function scheduleFrom(v: unknown): FlowFileSchedule | null {
   const cron = str(s.cron);
   if (!cron) return null;
   return { cron, timezone: str(s.timezone) ?? "UTC" };
-}
-
-/** `on` / `off` (or a YAML boolean): webhooks on or off. */
-function onOff(v: unknown): boolean | undefined {
-  if (v === true || v === "on") return true;
-  if (v === false || v === "off") return false;
-  return undefined;
-}
-
-/** Format 2 `live.poll`: a cron, or `off`; `live.timezone` beside it. */
-function pollFrom(live: Record<string, unknown>): FlowFileSchedule | null {
-  const poll = live.poll;
-  if (poll === false || poll === "off") return null;
-  const cron = str(poll);
-  if (!cron) return null;
-  return { cron, timezone: str(live.timezone) ?? "UTC" };
-}
-
-/** Format 2 `resync`: `off`, a cron, or { cron, timezone, entities }. */
-function resyncFrom(v: unknown): FlowFileBackfillSchedule | null {
-  if (v === false || v === "off" || v === null || v === undefined) return null;
-  if (typeof v === "string") return { cron: v, timezone: "UTC" };
-  return backfillScheduleFrom(v);
 }
 
 function backfillScheduleFrom(v: unknown): FlowFileBackfillSchedule | null {
@@ -480,10 +373,10 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
         "`name:` is required and must be a non-empty string — it is the flow's display name",
     };
   }
-  if (type && type !== "scheduled" && type !== "webhook") {
+  if (type !== "scheduled" && type !== "webhook") {
     return {
       ok: false,
-      reason: `\`type:\` is retired (triggers are \`schedule\`, \`webhook\` and \`backfill_schedule\`); when present it must be "scheduled" or "webhook", not "${type}"`,
+      reason: `\`type:\` must be "scheduled" or "webhook"${type ? `, not "${type}"` : " and is missing"}`,
     };
   }
 
@@ -533,36 +426,16 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
   const conflictDoc = (doc.conflict ?? {}) as Record<string, unknown>;
   const pageDoc = (doc.pagination ?? {}) as Record<string, unknown>;
   const webhookDoc = doc.webhook as Record<string, unknown> | undefined;
-  const liveDoc =
-    doc.live && typeof doc.live === "object"
-      ? (doc.live as Record<string, unknown>)
-      : undefined;
 
   const file: FlowFile = {
     name,
-    type: type === "scheduled" || type === "webhook" ? type : undefined,
+    type,
     source,
     destination,
-    // Format 2 (`live`, `resync`) when present, else format 1's keys.
-    schedule:
-      liveDoc && "poll" in liveDoc
-        ? pollFrom(liveDoc)
-        : scheduleFrom(doc.schedule),
-    backfillSchedule:
-      "resync" in doc
-        ? resyncFrom(doc.resync)
-        : backfillScheduleFrom(doc.backfill_schedule),
-    // An older file's `type: webhook` with no stanza means webhooks on.
-    webhookEnabled:
-      liveDoc && "webhook" in liveDoc
-        ? onOff(liveDoc.webhook)
-        : webhookDoc
-          ? webhookDoc.enabled !== false
-          : type === "webhook"
-            ? true
-            : undefined,
-    webhookProviderId:
-      str(liveDoc?.provider_webhook_id) ?? str(webhookDoc?.provider_webhook_id),
+    schedule: scheduleFrom(doc.schedule),
+    backfillSchedule: backfillScheduleFrom(doc.backfill_schedule),
+    webhookEnabled: webhookDoc ? webhookDoc.enabled !== false : undefined,
+    webhookProviderId: str(webhookDoc?.provider_webhook_id),
     sync: {
       mode: str(syncDoc.mode),
       writeMode: str(syncDoc.write_mode),

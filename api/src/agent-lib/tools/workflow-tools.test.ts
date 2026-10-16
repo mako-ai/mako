@@ -10,6 +10,10 @@ import mongoose, { Types } from "mongoose";
 
 import { Workspace, WorkspaceMember } from "../../database/workspace-schema";
 import { encryptString } from "../../services/crypto.service";
+import {
+  createSandboxRun,
+  finishSandboxRun,
+} from "../../workflows/sandbox-runs";
 import { createWorkflowTools } from "./workflow-tools";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -83,7 +87,11 @@ const responses: Record<string, unknown> = {
     ],
   },
   [`GET /api/v1/stable/tasks/${TASK}/logs`]: {
-    rows: Array.from({ length: 50 }, (_, i) => ({ message: `line ${i}` })),
+    // In no order, as Hatchet lists them: newest first here.
+    rows: Array.from({ length: 50 }, (_, i) => ({
+      message: `line ${i}`,
+      createdAt: `2026-10-08T09:43:${String(i).padStart(2, "0")}Z`,
+    })).reverse(),
   },
 };
 globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
@@ -191,6 +199,72 @@ async function main() {
     assert.ok(step.error.length < 200, "the stack is cut to its first lines");
     assert.equal(step.logs.length, 20);
     assert.equal(step.logs.at(-1), "line 49");
+    assert.equal(step.logLinesOmitted, 30);
+
+    // `full`: every log line and the whole stack.
+    const whole = await call(tools, "workflows_status", {
+      runId: RUN,
+      full: true,
+    });
+    const [fullStep] = whole.run.steps;
+    assert.equal(fullStep.logs.length, 50);
+    assert.deepEqual(
+      [fullStep.logs[0], fullStep.logs.at(-1)],
+      ["line 0", "line 49"],
+    );
+    assert.equal(fullStep.logLinesOmitted, undefined);
+    assert.ok(fullStep.error.length > 5000, "the whole stack");
+    // An ended run answers at once, wait or not, and is not `running`.
+    const waited = await call(tools, "workflows_status", {
+      runId: RUN,
+      wait: 30,
+    });
+    assert.equal(waited.running, undefined);
+
+    // A sandbox run is the starter's: among their recent runs, readable by
+    // its id, and nobody else's.
+    const sandboxRunId = await createSandboxRun(
+      id.toString(),
+      "member",
+      "daily-digest",
+      { limit: 1 },
+    );
+    await finishSandboxRun(sandboxRunId, {
+      result: { buildError: "error TS2304: Cannot find name 'x'." },
+    });
+    const mine = await call(tools, "workflows_status", {});
+    const listed = mine.recentRuns.find(
+      (r: { runId: string }) => r.runId === sandboxRunId,
+    );
+    assert.deepEqual(
+      [listed?.sandbox, listed?.status, listed?.trigger],
+      [true, "FAILED", "sandbox"],
+    );
+    assert.equal(
+      (await call(admin, "workflows_status", {})).recentRuns.some(
+        (r: { runId: string }) => r.runId === sandboxRunId,
+      ),
+      false,
+    );
+    const read = await call(tools, "workflows_status", {
+      runId: sandboxRunId,
+    });
+    assert.equal(read.run.buildError, "error TS2304: Cannot find name 'x'.");
+    assert.equal(read.run.input, '{"limit":1}');
+    const notTheirs = await call(admin, "workflows_status", {
+      runId: sandboxRunId,
+    });
+    assert.deepEqual(
+      [notTheirs.success, notTheirs.error],
+      [false, "Run not found"],
+    );
+
+    // Without a runId, `wait` waits for the deploy: this one has a build
+    // error, so it has settled and answers at once.
+    const started = Date.now();
+    const deploy = await call(tools, "workflows_status", { wait: 30 });
+    assert.ok(Date.now() - started < 5000);
+    assert.equal(deploy.deploying, undefined);
 
     // A run id is a UUID, nothing else reaches Hatchet's path.
     const before = requests.length;

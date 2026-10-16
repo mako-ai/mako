@@ -46,9 +46,7 @@ const noopToggle = () => undefined;
 
 const classifyFlow = (flow: any): FlowTreeNode["flowKind"] => {
   if (flow.syncEngine === "cdc") return "cdc";
-  if (flow.webhookConfig?.enabled && flow.webhookConfig?.endpoint) {
-    return "webhook";
-  }
+  if (flow.type === "webhook") return "webhook";
   if (flow.sourceType === "database") return "db-sync";
   return "connector";
 };

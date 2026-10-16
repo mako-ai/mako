@@ -79,8 +79,7 @@ const flowSchema = z.object({
   dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseName: z.string().nullable().optional(),
-  /** Retired: display label only (never decides anything); triggers do. */
-  type: z.enum(["scheduled", "webhook"]).optional(),
+  type: z.enum(["scheduled", "webhook"]).optional(), // Remove default to detect missing type
   schedule: flowScheduleSchema,
   webhookConfig: webhookConfigSchema,
   entityFilter: z.array(z.string()).nullable().optional(),

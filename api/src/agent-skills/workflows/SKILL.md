@@ -41,26 +41,38 @@ the file above is `path: "workflow.ts"`.
 Three things, each one verb. **Sandbox**: `workflows_run` with
 `sandbox: true` runs the workflow as it is in your checkout right now,
 uncommitted edits included, inside your sandbox, with real data and no
-schedule, and returns the finished run. **Main**: a commit on main is the
+schedule. **Main**: a commit on main is the
 deploy. **Active**: a deployed workflow starts inactive (schedule and webhook
 off, Run works); an admin switches it on. Like n8n: test, then activate.
 
 1. Write `workflow.ts` with `workflow_write_file` / `workflow_edit_file` and
    `workflowId: "<name>"`. A new name creates the folder. No commit yet.
-2. `workflows_run` with `sandbox: true` and an input. The answer is the run:
-   each step's status, output, error and log lines, or the type errors if
-   the file does not build. About ten seconds plus the workflow's own time.
-3. Fix and repeat from 1 until the run is `COMPLETED`.
-4. `workflow_commit`. On main that is the deploy; `workflows_status` until
-   `deployment.liveSha` is your commit (`deployment.buildError` says why
-   not; the previous version keeps running meanwhile). A member commits to
+2. `workflows_run` with `sandbox: true` and an input. It answers a `runId`
+   at once; the run goes on in your sandbox (about ten seconds plus the
+   workflow's own time, fifteen minutes at most).
+3. `workflows_status({ runId, wait: 90 })`: waits on the server until the
+   run ends and answers it: each step's status, output, error and log lines,
+   or `buildError` with the type errors when the file does not build. While
+   it answers `running: true`, call it again the same way. Never sleep
+   between calls: the wait is the poll.
+4. Fix and repeat from 1 until the run is `COMPLETED`.
+5. `workflow_commit`. On main that is the deploy;
+   `workflows_status({ wait: 90 })` waits until `deployment.liveSha` is
+   your commit or `deployment.buildError` says why not (the previous version
+   keeps running meanwhile); `deploying: true` means not yet, call again. A member commits to
    a branch and asks an admin to merge: only admins put workflows on main.
-5. Ask the user, then `workflows_triggers` with `active: true`: from then on its schedule and
+6. Ask the user, then `workflows_triggers` with `active: true`: from then on its schedule and
    webhook start runs by themselves.
 
 A sandbox run is real: `query` reads real data, and `call` and `agent` act
-as you. Its engine is the sandbox's own, so the run is not in the
-workspace's list and a schedule never fires there.
+as you. Its engine is the sandbox's own, so a schedule never fires there.
+Mako keeps the run: it is among your `recentRuns` (`sandbox: true`, only you
+see it), and `workflows_status({ runId })` reads it again later.
+
+A run's answer is a summary: each text cut at 2000 characters, each step's
+last 20 log lines (`logLinesOmitted` says how many more). For the whole of
+it (an eval report, a long output), `workflows_status({ runId, full: true })`:
+each text up to 1 MB and every log line. A deployed run's too.
 
 Changing an active workflow: the same loop; test in the sandbox, and say
 before committing that the new commit is live as soon as it builds.
@@ -244,7 +256,8 @@ The schedule and the webhook work only while the workflow is **active**
 (`workflows_triggers` with `active: true`, or the switch on its tab). Run and `workflows_run`
 always work. The webhook URL with `?sandbox=<userId>` is a test URL: a POST
 to it runs that person's sandbox version with the body as input and answers
-with the finished run, whether or not the workflow is active.
+with the finished run, whether or not the workflow is active. A run, on
+main or in a sandbox, is followed with `workflows_status({ runId, wait })`.
 
 ## Hatchet's own documentation
 
@@ -262,5 +275,7 @@ markdown (`https://docs.hatchet.run/llms/<section>/<page>.md`).
 | `liveSha` is not `targetSha` after a minute, and no `buildError` | The worker is not running. Tell the user.                                       |
 | A run stays `QUEUED`                                             | No worker has that workflow: its build failed. Check `workflows_status`.        |
 | A sandbox run answers with type errors                           | Your checkout does not typecheck. Fix the file and run again.                   |
+| `running: true` after a wait                                     | The run goes on. Call `workflows_status({ runId, wait: 90 })` again.            |
+| A sandbox run stays `QUEUED`                                     | Another sandbox run of yours has the sandbox; it starts when that one ends.     |
 | The schedule did not fire                                        | The workflow is not active. `workflows_status` shows `active` per workflow.     |
 | Step `FAILED`                                                    | Read that step's `error` and `logs` in `workflows_status({ runId })`.           |

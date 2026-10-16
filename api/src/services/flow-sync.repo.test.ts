@@ -223,10 +223,7 @@ describe("a NEW flow file creates a row", () => {
     });
     expect(row).not.toBeNull();
     expect(row!.createdBy).toBe("user-42");
-    // `type: webhook` in the file is retired: it means webhooks on, and the
-    // row is never given a `type`.
-    expect(row!.type).toBeUndefined();
-    expect(row!.webhookConfig?.enabled).toBe(true);
+    expect(row!.type).toBe("webhook");
     expect(row!._id.toString()).toBe(
       derivedFlowId(WS, "close-to-bigquery").toString(),
     );

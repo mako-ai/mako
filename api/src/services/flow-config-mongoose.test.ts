@@ -138,18 +138,15 @@ async function main(): Promise<void> {
       "the Mongoose default",
     );
     const plain = serializeFlowFile(flowToFile(scheduled));
-    assert.ok(
-      !plain.includes("webhook:"),
-      `no webhook key expected:\n${plain}`,
-    );
+    assert.ok(!plain.includes("webhook:"), `no stanza expected:\n${plain}`);
 
-    // Webhooks switched on (endpoint minted): `live.webhook: on` appears and
-    // the poll stays — polling carries on, webhooks add speed.
+    // Webhooks switched on (endpoint minted): the stanza appears, the type
+    // and the schedule stay — polling carries on, webhooks add speed.
     scheduled.set("webhookConfig.endpoint", "https://x/api/webhooks/w/f");
     const hybrid = serializeFlowFile(flowToFile(scheduled));
-    assert.ok(!/^type:/m.test(hybrid), hybrid);
-    assert.ok(hybrid.includes("webhook: 'on'"), hybrid);
-    assert.ok(hybrid.includes("poll: 0 * * * *"), hybrid);
+    assert.ok(hybrid.includes("type: scheduled"));
+    assert.ok(hybrid.includes("webhook:\n  enabled: true"), hybrid);
+    assert.ok(hybrid.includes("cron: 0 * * * *"), hybrid);
     assert.equal(parseFlowFile(hybrid)?.webhookEnabled, true);
 
     console.log("flow-config mongoose-safety tests passed");

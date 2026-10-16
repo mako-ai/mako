@@ -31,14 +31,6 @@ export function getFlowTitle(flow: Flow): string {
  * palette and deep links used to build this tab three different ways (three
  * metadata sets); this is the one way.
  */
-function webhookOnly(flow: Flow): boolean {
-  const webhook = Boolean(
-    flow.webhookConfig?.enabled && flow.webhookConfig?.endpoint,
-  );
-  const poll = Boolean(flow.schedule?.enabled && flow.schedule?.cron);
-  return webhook && !poll;
-}
-
 export function focusFlowTab(flow: Flow): string {
   const f = flow as Flow & { sourceType?: string };
   return useConsoleStore
@@ -52,17 +44,11 @@ export function focusFlowTab(flow: Flow): string {
         metadata: {
           flowId: flow._id,
           isNew: false,
-          // Tab icon only: webhook when the webhook trigger is the sync's
-          // only freshness source (no poll schedule), as deriveFlowType.
-          flowType:
-            f.sourceType === "database"
-              ? "db-scheduled"
-              : webhookOnly(flow)
-                ? "webhook"
-                : "scheduled",
-          enabled: webhookOnly(flow)
-            ? flow.webhookConfig?.enabled
-            : flow.schedule?.enabled,
+          flowType: f.sourceType === "database" ? "db-scheduled" : flow.type,
+          enabled:
+            flow.type === "webhook"
+              ? flow.webhookConfig?.enabled
+              : flow.schedule?.enabled,
         },
       }),
     ) as string;

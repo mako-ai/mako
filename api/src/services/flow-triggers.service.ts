@@ -15,11 +15,6 @@
 
 /** Structural subset of IFlow used for trigger derivation. */
 export interface FlowTriggerFields {
-  /**
-   * Retired. Documents written before triggers replaced it still carry it;
-   * nothing writes it any more and only `isWebhookFlow` reads it, as a
-   * fallback for such a document without an endpoint.
-   */
   type?: "scheduled" | "webhook";
   schedule?: {
     enabled?: boolean;
@@ -66,26 +61,16 @@ export function hasWebhookTrigger(flow: FlowTriggerFields): boolean {
   );
 }
 
-/** The flow has an inbound webhook URL (minted once; providers POST to it). */
-export function hasWebhookEndpoint(flow: FlowTriggerFields): boolean {
-  return (
-    typeof flow.webhookConfig?.endpoint === "string" &&
-    flow.webhookConfig.endpoint.trim().length > 0
-  );
-}
-
 /**
- * Whether the flow is set up for inbound webhooks: it has its URL. Whether
- * deliveries are accepted right now is `webhookConfig.enabled` (the receiver
- * answers 403 when it is off), and `hasWebhookTrigger` is both. A flow with
- * webhooks keeps polling when it has a poll schedule: webhooks only add speed.
- *
- * A document from before triggers replaced `type` and without an endpoint
- * still counts when its retired `type` says webhook (the migration
- * 2026-10-17 gives every such flow its endpoint; this is the safety net).
+ * Whether the flow takes inbound webhook deliveries. A flow created as
+ * `type: "webhook"` keeps exactly the behaviour it always had (its URL was
+ * minted at creation and providers already POST to it). Any other flow takes
+ * them once its webhook trigger is on: an endpoint minted when webhooks were
+ * switched on, and `enabled`. `type` no longer decides alone, so a scheduled
+ * flow keeps polling and gets webhooks on top.
  */
 export function isWebhookFlow(flow: FlowTriggerFields): boolean {
-  return hasWebhookEndpoint(flow) || flow.type === "webhook";
+  return flow.type === "webhook" || hasWebhookTrigger(flow);
 }
 
 export function hasReconcileTrigger(flow: FlowTriggerFields): boolean {
@@ -109,9 +94,12 @@ export function hasAnyTrigger(flow: FlowTriggerFields): boolean {
 }
 
 /**
- * A label for API clients that still read `type`: "webhook" when the webhook
- * trigger is the sync's only freshness source, else "scheduled". Display
- * only: never persisted, never branched on.
+ * Back-compat `type` derivation: a flow is only "webhook" when the webhook
+ * trigger is its sole freshness source; anything with a poll schedule is
+ * "scheduled" so legacy consumers keep working.
+ *
+ * Never persist it onto a flow's `type`: `type` is what keeps an existing
+ * webhook flow taking deliveries (see `isWebhookFlow`).
  */
 export function deriveFlowType(
   flow: FlowTriggerFields,

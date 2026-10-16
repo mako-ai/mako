@@ -963,13 +963,14 @@ export function SyncFlowForm({
       );
       const generatedName = `${selectedSource?.name || "Source"} → ${selectedDatabase?.name || "Destination"}`;
 
-      // Triggers, not a flow type: polling (schedule), webhooks
-      // (webhookConfig.enabled) and the periodic resync (backfillSchedule)
-      // are independent; webhooks on only add speed on top of polling.
-      const flowType = data.webhookEnabled ? "webhook" : "scheduled"; // analytics label
+      // `type` is only chosen at creation. The inbound receiver no longer
+      // keys on it: an existing scheduled flow switches webhooks on through
+      // `webhookConfig.enabled` (below) and keeps polling.
+      const flowType = data.webhookEnabled ? "webhook" : "scheduled";
 
       const payload: any = {
         name: generatedName,
+        type: flowType,
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,
         syncMode: data.syncMode,
@@ -987,21 +988,12 @@ export function SyncFlowForm({
       if (data.webhookEnabled) {
         payload.webhookSecret = data.webhookSecret || "";
       }
-      // Webhooks on or off: on create when on; on edit only when the user
-      // changed it from what the flow has, so a save never switches a sync's
-      // webhooks off by accident. The server mints the URL and provisions the
-      // subscription on save (adopting one already on the URL).
+      // A scheduled flow switches webhooks on or off here: the server mints
+      // its URL and provisions the subscription on save (adopting one already
+      // on the URL). Flows created as webhook flows keep their payload
+      // unchanged, so a save never turns their webhooks off.
       const existingFlow = flows.find(flow => flow._id === currentFlowId);
-      const webhookOnNow = Boolean(
-        existingFlow?.webhookConfig?.enabled &&
-        existingFlow?.webhookConfig?.endpoint,
-      );
-      if (isNewMode) {
-        if (data.webhookEnabled) payload.webhookConfig = { enabled: true };
-      } else if (
-        existingFlow &&
-        Boolean(data.webhookEnabled) !== webhookOnNow
-      ) {
+      if (!isNewMode && existingFlow && existingFlow.type !== "webhook") {
         payload.webhookConfig = { enabled: Boolean(data.webhookEnabled) };
       }
       if (isCdcCapableDest) {

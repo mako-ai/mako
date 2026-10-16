@@ -19,8 +19,6 @@ import {
   parseFlowFile,
   serializeFlowFile,
   slugFromFlowFilePath,
-  sameFlowMeaning,
-  serializeFlowFileV1,
 } from "./flow-config-files";
 import type { IFlow } from "../database/workspace-schema";
 
@@ -159,17 +157,21 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
     "name: Stripe → Warehouse",
     "tracking_column: updated_at",
     "keyset_column: id",
-    "poll: 0 * * * *",
-    "resync:",
+    "cron: 0 * * * *",
+    "backfill_schedule",
     "cron: 0 3 * * *",
     "table_name: stripe_charges",
+    "engine: cdc",
     "batch_size: 5000",
   ]) {
     assert.ok(yamlText.includes(needle), `expected ${needle} in:\n${yamlText}`);
   }
   // A webhook flow records whether delivery is enabled and which provider
   // subscription delivers to it — never the endpoint or the secret.
-  assert.match(yamlText, /webhook: 'on'\n\s+provider_webhook_id: we_1Provider/);
+  assert.match(
+    yamlText,
+    /webhook:\n\s+enabled: true\n\s+provider_webhook_id: we_1Provider/,
+  );
 }
 
 // ── round-trip ──
@@ -178,8 +180,7 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   const parsed = parseFlowFile(serializeFlowFile(file));
   assert.ok(parsed, "round-trips");
   assert.equal(parsed.name, "Stripe → Warehouse");
-  // `type` is retired: format 2 does not write it.
-  assert.equal(parsed.type, undefined);
+  assert.equal(parsed.type, "webhook");
   assert.deepEqual(parsed.source, {
     type: "connector",
     connectionId: connectorId.toString(),
@@ -194,8 +195,7 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
     cron: "0 3 * * *",
     timezone: "UTC",
   });
-  // A connector flow's engine is always CDC: format 2 does not repeat it.
-  assert.equal(parsed.sync.engine, undefined);
+  assert.equal(parsed.sync.engine, "cdc");
   assert.equal(parsed.sync.batchSize, 5000);
   assert.deepEqual(parsed.entityFilter, ["charges", "customers"]);
   assert.equal(parsed.incremental?.trackingColumn, "updated_at");
@@ -308,21 +308,7 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
 // ── malformed input is rejected, not half-parsed ──
 assert.equal(parseFlowFile("this: [is: not: valid"), null);
 assert.equal(parseFlowFile("just a string"), null);
-// `type:` is retired: optional, and an invalid value is still refused.
-assert.equal(parseFlowFile("name: no type here")?.type, undefined);
-assert.equal(parseFlowFile("name: x\ntype: bogus"), null);
-// An older file's `type: webhook` without a `webhook:` stanza = webhooks on;
-// a stanza decides when present.
-assert.equal(parseFlowFile("name: x\ntype: webhook")?.webhookEnabled, true);
-assert.equal(
-  parseFlowFile("name: x\ntype: webhook\nwebhook:\n  enabled: false")
-    ?.webhookEnabled,
-  false,
-);
-assert.equal(
-  parseFlowFile("name: x\ntype: scheduled")?.webhookEnabled,
-  undefined,
-);
+assert.equal(parseFlowFile("name: no type here"), null);
 assert.equal(parseFlowFile("type: scheduled"), null); // no name
 
 console.log("flow-config-files tests passed");
@@ -381,81 +367,4 @@ console.log("flow-config-files tests passed");
     } as never),
   );
   assert.doesNotMatch(unscoped, /entities:\n\s+- /);
-}
-
-// ---- format 2: `live` + `resync`, read alongside format 1 forever ---------
-{
-  const v1 = [
-    "name: Stripe FR",
-    "type: webhook",
-    "source:",
-    "  type: connector",
-    "  connection_id: c1",
-    "destination:",
-    "  connection_id: d1",
-    "schedule:",
-    "  cron: 0 4 * * *",
-    "  timezone: UTC",
-    "backfill_schedule:",
-    "  cron: 0 3 * * 0",
-    "  timezone: UTC",
-    "webhook:",
-    "  enabled: true",
-    "  provider_webhook_id: we_1",
-    "sync:",
-    "  engine: cdc",
-    "",
-  ].join("\n");
-  const a = parseFlowFile(v1)!;
-  const v2 = serializeFlowFile(a);
-  // No `type`, no connector engine, triggers in their own words.
-  assert.doesNotMatch(v2, /^type:/m);
-  assert.doesNotMatch(v2, /engine:/);
-  assert.match(
-    v2,
-    /^live:\n {2}poll: 0 4 \* \* \*\n {2}timezone: UTC\n {2}webhook: 'on'\n {2}provider_webhook_id: we_1$/m,
-  );
-  assert.match(v2, /^resync:\n {2}cron: 0 3 \* \* 0/m);
-  const b = parseFlowFile(v2)!;
-  assert.ok(sameFlowMeaning(a, b), "format 1 and format 2 mean the same flow");
-  assert.deepEqual(b.schedule, { cron: "0 4 * * *", timezone: "UTC" });
-  assert.equal(b.webhookEnabled, true);
-  assert.equal(b.webhookProviderId, "we_1");
-  // Format 1 is still written, byte for byte, for the no-churn check.
-  assert.equal(
-    serializeFlowFileV1(a),
-    v1.replace("  engine: cdc\n", "  engine: cdc\n"),
-  );
-
-  // off / on, and YAML booleans.
-  const off = parseFlowFile(
-    "name: x\nlive:\n  poll: off\n  webhook: off\nresync: off\n",
-  )!;
-  assert.equal(off.schedule, null);
-  assert.equal(off.webhookEnabled, false);
-  assert.equal(off.backfillSchedule, null);
-  const bools = parseFlowFile(
-    "name: x\nlive:\n  poll: '0 1 * * *'\n  webhook: true\n",
-  )!;
-  assert.equal(bools.webhookEnabled, true);
-  assert.deepEqual(bools.schedule, { cron: "0 1 * * *", timezone: "UTC" });
-  // Polling only, never had webhooks: no `webhook` key, which apply leaves alone.
-  const pollOnly = parseFlowFile("name: x\nlive:\n  poll: '0 1 * * *'\n")!;
-  assert.equal(pollOnly.webhookEnabled, undefined);
-  assert.match(serializeFlowFile(pollOnly), /^resync: 'off'$/m);
-  // A cron string for resync is accepted too.
-  assert.deepEqual(
-    parseFlowFile("name: x\nresync: '0 3 * * *'\n")!.backfillSchedule,
-    {
-      cron: "0 3 * * *",
-      timezone: "UTC",
-    },
-  );
-  // Format 2 keys win over format 1 keys when a file carries both.
-  const both = parseFlowFile(
-    "name: x\nschedule:\n  cron: 0 9 * * *\nlive:\n  poll: off\n",
-  )!;
-  assert.equal(both.schedule, null);
-  // A real change is not the same meaning.
-  assert.ok(!sameFlowMeaning(a, { ...a, webhookEnabled: false }));
 }

@@ -21,18 +21,37 @@ import {
 } from "./hatchet";
 import { webhookUrls } from "./webhook";
 
-const RECENT_RUNS_DAYS = 30;
-const LOG_LINES_PER_STEP = 20;
-const MAX_TEXT_CHARS = 2000;
+export const RECENT_RUNS_DAYS = 30;
+
+/**
+ * How much of a run is shown. By default a summary a model can read in one
+ * go: the start of each text and a step's last log lines. `full` is the run
+ * as it was kept: each text up to a megabyte, every log line.
+ */
+type Limits = { chars: number; lines: number; stackLines: number };
+const SUMMARY: Limits = { chars: 2000, lines: 20, stackLines: 3 };
+export const FULL_TEXT_CHARS = 1_000_000;
+const FULL: Limits = {
+  chars: FULL_TEXT_CHARS,
+  lines: Number.POSITIVE_INFINITY,
+  stackLines: Number.POSITIVE_INFINITY,
+};
+export type ShapeOptions = { full?: boolean };
+const limitsOf = (options: ShapeOptions = {}) =>
+  options.full ? FULL : SUMMARY;
 
 type Row = Record<string, unknown>;
 type Rows = { rows?: Row[] };
 
-const cap = (value: unknown): string | undefined => {
+/** A value as text, cut at `max` characters with a note of its length. */
+export const cap = (
+  value: unknown,
+  max = SUMMARY.chars,
+): string | undefined => {
   if (value === undefined || value === null || value === "") return undefined;
   const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length > MAX_TEXT_CHARS
-    ? `${text.slice(0, MAX_TEXT_CHARS)}… (${text.length} chars)`
+  return text.length > max
+    ? `${text.slice(0, max)}… (${text.length} chars)`
     : text;
 };
 
@@ -43,18 +62,24 @@ const idOf = (row: Row): string | undefined =>
  * Hatchet reports a step's error as JSON, `{ message, stack }`. The message
  * is what an agent needs; the stack's first lines say where.
  */
-function errorOf(value: unknown): string | undefined {
+function errorOf(value: unknown, limits: Limits = SUMMARY): string | undefined {
   if (typeof value !== "string" || !value) return undefined;
   try {
     const parsed = JSON.parse(value) as { message?: string; stack?: string };
     if (parsed.message) {
-      const where = (parsed.stack ?? "").split("\n").slice(1, 4).join("\n");
-      return cap(`${parsed.message.trim()}${where ? `\n${where}` : ""}`);
+      const where = (parsed.stack ?? "")
+        .split("\n")
+        .slice(1, 1 + limits.stackLines)
+        .join("\n");
+      return cap(
+        `${parsed.message.trim()}${where ? `\n${where}` : ""}`,
+        limits.chars,
+      );
     }
   } catch {
     // Not JSON: use it as it is.
   }
-  return cap(value);
+  return cap(value, limits.chars);
 }
 
 /** A one-step run reports Hatchet's envelope around the input; unwrap it. */
@@ -66,20 +91,24 @@ function inputOf(value: unknown): unknown {
 const metadataOf = (run: Row) =>
   (run.additionalMetadata ?? {}) as { trigger?: string };
 
-const runSummary = (run: Row, workflowName: unknown = run.workflowName) => ({
+const runSummary = (
+  run: Row,
+  workflowName: unknown = run.workflowName,
+  limits: Limits = SUMMARY,
+) => ({
   runId: idOf(run),
   workflowId: String(workflowName ?? ""),
   status: run.status,
   startedAt: run.startedAt ?? run.createdAt,
   durationMs: run.duration,
-  error: errorOf(run.errorMessage),
+  error: errorOf(run.errorMessage, limits),
   // Set by Mako when a person or an agent starts the run; a scheduled run
   // has neither.
   trigger: metadataOf(run).trigger,
 });
 
 /** What a screen shows of one slot. */
-function deployment(slot?: IWorkflowSlot) {
+export function deployment(slot?: IWorkflowSlot) {
   return {
     /** The commit the worker reports running. Null before the first good deploy. */
     liveSha: slot?.running?.sha ?? null,
@@ -104,7 +133,7 @@ function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {
   };
 }
 
-async function loadState(workspaceId: string) {
+export async function loadState(workspaceId: string) {
   const [workspace, repo] = await Promise.all([
     Workspace.findById(workspaceId).select("workflows").lean(),
     getWorkspaceRepo(workspaceId),
@@ -170,7 +199,12 @@ export type RunDetail = { run?: Row; tasks?: Row[] };
  * status, output, error and its last log lines. Pure, so the same shape comes
  * from the workspace's Hatchet and from a sandbox's own engine (sandbox.ts).
  */
-export function shapeRun(detail: RunDetail, logs: Record<string, Row[]>) {
+export function shapeRun(
+  detail: RunDetail,
+  logs: Record<string, Row[]>,
+  options: ShapeOptions = {},
+) {
+  const limits = limitsOf(options);
   // A step's `actionId` is `<workflow>:<step>`; Hatchet lists steps in no order.
   const tasks = [...(detail.tasks ?? [])].sort((a, b) =>
     String(a.taskInsertedAt ?? "").localeCompare(
@@ -180,25 +214,40 @@ export function shapeRun(detail: RunDetail, logs: Record<string, Row[]>) {
   const nameOf = (task: Row | undefined, part: 0 | 1) =>
     String(task?.actionId ?? "").split(":")[part];
   return {
-    ...runSummary(detail.run ?? {}, nameOf(tasks[0], 0)),
-    input: cap(inputOf(detail.run?.input)),
-    output: cap(detail.run?.output),
-    steps: tasks.map(task => ({
-      step: nameOf(task, 1) || task.displayName,
-      status: task.status,
-      attempt: task.attempt,
-      durationMs: task.duration,
-      output: cap(task.output),
-      error: errorOf(task.errorMessage),
-      logs: (logs[idOf(task) ?? ""] ?? [])
-        .slice(-LOG_LINES_PER_STEP)
-        .map(line => cap(line.message)),
-    })),
+    ...runSummary(detail.run ?? {}, nameOf(tasks[0], 0), limits),
+    input: cap(inputOf(detail.run?.input), limits.chars),
+    output: cap(detail.run?.output, limits.chars),
+    steps: tasks.map(task => {
+      // Hatchet lists log lines in no order; by time, oldest first.
+      const lines = [...(logs[idOf(task) ?? ""] ?? [])].sort((a, b) =>
+        String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")),
+      );
+      const shown = Number.isFinite(limits.lines)
+        ? lines.slice(-limits.lines)
+        : lines;
+      return {
+        step: nameOf(task, 1) || task.displayName,
+        status: task.status,
+        attempt: task.attempt,
+        durationMs: task.duration,
+        output: cap(task.output, limits.chars),
+        error: errorOf(task.errorMessage, limits),
+        logs: shown.map(line => cap(line.message, limits.chars)),
+        // Said when lines were left out, so a reader knows to ask for them.
+        ...(shown.length < lines.length
+          ? { logLinesOmitted: lines.length - shown.length }
+          : {}),
+      };
+    }),
   };
 }
 
 /** One run of the workspace's Hatchet. */
-export async function readRun(tenant: WorkspaceTenant, runId: string) {
+export async function readRun(
+  tenant: WorkspaceTenant,
+  runId: string,
+  options: ShapeOptions = {},
+) {
   if (!isHatchetId(runId)) throw new HatchetError("Invalid run id", 400);
   const detail = await tenantJson<RunDetail>(
     tenant,
@@ -217,5 +266,14 @@ export async function readRun(tenant: WorkspaceTenant, runId: string) {
         .catch(() => []);
     }),
   );
-  return shapeRun(detail, logs);
+  return shapeRun(detail, logs, options);
 }
+
+/** A run's status when it has not ended yet. */
+export const ACTIVE_STATUSES: readonly unknown[] = [
+  "QUEUED",
+  "RUNNING",
+  "PENDING",
+];
+export const isRunActive = (run: { status?: unknown }) =>
+  ACTIVE_STATUSES.includes(run.status);
