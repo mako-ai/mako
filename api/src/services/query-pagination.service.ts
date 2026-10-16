@@ -334,6 +334,8 @@ function assertCursorMatchesQuery(
   }
 }
 
+// The query sits on its own lines so a trailing `-- comment` in it cannot
+// swallow the wrapper's closing parenthesis.
 function buildWrappedSqlQuery(
   baseQuery: string,
   dialect: SqlDialect,
@@ -341,18 +343,18 @@ function buildWrappedSqlQuery(
   offset: number,
 ): string {
   if (dialect === "postgresql" || dialect === "mysql" || dialect === "sqlite") {
-    return `SELECT * FROM (${baseQuery}) AS _mako_preview LIMIT ${limit} OFFSET ${offset}`;
+    return `SELECT * FROM (\n${baseQuery}\n) AS _mako_preview LIMIT ${limit} OFFSET ${offset}`;
   }
 
   if (dialect === "clickhouse") {
-    return `SELECT * FROM (${baseQuery}) AS _mako_preview LIMIT ${limit} OFFSET ${offset}`;
+    return `SELECT * FROM (\n${baseQuery}\n) AS _mako_preview LIMIT ${limit} OFFSET ${offset}`;
   }
 
   if (dialect === "bigquery") {
     return baseQuery;
   }
 
-  return `SELECT * FROM (${baseQuery}) AS _mako_preview ORDER BY (SELECT NULL) OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY`;
+  return `SELECT * FROM (\n${baseQuery}\n) AS _mako_preview ORDER BY (SELECT NULL) OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY`;
 }
 
 export function prepareSqlPreviewQuery(options: {

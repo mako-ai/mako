@@ -148,7 +148,84 @@ export async function call(
   }
 }
 
-/** Run SQL on a workspace connection. Read-only unless the key and connection allow writes. */
-export function query(connection: string, sql: string): Promise<unknown> {
-  return call("sql_execute_query", { connectionId: connection, query: sql });
+export type QueryOptions = {
+  /** The database or dataset, when the connection has no default. */
+  database?: string;
+  /** Rows per page, 1 to 500 (default 500). */
+  maxRows?: number;
+};
+
+/** One page of a query's result, as Mako's /query route answers. */
+export type QueryPage<Row = Record<string, unknown>> = {
+  rows: Row[];
+  fields: { name: string; type?: string }[];
+  /** Rows in this page for a read; rows changed for a write. */
+  rowCount: number;
+  /** Pass as `cursor` for the next page; absent on the last page. */
+  nextCursor?: string;
+};
+
+/**
+ * One request to Mako's query route: a page of a SELECT, or a write's result
+ * (`rowCount` is the rows it changed). Values come back as the database
+ * returns them, never shortened.
+ */
+export async function queryPage<Row = Record<string, unknown>>(
+  connection: string,
+  sql: string,
+  options: QueryOptions & { cursor?: string } = {},
+): Promise<QueryPage<Row>> {
+  const workflow = workflowName();
+  const res = await fetch(`${url}/api/workflows/runtime/query`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      ...(workflow ? { "X-Mako-Workflow": workflow } : {}),
+    },
+    body: JSON.stringify({ connectionId: connection, query: sql, ...options }),
+  });
+  const body = (await res.json().catch(() => ({}))) as QueryPage<Row> & {
+    error?: string;
+  };
+  if (!res.ok)
+    throw new Error(body.error ?? `The query failed (${res.status})`);
+  return body;
+}
+
+/** Every page of a query's result, one request each: for results too big to hold at once. */
+export async function* queryPages<Row = Record<string, unknown>>(
+  connection: string,
+  sql: string,
+  options: QueryOptions = {},
+): AsyncGenerator<QueryPage<Row>> {
+  let cursor: string | undefined;
+  do {
+    const page: QueryPage<Row> = await queryPage<Row>(connection, sql, {
+      ...options,
+      cursor,
+    });
+    yield page;
+    cursor = page.nextCursor;
+  } while (cursor);
+}
+
+/**
+ * Run SQL on a workspace connection and return all its rows, e.g.
+ * `await query<{ id: string }>(conn, "SELECT id FROM t")`. Pages are fetched
+ * until the last one; add ORDER BY so pages do not overlap. A write runs once
+ * and returns the rows it returned (none without RETURNING): use `queryPage`
+ * for the rows it changed. Reads work everywhere; a write needs this workflow
+ * on the connection's writers list.
+ */
+export async function query<Row = Record<string, unknown>>(
+  connection: string,
+  sql: string,
+  options: QueryOptions = {},
+): Promise<Row[]> {
+  const rows: Row[] = [];
+  for await (const page of queryPages<Row>(connection, sql, options)) {
+    rows.push(...page.rows);
+  }
+  return rows;
 }

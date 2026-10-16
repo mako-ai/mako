@@ -1,8 +1,8 @@
 /**
  * A deployed workflow writes as itself, end to end: the runtime's own
  * `lib/mako.ts` (deploy/workflows/runtime/defaults), run inside the
- * AsyncLocalStorage worker.mjs sets, calls Mako's MCP endpoint over real HTTP
- * with the worker's key; Mako sees `workflow:<name>` and its writers list
+ * AsyncLocalStorage worker.mjs sets, calls Mako's runtime query route over
+ * real HTTP with the worker's key (and a person's key calls the MCP endpoint); Mako sees `workflow:<name>` and its writers list
  * decides. In-memory Mongo; only the BigQuery driver is stubbed, so a write
  * that passes the check "succeeds" without a warehouse.
  *
@@ -30,6 +30,7 @@ import {
 } from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
 import { mcpProtocolRoutes } from "../routes/mcp-server.routes";
+import { workflowRuntimeRoutes } from "../routes/workflows";
 import { databaseConnectionService } from "../services/database-connection.service";
 
 const WORKER_KEY = "revops_worker_identity_key_tests_only";
@@ -37,12 +38,20 @@ const PERSON_KEY = "revops_person_query_write_key_tests";
 const MERGE =
   "MERGE INTO `realadvisor-prod.crm_ai_chat.chat_labels` T USING (SELECT 1 AS id) S ON T.id = S.id WHEN NOT MATCHED THEN INSERT (id) VALUES (S.id)";
 
-/** What sql_execute_query answers. */
+/** Whether a query ran, and why not. */
 type Answer = { success: boolean; error?: string };
 
 type Mako = {
-  query: (connection: string, sql: string) => Promise<unknown>;
+  query: (connection: string, sql: string) => Promise<unknown[]>;
+  call: (name: string, input: Record<string, unknown>) => Promise<unknown>;
 };
+
+/** `query()` throws a refusal; as an answer, like sql_execute_query's. */
+const attempt = (run: () => Promise<unknown>): Promise<Answer> =>
+  run().then(
+    () => ({ success: true }),
+    (error: Error) => ({ success: false, error: error.message }),
+  );
 
 async function main() {
   const mongo = await MongoMemoryServer.create();
@@ -51,6 +60,7 @@ async function main() {
   const app = new Hono();
   app.use("*", loggingMiddleware({}));
   app.route("/api/mcp", mcpProtocolRoutes);
+  app.route("/api/workflows/runtime", workflowRuntimeRoutes);
   const server = serve({ fetch: app.fetch, port: 0 });
   await new Promise(resolve => server.once("listening", resolve));
   const { port } = server.address() as AddressInfo;
@@ -116,6 +126,18 @@ async function main() {
       ran.push(q);
       return { success: true, data: [], rowCount: 0 };
     };
+    // A read is fetched a page at a time, with BigQuery's own pages.
+    (
+      databaseConnectionService as unknown as {
+        executeBigQueryPreviewQuery: (
+          db: unknown,
+          q: string,
+        ) => Promise<unknown>;
+      }
+    ).executeBigQueryPreviewQuery = async (_db, q) => {
+      ran.push(q);
+      return { success: true, rows: [], fields: [], pageInfo: {} };
+    };
 
     // What the image runs: worker.mjs's storage, then the default helpers.
     const running = new AsyncLocalStorage<string>();
@@ -146,9 +168,9 @@ async function main() {
 
     // The listed workflow writes, inside its own schema, as itself.
     const worker = await load(WORKER_KEY);
-    const wrote = (await running.run("crm-chat-classifier", () =>
-      worker.query(id, MERGE),
-    )) as Answer;
+    const wrote = await running.run("crm-chat-classifier", () =>
+      attempt(() => worker.query(id, MERGE)),
+    );
     assert.equal(wrote.success, true, wrote.error);
     assert.equal(ran.length, 1, "the MERGE reached the driver");
     let recorded = await events(1);
@@ -157,9 +179,9 @@ async function main() {
     assert.equal(recorded[0].allowed, true);
 
     // Another workflow on the same worker is refused, by name, and recorded.
-    const other = (await running.run("other-flow", () =>
-      worker.query(id, MERGE),
-    )) as Answer;
+    const other = await running.run("other-flow", () =>
+      attempt(() => worker.query(id, MERGE)),
+    );
     assert.equal(other.success, false);
     assert.match(
       other.error ?? "",
@@ -174,9 +196,9 @@ async function main() {
 
     // A name not deployed from main is not believed: the worker writes as
     // no one listable, never as the person who deployed it.
-    const stranger = (await running.run("not-deployed", () =>
-      worker.query(id, MERGE),
-    )) as Answer;
+    const stranger = await running.run("not-deployed", () =>
+      attempt(() => worker.query(id, MERGE)),
+    );
     assert.equal(stranger.success, false);
     assert.match(
       stranger.error ?? "",
@@ -186,10 +208,11 @@ async function main() {
     assert.equal(recorded[2].principal, "worker:workflows");
     assert.equal(recorded[2].allowed, false);
 
-    // A person's key naming a workflow is still the person.
+    // A person's key naming a workflow is still the person. It has no
+    // runtime scope, so it goes through the MCP tool.
     const person = await load(PERSON_KEY);
     const mine = (await running.run("crm-chat-classifier", () =>
-      person.query(id, MERGE),
+      person.call("sql_execute_query", { connectionId: id, query: MERGE }),
     )) as Answer;
     assert.equal(mine.success, false);
     assert.match(
@@ -202,9 +225,11 @@ async function main() {
     assert.equal(ran.length, 1, "no refused write reached the driver");
 
     // A read needs no list.
-    const read = (await running.run("other-flow", () =>
-      worker.query(id, "SELECT 1 FROM `realadvisor-prod.crm_ai_chat.x`"),
-    )) as Answer;
+    const read = await running.run("other-flow", () =>
+      attempt(() =>
+        worker.query(id, "SELECT 1 FROM `realadvisor-prod.crm_ai_chat.x`"),
+      ),
+    );
     assert.equal(read.success, true, read.error);
     assert.equal(ran.length, 2);
 

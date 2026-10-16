@@ -30,8 +30,9 @@ workflows/
 
 That one file is all a workflow needs. `../hatchet` (the Hatchet client) and
 `../lib/mako` (Mako data access) are supplied when it is built: do not create
-them, and they are not in the repo to read. `../lib/mako` exports `query`,
-`call`, `agent`, `model`, `decide` and `tools`, each shown below.
+them, and they are not in the repo to read. `../lib/mako` exports `query`
+(with `queryPage` and `queryPages`), `call`, `agent`, `model`, `decide` and
+`tools`, each shown below.
 
 With `workflowId: "daily-digest"`, file paths are relative to that folder:
 the file above is `path: "workflow.ts"`.
@@ -125,15 +126,29 @@ Rules:
 ```ts
 import { query } from "../lib/mako";
 
-const rows = (await query(
+const rows = await query<{ id: string; name: string }>(
   "<connectionId>",
-  "select id, name from customers limit 100",
-)) as { id: string; name: string }[];
+  "select id, name from customers order by id",
+);
 ```
 
-`query` returns `unknown`: say what the rows are, as above. Find the
-connection id and check the SQL first with `list_connections`,
-`inspect_table` and `sql_execute_query`.
+`query` returns every row, exactly as the database returns it: no cell is
+shortened and no `LIMIT` is added. Mako sends it 500 rows at a time and
+`query` fetches all pages, so add `ORDER BY` and filter in SQL. For a result
+too big to hold at once, read it a page at a time:
+
+```ts
+import { queryPages } from "../lib/mako";
+
+for await (const page of queryPages("<connectionId>", sql)) {
+  // page.rows: up to 500 rows (maxRows: 1 to 500)
+}
+```
+
+Do not use `call("sql_execute_query", ...)` for data: it answers with a
+table for a model to read, cut to a few rows. A refused or failed query
+throws. Find the connection id and check the SQL first with
+`list_connections`, `inspect_table` and `sql_execute_query`.
 
 A workflow reads every connection. It writes (INSERT, UPDATE, MERGE, CREATE,
 DROP) only through a connection whose Access tab lists that workflow, either
@@ -141,9 +156,10 @@ anywhere or only in one schema or table. An admin adds it there; the agent
 cannot. Before building a workflow that writes, tell the user which
 connection and which `schema.table` to allow it on. Name the target fully in
 the statement (`INSERT INTO mako_out.labels ...`): a workflow allowed only
-one place must say where it writes, in one statement. A sandbox run writes
-as the person running it, under their own access. A dbt job
-(`call("dbt_run_job", { ... })`) remains the way to rebuild models.
+one place must say where it writes, in one statement. A write runs once;
+`queryPage(connection, sql)` returns its `rowCount`, the rows it changed. A
+sandbox run writes as the person running it, under their own access. A dbt
+job (`call("dbt_run_job", { ... })`) remains the way to rebuild models.
 
 ## Calling a Mako tool in a step
 

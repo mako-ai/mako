@@ -56,11 +56,21 @@ Anyone with the member role writes workflows in their sandbox and tests them the
 
 ```ts
 import { generateText } from "ai";
-import { agent, call, model, query } from "../lib/mako";
+import { agent, call, model, query, queryPage } from "../lib/mako";
 
-// SQL on a workspace connection. Writing needs the workflow on the
-// connection's writers list (Access tab).
-const rows = await query("<connectionId>", "select count(*) from orders");
+// SQL on a workspace connection: every row, with values exactly as the
+// database returns them. Name the row type for typed rows.
+const orders = await query<{ id: string; total: number }>(
+  "<connectionId>",
+  "select id, total from orders order by id",
+);
+
+// Writing needs the workflow on the connection's writers list (Access tab).
+// rowCount is the number of rows the write changed.
+const { rowCount } = await queryPage(
+  "<connectionId>",
+  "update mako_out.orders set flagged = true where total > 1000",
+);
 
 // Any Mako tool by name: here, rebuild an app's data.
 await call("app_materialize", { appId: "<appId>", name: "orders_daily" });
@@ -76,6 +86,16 @@ const summary = await generateText({
   prompt: `Summarize in one line: ${text}`,
 });
 ```
+
+### Query results
+
+`query()` returns every row of the result, fetched from Mako 500 rows at a time. Nothing is shortened: long text and JSON values come back whole, and no `LIMIT` is added. Add an `ORDER BY` so that the pages do not overlap or skip rows.
+
+- `query(connection, sql, { database?, maxRows? })` returns all rows as an array.
+- `queryPages(connection, sql, options?)` yields one page at a time (`for await`). Use it for results too big to keep in memory at once.
+- `queryPage(connection, sql, { cursor?, ... })` makes one request and returns `{ rows, fields, rowCount, nextCursor? }`. Pass `nextCursor` back as `cursor` for the next page. For a write, `rowCount` is the number of rows changed.
+
+A query passes the same checks as the agent's `sql_execute_query`: every workflow reads, and only the workflows on a connection's writers list write. A refused or failed query throws with the reason. Workflow code calls the route `POST /api/workflows/runtime/query` with the worker's key.
 
 ## How a deploy works
 

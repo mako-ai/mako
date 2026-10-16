@@ -1759,7 +1759,16 @@ export class DatabaseConnectionService {
         pageToken = data.pageToken;
       }
 
-      return { success: true, data: rowsAccum, rowCount: rowsAccum.length };
+      // A DML statement returns no rows; BigQuery says how many it changed.
+      const affected = Number(data.numDmlAffectedRows);
+      return {
+        success: true,
+        data: rowsAccum,
+        rowCount:
+          rowsAccum.length === 0 && Number.isFinite(affected)
+            ? affected
+            : rowsAccum.length,
+      };
     } catch (error: any) {
       if (error?.message === "Query cancelled") {
         return { success: false, error: "Query cancelled" };
