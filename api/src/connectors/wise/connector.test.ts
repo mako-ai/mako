@@ -183,6 +183,36 @@ function testExtractBalanceUpdate() {
   assert.equal(extracted?.data.step_id, 1234567);
 }
 
+function testExtractBalanceCredit() {
+  const connector = createConnector();
+  assert.deepEqual(connector.getWebhookEventMapping("balances#credit"), {
+    entity: "balance_updates",
+    operation: "upsert",
+  });
+  const extracted = connector.extractWebhookData({
+    event_type: "balances#credit",
+    subscription_id: "sub-2",
+    schema_version: "2.0.0",
+    sent_at: "2026-10-17T09:00:01Z",
+    data: {
+      resource: { type: "balance-account", id: 111, profile_id: 222 },
+      transaction_type: "credit",
+      amount: 1.23,
+      currency: "EUR",
+      post_transaction_balance_amount: 2.34,
+      occurred_at: "2026-10-17T09:00:00Z",
+    },
+  });
+
+  assert.ok(extracted);
+  assert.equal(extracted?.id, "111:EUR:2026-10-17T09:00:00Z");
+  assert.equal(extracted?.data.balance_id, null);
+  assert.equal(extracted?.data.resource_id, 111);
+  assert.equal(extracted?.data.profile_id, 222);
+  assert.equal(extracted?.data.amount, 1.23);
+  assert.equal(extracted?.data.event_type, "balances#credit");
+}
+
 function testExtractWebhookCdcRecordsParity() {
   const connector = createConnector();
   const event = {
@@ -1329,6 +1359,7 @@ async function main() {
   testWebhookEventsForEntities();
   testExtractTransferStateChange();
   testExtractBalanceUpdate();
+  testExtractBalanceCredit();
   testExtractWebhookCdcRecordsParity();
   testNormalizeBackfillRecord();
   testWebhookCapabilitiesProvision();

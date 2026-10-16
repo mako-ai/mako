@@ -1732,6 +1732,9 @@ export class WiseConnector extends BaseConnector {
       "transfers#payout-failure": { entity: "transfers", operation: "upsert" },
       "transfers#active-cases": { entity: "transfers", operation: "upsert" },
       "balances#update": { entity: "balance_updates", operation: "upsert" },
+      // Wise's own webhook screen offers "Account deposit events" but not
+      // balances#update, so a hand-made subscription lands here
+      "balances#credit": { entity: "balance_updates", operation: "upsert" },
       "balances#account-state-change": {
         entity: "balances",
         operation: "upsert",
@@ -1774,8 +1777,14 @@ export class WiseConnector extends BaseConnector {
     const data = (event.data ?? {}) as Record<string, unknown>;
     const resource = (data.resource ?? {}) as Record<string, unknown>;
 
-    if (eventType === "balances#update") {
-      const balanceId = data.balance_id ?? resource.id;
+    if (eventType === "balances#update" || eventType === "balances#credit") {
+      // balances#credit (2.0.0) has no balance_id or step_id: only the
+      // balance account in `resource`, so its id adds the currency
+      const balanceId =
+        data.balance_id ??
+        (eventType === "balances#credit" && resource.id != null
+          ? `${resource.id}:${data.currency ?? ""}`
+          : resource.id);
       const stepId = data.step_id;
       const occurredAt = data.occurred_at;
       if (balanceId == null) return null;
@@ -1791,16 +1800,20 @@ export class WiseConnector extends BaseConnector {
         data: withStringId({
           id,
           balance_id:
-            typeof data.balance_id === "number"
-              ? data.balance_id
-              : Number(data.balance_id),
+            data.balance_id == null
+              ? null
+              : typeof data.balance_id === "number"
+                ? data.balance_id
+                : Number(data.balance_id),
           profile_id: resource.profile_id ?? null,
           resource_id: resource.id ?? null,
           resource_type: resource.type ?? null,
           amount: data.amount ?? null,
           currency: data.currency ?? null,
           channel_name: data.channel_name ?? null,
-          transaction_type: data.transaction_type ?? null,
+          transaction_type:
+            data.transaction_type ??
+            (eventType === "balances#credit" ? "credit" : null),
           transfer_reference: data.transfer_reference ?? null,
           post_transaction_balance_amount:
             data.post_transaction_balance_amount ?? null,
