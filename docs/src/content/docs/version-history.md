@@ -1,6 +1,6 @@
 ---
 title: Version History
-description: Immutable snapshots for saved consoles and dashboards — browse, view, and restore past versions.
+description: Immutable snapshots for saved consoles and dashboards, plus git history for flows and connectors — browse, view, and restore past versions.
 ---
 
 Every saved console and dashboard has a full, immutable version history. (Apps are git-backed — their history is git history, browsable in Source Control.) Each explicit save creates a new version record capturing the complete state at that point in time. Versions are never rewritten or deleted.
@@ -33,6 +33,19 @@ All endpoints live under the workspace path and require workspace membership.
 | `GET`  | `/api/workspaces/:wid/dashboards/:did/versions`                 | List versions (paginated, newest first)  |
 | `GET`  | `/api/workspaces/:wid/dashboards/:did/versions/:version`        | Get a specific version snapshot          |
 | `POST` | `/api/workspaces/:wid/dashboards/:did/versions/:version/restore` | Restore the dashboard to that version    |
+
+### Flows and Connectors (git history)
+
+Flow definitions (`flows/<slug>.yml`) and workspace connector folders live in the workspace repo, so their history is git history rather than `EntityVersion` records. The History button on a flow or connector opens the same popover consoles and notebooks use: browse commits, diff a commit, and restore. Both entities expose the same four routes (consoles and notebooks serve equivalent `/history`, `/git/commit`, `/git/file-versions` and `/restore` routes):
+
+| Method | Flows                                                    | Connectors                                                                | Description                                              |
+| ------ | -------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `GET`  | `/api/workspaces/:wid/flows/:id/git/history`             | `/api/workspaces/:wid/connector-definitions/:slug/git/history`            | Commit history of the entity's files (`limit` ≤ 200)     |
+| `GET`  | `/api/workspaces/:wid/flows/:id/git/commit`              | `/api/workspaces/:wid/connector-definitions/:slug/git/commit`             | What one commit changed for this entity                  |
+| `GET`  | `/api/workspaces/:wid/flows/:id/git/file-versions`       | `/api/workspaces/:wid/connector-definitions/:slug/git/file-versions`      | A file before and after one commit (for diffs)           |
+| `POST` | `/api/workspaces/:wid/flows/:id/git/restore`             | `/api/workspaces/:wid/connector-definitions/:slug/git/restore`            | Restore to a previous commit, body `{ "sha": "…" }`      |
+
+Flow routes live under `/git/` because `/flows/:id/history` is the run history. Restoring never rewrites history: the old content is committed on `main` as a new commit and applied as a push would be. Flow restore needs only workspace membership (the same as saving a flow); connector restore requires a workspace editor role, because connector code runs with the workspace's credentials. These routes return `412` when the workspace has no connected repo, and `400` when a restore is refused.
 
 ### Apps
 

@@ -144,6 +144,8 @@ A *connector* is code (Stripe, Close, PostHog, a workspace-authored `ws:` connec
 
 The same methods are also served at `/api/workspaces/:wid/connectors` (and `/connectors/:id/…`) as a deprecated alias.
 
+Workspace-authored connector code has git history too: `GET /api/workspaces/:wid/connector-definitions/:slug/git/history` (also `/git/commit`, `/git/file-versions`) and `POST …/git/restore` (workspace editors only). See [Version History](/version-history/).
+
 ### Probe Request
 
 `POST …/connections/sources/:id/probe` (or the legacy `POST …/connectors/:id/probe`) takes an optional JSON body — `entity` (omit to test the credential only), `limit` (1–200, default 20), `fields` (top-level fields to keep), `since` (ISO 8601 instant, honoured where the connector can) — and answers `{ success, data: { connection, check, entity?, durationMs } }`. `entity` carries `records`, `schema`, `count`, `received`, `truncated`, `hasMore` and `logs`. One API page is read and nothing is written; credential values are scrubbed from every string in the result. Errors carry a `code` (`invalid_input`, `not_found`, `unknown_entity`, `timeout`, `connector_unavailable`). Requires a browser session or a legacy (unscoped) API key: scoped MCP keys stay MCP-only, and reach the same probe through the `probe_connection` tool.
@@ -157,6 +159,8 @@ The same methods are also served at `/api/workspaces/:wid/connectors` (and `/con
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/status`                   | Get CDC stream status                                        |
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/schema-health`            | Compare live destination column types to the connector schema (BigQuery; detects drift) |
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/destination-counts`       | Batched row counts per entity in the destination             |
+| `GET`  | `/api/workspaces/:wid/flows/:id/git/history` (also `/git/commit`, `/git/file-versions`) | Git history of the flow definition file |
+| `POST` | `/api/workspaces/:wid/flows/:id/git/restore`                       | Restore the flow to a previous commit (as a new commit)      |
 
 ### Destination Counts Response
 
