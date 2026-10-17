@@ -42,6 +42,7 @@ import {
 } from "../workflows/hatchet";
 import {
   WORKFLOW_QUERY_MAX_ROWS,
+  WORKFLOW_QUERY_MAX_TIMEOUT_MS,
   WorkflowQueryError,
   runWorkflowQuery,
 } from "../workflows/query";
@@ -588,9 +589,10 @@ workflowRuntimeRoutes.post(
   }),
 );
 
-// SQL for a step (lib/mako `query()`): rows as the driver returns them, a
-// page at a time, after the same checks as the agent's sql_execute_query
-// (workflows/query.ts). A refused or failed query is a 400 with its reason.
+// SQL for a step (lib/mako `query()` / `execute()`): the statement runs
+// once and its rows come back as the driver returns them, up to a cap, after
+// the same checks as the agent's sql_execute_query (workflows/query.ts). A
+// refused, failed, capped or timed-out query is a 400 with its reason.
 workflowRuntimeRoutes.post(
   "/query",
   asWorker(async (c, worker) => {
@@ -598,8 +600,8 @@ workflowRuntimeRoutes.post(
       connectionId?: unknown;
       query?: unknown;
       database?: unknown;
-      cursor?: unknown;
       maxRows?: unknown;
+      timeoutMs?: unknown;
     } | null;
     if (typeof body?.connectionId !== "string" || !body.connectionId) {
       return c.json({ error: "A connectionId is required" }, 400);
@@ -607,19 +609,24 @@ workflowRuntimeRoutes.post(
     if (typeof body.query !== "string" || !body.query.trim()) {
       return c.json({ error: "A query is required" }, 400);
     }
-    const optional = (value: unknown) =>
-      typeof value === "string" && value ? value : undefined;
-    const maxRows = body.maxRows;
-    if (
-      maxRows !== undefined &&
-      (typeof maxRows !== "number" ||
-        !Number.isInteger(maxRows) ||
-        maxRows < 1 ||
-        maxRows > WORKFLOW_QUERY_MAX_ROWS)
-    ) {
+    const whole = (value: unknown, max: number) =>
+      value === undefined ||
+      (typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= 1 &&
+        value <= max);
+    if (!whole(body.maxRows, WORKFLOW_QUERY_MAX_ROWS)) {
       return c.json(
         {
           error: `maxRows must be a whole number from 1 to ${WORKFLOW_QUERY_MAX_ROWS}`,
+        },
+        400,
+      );
+    }
+    if (!whole(body.timeoutMs, WORKFLOW_QUERY_MAX_TIMEOUT_MS)) {
+      return c.json(
+        {
+          error: `timeoutMs must be a whole number of milliseconds up to ${WORKFLOW_QUERY_MAX_TIMEOUT_MS}`,
         },
         400,
       );
@@ -637,9 +644,12 @@ workflowRuntimeRoutes.post(
           {
             connectionId: body.connectionId,
             query: body.query,
-            database: optional(body.database),
-            cursor: optional(body.cursor),
-            maxRows: maxRows as number | undefined,
+            database:
+              typeof body.database === "string" && body.database
+                ? body.database
+                : undefined,
+            maxRows: body.maxRows as number | undefined,
+            timeoutMs: body.timeoutMs as number | undefined,
           },
           c.req.raw.signal,
         ),

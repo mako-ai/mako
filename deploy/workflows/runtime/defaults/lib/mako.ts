@@ -151,30 +151,18 @@ export async function call(
 export type QueryOptions = {
   /** The database or dataset, when the connection has no default. */
   database?: string;
-  /** Rows per page, 1 to 500 (default 500). */
+  /** Fail past this many rows (1 to 100000, the default). */
   maxRows?: number;
+  /** Cancel the statement after this long (default 5 minutes, at most 15). */
+  timeoutMs?: number;
 };
 
-/** One page of a query's result, as Mako's /query route answers. */
-export type QueryPage<Row = Record<string, unknown>> = {
-  rows: Row[];
-  fields: { name: string; type?: string }[];
-  /** Rows in this page for a read; rows changed for a write. */
-  rowCount: number;
-  /** Pass as `cursor` for the next page; absent on the last page. */
-  nextCursor?: string;
-};
-
-/**
- * One request to Mako's query route: a page of a SELECT, or a write's result
- * (`rowCount` is the rows it changed). Values come back as the database
- * returns them, never shortened.
- */
-export async function queryPage<Row = Record<string, unknown>>(
+/** One statement, run once by Mako's query route. */
+async function runSql(
   connection: string,
   sql: string,
-  options: QueryOptions & { cursor?: string } = {},
-): Promise<QueryPage<Row>> {
+  options: QueryOptions,
+): Promise<{ rows: unknown[]; rowCount: number }> {
   const workflow = workflowName();
   const res = await fetch(`${url}/api/workflows/runtime/query`, {
     method: "POST",
@@ -185,47 +173,41 @@ export async function queryPage<Row = Record<string, unknown>>(
     },
     body: JSON.stringify({ connectionId: connection, query: sql, ...options }),
   });
-  const body = (await res.json().catch(() => ({}))) as QueryPage<Row> & {
+  const body = (await res.json().catch(() => ({}))) as {
+    rows?: unknown[];
+    rowCount?: number;
     error?: string;
   };
   if (!res.ok)
     throw new Error(body.error ?? `The query failed (${res.status})`);
-  return body;
-}
-
-/** Every page of a query's result, one request each: for results too big to hold at once. */
-export async function* queryPages<Row = Record<string, unknown>>(
-  connection: string,
-  sql: string,
-  options: QueryOptions = {},
-): AsyncGenerator<QueryPage<Row>> {
-  let cursor: string | undefined;
-  do {
-    const page: QueryPage<Row> = await queryPage<Row>(connection, sql, {
-      ...options,
-      cursor,
-    });
-    yield page;
-    cursor = page.nextCursor;
-  } while (cursor);
+  return { rows: body.rows ?? [], rowCount: body.rowCount ?? 0 };
 }
 
 /**
- * Run SQL on a workspace connection and return all its rows, e.g.
- * `await query<{ id: string }>(conn, "SELECT id FROM t")`. Pages are fetched
- * until the last one; add ORDER BY so pages do not overlap. A write runs once
- * and returns the rows it returned (none without RETURNING): use `queryPage`
- * for the rows it changed. Reads work everywhere; a write needs this workflow
- * on the connection's writers list.
+ * Run SQL on a workspace connection once and return all its rows, e.g.
+ * `await query<{ id: string }>(conn, "SELECT id FROM t")`. Values come back
+ * as the database returns them, never shortened. More than `maxRows` rows
+ * (100000) or 50 MB, or longer than `timeoutMs`, throws: aggregate or filter
+ * in SQL. A write returns the rows it returns (RETURNING), else none; it
+ * needs this workflow on the connection's writers list.
  */
 export async function query<Row = Record<string, unknown>>(
   connection: string,
   sql: string,
   options: QueryOptions = {},
 ): Promise<Row[]> {
-  const rows: Row[] = [];
-  for await (const page of queryPages<Row>(connection, sql, options)) {
-    rows.push(...page.rows);
-  }
-  return rows;
+  return (await runSql(connection, sql, options)).rows as Row[];
+}
+
+/**
+ * Run a write (INSERT, UPDATE, DELETE, MERGE, DDL) once and return how many
+ * rows it changed. Needs this workflow on the connection's writers list.
+ */
+export async function execute(
+  connection: string,
+  sql: string,
+  options: Pick<QueryOptions, "database" | "timeoutMs"> = {},
+): Promise<{ rowCount: number }> {
+  const { rowCount } = await runSql(connection, sql, options);
+  return { rowCount };
 }

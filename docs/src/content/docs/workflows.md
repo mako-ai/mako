@@ -56,18 +56,18 @@ Anyone with the member role writes workflows in their sandbox and tests them the
 
 ```ts
 import { generateText } from "ai";
-import { agent, call, model, query, queryPage } from "../lib/mako";
+import { agent, call, execute, model, query } from "../lib/mako";
 
-// SQL on a workspace connection: every row, with values exactly as the
-// database returns them. Name the row type for typed rows.
+// SQL on a workspace connection: run once, every row, with values exactly
+// as the database returns them. Name the row type for typed rows.
 const orders = await query<{ id: string; total: number }>(
   "<connectionId>",
-  "select id, total from orders order by id",
+  "select id, total from orders",
 );
 
 // Writing needs the workflow on the connection's writers list (Access tab).
 // rowCount is the number of rows the write changed.
-const { rowCount } = await queryPage(
+const { rowCount } = await execute(
   "<connectionId>",
   "update mako_out.orders set flagged = true where total > 1000",
 );
@@ -89,13 +89,16 @@ const summary = await generateText({
 
 ### Query results
 
-`query()` returns every row of the result, fetched from Mako 500 rows at a time. Nothing is shortened: long text and JSON values come back whole, and no `LIMIT` is added. Add an `ORDER BY` so that the pages do not overlap or skip rows.
+`query()` runs the statement once and returns all its rows. Nothing is shortened: long text and JSON values come back whole, and no `LIMIT` is added.
 
-- `query(connection, sql, { database?, maxRows? })` returns all rows as an array.
-- `queryPages(connection, sql, options?)` yields one page at a time (`for await`). Use it for results too big to keep in memory at once.
-- `queryPage(connection, sql, { cursor?, ... })` makes one request and returns `{ rows, fields, rowCount, nextCursor? }`. Pass `nextCursor` back as `cursor` for the next page. For a write, `rowCount` is the number of rows changed.
+- `query(connection, sql, { database?, maxRows?, timeoutMs? })` returns the rows as an array. A write sent through `query()` returns its `RETURNING` rows, or an empty array.
+- `execute(connection, sql, { database?, timeoutMs? })` runs a write and returns `{ rowCount }`, the number of rows it changed.
+- A result over 100,000 rows (or `maxRows`, if lower) or over 50 MB throws while it is being read: aggregate or filter in SQL, or read it in parts (for example by id range).
+- A statement still running after `timeoutMs` (default 5 minutes, at most 15) is cancelled on the database and throws.
 
 A query passes the same checks as the agent's `sql_execute_query`: every workflow reads, and only the workflows on a connection's writers list write. A refused or failed query throws with the reason. Workflow code calls the route `POST /api/workflows/runtime/query` with the worker's key.
+
+Rows are raw data. If a step passes them to a model, treat them as untrusted input: text in a row can carry instructions (prompt injection), and guarding against that is the workflow author's job.
 
 ## How a deploy works
 

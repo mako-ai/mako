@@ -126,19 +126,6 @@ async function main() {
       ran.push(q);
       return { success: true, data: [], rowCount: 0 };
     };
-    // A read is fetched a page at a time, with BigQuery's own pages.
-    (
-      databaseConnectionService as unknown as {
-        executeBigQueryPreviewQuery: (
-          db: unknown,
-          q: string,
-        ) => Promise<unknown>;
-      }
-    ).executeBigQueryPreviewQuery = async (_db, q) => {
-      ran.push(q);
-      return { success: true, rows: [], fields: [], pageInfo: {} };
-    };
-
     // What the image runs: worker.mjs's storage, then the default helpers.
     const running = new AsyncLocalStorage<string>();
     (globalThis as { makoWorkflow?: unknown }).makoWorkflow = running;
