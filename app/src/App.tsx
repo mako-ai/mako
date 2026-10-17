@@ -342,14 +342,6 @@ function MainApp() {
     left: leftWidthRef.current,
     right: rightWidthRef.current,
   });
-  const handleGroupLayoutChanged = useCallback((layout: Layout) => {
-    const width = containerWidthRef.current;
-    if (width <= 0) return;
-    const leftPct = layout["left-pane"] ?? 0;
-    const rightPct = layout["right-pane"] ?? 0;
-    if (leftPct > 0) settledWidthsRef.current.left = (leftPct * width) / 100;
-    if (rightPct > 0) settledWidthsRef.current.right = (rightPct * width) / 100;
-  }, []);
 
   // While dragging, make iframes (e.g. the app preview) transparent to
   // pointer events so they don't swallow the drag mid-flight.
@@ -365,6 +357,27 @@ function MainApp() {
     setPaneWidths({ rightPaneWidthPx: rightWidthRef.current });
     closeRightPane();
   }, [closeRightPane, setPaneWidths]);
+
+  const handleGroupLayoutChanged = useCallback(
+    (layout: Layout) => {
+      const width = containerWidthRef.current;
+      if (width <= 0) return;
+      const leftPct = layout["left-pane"] ?? 0;
+      const rightPct = layout["right-pane"] ?? 0;
+      if (leftPct > 0) settledWidthsRef.current.left = (leftPct * width) / 100;
+      if (rightPct > 0) {
+        settledWidthsRef.current.right = (rightPct * width) / 100;
+      }
+      // The completed layout is the truth about whether a side pane shows.
+      // A drag that collapses a pane in one burst (seen in production) can
+      // land at 0 without the panel's onResize reporting the transition,
+      // which left the pane hidden but flagged open. Sync the flag here.
+      const { left, right } = openFlagsRef.current;
+      if (leftPct === 0 && left) handleLeftCollapse();
+      if (rightPct === 0 && right) handleRightCollapse();
+    },
+    [handleLeftCollapse, handleRightCollapse],
+  );
 
   // react-resizable-panels v4 reports collapse/expand only as size changes:
   // translate a side pane's transition to/from 0 into close/open.
