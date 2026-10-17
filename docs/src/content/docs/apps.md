@@ -32,7 +32,7 @@ Bindings are how apps reach workspace data. A binding is one file — `bindings/
 SELECT category, amount, created_at FROM orders
 ```
 
-Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact (same pipeline as dashboards); at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@mako/app-sdk` — a real package committed into the workspace repo:
+Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact (same pipeline as dashboards); at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
 
 ```tsx
 import { useQuery, useDuckDB } from "@makoai/app-sdk"; // apps created before 2026-09: "@mako/app-sdk" (older alias, same package)
@@ -52,9 +52,30 @@ const { refresh, refreshing } = useQuery("recent_orders");
 
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
+## House Style: `@makoai/app-sdk/ui`
+
+Importing the SDK injects Mako's theme tokens (stone palette, warm `--canvas`, `--brand`, `--positive` / `--warning` / `--negative`, `--chart-1`…`--chart-5`; light and dark). Style with those names and the app follows the house palette for free. To re-theme, override a single token in your own stylesheet rather than pasting the whole token block.
+
+The SDK also ships a small dashboard kit — plain ESM and plain CSS (no Tailwind required, classes prefixed `mk-`), and new apps are scaffolded on it:
+
+```tsx
+import "@makoai/app-sdk/ui.css"; // before ./styles.css, so the app wins
+import { PageHeader, Card, KpiRow, KpiTile, Button, StatusDot,
+  MultiSelect, FreshnessBadge, RefreshAllButton } from "@makoai/app-sdk/ui";
+```
+
+- `PageHeader`, `Card`, `KpiRow` / `KpiTile`, `Button`, `StatusDot` — page furniture.
+- `MultiSelect` — controlled filter; an empty selection means "all" unless `emptyMeansAll={false}`. On phones the menu is a bottom sheet.
+- `FreshnessBadge` — presentational: the app decides what "fresh" means and passes a `tone`, a `headline` and per-source rows.
+- `RefreshAllButton` — rebuilds every binding (`refreshBinding`) a few at a time, with a progress modal. Feed it the binding names through a build-time `__APP_BINDING_NAMES__` define in `vite.config.ts` (the scaffold sets this up).
+
+## SDK Versions
+
+Apps declare `@makoai/app-sdk` with a caret range. On every deploy, Mako moves each app's `@makoai/*` dependencies to the newest release inside that range after install, so SDK fixes and design updates reach published apps without anyone copying files. This is best-effort and never fails a build; third-party dependencies stay locked.
+
 ## URL State & Routing
 
-Apps can keep view state — the active tab, applied filters, a selected record, a sub-page — in the URL, so a reload restores it and the link is shareable. Reach for the `@mako/app-sdk` hooks rather than `window.history` directly, and they work both embedded in Mako (`/a/:app`) and in the public share view (`/share/:token`):
+Apps can keep view state — the active tab, applied filters, a selected record, a sub-page — in the URL, so a reload restores it and the link is shareable. Reach for the `@makoai/app-sdk` hooks rather than `window.history` directly, and they work both embedded in Mako (`/a/:app`) and in the public share view (`/share/:token`):
 
 ```tsx
 import { useLocation, useSearchParams, navigate } from "@makoai/app-sdk";
