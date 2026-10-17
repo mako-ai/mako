@@ -17,7 +17,7 @@ A **connector** is code: the thing that knows how to check a credential and read
 
 | Connector     | Source          | Entities                                                                         |
 | ------------- | --------------- | -------------------------------------------------------------------------------- |
-| **Stripe**    | Stripe API      | Customers, Subscriptions, Disputes, Charges, Invoices, Products, Prices, Plans, Payment Intents. *Supports backfill and CDC webhooks (auto-provisioning via Stripe webhook endpoints).* |
+| **Stripe**    | Stripe API      | Customers, Subscriptions, Disputes, Charges, Invoices, Products, Prices, Plans, Payment Intents, plus money-movement and billing-detail entities: Balance Transactions, Payouts, Payout Balance Transactions, Refunds, Credit Notes, Customer Balance Transactions, Invoice Items, Subscription Schedules, Coupons, Promotion Codes, Checkout Sessions, Setup Intents, Early Fraud Warnings. *Supports backfill and CDC webhooks (auto-provisioning via Stripe webhook endpoints; the endpoint's events are kept in step with the flow's enabled entities).* Customer Balance Transactions walks every customer and has no incremental mode (`none`). |
 | **Close CRM** | Close API       | Leads, Opportunities, Activities (10+ sub-types), Contacts, Users, Custom Fields. *Webhooks are automatically scoped to synced entities only.* |
 | **Claap**     | Claap API       | Recordings, Workspace. *Supports backfill and CDC webhooks (auto-provisioning via "Create in Claap").* |
 | **Calendly**  | Calendly API    | Organizations, Users, Groups, Event Types, Scheduled Events, Invitees, Contacts. *Real-time invitee + event-type webhooks (auto-provisioned); scheduled backfill covers the rest.* |
