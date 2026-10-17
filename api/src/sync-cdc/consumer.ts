@@ -262,6 +262,35 @@ export class CdcConsumerService {
         rowsAppliedDelta: apply.applied,
       });
 
+      // A failed apply marks the whole stream "error"; one that succeeds
+      // afterwards proves the failure was transient (a reset connection, a
+      // BigQuery hiccup), so clear it rather than show a working stream as
+      // broken until someone presses Recover (es/fr Close sat in "error" from
+      // 2026-10-05 while applying events every minute).
+      if (
+        flow.streamState === "error" &&
+        flow.syncStateMeta?.lastErrorCode === "MATERIALIZATION_FAILED"
+      ) {
+        try {
+          await cdcSyncStateService.applyStreamTransition({
+            workspaceId: params.workspaceId,
+            flowId: params.flowId,
+            event: {
+              type: "RECOVER",
+              reason: "Materialization succeeded again",
+            },
+          });
+        } catch (recoverError) {
+          log.warn("CDC consumer could not clear the stream error", {
+            flowId: params.flowId,
+            error:
+              recoverError instanceof Error
+                ? recoverError.message
+                : String(recoverError),
+          });
+        }
+      }
+
       if (state?.consecutiveFailures) {
         await CdcEntityState.updateOne(
           {
