@@ -45,18 +45,34 @@ In addition to scheduled batch syncing, Mako supports experimental Change Data C
 - **Backfills** — historical data backfills run robustly within 1Gi Cloud Run memory limits, safely handling bulk flushes by cycling DuckDB instances
 - **BigQuery Staging** — streams events into region-aligned BigQuery staging tables (safely preserved during recovery)
 
-### Scoped Backfill Schedules
+### Triggers: Poll, Webhooks, Resync
 
-A flow's `backfill_schedule` normally re-pulls every entity. Some entities are never reported by webhooks (for example Close users, groups and statuses) and only refresh on a backfill, so a whole-flow backfill is a heavy way to keep them current. Add an optional `entities` list to limit each scheduled backfill to those entities:
+A sync has three independent controls that decide what starts it. There is no flow "type" any more — the triggers are the whole story (older files that still say `type: webhook` or `type: scheduled` keep working, but `type` is never written).
+
+| Control | What it does |
+|---------|--------------|
+| **Poll** | Re-reads the source on a cron (or `off`). Polling runs whenever it is on. |
+| **Webhooks** | The source pushes changes to the sync's inbound URL. Webhooks only add speed on top of polling — they never switch polling off. Any sync can take webhooks; the URL is minted when you turn them on and never moves. |
+| **Resync** | The periodic full re-read that repairs whatever live updates missed. It is also what makes a new sync start. Set a cron, or `off` to run a backfill only on demand. |
+
+For connectors that can look a subscription up by URL (Stripe, Wise), saving a sync with webhooks on **provisions the subscription for you**: it adopts one already pointing at the URL and creates one only if none exists. A refusal is shown on the sync and polling carries on. Close, PandaDoc, Calendly and Claap keep the explicit **Create in …** button.
+
+In the sync form the three controls sit side by side, with a status line (last poll, last resync, webhook state) and a **Backfill now** button.
+
+Connector syncs always use the CDC engine (the legacy sync engine was removed): a connector sync needs a table destination in a database with a CDC adapter (BigQuery, PostgreSQL, ClickHouse or MongoDB). Database-source syncs (query → table) keep their own write path.
+
+### Scoped Resync Schedules
+
+A sync's resync normally re-pulls every entity. Some entities are never reported by webhooks (for example Close users, groups and statuses) and only refresh on a backfill, so a whole-sync resync is a heavy way to keep them current. Add an optional `entities` list to limit each scheduled resync to those entities:
 
 ```yaml
-backfill_schedule:
+resync:
   cron: 0 4 * * *
   timezone: Europe/Paris
   entities: [users]
 ```
 
-This uses the same scoped path as the per-entity **Sync** button. Leave `entities` out (or empty) for a full backfill. Schedules saved from the UI keep the list.
+This uses the same scoped path as the per-entity **Sync** button. Leave `entities` out (or empty) for a full resync. Schedules saved from the UI keep the list. (Format 1 files call this `backfill_schedule`; it still parses.)
 
 ### Schema Evolution (BigQuery)
 
@@ -111,8 +127,8 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
   `connectors/<slug>/`, see [Connectors](/connectors/)). Webhook secrets and
   endpoints are minted in Mongo on first create and are never read from or
   written to the file.
-- **The connection must already exist.** No MCP tool or CLI creates one: ask
-  for it to be configured in Mako (Sources → Add), find its id with
+- **The connection must already exist.** Configure it in Mako (Sources → Add)
+  or create it with the `create_connection` MCP tool, find its id with
   `list_connections({ kind: "source" })`, confirm it works with
   `probe_connection`, then write the file.
 - Validate before pushing with the `check_flow_files` MCP tool, which reports
@@ -122,6 +138,43 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
 
 See the `flows-as-code` system skill (loaded automatically by MCP-connected
 agents) for the full file format and step-by-step workflow.
+
+### Flow file format 2
+
+Files are written in format 2: `live` (`poll`, `timezone`, `webhook`) and `resync` replace `type`, `schedule`, `webhook: { enabled }` and `backfill_schedule`, and `sync.engine` is gone (CDC is the only engine). Older files are read forever and Mako never rewrites a file just to change its format.
+
+```yaml
+live:
+  poll: 'off'        # a cron, or off
+  webhook: 'on'      # on | off
+resync:
+  cron: 0 3 * * *    # or `resync: off`
+  timezone: UTC
+```
+
+### Driving syncs from an agent or the terminal
+
+Over MCP (external clients only), five tools cover syncs:
+
+| Tool | What it does |
+|------|--------------|
+| `flow_list` / `flow_read` | List syncs, or read one as its `flows/<slug>.yml` shape (never credentials or webhook secrets), with its triggers |
+| `flow_status` | Per-entity CDC state (mode, backlog, failures, last materialised) plus the last executions |
+| `flow_backfill` | Start (or resume) a backfill, optionally for some entities |
+| `flow_update` | Change the three trigger controls (poll, webhook, resync) and commit the flow file |
+
+A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_close`). The two writes need the `warehouse:write` grant and an owner or admin role; the reads need neither.
+
+The CLI wraps the same tools:
+
+```bash
+mako sync ls
+mako sync status <name|id>
+mako sync backfill <name|id> [--entity a,b]
+mako sync set <name|id> [--poll <cron|off>] [--webhook on|off] [--resync <cron|off>] [--tz <zone>]
+```
+
+All of them accept `--json`.
 
 ## Error Handling
 

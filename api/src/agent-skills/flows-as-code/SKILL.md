@@ -169,9 +169,10 @@ if it carries the field the cron looks for:
 | `live.poll:` a cron | polls on the cron |
 | `live.webhook: on` | row is *addressable* (endpoint minted, shown on the flow's page). Stripe and Wise subscriptions are created on save where the token allows; for other providers inbound deliveries are rejected until (a) the provider's signing secret is pasted in the UI — never from the file — and (b) the provider is pointed at the minted URL. Push first, then do both. |
 
-Verify: there is no flow-status tool over MCP yet — open the Flows page:
-`streamState` should leave `idle` and a backfill run should appear; then
-`SELECT count(*)` in the destination via `execute_query`.
+Verify: `flow_status` (or `mako sync status <name>`) shows each entity's state
+and the last runs — `streamState` should leave `idle` and a backfill run should
+appear (the Flows page shows the same); then `SELECT count(*)` in the
+destination via `execute_query`.
 
 ## Removing and renaming
 
