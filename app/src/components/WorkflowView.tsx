@@ -29,7 +29,6 @@ import {
   fetchWorkflowFile,
   isActiveRun,
   useWorkflowsStore,
-  type WorkflowRun,
   type WorkflowRunSummary,
 } from "../store/workflowsStore";
 import { formatDuration } from "../utils/format";
@@ -155,8 +154,8 @@ function RunDialog({
     sandbox: boolean,
   ) => Promise<string | null>;
 }) {
-  // A sandbox run answers when it is finished, a few seconds at least.
-  // Mounted only while open, so the initial state is the dialog's state.
+  // A run, on main or in the sandbox, answers its runId at once and is
+  // followed in the list. Mounted only while open, so the initial state is the dialog's state.
   const [target, setTarget] = useState<"main" | "sandbox">(
     deployed ? "main" : "sandbox",
   );
@@ -238,7 +237,7 @@ function RunDialog({
           disabled={busy}
           startIcon={busy ? <CircularProgress size={12} /> : undefined}
         >
-          {busy && target === "sandbox" ? "Running in sandbox…" : "Run"}
+          Run
         </Button>
       </DialogActions>
     </Dialog>
@@ -259,15 +258,13 @@ function RunsView({
   const setTriggers = useWorkflowsStore(s => s.setTriggers);
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  // The last sandbox run: shown in place of a selected run until one is picked.
-  const [sandboxRun, setSandboxRun] = useState<WorkflowRun | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listedRun = useWorkflowsStore(s =>
     selectedRunId ? s.runsById[selectedRunId] : undefined,
   );
-  const selectedRun = sandboxRun ?? listedRun;
+  const selectedRun = listedRun;
 
   const runs = useMemo(
     () =>
@@ -277,8 +274,9 @@ function RunsView({
       ),
     [overview?.recentRuns, workflowId],
   );
-  const selectedSummary: WorkflowRunSummary | undefined =
-    sandboxRun ?? runs.find(run => run.runId === selectedRunId);
+  const selectedSummary: WorkflowRunSummary | undefined = runs.find(
+    run => run.runId === selectedRunId,
+  );
   const selectedStatus = selectedRun?.status ?? selectedSummary?.status;
   const hasActive = runs.some(run => isActiveRun(run.status));
 
@@ -309,7 +307,6 @@ function RunsView({
   ]);
 
   const select = (runId: string) => {
-    setSandboxRun(null);
     setSelectedRunId(runId);
   };
 
@@ -466,7 +463,7 @@ function RunsView({
                     borderBottom: "1px solid",
                     borderColor: "divider",
                     backgroundColor:
-                      !sandboxRun && run.runId === selectedRunId
+                      run.runId === selectedRunId
                         ? "action.selected"
                         : "transparent",
                     "&:hover": { backgroundColor: "action.hover" },
@@ -715,11 +712,8 @@ function RunsView({
               sandbox,
             );
             if (!result.ok) return result.error ?? "Failed to start the run";
-            if (result.run) setSandboxRun(result.run);
-            else {
-              await fetchOverview(workspaceId);
-              if (result.runId) select(result.runId);
-            }
+            await fetchOverview(workspaceId);
+            if (result.runId) select(result.runId);
             return null;
           }}
         />

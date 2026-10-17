@@ -8,9 +8,21 @@
 //   node run.mjs <workflow> <base64 of the JSON input>
 //
 // Env: WORKFLOWS_ROOT (the checkout), MAKO_URL, MAKO_API_KEY (for lib/mako),
-// MAKO_SANDBOX_RESULT_FILE (where the result goes; stdout without it).
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+// MAKO_SANDBOX_RESULT_FILE (where the result goes; stdout without it),
+// MAKO_SANDBOX_RUN_TIMEOUT_MS (how long the workflow may run),
+// MAKO_SANDBOX_ENGINE_DIR (where engines keep their Postgres, one folder per
+// run), MAKO_SANDBOX_RUN_ID (this run's folder name there).
+import { execFileSync } from "node:child_process";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startEmbeddedSidecar } from "@hatchet-dev/typescript-sdk/v1/embedded";
 import { prepare, startWorker, typecheck } from "./build.mjs";
@@ -18,11 +30,28 @@ import { prepare, startWorker, typecheck } from "./build.mjs";
 // The engine the sidecar runs, pinned: the one the sandbox image carries
 // (api/src/apps/e2b-template.ts), so a box never fetches another.
 const ENGINE_VERSION = "v0.110.5";
-const ENGINE_START_ATTEMPTS = 4;
-const RUN_TIMEOUT_MS = 300_000;
+const ENGINE_START_ATTEMPTS = 3;
+const RUN_TIMEOUT_MS =
+  Number(process.env.MAKO_SANDBOX_RUN_TIMEOUT_MS) || 300_000;
 const POLL_MS = 500;
-const LOG_LINES_PER_STEP = 20;
-const MAX_TEXT_CHARS = 4000;
+// Mako keeps each text up to a megabyte and every log line; it shows a
+// summary unless asked for all of it.
+const MAX_TEXT_CHARS = 1_000_000;
+const MAX_LOG_CHARS_PER_STEP = 1_000_000;
+const MAX_LOG_LINES = 10_000;
+// Each run's engine keeps its Postgres in a folder of its own here, so no
+// run ever starts on what another left: an engine and Postgres that a killed
+// run left running hold only their own folder.
+const ENGINE_DIR =
+  process.env.MAKO_SANDBOX_ENGINE_DIR ||
+  join(homedir(), ".mako-workflow-engine");
+const RUN_DIR = join(
+  ENGINE_DIR,
+  (process.env.MAKO_SANDBOX_RUN_ID || `run-${process.pid}`).replace(
+    /[^A-Za-z0-9_-]/g,
+    "_",
+  ),
+);
 
 const [name, encodedInput] = process.argv.slice(2);
 const input = JSON.parse(
@@ -32,11 +61,83 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Waiting for the engine does not by itself keep Node alive (it exits with
 // code 13 on Node 20.9, the sandbox's); this does, until finish() exits.
 setInterval(() => {}, 60_000);
-/** A step's output can be any size; Mako shows the start of it. */
+/** A step's output can be any size; Mako keeps the first megabyte. */
 const clip = value => {
   const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text?.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : value;
+  return text?.length > MAX_TEXT_CHARS
+    ? `${text.slice(0, MAX_TEXT_CHARS)}… (${text.length} chars)`
+    : value;
 };
+/** A step's log lines, the last ones when there are more than Mako keeps. */
+function keepLines(rows) {
+  // Hatchet lists them in no order; by time, oldest first.
+  // Parsed: Hatchet writes fractions of a second at varying lengths.
+  const at = row => Date.parse(String(row.createdAt ?? "")) || 0;
+  const sorted = [...rows].sort((a, b) => at(a) - at(b));
+  const kept = [];
+  let chars = 0;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const message = clip(sorted[i].message);
+    chars += String(message ?? "").length;
+    if (chars > MAX_LOG_CHARS_PER_STEP) break;
+    kept.unshift({ createdAt: sorted[i].createdAt, message });
+  }
+  return kept;
+}
+
+const alive = pid => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Stop what earlier runs left behind and delete their folders. A run whose
+ * exec was killed (a timeout) can leave its engine, and the engine's
+ * Postgres outlives it. Both name their run's folder in their command line;
+ * Postgres by its real path (/private/var/… for /var/…). One run at a time
+ * per box (Mako's lock), so every other folder is a leftover.
+ */
+async function stopLeftovers() {
+  const old = readdirSync(ENGINE_DIR)
+    .map(entry => join(ENGINE_DIR, entry))
+    .filter(dir => dir !== RUN_DIR);
+  if (!old.length) return;
+  const named = old.flatMap(dir => [`${dir}/`, `${realpathSync(dir)}/`]);
+  let pids = [];
+  try {
+    pids = execFileSync("ps", ["-A", "-o", "pid=,command="])
+      .toString()
+      .split("\n")
+      .map(line => line.trim().match(/^(\d+)\s+(.*)$/))
+      .filter(Boolean)
+      .filter(
+        ([, , command]) =>
+          /hatchet-embedded-sidecar|postgres/.test(command) &&
+          named.some(dir => command.includes(dir)),
+      )
+      .map(([, pid]) => Number(pid));
+  } catch {
+    // No ps: nothing to stop, only folders to delete.
+  }
+  if (pids.length) {
+    console.error(
+      `Stopping what an earlier run left running: ${pids.join(", ")}`,
+    );
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    for (let i = 0; i < 20 && pids.some(alive); i++) await sleep(250);
+  }
+  for (const dir of old) rmSync(dir, { recursive: true, force: true });
+}
 
 let root;
 let worker;
@@ -49,9 +150,9 @@ async function finish(result) {
   if (process.env.MAKO_SANDBOX_RESULT_FILE) {
     writeFileSync(process.env.MAKO_SANDBOX_RESULT_FILE, json);
   } else console.log(json);
-  // Stop the engine before leaving: the next run starts its own on the same
-  // data folder, and two cannot hold it.
+  // Stop the engine and its Postgres, then its folder goes.
   await engine?.stop().catch(() => undefined);
+  rmSync(RUN_DIR, { recursive: true, force: true });
   process.exit(0);
 }
 
@@ -70,16 +171,19 @@ try {
   const errors = typecheck(root);
   if (errors) await finish({ buildError: errors });
 
-  // The last run's Postgres can hold the data folder a moment after its
-  // engine stopped: try again before giving up.
+  mkdirSync(RUN_DIR, { recursive: true });
+  await stopLeftovers();
+  const engineStart = Date.now();
   for (let attempt = 1; !engine; attempt++) {
-    engine = await startEmbeddedSidecar({ version: ENGINE_VERSION }).catch(
-      err => {
-        if (attempt === ENGINE_START_ATTEMPTS) throw err;
-      },
-    );
+    engine = await startEmbeddedSidecar({
+      version: ENGINE_VERSION,
+      postgresDataDir: join(RUN_DIR, "postgres"),
+    }).catch(err => {
+      if (attempt === ENGINE_START_ATTEMPTS) throw err;
+    });
     if (!engine) await sleep(3_000);
   }
+  console.error(`Engine ready in ${Date.now() - engineStart} ms`);
   const api = async (path, init) => {
     const res = await fetch(`${engine.apiUrl}${path}`, {
       ...init,
@@ -135,13 +239,9 @@ try {
     task.output = clip(task.output);
     task.errorMessage = clip(task.errorMessage);
     logs[task.metadata.id] = await api(
-      `/api/v1/stable/tasks/${task.metadata.id}/logs`,
+      `/api/v1/stable/tasks/${task.metadata.id}/logs?limit=${MAX_LOG_LINES}`,
     )
-      .then(list =>
-        (list.rows ?? [])
-          .slice(-LOG_LINES_PER_STEP)
-          .map(line => ({ message: clip(line.message) })),
-      )
+      .then(list => keepLines(list.rows ?? []))
       .catch(() => []);
   }
   detail.run.output = clip(detail.run.output);

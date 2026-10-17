@@ -1,7 +1,8 @@
 /**
  * Workflows — what is deployed, the workflows, their runs and their files —
  * keyed by workspace. Everything here is read from the API on demand; runs
- * live in Hatchet and the deploy state on the workspace, so the store only
+ * live in Hatchet (sandbox runs in Mako) and the deploy state on the
+ * workspace, so the store only
  * caches what the screens last saw.
  */
 import { create } from "zustand";
@@ -17,7 +18,7 @@ interface WorkflowDeployment {
 export interface WorkflowRunSummary {
   runId?: string;
   workflowId: string;
-  /** A run of the viewer's checkout in their sandbox; it is in no list. */
+  /** A run of the viewer's checkout in their sandbox; only they see it. */
   sandbox?: boolean;
   status?: string;
   startedAt?: string;
@@ -34,6 +35,8 @@ interface WorkflowRunStep {
   output?: string;
   error?: string;
   logs: Array<string | undefined>;
+  /** Earlier log lines left out of this view. */
+  logLinesOmitted?: number;
 }
 
 export interface WorkflowRun extends WorkflowRunSummary {
@@ -65,10 +68,8 @@ interface WorkflowsOverview {
 type Result = {
   ok: boolean;
   error?: string;
-  /** A run started on main. */
+  /** The run started, on main or in the sandbox. */
   runId?: string;
-  /** A finished sandbox run. */
-  run?: WorkflowRun;
 };
 
 interface WorkflowsState {
@@ -172,8 +173,8 @@ export const useWorkflowsStore = create<WorkflowsState>()(
             params: { path: { workspaceId, name: workflowId } },
             body: { input, sandbox },
           }),
-        ) as { runId?: string; run?: WorkflowRun };
-        return { ok: true, runId: body.runId, run: body.run };
+        ) as { runId?: string };
+        return { ok: true, runId: body.runId };
       } catch (e) {
         return { ok: false, error: message(e, "Failed to start the run") };
       }

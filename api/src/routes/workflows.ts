@@ -3,7 +3,8 @@
  * people, a webhook per workflow, and the runtime routes for the worker.
  *
  * Workflows, runs and logs are read from Hatchet and trimmed
- * (workflows/runs.ts); Mako keeps only the deploy state on the workspace. The
+ * (workflows/runs.ts); Mako keeps the deploy state on the workspace and the
+ * sandbox runs (workflows/sandbox-runs.ts). The
  * runtime routes accept a workspace API key with the `workflows:runtime`
  * scope, which a person cannot put on a key; the key decides the workspace.
  */
@@ -39,9 +40,9 @@ import {
   requireTenant,
   startRun,
 } from "../workflows/hatchet";
-import { readRun, readWorkflowsOverview } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
-import { runInSandbox } from "../workflows/sandbox";
+import { runSandboxToEnd, startSandboxRun } from "../workflows/sandbox";
+import { readStatus, waitForRun } from "../workflows/status";
 import { isWebhookSecret, setTriggers } from "../workflows/webhook";
 
 const logger = loggers.api("workflows");
@@ -80,6 +81,8 @@ const WorkspaceParam = z.object({
     .string()
     .openapi({ param: { name: "workspaceId", in: "path" } }),
 });
+/** Seconds to wait on the server; capped in workflows/wait.ts. */
+const WaitQuery = z.coerce.number().min(0).optional();
 const NameParam = WorkspaceParam.extend({
   name: z.string().openapi({ param: { name: "name", in: "path" } }),
 });
@@ -114,17 +117,27 @@ workflowRoutes.openapi(
     method: "get",
     path: "/",
     tags: ["Workflows"],
-    summary: "What is deployed, the workflows, schedules and recent runs",
+    summary:
+      "What is deployed, the workflows, schedules and recent runs (the caller's sandbox runs among them); `wait` (seconds, at most 90) first waits for a deploy to go live",
     security: AUTH_SECURITY,
-    request: { params: WorkspaceParam },
+    request: {
+      params: WorkspaceParam,
+      query: z.object({ wait: WaitQuery }),
+    },
     responses: OPEN_RESPONSES,
   }),
   async c => {
     const { workspaceId } = c.req.valid("param");
+    const { wait } = c.req.valid("query");
     return c.json(
       {
         success: true as const,
-        ...(await readWorkflowsOverview(workspaceId, RUNS_SHOWN, mayChange(c))),
+        ...(await readStatus(workspaceId, {
+          userId: c.get("user")?.id,
+          limit: RUNS_SHOWN,
+          asAdmin: mayChange(c),
+          wait,
+        })),
       },
       200,
     );
@@ -136,19 +149,34 @@ workflowRoutes.openapi(
     method: "get",
     path: "/runs/{id}",
     tags: ["Workflows"],
-    summary: "One run: its steps in order, with status, output, error and logs",
+    summary:
+      "One run, deployed or sandbox: its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives each text up to 1 MB and every log line",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam.extend({
         id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      query: z.object({
+        wait: WaitQuery,
+        full: z
+          .enum(["true", "false"])
+          .optional()
+          .transform(value => value === "true"),
       }),
     },
     responses: OPEN_RESPONSES,
   }),
   async c => {
     const { workspaceId, id } = c.req.valid("param");
-    const run = await readRun(await requireTenant(workspaceId), id);
-    return c.json({ success: true as const, run }, 200);
+    const { wait, full } = c.req.valid("query");
+    const { run, done } = await waitForRun(workspaceId, c.get("user")?.id, id, {
+      wait,
+      full,
+    });
+    return c.json(
+      { success: true as const, run, ...(done ? {} : { running: true }) },
+      200,
+    );
   },
 );
 
@@ -204,7 +232,7 @@ workflowRoutes.openapi(
     path: "/{name}/run",
     tags: ["Workflows"],
     summary:
-      "Start a run of the deployed workflow (answers its runId), or with `sandbox` run the caller's checkout in their sandbox (answers the finished run)",
+      "Start a run of the deployed workflow, or with `sandbox` of the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait=",
     security: AUTH_SECURITY,
     request: {
       params: NameParam,
@@ -230,8 +258,13 @@ workflowRoutes.openapi(
       if (!userId) {
         throw new HatchetError("A sandbox needs a signed-in user", 400);
       }
-      const run = await runInSandbox(workspaceId, userId, name, body.input);
-      return c.json({ success: true as const, run }, 200);
+      const { runId } = await startSandboxRun(
+        workspaceId,
+        userId,
+        name,
+        body.input,
+      );
+      return c.json({ success: true as const, runId, sandbox: true }, 200);
     }
     const runId = await startRun(await requireTenant(workspaceId), name, {
       input: body?.input,
@@ -309,7 +342,7 @@ workflowHookRoutes.post(
       ]);
       if (!member) return c.json({ error: "Not found" }, 404);
       return c.json({
-        run: await runInSandbox(workspaceId, tester, name, input),
+        run: await runSandboxToEnd(workspaceId, tester, name, input),
       });
     }
     // The production URL works while the workflow is active, like its schedule.

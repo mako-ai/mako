@@ -30,7 +30,7 @@ export function workflowsNamePrefix(): string {
 export function hasInstanceHatchet(): boolean {
   return Boolean(
     process.env.HATCHET_CLIENT_TOKEN ||
-      (process.env.HATCHET_ADMIN_PASSWORD && process.env.HATCHET_API_URL),
+    (process.env.HATCHET_ADMIN_PASSWORD && process.env.HATCHET_API_URL),
   );
 }
 

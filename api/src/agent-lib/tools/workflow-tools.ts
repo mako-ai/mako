@@ -9,9 +9,10 @@ import { z } from "zod";
 
 import { workspaceService } from "../../services/workspace.service";
 import { requireTenant, startRun } from "../../workflows/hatchet";
-import { readRun, readWorkflowsOverview } from "../../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY } from "../../workflows/policy";
-import { runInSandbox } from "../../workflows/sandbox";
+import { startSandboxRun } from "../../workflows/sandbox";
+import { readStatus, waitForRun } from "../../workflows/status";
+import { MAX_WAIT_SECONDS } from "../../workflows/wait";
 import { setTriggers } from "../../workflows/webhook";
 
 /** How many recent runs an agent is shown. */
@@ -37,28 +38,42 @@ export function createWorkflowTools({
 
   return {
     workflows_status: tool({
-      description:
-        "Look at this workspace's workflows. Without runId: what is deployed (`deployment`: the code on main), the build error if a commit did not start (`buildError` — the old code keeps running), the workflows (each with `active`, and `webhookUrl` when one has a webhook) and schedules, and the last runs. With runId: that run's steps, each with status, output, error and its last log lines (what the step wrote with ctx.logger). While `liveSha` is not yet `targetSha` the worker has not switched to the new commit; call again in a few seconds.",
+      description: `Look at this workspace's workflows. Without runId: what is deployed (\`deployment\`: the code on main), the build error if a commit did not start (\`buildError\` — the old code keeps running), the workflows (each with \`active\`, and \`webhookUrl\` when one has a webhook) and schedules, and the last runs, your sandbox runs among them (\`sandbox: true\`). With \`wait\` and no runId it first waits up to that many seconds for a deploy to go live (\`liveSha\` = \`targetSha\`) or fail (\`buildError\`); \`deploying: true\` means it had not yet, call again. With runId: that run, sandbox or deployed: its steps, each with status, output, error and log lines (what the step wrote with ctx.logger). With \`wait\` it waits up to that many seconds (at most ${MAX_WAIT_SECONDS}) for the run to end; \`running: true\` means it had not yet, call again. Texts are cut at 2000 characters and logs to a step's last 20 lines; \`full: true\` gives each text up to 1 MB and every log line.`,
       inputSchema: z.object({
         runId: z
           .string()
           .optional()
           .describe("A run id from workflows_run or from recentRuns"),
+        wait: z
+          .number()
+          .min(0)
+          .optional()
+          .describe(
+            `Seconds to wait for the run to end (with runId) or the deploy to go live (without), at most ${MAX_WAIT_SECONDS}`,
+          ),
+        full: z
+          .boolean()
+          .optional()
+          .describe("With runId: the whole run, not a summary"),
       }),
-      execute: async ({ runId }) => {
+      execute: async ({ runId, wait, full }) => {
         try {
           if (!runId) {
             return {
               success: true,
-              ...(await readWorkflowsOverview(
-                workspaceId,
-                RECENT_RUNS,
-                await mayChange(),
-              )),
+              ...(await readStatus(workspaceId, {
+                userId,
+                limit: RECENT_RUNS,
+                asAdmin: await mayChange(),
+                wait,
+              })),
             };
           }
-          const tenant = await requireTenant(workspaceId);
-          return { success: true, run: await readRun(tenant, runId) };
+          const { run, done } = await waitForRun(workspaceId, userId, runId, {
+            wait,
+            full,
+          });
+          return { success: true, run, ...(done ? {} : { running: true }) };
         } catch (error) {
           return failure(error);
         }
@@ -67,7 +82,7 @@ export function createWorkflowTools({
 
     workflows_run: tool({
       description:
-        "Run a workflow. With `sandbox: true` it runs the workflow as it is in your checkout right now, uncommitted edits included, inside your sandbox, with real data and no schedule, and returns the finished run: each step's status, output, error and log lines. That is how a change is tested; it takes about ten seconds plus the workflow's own time, five minutes at most. Without `sandbox`, the deployed code on main is started, active or not, and you get a runId to follow with workflows_status({ runId }).",
+        "Start a run of a workflow; answers its runId at once. Follow it with workflows_status({ runId, wait: 90 }), again while it answers `running: true`. With `sandbox: true` it runs the workflow as it is in your checkout right now, uncommitted edits included, inside your sandbox, with real data and no schedule: that is how a change is tested. A sandbox run takes about ten seconds plus the workflow's own time, fifteen minutes at most; type errors in the checkout end it with `buildError`. Without `sandbox`, the deployed code on main is started, active or not.",
       inputSchema: z.object({
         workflowId: z
           .string()
@@ -91,11 +106,13 @@ export function createWorkflowTools({
             if (!userId) {
               return { success: false, error: "A sandbox needs a person." };
             }
-            return {
-              success: true,
-              sandbox: true,
-              run: await runInSandbox(workspaceId, userId, workflowId, input),
-            };
+            const { runId } = await startSandboxRun(
+              workspaceId,
+              userId,
+              workflowId,
+              input,
+            );
+            return { success: true, sandbox: true, runId, workflowId };
           }
           const runId = await startRun(
             await requireTenant(workspaceId),

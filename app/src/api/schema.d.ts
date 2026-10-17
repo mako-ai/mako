@@ -5190,7 +5190,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** What is deployed, the workflows, schedules and recent runs */
+        /** What is deployed, the workflows, schedules and recent runs (the caller's sandbox runs among them); `wait` (seconds, at most 90) first waits for a deploy to go live */
         get: operations["get_api_workspaces_workspaceId_workflows"];
         put?: never;
         post?: never;
@@ -5207,7 +5207,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One run: its steps in order, with status, output, error and logs */
+        /** One run, deployed or sandbox: its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives each text up to 1 MB and every log line */
         get: operations["get_api_workspaces_workspaceId_workflows_runs_id"];
         put?: never;
         post?: never;
@@ -5243,7 +5243,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a run of the deployed workflow (answers its runId), or with `sandbox` run the caller's checkout in their sandbox (answers the finished run) */
+        /** Start a run of the deployed workflow, or with `sandbox` of the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait= */
         post: operations["post_api_workspaces_workspaceId_workflows_name_run"];
         delete?: never;
         options?: never;
@@ -22929,7 +22929,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_workflows: {
         parameters: {
-            query?: never;
+            query?: {
+                wait?: number | null;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -22969,7 +22971,10 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_workflows_runs_id: {
         parameters: {
-            query?: never;
+            query?: {
+                wait?: number | null;
+                full?: "true" | "false";
+            };
             header?: never;
             path: {
                 workspaceId: string;
