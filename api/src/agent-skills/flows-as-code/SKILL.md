@@ -182,9 +182,10 @@ through the live stream (webhooks). So a nightly
 Ops knobs (env): `CDC_INCREMENTAL_RESYNC=off`,
 `CDC_INCREMENTAL_RESYNC_OVERLAP_HOURS`, `CDC_FULL_RESYNC_INTERVAL_DAYS`.
 
-Verify: there is no flow-status tool over MCP yet — open the Flows page:
-`streamState` should leave `idle` and a backfill run should appear; then
-`SELECT count(*)` in the destination via `execute_query`.
+Verify: `flow_status` (or `mako sync status <name>`) shows each entity's state
+and the last runs — `streamState` should leave `idle` and a backfill run should
+appear (the Flows page shows the same); then `SELECT count(*)` in the
+destination via `execute_query`.
 
 ## Removing and renaming
 
@@ -199,12 +200,11 @@ Verify: there is no flow-status tool over MCP yet — open the Flows page:
 
 ## Creating the connection (the step the file cannot do)
 
-A flow file references a source connection that must already exist. **No
-MCP or CLI tool creates one**; `POST /api/workspaces/{id}/connectors` behind
-a signed-in session is the only construction site, and it takes the API key.
-So: ask the user to configure the connection in Mako (Sources → Add),
-`list_connections({ kind: "source" })` for its id, `probe_connection` to
-see it work, then write the file. Never write an API key into a repo file.
+A flow file references a source connection that must already exist. Ask the
+user to configure it in Mako (Sources → Add), or create it with the
+`create_connection` MCP tool (needs the `connections:write` grant and at least
+the member role). `list_connections({ kind: "source" })` for its id,
+`probe_connection` to see it work, then write the file. Never write an API key into a repo file.
 
 ## Gotchas that have bitten
 
