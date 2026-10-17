@@ -148,7 +148,66 @@ export async function call(
   }
 }
 
-/** Run SQL on a workspace connection. Read-only unless the key and connection allow writes. */
-export function query(connection: string, sql: string): Promise<unknown> {
-  return call("sql_execute_query", { connectionId: connection, query: sql });
+export type QueryOptions = {
+  /** The database or dataset, when the connection has no default. */
+  database?: string;
+  /** Fail past this many rows (1 to 100000, the default). */
+  maxRows?: number;
+  /** Cancel the statement after this long (default 5 minutes, at most 15). */
+  timeoutMs?: number;
+};
+
+/** One statement, run once by Mako's query route. */
+async function runSql(
+  connection: string,
+  sql: string,
+  options: QueryOptions,
+): Promise<{ rows: unknown[]; rowCount: number }> {
+  const workflow = workflowName();
+  const res = await fetch(`${url}/api/workflows/runtime/query`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      ...(workflow ? { "X-Mako-Workflow": workflow } : {}),
+    },
+    body: JSON.stringify({ connectionId: connection, query: sql, ...options }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    rows?: unknown[];
+    rowCount?: number;
+    error?: string;
+  };
+  if (!res.ok)
+    throw new Error(body.error ?? `The query failed (${res.status})`);
+  return { rows: body.rows ?? [], rowCount: body.rowCount ?? 0 };
+}
+
+/**
+ * Run SQL on a workspace connection once and return all its rows, e.g.
+ * `await query<{ id: string }>(conn, "SELECT id FROM t")`. Values come back
+ * as the database returns them, never shortened. More than `maxRows` rows
+ * (100000) or 50 MB, or longer than `timeoutMs`, throws: aggregate or filter
+ * in SQL. A write returns the rows it returns (RETURNING), else none; it
+ * needs this workflow on the connection's writers list.
+ */
+export async function query<Row = Record<string, unknown>>(
+  connection: string,
+  sql: string,
+  options: QueryOptions = {},
+): Promise<Row[]> {
+  return (await runSql(connection, sql, options)).rows as Row[];
+}
+
+/**
+ * Run a write (INSERT, UPDATE, DELETE, MERGE, DDL) once and return how many
+ * rows it changed. Needs this workflow on the connection's writers list.
+ */
+export async function execute(
+  connection: string,
+  sql: string,
+  options: Pick<QueryOptions, "database" | "timeoutMs"> = {},
+): Promise<{ rowCount: number }> {
+  const { rowCount } = await runSql(connection, sql, options);
+  return { rowCount };
 }

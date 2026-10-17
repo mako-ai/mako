@@ -1,6 +1,7 @@
 import {
   checkConnectionWrite,
   inReadOnlyTransaction,
+  isWrite,
   ownResult,
 } from "../access/connection-writes";
 import { createClient } from "@clickhouse/client";
@@ -41,7 +42,9 @@ import {
   prepareSqlBatchQuery,
   prepareSqlPreviewQuery,
   resolvePreviewPageSize,
+  stripLeadingSqlComments,
 } from "./query-pagination.service";
+import { countTopLevelSemicolons } from "./sql-query-utils";
 
 const logger = loggers.db();
 
@@ -115,6 +118,31 @@ export interface QueryExecuteOptions {
    * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
    */
   bigQueryJobMaxWaitMs?: number;
+  /**
+   * Given each batch of rows as it is read (BigQuery: each result page).
+   * Throwing stops the read; the query fails with that error.
+   */
+  onRows?: (rows: Record<string, unknown>[]) => void;
+}
+
+/** Rows a Postgres cursor fetches at a time. */
+const CURSOR_FETCH_ROWS = 1000;
+
+/**
+ * The query without its trailing semicolon, when it is one statement that a
+ * Postgres cursor can read (a SELECT, WITH, VALUES or TABLE that writes
+ * nothing); null otherwise.
+ */
+function cursorReadable(query: string): string | null {
+  const statement = stripLeadingSqlComments(query.trim());
+  if (!/^[\s(]*(select|with|values|table)\b/i.test(statement)) return null;
+  if (isWrite("postgresql", query)) return null;
+  const { count, lastIndex } = countTopLevelSemicolons(statement);
+  if (count === 0) return statement;
+  if (count === 1 && lastIndex === statement.trimEnd().length - 1) {
+    return statement.trimEnd().slice(0, -1);
+  }
+  return null;
 }
 
 export interface QueryPreviewOptions extends QueryExecuteOptions {
@@ -637,6 +665,146 @@ export class DatabaseConnectionService {
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Run `query` exactly once and read its whole result, handing each batch
+   * of rows to `options.onRows` as it arrives (it throws to stop reading).
+   * On Postgres a read goes through a cursor in one transaction, so a result
+   * past the caller's limit is never held whole; BigQuery reads its job's
+   * pages; any other engine, or a write, returns its result whole first.
+   */
+  async executeQueryReadingRows(
+    database: IDatabaseConnection,
+    query: string,
+    options: QueryExecuteOptions & {
+      onRows: (rows: Record<string, unknown>[]) => void;
+      /** Statement timeout for the cursor read and BigQuery's job wait. */
+      timeoutMs?: number;
+    },
+  ): Promise<QueryResult> {
+    const check = await checkConnectionWrite(database, query, options);
+    if (check.refused) return { success: false, error: check.refused };
+    options = {
+      ...options,
+      writeChecked: true,
+      readOnlyTransaction:
+        options.readOnlyTransaction || check.readOnlyTransaction,
+    };
+    const readable =
+      database.type === "postgresql" ? cursorReadable(query) : null;
+    if (readable !== null) {
+      return this.executePostgreSQLCursor(database, readable, options);
+    }
+    let read = false;
+    const result = await this.executeQuery(database, query, {
+      ...options,
+      bigQueryJobMaxWaitMs: options.timeoutMs ?? options.bigQueryJobMaxWaitMs,
+      onRows: rows => {
+        read = true;
+        options.onRows(rows);
+      },
+    });
+    if (result.success && !read && Array.isArray(result.data)) {
+      try {
+        options.onRows(result.data as Record<string, unknown>[]);
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    return result;
+  }
+
+  /**
+   * A Postgres read through a cursor: DECLARE once, FETCH a batch at a time
+   * in one transaction (read-only where the caller may not write), so the
+   * statement runs once and is one snapshot.
+   */
+  private async executePostgreSQLCursor(
+    database: IDatabaseConnection,
+    query: string,
+    options: QueryExecuteOptions & {
+      onRows: (rows: Record<string, unknown>[]) => void;
+      timeoutMs?: number;
+    },
+  ): Promise<QueryResult> {
+    const { executionId, signal, timeoutMs } = options;
+    try {
+      if (signal?.aborted) return { success: false, error: "Query cancelled" };
+      const pool = await this.getPostgresPool(
+        database,
+        options.databaseName || database.connection.database,
+      );
+      const client = await withRetry(async () => pool.connect(), {
+        maxRetries: this.postgresMaxRetries,
+        baseDelayMs: this.postgresRetryBaseDelayMs,
+        signal,
+      });
+      let open = false;
+      try {
+        if (executionId) {
+          const pid = (await client.query("SELECT pg_backend_pid()")).rows[0]
+            ?.pg_backend_pid;
+          if (pid) {
+            this.runningPostgresQueries.set(executionId, { database, pid });
+          }
+        }
+        await client.query(
+          options.readOnly || options.readOnlyTransaction
+            ? "BEGIN TRANSACTION READ ONLY"
+            : "BEGIN",
+        );
+        open = true;
+        if (timeoutMs) {
+          await client.query(
+            `SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`,
+          );
+        }
+        // On its own lines: a trailing `-- comment` cannot eat the rest.
+        await client.query(
+          `DECLARE _mako_rows NO SCROLL CURSOR FOR\n${query}\n`,
+        );
+        const rows: Record<string, unknown>[] = [];
+        let fields: ReturnType<typeof normalizePostgresFields> | undefined;
+        for (;;) {
+          if (signal?.aborted) {
+            return { success: false, error: "Query cancelled" };
+          }
+          // pg reads query_timeout per query; its types do not list it.
+          const batch = await client.query({
+            text: `FETCH ${CURSOR_FETCH_ROWS} FROM _mako_rows`,
+            ...(timeoutMs ? { query_timeout: timeoutMs } : {}),
+          } as { text: string });
+          fields ??= normalizePostgresFields(batch.fields);
+          const batchRows = normalizePostgresRows(
+            batch.rows as Record<string, unknown>[],
+            fields,
+          );
+          options.onRows(batchRows);
+          rows.push(...batchRows);
+          if (batch.rows.length < CURSOR_FETCH_ROWS) break;
+        }
+        await client.query("COMMIT");
+        open = false;
+        return { success: true, data: rows, rowCount: rows.length, fields };
+      } finally {
+        if (open) await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+        if (executionId) this.runningPostgresQueries.delete(executionId);
+      }
+    } catch (error: any) {
+      if (error?.message?.includes("canceling statement due to user request")) {
+        return { success: false, error: "Query cancelled" };
+      }
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "PostgreSQL query failed",
       };
     }
   }
@@ -1738,7 +1906,9 @@ export class DatabaseConnectionService {
 
       // Collect results
       if (Array.isArray(data.rows) && schema) {
-        rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
+        const page = this.bqMapRowsToObjects(data.rows, schema);
+        options?.onRows?.(page);
+        rowsAccum.push(...page);
       }
       pageToken = data.pageToken;
 
@@ -1754,12 +1924,23 @@ export class DatabaseConnectionService {
         data = response.data || {};
         schema = data.schema || schema;
         if (Array.isArray(data.rows) && schema) {
-          rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
+          const page = this.bqMapRowsToObjects(data.rows, schema);
+          options?.onRows?.(page);
+          rowsAccum.push(...page);
         }
         pageToken = data.pageToken;
       }
 
-      return { success: true, data: rowsAccum, rowCount: rowsAccum.length };
+      // A DML statement returns no rows; BigQuery says how many it changed.
+      const affected = Number(data.numDmlAffectedRows);
+      return {
+        success: true,
+        data: rowsAccum,
+        rowCount:
+          rowsAccum.length === 0 && Number.isFinite(affected)
+            ? affected
+            : rowsAccum.length,
+      };
     } catch (error: any) {
       if (error?.message === "Query cancelled") {
         return { success: false, error: "Query cancelled" };

@@ -928,18 +928,30 @@ export function effectiveSqlQueryAccess(
     : "read";
 }
 
-async function executeQueryImpl(
+/** A SQL query cleared to run: its connection, and how to run it there. */
+export interface SqlQueryTarget {
+  database: IDatabaseConnection;
+  dialect: ReturnType<typeof getDialect>;
+  databaseName?: string;
+  /** Driver options naming the target database. */
+  options: { databaseName?: string; databaseId?: string };
+  /** Run read-only: the key or the connection's writers list allow no write. */
+  readOnly: boolean;
+}
+
+/**
+ * The access checks every SQL query from an agent or a workflow passes before
+ * it runs (sql_execute_query and the workflow runtime's /query): the key's
+ * query access, the connection's writers list for a write, and the target
+ * database. Throws with the reason a query may not run.
+ */
+export async function resolveSqlQueryTarget(
   connectionId: string,
   requestedDatabase: string | undefined,
   query: string,
   workspaceId: string,
-  userId?: string,
-  toolExecutionContext?: AgentToolExecutionContext,
-  queryAccess: QueryAccess = "write",
-  maxRows?: number,
-) {
-  const startTime = Date.now();
-
+  queryAccess: QueryAccess,
+): Promise<SqlQueryTarget> {
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
   }
@@ -992,14 +1004,110 @@ async function executeQueryImpl(
     );
   }
 
-  const safeQuery = appendLimitIfMissing(query);
-
-  let options: Record<string, string> = {};
+  let options: SqlQueryTarget["options"] = {};
   if ((dialect === "postgresql" || dialect === "mysql") && databaseName) {
     options = { databaseName };
   } else if (dialect === "sqlite" && databaseName) {
     options = { databaseId: databaseName };
   }
+
+  return {
+    database,
+    dialect,
+    databaseName,
+    options,
+    readOnly: effectiveAccess === "read",
+  };
+}
+
+/**
+ * Record a finished SQL query in the workspace's query history
+ * (fire-and-forget), with its error classified.
+ */
+export function trackSqlExecution(input: {
+  userId: string;
+  workspaceId: string;
+  target: SqlQueryTarget;
+  source: "agent";
+  result: {
+    success: boolean;
+    error?: string;
+    rowCount?: number;
+    data?: unknown;
+  };
+  startTime: number;
+}): void {
+  const { result, target } = input;
+  const rowCount = result.success
+    ? (result.rowCount ??
+      (Array.isArray(result.data) ? result.data.length : undefined))
+    : undefined;
+
+  let errorType: string | undefined;
+  if (!result.success) {
+    const errorMsg = result.error?.toLowerCase() || "";
+    if (errorMsg.includes("syntax")) {
+      errorType = "syntax";
+    } else if (errorMsg.includes("timeout") || errorMsg.includes("timed out")) {
+      errorType = "timeout";
+    } else if (
+      errorMsg.includes("connection") ||
+      errorMsg.includes("connect")
+    ) {
+      errorType = "connection";
+    } else if (
+      errorMsg.includes("permission") ||
+      errorMsg.includes("access denied")
+    ) {
+      errorType = "permission";
+    } else {
+      errorType = "unknown";
+    }
+  }
+
+  const executionStatus: "success" | "error" | "timeout" = result.success
+    ? "success"
+    : errorType === "timeout"
+      ? "timeout"
+      : "error";
+
+  queryExecutionService.track({
+    userId: input.userId,
+    workspaceId: new Types.ObjectId(input.workspaceId),
+    connectionId: target.database._id,
+    databaseName: target.databaseName,
+    source: input.source,
+    databaseType: target.database.type,
+    queryLanguage: "sql",
+    status: executionStatus,
+    executionTimeMs: Date.now() - input.startTime,
+    rowCount,
+    errorType,
+  });
+}
+
+async function executeQueryImpl(
+  connectionId: string,
+  requestedDatabase: string | undefined,
+  query: string,
+  workspaceId: string,
+  userId?: string,
+  toolExecutionContext?: AgentToolExecutionContext,
+  queryAccess: QueryAccess = "write",
+  maxRows?: number,
+) {
+  const startTime = Date.now();
+
+  const target = await resolveSqlQueryTarget(
+    connectionId,
+    requestedDatabase,
+    query,
+    workspaceId,
+    queryAccess,
+  );
+  const { database, dialect, databaseName, options } = target;
+
+  const safeQuery = appendLimitIfMissing(query);
 
   const { executionId, signal, release } = registerAgentExecution(
     toolExecutionContext,
@@ -1019,7 +1127,7 @@ async function executeQueryImpl(
             ...options,
             executionId: registeredExecutionId,
             signal,
-            readOnly: effectiveAccess === "read",
+            readOnly: target.readOnly,
           },
         ),
       { signal },
@@ -1027,56 +1135,13 @@ async function executeQueryImpl(
 
     // Track successful/error query execution (fire-and-forget)
     if (userId) {
-      const rowCount = result.success
-        ? (result.rowCount ??
-          (Array.isArray(result.data) ? result.data.length : undefined))
-        : undefined;
-
-      let errorType: string | undefined;
-      if (!result.success) {
-        const errorMsg = result.error?.toLowerCase() || "";
-        if (errorMsg.includes("syntax")) {
-          errorType = "syntax";
-        } else if (
-          errorMsg.includes("timeout") ||
-          errorMsg.includes("timed out")
-        ) {
-          errorType = "timeout";
-        } else if (
-          errorMsg.includes("connection") ||
-          errorMsg.includes("connect")
-        ) {
-          errorType = "connection";
-        } else if (
-          errorMsg.includes("permission") ||
-          errorMsg.includes("access denied")
-        ) {
-          errorType = "permission";
-        } else {
-          errorType = "unknown";
-        }
-      }
-
-      let executionStatus: "success" | "error" | "timeout" | "cancelled" =
-        result.success ? "success" : "error";
-      if (!result.success && errorType === "timeout") {
-        executionStatus = "timeout";
-      } else if (!result.success && errorType === "cancelled") {
-        executionStatus = "cancelled";
-      }
-
-      queryExecutionService.track({
+      trackSqlExecution({
         userId,
-        workspaceId: new Types.ObjectId(workspaceId),
-        connectionId: database._id,
-        databaseName,
+        workspaceId,
+        target,
         source: "agent",
-        databaseType: database.type,
-        queryLanguage: "sql",
-        status: executionStatus,
-        executionTimeMs: Date.now() - startTime,
-        rowCount,
-        errorType,
+        result,
+        startTime,
       });
     }
 
