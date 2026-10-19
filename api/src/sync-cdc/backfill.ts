@@ -1798,6 +1798,27 @@ export async function markCdcBackfillCompletedForFlow(params: {
       },
     },
   );
+  // The COMPLETE transition that follows finds the status already completed
+  // and changes nothing, so it never replaces an old failure's meta: a flow
+  // whose backfill failed once kept that error for months of clean runs.
+  // A live stream error keeps its meta (the consumer's self-heal reads it).
+  await Flow.updateOne(
+    {
+      _id: new Types.ObjectId(params.flowId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+      streamState: { $ne: "error" },
+      "syncStateMeta.lastErrorCode": { $exists: true, $ne: null },
+    },
+    {
+      $set: {
+        syncStateMeta: {
+          lastEvent: "backfill:COMPLETE",
+          lastReason: "Backfill completed",
+        },
+        syncStateUpdatedAt: new Date(),
+      },
+    },
+  );
 }
 
 export async function purgeSoftDeletesAfterBackfill(params: {
