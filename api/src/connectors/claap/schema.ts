@@ -51,6 +51,34 @@ export const RECORDING_SCHEMA: Record<string, ConnectorFieldSchema> = {
   ...MAKO_SYSTEM_FIELDS,
 };
 
+const b = (nullable = true): ConnectorFieldSchema => ({
+  type: "boolean",
+  nullable,
+});
+
+// One row per recording × transcript language; `id` is `<recordingId>:<langIso2>`.
+export const RECORDING_TRANSCRIPT_SCHEMA: Record<string, ConnectorFieldSchema> =
+  {
+    id: { type: "string", required: true },
+    recordingId: s(false),
+    langIso2: s(false),
+    // true on the original transcript, false on translations
+    isTranscript: b(),
+    // true on the language currently shown in Claap
+    isActive: b(),
+    transcriptText: s(),
+    // [{ startedAt, endedAt, text, speaker?, languageCode? }], seconds
+    segments: j(),
+    segmentCount: n(),
+    charCount: n(),
+    // ok | empty | failed
+    fetchStatus: s(false),
+    fetchError: s(),
+    fetchedAt: ts(false),
+    recordingCreatedAt: ts(),
+    ...MAKO_SYSTEM_FIELDS,
+  };
+
 export const WORKSPACE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   id: { type: "string", required: true },
   name: s(),
@@ -65,6 +93,7 @@ export const ENTITY_SCHEMA_MAP: Record<
   Record<string, ConnectorFieldSchema>
 > = {
   recordings: RECORDING_SCHEMA,
+  recording_transcripts: RECORDING_TRANSCRIPT_SCHEMA,
   workspace: WORKSPACE_SCHEMA,
 };
 

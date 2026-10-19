@@ -385,15 +385,39 @@ function workerOf(c: AuthenticatedContext): Worker | null {
   };
 }
 
+/**
+ * A person running workflow code themselves (`mako workflow run`, a sandbox
+ * run) with their own login or API key. They act as themselves, exactly as
+ * over /api/mcp: the same reads and writes, billed to the workspace. The
+ * workflow name they send (X-Mako-Workflow) grants nothing.
+ */
+function personOf(c: AuthenticatedContext): Worker | null {
+  const user = c.get("user") as { id?: string } | undefined;
+  const workspace = c.get("workspace");
+  const kind = c.get("authType");
+  if ((kind !== "apiKey" && kind !== "mcpOAuth") || !user?.id || !workspace) {
+    return null;
+  }
+  return { workspaceId: workspace._id.toString(), userId: String(user.id) };
+}
+
 /** A runtime handler: it runs only for a worker key, and is given its worker. */
 const asWorker =
-  (handler: (c: Context, worker: Worker) => Promise<Response>) =>
+  (
+    handler: (c: Context, worker: Worker) => Promise<Response>,
+    { person = false } = {},
+  ) =>
   async (c: AuthenticatedContext) => {
-    const worker = workerOf(c);
+    const worker = workerOf(c) ?? (person ? personOf(c) : null);
     return worker
       ? handler(c, worker)
       : c.json({ error: "Invalid worker key" }, 401);
   };
+
+/** The SQL, model and agent routes, which a person's own run calls too. */
+const asWorkerOrPerson = (
+  handler: (c: Context, worker: Worker) => Promise<Response>,
+) => asWorker(handler, { person: true });
 
 // What the worker should run. It polls this: the commit, which workflows
 // have their triggers on, and the Hatchet token to connect with, so the
@@ -541,7 +565,7 @@ async function forwardToGateway(
 
 workflowRuntimeRoutes.post(
   "/ai/language-model",
-  asWorker(async (c, worker) => {
+  asWorkerOrPerson(async (c, worker) => {
     if (c.req.header("ai-language-model-streaming") === "true") {
       return c.json(
         { error: "Streaming is not available in a step; use generateText." },
@@ -555,7 +579,7 @@ workflowRuntimeRoutes.post(
 
 workflowRuntimeRoutes.post(
   "/ai/decision-model",
-  asWorker(async (c, worker) =>
+  asWorkerOrPerson(async (c, worker) =>
     forwardToGateway(
       c,
       worker,
@@ -569,7 +593,7 @@ workflowRuntimeRoutes.post(
 // the tools it used out. It acts as the person who set the worker up.
 workflowRuntimeRoutes.post(
   "/agent",
-  asWorker(async (c, worker) => {
+  asWorkerOrPerson(async (c, worker) => {
     const body = (await c.req.json().catch(() => null)) as {
       goal?: unknown;
       model?: unknown;
@@ -595,7 +619,7 @@ workflowRuntimeRoutes.post(
 // refused, failed, capped or timed-out query is a 400 with its reason.
 workflowRuntimeRoutes.post(
   "/query",
-  asWorker(async (c, worker) => {
+  asWorkerOrPerson(async (c, worker) => {
     const body = (await c.req.json().catch(() => null)) as {
       connectionId?: unknown;
       query?: unknown;
@@ -631,14 +655,16 @@ workflowRuntimeRoutes.post(
         400,
       );
     }
+    // The key's scopes, or a login's (query:read: it reads, as over /api/mcp).
     const key = c.get("apiKey") as { scopes?: string[] } | undefined;
+    const scopes = key?.scopes ?? c.get("mcpOAuthScopes");
     try {
       return c.json(
         await runWorkflowQuery(
           {
             ...worker,
             queryAccess: queryAccessFromScopes(
-              resolveWorkspaceApiKeyScopes(key?.scopes),
+              resolveWorkspaceApiKeyScopes(scopes),
             ),
           },
           {

@@ -183,6 +183,10 @@ import {
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  concurrencyLimit,
+  repoWorkPool,
+} from "../middleware/concurrency-limit";
 
 const logger = loggers.api("apps");
 
@@ -235,6 +239,13 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
   }
   await next();
 });
+
+// Git walks and sandbox round trips: capped per instance (2026-10-19 — one
+// slow endpoint here starved the whole service). GET only, so a busy pool
+// never refuses a save.
+for (const route of ["/:id/branches", "/:id/files", "/:id/status"]) {
+  appsRoutes.on("GET", route, concurrencyLimit(repoWorkPool));
+}
 
 function actingUserId(c: AuthenticatedContext): string | undefined {
   return c.get("user")?.id;

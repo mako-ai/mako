@@ -2041,8 +2041,13 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
         const entities = schedule?.entities?.length
           ? schedule.entities
           : undefined;
+        // trigger "scheduled": entities whose source can filter on update
+        // time fetch only what changed since their last completed backfill
+        // (with an overlap), and fall back to a full fetch at least weekly —
+        // see sync-cdc/backfill-fetch-mode.ts.
         await cdcBackfillService.startBackfill(workspaceId, flowId, {
           entities,
+          trigger: "scheduled",
           reason: entities
             ? `Scheduled backfill (${entities.join(", ")})`
             : "Scheduled full backfill",

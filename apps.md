@@ -1313,9 +1313,20 @@ either side can be recovered manually, nothing is silently dropped.
 
 **Known limits.** The binding's `subdirectory` (Mako root) is stored but not
 yet honored by `listAppFolders` — apps live under `apps/` at the repo root.
-Branch deletions do not propagate to connected remotes (no prune), and
-non-default branches pushed directly to GitHub are mirrored in but not
-deployed. Tests: `cloud-repo.service.test.ts` (file:// remotes, real git)
+Branch deletions made HERE do not propagate to connected remotes (no
+prune), and non-default branches pushed directly to GitHub are mirrored in
+but not deployed.
+
+**Deletions on GitHub win over a stale cache, never over unmirrored work.**
+The push sends every local head, so a branch deleted on GitHub used to come
+straight back from any instance whose clone still had it (2026-10-19:
+pruning 267 merged branches could not stick). Each instance now records the
+mirror's heads under `refs/remotes/mirror/*` (never pushed; hidden from
+sandboxes by the git endpoint) after every push and fetch. Before a push,
+and in a throttled background sweep when branches are listed, a local branch
+is deleted only if the mirror HAD it, no longer does, and it has not moved
+here since. A branch created here and not yet pushed, or one that gained
+local commits, is kept and pushed. Tests: `cloud-repo.service.test.ts` (file:// remotes, real git)
 covers the adoption matrix, the no-force guarantee, and the
 fast-forward-or-stand-still fetch.
 

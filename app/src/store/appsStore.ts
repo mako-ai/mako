@@ -1454,13 +1454,9 @@ export const useAppsStore = create<AppsStore>()(
 
       fetchBranches: async (workspaceId, appId) => {
         try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/{id}/branches", {
-              params: { path: { workspaceId, id: appId } },
-            }),
-          ) as { branches?: AppBranch[] };
+          const branches = await loadWorkspaceBranches(workspaceId, appId);
           set(s => {
-            s.branchesByApp[appId] = body.branches ?? [];
+            s.branchesByApp[appId] = branches;
           });
         } catch (e) {
           set(s => {
@@ -1478,6 +1474,7 @@ export const useAppsStore = create<AppsStore>()(
             }),
           );
           // Everything on screen was showing the OLD branch.
+          forgetInFlightBranches(workspaceId);
           await Promise.all([
             get().fetchFiles(workspaceId, appId),
             get().fetchStatus(workspaceId, appId),
@@ -1498,6 +1495,7 @@ export const useAppsStore = create<AppsStore>()(
             }),
           ) as { result?: { merged: boolean; reason?: string } };
           // Merge moves main: refresh everything the UI shows.
+          forgetInFlightBranches(workspaceId);
           void get().fetchBranches(workspaceId, appId);
           void get().fetchFiles(workspaceId, appId);
           void get().fetchStatus(workspaceId, appId);
@@ -2345,6 +2343,43 @@ onRealtimeEvent("app.updated", "appsStore", (event, ctx) => {
   const active = activeAppId();
   if (active) refreshAppNow(workspaceId, active);
 });
+
+/**
+ * The branch list is the WORKSPACE repo's, identical for every app, so apps
+ * asking at the same time share one request. Before this, each open app
+ * fetched it separately — on 2026-10-19 that was 17 copies of the slowest
+ * call in the API. No freshness window on top: a push pokes right after a
+ * commit, and that refetch must see the commit (the server caches by branch
+ * tips, so asking again is cheap).
+ */
+const branchesInFlight = new Map<string, Promise<AppBranch[]>>();
+
+function loadWorkspaceBranches(
+  workspaceId: string,
+  appId: string,
+): Promise<AppBranch[]> {
+  const existing = branchesInFlight.get(workspaceId);
+  if (existing) return existing;
+  const run = (async () => {
+    const body = unwrapBody(
+      await api.GET("/api/workspaces/{workspaceId}/apps/{id}/branches", {
+        params: { path: { workspaceId, id: appId } },
+      }),
+    ) as { branches?: AppBranch[] };
+    return body.branches ?? [];
+  })().finally(() => {
+    if (branchesInFlight.get(workspaceId) === run) {
+      branchesInFlight.delete(workspaceId);
+    }
+  });
+  branchesInFlight.set(workspaceId, run);
+  return run;
+}
+
+/** After a checkout or merge, a request already in flight predates it. */
+function forgetInFlightBranches(workspaceId: string): void {
+  branchesInFlight.delete(workspaceId);
+}
 
 /** Refresh one app's cached state now, ignoring whether it was marked stale. */
 function refreshAppNow(workspaceId: string, appId: string): void {

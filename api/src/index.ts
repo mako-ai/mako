@@ -11,6 +11,8 @@ import fs from "fs";
 import path from "path";
 import { connectDatabase } from "./database/schema";
 import { registerApiRoutes } from "./routes/register-routes";
+import { edgeOriginMiddleware } from "./middleware/edge-origin";
+import { apiRateLimitMiddleware } from "./middleware/rate-limit";
 import { mcpOAuthWellKnownRoutes } from "./routes/mcp-oauth.routes";
 import { getOpenApiDocument } from "./openapi";
 import type { AuthEnv } from "./openapi/core";
@@ -129,6 +131,10 @@ app.use(
     skipSuccessInDev: ["/api/inngest", "/health"],
   }),
 );
+
+// Edge check, then the per-caller budget — before any route does work.
+app.use("*", edgeOriginMiddleware);
+app.use("*", apiRateLimitMiddleware);
 
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
