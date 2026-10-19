@@ -13,6 +13,7 @@ import {
 import { FetchState } from "../../connectors/base/BaseConnector";
 import { Types } from "mongoose";
 import { cdcBackfillCheckpointService } from "../../sync-cdc/sync-state";
+import { resolveBackfillFetchForEntity } from "../../sync-cdc/backfill-fetch-resolver";
 import {
   resolveCdcDestinationAdapter,
   hasStagingSupport,
@@ -236,6 +237,37 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       }
     }
 
+    // ── Resolve fetch scope (full vs incremental scheduled resync) ───
+    // Decided once per entity and run from values that are stable for the
+    // whole run, so a continuation invocation re-derives the same answer.
+    // null = connector not covered: historical behaviour, untouched.
+    let backfillFetch: Awaited<
+      ReturnType<typeof resolveBackfillFetchForEntity>
+    > = null;
+    if (checkpointEnabled) {
+      backfillFetch = (await step.run(
+        `resolve-backfill-fetch-${safeEntityStepId}`,
+        async () => {
+          const decision = await resolveBackfillFetchForEntity({
+            flowId,
+            dataSourceId,
+            entity,
+          });
+          if (decision && !state) {
+            logExec(
+              "info",
+              decision.mode === "incremental"
+                ? `${entity}: incremental resync — ${decision.reason}`
+                : `${entity}: full fetch — ${decision.reason}`,
+              { entity, fetchMode: decision.mode },
+            );
+          }
+          return decision;
+        },
+      )) as Awaited<ReturnType<typeof resolveBackfillFetchForEntity>>;
+      stepsUsed++;
+    }
+
     // ── Resolve bulk path options ────────────────────────────────────
     const cdcAdapter =
       isCdcEnabled && destinationType && (tableDestination as any)?.connectionId
@@ -443,6 +475,14 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               : undefined,
             entity,
             isIncremental: syncMode === "incremental",
+            ...(backfillFetch
+              ? {
+                  backfillFetch:
+                    backfillFetch.mode === "incremental"
+                      ? { mode: "incremental", since: backfillFetch.since }
+                      : { mode: "full" },
+                }
+              : {}),
             state,
             maxIterations: 10,
             logger: syncLogger,
@@ -684,6 +724,12 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             entity,
             fetchState: state,
             rowsWritten: totalWrittenForEntity,
+            ...(backfillFetch?.runStartedAt
+              ? {
+                  runStartedAt: backfillFetch.runStartedAt,
+                  fetchMode: backfillFetch.mode,
+                }
+              : {}),
           });
         },
       );

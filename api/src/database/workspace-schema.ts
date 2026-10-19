@@ -1105,6 +1105,12 @@ export interface IFlow extends Document {
       mode: "all" | "subset";
       entities?: string[];
     };
+    /**
+     * What started this run. Only "scheduled" runs (backfillSchedule) may
+     * fetch incrementally — see sync-cdc/backfill-fetch-mode.ts. Absent on
+     * runs started before this field existed: treated as manual (full).
+     */
+    trigger?: "scheduled" | "manual";
   };
 
   lastRunAt?: Date;
@@ -1226,6 +1232,14 @@ export interface ICdcEntityState extends Document {
   runId?: string;
   backfillStartedAt?: Date;
   backfillCompletedAt?: Date;
+  /**
+   * `backfillState.startedAt` of the last backfill run in which this entity
+   * completed (full or incremental) — the anchor of the next incremental
+   * scheduled resync. See sync-cdc/backfill-fetch-mode.ts.
+   */
+  lastBackfillRunStartedAt?: Date;
+  /** Same, for the last run in which this entity was fetched in FULL. */
+  lastFullBackfillRunStartedAt?: Date;
   lastIngestSeq: number;
   lastMaterializedSeq: number;
   lastMaterializedAt?: Date;
@@ -2714,6 +2728,7 @@ const FlowSchema = new Schema<IFlow>(
         },
         entities: [String],
       },
+      trigger: { type: String, enum: ["scheduled", "manual"] },
     },
     lastRunAt: Date,
     lastSuccessAt: Date,
@@ -3030,6 +3045,8 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     runId: String,
     backfillStartedAt: Date,
     backfillCompletedAt: Date,
+    lastBackfillRunStartedAt: Date,
+    lastFullBackfillRunStartedAt: Date,
     lastIngestSeq: { type: Number, default: 0 },
     lastMaterializedSeq: { type: Number, default: 0 },
     lastMaterializedAt: Date,

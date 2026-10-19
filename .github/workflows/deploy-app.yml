@@ -1083,6 +1083,7 @@ jobs:
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars API_RATE_LIMIT_MODE=enforce \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
             --set-env-vars DASHBOARD_ARTIFACT_PREFIX=${DASHBOARD_ARTIFACT_PREFIX} \

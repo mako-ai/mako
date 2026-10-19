@@ -119,6 +119,16 @@ export interface SyncChunkOptions {
   workspaceId?: string;
   syncEngine?: string;
   backfillRunId?: string;
+  /**
+   * Explicit fetch scope for a CDC backfill chunk, decided once per entity
+   * and run by sync-cdc/backfill-fetch-mode.ts. When present it replaces the
+   * `_syncedAt` incremental anchor below:
+   * - "incremental": `since` is passed to the connector on EVERY chunk (not
+   *   only the first), so a resumable cursor keeps one consistent filter;
+   * - "full": no `since` at all — a genuinely full fetch.
+   * Absent: the historical behaviour (poll anchor on the first chunk).
+   */
+  backfillFetch?: { mode: "full" } | { mode: "incremental"; since: string };
   entityPartitioning?: {
     type?: "time" | "ingestion";
     field: string;
@@ -376,9 +386,25 @@ async function performSyncChunkSql(
   // _syncedAt column, so anchor there too. Note: incremental CDC polls are
   // upsert-only; deletes are reconciled by the periodic full backfill
   // (backfillSchedule), not by polls.
+  const backfillFetch = options.backfillFetch;
   const anchorIncremental =
-    syncMode === "incremental" && options.writeMode !== "overwrite" && !state;
+    !backfillFetch &&
+    syncMode === "incremental" &&
+    options.writeMode !== "overwrite" &&
+    !state;
   let lastSyncDate: Date | undefined;
+  if (backfillFetch?.mode === "incremental") {
+    const since = new Date(backfillFetch.since);
+    if (!Number.isNaN(since.getTime())) {
+      lastSyncDate = since;
+      if (!state) {
+        logger?.log(
+          "info",
+          `Incremental resync: fetching ${entity} updated since ${since.toISOString()}`,
+        );
+      }
+    }
+  }
   if (anchorIncremental) {
     try {
       const { getMaxTrackingValue } =

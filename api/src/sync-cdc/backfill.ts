@@ -328,6 +328,12 @@ export class CdcBackfillService {
       reuseExistingRunId?: boolean;
       entities?: string[];
       reason?: string;
+      /**
+       * "scheduled" lets eligible entities fetch incrementally (see
+       * backfill-fetch-mode.ts). Default: a resumed run keeps its trigger,
+       * anything else is "manual" (full).
+       */
+      trigger?: "scheduled" | "manual";
     },
   ): Promise<{ runId: string; reusedRunId: boolean }> {
     const flow = await Flow.findOne({
@@ -392,6 +398,11 @@ export class CdcBackfillService {
         : createBackfillRunId(flowId);
     const reusedRunId = Boolean(shouldReuseRunId && flow.backfillState?.runId);
     const previousFailures = flow.backfillState?.consecutiveFailures ?? 0;
+    const trigger: "scheduled" | "manual" =
+      options?.trigger ??
+      (reusedRunId && flow.backfillState?.trigger === "scheduled"
+        ? "scheduled"
+        : "manual");
     const now = new Date();
     flow.backfillState = {
       status: "running",
@@ -403,6 +414,7 @@ export class CdcBackfillService {
         mode: effectiveScope.length > 0 ? "subset" : "all",
         entities: effectiveScope,
       },
+      trigger,
     };
     await flow.save();
 

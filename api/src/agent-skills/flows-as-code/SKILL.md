@@ -169,6 +169,19 @@ if it carries the field the cron looks for:
 | `live.poll:` a cron | polls on the cron |
 | `live.webhook: on` | row is *addressable* (endpoint minted, shown on the flow's page). Stripe and Wise subscriptions are created on save where the token allows; for other providers inbound deliveries are rejected until (a) the provider's signing secret is pasted in the UI — never from the file — and (b) the provider is pointed at the minted URL. Push first, then do both. |
 
+**Incremental resync (Close).** A *scheduled* resync of a Close flow fetches
+leads, contacts, opportunities and every `activities:*` entity only where
+`date_updated` is at or after the start of that entity's last completed
+backfill minus 6 h. Every entity is still fetched in full at least every 7
+days, and whenever it has no completed full backfill on record. Other Close
+entities (users, custom fields, groups, statuses) are always fetched in full,
+and so is every manual Backfill. `write_mode: overwrite`/`append` flows are
+always full too. A resync upserts and never deletes rows. Deletions arrive
+through the live stream (webhooks). So a nightly
+`resync` over all entities is cheap, and it is a safety net on top of webhooks.
+Ops knobs (env): `CDC_INCREMENTAL_RESYNC=off`,
+`CDC_INCREMENTAL_RESYNC_OVERLAP_HOURS`, `CDC_FULL_RESYNC_INTERVAL_DAYS`.
+
 Verify: there is no flow-status tool over MCP yet — open the Flows page:
 `streamState` should leave `idle` and a backfill run should appear; then
 `SELECT count(*)` in the destination via `execute_query`.

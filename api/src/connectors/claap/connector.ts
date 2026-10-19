@@ -18,11 +18,28 @@ import {
 import { resolveClaapEntitySchema } from "./schema";
 import axios, { AxiosError, AxiosInstance } from "axios";
 import { loggers } from "../../logging";
+import { safeFetch } from "../../services/safe-fetch.service";
 
 const logger = loggers.connector("claap");
 
 const DEFAULT_BASE_URL = "https://api.claap.io";
 const MAX_PAGE_LIMIT = 100;
+
+const TRANSCRIPTS_ENTITY = "recording_transcripts";
+// Every recording on a page triggers one download per language, so transcript
+// pages are kept small: each page is one batch (and one heartbeat) of roughly
+// this many downloads.
+const TRANSCRIPT_PAGE_LIMIT = 50;
+// A poll re-lists recordings created this long before `since`, so transcripts
+// that finish processing (or translations added) after the recording first
+// appeared are still picked up, and failed downloads are retried.
+const TRANSCRIPT_RECHECK_MS = 2 * 24 * 60 * 60 * 1000;
+// Claap enforces a per-workspace daily quota shared by every key. Stop before
+// it runs dry so other integrations of the workspace keep working; the run
+// resumes from its checkpoint once the rolling window has refilled.
+const DAILY_QUOTA_RESERVE = 500;
+const TRANSCRIPT_MAX_BYTES = 50_000_000;
+const TRANSCRIPT_TIMEOUT_MS = 60_000;
 
 const SUPPORTED_WEBHOOK_EVENTS = [
   "recording_added",
@@ -41,7 +58,100 @@ type ClaapListRecordingsResult = {
     nextCursor?: string;
     totalCount?: number;
   };
+  dailyRemaining?: number;
 };
+
+type ClaapTranscriptRef = {
+  langIso2?: unknown;
+  isTranscript?: unknown;
+  isActive?: unknown;
+  url?: unknown;
+};
+
+type ClaapTranscriptSegment = {
+  startedAt: number;
+  endedAt: number;
+  text: string;
+  speaker?: string;
+  languageCode?: string;
+};
+
+/**
+ * Pull the segments out of a transcript document. The signed `url` download
+ * and `GET /v1/recordings/{id}/transcript?format=json` may wrap them
+ * differently, so accept `{ result: { transcript: { segments } } }`,
+ * `{ transcript: { segments } }`, `{ segments }` and a bare array. Per-word
+ * timings (`words`) are dropped: they multiply the size for no use downstream.
+ */
+export function parseClaapTranscriptSegments(
+  document: unknown,
+): ClaapTranscriptSegment[] | null {
+  const unwrapped = extractClaapResult(document);
+  const container =
+    unwrapped && typeof unwrapped === "object" && "transcript" in unwrapped
+      ? (unwrapped as { transcript: unknown }).transcript
+      : unwrapped;
+  const rawSegments = Array.isArray(container)
+    ? container
+    : container && typeof container === "object"
+      ? (container as { segments?: unknown }).segments
+      : undefined;
+  if (!Array.isArray(rawSegments)) return null;
+
+  const segments: ClaapTranscriptSegment[] = [];
+  for (const raw of rawSegments) {
+    if (!raw || typeof raw !== "object") continue;
+    const segment = raw as Record<string, unknown>;
+    if (typeof segment.text !== "string") continue;
+    segments.push({
+      startedAt: Number(segment.startedAt) || 0,
+      endedAt: Number(segment.endedAt) || 0,
+      text: segment.text,
+      ...(typeof segment.speaker === "string" && { speaker: segment.speaker }),
+      ...(typeof segment.languageCode === "string" && {
+        languageCode: segment.languageCode,
+      }),
+    });
+  }
+  return segments;
+}
+
+function formatTranscriptTimestamp(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(secs)}`
+    : `${pad(minutes)}:${pad(secs)}`;
+}
+
+/**
+ * Plain-text rendering in Claap's own `format=text` layout
+ * (`02:17 speaker_1: Hello there!`), one line per segment, so the text needs
+ * no second download.
+ */
+export function renderClaapTranscriptText(
+  segments: ClaapTranscriptSegment[],
+): string {
+  return segments
+    .map(segment => {
+      const speaker = segment.speaker ? ` ${segment.speaker}:` : "";
+      return `${formatTranscriptTimestamp(segment.startedAt)}${speaker} ${segment.text}`;
+    })
+    .join("\n");
+}
+
+function readDailyRemaining(headers: unknown): number | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== "x-ratelimit-daily-remaining") continue;
+    const parsed = Number(Array.isArray(value) ? value[0] : value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
 
 function extractClaapResult(data: unknown): unknown {
   if (data && typeof data === "object" && "result" in data) {
@@ -188,10 +298,10 @@ export class ClaapConnector extends BaseConnector {
   getMetadata() {
     return {
       name: "Claap",
-      version: "1.0.0",
+      version: "1.1.0",
       description:
-        "Connector for Claap meeting recordings, workspace metadata, and webhooks",
-      supportedEntities: ["recordings", "workspace"],
+        "Connector for Claap meeting recordings, their transcripts, workspace metadata, and webhooks",
+      supportedEntities: ["recordings", TRANSCRIPTS_ENTITY, "workspace"],
     };
   }
 
@@ -314,7 +424,7 @@ export class ClaapConnector extends BaseConnector {
   }
 
   getAvailableEntities(): string[] {
-    return ["recordings", "workspace"];
+    return ["recordings", TRANSCRIPTS_ENTITY, "workspace"];
   }
 
   getEntityMetadata(): EntityMetadata[] {
@@ -330,6 +440,17 @@ export class ClaapConnector extends BaseConnector {
         label: "Recordings",
         description: "Claap meeting and clip recordings",
         layoutSuggestion,
+      },
+      {
+        name: TRANSCRIPTS_ENTITY,
+        label: "Recording transcripts",
+        description:
+          "Transcript text and speaker segments, one row per recording and language",
+        layoutSuggestion: {
+          partitionField: "recordingCreatedAt",
+          partitionGranularity: "day" as const,
+          clusterFields: ["recordingId"],
+        },
       },
       {
         name: "workspace",
@@ -354,11 +475,13 @@ export class ClaapConnector extends BaseConnector {
 
   private parseListRecordingsResponse(
     data: unknown,
+    headers?: unknown,
   ): ClaapListRecordingsResult {
     const result = (data as { result?: ClaapListRecordingsResult })?.result;
     return {
       recordings: Array.isArray(result?.recordings) ? result.recordings : [],
       pagination: result?.pagination ?? {},
+      dailyRemaining: readDailyRemaining(headers),
     };
   }
 
@@ -366,16 +489,19 @@ export class ClaapConnector extends BaseConnector {
     cursor?: string;
     since?: Date;
     limit?: number;
+    includeAiFields?: boolean;
   }): Promise<ClaapListRecordingsResult> {
     const api = this.getClaapClient();
     const params: Record<string, string | number | boolean> = {
       limit: Math.min(options.limit ?? this.getBatchSize(), MAX_PAGE_LIMIT),
       sort: "created_asc",
+    };
+    if (options.includeAiFields ?? true) {
       // Opt into Claap's new AI output structure (`aiFields`). Without this the
       // API returns the legacy `insightTemplates`, which stops being populated
       // as of 2026-06-26.
-      returnAiFields: true,
-    };
+      params.returnAiFields = true;
+    }
 
     if (options.cursor) {
       params.cursor = options.cursor;
@@ -388,7 +514,7 @@ export class ClaapConnector extends BaseConnector {
       api.get("/v1/recordings", { params }),
     );
 
-    return this.parseListRecordingsResponse(response.data);
+    return this.parseListRecordingsResponse(response.data, response.headers);
   }
 
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
@@ -409,6 +535,10 @@ export class ClaapConnector extends BaseConnector {
         hasMore: false,
         iterationsInChunk: 0,
       };
+    }
+
+    if (entity === TRANSCRIPTS_ENTITY) {
+      return this.fetchTranscriptsChunk(options);
     }
 
     if (entity !== "recordings") {
@@ -473,6 +603,210 @@ export class ClaapConnector extends BaseConnector {
     };
   }
 
+  /**
+   * `recording_transcripts`: one row per recording × transcript language.
+   * Claap's transcript links expire after 24 hours, so each page of recordings
+   * is listed and its transcripts are downloaded straight away, in the same
+   * chunk. Downloads that fail are still emitted (fetchStatus `failed`) so the
+   * gap is visible; the next poll's overlap window retries them.
+   */
+  private async fetchTranscriptsChunk(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, onLog, since, state } = options;
+    const maxIterations = options.maxIterations ?? 10;
+    const createdAfter = since
+      ? new Date(since.getTime() - TRANSCRIPT_RECHECK_MS)
+      : undefined;
+
+    let cursor = (state?.metadata?.cursor as string | undefined) ?? undefined;
+    let totalCount = state?.metadata?.totalCount as number | undefined;
+    let recordingsSeen =
+      (state?.metadata?.recordingsSeen as number | undefined) ?? 0;
+    let recordCount = state?.totalProcessed ?? 0;
+    let iterations = 0;
+
+    while (iterations < maxIterations) {
+      const page = await this.fetchRecordingsPage({
+        cursor,
+        since: createdAfter,
+        limit: TRANSCRIPT_PAGE_LIMIT,
+        includeAiFields: false,
+      });
+      totalCount ??= page.pagination.totalCount;
+
+      if (
+        page.dailyRemaining !== undefined &&
+        page.dailyRemaining < DAILY_QUOTA_RESERVE
+      ) {
+        const message = `Claap daily API quota nearly used up (${page.dailyRemaining} calls left, reserve ${DAILY_QUOTA_RESERVE}); stopping transcript downloads until it refills`;
+        onLog?.("warn", message);
+        if (iterations > 0) {
+          // Save the progress made in this chunk; the next chunk stops here.
+          return {
+            totalProcessed: recordCount,
+            hasMore: true,
+            iterationsInChunk: iterations,
+            metadata: { cursor, totalCount, recordingsSeen },
+          };
+        }
+        throw new Error(message);
+      }
+
+      const rows: Record<string, unknown>[] = [];
+      for (const recording of page.recordings) {
+        rows.push(...(await this.fetchRecordingTranscripts(recording)));
+      }
+      if (rows.length > 0) {
+        await onBatch(rows);
+        recordCount += rows.length;
+      }
+      recordingsSeen += page.recordings.length;
+      onProgress?.(recordingsSeen, totalCount);
+
+      cursor = page.pagination.nextCursor;
+      iterations++;
+
+      if (!cursor) {
+        return {
+          totalProcessed: recordCount,
+          hasMore: false,
+          iterationsInChunk: iterations,
+          metadata: { cursor: null, totalCount, recordingsSeen },
+        };
+      }
+    }
+
+    return {
+      totalProcessed: recordCount,
+      hasMore: true,
+      iterationsInChunk: iterations,
+      metadata: { cursor, totalCount, recordingsSeen },
+    };
+  }
+
+  private async fetchRecordingTranscripts(
+    recording: Record<string, unknown>,
+  ): Promise<Record<string, unknown>[]> {
+    const recordingId =
+      typeof recording.id === "string" && recording.id.length > 0
+        ? recording.id
+        : undefined;
+    if (!recordingId || !Array.isArray(recording.transcripts)) return [];
+
+    const recordingCreatedAt =
+      typeof recording.createdAt === "string" ? recording.createdAt : null;
+    const rows: Record<string, unknown>[] = [];
+
+    for (const ref of recording.transcripts as ClaapTranscriptRef[]) {
+      const langIso2 =
+        typeof ref?.langIso2 === "string" && ref.langIso2.trim().length > 0
+          ? ref.langIso2.trim().toLowerCase()
+          : undefined;
+      if (!langIso2) continue;
+
+      const base = {
+        id: `${recordingId}:${langIso2}`,
+        recordingId,
+        langIso2,
+        isTranscript: ref.isTranscript === true,
+        isActive: ref.isActive === true,
+        recordingCreatedAt,
+      };
+
+      try {
+        const segments = await this.downloadTranscriptSegments(
+          recordingId,
+          langIso2,
+          ref.url,
+        );
+        const transcriptText = renderClaapTranscriptText(segments);
+        rows.push({
+          ...base,
+          transcriptText,
+          segments,
+          segmentCount: segments.length,
+          charCount: transcriptText.length,
+          fetchStatus: segments.length > 0 ? "ok" : "empty",
+          fetchError: null,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        logger.warn("Could not download Claap transcript", {
+          recordingId,
+          langIso2,
+          error: formatClaapApiError(error),
+        });
+        rows.push({
+          ...base,
+          transcriptText: null,
+          segments: null,
+          segmentCount: null,
+          charCount: null,
+          fetchStatus: "failed",
+          fetchError: formatClaapApiError(error).slice(0, 500),
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+
+      await this.sleep(this.getRateLimitDelay());
+    }
+
+    return rows;
+  }
+
+  /**
+   * The signed link from the listing first (it carries its own token, so the
+   * API key is never sent to it); the transcript endpoint when the link is
+   * missing, expired or unreadable.
+   */
+  private async downloadTranscriptSegments(
+    recordingId: string,
+    langIso2: string,
+    url: unknown,
+  ): Promise<ClaapTranscriptSegment[]> {
+    if (typeof url === "string" && url.startsWith("https://")) {
+      try {
+        const body = await this.downloadSignedUrl(url);
+        const segments = parseClaapTranscriptSegments(JSON.parse(body));
+        if (segments) return segments;
+        logger.warn("Claap transcript link returned no segments", {
+          recordingId,
+          langIso2,
+        });
+      } catch (error) {
+        logger.warn("Claap transcript link failed; using the API endpoint", {
+          recordingId,
+          langIso2,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const api = this.getClaapClient();
+    const response = await this.executeWithRetry(() =>
+      api.get(`/v1/recordings/${encodeURIComponent(recordingId)}/transcript`, {
+        params: { lang: langIso2, format: "json" },
+      }),
+    );
+    const segments = parseClaapTranscriptSegments(response.data);
+    if (!segments) {
+      throw new Error("Claap transcript response has no segments");
+    }
+    return segments;
+  }
+
+  protected async downloadSignedUrl(url: string): Promise<string> {
+    const response = await safeFetch(url, {
+      maxBytes: TRANSCRIPT_MAX_BYTES,
+      timeoutMs: TRANSCRIPT_TIMEOUT_MS,
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`HTTP ${response.status} downloading transcript`);
+    }
+    return response.body.toString("utf8");
+  }
+
   private async fetchWorkspace(options: FetchOptions): Promise<void> {
     const api = this.getClaapClient();
     const response = await this.executeWithRetry(() =>
@@ -530,6 +864,12 @@ export class ClaapConnector extends BaseConnector {
         // `createdAfter` only — a recording edited after creation won't be
         // re-polled; only the webhook trigger catches later edits.
         recordings: { mode: "created-anchor", anchorField: "createdAfter" },
+        // Same anchor, re-read with a two-day overlap: a transcript that is
+        // regenerated later than that is only caught by a full backfill.
+        [TRANSCRIPTS_ENTITY]: {
+          mode: "created-anchor",
+          anchorField: "createdAfter",
+        },
       },
       warning:
         "Claap recordings are matched by creation date only; edits to existing recordings require the webhook trigger.",
