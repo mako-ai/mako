@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import {
-  actingPrincipals,
+  actingPrincipal,
   asSystem,
   checkConnectionWrite,
   inReadOnlyTransaction,
@@ -198,27 +198,11 @@ assert.match(
 
 // --- Who is acting -------------------------------------------------------------
 
-assert.deepEqual(actingPrincipals(), []); // no request: the system
-assert.deepEqual(actingPrincipals("user:owner"), ["user:owner"]);
+assert.equal(actingPrincipal(), undefined); // no request: the system
+assert.equal(actingPrincipal("user:owner"), "user:owner");
 requestContextStorage.run(
   { requestId: "r", userId: "marc", method: "POST", path: "/", startTime: 0 },
-  () => assert.deepEqual(actingPrincipals(), ["user:marc"]),
-);
-// A person testing a workflow acts as both.
-requestContextStorage.run(
-  {
-    requestId: "r",
-    userId: "marc",
-    testedWorkflow: "crm-chat-issues",
-    method: "POST",
-    path: "/",
-    startTime: 0,
-  },
-  () =>
-    assert.deepEqual(actingPrincipals(), [
-      "user:marc",
-      "workflow:crm-chat-issues",
-    ]),
+  () => assert.equal(actingPrincipal(), "user:marc"),
 );
 // A workflow's request acts as the workflow, not the key's owner.
 requestContextStorage.run(
@@ -230,7 +214,7 @@ requestContextStorage.run(
     path: "/",
     startTime: 0,
   },
-  () => assert.deepEqual(actingPrincipals(), ["workflow:crm-chat-issues"]),
+  () => assert.equal(actingPrincipal(), "workflow:crm-chat-issues"),
 );
 
 // --- A request that identifies no one ---------------------------------------
@@ -268,75 +252,14 @@ async function unidentified() {
   });
   // Marked as Mako's own inside a person's request: the person is dropped.
   await requestContextStorage.run({ ...anonymous, userId: "eve" }, () =>
-    asSystem(async () => assert.deepEqual(actingPrincipals(), [])),
+    asSystem(async () => assert.equal(actingPrincipal(), undefined)),
   );
 }
 
-// --- A person testing a workflow: both must be allowed ------------------------
-
-async function narrowed() {
-  const connection = (writers: { principal: string; where?: string }[]) =>
-    ({
-      _id: "64b000000000000000000001",
-      workspaceId: "64b000000000000000000002",
-      name: "warehouse",
-      type: "postgresql",
-      writers,
-    }) as never;
-  const testing = {
-    requestId: "r",
-    userId: "marc",
-    testedWorkflow: "billing-sync",
-    method: "POST",
-    path: "/api/workflows/runtime/query",
-    startTime: 0,
-  };
-  const write = "INSERT INTO finance.invoices VALUES (1)";
-  const both = [
-    { principal: "user:marc" },
-    { principal: "workflow:billing-sync", where: "finance" },
-  ];
-  await requestContextStorage.run(testing, async () => {
-    // Both may: it runs.
-    assert.deepEqual(await checkConnectionWrite(connection(both), write), {});
-    // Only the person may: refused as the workflow would be in production.
-    const personOnly = await checkConnectionWrite(
-      connection([{ principal: "user:marc" }]),
-      write,
-    );
-    assert.equal(
-      personOnly.refused,
-      refusal(decideWrite([], "workflow:billing-sync", write), "warehouse"),
-    );
-    // Only the workflow may: refused as the person would be.
-    const workflowOnly = await checkConnectionWrite(
-      connection([{ principal: "workflow:billing-sync" }]),
-      write,
-    );
-    assert.match(workflowOnly.refused ?? "", /only the people and workflows/);
-    // The workflow may write elsewhere only: the narrower place decides.
-    const elsewhere = await checkConnectionWrite(
-      connection(both),
-      "INSERT INTO hr.salaries VALUES (1)",
-    );
-    assert.match(elsewhere.refused ?? "", /only to finance on warehouse/);
-    // A read runs read-only unless both may write.
-    assert.deepEqual(
-      await checkConnectionWrite(
-        connection([{ principal: "user:marc" }]),
-        "SELECT 1",
-      ),
-      { readOnlyTransaction: true },
-    );
-  });
-}
-
-void unidentified()
-  .then(narrowed)
-  .then(
-    () => console.log("connection writes tests passed"),
-    error => {
-      console.error(error);
-      process.exitCode = 1;
-    },
-  );
+void unidentified().then(
+  () => console.log("connection writes tests passed"),
+  error => {
+    console.error(error);
+    process.exitCode = 1;
+  },
+);

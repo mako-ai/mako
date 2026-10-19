@@ -25,7 +25,7 @@ import {
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
 import { AppProject, Workspace } from "../database/workspace-schema";
-import { getRequestContext, loggers } from "../logging";
+import { loggers } from "../logging";
 import {
   AuthenticatedContext,
   requireWorkspace,
@@ -387,18 +387,17 @@ function workerOf(c: AuthenticatedContext): Worker | null {
 
 /**
  * A person running workflow code themselves (`mako workflow run`, a sandbox
- * run): their own key or login, naming the workflow (X-Mako-Workflow). They
- * act as both, so they may do only what both may (access/connection-writes.ts).
+ * run) with their own login or API key. They act as themselves, exactly as
+ * over /api/mcp: the same reads and writes, billed to the workspace. The
+ * workflow name they send (X-Mako-Workflow) grants nothing.
  */
-function testerOf(c: AuthenticatedContext): Worker | null {
+function personOf(c: AuthenticatedContext): Worker | null {
   const user = c.get("user") as { id?: string } | undefined;
   const workspace = c.get("workspace");
   const kind = c.get("authType");
-  if (kind !== "apiKey" && kind !== "mcpOAuth") return null;
-  const workflow = getRequestContext()?.testedWorkflow;
-  // Only for a workflow the workspace has deployed: a name is not a pass.
-  const deployed = workspace?.workflows?.live?.names ?? [];
-  if (!workflow || !deployed.includes(workflow) || !user?.id) return null;
+  if ((kind !== "apiKey" && kind !== "mcpOAuth") || !user?.id || !workspace) {
+    return null;
+  }
   return { workspaceId: workspace._id.toString(), userId: String(user.id) };
 }
 
@@ -406,19 +405,19 @@ function testerOf(c: AuthenticatedContext): Worker | null {
 const asWorker =
   (
     handler: (c: Context, worker: Worker) => Promise<Response>,
-    { tester = false } = {},
+    { person = false } = {},
   ) =>
   async (c: AuthenticatedContext) => {
-    const worker = workerOf(c) ?? (tester ? testerOf(c) : null);
+    const worker = workerOf(c) ?? (person ? personOf(c) : null);
     return worker
       ? handler(c, worker)
       : c.json({ error: "Invalid worker key" }, 401);
   };
 
-/** The SQL, model and agent routes, which a person's test run calls too. */
-const asWorkerOrTester = (
+/** The SQL, model and agent routes, which a person's own run calls too. */
+const asWorkerOrPerson = (
   handler: (c: Context, worker: Worker) => Promise<Response>,
-) => asWorker(handler, { tester: true });
+) => asWorker(handler, { person: true });
 
 // What the worker should run. It polls this: the commit, which workflows
 // have their triggers on, and the Hatchet token to connect with, so the
@@ -566,7 +565,7 @@ async function forwardToGateway(
 
 workflowRuntimeRoutes.post(
   "/ai/language-model",
-  asWorkerOrTester(async (c, worker) => {
+  asWorkerOrPerson(async (c, worker) => {
     if (c.req.header("ai-language-model-streaming") === "true") {
       return c.json(
         { error: "Streaming is not available in a step; use generateText." },
@@ -580,7 +579,7 @@ workflowRuntimeRoutes.post(
 
 workflowRuntimeRoutes.post(
   "/ai/decision-model",
-  asWorkerOrTester(async (c, worker) =>
+  asWorkerOrPerson(async (c, worker) =>
     forwardToGateway(
       c,
       worker,
@@ -594,7 +593,7 @@ workflowRuntimeRoutes.post(
 // the tools it used out. It acts as the person who set the worker up.
 workflowRuntimeRoutes.post(
   "/agent",
-  asWorkerOrTester(async (c, worker) => {
+  asWorkerOrPerson(async (c, worker) => {
     const body = (await c.req.json().catch(() => null)) as {
       goal?: unknown;
       model?: unknown;
@@ -620,7 +619,7 @@ workflowRuntimeRoutes.post(
 // refused, failed, capped or timed-out query is a 400 with its reason.
 workflowRuntimeRoutes.post(
   "/query",
-  asWorkerOrTester(async (c, worker) => {
+  asWorkerOrPerson(async (c, worker) => {
     const body = (await c.req.json().catch(() => null)) as {
       connectionId?: unknown;
       query?: unknown;
@@ -656,7 +655,7 @@ workflowRuntimeRoutes.post(
         400,
       );
     }
-    // The key's scopes, or a login's: a person's query:read login reads only.
+    // The key's scopes, or a login's (query:read: it reads, as over /api/mcp).
     const key = c.get("apiKey") as { scopes?: string[] } | undefined;
     const scopes = key?.scopes ?? c.get("mcpOAuthScopes");
     try {

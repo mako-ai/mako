@@ -34,12 +34,6 @@ export interface RequestContext {
    */
   workflowWorker?: boolean;
   /**
-   * The workflow a person's request runs for (X-Mako-Workflow on their own
-   * credential: a test run, `mako workflow run`). It narrows: they write
-   * only where both they and the workflow may (access/connection-writes.ts).
-   */
-  testedWorkflow?: string;
-  /**
    * Mako's own work, not a person's or a workflow's: an Inngest function (a
    * sync, a flow run, dbt), a flow writing its own destination. Its writes
    * are not checked against writers lists (access/connection-writes.ts).
@@ -311,11 +305,6 @@ export function enrichContextWithUser(userId: string): void {
 export function enrichContextWithWorkflow(workflow: string): void {
   const context = requestContextStorage.getStore();
   if (context) context.workflow = workflow;
-}
-
-export function enrichContextWithTestedWorkflow(workflow: string): void {
-  const context = requestContextStorage.getStore();
-  if (context) context.testedWorkflow = workflow;
 }
 
 export function enrichContextWithWorkflowWorker(): void {

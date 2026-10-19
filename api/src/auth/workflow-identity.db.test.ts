@@ -2,15 +2,14 @@
  * Who a workflow-runtime key writes as, through the real auth middleware and
  * an in-memory Mongo. Workflow code can read the key it runs with, so the
  * workflow name it sends (X-Mako-Workflow) must be trusted only from the
- * deployed worker's key, and only for a workflow deployed from main. On any
- * other key it only narrows: the person acts as themselves AND the workflow.
+ * deployed worker's key, and only for a workflow deployed from main.
  */
 import assert from "node:assert/strict";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 import { Hono } from "hono";
 
-import { WORKFLOW_WORKER, actingPrincipals } from "../access/connection-writes";
+import { WORKFLOW_WORKER, actingPrincipal } from "../access/connection-writes";
 import { User } from "../database/schema";
 import { Workspace } from "../database/workspace-schema";
 import { requestContextStorage } from "../logging/context";
@@ -29,7 +28,7 @@ const ORDINARY_KEY = "revops_ordinary_mcp_key_test__";
 // The MCP endpoint is where workflow code queries; answer who is acting.
 const app = new Hono();
 app.post("/api/mcp", unifiedAuthMiddleware, c =>
-  c.json({ principals: actingPrincipals() }),
+  c.json({ principal: actingPrincipal() ?? null }),
 );
 
 const principalOf = async (key: string, workflow?: string) => {
@@ -50,9 +49,7 @@ const principalOf = async (key: string, workflow?: string) => {
       }),
   );
   assert.equal(res.status, 200);
-  return ((await res.json()) as { principals: string[] }).principals.join(
-    " + ",
-  );
+  return ((await res.json()) as { principal: string | null }).principal;
 };
 
 async function main() {
@@ -95,23 +92,14 @@ async function main() {
       await principalOf(WORKER_KEY, "billing-sync"),
       "workflow:billing-sync",
     );
-    // A member's sandbox key claiming that workflow stays the member, and
-    // is narrowed to what the workflow may do too.
-    assert.equal(
-      await principalOf(SANDBOX_KEY, "billing-sync"),
-      "user:member + workflow:billing-sync",
-    );
+    // A member's sandbox key claiming that workflow stays the member.
+    assert.equal(await principalOf(SANDBOX_KEY, "billing-sync"), "user:member");
     assert.equal(await principalOf(SANDBOX_KEY), "user:member");
-    // So is any other key's claim, deployed workflow or not.
+    // Any other key's claim is ignored.
     assert.equal(
       await principalOf(ORDINARY_KEY, "billing-sync"),
-      "user:member + workflow:billing-sync",
+      "user:member",
     );
-    assert.equal(
-      await principalOf(ORDINARY_KEY, "draft-flow"),
-      "user:member + workflow:draft-flow",
-    );
-    assert.equal(await principalOf(ORDINARY_KEY, "bad name!"), "user:member");
     // The worker naming nothing, or a workflow not deployed from main, writes
     // as no one listable: never as the admin who deployed it.
     assert.equal(await principalOf(WORKER_KEY), WORKFLOW_WORKER);

@@ -16,14 +16,9 @@ import {
   enrichContextWithUser,
   enrichContextWithWorkflow,
   enrichContextWithWorkflowWorker,
-  enrichContextWithTestedWorkflow,
   enrichContextWithWorkspace,
 } from "../logging";
-import {
-  testedWorkflow,
-  type WorkflowIdentity,
-  workflowIdentity,
-} from "../workflows/worker-key";
+import { workflowIdentity } from "../workflows/worker-key";
 
 const logger = loggers.auth();
 
@@ -46,15 +41,6 @@ function unauthenticated(c: Context, error: string) {
     return c.redirect(loginRedirectUrl(url.pathname, url.search), 302);
   }
   return c.json({ error }, 401);
-}
-
-/** Who a request acts as besides its credential's person, if anyone. */
-function enrichContextWithIdentity(identity: WorkflowIdentity): void {
-  if (identity.kind === "workflow") enrichContextWithWorkflow(identity.name);
-  else if (identity.kind === "worker") enrichContextWithWorkflowWorker();
-  else if (identity.kind === "tested") {
-    enrichContextWithTestedWorkflow(identity.name);
-  }
 }
 
 /**
@@ -110,9 +96,6 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
 
         enrichContextWithUser(tokenUser._id);
         enrichContextWithWorkspace(workspace._id.toString());
-        enrichContextWithIdentity(
-          testedWorkflow(c.req.header("x-mako-workflow")),
-        );
 
         await next();
         return;
@@ -198,16 +181,19 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           enrichContextWithWorkspace(workspace._id.toString());
           // Only the deployed worker's key may say which deployed workflow
           // a request runs for, so the workflow writes as itself
-          // (access/connection-writes.ts). On a person's key the name only
-          // narrows what they may do; the worker naming no deployed
-          // workflow acts as no one listable.
-          enrichContextWithIdentity(
-            workflowIdentity(
-              workspaceApiKey,
-              workspace,
-              c.req.header("x-mako-workflow"),
-            ),
+          // (access/connection-writes.ts). A sandbox run's key, which the
+          // code being tested can read, acts as its person; the worker
+          // naming no deployed workflow acts as no one listable.
+          const identity = workflowIdentity(
+            workspaceApiKey,
+            workspace,
+            c.req.header("x-mako-workflow"),
           );
+          if (identity.kind === "workflow") {
+            enrichContextWithWorkflow(identity.name);
+          } else if (identity.kind === "worker") {
+            enrichContextWithWorkflowWorker();
+          }
 
           await next();
           return;
