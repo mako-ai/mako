@@ -38,6 +38,8 @@ import type {
 // ---------------------------------------------------------------------------
 
 const SCHEMA_CACHE_TTL_MS = 5 * 60 * 1000;
+/** A per-batch staging table outlives its batch only if the worker died. */
+const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface SchemaCacheEntry {
   columns: Map<string, string>;
@@ -1284,6 +1286,20 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return { loaded };
   }
 
+  private async expireStagingTable(stagingTable: string): Promise<void> {
+    const { bq, dataset, datasetLocation } = await this.resolveBqClient();
+    await bq
+      .dataset(dataset, { location: datasetLocation })
+      .table(stagingTable)
+      .setMetadata({ expirationTime: String(Date.now() + STAGING_TTL_MS) })
+      .catch(err => {
+        log.warn("Could not set an expiry on the CDC staging table", {
+          stagingTable,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }
+
   private async dropStagingTable(stagingTable: string): Promise<void> {
     const { projectId, dataset, destination, datasetLocation } =
       await this.resolveBqClient();
@@ -1344,6 +1360,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         params.layout,
         flowId,
         { stagingSuffix },
+      );
+      // The finally below drops the table, but not when the worker dies
+      // mid-batch (deploy, timeout): such tables piled up for months, one
+      // per crash. BigQuery deletes it on its own a day later regardless.
+      await this.expireStagingTable(
+        this.getStagingTableName(params.layout.tableName, flowId, stagingSuffix),
       );
       await this.mergeFromStaging(
         params.layout,
