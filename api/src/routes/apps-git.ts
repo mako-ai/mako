@@ -342,7 +342,7 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       // it applies to exactly this serving path (updateRefCas and the mirror
       // push never see it), and there is no migration to run over existing
       // repos when it changes.
-      GIT_CONFIG_COUNT: "3",
+      GIT_CONFIG_COUNT: "4",
       GIT_CONFIG_KEY_0: "core.hooksPath",
       GIT_CONFIG_VALUE_0: input.hooksDir,
       // Internal bookkeeping refs are invisible to fetch AND unpushable —
@@ -358,6 +358,11 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       // one by sha reveals nothing that a clone does not.
       GIT_CONFIG_KEY_2: "uploadpack.allowAnySHA1InWant",
       GIT_CONFIG_VALUE_2: "true",
+      // The instance's record of the mirror's heads (cloud-repo.service's
+      // deletion reconcile) is bookkeeping, not branches: keep it out of
+      // every clone's ref advertisement.
+      GIT_CONFIG_KEY_3: "transfer.hideRefs",
+      GIT_CONFIG_VALUE_3: "refs/remotes",
       ...(input.contentLength ? { CONTENT_LENGTH: input.contentLength } : {}),
       ...(input.contentEncoding
         ? { HTTP_CONTENT_ENCODING: input.contentEncoding }

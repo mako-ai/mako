@@ -134,6 +134,7 @@ import {
   mirrorPushNow,
   resolveMirrorTarget,
   queueMirrorPush,
+  scheduleMirrorBranchReconcile,
 } from "./cloud-repo.service";
 
 /**
@@ -2506,50 +2507,149 @@ export interface BranchInfo {
   lastCommit?: { subject: string; author: string; timestamp: number };
 }
 
+/**
+ * Every branch in the workspace repo with its distance from the default
+ * branch.
+ *
+ * The repo is the WORKSPACE's (apps, consoles, dbt, flows share it), so this
+ * answer is the same for every app that asks — and it used to be computed
+ * once per asking app with one `git rev-list --count` per branch, serially.
+ * At 573 branches that was ~573 subprocesses per call on a 1-vCPU instance;
+ * on 2026-10-19 it took 40s at the median and 71% of the service's
+ * request-seconds, and Cloud Run refused ~1,700 requests while it lasted.
+ *
+ * Now: one `for-each-ref` (≈10ms) per call reads the branch tips, and the
+ * tips ARE the cache key — nothing to invalidate, and a call made after a
+ * push always sees it. Only when the tips changed does one `rev-list` walk
+ * the commits not on the default branch, from which every branch's count is
+ * read in memory; concurrent calls seeing the same tips share that walk.
+ */
 export async function listBranches(scope: RepoScope): Promise<BranchInfo[]> {
   const repoDir = await repoForWorkspace(scope.workspaceId);
-  const { stdout } = await runGit([
+  // Mirror deletions are reconciled in the background (a deleted branch
+  // stays listed until then); never on the read path.
+  scheduleMirrorBranchReconcile(scope.workspaceId);
+  const { stdout: refs } = await runGit([
     "-C",
     repoDir,
     "for-each-ref",
     "--format=%(refname:short)%00%(objectname)%00%(subject)%00%(authorname)%00%(authordate:unix)",
     "refs/heads/",
   ]);
-  const defaultBranch = scope.defaultBranch;
-  const branches: BranchInfo[] = [];
-  for (const line of stdout.split("\n").filter(Boolean)) {
-    const [name, head, subject, author, at] = line.split("\0");
-    let aheadOfMain = 0;
-    if (name !== defaultBranch) {
-      try {
-        const { stdout: count } = await runGit([
-          "-C",
-          repoDir,
-          "rev-list",
-          "--count",
-          `refs/heads/${defaultBranch}..refs/heads/${name}`,
-        ]);
-        aheadOfMain = Number(count.trim()) || 0;
-      } catch {
-        aheadOfMain = 0;
-      }
-    }
-    branches.push({
-      name,
-      head,
-      isDefault: name === defaultBranch,
-      aheadOfMain,
-      lastCommit: subject
-        ? { subject, author, timestamp: Number(at) * 1000 }
-        : undefined,
+  const key = `${scope.workspaceId}\u0000${scope.defaultBranch}`;
+  const cached = branchListCache.get(key);
+  if (cached?.refs === refs) return cached.branches;
+  const flightKey = `${key}\u0000${refs}`;
+  const existing = branchListInFlight.get(flightKey);
+  if (existing) return existing;
+  const run = buildBranchList(repoDir, scope.defaultBranch, refs)
+    .then(branches => {
+      branchListCache.set(key, { refs, branches });
+      return branches;
+    })
+    .finally(() => branchListInFlight.delete(flightKey));
+  branchListInFlight.set(flightKey, run);
+  return run;
+}
+
+const branchListInFlight = new Map<string, Promise<BranchInfo[]>>();
+const branchListCache = new Map<
+  string,
+  { refs: string; branches: BranchInfo[] }
+>();
+
+async function buildBranchList(
+  repoDir: string,
+  defaultBranch: string,
+  refs: string,
+): Promise<BranchInfo[]> {
+  const rows = refs
+    .split("\n")
+    .filter(Boolean)
+    .map(line => {
+      const [name, head, subject, author, at] = line.split("\0");
+      return { name, head, subject, author, at };
     });
+  const hasDefault = rows.some(r => r.name === defaultBranch);
+  const others = rows.filter(r => r.name !== defaultBranch);
+  let ahead = new Map<string, number>();
+  if (hasDefault && others.length > 0) {
+    try {
+      // Every commit reachable from some branch but not from the default
+      // branch, with its parents: the whole "ahead" graph in one process.
+      const { stdout: graph } = await runGit([
+        "-C",
+        repoDir,
+        "rev-list",
+        "--parents",
+        "--branches",
+        "--not",
+        `refs/heads/${defaultBranch}`,
+      ]);
+      ahead = countAheadOfDefault(
+        graph,
+        others.map(r => r.head),
+      );
+    } catch {
+      ahead = new Map();
+    }
   }
+
+  const branches: BranchInfo[] = rows.map(r => ({
+    name: r.name,
+    head: r.head,
+    isDefault: r.name === defaultBranch,
+    aheadOfMain: r.name === defaultBranch ? 0 : (ahead.get(r.head) ?? 0),
+    lastCommit: r.subject
+      ? { subject: r.subject, author: r.author, timestamp: Number(r.at) * 1000 }
+      : undefined,
+  }));
   // Default branch first, then most recently committed.
   branches.sort((a, b) => {
     if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
     return (b.lastCommit?.timestamp ?? 0) - (a.lastCommit?.timestamp ?? 0);
   });
   return branches;
+}
+
+/**
+ * `rev-list --count <default>..<head>` for many heads at once, from the
+ * output of `rev-list --parents --branches --not <default>`: each line is a
+ * commit not on the default branch followed by its parents. A head's count is
+ * the commits reachable from it inside that set — a parent outside the set is
+ * on the default branch, and so is everything behind it. A head absent from
+ * the set is merged (0).
+ */
+export function countAheadOfDefault(
+  graph: string,
+  heads: string[],
+): Map<string, number> {
+  const parents = new Map<string, string[]>();
+  for (const line of graph.split("\n")) {
+    if (!line) continue;
+    const [commit, ...rest] = line.split(" ");
+    parents.set(commit, rest);
+  }
+  const counts = new Map<string, number>();
+  for (const head of heads) {
+    if (counts.has(head)) continue;
+    if (!parents.has(head)) {
+      counts.set(head, 0);
+      continue;
+    }
+    const seen = new Set<string>([head]);
+    const stack = [head];
+    while (stack.length > 0) {
+      for (const parent of parents.get(stack.pop() as string) ?? []) {
+        if (!seen.has(parent) && parents.has(parent)) {
+          seen.add(parent);
+          stack.push(parent);
+        }
+      }
+    }
+    counts.set(head, seen.size);
+  }
+  return counts;
 }
 
 export interface MergeResult {
