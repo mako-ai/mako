@@ -39,7 +39,7 @@ ogRoutes.openapi(
     tags: ["Public Shares"],
     summary: "Link-preview image of a workspace app",
     description:
-      "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), unchanged, for Open Graph crawlers unfurling an in-app link. Only for a workspace-tree app visible to the whole workspace, while the workspace's link previews are on; otherwise — or for an SVG-only app — 404, and the page points crawlers at the generic /og-default.png. Cached publicly by blob oid.",
+      "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers unfurling an in-app link. Only for a workspace-tree app visible to the whole workspace, while the workspace's link previews are on; otherwise — or for an SVG-only app — 404, and the page points crawlers at the generic /og-default.png. Cached publicly by blob oid.",
     security: [],
     request: { params: AppImageParams },
     responses: OPEN_RESPONSES,
@@ -67,7 +67,7 @@ ogRoutes.openapi(
           "Content-Type": image.contentType,
           "Content-Length": String(image.bytes.length),
           "Cache-Control": "public, max-age=86400",
-          ETag: `"${image.oid}"`,
+          ETag: image.etag,
           "X-Content-Type-Options": "nosniff",
         },
       });

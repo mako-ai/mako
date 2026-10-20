@@ -115,7 +115,7 @@ import {
   searchDiscoveryApps,
 } from "../apps/app-discovery.service";
 import { appUsageScores } from "../apps/app-search.service";
-import { readThumbnailBlob, thumbnailHeaders } from "../apps/app-thumbnail";
+import { readThumbnailBlob, thumbnailResponse } from "../apps/app-thumbnail";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
   authorizeAppMove,
@@ -3932,9 +3932,20 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "The app's own thumbnail image",
     description:
-      "The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main, served by blob oid with immutable caching; /apps/discovery says which apps have one (and its oid, the cache version). 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.",
+      "The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main; /apps/discovery says which apps have one (and its oid, the cache version). With `w`, a raster thumbnail comes back as a WebP at most that wide (snapped to 320/480/640/960/1200, never upscaled); SVG is always the original. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid and width) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.",
     security: AUTH_SECURITY,
-    request: { params: ProjectParam },
+    request: {
+      params: ProjectParam,
+      query: z.object({
+        v: z.string().optional().openapi({
+          description: "The thumbnail's blob oid (cache version).",
+        }),
+        w: z.string().optional().openapi({
+          description:
+            "Desired width in px; snapped to the nearest of 320, 480, 640, 960, 1200. Omit for the original.",
+        }),
+      }),
+    },
     responses: OPEN_RESPONSES,
   }),
   async c => {
@@ -3946,23 +3957,27 @@ appsRoutes.openapi(
         workspaceId,
         loaded.project._id.toString(),
       );
-      const repoDir = row?.thumbnail
-        ? await boundRepoDirIfExists(workspaceId)
+      const thumbnail = row?.thumbnail;
+      const { v, w } = c.req.valid("query");
+      const res = thumbnail
+        ? await thumbnailResponse({
+            thumbnail,
+            v,
+            w,
+            ifNoneMatch: c.req.header("if-none-match"),
+            read: async () => {
+              const repoDir = await boundRepoDirIfExists(workspaceId);
+              return repoDir ? readThumbnailBlob(repoDir, thumbnail) : null;
+            },
+          })
         : null;
-      const bytes =
-        row?.thumbnail && repoDir
-          ? await readThumbnailBlob(repoDir, row.thumbnail)
-          : null;
-      if (!row?.thumbnail || !bytes) {
+      if (!res) {
         return c.json(
           { success: false, error: "This app has no thumbnail" },
           404,
         );
       }
-      return new Response(new Uint8Array(bytes), {
-        status: 200,
-        headers: thumbnailHeaders(row.thumbnail.file, bytes.length),
-      });
+      return res;
     } catch (error) {
       return handleError(c, error);
     }

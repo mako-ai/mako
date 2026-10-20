@@ -13,10 +13,11 @@
  * Authenticated in-app URLs get nothing.
  *
  * The image must be raster (crawlers ignore SVG): the app's own
- * `thumbnail.png`/`.jpg`/`.webp`, served unchanged from
- * /api/share/<token>/og-image; an app with only an SVG thumbnail (or none)
- * uses the static generic `/og-default.png` (no server-side rasterizer is
- * available, and adding a native image stack for this is not worth it).
+ * `thumbnail.png`/`.jpg`/`.webp`, re-encoded to a JPEG at most 1200 wide
+ * and ~300 KB (WhatsApp drops the large card above that; see
+ * image-variants.ts) and served from /api/share/<token>/og-image; an app
+ * with only an SVG thumbnail (or none) uses the static generic
+ * `/og-default.png`.
  */
 import { Types } from "mongoose";
 import {
@@ -30,6 +31,7 @@ import {
   type AppThumbnailRef,
 } from "../apps/app-index.service";
 import { readThumbnailBlob } from "../apps/app-thumbnail";
+import { toOgJpeg } from "../apps/image-variants";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 
 /** The share URL shapes the SPA serves (see app/src/App.tsx). */
@@ -137,6 +139,8 @@ export interface ShareImage {
   bytes: Buffer;
   contentType: string;
   oid: string;
+  /** Quoted; distinguishes the re-encoded JPEG from the original bytes. */
+  etag: string;
   width?: number;
   height?: number;
 }
@@ -165,13 +169,27 @@ export async function rasterThumbnail(
   const repoDir = await boundRepoDirIfExists(workspaceId);
   const bytes = repoDir ? await readThumbnailBlob(repoDir, thumb) : null;
   if (!bytes) return null;
-  const size = imageSize(bytes);
-  const image: ShareImage = {
-    bytes,
-    contentType,
-    oid: thumb.oid,
-    ...(size ?? {}),
-  };
+  const jpeg = await toOgJpeg(bytes);
+  // Keep the original when the encoder failed, or when it already was a
+  // within-budget JPEG the re-encode would only make bigger.
+  const image: ShareImage =
+    jpeg && !(contentType === "image/jpeg" && bytes.length <= jpeg.bytes.length)
+      ? {
+          bytes: jpeg.bytes,
+          contentType: jpeg.contentType,
+          oid: thumb.oid,
+          etag: `"${thumb.oid}-og"`,
+          ...(jpeg.width && jpeg.height
+            ? { width: jpeg.width, height: jpeg.height }
+            : {}),
+        }
+      : {
+          bytes,
+          contentType,
+          oid: thumb.oid,
+          etag: `"${thumb.oid}"`,
+          ...(imageSize(bytes) ?? {}),
+        };
   if (imageCache.size > 200) imageCache.clear();
   imageCache.set(thumb.oid, image);
   return image;

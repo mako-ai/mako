@@ -100,7 +100,7 @@ export async function repoExists(repoDir: string): Promise<boolean> {
  */
 export async function initRepo(
   repoDir: string,
-  files: Record<string, string>,
+  files: Record<string, string | Buffer>,
   options: { message?: string; author?: GitAuthor } = {},
 ): Promise<{ commitOid: string }> {
   await fs.mkdir(path.dirname(repoDir), { recursive: true });
@@ -123,6 +123,7 @@ export async function initRepo(
       const safe = assertSafeRelPath(rel);
       const abs = path.join(tmp, safe);
       await fs.mkdir(path.dirname(abs), { recursive: true });
+      // Buffers (binary fixtures such as images) are written as-is.
       await fs.writeFile(abs, contents, "utf8");
     }
     const treeOid = await snapshotDirToTree(repoDir, tmp);

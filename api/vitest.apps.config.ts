@@ -80,6 +80,8 @@ export default defineConfig({
       "src/apps/app-index.service.test.ts",
       // The starter project, including its placeholder thumbnail.
       "src/apps/scaffold.test.ts",
+      // Thumbnail variants: card-sized WebPs, cache headers, the OG cap.
+      "src/apps/image-variants.test.ts",
       // Link previews (Open Graph) for public shares.
       "src/services/share-og.service.test.ts",
       // Who opens which app: daily rollup, popularity score, authors.

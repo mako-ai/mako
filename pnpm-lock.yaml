@@ -192,6 +192,9 @@ importers:
       resumable-stream:
         specifier: ^2.2.13
         version: 2.2.13
+      sharp:
+        specifier: ^0.35.5
+        version: 0.35.5(@types/node@24.19.2)
       ssh2:
         specifier: ^1.17.0
         version: 1.17.0

@@ -20,6 +20,22 @@ export function appThumbnailUrl(
   return `${base}/workspaces/${workspaceId}/apps/${app.id}/thumbnail?v=${encodeURIComponent(app.thumbnail.oid)}`;
 }
 
+/**
+ * A thumbnail URL asking for a card-sized WebP (`w`, snapped server-side to
+ * 320/480/640/960/1200). The originals are 1200-wide posters of several
+ * hundred KB; a card is ~300 px wide.
+ */
+export function thumbnailAtWidth(src: string, width: number): string {
+  return `${src}${src.includes("?") ? "&" : "?"}w=${width}`;
+}
+
+/** `srcSet` for a thumbnail URL: 1×, 2× and 3× of a ~320 px card. */
+export function thumbnailSrcSet(src: string): string {
+  return [320, 640, 960]
+    .map(w => `${thumbnailAtWidth(src, w)} ${w}w`)
+    .join(", ");
+}
+
 /** The usage API's per-app stats (Lane A contract, app-usage.service). */
 export interface AppUsageStats {
   appId: string;

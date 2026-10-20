@@ -12,6 +12,8 @@ import { useTheme } from "@mui/material/styles";
 import {
   appThumbnailUrl,
   placeholderFor,
+  thumbnailAtWidth,
+  thumbnailSrcSet,
   type DiscoveryApp,
 } from "../../lib/apps-discovery";
 
@@ -95,7 +97,11 @@ export default function AppThumbnail({
       {src && (
         <Box
           component="img"
-          src={src}
+          src={thumbnailAtWidth(src, 640)}
+          srcSet={thumbnailSrcSet(src)}
+          // Cards are 160–440 px (AppsHome grid): half the viewport on a
+          // phone, ~300 px otherwise.
+          sizes="(max-width: 599px) 50vw, 300px"
           alt=""
           loading="lazy"
           onLoad={() => setLoaded(true)}

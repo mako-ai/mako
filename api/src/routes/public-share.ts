@@ -296,7 +296,7 @@ app.openapi(
     tags: ["Public Shares"],
     summary: "Link-preview image of an open share",
     description:
-      "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), unchanged, for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.",
+      "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.",
     security: [],
     request: { params: TokenParam },
     responses: OPEN_RESPONSES,
@@ -319,7 +319,7 @@ app.openapi(
           // Crawlers and their CDNs cache by URL; the URL carries the oid.
           // A day, not forever: unsharing must eventually stop serving it.
           "Cache-Control": "public, max-age=86400",
-          ETag: `"${image.oid}"`,
+          ETag: image.etag,
           "X-Content-Type-Options": "nosniff",
         },
       });

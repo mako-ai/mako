@@ -11,6 +11,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import sharp from "sharp";
 import {
   AppIndexEntry,
   AppIndexHead,
@@ -26,6 +27,7 @@ import { invalidateAppsIndexCache } from "../apps/app-index.service";
 import { anonymousViewerRedirect } from "../apps/live-viewer-redirect";
 import { publicShareRoutes } from "../routes/public-share";
 import { ogRoutes } from "../routes/og";
+import { OG_MAX_BYTES } from "../apps/image-variants";
 import {
   GENERIC_SHARE_TITLE,
   appLinkFromPath,
@@ -39,6 +41,8 @@ import {
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
+/** A real 1600×1000 PNG: the OG image re-encodes and caps it. */
+let posterPng: Buffer;
 
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "share-og-test-"));
@@ -48,6 +52,23 @@ beforeAll(async () => {
   process.env.SESSION_SECRET ||= "test-secret";
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  // Coarse noise, blown up: a ~650 KB PNG (under the 3 MB blob cap) whose
+  // straight q85 JPEG would still be ~450 KB, so the cap has to bite.
+  const grain = await sharp({
+    create: {
+      width: 533,
+      height: 333,
+      channels: 3,
+      background: "#3a6ea5",
+      noise: { type: "gaussian", mean: 128, sigma: 60 },
+    },
+  })
+    .png()
+    .toBuffer();
+  posterPng = await sharp(grain)
+    .resize({ width: 1600, height: 1000, kernel: "nearest" })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
 });
 
 afterAll(async () => {
@@ -86,7 +107,7 @@ beforeEach(async () => {
       'Leads "by" canton',
       "Daily inbound leads",
     ),
-    "apps/open/thumbnail.png": "PNG-BYTES",
+    "apps/open/thumbnail.png": posterPng,
     "apps/locked/mako.json": manifest(LOCKED, "Secret board", "Do not leak"),
     "apps/locked/thumbnail.png": "SECRET-PNG",
     "apps/svg/mako.json": manifest(
@@ -174,7 +195,10 @@ describe("share link previews", () => {
     expect(tags.image).toMatch(
       /^https:\/\/app\.mako\.ai\/api\/share\/open-share\/og-image\?v=[0-9a-f]{12}$/,
     );
-    expect(tags.imageType).toBe("image/png");
+    // Re-encoded for crawlers: a JPEG at most 1200 wide.
+    expect(tags.imageType).toBe("image/jpeg");
+    expect(tags.imageWidth).toBe(1200);
+    expect(tags.imageHeight).toBe(750);
 
     const html = injectOgTags(
       "<html><head><title>Mako</title></head><body></body></html>",
@@ -215,10 +239,16 @@ describe("share link previews", () => {
   it("serves the open share's image publicly and 404s every other share", async () => {
     const ok = await publicShareRoutes.request("/open-share/og-image");
     expect(ok.status).toBe(200);
-    expect(ok.headers.get("content-type")).toBe("image/png");
+    expect(ok.headers.get("content-type")).toBe("image/jpeg");
     expect(ok.headers.get("cache-control")).toBe("public, max-age=86400");
-    expect(ok.headers.get("etag")).toMatch(/^"[0-9a-f]{40}"$/);
-    expect(await ok.text()).toBe("PNG-BYTES");
+    expect(ok.headers.get("etag")).toMatch(/^"[0-9a-f]{40}-og"$/);
+    const body = Buffer.from(await ok.arrayBuffer());
+    expect(posterPng.length).toBeGreaterThan(OG_MAX_BYTES);
+    expect(body.length).toBeLessThanOrEqual(OG_MAX_BYTES);
+    expect(Number(ok.headers.get("content-length"))).toBe(body.length);
+    const meta = await sharp(body).metadata();
+    expect(meta.format).toBe("jpeg");
+    expect(meta.width).toBe(1200);
 
     for (const token of ["locked-share", "svg-share", "no-such-share"]) {
       const res = await publicShareRoutes.request(`/${token}/og-image`);
@@ -282,8 +312,10 @@ describe("in-app link previews", () => {
       `/app-image/${WS}/${PLAIN.toHexString()}`,
     );
     expect(ok.status).toBe(200);
+    // Bytes the encoder cannot decode are served as they are.
     expect(ok.headers.get("content-type")).toBe("image/png");
     expect(ok.headers.get("cache-control")).toBe("public, max-age=86400");
+    expect(ok.headers.get("etag")).toMatch(/^"[0-9a-f]{40}"$/);
     expect(await ok.text()).toBe("PLAIN-PNG");
     for (const id of [RESTRICTED, PERSONAL, SVG_ONLY]) {
       const res = await ogRoutes.request(

@@ -4583,7 +4583,7 @@ export interface paths {
         };
         /**
          * The app's own thumbnail image
-         * @description The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main, served by blob oid with immutable caching; /apps/discovery says which apps have one (and its oid, the cache version). 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.
+         * @description The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main; /apps/discovery says which apps have one (and its oid, the cache version). With `w`, a raster thumbnail comes back as a WebP at most that wide (snapped to 320/480/640/960/1200, never upscaled); SVG is always the original. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid and width) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.
          */
         get: operations["get_api_workspaces_workspaceId_apps_id_thumbnail"];
         put?: never;
@@ -5159,7 +5159,7 @@ export interface paths {
         };
         /**
          * Link-preview image of an open share
-         * @description The app's own raster thumbnail (thumbnail.png/.jpg/.webp), unchanged, for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.
+         * @description The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.
          */
         get: operations["get_api_share_token_og_image"];
         put?: never;
@@ -5196,7 +5196,7 @@ export interface paths {
         };
         /**
          * Link-preview image of a workspace app
-         * @description The app's own raster thumbnail (thumbnail.png/.jpg/.webp), unchanged, for Open Graph crawlers unfurling an in-app link. Only for a workspace-tree app visible to the whole workspace, while the workspace's link previews are on; otherwise — or for an SVG-only app — 404, and the page points crawlers at the generic /og-default.png. Cached publicly by blob oid.
+         * @description The app's own raster thumbnail (thumbnail.png/.jpg/.webp), as a JPEG at most 1200 px wide and ~300 KB (so WhatsApp shows the large card), for Open Graph crawlers unfurling an in-app link. Only for a workspace-tree app visible to the whole workspace, while the workspace's link previews are on; otherwise — or for an SVG-only app — 404, and the page points crawlers at the generic /og-default.png. Cached publicly by blob oid.
          */
         get: operations["get_api_og_app_image_workspaceId_appId"];
         put?: never;
@@ -20010,7 +20010,12 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_apps_id_thumbnail: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The thumbnail's blob oid (cache version). */
+                v?: string;
+                /** @description Desired width in px; snapped to the nearest of 320, 480, 640, 960, 1200. Omit for the original. */
+                w?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
