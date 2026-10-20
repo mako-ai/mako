@@ -14,7 +14,10 @@ import { makeContext, workflows } from "./workflow-hatchet.js";
 /** Hatchet's default when a step sets no executionTimeout. */
 const DEFAULT_TIMEOUT = "60s";
 
-/** lib/mako.ts as the workers run it: the monorepo's, else the copy packed with the CLI. */
+/**
+ * lib/mako.ts as the workers run it: the monorepo's, the copy packed with
+ * the CLI, or, in a sandbox, the runtime's own (the CLI files sit in its cli/).
+ */
 function makoFile() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   return [
@@ -23,6 +26,7 @@ function makoFile() {
       "../../../deploy/workflows/runtime/defaults/lib/mako.ts",
     ),
     path.resolve(here, "../runtime/mako.ts"),
+    path.resolve(here, "../defaults/lib/mako.ts"),
   ].find(file => fs.existsSync(file));
 }
 
