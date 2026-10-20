@@ -340,6 +340,35 @@ describe("lastCommitByAppPath", () => {
     );
     expect(recent.size).toBe(0);
   });
+
+  it("ignores a sweeping commit that touched many apps at once", async () => {
+    const sha = (await resolveCommit(repoDirFor(WS), MAIN))!;
+    const since = new Date(REAL_NOW - 200 * DAY);
+    const paths = ["apps/old", "apps/Sales/fresh"];
+    // The seed commit touched both: a chore by the 1-app threshold.
+    const swept = await lastCommitByAppPath(
+      repoDirFor(WS),
+      sha,
+      paths,
+      since,
+      1,
+    );
+    expect(swept.size).toBe(0);
+    const edit = await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "apps/old/src/main.tsx": "export const x = 1;\n" } },
+      { message: "edit one app" },
+    );
+    const after = await lastCommitByAppPath(
+      repoDirFor(WS),
+      edit.commitOid,
+      paths,
+      since,
+      1,
+    );
+    expect([...after.keys()]).toEqual(["apps/old"]);
+  });
 });
 
 describe("archiveProject", () => {

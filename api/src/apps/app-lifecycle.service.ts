@@ -240,12 +240,21 @@ export function planAppLifecycle(
  * Newest commit touching each app folder, over one `git log` of the app
  * trees — never one rev-list per app (2026-10-19: 573 sequential rev-lists
  * saturated the service). Only commits since `since` are walked.
+ *
+ * A SWEEPING commit — one touching more than `sweepingApps` apps, like
+ * "switch every app to pnpm" or an SDK bump — is nobody editing any one of
+ * them, so it does not count: on the RealAdvisor repo two such chores
+ * (2026-09-16, 179 folders; 2026-10-02, 88) would otherwise make every app
+ * look recently edited for two months after each one.
  */
+export const SWEEPING_COMMIT_APPS = 10;
+
 export async function lastCommitByAppPath(
   repoDir: string,
   sha: string,
   appPaths: string[],
   since: Date,
+  sweepingApps = SWEEPING_COMMIT_APPS,
 ): Promise<Map<string, Date>> {
   const out = new Map<string, Date>();
   if (!sha || appPaths.length === 0) return out;
@@ -269,19 +278,22 @@ export async function lastCommitByAppPath(
     const lines = record.split("\n").filter(Boolean);
     if (lines.length < 2) continue;
     const at = new Date(Number(lines[0]) * 1000);
+    const touched = new Set<string>();
     for (const file of lines.slice(1)) {
       // Walk up to the app folder holding this file.
       let dir = file;
       for (let slash = dir.lastIndexOf("/"); slash > 0;) {
         dir = dir.slice(0, slash);
         if (roots.has(dir)) {
-          // Newest first: the first commit seen for an app is its last.
-          if (!out.has(dir)) out.set(dir, at);
+          touched.add(dir);
           break;
         }
         slash = dir.lastIndexOf("/");
       }
     }
+    if (touched.size > sweepingApps) continue;
+    // Newest first: the first commit seen for an app is its last.
+    for (const dir of touched) if (!out.has(dir)) out.set(dir, at);
   }
   return out;
 }
