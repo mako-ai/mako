@@ -2115,6 +2115,15 @@ export const useConsoleStore = create<ConsoleStore>()(
           if (str) {
             const data = JSON.parse(str);
             if (data.state?.tabs) {
+              // Dashboards were removed; their open tabs cannot be reopened.
+              for (const [id, tab] of Object.entries(data.state.tabs)) {
+                if ((tab as { kind?: string }).kind === "dashboard") {
+                  delete data.state.tabs[id];
+                  if (data.state.activeTabId === id) {
+                    data.state.activeTabId = null;
+                  }
+                }
+              }
               // Rebuild or reconcile tabOrder with the current tabs map so
               // upgrading users don't end up with an empty tab strip.
               const tabIds = Object.keys(data.state.tabs);

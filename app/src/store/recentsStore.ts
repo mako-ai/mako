@@ -13,7 +13,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-export type RecentKind = "console" | "notebook" | "app";
+export const RECENT_KINDS = ["console", "notebook", "app"] as const;
+export type RecentKind = (typeof RECENT_KINDS)[number];
 
 export interface RecentEntry {
   kind: RecentKind;
@@ -43,6 +44,19 @@ interface RecentsActions {
 
 type RecentsStore = RecentsState & RecentsActions;
 
+/** Keep only entries whose kind still exists. */
+export function dropUnknownRecentKinds(
+  state: RecentsState | undefined,
+): RecentsState {
+  const byWorkspace: Record<string, RecentEntry[]> = {};
+  for (const [workspaceId, list] of Object.entries(state?.byWorkspace ?? {})) {
+    byWorkspace[workspaceId] = list.filter(e =>
+      (RECENT_KINDS as readonly string[]).includes(e.kind),
+    );
+  }
+  return { byWorkspace };
+}
+
 export const useRecentsStore = create<RecentsStore>()(
   persist(
     immer(set => ({
@@ -71,7 +85,13 @@ export const useRecentsStore = create<RecentsStore>()(
 
       reset: () => set({ byWorkspace: {} }),
     })),
-    { name: "recents-store" },
+    {
+      name: "recents-store",
+      // v1: drop kinds that no longer exist (the removed "dashboard").
+      version: 1,
+      migrate: persisted =>
+        dropUnknownRecentKinds(persisted as RecentsState) as RecentsStore,
+    },
   ),
 );
 

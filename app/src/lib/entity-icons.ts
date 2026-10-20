@@ -103,7 +103,9 @@ export const TAB_KIND_ICONS = {
 } as const satisfies Record<NonNullable<TabKind>, LucideIcon>;
 
 export function tabKindIcon(kind: TabKind | undefined): LucideIcon {
-  return TAB_KIND_ICONS[kind ?? "console"];
+  // Persisted tabs and recents can carry a kind that no longer exists (the
+  // removed "dashboard"); an undefined icon would crash the whole shell.
+  return TAB_KIND_ICONS[kind ?? "console"] ?? TAB_KIND_ICONS.console;
 }
 
 /** Settings explorer / settings command icons, one per section. */

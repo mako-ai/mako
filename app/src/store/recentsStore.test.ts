@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  dropUnknownRecentKinds,
   MAX_RECENTS_PER_WORKSPACE,
+  type RecentKind,
   selectRecents,
   useRecentsStore,
 } from "./recentsStore";
@@ -21,6 +23,20 @@ describe("recentsStore", () => {
       "notebook:n1",
     ]);
     expect(list[0].title).toBe("First (renamed)");
+  });
+
+  it("drops persisted entries of removed kinds", () => {
+    const migrated = dropUnknownRecentKinds({
+      byWorkspace: {
+        w1: [
+          { kind: "dashboard" as RecentKind, id: "d1", title: "Old", at: 2 },
+          { kind: "app", id: "a1", title: "App", slug: "app", at: 1 },
+        ],
+      },
+    });
+    expect(migrated.byWorkspace.w1.map(e => `${e.kind}:${e.id}`)).toEqual([
+      "app:a1",
+    ]);
   });
 
   it("is scoped per workspace", () => {
