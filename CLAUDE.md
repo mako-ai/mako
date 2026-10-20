@@ -19,7 +19,7 @@ Mako is a production-ready, multi-tenant AI-powered SQL client built with a PNPM
 
 ## Agent prompts & skills
 
-Keep base agent prompts lean. Durable vendor/database/dashboard/flow guidance
+Keep base agent prompts lean. Durable vendor/database/app/flow guidance
 belongs in git-versioned system skills under `api/src/agent-skills/**`, not in
 always-on prompt literals. See `.cursor/rules/35-agent-prompts.mdc` and
 `api/src/agent-skills/README.md` before changing prompt content.

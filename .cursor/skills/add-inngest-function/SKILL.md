@@ -152,5 +152,5 @@ const completion = await step.waitForEvent("wait-for-webhook", {
 - Client: `api/src/inngest/client.ts`
 - Function registry: `api/src/inngest/index.ts`
 - Flow example: `api/src/inngest/functions/flow.ts`
-- Dashboard refresh example: `api/src/inngest/functions/dashboard-refresh.ts`
+- Scheduled refresh example: `api/src/inngest/functions/apps-binding-refresh.ts`
 - Inngest rules: `.cursor/rules/45-inngest.mdc`

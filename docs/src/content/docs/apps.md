@@ -32,7 +32,7 @@ Bindings are how apps reach workspace data. A binding is one file — `bindings/
 SELECT category, amount, created_at FROM orders
 ```
 
-Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact (same pipeline as dashboards); at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
+Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact; at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
 
 ```tsx
 import { useQuery, useDuckDB } from "@makoai/app-sdk"; // apps created before 2026-09: "@mako/app-sdk" (older alias, same package)
@@ -48,7 +48,7 @@ const { data: totals } = useDuckDB(
 const { refresh, refreshing } = useQuery("recent_orders");
 ```
 
-`refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh (as with a dashboard); a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
+`refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh; a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
 
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
@@ -56,7 +56,7 @@ A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <
 
 Importing the SDK injects Mako's theme tokens (stone palette, warm `--canvas`, `--brand`, `--positive` / `--warning` / `--negative`, `--chart-1`…`--chart-5`; light and dark). Style with those names and the app follows the house palette for free. To re-theme, override a single token in your own stylesheet rather than pasting the whole token block.
 
-The SDK also ships a small dashboard kit — plain ESM and plain CSS (no Tailwind required, classes prefixed `mk-`), and new apps are scaffolded on it:
+The SDK also ships a small UI kit — plain ESM and plain CSS (no Tailwind required, classes prefixed `mk-`), and new apps are scaffolded on it:
 
 ```tsx
 import "@makoai/app-sdk/ui.css"; // before ./styles.css, so the app wins
@@ -115,7 +115,7 @@ directly); poll
 
 ## Access Control
 
-Apps follow the same model as dashboards (see [Sharing & Collaborators](/dashboards/#sharing--collaborators)):
+Apps have two access levels:
 
 - **`private`** (default): owner-only. Workspace admins and API keys cannot read or modify another member's private app.
 - **`workspace`**: visible and editable by any workspace member.

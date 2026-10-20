@@ -43,7 +43,6 @@ export default defineConfig({
           items: [
             { label: "AI-Powered SQL Client", slug: "ai-agent" },
             { label: "Console", slug: "console" },
-            { label: "Dashboards", slug: "dashboards" },
             { label: "Version History", slug: "version-history" },
             { label: "Apps", slug: "apps" },
             { label: "Transforms (dbt)", slug: "transforms" },

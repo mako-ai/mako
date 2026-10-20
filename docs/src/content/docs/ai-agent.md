@@ -90,17 +90,16 @@ Skill _retrieval_ and _writes_ (`get_relevant_skills`, `load_skill`, `save_skill
 
 Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches _expertise modes_ mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A small set of core tools (memory, skill retrieval, web access, planning, mode-switching, tool discovery) is always available regardless of mode; everything else is either mode-scoped or deferred (see [Tool paging](#tool-paging)).
 
-On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms**, a notebook in **Notebook** — otherwise **Query**. The agent then switches as the task demands.
+On a fresh request the default mode is picked from what you're looking at — the flow editor opens in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms**, a notebook in **Notebook** — otherwise **Query**. The agent then switches as the task demands.
 
 | Mode                | Does                                                                                                                                              |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses                                                                  |
-| **Dashboard**       | Create and edit dashboards, widgets, data sources, filters, and charts                                                                            |
 | **Sync Flow**       | Configure database-to-database sync flows, query templates, and schema mapping                                                                    |
 | **React App**       | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings                 |
 | **Transforms**      | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse                       |
 | **Notebook**        | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
-| **Explore**         | Read-only investigation across connections, consoles, dashboards, and memory                                                                      |
+| **Explore**         | Read-only investigation across connections, consoles, apps, and memory                                                                           |
 
 `Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
 
@@ -122,23 +121,11 @@ Budgets: at most 110 active tools and ~12k tokens of tool definitions per step, 
 
 There is no user-facing plan/agent toggle. The model decides when planning is worthwhile: the moment it calls `submit_plan` in a turn, mutating tools are hard-gated until you approve the plan. Read-only and lifecycle tools (e.g. `enable_mode`, `todo_write`, `ask_clarifying_questions`, `search_tools`, `load_tools`) stay available throughout — finding and loading a tool mutates nothing, and loaded write-tools remain gated.
 
-### Dashboard specifics
-
-Dashboards combine saved queries (consoles) into interactive visualizations powered by in-browser DuckDB and Vega-Lite charts:
-
-- **Data sources** — dashboard-local query definitions materialized into a local DuckDB instance
-- **Widgets** — charts (Vega-Lite), KPI cards, and data tables querying the local data
-- **Cross-filtering** — clicking a bar or slice in one chart filters all others automatically
-- **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
-- **Multi-dashboard** — multiple dashboards open simultaneously, each with its own isolated DuckDB instance
-
-Edit-mode locking is handled automatically so concurrent users cannot conflict.
-
 ## Version-Aware Tools
 
-Two tools inspect the history of saved consoles and dashboards. They are mode tools — active in the **Dashboard** and **React App** modes, where history questions actually come up:
+Two tools inspect the history of saved consoles. They are mode tools — active in the **React App** mode, where history questions actually come up:
 
-- `browse_version_history` — list past versions of a console or dashboard with author, timestamp, and comment.
+- `browse_version_history` — list past versions of a console with author, timestamp, and comment.
 - `get_version_snapshot` — fetch the full snapshot of a specific version.
 
 Both are workspace-scoped. See [Version History](/version-history/).
@@ -149,14 +136,12 @@ The agent can capture screenshots of the live UI for visual QA via the **`captur
 
 | Target             | Captures                                                   |
 | ------------------ | ---------------------------------------------------------- |
-| `active_dashboard` | The current dashboard — for visual QA of layout and charts |
 | `active_tab`       | The current main tab                                       |
 | `app_shell`        | The full Mako app UI                                       |
-| `widget`           | A specific dashboard widget                                |
 | `viewport`         | The current visible page                                   |
 | `selector`         | A specific element matched by a CSS selector               |
 
-This lets the agent verify dashboard rendering (chart legibility, overlap, layout reflow) and debug UI issues by actually looking at the result rather than reasoning blind.
+This lets the agent verify rendering (chart legibility, overlap, layout reflow) and debug UI issues by actually looking at the result rather than reasoning blind.
 
 ## Web Access
 

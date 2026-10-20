@@ -1,6 +1,9 @@
 # Inngest And Materialization Environment Setup
 
-This repo runs dashboard materialization in three different environments:
+This repo runs Inngest-driven materialization (app bindings, flows, dbt) in three
+different environments. The artifact-store variable names (`DASHBOARD_ARTIFACT_*`,
+`GCS_DASHBOARD_BUCKET`) and `dashboard-artifacts/...` prefixes are historical
+(from the removed dashboards feature) and still configure the shared store:
 
 - `local`: app on `http://localhost:5173`, API on `http://localhost:8080`, Inngest dev server on `http://localhost:8288`
 - `pr`: preview deploys on `https://pr-<number>.mako.ai`
@@ -137,22 +140,6 @@ Raise `CDC_MATERIALIZE_CONCURRENCY` only if you have headroom in the BigQuery
 slot reservation -- it is the first knob to lower if interactive or hasura-crm
 queries start queueing during CDC catch-up. If a single flow is starving others,
 lower `CDC_MATERIALIZE_CONCURRENCY_PER_FLOW` instead of the global cap.
-
-## Dashboard / app binding refresh concurrency
-
-Dashboard and app-binding materialization refreshes are capped **per workspace**
-so one workspace's scheduled dashboards cannot starve others (or the shared
-BigQuery reservation). The effective limit is a workspace setting
-(**Workspace settings → Limits**, `GET/PUT /api/workspaces/:id/settings/limits`)
-defaulting to 2 for each class; runs beyond the limit soft-gate with
-`RetryAfterError` and the scheduler throttles per workspace. The env vars below
-only set the hard ceiling the setting is clamped to and the Inngest function
-concurrency key (`event.data.workspaceId`).
-
-| Variable | Default | Applies to | Description |
-|---|---|---|---|
-| `DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX` | `10` | `dashboardRefreshFunction` (per workspace) | Hard ceiling on parallel dashboard refreshes within one workspace. Per-dashboard concurrency is independently 1. |
-| `APP_BINDING_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX` | `10` | app binding refresh (per workspace) | Hard ceiling on parallel app binding materializations within one workspace. |
 
 ## Environment summary
 

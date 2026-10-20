@@ -44,7 +44,7 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 | `GET`  | `/api/workspaces`     | List user's workspaces |
 | `POST` | `/api/workspaces`     | Create a workspace     |
 | `GET`  | `/api/workspaces/:id` | Get workspace details  |
-| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`dashboardRefreshConcurrency`, `appBindingRefreshConcurrency`; defaults 2, clamped to the per-workspace max) |
+| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`appBindingRefreshConcurrency`; default 2, clamped to the per-workspace max) |
 | `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits |
 | `GET`  | `/api/workspaces/:id/auto-join` | Get domain auto-join settings (email domains that auto-join on first sign-in, and the role granted: `member` \| `viewer`) |
 | `PUT`  | `/api/workspaces/:id/auto-join` | Set domain auto-join (`{ domains: string[] (max 20), role?: "member" \| "viewer" }`, default role `viewer`) |
@@ -305,48 +305,6 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 }
 ```
 
-## Dashboards
-
-| Method   | Endpoint                                                         | Description                          |
-| -------- | ---------------------------------------------------------------- | ------------------------------------ |
-| `GET`    | `/api/workspaces/:wid/dashboards`                                | List dashboards                      |
-| `POST`   | `/api/workspaces/:wid/dashboards`                                | Create a dashboard                   |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did`                           | Get dashboard details                |
-| `PUT`    | `/api/workspaces/:wid/dashboards/:did`                           | Update dashboard                     |
-| `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions`                  | List dashboard version history       |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions/:version`         | Get a specific dashboard version     |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/versions/:version/restore` | Restore dashboard to a past version  |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/version-comment`           | AI-suggested commit message for pending changes |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/collaborators`             | List per-user collaborators                  |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/collaborators`             | Add/update a collaborator (`{ userId, role }`, role `viewer`\|`editor`; owner/admin only) |
-| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Change a collaborator's role (owner/admin only) |
-| `DELETE` | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Remove a collaborator (owner/admin only)     |
-| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/sharing`                   | Update general access (`{ access, workspaceRole }`; owner/admin only) |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/public-share`             | Enable/create a public link (`{ password? }`; owner/admin only) |
-| `GET`    | `/api/workspaces/:wid/dashboards/:did/public-share/password`    | Reveal the public-link password (owner/admin only) |
-| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/public-share`            | Update password / rotate token / rename slug (owner/admin only) |
-| `DELETE` | `/api/workspaces/:wid/dashboards/:did/public-share`            | Disable the public link (owner/admin only)   |
-
-### Dashboard Folders
-
-| Method   | Endpoint                                                         | Description                          |
-| -------- | ---------------------------------------------------------------- | ------------------------------------ |
-| `GET`    | `/api/workspaces/:wid/dashboard-folders`                         | List dashboard folders               |
-| `POST`   | `/api/workspaces/:wid/dashboard-folders`                         | Create a folder                      |
-| `PUT`    | `/api/workspaces/:wid/dashboard-folders/:fid`                    | Update a folder                      |
-| `DELETE` | `/api/workspaces/:wid/dashboard-folders/:fid`                    | Delete a folder                      |
-
-### Dashboard Materialization
-
-| Method | Endpoint                                                                      | Description                                   |
-| ------ | ----------------------------------------------------------------------------- | --------------------------------------------- |
-| `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/status`                 | Get materialization status for all data sources |
-| `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger`                | Trigger materialization for a data source       |
-| `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger-all`            | Trigger materialization for all data sources    |
-| `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/stream/:dataSourceId`   | Stream Parquet artifact (supports range requests) |
-
 ## Apps
 
 Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-only — admins and API keys cannot access another member's private app. The workspace repo itself is served over git HTTP at `/api/apps-git/:workspaceId.git` (scoped git token).
@@ -384,7 +342,7 @@ Notebook CRUD, kernel sessions, executions, versions, presence, and the kernel's
 
 ## Public Shares
 
-Token-gated, **read-only** endpoints for published dashboard/app links. These are intentionally unauthenticated (no session or API key) and serve only materialized snapshots.
+Token-gated, **read-only** endpoints for published app links. These are intentionally unauthenticated (no session or API key) and serve only materialized snapshots.
 
 | Method | Endpoint                                  | Description                                              |
 | ------ | ----------------------------------------- | ------------------------------------------------------- |

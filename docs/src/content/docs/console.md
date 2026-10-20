@@ -82,17 +82,17 @@ Tool inputs stream as they generate, so edit cards reflect work in progress rath
 
 ## Sharing
 
-Consoles use the same **Google Workspace-style** sharing model as [dashboards](/dashboards/#sharing--collaborators):
+Consoles use a **Google Workspace-style** sharing model:
 
 - **Per-user collaborators** — add specific teammates as `viewer` (read-only) or `editor` (read + write) from the console's **Share** dialog.
 - **General access** — set the console to `private` (owner + collaborators only) or `workspace` (every member), with a `workspaceRole` of `viewer` or `editor` controlling what members can do.
 - Only the **owner**, or a workspace **owner/admin** for non-private consoles, can manage sharing.
 
-Unlike dashboards and apps, consoles do **not** support unauthenticated public links — they execute live queries against your databases, so access always requires workspace authentication.
+Unlike apps, consoles do **not** support unauthenticated public links — they execute live queries against your databases, so access always requires workspace authentication.
 
 ## Console API
 
-Saved consoles can be executed programmatically. This is useful for building dashboards, automations, or integrations on top of your queries.
+Saved consoles can be executed programmatically. This is useful for building reports, automations, or integrations on top of your queries.
 
 ### Authentication
 

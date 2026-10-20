@@ -122,9 +122,10 @@ are filtered out and never count toward billable units. A defensive redaction
 pass strips connection strings, bearer tokens, provider API keys, and card
 numbers before any trace leaves the process.
 
-### Dashboard Artifact Storage
+### Artifact Storage
 
-Dashboard materialization stores parquet artifacts on the backend. Mako supports
+Mako stores materialized parquet artifacts on the backend: app data bindings,
+dbt outputs, and chat attachments all share one artifact store. Mako supports
 three artifact storage backends:
 
 - `filesystem` - default; stores parquet files on local disk
@@ -136,6 +137,10 @@ Select the backend with:
 ```env
 DASHBOARD_ARTIFACT_STORE=filesystem
 ```
+
+The `DASHBOARD_` prefix on these variable names (and the default
+`/data/dashboard-artifacts` directory) is historical; they configure the shared
+artifact store and are kept for compatibility with existing deployments.
 
 Optional shared settings:
 
@@ -149,7 +154,7 @@ DASHBOARD_ARTIFACT_DIR=/data/dashboard-artifacts
 
 #### Google Cloud Storage
 
-To use GCS for dashboard parquet artifacts:
+To use GCS for parquet artifacts:
 
 ```env
 DASHBOARD_ARTIFACT_STORE=gcs
