@@ -253,9 +253,11 @@ async function anonymousLiveLinkToViewer(
       url: c.req.url,
     });
     if (viewerPath) {
-      const html = await crawlerPreviewPage(
-        viewerPath,
-        publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
+      const html = await timed("og.live", () =>
+        crawlerPreviewPage(
+          viewerPath,
+          publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
+        ),
       );
       return c.html(html, 200, { "Cache-Control": "no-cache" });
     }
@@ -287,13 +289,9 @@ const ProjectParam = WorkspaceParam.extend({
   id: z.string().openapi({ param: { name: "id", in: "path" } }),
 });
 
-// A copied workspace link (`…/apps/<id>/live/`) opened without any session —
-// a person signed out, or a chat app's link-preview crawler — goes to the
-// viewer page instead of a 401: the page signs people in, and its HTML
-// carries the app's link-preview tags (share-og.service). Only the app's
-// top-level page, only for browsers and crawlers; API clients still get 401.
 // Step timings (Server-Timing + a log line when slow) for the Apps home's
-// reads — registered first so the total includes auth.
+// reads — registered first so the total includes auth. The live link's
+// top-level page too: a crawler's link preview is built right there.
 for (const [route, label] of [
   ["/", "apps.list"],
   ["/discovery", "apps.discovery"],
@@ -302,10 +300,17 @@ for (const [route, label] of [
   ["/recent", "apps.recent"],
   ["/search", "apps.search"],
   ["/:id/thumbnail", "apps.thumbnail"],
+  ["/:id/live", "apps.live"],
+  ["/:id/live/", "apps.live"],
 ] as const) {
   appsRoutes.on("GET", route, serverTiming(label));
 }
 
+// A copied workspace link (`…/apps/<id>/live/`) opened without any session —
+// a person signed out, or a chat app's link-preview crawler — goes to the
+// viewer page instead of a 401: the page signs people in, and its HTML
+// carries the app's link-preview tags (share-og.service). Only the app's
+// top-level page, only for browsers and crawlers; API clients still get 401.
 appsRoutes.use("/:id/live/*", anonymousLiveLinkToViewer);
 appsRoutes.use("/:id/live", anonymousLiveLinkToViewer);
 

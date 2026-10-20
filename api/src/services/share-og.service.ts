@@ -19,6 +19,7 @@
  * with only an SVG thumbnail (or none) uses the static generic
  * `/og-default.png`.
  */
+import { timed } from "../middleware/server-timing";
 import { Types } from "mongoose";
 import {
   AppIndexEntry,
@@ -309,7 +310,8 @@ export async function ogTagsForPath(
   }
   const tabRef = appTabRefFromPath(pathname);
   if (tabRef !== null) {
-    const found = await workspaceAppForTabRef(tabRef);
+    // Index rows only — no git on a crawler's request.
+    const found = await timed("og.tabref", () => workspaceAppForTabRef(tabRef));
     return found
       ? ogTagsForAppLink(found.workspaceId, found.appId, origin, pathname)
       : genericTags(origin, pathname);
