@@ -4,12 +4,12 @@
  * - **Starred**: this person's favourites, in folders of their own. A star is
  *   a shortcut, never a move; folders here are bookmark folders, kept in the
  *   database, instant, no commit.
+ * - **Personal**: this person's own apps under `users/<handle>/apps/`,
+ *   visible to nobody else — first, since new apps start here.
  * - **Workspace**: the real `apps/` tree of the repo. Folders are directories;
  *   dragging an app into one is a `git mv` on main (editors only). The app
  *   keeps its id, so its tab, deployment, sharing and everyone's stars
  *   follow it and nothing rebuilds.
- * - **Personal**: the same, under `users/<handle>/apps/` — this person's own
- *   apps, visible to nobody else.
  *
  * Each app is a directory node whose children are its file tree (loaded
  * lazily from the durable worktree API); every file opens in its own editor
@@ -492,18 +492,6 @@ export default function AppsExplorer() {
       ...starredSection,
       ...recentSection,
       ...popularSection,
-      {
-        key: WORKSPACE_SECTION,
-        label: "Workspace",
-        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: buildAppTree({
-          root: WORKSPACE_ROOT,
-          folders,
-          apps: treeApps(workspaceApps),
-          appChildren,
-        }),
-        droppableId: "__section_workspace",
-      },
       ...(personalRoot
         ? [
             {
@@ -520,6 +508,18 @@ export default function AppsExplorer() {
             },
           ]
         : []),
+      {
+        key: WORKSPACE_SECTION,
+        label: "Workspace",
+        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
+        nodes: buildAppTree({
+          root: WORKSPACE_ROOT,
+          folders,
+          apps: treeApps(workspaceApps),
+          appChildren,
+        }),
+        droppableId: "__section_workspace",
+      },
       ...(sharedWithMe.length > 0
         ? [
             {

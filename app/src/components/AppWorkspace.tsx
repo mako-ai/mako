@@ -58,7 +58,7 @@ import {
 import AppHistoryPopover from "./AppHistoryPopover";
 import AppPublishedChip from "./AppPublishedChip";
 import EntityLoadErrorState from "./EntityLoadErrorState";
-import { EXPLORER_ICONS } from "../lib/entity-icons";
+import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import { useConsoleStore } from "../store/consoleStore";
 import {
   Group,
@@ -1874,7 +1874,7 @@ export default function AppWorkspace({
  * never-built one.
  */
 function AppOpeningState({ title }: { title?: string }) {
-  const AppIcon = EXPLORER_ICONS.apps;
+  const AppIcon = TAB_KIND_ICONS.app;
   return (
     <Box
       role="status"

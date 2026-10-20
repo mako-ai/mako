@@ -69,7 +69,8 @@ export const EXPLORER_ICONS = {
   workflows: Workflow,
   "source-control": GitBranch,
   connectors: Plug,
-  apps: AppWindowMac,
+  // The launcher grid, as on Apps home; a single app keeps its window glyph.
+  apps: LayoutGrid,
   notebooks: Notebook,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
