@@ -1412,6 +1412,86 @@ export async function archiveProject(
 }
 
 /**
+ * Restore an archived app: move `archive/<...>` back to `to` (its original
+ * app folder) as one commit on main — the reverse of archiveProject. The
+ * manifest id was stamped before the archive move, so the app comes back
+ * under the same id with its row's shares, env vars and public link. 409
+ * when anything already sits at `to` (an app, a folder, a file) or inside
+ * an app there.
+ */
+export async function restoreArchivedProject(
+  workspaceId: string,
+  archivedPath: string,
+  to: string,
+  options: {
+    appId?: string;
+    title?: string;
+    author?: GitAuthor;
+    userId?: string;
+  } = {},
+): Promise<{ from: string; to: string }> {
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  const from = archivedPath.replace(/\/+$/, "");
+  const location = parseAppRepoPath(to);
+  if (!from.startsWith(`${ARCHIVE_DIR}/`) || !location) {
+    throw new AppFolderError(`Not an archived app: ${JSON.stringify(from)}`);
+  }
+  assertSafeRelPath(from);
+  const existsOnMain = (rel: string) =>
+    runGit(["-C", repoDir, "cat-file", "-e", `${DEFAULT_BRANCH}:${rel}`])
+      .then(() => true)
+      .catch(() => false);
+  const checkTarget = async (
+    snapshot: Awaited<ReturnType<typeof loadAppsIndex>>,
+  ) => {
+    if (!(await existsOnMain(`${from}/${APP_MANIFEST}`))) {
+      throw new AppFolderError(`${from} is not in the archive on main`, 404);
+    }
+    if (await existsOnMain(to)) {
+      throw new AppFolderError(`${to} already exists`, 409);
+    }
+    const parent = snapshot.apps.find(a => isWithin(to, a.path));
+    if (parent) {
+      throw new AppFolderError(`${parent.path} is an app, not a folder`, 409);
+    }
+    if (options.appId && snapshot.apps.some(a => a.appId === options.appId)) {
+      throw new AppFolderError(
+        "This app is already live in the workspace",
+        409,
+      );
+    }
+  };
+  await checkTarget(await loadAppsIndex(workspaceId));
+  const taken = await occupiedPaths(workspaceId);
+  if (taken.has(to)) throw new AppFolderError(`${to} already exists`, 409);
+  const moves = [{ from, to }];
+  await commitOnMainDurably(
+    workspaceId,
+    repoDir,
+    async () => {
+      // Against the freshened main: a push may have taken the address.
+      await checkTarget(await loadAppsIndex(workspaceId, { freshen: false }));
+      return { moves, writes: {} };
+    },
+    {
+      message: `Restore app "${options.title ?? location.slug}" (${from} → ${to})`,
+      author: options.author,
+    },
+  );
+  if (options.appId && Types.ObjectId.isValid(options.appId)) {
+    await AppProject.updateOne(
+      {
+        _id: new Types.ObjectId(options.appId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: { path: to, slug: location.slug } },
+    );
+  }
+  pokeApp(workspaceId, options.appId ?? null, "lifecycle", options.userId);
+  return { from, to };
+}
+
+/**
  * A new, empty folder. Git cannot hold an empty directory, so it is a
  * `.gitkeep` — the marker the index reads folders from.
  */

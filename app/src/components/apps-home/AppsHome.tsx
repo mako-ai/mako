@@ -7,7 +7,8 @@
  * been shown exactly once. The ranking and the paging are the server's
  * (GET /apps/feed): it freezes the order on the first page, so scrolling
  * never repeats or skips an app. Filter chips switch the grid to
- * Recently viewed, Mine or Needs attention; typing in the search box
+ * Recently viewed, Mine, Needs attention or Archived (apps the lifecycle
+ * job moved under `archive/`, each with Restore); typing in the search box
  * replaces it with results.
  *
  * Opening a card notes its shelf and position (app-open-placement), which
@@ -49,12 +50,15 @@ import {
   keepOnScreen,
   provisionalFeed,
   recentlyViewedApps,
+  type ArchivedApp,
   type AttentionReason,
   type DiscoveryApp,
 } from "../../lib/apps-discovery";
 import { notePlacement, type AppOpenShelf } from "../../lib/app-open-placement";
 import AppCard, { AppCardSkeleton } from "./AppCard";
 import { useInfiniteSentinel } from "./useInfiniteSentinel";
+import ArchivedAppCard from "./ArchivedAppCard";
+import { ConfirmDialog } from "../ConfirmDialog";
 
 type OnScreen = { popular: string[]; new: string[]; recommended: string[] };
 const NOTHING_ON_SCREEN: OnScreen = { popular: [], new: [], recommended: [] };
@@ -66,7 +70,7 @@ const RECENT_LIMIT = 48;
 const SHELF_SIZE = 10;
 const SHELF_SKELETONS = 5;
 
-type Filter = "all" | "recent" | "mine" | "attention";
+type Filter = "all" | "recent" | "mine" | "attention" | "archived";
 
 const GRID_SX = {
   display: "grid",
@@ -145,6 +149,13 @@ export default function AppsHome() {
   const fetchRecent = useAppsDiscoveryStore(s => s.fetchRecent);
   const fetchFeed = useAppsDiscoveryStore(s => s.fetchFeed);
   const fetchMoreFeed = useAppsDiscoveryStore(s => s.fetchMoreFeed);
+  const fetchArchived = useAppsDiscoveryStore(s => s.fetchArchived);
+  const restoreArchived = useAppsDiscoveryStore(s => s.restoreArchived);
+  const [restoring, setRestoring] = useState<{
+    app: ArchivedApp;
+    busy: boolean;
+    error: string | null;
+  } | null>(null);
   const searchApps = useAppsDiscoveryStore(s => s.searchApps);
   // In the store, so the palette can open this tab already searching.
   const query = useAppsDiscoveryStore(s => s.homeQuery);
@@ -173,12 +184,20 @@ export default function AppsHome() {
     void fetchDiscovery(workspaceId);
     void fetchUsage(workspaceId);
     void fetchRecent(workspaceId);
+    void fetchArchived(workspaceId);
     const current =
       useAppsDiscoveryStore.getState().byWorkspace[workspaceId]?.feed;
     if (!current?.loadedAt || Date.now() - current.loadedAt > FEED_MAX_AGE_MS) {
       void fetchFeed(workspaceId);
     }
-  }, [workspaceId, fetchDiscovery, fetchUsage, fetchRecent, fetchFeed]);
+  }, [
+    workspaceId,
+    fetchDiscovery,
+    fetchUsage,
+    fetchRecent,
+    fetchArchived,
+    fetchFeed,
+  ]);
 
   // Debounced: a search re-reads the index server-side on every call.
   useEffect(() => {
@@ -341,7 +360,22 @@ export default function AppsHome() {
           },
         ]
       : []),
+    ...(discovery.archived.apps.length > 0 || filter === "archived"
+      ? [
+          {
+            key: "archived" as const,
+            label: "Archived",
+            count: discovery.archived.apps.length,
+          },
+        ]
+      : []),
   ];
+  const confirmRestore = async () => {
+    if (!restoring) return;
+    setRestoring({ ...restoring, busy: true, error: null });
+    const error = await restoreArchived(workspaceId, restoring.app.path);
+    setRestoring(error ? { ...restoring, busy: false, error } : null);
+  };
   const chooseFilter = (key: Filter) => {
     setFilter(key);
     if (searching) setQuery("");
@@ -695,6 +729,25 @@ export default function AppsHome() {
             "mine",
             "You have no apps yet.",
           )
+        ) : filter === "archived" ? (
+          discovery.archived.apps.length === 0 ? (
+            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+              {discovery.archived.error ?? "No archived apps."}
+            </Typography>
+          ) : (
+            <Box sx={GRID_SX}>
+              {discovery.archived.apps.map(app => (
+                <ArchivedAppCard
+                  key={app.path}
+                  workspaceId={workspaceId}
+                  app={app}
+                  onRestore={a =>
+                    setRestoring({ app: a, busy: false, error: null })
+                  }
+                />
+              ))}
+            </Box>
+          )
         ) : filter === "attention" ? (
           renderList(
             lists.attention,
@@ -705,6 +758,26 @@ export default function AppsHome() {
           renderFeed()
         )}
       </Box>
+      <ConfirmDialog
+        open={!!restoring}
+        busy={restoring?.busy}
+        title={`Restore “${restoring?.app.title ?? ""}”?`}
+        body={
+          <Stack spacing={1}>
+            <Typography variant="body2">
+              {`It moves back to ${restoring?.app.originalPath ?? ""} with the same id, sharing and links, and reappears in the explorer and the feed in a moment. It will not be archived again for 60 days.`}
+            </Typography>
+            {restoring?.error && (
+              <Typography variant="body2" sx={{ color: "error.main" }}>
+                {restoring.error}
+              </Typography>
+            )}
+          </Stack>
+        }
+        confirmLabel="Restore"
+        onConfirm={() => void confirmRestore()}
+        onCancel={() => setRestoring(null)}
+      />
     </Box>
   );
 }

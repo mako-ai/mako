@@ -36,6 +36,33 @@ export function thumbnailSrcSet(src: string): string {
     .join(", ");
 }
 
+/** An app the lifecycle job moved under `archive/` (GET /apps/archived). */
+export interface ArchivedApp {
+  /** Where it is now: `archive/apps/x`. */
+  path: string;
+  /** Where Restore puts it back. */
+  originalPath: string;
+  appId?: string;
+  title: string;
+  description?: string;
+  scope: "workspace" | "private";
+  ownerId?: string;
+  ownerHandle?: string;
+  thumbnail: { file: string; oid: string } | null;
+  archivedAt?: string;
+  archivedBy?: { name: string; email: string };
+}
+
+/** An archived app's picture (it has no live id route), or null. */
+export function archivedThumbnailUrl(
+  workspaceId: string,
+  app: Pick<ArchivedApp, "path" | "thumbnail">,
+): string | null {
+  if (!app.thumbnail) return null;
+  const base = getApiBasePath(import.meta.env.VITE_API_URL);
+  return `${base}/workspaces/${workspaceId}/apps/archived/thumbnail?path=${encodeURIComponent(app.path)}&v=${encodeURIComponent(app.thumbnail.oid)}`;
+}
+
 /** The usage API's per-app stats (Lane A contract, app-usage.service). */
 export interface AppUsageStats {
   appId: string;

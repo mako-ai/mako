@@ -117,6 +117,12 @@ import {
 } from "../apps/app-discovery.service";
 import { appUsageScores } from "../apps/app-search.service";
 import { FeedCursorError, getFeedPage } from "../apps/app-feed.service";
+import {
+  ArchiveRestoreError,
+  archivedThumbnail,
+  listArchivedApps,
+  restoreArchivedApp,
+} from "../apps/app-archive.service";
 import { readThumbnailBlob, thumbnailResponse } from "../apps/app-thumbnail";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
@@ -1335,6 +1341,149 @@ appsRoutes.openapi(
       if (error instanceof RepoRequiredError) {
         return c.json({ success: true as const, apps: [] }, 200);
       }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/archived",
+    tags: ["Apps"],
+    summary: "Archived apps the caller may see",
+    description:
+      "Apps under the repo's `archive/` tree (moved there by the lifecycle job), read from main: title, description and thumbnail from each mako.json, the original path Restore moves it back to, and when and by whom it was archived (the commit that added it). Same visibility as the list: workspace apps for members, a personal app only for its mapped owner. Newest archive first.",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const apps = await listArchivedApps(workspaceId, userId, role);
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/archived/restore",
+    tags: ["Apps"],
+    summary: "Restore an archived app to where it was",
+    description:
+      "Moves `archive/<...>` back to its original folder as one commit on main; the app keeps its id. The Workspace tree needs an editing role, a personal tree is its owner's alone (403). 404 when the archived app is not there or not visible; 409 when its original address is taken. The app gets a fresh lifecycle grace period, so it is not archived again straight away.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ path: z.string().min(1).max(1024) }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path } = c.req.valid("json");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const restored = await restoreArchivedApp(
+        workspaceId,
+        path,
+        userId,
+        role,
+      );
+      return c.json({ success: true as const, ...restored }, 200);
+    } catch (error) {
+      if (error instanceof ArchiveRestoreError) {
+        return c.json(
+          { success: false as const, error: error.message },
+          error.status,
+        );
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/archived/thumbnail",
+    tags: ["Apps"],
+    summary: "An archived app's thumbnail image",
+    description:
+      "The thumbnail an archived app ships, for its card on the Apps home's Archived chip; `v` is the blob oid (cache version). 404 when it ships none or the caller may not see it.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        path: z
+          .string()
+          .min(1)
+          .max(1024)
+          .openapi({ param: { name: "path", in: "query" } }),
+        v: z
+          .string()
+          .max(64)
+          .optional()
+          .openapi({ param: { name: "v", in: "query" } }),
+        w: z
+          .string()
+          .max(8)
+          .optional()
+          .openapi({ param: { name: "w", in: "query" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { path, v, w } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const thumbnail = await archivedThumbnail(
+        workspaceId,
+        path,
+        userId,
+        role,
+      );
+      const res = thumbnail
+        ? await thumbnailResponse({
+            thumbnail,
+            v,
+            w,
+            ifNoneMatch: c.req.header("if-none-match"),
+            read: async () => {
+              const repoDir = await boundRepoDirIfExists(workspaceId);
+              return repoDir ? readThumbnailBlob(repoDir, thumbnail) : null;
+            },
+          })
+        : null;
+      if (!res) {
+        return c.json(
+          { success: false, error: "This app has no thumbnail" },
+          404,
+        );
+      }
+      return res;
+    } catch (error) {
       return handleError(c, error);
     }
   },

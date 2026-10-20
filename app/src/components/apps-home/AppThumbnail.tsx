@@ -48,15 +48,22 @@ function MakoMark({ size, opacity }: { size: number; opacity: number }) {
 export default function AppThumbnail({
   workspaceId,
   app,
+  src: srcOverride,
 }: {
   workspaceId: string;
   app: Pick<DiscoveryApp, "id" | "title" | "thumbnail">;
+  /** Where the picture is when not at the app's id route (archived apps). */
+  src?: string | null;
 }) {
   const theme = useTheme();
   const dark = theme.palette.mode === "dark";
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const src = failed ? null : appThumbnailUrl(workspaceId, app);
+  const src = failed
+    ? null
+    : srcOverride !== undefined
+      ? srcOverride
+      : appThumbnailUrl(workspaceId, app);
   const { initials, hue } = placeholderFor(app);
   const ink = `hsl(${hue} 45% ${dark ? "80%" : "28%"})`;
 

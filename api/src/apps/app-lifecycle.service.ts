@@ -57,6 +57,8 @@ export const LIFECYCLE_RULES = {
   unviewedDays: 30,
   /** Apps younger than this are left alone. */
   minAgeDays: 14,
+  /** A restored app is not staled again for this long. */
+  restoreGraceDays: 60,
 } as const;
 
 /** The committer of archive moves. */
@@ -101,7 +103,10 @@ export interface LifecycleAppInput {
   /** Has scheduled bindings the scheduler would run (a project row exists). */
   scheduled: boolean;
   verified: boolean;
-  state: Pick<IAppLifecycleState, "staleSince" | "schedulesPausedAt"> | null;
+  state: Pick<
+    IAppLifecycleState,
+    "staleSince" | "schedulesPausedAt" | "restoredAt"
+  > | null;
 }
 
 export type LifecycleActionKind =
@@ -167,8 +172,11 @@ export function planAppLifecycle(
       entry.reasons.push("opened since its schedules were paused");
     }
 
+    // Restored from the archive: someone wanted it back, so it gets a
+    // fresh grace period before it can be judged unused again.
     const young =
-      !!app.createdAt && after(app.createdAt, daysAgo(now, R.minAgeDays));
+      (!!app.createdAt && after(app.createdAt, daysAgo(now, R.minAgeDays))) ||
+      after(state?.restoredAt, daysAgo(now, R.restoreGraceDays));
     const stale =
       !young &&
       !app.verified &&

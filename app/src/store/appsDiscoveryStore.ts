@@ -14,6 +14,7 @@ import { immer } from "zustand/middleware/immer";
 import { api, ApiError, toErrorMessage, unwrapBody } from "../api";
 import {
   upgradeCards,
+  type ArchivedApp,
   type AppUsageStats,
   type DiscoveryApp,
   type DiscoverySearchHit,
@@ -34,6 +35,11 @@ export interface WorkspaceDiscovery {
   recent: RecentAppView[];
   recentAvailable: boolean | null;
   feed: FeedState;
+  archived: {
+    apps: ArchivedApp[];
+    loaded: boolean;
+    error: string | null;
+  };
 }
 
 /**
@@ -96,6 +102,12 @@ interface AppsDiscoveryActions {
   fetchFeed: (workspaceId: string) => Promise<void>;
   /** The next Recommended page; a no-op while loading or at the end. */
   fetchMoreFeed: (workspaceId: string) => Promise<void>;
+  fetchArchived: (workspaceId: string) => Promise<void>;
+  /** Move an archived app back; resolves to an error message, or null. */
+  restoreArchived: (
+    workspaceId: string,
+    path: string,
+  ) => Promise<string | null>;
   /** Run a search; a newer call in the same scope supersedes an older one. */
   searchApps: (
     workspaceId: string,
@@ -133,6 +145,7 @@ const emptyWorkspace = (): WorkspaceDiscovery => ({
   recent: [],
   recentAvailable: null,
   feed: emptyFeed(),
+  archived: { apps: [], loaded: false, error: null },
 });
 
 const EMPTY_WORKSPACE: WorkspaceDiscovery = emptyWorkspace();
@@ -343,6 +356,54 @@ export const useAppsDiscoveryStore = create<
               }
             });
           }
+        },
+
+        fetchArchived: async workspaceId => {
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps/archived", {
+                params: { path: { workspaceId } },
+              }),
+            ) as { apps?: ArchivedApp[] };
+            set(s => {
+              ws(s, workspaceId).archived = {
+                apps: body.apps ?? [],
+                loaded: true,
+                error: null,
+              };
+            });
+          } catch (e) {
+            set(s => {
+              const a = ws(s, workspaceId).archived;
+              // An older API without the route: no chip, no complaint.
+              a.loaded = true;
+              a.error = isMissingEndpoint(e)
+                ? null
+                : toErrorMessage(e, "Could not load archived apps");
+            });
+          }
+        },
+
+        restoreArchived: async (workspaceId, path) => {
+          try {
+            unwrapBody(
+              await api.POST(
+                "/api/workspaces/{workspaceId}/apps/archived/restore",
+                { params: { path: { workspaceId } }, body: { path } },
+              ),
+            );
+          } catch (e) {
+            return toErrorMessage(e, "Could not restore the app");
+          }
+          set(s => {
+            const a = ws(s, workspaceId).archived;
+            a.apps = a.apps.filter(x => x.path !== path);
+          });
+          // Back on main: the list, the explorer and the feed pick it up.
+          const self = get();
+          void self.fetchDiscovery(workspaceId);
+          void self.fetchFeed(workspaceId);
+          return null;
         },
 
         searchApps: async (workspaceId, query, scope = "home") => {

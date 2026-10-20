@@ -5409,6 +5409,12 @@ export interface IAppLifecycleState extends Document {
   archivedAt?: Date;
   archivedFrom?: string;
   archivedTo?: string;
+  /**
+   * Restored from `archive/` by someone (Apps home → Archived → Restore):
+   * the planner gives it a fresh grace period from here.
+   */
+  restoredAt?: Date;
+  restoredBy?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -5429,6 +5435,8 @@ const AppLifecycleStateSchema = new Schema<IAppLifecycleState>(
     archivedAt: { type: Date },
     archivedFrom: { type: String },
     archivedTo: { type: String },
+    restoredAt: { type: Date },
+    restoredBy: { type: String },
   },
   { collection: "app_lifecycle", timestamps: true },
 );
