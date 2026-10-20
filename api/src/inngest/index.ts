@@ -17,6 +17,7 @@ import {
   appsBindingMaterializeFunction,
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
+import { appsLifecycleFunction } from "./functions/apps-lifecycle";
 import {
   appsBindingJobFunction,
   appsBindingJobSweeperFunction,
@@ -110,6 +111,7 @@ export function getFunctions() {
         cdcScheduledBackfillFunction,
         appsBindingSchedulerFunction,
         appsBindingJobSweeperFunction,
+        appsLifecycleFunction,
         appsDeployReconcileFunction,
         workflowsDeployReconcileFunction,
         scheduledQuerySchedulerFunction,
@@ -161,6 +163,7 @@ export {
   appsBindingJobFunction,
   appsBindingJobSweeperFunction,
   appsBindingSchedulerFunction,
+  appsLifecycleFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,

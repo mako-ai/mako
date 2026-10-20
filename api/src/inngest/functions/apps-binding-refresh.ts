@@ -34,6 +34,7 @@ import {
   type AppBindingStateDoc,
 } from "../../apps/bindings.service";
 import { isCronDue, nextCronRunAt } from "../../services/cron-due";
+import { pausedScheduleAppIds } from "../../apps/app-lifecycle.service";
 
 import { APPS_BINDING_BUILD_CONCURRENCY } from "./apps-binding-concurrency";
 
@@ -133,7 +134,16 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
         .select("_id")
         .lean();
       const withRow = new Set(rows.map(r => r._id.toString()));
-      return entries.filter(e => withRow.has(e.appId));
+      // Unviewed apps (nobody opened them in 30 days) have their schedules
+      // paused by the lifecycle job until the next open — skipped here, the
+      // binding's front matter untouched (app-lifecycle.service.ts).
+      const paused = await pausedScheduleAppIds();
+      if (paused.size > 0) {
+        log.info("Skipping paused binding schedules", {
+          apps: entries.filter(e => paused.has(e.appId)).length,
+        });
+      }
+      return entries.filter(e => withRow.has(e.appId) && !paused.has(e.appId));
     })) as unknown as Array<
       Pick<IAppIndexEntry, "workspaceId" | "appId" | "schedules">
     >;

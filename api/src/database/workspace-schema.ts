@@ -5296,6 +5296,73 @@ export const AppIndexHead = mongoose.model<IAppIndexHead>(
 );
 
 // ---------------------------------------------------------------------------
+// App lifecycle + curation — keyed by app id, not by project row
+// ---------------------------------------------------------------------------
+
+/**
+ * Curation and lifecycle state of one app (app-lifecycle.service.ts). Keyed
+ * by the app's id, NOT its `AppProject` row: most apps are folders that never
+ * got a row, and an admin must be able to verify one (or the lifecycle job
+ * pause one) without materializing state it does not need.
+ *
+ * Nothing here is derived from git; nothing in git is derived from it. The
+ * archive move itself is a commit — `archivedFrom` / `archivedTo` are only a
+ * receipt, so a restore knows where the folder came from.
+ */
+export interface IAppLifecycleState extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  appId: string;
+  /** Marked verified by a workspace admin: who and when. */
+  verifiedAt?: Date;
+  verifiedBy?: string;
+  /** When the job first found the app stale and told its owner. */
+  staleSince?: Date;
+  /** Who the stale notice went to (emails), for the plan report. */
+  staleNotifiedTo?: string[];
+  /** Binding schedules skipped by the scheduler since then (unviewed). */
+  schedulesPausedAt?: Date;
+  /** The archive commit's receipt. */
+  archivedAt?: Date;
+  archivedFrom?: string;
+  archivedTo?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppLifecycleStateSchema = new Schema<IAppLifecycleState>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    verifiedAt: { type: Date },
+    verifiedBy: { type: String },
+    staleSince: { type: Date },
+    staleNotifiedTo: { type: [String], default: undefined },
+    schedulesPausedAt: { type: Date },
+    archivedAt: { type: Date },
+    archivedFrom: { type: String },
+    archivedTo: { type: String },
+  },
+  { collection: "app_lifecycle", timestamps: true },
+);
+
+AppLifecycleStateSchema.index({ workspaceId: 1, appId: 1 }, { unique: true });
+// The binding scheduler reads the paused set on every tick.
+AppLifecycleStateSchema.index(
+  { schedulesPausedAt: 1 },
+  { partialFilterExpression: { schedulesPausedAt: { $exists: true } } },
+);
+
+export const AppLifecycleState = mongoose.model<IAppLifecycleState>(
+  "AppLifecycleState",
+  AppLifecycleStateSchema,
+);
+
+// ---------------------------------------------------------------------------
 // Favourites — one person's bookmark tree, never a location
 // ---------------------------------------------------------------------------
 

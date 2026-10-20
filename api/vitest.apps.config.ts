@@ -86,6 +86,8 @@ export default defineConfig({
       "src/apps/app-usage.service.test.ts",
       // Reconstructing usage from Cloud Run logs and PostHog.
       "src/apps/app-usage-backfill.test.ts",
+      // Stale / unviewed apps: the planner, archive moves, the dry-run default.
+      "src/apps/app-lifecycle.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       // A deploy's outcome as a GitHub commit status on the pushed sha.

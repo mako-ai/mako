@@ -119,6 +119,8 @@ export interface AppMeta {
    * the server filed it under an id of its own and offers to stamp it.
    */
   duplicateOf?: string;
+  /** A workspace admin vouched for this app (workspace tree only). */
+  verified?: boolean;
   title: string;
   description?: string;
   updatedAt?: string;
@@ -474,6 +476,21 @@ interface AppsStore {
   deleteAppFolder: (workspaceId: string, path: string) => Promise<boolean>;
   /** Give a copied app (duplicateOf set) an id of its own. */
   stampAppId: (workspaceId: string, appId: string) => Promise<boolean>;
+  /** Workspace admins: vouch for an app (or withdraw it). */
+  setAppVerified: (
+    workspaceId: string,
+    appId: string,
+    verified: boolean,
+  ) => Promise<boolean>;
+  /**
+   * Move a personal app into the Workspace tree, writing a one-line
+   * description into its manifest. One commit; the app keeps its id.
+   */
+  shareAppWithWorkspace: (
+    workspaceId: string,
+    appId: string,
+    description: string,
+  ) => Promise<boolean>;
 
   /**
    * List an app's files.
@@ -1119,6 +1136,60 @@ export const useAppsStore = create<AppsStore>()(
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to stamp the app id");
+          });
+          return false;
+        }
+      },
+
+      setAppVerified: async (workspaceId, appId, verified) => {
+        try {
+          unwrapBody(
+            await api.PUT("/api/workspaces/{workspaceId}/apps/{id}/verified", {
+              params: { path: { workspaceId, id: appId } },
+              body: { verified },
+            }),
+          );
+          set(s => {
+            const app = s.apps.find(a => a.id === appId);
+            if (app) app.verified = verified;
+          });
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to change verification");
+          });
+          return false;
+        }
+      },
+
+      shareAppWithWorkspace: async (workspaceId, appId, description) => {
+        try {
+          const body = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/apps/{id}/share-with-workspace",
+              {
+                params: { path: { workspaceId, id: appId } },
+                body: { description },
+              },
+            ),
+          ) as { to?: string };
+          set(s => {
+            const app = s.apps.find(a => a.id === appId);
+            if (app && body.to) {
+              app.path = body.to;
+              app.slug = body.to.split("/").pop();
+              app.scope = "workspace";
+              app.access = "workspace";
+              app.description = description;
+            }
+          });
+          const moved = get().apps.find(a => a.id === appId);
+          if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
+          void get().fetchApps(workspaceId);
+          return true;
+        } catch (e) {
+          set(s => {
+            s.error = message(e, "Failed to share the app with the workspace");
           });
           return false;
         }

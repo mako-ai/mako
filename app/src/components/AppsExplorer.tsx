@@ -52,6 +52,8 @@ import {
   Trash2 as DeleteIcon,
   UserPlus as ShareMenuIcon,
   Wand2 as StampIcon,
+  BadgeCheck as VerifiedIcon,
+  Share2 as ShareWorkspaceIcon,
 } from "lucide-react";
 import LinkIcon from "./icons/GithubIcon";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -78,6 +80,7 @@ import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import AppEnvDialog from "./AppEnvDialog";
+import ShareWithWorkspaceDialog from "./ShareWithWorkspaceDialog";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -297,6 +300,8 @@ export default function AppsExplorer() {
   const moveAppFolder = useAppsStore(s => s.moveAppFolder);
   const deleteAppFolder = useAppsStore(s => s.deleteAppFolder);
   const stampAppId = useAppsStore(s => s.stampAppId);
+  const setAppVerified = useAppsStore(s => s.setAppVerified);
+  const shareAppWithWorkspace = useAppsStore(s => s.shareAppWithWorkspace);
 
   const favourites = useFavouritesStore(selectFavourites(workspaceId));
   const fetchFavourites = useFavouritesStore(s => s.fetch);
@@ -366,6 +371,7 @@ export default function AppsExplorer() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createFolder, setCreateFolder] = useState(WORKSPACE_ROOT);
   const [shareAppId, setShareAppId] = useState<string | null>(null);
+  const [shareWsAppId, setShareWsAppId] = useState<string | null>(null);
   const [envAppId, setEnvAppId] = useState<string | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState | null>(
     null,
@@ -1052,6 +1058,41 @@ export default function AppsExplorer() {
           Environment variables…
         </MenuItem>,
       );
+      // Lifecycle + curation (app-lifecycle.service.ts on the API).
+      if (app?.scope === "private" && app.owner_id === user?.id) {
+        items.push(
+          <MenuItem
+            key="share-workspace"
+            onClick={() => {
+              helpers.closeMenu();
+              setShareWsAppId(appId);
+            }}
+          >
+            <ListItemIcon>
+              <ShareWorkspaceIcon size={16} />
+            </ListItemIcon>
+            Share with workspace…
+          </MenuItem>,
+        );
+      }
+      if (isWorkspaceAdmin && app?.scope === "workspace") {
+        items.push(
+          <MenuItem
+            key="verified"
+            onClick={() => {
+              helpers.closeMenu();
+              if (workspaceId) {
+                void setAppVerified(workspaceId, appId, !app.verified);
+              }
+            }}
+          >
+            <ListItemIcon>
+              <VerifiedIcon size={16} />
+            </ListItemIcon>
+            {app.verified ? "Remove verified mark" : "Mark as verified"}
+          </MenuItem>,
+        );
+      }
       if (app?.duplicateOf) {
         items.push(
           <MenuItem
@@ -1084,7 +1125,17 @@ export default function AppsExplorer() {
       );
       return items;
     },
-    [appById, starred, handleToggleStar, workspaceId, stampAppId, handleDelete],
+    [
+      appById,
+      starred,
+      handleToggleStar,
+      workspaceId,
+      stampAppId,
+      handleDelete,
+      user?.id,
+      isWorkspaceAdmin,
+      setAppVerified,
+    ],
   );
 
   const folderMenuItems = useCallback(
@@ -1256,6 +1307,9 @@ export default function AppsExplorer() {
   );
 
   const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
+  const shareWsApp = shareWsAppId
+    ? apps.find(a => a.id === shareWsAppId)
+    : null;
   const envApp = envAppId ? apps.find(a => a.id === envAppId) : null;
 
   const folderOptions = useMemo(() => {
@@ -1642,6 +1696,18 @@ export default function AppsExplorer() {
         onClose={() => !folderBusy && setFolderDialog(null)}
         onConfirm={submitFolderDialog}
       />
+
+      {shareWsApp && workspaceId && (
+        <ShareWithWorkspaceDialog
+          open={!!shareWsAppId}
+          appTitle={shareWsApp.title}
+          initialDescription={shareWsApp.description}
+          onClose={() => setShareWsAppId(null)}
+          onSubmit={description =>
+            shareAppWithWorkspace(workspaceId, shareWsApp.id, description)
+          }
+        />
+      )}
 
       {shareApp && (
         <ShareDialog

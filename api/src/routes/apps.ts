@@ -124,6 +124,11 @@ import {
 } from "../apps/app-authorization";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
+  getAppLifecyclePlan,
+  setAppVerified,
+  verifiedAppIds,
+} from "../apps/app-lifecycle.service";
+import {
   APPS_EXEC_MAX_TIMEOUT_MS,
   previewStagingDir,
   RepoRequiredError,
@@ -769,9 +774,10 @@ appsRoutes.openapi(
       repoForWorkspace(workspaceId)
         .then(repoDir => ensureWorkspaceTemplateSoon(workspaceId, repoDir))
         .catch(() => undefined);
-      const docs = await AppProject.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const [docs, verified] = await Promise.all([
+        AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
+        verifiedAppIds(workspaceId),
+      ]);
       const stateById = new Map(docs.map(d => [d._id.toString(), d]));
 
       const apps = folders
@@ -808,6 +814,8 @@ appsRoutes.openapi(
             // A copied app that still declares its source's id: the index
             // filed it under its own derived id; the UI offers to stamp one.
             duplicateOf: folder.duplicateOf,
+            // A workspace admin vouched for it (app-lifecycle.service.ts).
+            verified: folder.scope === "workspace" && verified.has(folder.id),
           };
         });
       // Folders of the two trees the caller can see: the workspace tree, and
@@ -1330,6 +1338,187 @@ appsRoutes.openapi(
       if (error instanceof RepoRequiredError) {
         return c.json({ success: true as const, apps: [] }, 200);
       }
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Lifecycle + curation (app-lifecycle.service.ts): the stale/unviewed plan,
+// the admin `verified` mark, and "Share with workspace".
+// ---------------------------------------------------------------------------
+
+function isWorkspaceAdminRole(role: string | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/lifecycle/plan",
+    tags: ["Apps"],
+    summary: "What the app lifecycle job would do now (admins)",
+    description:
+      "The daily lifecycle job's plan for this workspace, computed now and changing nothing: apps it would notify as stale, archive, or whose binding schedules it would pause or resume. `mode` says whether the job only logs this plan (dry-run, the default) or applies it.",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const userId = actingUserId(c);
+      if (!isWorkspaceAdminRole(await memberRoleFor(workspaceId, userId))) {
+        return c.json(
+          { success: false, error: "Only workspace admins can see this" },
+          403,
+        );
+      }
+      const plan = await getAppLifecyclePlan(workspaceId);
+      return c.json({ success: true as const, plan }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: false, error: error.message }, 412);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/verified",
+    tags: ["Apps"],
+    summary: "Mark an app verified (or not) — workspace admins",
+    description:
+      "A workspace admin vouches for an app: the mark (with who and when) is shown on the app list as `verified`, and a verified app is never archived as stale.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ verified: z.boolean() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const workspaceId = loaded.project.workspaceId.toString();
+      const userId = loaded.userId;
+      if (
+        !userId ||
+        !isWorkspaceAdminRole(await memberRoleFor(workspaceId, userId))
+      ) {
+        return c.json(
+          { success: false, error: "Only workspace admins can verify apps" },
+          403,
+        );
+      }
+      if (parseAppRepoPath(appRootFor(loaded.project))?.scope !== "workspace") {
+        return c.json(
+          {
+            success: false,
+            error: "Only apps in the Workspace tree can be verified",
+          },
+          400,
+        );
+      }
+      const { verified } = c.req.valid("json");
+      const result = await setAppVerified(
+        workspaceId,
+        loaded.project._id.toString(),
+        verified,
+        userId,
+      );
+      return c.json({ success: true as const, ...result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/share-with-workspace",
+    tags: ["Apps"],
+    summary: "Move a personal app into the Workspace tree",
+    description:
+      "The explicit step that turns a personal app (`users/<me>/apps/…`) into workspace content: one commit on main moving its folder under `apps/` (or the given workspace folder) and writing the one-line description into mako.json. The app keeps its id, so its deployment, sharing and favourites follow it. Only the app's owner, with an editing role, can do this.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              /** One line telling colleagues what the app is for. */
+              description: z.string().trim().min(1).max(300),
+              /** Workspace folder to file it in (default: `apps`). */
+              folder: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { description, folder } = c.req.valid("json");
+      const workspaceId = loaded.project.workspaceId.toString();
+      const userId = loaded.userId;
+      const source = parseAppRepoPath(appRootFor(loaded.project));
+      if (source?.scope !== "private") {
+        return c.json(
+          { success: false, error: "This app is already in the Workspace" },
+          409,
+        );
+      }
+      const target = folderTargetFromPath(folder ?? "apps");
+      if (target.scope !== "workspace") {
+        return c.json(
+          { success: false, error: "Pick a folder in the Workspace tree" },
+          400,
+        );
+      }
+      // `users/<handle>/` is the owner's tree through the handle mapping,
+      // never by the raw segment.
+      const denied = authorizeAppMove(
+        source,
+        target,
+        userId,
+        await memberRoleFor(workspaceId, userId),
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
+      );
+      if (denied) return c.json({ success: false, error: denied }, 403);
+      const moved = await moveProject(loaded.project, target, {
+        userId,
+        description,
+      });
+      return c.json(
+        {
+          success: true as const,
+          ...moved,
+          app: toProjectJson(loaded.project, {
+            title: loaded.project.title,
+            description,
+          }),
+        },
+        200,
+      );
+    } catch (error) {
       return handleError(c, error);
     }
   },

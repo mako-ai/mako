@@ -1225,7 +1225,15 @@ export async function commitOnMainDurably(
 export async function moveProject(
   project: IAppProject,
   target: AppFolderTarget & { slug?: string },
-  options: { userId?: string; author?: GitAuthor } = {},
+  options: {
+    userId?: string;
+    author?: GitAuthor;
+    /**
+     * Write this one-line description into the app's `mako.json` in the
+     * same commit ("Share with workspace" asks for one).
+     */
+    description?: string;
+  } = {},
 ): Promise<{ from: string; to: string }> {
   const workspaceId = project.workspaceId.toString();
   const repoDir = await requireWorkspaceRepo(workspaceId);
@@ -1263,10 +1271,25 @@ export async function moveProject(
       if (!fresh.apps.some(a => a.path === from)) {
         throw new AppFolderError(`App folder ${from} is not on main`, 404);
       }
-      return {
-        moves,
-        writes: await moveWritesUnder(workspaceId, repoDir, moves),
-      };
+      const writes = await moveWritesUnder(workspaceId, repoDir, moves);
+      if (options.description !== undefined) {
+        const manifestAt = `${to}/${APP_MANIFEST}`;
+        let current: string | null = writes[manifestAt] ?? null;
+        if (current === null) {
+          try {
+            current = (
+              await readBlob(repoDir, DEFAULT_BRANCH, `${from}/${APP_MANIFEST}`)
+            ).contents;
+          } catch {
+            current = null;
+          }
+        }
+        const described = withManifestDescription(current, options.description);
+        if (described !== null && described !== current) {
+          writes[manifestAt] = described;
+        }
+      }
+      return { moves, writes };
     },
     {
       message: `Move app "${project.title}" (${from} → ${to})`,
@@ -1293,6 +1316,98 @@ export async function moveProject(
     { $set: { path: to, slug, ...visibility } },
   );
   pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
+  return { from, to };
+}
+
+/**
+ * Set `description` in a manifest, keeping every other key in place. A
+ * manifest that does not parse is left alone (null), as stampManifestId does.
+ */
+export function withManifestDescription(
+  contents: string | null,
+  description: string,
+): string | null {
+  let raw: Record<string, unknown>;
+  try {
+    const parsed = contents ? (JSON.parse(contents) as unknown) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    raw = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const clean = description.trim();
+  if (!clean) return contents;
+  return `${JSON.stringify({ ...raw, description: clean }, null, 2)}\n`;
+}
+
+/** Where archived content lives: outside both app trees, so never built. */
+export const ARCHIVE_DIR = "archive";
+
+/**
+ * Archive an app: move its folder to `archive/<its path>` as one commit on
+ * main. `archive/` is outside `apps/` and `users/<id>/apps/`, so the index
+ * stops listing it and deploy-on-push unpublishes it like a deleted folder —
+ * but git keeps every file, and moving the folder back restores the app
+ * under the same id (stamped into the manifest here if it had none).
+ *
+ * The project row keeps its state (shares, env vars, public link) and gives
+ * up its path: a new app created at the old address must not inherit this
+ * app's identity from a stale incumbent row.
+ */
+export async function archiveProject(
+  workspaceId: string,
+  appPath: string,
+  options: { author?: GitAuthor; reason?: string } = {},
+): Promise<{ from: string; to: string }> {
+  const repoDir = await requireWorkspaceRepo(workspaceId);
+  const from = appPath.replace(/\/+$/, "");
+  if (!parseAppRepoPath(from)) {
+    throw new AppFolderError(`Not an app folder: ${JSON.stringify(from)}`);
+  }
+  const snapshot = await loadAppsIndex(workspaceId);
+  const app = snapshot.apps.find(a => a.path === from);
+  if (!app) throw new AppFolderError(`App folder ${from} is not on main`, 404);
+  const existsOnMain = (rel: string) =>
+    runGit(["-C", repoDir, "cat-file", "-e", `${DEFAULT_BRANCH}:${rel}`])
+      .then(() => true)
+      .catch(() => false);
+  // Archived before (restored, then stale again): keep both copies.
+  const base = `${ARCHIVE_DIR}/${from}`;
+  const day = new Date().toISOString().slice(0, 10);
+  let to = base;
+  for (let i = 1; await existsOnMain(to); i++) {
+    to = i === 1 ? `${base}-${day}` : `${base}-${day}-${i}`;
+  }
+  const moves = [{ from, to }];
+  await commitOnMainDurably(
+    workspaceId,
+    repoDir,
+    async () => {
+      const fresh = await loadAppsIndex(workspaceId, { freshen: false });
+      if (!fresh.apps.some(a => a.path === from)) {
+        throw new AppFolderError(`App folder ${from} is not on main`, 404);
+      }
+      return {
+        moves,
+        writes: await moveWritesUnder(workspaceId, repoDir, moves),
+      };
+    },
+    {
+      message: `Archive app "${app.title}" (${from} → ${to})${options.reason ? `\n\n${options.reason}` : ""}`,
+      author: options.author,
+    },
+  );
+  await AppProject.updateOne(
+    {
+      _id: new Types.ObjectId(app.appId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      path: from,
+    },
+    { $unset: { path: 1 } },
+  );
+  pokeApp(workspaceId, app.appId, "lifecycle");
   return { from, to };
 }
 

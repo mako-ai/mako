@@ -44,6 +44,7 @@ import { User } from "../database/schema";
 import { loggers } from "../logging";
 import { loadAppsIndex } from "./app-index.service";
 import { canSeeIndexedApp } from "./app-authorization";
+import { onAppOpened } from "./app-lifecycle-state";
 import { runGit } from "./git";
 import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
@@ -224,6 +225,17 @@ export async function recordAppUsage(
       { upsert: true },
     ),
   ]);
+  if (input.kind === "open") {
+    // An open resumes paused binding schedules and cancels a pending stale
+    // archive (app-lifecycle.service.ts). Off the request path, and never
+    // allowed to fail the usage write it rides on.
+    onAppOpened(input.workspaceId, input.appId).catch(error => {
+      logger.warn("Could not resume app lifecycle on open", {
+        appId: input.appId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 }
 
 /**

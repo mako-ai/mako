@@ -327,6 +327,33 @@ export class EmailService {
       count: recipients.length,
     });
   }
+
+  /**
+   * App lifecycle notices (stale apps about to be archived) — in-repo HTML
+   * + text, SendGrid as transport only, like run notifications.
+   */
+  async sendAppLifecycleEmail(
+    to: string,
+    body: { html: string; text: string; subject: string },
+  ): Promise<void> {
+    const config = getConfig();
+    if (!config.apiKey) {
+      logEmailForDev("App lifecycle notice", to, body.subject, {
+        kind: "content",
+        text: body.text,
+        htmlTruncated: truncateForLog(body.html),
+      });
+      return;
+    }
+    await sendMail({
+      to,
+      from: config.fromEmail,
+      subject: body.subject,
+      html: body.html,
+      text: body.text,
+    });
+    logger.info("App lifecycle notice sent", { to });
+  }
 }
 
 // Export singleton instance
