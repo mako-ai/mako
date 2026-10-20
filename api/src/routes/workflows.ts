@@ -154,7 +154,10 @@ workflowRoutes.openapi(
   }),
   async c => {
     const { workspaceId, id } = c.req.valid("param");
-    const run = await readRun(await requireTenant(workspaceId), id);
+    // The run screen: every log line, and the outputs whole.
+    const run = await readRun(await requireTenant(workspaceId), id, {
+      full: true,
+    });
     return c.json({ success: true as const, run }, 200);
   },
 );

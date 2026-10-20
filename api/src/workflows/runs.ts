@@ -24,17 +24,31 @@ import { webhookUrls } from "./webhook";
 const RECENT_RUNS_DAYS = 30;
 const LOG_LINES_PER_STEP = 20;
 const MAX_TEXT_CHARS = 2000;
+/**
+ * The run screen reads a step's whole log and output. These bound one
+ * response: a step's log lines, and a step's or the run's input and output.
+ */
+const MAX_FULL_LOG_LINES = 50_000;
+const MAX_FULL_TEXT_CHARS = 5_000_000;
+/** Log lines per Hatchet request; Hatchet's own default page. */
+const LOG_PAGE_SIZE = 1000;
 
 type Row = Record<string, unknown>;
 type Rows = { rows?: Row[] };
 
-const cap = (value: unknown): string | undefined => {
+const textOf = (value: unknown): string | undefined => {
   if (value === undefined || value === null || value === "") return undefined;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length > MAX_TEXT_CHARS
-    ? `${text.slice(0, MAX_TEXT_CHARS)}… (${text.length} chars)`
+  return typeof value === "string" ? value : JSON.stringify(value);
+};
+
+const capAt = (value: unknown, max: number): string | undefined => {
+  const text = textOf(value);
+  return text && text.length > max
+    ? `${text.slice(0, max)}… (${text.length} chars)`
     : text;
 };
+
+const cap = (value: unknown) => capAt(value, MAX_TEXT_CHARS);
 
 const idOf = (row: Row): string | undefined =>
   (row.metadata as { id?: string } | undefined)?.id;
@@ -169,8 +183,17 @@ export type RunDetail = { run?: Row; tasks?: Row[] };
  * One run as a screen or an agent reads it: its steps in order, each with
  * status, output, error and its last log lines. Pure, so the same shape comes
  * from the workspace's Hatchet and from a sandbox's own engine (sandbox.ts).
+ *
+ * `full` is the run screen's view: every log line it was given, and input
+ * and output whole (up to MAX_FULL_TEXT_CHARS). An agent gets the short view.
  */
-export function shapeRun(detail: RunDetail, logs: Record<string, Row[]>) {
+export function shapeRun(
+  detail: RunDetail,
+  logs: Record<string, Row[]>,
+  { full = false }: { full?: boolean } = {},
+) {
+  const text = (value: unknown) =>
+    full ? capAt(value, MAX_FULL_TEXT_CHARS) : cap(value);
   // A step's `actionId` is `<workflow>:<step>`; Hatchet lists steps in no order.
   const tasks = [...(detail.tasks ?? [])].sort((a, b) =>
     String(a.taskInsertedAt ?? "").localeCompare(
@@ -181,24 +204,84 @@ export function shapeRun(detail: RunDetail, logs: Record<string, Row[]>) {
     String(task?.actionId ?? "").split(":")[part];
   return {
     ...runSummary(detail.run ?? {}, nameOf(tasks[0], 0)),
-    input: cap(inputOf(detail.run?.input)),
-    output: cap(detail.run?.output),
-    steps: tasks.map(task => ({
-      step: nameOf(task, 1) || task.displayName,
-      status: task.status,
-      attempt: task.attempt,
-      durationMs: task.duration,
-      output: cap(task.output),
-      error: errorOf(task.errorMessage),
-      logs: (logs[idOf(task) ?? ""] ?? [])
-        .slice(-LOG_LINES_PER_STEP)
-        .map(line => cap(line.message)),
-    })),
+    input: text(inputOf(detail.run?.input)),
+    output: text(detail.run?.output),
+    steps: tasks.map(task => {
+      const lines = logs[idOf(task) ?? ""] ?? [];
+      return {
+        step: nameOf(task, 1) || task.displayName,
+        status: task.status,
+        attempt: task.attempt,
+        durationMs: task.duration,
+        output: text(task.output),
+        // The output's whole length, so a screen can say how big it is
+        // before showing it.
+        outputChars: textOf(task.output)?.length ?? 0,
+        error: errorOf(task.errorMessage),
+        logs: (full ? lines : lines.slice(-LOG_LINES_PER_STEP)).map(line =>
+          cap(line.message),
+        ),
+        // The full view stopped at MAX_FULL_LOG_LINES: the step logged more.
+        ...(full ? { logsTruncated: lines.length >= MAX_FULL_LOG_LINES } : {}),
+      };
+    }),
   };
 }
 
-/** One run of the workspace's Hatchet. */
-export async function readRun(tenant: WorkspaceTenant, runId: string) {
+/**
+ * Every log line of one task, oldest first. Hatchet returns at most a page
+ * per request, oldest first, so this asks again from the last line's time
+ * until a page comes back short. When `since` returns lines at that very
+ * time again, the ones already read are skipped by count, so none shows twice.
+ */
+export async function readTaskLogs(
+  fetchPage: (query: URLSearchParams) => Promise<Row[]>,
+  maxLines = MAX_FULL_LOG_LINES,
+): Promise<Row[]> {
+  const lines: Row[] = [];
+  let since: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ limit: String(LOG_PAGE_SIZE) });
+    if (since) query.set("since", since);
+    const page = await fetchPage(query);
+    // A page that ends where the last one did moved nothing on (a Hatchet
+    // that ignores `since` sends the first page again): stop.
+    if (since && page.at(-1)?.createdAt === since) return lines;
+    // Lines already read that share the last line's time: a `since` that
+    // includes that time returns them again.
+    let repeats = since
+      ? lines.filter(line => line.createdAt === since).length
+      : 0;
+    const fresh = page.filter(line => {
+      if (repeats > 0 && line.createdAt === since) {
+        repeats--;
+        return false;
+      }
+      return true;
+    });
+    lines.push(...fresh);
+    if (lines.length >= maxLines) return lines.slice(0, maxLines);
+    const last = lines.at(-1)?.createdAt;
+    if (
+      page.length < LOG_PAGE_SIZE ||
+      fresh.length === 0 ||
+      typeof last !== "string"
+    ) {
+      return lines;
+    }
+    since = last;
+  }
+}
+
+/**
+ * One run of the workspace's Hatchet. `full` reads every log line of each
+ * step and keeps input and output whole: the run screen's view.
+ */
+export async function readRun(
+  tenant: WorkspaceTenant,
+  runId: string,
+  { full = false }: { full?: boolean } = {},
+) {
   if (!isHatchetId(runId)) throw new HatchetError("Invalid run id", 400);
   const detail = await tenantJson<RunDetail>(
     tenant,
@@ -209,13 +292,11 @@ export async function readRun(tenant: WorkspaceTenant, runId: string) {
     (detail.tasks ?? []).map(async task => {
       const taskId = idOf(task);
       if (!taskId) return;
-      logs[taskId] = await tenantJson<Rows>(
-        tenant,
-        `/api/v1/stable/tasks/${taskId}/logs`,
-      )
-        .then(l => l.rows ?? [])
-        .catch(() => []);
+      const path = `/api/v1/stable/tasks/${taskId}/logs`;
+      const page = (query?: URLSearchParams) =>
+        tenantJson<Rows>(tenant, path, { query }).then(l => l.rows ?? []);
+      logs[taskId] = await (full ? readTaskLogs(page) : page()).catch(() => []);
     }),
   );
-  return shapeRun(detail, logs);
+  return shapeRun(detail, logs, { full });
 }

@@ -14,6 +14,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  InputAdornment,
   Switch,
   TextField,
   ToggleButton,
@@ -22,7 +23,13 @@ import {
   Typography,
 } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
-import { Play as RunIcon, Webhook as WebhookIcon } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Play as RunIcon,
+  Search as SearchIcon,
+  Webhook as WebhookIcon,
+} from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
@@ -30,9 +37,10 @@ import {
   isActiveRun,
   useWorkflowsStore,
   type WorkflowRun,
+  type WorkflowRunStep,
   type WorkflowRunSummary,
 } from "../store/workflowsStore";
-import { formatDuration } from "../utils/format";
+import { formatBytes, formatDuration } from "../utils/format";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
 
 /** A toolbar or header: a padded row closed by a divider. */
@@ -138,10 +146,275 @@ function FileView({
   );
 }
 
+const MONO_SX = { fontFamily: "monospace", fontSize: "0.72rem" } as const;
+
+/** A step's log: every line, scrollable, with a search that filters lines. */
+function LogView({ lines }: { lines: string[] }) {
+  const [search, setSearch] = useState("");
+  const query = search.trim().toLowerCase();
+  const shown = useMemo(
+    () =>
+      lines
+        .map((line, index) => ({ line, number: index + 1 }))
+        .filter(({ line }) => !query || line.toLowerCase().includes(query)),
+    [lines, query],
+  );
+
+  return (
+    <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1,
+          py: 0.5,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+        }}
+      >
+        <TextField
+          size="small"
+          placeholder="Search the log"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon size={13} />
+                </InputAdornment>
+              ),
+            },
+          }}
+          sx={{ flex: 1, maxWidth: 320, "& input": { py: 0.5, fontSize: 13 } }}
+        />
+        <Dim>
+          {query
+            ? `${shown.length} of ${lines.length} lines`
+            : `${lines.length} ${lines.length === 1 ? "line" : "lines"}`}
+        </Dim>
+      </Box>
+      <Box
+        sx={{
+          ...MONO_SX,
+          maxHeight: "60vh",
+          overflow: "auto",
+          py: 0.5,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {shown.length === 0 ? (
+          <Box sx={{ px: 1 }}>
+            <Dim>No line matches.</Dim>
+          </Box>
+        ) : (
+          shown.map(({ line, number }) => (
+            <Box key={number} sx={{ display: "flex", px: 1 }}>
+              <Box
+                component="span"
+                sx={{
+                  color: "text.disabled",
+                  minWidth: "4ch",
+                  textAlign: "right",
+                  mr: 1.5,
+                  flexShrink: 0,
+                  userSelect: "none",
+                }}
+              >
+                {number}
+              </Box>
+              <Box component="span" sx={{ minWidth: 0 }}>
+                <Highlight text={line} query={query} />
+              </Box>
+            </Box>
+          ))
+        )}
+      </Box>
+    </Box>
+  );
+}
+
+/** `text` with each case-insensitive match of `query` marked. */
+function Highlight({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  const lower = text.toLowerCase();
+  let at = 0;
+  for (
+    let found = lower.indexOf(query);
+    found !== -1;
+    found = lower.indexOf(query, at)
+  ) {
+    parts.push(text.slice(at, found));
+    parts.push(
+      <Box
+        component="mark"
+        key={found}
+        sx={{ bgcolor: "warning.light", color: "inherit", borderRadius: 0.5 }}
+      >
+        {text.slice(found, found + query.length)}
+      </Box>,
+    );
+    at = found + query.length;
+  }
+  parts.push(text.slice(at));
+  return <>{parts}</>;
+}
+
+/** The output as JSON with indentation, or as it came when it is not JSON. */
+function prettyOutput(output: string): string {
+  try {
+    return JSON.stringify(JSON.parse(output), null, 2);
+  } catch {
+    return output;
+  }
+}
+
+/** A step's output: folded by default, its size on the fold. */
+function OutputView({ output, chars }: { output: string; chars: number }) {
+  const [open, setOpen] = useState(false);
+  const pretty = useMemo(
+    () => (open ? prettyOutput(output) : ""),
+    [open, output],
+  );
+  return (
+    <Box>
+      <Button
+        size="small"
+        onClick={() => setOpen(!open)}
+        startIcon={
+          open ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+        }
+        sx={{ textTransform: "none", px: 0.5, minWidth: 0 }}
+      >
+        Output
+        <Box component="span" sx={{ ml: 1, color: "text.secondary" }}>
+          {formatBytes(chars)}
+        </Box>
+      </Button>
+      {open && (
+        <Box
+          component="pre"
+          sx={{
+            ...MONO_SX,
+            m: 0,
+            mt: 0.5,
+            p: 1,
+            maxHeight: "60vh",
+            overflow: "auto",
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: 1,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {pretty}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * One step: status, time and attempt first, then its error, its whole log
+ * and, folded, its output.
+ */
+function StepSection({ step }: { step: WorkflowRunStep }) {
+  const status = statusOf(step.status);
+  const lines = useMemo(
+    () => step.logs.filter((line): line is string => line !== undefined),
+    [step.logs],
+  );
+  const output = step.output && step.output !== "{}" ? step.output : null;
+  return (
+    <Box
+      sx={{
+        px: 1.5,
+        py: 1,
+        display: "flex",
+        flexDirection: "column",
+        gap: 0.75,
+        borderBottom: "1px solid",
+        borderColor: "divider",
+      }}
+    >
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+          {step.step}
+        </Typography>
+        <Typography
+          variant="caption"
+          sx={{
+            fontWeight: 600,
+            color: status.color,
+            display: "flex",
+            alignItems: "center",
+            gap: 0.5,
+          }}
+        >
+          {status.label}
+          {isActiveRun(step.status) && <CircularProgress size={9} />}
+        </Typography>
+        <Dim>{formatDuration(step.durationMs)}</Dim>
+        {step.attempt !== undefined && <Dim>attempt {step.attempt}</Dim>}
+      </Box>
+      {step.error && (
+        <Box
+          component="pre"
+          sx={{ ...MONO_SX, m: 0, color: "error.main", whiteSpace: "pre-wrap" }}
+        >
+          {step.error}
+        </Box>
+      )}
+      {lines.length > 0 ? <LogView lines={lines} /> : <Dim>No log lines.</Dim>}
+      {step.logsTruncated && (
+        <Dim>
+          The log is longer than shown: this view stops at {lines.length} lines.
+        </Dim>
+      )}
+      {output && (
+        <OutputView
+          output={output}
+          chars={Math.max(step.outputChars ?? 0, output.length)}
+        />
+      )}
+    </Box>
+  );
+}
+
+/** The selected run's steps, in order. */
+function StepsView({
+  run,
+  status,
+}: {
+  run: WorkflowRun | undefined;
+  status: string | undefined;
+}) {
+  return (
+    <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      {!run ? (
+        <Box sx={{ p: 1.5 }}>
+          <CircularProgress size={14} />
+        </Box>
+      ) : run.steps.length === 0 ? (
+        <Note>{status === "QUEUED" ? "Run queued…" : "No steps."}</Note>
+      ) : (
+        run.steps.map((step, index) => (
+          <StepSection key={step.step ?? index} step={step} />
+        ))
+      )}
+    </Box>
+  );
+}
+
 function RunDialog({
   workflowId,
   deployed,
   initialInput,
+  inputSource,
   onClose,
   onRun,
 }: {
@@ -149,6 +422,8 @@ function RunDialog({
   /** The workflow is on main; otherwise only the sandbox can run it. */
   deployed: boolean;
   initialInput: string;
+  /** Where `initialInput` comes from, e.g. "the run started 2h ago"; none: empty. */
+  inputSource?: string;
   onClose: () => void;
   onRun: (
     input: Record<string, unknown>,
@@ -223,7 +498,14 @@ function RunDialog({
           value={input}
           onChange={e => setInput(e.target.value)}
           error={Boolean(error)}
-          helperText={error ?? "Filled in from the last run."}
+          helperText={
+            error ??
+            (input.trim() === "{}" || !input.trim()
+              ? "Empty: the workflow runs with no input."
+              : inputSource && input === initialInput
+                ? `Filled in from ${inputSource}. Empty it to run with no input.`
+                : undefined)
+          }
           sx={{
             mt: 1,
             "& textarea": { fontFamily: "monospace", fontSize: 13 },
@@ -231,6 +513,16 @@ function RunDialog({
         />
       </DialogContent>
       <DialogActions>
+        <Button
+          onClick={() => {
+            setInput("{}");
+            setError(null);
+          }}
+          disabled={input.trim() === "{}"}
+          sx={{ mr: "auto", textTransform: "none" }}
+        >
+          Empty input
+        </Button>
         <Button onClick={onClose}>Cancel</Button>
         <Button
           variant="contained"
@@ -581,122 +873,7 @@ function RunsView({
               <Dim>{selectedSummary.trigger ?? "schedule"}</Dim>
             </Box>
 
-            <Box
-              sx={{
-                borderBottom: "1px solid",
-                borderColor: "divider",
-                overflowX: "auto",
-              }}
-            >
-              <Box
-                component="table"
-                sx={{
-                  width: "100%",
-                  fontSize: "0.75rem",
-                  borderCollapse: "collapse",
-                  "& td, & th": {
-                    borderBottom: "1px solid",
-                    borderColor: "divider",
-                    p: 0.5,
-                    textAlign: "left",
-                    verticalAlign: "top",
-                  },
-                  "& td:first-of-type, & th:first-of-type": { pl: 1.5 },
-                  "& th": { fontWeight: 600, color: "text.secondary" },
-                  "& tr:last-of-type td": { borderBottom: 0 },
-                }}
-              >
-                <thead>
-                  <tr>
-                    <th>Step</th>
-                    <th>Status</th>
-                    <th>Attempt</th>
-                    <th>Time</th>
-                    <th>Output</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(selectedRun?.steps ?? []).map(step => (
-                    <Box
-                      component="tr"
-                      key={step.step}
-                      sx={{
-                        color:
-                          step.status === "FAILED"
-                            ? "error.main"
-                            : isActiveRun(step.status)
-                              ? "primary.main"
-                              : "inherit",
-                      }}
-                    >
-                      <td>{step.step}</td>
-                      <td>
-                        {(step.status ?? "").toLowerCase()}
-                        {step.error ? ` — ${step.error.split("\n")[0]}` : ""}
-                      </td>
-                      <td>{step.attempt ?? ""}</td>
-                      <td>{formatDuration(step.durationMs)}</td>
-                      <Box
-                        component="td"
-                        sx={{
-                          fontFamily: "monospace",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {step.output === "{}" ? "" : step.output}
-                      </Box>
-                    </Box>
-                  ))}
-                </tbody>
-              </Box>
-            </Box>
-
-            {/* Logs, and the full error of a failed step */}
-            <Box
-              sx={{
-                flex: 1,
-                minHeight: 0,
-                overflow: "auto",
-                fontFamily: "monospace",
-                fontSize: "0.72rem",
-                p: 1,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {!selectedRun ? (
-                <CircularProgress size={14} />
-              ) : selectedRun.steps.every(
-                  step => step.logs.length === 0 && !step.error,
-                ) ? (
-                <Dim>
-                  {selectedStatus === "QUEUED" ? "Run queued…" : "No logs."}
-                </Dim>
-              ) : (
-                selectedRun.steps.flatMap(step =>
-                  [...step.logs, step.error].map(
-                    (line, index) =>
-                      line && (
-                        <Box
-                          key={`${step.step}-${index}`}
-                          sx={
-                            index === step.logs.length
-                              ? { color: "error.main" }
-                              : undefined
-                          }
-                        >
-                          <Box
-                            component="span"
-                            sx={{ color: "text.secondary", mr: 1 }}
-                          >
-                            {step.step}
-                          </Box>
-                          {line}
-                        </Box>
-                      ),
-                  ),
-                )
-              )}
-            </Box>
+            <StepsView run={selectedRun} status={selectedStatus} />
           </Box>
         )}
       </Box>
@@ -706,6 +883,11 @@ function RunsView({
           workflowId={workflowId}
           deployed={Boolean(workflow)}
           initialInput={formatInput(selectedRun?.input)}
+          inputSource={
+            selectedRun?.input && selectedSummary
+              ? `the ${selectedSummary.sandbox ? "sandbox " : ""}run started ${formatRelativeTimeCompact(selectedSummary.startedAt)}`
+              : undefined
+          }
           onClose={() => setDialogOpen(false)}
           onRun={async (input, sandbox) => {
             const result = await startRun(

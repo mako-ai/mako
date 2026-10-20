@@ -26,14 +26,18 @@ export interface WorkflowRunSummary {
   trigger?: string;
 }
 
-interface WorkflowRunStep {
+export interface WorkflowRunStep {
   step?: string;
   status?: string;
   attempt?: number;
   durationMs?: number;
   output?: string;
+  /** The output's whole length; `output` may be cut for a sandbox run. */
+  outputChars?: number;
   error?: string;
   logs: Array<string | undefined>;
+  /** The step logged more lines than one response holds. */
+  logsTruncated?: boolean;
 }
 
 export interface WorkflowRun extends WorkflowRunSummary {
