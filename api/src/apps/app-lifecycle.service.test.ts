@@ -627,6 +627,12 @@ describe("routes", () => {
     };
     expect(list.apps.find(a => a.id === OLD_ID)?.verified).toBe(true);
     expect(list.apps.find(a => a.id === FRESH_ID)?.verified).toBe(false);
+    // The Apps home (its badge) reads the same mark.
+    const home = (await (await call("GET", "/discovery")).json()) as {
+      apps: Array<{ id: string; verified: boolean }>;
+    };
+    expect(home.apps.find(a => a.id === OLD_ID)?.verified).toBe(true);
+    expect(home.apps.find(a => a.id === FRESH_ID)?.verified).toBe(false);
   });
 
   it("share with workspace: the owner only, with a description", async () => {

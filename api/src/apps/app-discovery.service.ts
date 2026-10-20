@@ -17,6 +17,7 @@ import { canSeeIndexedApp } from "./app-authorization";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
 import { rankApps } from "./app-search";
 import { loadOwnerDirectory } from "./user-handles.service";
+import { verifiedAppIds } from "./app-lifecycle-state";
 import "./bindings.service";
 
 export interface DiscoveryApp {
@@ -76,20 +77,19 @@ export async function listDiscoveryApps(
   role: string | undefined,
 ): Promise<DiscoveryApp[]> {
   const ws = new Types.ObjectId(workspaceId);
-  const [snapshot, states, directory] = await Promise.all([
+  const [snapshot, states, directory, verified] = await Promise.all([
     loadAppsIndex(workspaceId),
     AppProject.find({ workspaceId: ws })
       .select(
-        "_id access workspaceRole sharedWith owner_id createdBy publishedSha publishedAt lastDeployError createdAt verified",
+        "_id access workspaceRole sharedWith owner_id createdBy publishedSha publishedAt lastDeployError createdAt",
       )
       .lean(),
     loadOwnerDirectory(workspaceId),
+    // Admin marks live in app_lifecycle, keyed by app id (no row needed).
+    verifiedAppIds(workspaceId),
   ]);
   const stateById = new Map(
-    states.map(s => [
-      s._id.toString(),
-      s as IAppProject & { verified?: unknown },
-    ]),
+    states.map(s => [s._id.toString(), s as IAppProject]),
   );
   const visible = snapshot.apps.filter(folder =>
     canSeeIndexedApp(folder, stateById.get(folder.appId), userId, role),
@@ -170,7 +170,7 @@ export async function listDiscoveryApps(
       createdAt: folder.firstCommitAt ?? iso(state?.createdAt),
       publishedAt: iso(state?.publishedAt),
       publishedSha: state?.publishedSha,
-      verified: state?.verified === true,
+      verified: folder.scope === "workspace" && verified.has(folder.appId),
       // The app's own picture, when its folder ships one — so a card only
       // asks for an image that exists, versioned by content.
       thumbnail: folder.thumbnail ?? null,

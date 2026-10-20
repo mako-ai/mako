@@ -38,7 +38,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 23;
+export const WORKSPACE_TEMPLATE_VERSION = 24;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -115,6 +115,11 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 - \`PROMPT.md\` — the workspace's custom agent prompt (business context,
   conventions). Every agent turn reads it from \`main\`; edit and commit it
   like any file.
+- \`archive/…\` — archived apps: an app nobody opened or edited for 60 days
+  is moved here (\`archive/apps/…\`, \`archive/users/<handle>/apps/…\`) after
+  its owner was told. Outside the app trees, so nothing here is listed,
+  built or deployed; never create or edit apps under it. Restore one by
+  moving its folder back (\`git mv archive/apps/x apps/x\`) — it keeps its id.
 - \`.mako/workspace.json\` — workspace id + template version (managed).
 - \`.mcp.json\` — the \`mako\` MCP server for your agent (managed).
 

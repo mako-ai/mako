@@ -1,7 +1,7 @@
 /**
- * The one lifecycle hook the usage path calls (app-usage.service.ts), kept
- * apart from app-lifecycle.service.ts so the usage service does not import
- * the job that imports it.
+ * The lifecycle state the usage and discovery paths read
+ * (app-usage.service.ts, app-discovery.service.ts), kept apart from
+ * app-lifecycle.service.ts so neither imports the job that imports them.
  */
 import { Types } from "mongoose";
 import { AppLifecycleState } from "../database/workspace-schema";
@@ -27,4 +27,18 @@ export async function onAppOpened(
     },
     { $unset: { schedulesPausedAt: 1, staleSince: 1, staleNotifiedTo: 1 } },
   );
+}
+
+/**
+ * Verified app ids of a workspace — what `verified` on the app list and on
+ * the Apps home is read from.
+ */
+export async function verifiedAppIds(
+  workspaceId: string,
+): Promise<Set<string>> {
+  const ids = await AppLifecycleState.distinct("appId", {
+    workspaceId: new Types.ObjectId(workspaceId),
+    verifiedAt: { $exists: true },
+  });
+  return new Set(ids.map(String));
 }

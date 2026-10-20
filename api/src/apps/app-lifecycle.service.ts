@@ -660,23 +660,12 @@ async function notifyStale(
  * served share/live/embed opens alike); lives in app-lifecycle-state.ts to
  * keep the usage service free of an import cycle.
  */
-export { onAppOpened } from "./app-lifecycle-state";
+export { onAppOpened, verifiedAppIds } from "./app-lifecycle-state";
 
 /** App ids whose binding schedules the scheduler must skip. */
 export async function pausedScheduleAppIds(): Promise<Set<string>> {
   const ids = await AppLifecycleState.distinct("appId", {
     schedulesPausedAt: { $exists: true },
-  });
-  return new Set(ids.map(String));
-}
-
-/** Verified app ids of a workspace, for the app list payload. */
-export async function verifiedAppIds(
-  workspaceId: string,
-): Promise<Set<string>> {
-  const ids = await AppLifecycleState.distinct("appId", {
-    workspaceId: new Types.ObjectId(workspaceId),
-    verifiedAt: { $exists: true },
   });
   return new Set(ids.map(String));
 }

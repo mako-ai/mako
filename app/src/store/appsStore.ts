@@ -1153,6 +1153,11 @@ export const useAppsStore = create<AppsStore>()(
             const app = s.apps.find(a => a.id === appId);
             if (app) app.verified = verified;
           });
+          // The Apps home renders the badge from its own discovery list.
+          void import("./appsDiscoveryStore").then(
+            ({ useAppsDiscoveryStore }) =>
+              useAppsDiscoveryStore.getState().fetchDiscovery(workspaceId),
+          );
           return true;
         } catch (e) {
           set(s => {
