@@ -84,6 +84,8 @@ export default defineConfig({
       "src/apps/image-variants.test.ts",
       // Variants shared across instances via the artifact store + pre-warm.
       "src/apps/thumbnail-variants.service.test.ts",
+      // GitError never carries credentials into a log line.
+      "src/apps/git-redact.test.ts",
       // Link previews (Open Graph) for public shares.
       "src/services/share-og.service.test.ts",
       // Who opens which app: daily rollup, popularity score, authors.

@@ -31,6 +31,7 @@ import {
   getArtifactStore,
 } from "../services/artifact-store.service";
 import { loggers } from "../logging";
+import { inngest } from "../inngest/client";
 
 const logger = loggers.api("apps-thumbnail-variants");
 
@@ -224,9 +225,21 @@ export async function getThumbnailVariant(
 // Pre-warm
 // ---------------------------------------------------------------------------
 
-/** (workspace → main sha) already warmed by this process. */
-const warmedAt = new Map<string, string>();
-const warming = new Map<string, Promise<void>>();
+/** (workspace → main sha) this process has already asked to warm. */
+const warmRequested = new Map<string, string>();
+
+/**
+ * The event that runs the warm (inngest/functions/apps-thumbnail-warm).
+ * `workspaceId: "*"` means every workspace with thumbnails (the backfill).
+ * An Inngest function rather than in-process fire-and-forget: Cloud Run
+ * here bills CPU per request, so background work after a response is
+ * starved — a mirror clone that takes ~6 s in a request timed out at 30 s.
+ */
+export const THUMBNAIL_WARM_EVENT = "apps/thumbnails.warm";
+export interface ThumbnailWarmEventData {
+  workspaceId: string;
+  sha?: string;
+}
 
 function isRaster(file: string): boolean {
   const type = thumbnailContentType(file);
@@ -264,7 +277,7 @@ export async function warmThumbnailVariants(
   return { checked, generated };
 }
 
-/** Whether main-moved pre-warming runs in this process. */
+/** Whether pre-warm requests are sent from this process. */
 export function warmEnabled(): boolean {
   const flag = process.env.APPS_THUMBNAIL_WARM;
   if (flag) return flag !== "0" && flag !== "false";
@@ -272,42 +285,33 @@ export function warmEnabled(): boolean {
   return !process.env.VITEST;
 }
 
+/** Ask the warm function to run (debounced per workspace there). */
+export function requestThumbnailWarm(data: ThumbnailWarmEventData): void {
+  if (!warmEnabled()) return;
+  void inngest.send({ name: THUMBNAIL_WARM_EVENT, data }).catch(error =>
+    logger.warn("could not request a thumbnail warm", {
+      workspaceId: data.workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+}
+
 /**
- * Fire-and-forget pre-warm, once per (workspace, main sha) per process.
- * Called whenever the apps index is read, so a push (whose deploy-on-push
- * reads the index) warms the new posters, and the first index read after a
- * deploy backfills whatever an earlier version never stored.
+ * Pre-warm once per (workspace, main sha) per process. Called whenever an
+ * instance's apps index moves to a new main (a push, or this instance's
+ * first index read), so new posters are stored before anyone asks.
  */
 export function scheduleThumbnailWarm(
   workspaceId: string,
   snapshot: AppsIndexSnapshot,
 ): void {
-  if (!snapshot.sha || !warmEnabled()) return;
-  if (warmedAt.get(workspaceId) === snapshot.sha) return;
-  if (warming.has(workspaceId)) return;
-  warmedAt.set(workspaceId, snapshot.sha);
-  const run = warmThumbnailVariants(workspaceId, snapshot.apps)
-    .then(({ checked, generated }) => {
-      if (generated > 0) {
-        logger.info("thumbnail variants warmed", {
-          workspaceId,
-          sha: snapshot.sha,
-          checked,
-          generated,
-        });
-      }
-    })
-    .catch(error => {
-      // Try again on the next index read.
-      warmedAt.delete(workspaceId);
-      logger.warn("thumbnail warm failed", { workspaceId, error });
-    })
-    .finally(() => warming.delete(workspaceId));
-  warming.set(workspaceId, run);
+  if (!snapshot.sha) return;
+  if (warmRequested.get(workspaceId) === snapshot.sha) return;
+  warmRequested.set(workspaceId, snapshot.sha);
+  requestThumbnailWarm({ workspaceId, sha: snapshot.sha });
 }
 
-/** Tests: forget what this process has warmed. */
+/** Tests: forget what this process has asked for. */
 export function resetThumbnailWarmState(): void {
-  warmedAt.clear();
-  warming.clear();
+  warmRequested.clear();
 }

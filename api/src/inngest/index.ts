@@ -49,6 +49,7 @@ import {
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
 import { consoleDescriptionFunction } from "./functions/console-description";
+import { appsThumbnailWarmFunction } from "./functions/apps-thumbnail-warm";
 import {
   flowWebhookResubscribeFunction,
   flowWebhookUnsubscribeFunction,
@@ -75,6 +76,7 @@ const baseFunctions = [
   dbtRunCancelFunction,
   dbtRunSweeperFunction,
   consoleDescriptionFunction,
+  appsThumbnailWarmFunction,
   flowWebhookResubscribeFunction,
   flowWebhookUnsubscribeFunction,
 ];
