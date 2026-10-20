@@ -28,6 +28,7 @@ import { parseBindingFrontMatter } from "./bindings.service";
 import { extractTables } from "./app-search";
 import { freshenForServe } from "./cloud-repo.service";
 import { runGit } from "./git";
+import { timed } from "../middleware/server-timing";
 import {
   DEFAULT_BRANCH,
   readBlobsBatch,
@@ -1074,15 +1075,23 @@ export async function loadAppsIndex(
   workspaceId: string,
   options: { freshen?: boolean } = {},
 ): Promise<AppsIndexSnapshot> {
-  const repoDir = await boundRepoDirIfExists(workspaceId);
+  const repoDir = await timed("index.repo", () =>
+    boundRepoDirIfExists(workspaceId),
+  );
   if (repoDir == null) return EMPTY;
-  if (options.freshen !== false) await freshenForServe(workspaceId);
-  const sha = await resolveCommit(repoDir, MAIN);
+  if (options.freshen !== false) {
+    await timed("index.freshen", () => freshenForServe(workspaceId));
+  }
+  const sha = await timed("index.revParse", () => resolveCommit(repoDir, MAIN));
   if (!sha) return EMPTY;
-  const directory = await loadOwnerDirectory(workspaceId);
+  const directory = await timed("index.owners", () =>
+    loadOwnerDirectory(workspaceId),
+  );
   const cached = snapshotCache.get(workspaceId);
   if (cached?.sha === sha) return withOwners(cached, directory);
-  const synced = await syncAppsIndexFromRepo(workspaceId);
+  const synced = await timed("index.sync", () =>
+    syncAppsIndexFromRepo(workspaceId),
+  );
   return synced ? withOwners(synced, directory) : EMPTY;
 }
 

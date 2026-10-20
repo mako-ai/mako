@@ -218,6 +218,7 @@ import {
 import { getArtifactStore } from "../services/artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { serverTiming, timed } from "../middleware/server-timing";
 import {
   concurrencyLimit,
   repoWorkPool,
@@ -263,6 +264,19 @@ const ProjectParam = WorkspaceParam.extend({
 // viewer page instead of a 401: the page signs people in, and its HTML
 // carries the app's link-preview tags (share-og.service). Only the app's
 // top-level page, only for browsers and crawlers; API clients still get 401.
+// Step timings (Server-Timing + a log line when slow) for the Apps home's
+// reads — registered first so the total includes auth.
+for (const [route, label] of [
+  ["/", "apps.list"],
+  ["/discovery", "apps.discovery"],
+  ["/feed", "apps.feed"],
+  ["/usage", "apps.usage"],
+  ["/recent", "apps.recent"],
+  ["/search", "apps.search"],
+] as const) {
+  appsRoutes.on("GET", route, serverTiming(label));
+}
+
 appsRoutes.use("/:id/live/*", anonymousLiveLinkToViewer);
 appsRoutes.use("/:id/live", anonymousLiveLinkToViewer);
 
@@ -287,8 +301,9 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
       // A stranger from a trusted domain joins here — this is the request
       // their first click on a published app's link makes (apps.md §28).
       const member =
-        (await workspaceService.getMember(workspaceId, user.id)) ??
-        (await ensureAutoJoin(workspaceId, user));
+        (await timed("auth.member", () =>
+          workspaceService.getMember(workspaceId, user.id),
+        )) ?? (await ensureAutoJoin(workspaceId, user));
       if (!member) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
@@ -321,7 +336,9 @@ async function memberRoleFor(
   userId: string | undefined,
 ): Promise<string | undefined> {
   if (!userId) return undefined;
-  const member = await workspaceService.getMember(workspaceId, userId);
+  const member = await timed("auth.role", () =>
+    workspaceService.getMember(workspaceId, userId),
+  );
   return member?.role;
 }
 
@@ -803,18 +820,22 @@ appsRoutes.openapi(
       // step (§13). Mongo is consulted only for what cannot live in a repo
       // the customer can clone: visibility, the deployed sha, the share
       // token — and the derived index that makes this read one query.
-      const [folders, folderPaths] = await Promise.all([
-        listAppFolders(workspaceId),
-        listAppFolderPaths(workspaceId),
-      ]);
+      const [folders, folderPaths] = await timed("list.index", () =>
+        Promise.all([
+          listAppFolders(workspaceId),
+          listAppFolderPaths(workspaceId),
+        ]),
+      );
       // Keep the repo's agent-facing template current for whoever is looking
       // at it (throttled, off the request path — see workspace-template.ts).
       repoForWorkspace(workspaceId)
         .then(repoDir => ensureWorkspaceTemplateSoon(workspaceId, repoDir))
         .catch(() => undefined);
       const [docs, verified] = await Promise.all([
-        AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
-        verifiedAppIds(workspaceId),
+        timed("list.projects", () =>
+          AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
+        ),
+        timed("list.verified", () => verifiedAppIds(workspaceId)),
       ]);
       const stateById = new Map(docs.map(d => [d._id.toString(), d]));
 
@@ -859,9 +880,9 @@ appsRoutes.openapi(
       // Folders of the two trees the caller can see: the workspace tree, and
       // their own personal tree (never anyone else's) — by the handle
       // mapping, not by what the folder is called.
-      const directory = await loadOwnerDirectory(workspaceId, {
-        forUserId: userId,
-      });
+      const directory = await timed("list.directory", () =>
+        loadOwnerDirectory(workspaceId, { forUserId: userId }),
+      );
       const handle = directory.handleOf(userId);
       const personalRoot = handle ? appTreeRoot("private", handle) : undefined;
       const visibleFolders = folderPaths.filter(p => {
@@ -1161,8 +1182,10 @@ appsRoutes.openapi(
         (c.get("memberRole") as string | undefined) ??
         (await memberRoleFor(workspaceId, userId));
       const [stats, visible] = await Promise.all([
-        getAppUsageStats(workspaceId, { days }),
-        visibleIndexedAppIds(workspaceId, userId, role),
+        timed("usage.stats", () => getAppUsageStats(workspaceId, { days })),
+        timed("usage.visible", () =>
+          visibleIndexedAppIds(workspaceId, userId, role),
+        ),
       ]);
       const apps = [...stats.values()].filter(s => visible.has(s.appId));
       return c.json({ success: true as const, apps }, 200);

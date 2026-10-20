@@ -16,6 +16,7 @@ import { Types } from "mongoose";
 import { AppFeedSnapshot } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { loggers } from "../logging";
+import { timed } from "../middleware/server-timing";
 import { listDiscoveryApps, type DiscoveryApp } from "./app-discovery.service";
 import {
   buildFeedOrder,
@@ -108,8 +109,8 @@ export async function loadFeedSignals(
       new Date(now.getTime() - (DEFAULT_USAGE_WINDOW_DAYS - 1) * DAY_MS),
     );
     const [rollups, authors] = await Promise.all([
-      loadUsageRollups(workspaceId, since),
-      getAppAuthors(workspaceId),
+      timed("feed.rollups", () => loadUsageRollups(workspaceId, since)),
+      timed("feed.authors", () => getAppAuthors(workspaceId)),
     ]);
     // Popularity is the Popular shelf's score exactly: the 28-day window.
     const windowed = rollups
@@ -189,7 +190,9 @@ export async function getFeedPage(
     1,
     Math.min(options.limit ?? FEED_PAGE_DEFAULT, FEED_PAGE_MAX),
   );
-  const visible = await deps.listApps(workspaceId, userId, role);
+  const visible = await timed("feed.list", () =>
+    deps.listApps(workspaceId, userId, role),
+  );
   const byId = new Map(visible.map(a => [a.id, a]));
   const hydrate = (ids: readonly string[]) =>
     ids.flatMap(id => {
@@ -219,12 +222,13 @@ export async function getFeedPage(
     order = stored;
     offset = cursor.offset;
   } else {
-    const viewer = await deps.loadViewer(userId);
-    const signals = await deps.loadSignals(workspaceId, viewer, now);
+    const viewer = await timed("feed.viewer", () => deps.loadViewer(userId));
+    const signals = await timed("feed.signals", () =>
+      deps.loadSignals(workspaceId, viewer, now),
+    );
     order = buildFeedOrder(visible, signals, viewer, now);
-    snapshotId = await deps.saveSnapshot(
-      { workspaceId, userId: userId ?? null, ...order },
-      now,
+    snapshotId = await timed("feed.save", () =>
+      deps.saveSnapshot({ workspaceId, userId: userId ?? null, ...order }, now),
     );
     offset = 0;
   }

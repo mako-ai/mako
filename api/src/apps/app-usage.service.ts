@@ -49,6 +49,8 @@ import { onAppOpened } from "./app-lifecycle-state";
 import { runGit } from "./git";
 import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
+import { performance } from "node:perf_hooks";
+import { currentTimings, timed } from "../middleware/server-timing";
 
 const logger = loggers.api("apps-usage");
 
@@ -410,10 +412,13 @@ async function commitAuthorUserIds(
     const repoDir = await boundRepoDirIfExists(workspaceId);
     if (repoDir === null) return new Map();
     const ref = `refs/heads/${DEFAULT_BRANCH}`;
-    const sha = await resolveCommit(repoDir, ref);
+    const sha = await timed("authors.revParse", () =>
+      resolveCommit(repoDir, ref),
+    );
     if (!sha) return new Map();
     const cached = commitAuthorCache.get(workspaceId);
     if (cached?.sha === sha) return cached.byApp;
+    const started = performance.now();
     const { stdout } = await runGit(
       [
         "-C",
@@ -430,7 +435,10 @@ async function commitAuthorUserIds(
       ],
       { timeoutMs: 15_000, maxBufferBytes: 64 * 1024 * 1024 },
     );
+    currentTimings()?.add("authors.gitLog", performance.now() - started);
+    const parsing = performance.now();
     const emailsByApp = parseCommitAuthors(stdout, apps);
+    currentTimings()?.add("authors.parse", performance.now() - parsing);
     const emails = [...new Set([...emailsByApp.values()].flatMap(s => [...s]))];
     const users = emails.length
       ? await User.find({ email: { $in: emails } })
@@ -474,7 +482,9 @@ export async function getAppAuthors(
       .select("_id owner_id createdBy")
       .lean(),
   ]);
-  const authors = await commitAuthorUserIds(workspaceId, snapshot.apps);
+  const authors = await timed("authors.commits", () =>
+    commitAuthorUserIds(workspaceId, snapshot.apps),
+  );
   const add = (appId: string, userId: string | null | undefined) => {
     if (!userId) return;
     let set = authors.get(appId);
@@ -644,8 +654,8 @@ export async function getAppUsageStats(
   );
   const since = utcDay(new Date(now.getTime() - (days - 1) * DAY_MS));
   const [rollups, authors, snapshot] = await Promise.all([
-    loadUsageRollups(workspaceId, since),
-    getAppAuthors(workspaceId),
+    timed("usage.rollups", () => loadUsageRollups(workspaceId, since)),
+    timed("usage.authors", () => getAppAuthors(workspaceId)),
     loadAppsIndex(workspaceId, { freshen: false }),
   ]);
   const stats = computeAppUsageStats(rollups, authors, now);

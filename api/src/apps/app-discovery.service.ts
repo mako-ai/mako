@@ -20,6 +20,7 @@ import { loadOwnerDirectory } from "./user-handles.service";
 import { resolveAppOwner, type AppOwner } from "./app-owner";
 import { githubIdsOfLogins, loadPeopleDirectory } from "./app-owner.service";
 import { verifiedAppIds } from "./app-lifecycle-state";
+import { timed } from "../middleware/server-timing";
 import "./bindings.service";
 
 export interface DiscoveryApp {
@@ -86,15 +87,17 @@ export async function listDiscoveryApps(
 ): Promise<DiscoveryApp[]> {
   const ws = new Types.ObjectId(workspaceId);
   const [snapshot, states, directory, verified] = await Promise.all([
-    loadAppsIndex(workspaceId),
-    AppProject.find({ workspaceId: ws })
-      .select(
-        "_id access workspaceRole sharedWith owner_id createdBy publishedSha publishedAt lastDeployError createdAt",
-      )
-      .lean(),
-    loadOwnerDirectory(workspaceId),
+    timed("disc.index", () => loadAppsIndex(workspaceId)),
+    timed("disc.states", async () =>
+      AppProject.find({ workspaceId: ws })
+        .select(
+          "_id access workspaceRole sharedWith owner_id createdBy publishedSha publishedAt lastDeployError createdAt",
+        )
+        .lean(),
+    ),
+    timed("disc.directory", () => loadOwnerDirectory(workspaceId)),
     // Admin marks live in app_lifecycle, keyed by app id (no row needed).
-    verifiedAppIds(workspaceId),
+    timed("disc.verified", () => verifiedAppIds(workspaceId)),
   ]);
   const stateById = new Map(
     states.map(s => [s._id.toString(), s as IAppProject]),
@@ -109,37 +112,43 @@ export async function listDiscoveryApps(
     if (owner) ownerIds.add(owner);
   }
   const [users, bindingRows, people] = await Promise.all([
-    ownerIds.size > 0
-      ? User.find({ _id: { $in: [...ownerIds] } })
-          .select("_id email")
-          .lean()
-      : Promise.resolve([]),
-    bindingStateModel()
-      .find({
-        projectId: {
-          $in: visible
-            .filter(f => Types.ObjectId.isValid(f.appId))
-            .map(f => new Types.ObjectId(f.appId)),
-        },
-      })
-      .select({
-        projectId: 1,
-        name: 1,
-        lastMaterializedAt: 1,
-        history: { $slice: 1 },
-      })
-      .lean()
-      .then(rows => rows as unknown as BindingStateRow[]),
-    loadPeopleDirectory(workspaceId, directory),
+    timed("disc.users", async () =>
+      ownerIds.size > 0
+        ? User.find({ _id: { $in: [...ownerIds] } })
+            .select("_id email")
+            .lean()
+        : [],
+    ),
+    timed("disc.bindings", async () =>
+      bindingStateModel()
+        .find({
+          projectId: {
+            $in: visible
+              .filter(f => Types.ObjectId.isValid(f.appId))
+              .map(f => new Types.ObjectId(f.appId)),
+          },
+        })
+        .select({
+          projectId: 1,
+          name: 1,
+          lastMaterializedAt: 1,
+          history: { $slice: 1 },
+        })
+        .lean()
+        .then(rows => rows as unknown as BindingStateRow[]),
+    ),
+    timed("disc.people", () => loadPeopleDirectory(workspaceId, directory)),
   ]);
   const emailById = new Map(users.map(u => [String(u._id), u.email]));
-  const githubIdOfLogin = await githubIdsOfLogins(
-    people.loginsToLookUp(
-      visible
-        .filter(f => !ownerOf(f, stateById.get(f.appId)))
-        .map(f => f.authorEmail),
+  const githubIdOfLogin = await timed("disc.github", () =>
+    githubIdsOfLogins(
+      people.loginsToLookUp(
+        visible
+          .filter(f => !ownerOf(f, stateById.get(f.appId)))
+          .map(f => f.authorEmail),
+      ),
+      people,
     ),
-    people,
   );
   const bindingsByApp = new Map<string, BindingStateRow[]>();
   for (const row of bindingRows) {
