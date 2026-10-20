@@ -36,7 +36,7 @@ import {
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
-import { getAppUsageStats } from "./app-usage.service";
+import { SWEEP_COMMIT_APP_LIMIT, getAppUsageStats } from "./app-usage.service";
 import { runGit } from "./git";
 import { archiveProject, repoForWorkspace } from "./worktree.service";
 import { APPS_DIR, USERS_DIR } from "./app-paths";
@@ -245,9 +245,10 @@ export function planAppLifecycle(
  * "switch every app to pnpm" or an SDK bump — is nobody editing any one of
  * them, so it does not count: on the RealAdvisor repo two such chores
  * (2026-09-16, 179 folders; 2026-10-02, 88) would otherwise make every app
- * look recently edited for two months after each one.
+ * look recently edited for two months after each one. The threshold is the
+ * usage service's: a sweep is not authorship there, and not an edit here.
  */
-export const SWEEPING_COMMIT_APPS = 10;
+export const SWEEPING_COMMIT_APPS = SWEEP_COMMIT_APP_LIMIT;
 
 export async function lastCommitByAppPath(
   repoDir: string,
@@ -341,7 +342,7 @@ async function gatherWorkspace(
       .select("_id owner_id createdBy createdAt")
       .lean(),
     AppLifecycleState.find({ workspaceId: ws }).lean(),
-    getAppUsageStats(workspaceId, { days: LIFECYCLE_RULES.staleDays }),
+    getAppUsageStats(workspaceId, { days: LIFECYCLE_RULES.staleDays, now }),
     usageHistorySince(workspaceId),
   ]);
   let commits = new Map<string, Date>();

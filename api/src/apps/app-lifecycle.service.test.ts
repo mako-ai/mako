@@ -52,6 +52,7 @@ import {
   AppLifecycleState,
   AppProject,
   WorkspaceMember,
+  WorkspaceUserHandle,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import {
@@ -87,6 +88,8 @@ import {
   type LifecycleAppInput,
 } from "./app-lifecycle.service";
 import { emailService } from "../services/email.service";
+import { invalidateOwnerDirectory } from "./user-handles.service";
+import { recordAppUsage } from "./app-usage.service";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = new Date("2026-10-20T06:00:00Z");
@@ -273,6 +276,8 @@ afterAll(async () => {
 
 const WS = new Types.ObjectId().toString();
 const OWNER = new Types.ObjectId().toString();
+// Personal trees are named by handle, resolved to the owner by the mapping.
+const HANDLE = "owner";
 const OLD_ID = new Types.ObjectId().toHexString();
 const FRESH_ID = new Types.ObjectId().toHexString();
 const MINE_ID = new Types.ObjectId().toHexString();
@@ -295,6 +300,13 @@ beforeEach(async () => {
   await AppIndexHead.deleteMany({});
   await AppProject.deleteMany({});
   await AppLifecycleState.deleteMany({});
+  await WorkspaceUserHandle.deleteMany({});
+  await WorkspaceUserHandle.create({
+    workspaceId: new Types.ObjectId(WS),
+    userId: OWNER,
+    handle: HANDLE,
+  });
+  invalidateOwnerDirectory();
   await mongoose.connection.db!.collection("app_usage_daily").deleteMany({});
   await unbindTestWorkspaceRepo(WS);
   invalidateAppsIndexCache();
@@ -307,7 +319,7 @@ beforeEach(async () => {
       "apps/old/mako.json": manifest("Old", OLD_ID),
       "apps/old/src/main.tsx": "export {}\n",
       "apps/Sales/fresh/mako.json": manifest("Fresh", FRESH_ID),
-      [`users/${OWNER}/apps/mine/mako.json`]: manifest("Mine", MINE_ID),
+      [`users/${HANDLE}/apps/mine/mako.json`]: manifest("Mine", MINE_ID),
     },
     {
       author: {
@@ -505,7 +517,7 @@ describe("runAppLifecycle", () => {
     const third = await runAppLifecycle(WS, day35);
     expect(third.counts.archive).toBe(1);
     expect(await fileAt("archive/apps/old/mako.json")).not.toBeNull();
-    expect(await fileAt(`users/${OWNER}/apps/mine/mako.json`)).not.toBeNull();
+    expect(await fileAt(`users/${HANDLE}/apps/mine/mako.json`)).not.toBeNull();
     const { stdout } = await import("./git").then(g =>
       g.runGit(["-C", repoDirFor(WS), "log", "-1", "--format=%an <%ae>"]),
     );
@@ -530,6 +542,32 @@ describe("hooks", () => {
     expect([...(await pausedScheduleAppIds())]).toEqual([OLD_ID]);
     await onAppOpened(WS, OLD_ID);
     expect((await pausedScheduleAppIds()).size).toBe(0);
+  });
+
+  it("a recorded open resumes paused schedules; a heartbeat does not", async () => {
+    await AppLifecycleState.create({
+      workspaceId: new Types.ObjectId(WS),
+      appId: OLD_ID,
+      schedulesPausedAt: new Date(),
+      staleSince: new Date(),
+    });
+    const usage = {
+      workspaceId: WS,
+      appId: OLD_ID,
+      userId: OWNER,
+      source: "app" as const,
+    };
+    await recordAppUsage({ ...usage, kind: "heartbeat" });
+    await new Promise(r => setTimeout(r, 50));
+    expect((await pausedScheduleAppIds()).size).toBe(1);
+    await recordAppUsage({ ...usage, kind: "open" });
+    // Fire-and-forget: the usage write does not wait for it.
+    for (let i = 0; i < 50 && (await pausedScheduleAppIds()).size; i++) {
+      await new Promise(r => setTimeout(r, 20));
+    }
+    expect((await pausedScheduleAppIds()).size).toBe(0);
+    const row = await AppLifecycleState.findOne({ appId: OLD_ID }).lean();
+    expect(row?.staleSince).toBeUndefined();
   });
 
   it("verified marks record who and are listed per workspace", async () => {
