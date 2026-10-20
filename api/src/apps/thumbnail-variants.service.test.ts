@@ -30,8 +30,8 @@ import {
 } from "./app-index.service";
 import { variantCache } from "./image-variants";
 import {
-  Timings,
   getThumbnailVariant,
+  resolveThumbnailVariant,
   resetThumbnailWarmState,
   variantStoreKey,
   warmThumbnailVariants,
@@ -39,6 +39,7 @@ import {
 import { getArtifactStore } from "../services/artifact-store.service";
 import { backfillThumbnailVariants } from "./thumbnail-warm-boot";
 import { ogRoutes } from "../routes/og";
+import { RequestTimings, runWithTimings } from "../middleware/server-timing";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -132,30 +133,35 @@ describe("getThumbnailVariant", () => {
   it("generates once, stores under the oid key, then serves from the store without git", async () => {
     const { row } = await indexed();
     const thumb = row(BOARD).thumbnail!;
-    const first = new Timings();
-    const og = await getThumbnailVariant(WS, thumb, { kind: "og" }, first);
-    expect(first.source).toBe("generated");
-    expect(og?.contentType).toBe("image/jpeg");
-    expect(og?.width).toBe(1200);
+    const first = await resolveThumbnailVariant(WS, thumb, { kind: "og" });
+    expect(first?.source).toBe("generated");
+    const og = first!.variant;
+    expect(og.contentType).toBe("image/jpeg");
+    expect(og.width).toBe(1200);
     const key = variantStoreKey(WS, thumb.oid, { kind: "og" });
     expect(key).toContain(`/app-thumbnails/${WS}/${thumb.oid}/og.jpg`);
     expect(await stored(key)).toBe(true);
 
-    const lru = new Timings();
-    await getThumbnailVariant(WS, thumb, { kind: "og" }, lru);
-    expect(lru.source).toBe("lru");
+    const lru = await resolveThumbnailVariant(WS, thumb, { kind: "og" });
+    expect(lru?.source).toBe("lru");
 
-    // A fresh instance: empty LRU, and no repo to read (unbound).
+    // A fresh instance: empty LRU, and no repo to read (unbound). Timed
+    // the way the routes are (the shared Server-Timing helper).
     variantCache.clear();
     await unbindTestWorkspaceRepo(WS);
-    const fresh = new Timings();
-    const again = await getThumbnailVariant(WS, thumb, { kind: "og" }, fresh);
-    expect(fresh.source).toBe("store");
-    expect(fresh.phases.map(([p]) => p)).toEqual(["store"]);
-    expect(again?.bytes.equals(og!.bytes)).toBe(true);
-    expect(again?.width).toBe(1200);
-    expect(again?.height).toBe(750);
-    expect(fresh.header()).toMatch(/store;dur=\d+, src;desc=store/);
+    const timings = new RequestTimings();
+    const fresh = await runWithTimings(timings, () =>
+      resolveThumbnailVariant(WS, thumb, { kind: "og" }),
+    );
+    expect(fresh?.source).toBe("store");
+    expect([...timings.spans.keys()]).toEqual(["thumb.store"]);
+    expect(timings.notes.get("thumb.src")).toBe("store");
+    expect(fresh?.variant.bytes.equals(og.bytes)).toBe(true);
+    expect(fresh?.variant.width).toBe(1200);
+    expect(fresh?.variant.height).toBe(750);
+    expect(timings.header(1, 0)).toMatch(
+      /thumb\.store;dur=[\d.]+, thumb\.src;desc="store"/,
+    );
   });
 
   it("stores card widths as WebP", async () => {
@@ -177,11 +183,10 @@ describe("getThumbnailVariant", () => {
   it("serves the original for an undecodable image and stores nothing", async () => {
     const { row } = await indexed();
     const thumb = row(BROKEN).thumbnail!;
-    const t = new Timings();
-    const out = await getThumbnailVariant(WS, thumb, { kind: "og" }, t);
-    expect(t.source).toBe("fallback");
-    expect(out?.transformed).toBe(false);
-    expect(out?.bytes.toString()).toBe("NOT-A-PNG");
+    const out = await resolveThumbnailVariant(WS, thumb, { kind: "og" });
+    expect(out?.source).toBe("fallback");
+    expect(out?.variant.transformed).toBe(false);
+    expect(out?.variant.bytes.toString()).toBe("NOT-A-PNG");
     await new Promise(r => setTimeout(r, 100));
     expect(
       await getArtifactStore().exists(
@@ -268,7 +273,11 @@ describe("persisted-index lookup", () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/jpeg");
-    expect(res.headers.get("server-timing")).toContain("src;desc=store");
+    // One Server-Timing, from the shared middleware.
+    const timing = res.headers.get("server-timing") ?? "";
+    expect(timing).toContain('thumb.src;desc="store"');
+    expect(timing).toContain("app.lookup;dur=");
+    expect(timing.match(/total;dur=/g)).toHaveLength(1);
     expect(res.headers.get("etag")).toMatch(/-og"$/);
   });
 });

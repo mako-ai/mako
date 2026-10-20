@@ -99,10 +99,7 @@ import {
   resolveAppRef,
   resolveIndexedAppRef,
 } from "../apps/app-index.service";
-import {
-  Timings,
-  getThumbnailVariant,
-} from "../apps/thumbnail-variants.service";
+import { getThumbnailVariant } from "../apps/thumbnail-variants.service";
 import {
   acceptUsageBeat,
   classifyUserAgent,
@@ -282,6 +279,7 @@ for (const [route, label] of [
   ["/usage", "apps.usage"],
   ["/recent", "apps.recent"],
   ["/search", "apps.search"],
+  ["/:id/thumbnail", "apps.thumbnail"],
 ] as const) {
   appsRoutes.on("GET", route, serverTiming(label));
 }
@@ -4219,11 +4217,10 @@ appsRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const workspaceId = loaded.project.workspaceId.toString();
       const appId = loaded.project._id.toString();
-      const timings = new Timings();
       // The persisted index first: a fresh instance must not clone the
       // mirror just to learn a blob oid the store already has a variant of.
-      const row = await timings.time(
-        "lookup",
+      const row = await timed(
+        "app.lookup",
         async () =>
           (await resolveIndexedAppRef(workspaceId, appId)) ??
           (await resolveAppRef(workspaceId, appId)),
@@ -4241,12 +4238,10 @@ appsRoutes.openapi(
               return repoDir ? readThumbnailBlob(repoDir, thumbnail) : null;
             },
             variant: width =>
-              getThumbnailVariant(
-                workspaceId,
-                thumbnail,
-                { kind: "width", width },
-                timings,
-              ),
+              getThumbnailVariant(workspaceId, thumbnail, {
+                kind: "width",
+                width,
+              }),
           })
         : null;
       if (!res) {
@@ -4255,7 +4250,6 @@ appsRoutes.openapi(
           404,
         );
       }
-      res.headers.set("Server-Timing", timings.header());
       return res;
     } catch (error) {
       return handleError(c, error);

@@ -31,10 +31,7 @@ import {
   type AppIndexRow,
   type AppThumbnailRef,
 } from "../apps/app-index.service";
-import {
-  getThumbnailVariant,
-  type Timings,
-} from "../apps/thumbnail-variants.service";
+import { getThumbnailVariant } from "../apps/thumbnail-variants.service";
 
 /** The share URL shapes the SPA serves (see app/src/App.tsx). */
 const SHARE_PATH = /^\/share\/(?:[^/]+\/)?([A-Za-z0-9_-]{3,128})\/?$/;
@@ -90,14 +87,13 @@ export interface ShareImage {
 /** The raster thumbnail of an open share's app, or null (use the default). */
 export async function shareImageFor(
   app: IAppProject,
-  timings?: Timings,
 ): Promise<ShareImage | null> {
   const workspaceId = app.workspaceId.toString();
   const appId = app._id.toString();
   const row =
     (await resolveIndexedAppRef(workspaceId, appId)) ??
     (await resolveAppRef(workspaceId, appId));
-  return rasterThumbnail(workspaceId, row?.thumbnail, timings);
+  return rasterThumbnail(workspaceId, row?.thumbnail);
 }
 
 /**
@@ -109,16 +105,10 @@ export async function shareImageFor(
 export async function rasterThumbnail(
   workspaceId: string,
   thumb: AppThumbnailRef | undefined,
-  timings?: Timings,
 ): Promise<ShareImage | null> {
   const contentType = thumb ? rasterTypeOf(thumb.file) : null;
   if (!thumb || !contentType) return null;
-  const image = await getThumbnailVariant(
-    workspaceId,
-    thumb,
-    { kind: "og" },
-    timings,
-  );
+  const image = await getThumbnailVariant(workspaceId, thumb, { kind: "og" });
   if (!image) return null;
   return {
     bytes: image.bytes,

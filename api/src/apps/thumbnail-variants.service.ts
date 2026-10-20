@@ -32,6 +32,7 @@ import {
 } from "../services/artifact-store.service";
 import { loggers } from "../logging";
 import { inngest } from "../inngest/client";
+import { noteTiming, timed } from "../middleware/server-timing";
 
 const logger = loggers.api("apps-thumbnail-variants");
 
@@ -59,34 +60,8 @@ export function variantStoreKey(
   return `${getArtifactPrefix()}/app-thumbnails/${workspaceId}/${oid}/${variantName(v)}`;
 }
 
-/** Phase timings of one variant lookup, for Server-Timing and slow logs. */
-export class Timings {
-  private readonly started = Date.now();
-  readonly phases: Array<[string, number]> = [];
-  source: "lru" | "store" | "generated" | "fallback" | "none" = "none";
-
-  async time<T>(phase: string, fn: () => Promise<T>): Promise<T> {
-    const t = Date.now();
-    try {
-      return await fn();
-    } finally {
-      this.phases.push([phase, Date.now() - t]);
-    }
-  }
-
-  get totalMs(): number {
-    return Date.now() - this.started;
-  }
-
-  /** `Server-Timing` value: each phase plus the cache outcome. */
-  header(): string {
-    return [
-      ...this.phases.map(([p, ms]) => `${p};dur=${ms}`),
-      `src;desc=${this.source}`,
-      `total;dur=${this.totalMs}`,
-    ].join(", ");
-  }
-}
+/** Where a variant came from — the `thumb.src` note on Server-Timing. */
+export type VariantSource = "lru" | "store" | "generated" | "fallback";
 
 async function readStream(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -115,17 +90,16 @@ async function readStored(key: string): Promise<Buffer | null> {
 async function readBlob(
   workspaceId: string,
   thumbnail: AppThumbnailRef,
-  timings: Timings,
 ): Promise<Buffer | null> {
   // A read, not a write: no repo simply means no picture (null, not a skip).
-  const repoDir = await timings.time("repo", () =>
+  const repoDir = await timed("thumb.repo", () =>
     boundRepoDirIfExists(workspaceId),
   );
   const read = () =>
     repoDir ? readThumbnailBlob(repoDir, thumbnail) : Promise.resolve(null);
-  const bytes = await timings.time("blob", read);
+  const bytes = await timed("thumb.blob", read);
   if (bytes || !repoDir) return bytes;
-  await timings.time("fetch", () =>
+  await timed("thumb.fetch", () =>
     freshenForServe(workspaceId, 0).catch(() => undefined),
   );
   return read();
@@ -160,24 +134,24 @@ function storedContentType(v: VariantKind): string {
 }
 
 /**
- * A raster thumbnail's variant: LRU, then the artifact store, then built
- * from the blob and written back to the store (not awaited — the response
- * never waits on an upload). When the encoder cannot handle the image the
- * original bytes come back with `transformed: false`, and nothing is stored.
- * Null when the blob is gone.
+ * A raster thumbnail's variant and where it came from: LRU, then the
+ * artifact store, then built from the blob and written back to the store
+ * (not awaited — the response never waits on an upload). When the encoder
+ * cannot handle the image the original bytes come back with
+ * `transformed: false`, and nothing is stored. Null when the blob is gone.
+ * Steps are `thumb.*` spans of the request's Server-Timing (#1117 helper).
  */
-export async function getThumbnailVariant(
+export async function resolveThumbnailVariant(
   workspaceId: string,
   thumbnail: AppThumbnailRef,
   v: VariantKind,
-  timings: Timings = new Timings(),
-): Promise<ImageVariant | null> {
+): Promise<{ variant: ImageVariant; source: VariantSource } | null> {
   const key = variantStoreKey(workspaceId, thumbnail.oid, v);
-  if (variantCache.get(key)) timings.source = "lru";
-  const out = await cachedVariant(key, async () => {
-    const stored = await timings.time("store", () => readStored(key));
+  let source: VariantSource = "lru";
+  const variant = await cachedVariant(key, async () => {
+    const stored = await timed("thumb.store", () => readStored(key));
     if (stored) {
-      timings.source = "store";
+      source = "store";
       return {
         bytes: stored,
         contentType: storedContentType(v),
@@ -185,40 +159,48 @@ export async function getThumbnailVariant(
         transformed: true,
       };
     }
-    const source = await readBlob(workspaceId, thumbnail, timings);
-    if (!source) return null;
-    const built = await timings.time("encode", () =>
-      generate(source, thumbnail, v),
+    const original = await readBlob(workspaceId, thumbnail);
+    if (!original) return null;
+    const built = await timed("thumb.encode", () =>
+      generate(original, thumbnail, v),
     );
     if (!built) {
-      timings.source = "fallback";
+      source = "fallback";
       return {
-        bytes: source,
+        bytes: original,
         contentType: thumbnailContentType(thumbnail.file) ?? "image/png",
-        ...(imageSize(source) ?? {}),
+        ...(imageSize(original) ?? {}),
         transformed: false,
       };
     }
-    timings.source = "generated";
+    source = "generated";
     void getArtifactStore()
       .putBuffer(built.bytes, key, built.contentType, {
         oid: thumbnail.oid,
         variant: variantName(v),
       })
       .catch(error =>
-        logger.warn("storing thumbnail variant failed", { key, error }),
+        logger.warn("storing thumbnail variant failed", {
+          key,
+          error: error instanceof Error ? error.message : String(error),
+        }),
       );
     return built;
   });
-  if (timings.totalMs > 1000) {
-    logger.info("slow thumbnail variant", {
-      workspaceId,
-      oid: thumbnail.oid,
-      variant: variantName(v),
-      timing: timings.header(),
-    });
-  }
-  return out;
+  if (!variant) return null;
+  noteTiming("thumb.src", source);
+  return { variant, source };
+}
+
+/** The variant only (see resolveThumbnailVariant). */
+export async function getThumbnailVariant(
+  workspaceId: string,
+  thumbnail: AppThumbnailRef,
+  v: VariantKind,
+): Promise<ImageVariant | null> {
+  return (
+    (await resolveThumbnailVariant(workspaceId, thumbnail, v))?.variant ?? null
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -269,9 +251,8 @@ export async function warmThumbnailVariants(
       const key = variantStoreKey(workspaceId, thumb.oid, v);
       if (variantCache.get(key)) continue;
       if (await store.exists(key).catch(() => false)) continue;
-      const timings = new Timings();
-      const out = await getThumbnailVariant(workspaceId, thumb, v, timings);
-      if (out && timings.source === "generated") generated++;
+      const out = await resolveThumbnailVariant(workspaceId, thumb, v);
+      if (out?.source === "generated") generated++;
     }
   }
   return { checked, generated };
