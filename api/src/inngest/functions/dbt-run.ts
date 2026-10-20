@@ -64,7 +64,7 @@ import {
   warmDirsEnabled,
   withProjectDir,
 } from "../../dbt/workspace-dir.service";
-import { getDashboardArtifactStore } from "../../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../../services/artifact-store.service";
 
 const logger = loggers.inngest("dbt");
 
@@ -171,7 +171,7 @@ async function readArtifactBuffer(
 ): Promise<Buffer | undefined> {
   if (!key) return undefined;
   try {
-    const stream = await getDashboardArtifactStore().openReadStream(key);
+    const stream = await getArtifactStore().openReadStream(key);
     if (!stream) return undefined;
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
@@ -463,7 +463,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
 
             // Upload artifacts after every command — the last successful
             // upload wins, which matches dbt's own target/ behavior.
-            const store = getDashboardArtifactStore();
+            const store = getArtifactStore();
             const prefix = `dbt-artifacts/${data.workspaceId}/${data.runId}`;
             const artifactKeys: Record<string, string> = {};
             const uploads: Array<[string, Buffer | undefined, string]> = [

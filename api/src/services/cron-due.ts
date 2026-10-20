@@ -3,8 +3,8 @@
  *
  * Every scheduler scan in the codebase asks the same question — has the
  * schedule's next occurrence after the last run already passed? — and it
- * used to be answered four ways: dashboard materialization had it right,
- * app bindings borrowed that, and the flow scheduler + CDC backfill each
+ * used to be answered four ways: the (since removed) dashboard
+ * materialization had it right, app bindings borrowed that, and the flow scheduler + CDC backfill each
  * hand-rolled their own (the flow one as three competing heuristics that
  * are provably equivalent to this predicate). Answer it here, once.
  *

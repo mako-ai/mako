@@ -118,11 +118,6 @@ export interface IWorkspace extends Document {
     billingTier: "free" | "pro" | "enterprise";
     disabledModelIds?: string[];
     /**
-     * Max concurrent scheduled/manual dashboard artifact refreshes for this
-     * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
-     */
-    dashboardRefreshConcurrency?: number;
-    /**
      * Domain auto-join (apps.md §28): a signed-in person whose email domain
      * is listed becomes a member on first contact with the workspace — no
      * invitation — with this access role. How someone clicks a published
@@ -411,15 +406,14 @@ export interface IConsoleFolder extends Document {
 export type ConsoleAccessLevel = "private" | "workspace";
 
 /**
- * Google Workspace-style sharing primitives, shared by dashboards, consoles
- * and apps.
+ * Google Workspace-style sharing primitives, shared by consoles and apps.
  *
  * - `sharedWith` entries grant a specific user `viewer` (read) or `editor`
  *   (read + write) access regardless of the resource's `access` scope.
  * - `workspaceRole` is the role every workspace member gets when the
  *   resource's `access` is "workspace" (workspace members with the `viewer`
  *   member role are always capped to viewer).
- * - `publicShare` (dashboards + apps only) exposes the resource read-only at
+ * - `publicShare` (apps only) exposes the resource read-only at
  *   /share/:token, optionally protected by a bcrypt-hashed password. Public
  *   viewers see materialized snapshot artifacts by default. When the owner
  *   opts in with `allowLiveQueries`, an app's public viewer may also re-run the
@@ -444,8 +438,6 @@ export interface IPublicShare {
   passwordEncrypted?: string | null;
   createdAt?: Date;
   createdBy?: string;
-  /** Throttle marker for the anonymous "Refresh data" action (dashboards). */
-  lastPublicRefreshAt?: Date;
   /**
    * Apps only. When true, the public viewer may execute the app's published
    * live bindings server-side (read-only, row-capped, rate-limited) instead of
@@ -1385,11 +1377,6 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         default: "free",
       },
       disabledModelIds: [{ type: String }],
-      dashboardRefreshConcurrency: {
-        type: Number,
-        default: 2,
-        min: 1,
-      },
       autoJoin: {
         type: new Schema(
           {
@@ -1813,7 +1800,7 @@ ConsoleFolderSchema.index({ workspaceId: 1, ownerId: 1, isPrivate: 1 });
 ConsoleFolderSchema.index({ workspaceId: 1, access: 1 });
 
 /**
- * Shared sharing sub-schemas (dashboards, consoles, apps).
+ * Shared sharing sub-schemas (consoles, apps).
  */
 const ResourceShareEntrySchema = new Schema<IResourceShareEntry>(
   {
@@ -1833,7 +1820,6 @@ const PublicShareSchema = new Schema<IPublicShare>(
     passwordEncrypted: { type: String, default: null },
     createdAt: { type: Date },
     createdBy: { type: String },
-    lastPublicRefreshAt: { type: Date },
     allowLiveQueries: { type: Boolean, default: false },
   },
   { _id: false },
@@ -3436,269 +3422,9 @@ NotificationDeliverySchema.index(
   { expireAfterSeconds: 7776000 },
 );
 
-export interface IMaterializationRun extends Document {
-  workspaceId: Types.ObjectId;
-  dashboardId: Types.ObjectId;
-  dataSourceId: string;
-  runId: string;
-  triggerType: "manual" | "schedule" | "dashboard_update";
-  lastHeartbeat?: Date;
-  workerId?: string;
-  stage?: string;
-  attempt?: number;
-  status: "queued" | "building" | "ready" | "error" | "abandoned" | "cancelled";
-  requestedAt: Date;
-  startedAt?: Date;
-  finishedAt?: Date;
-  artifactKey?: string;
-  version?: string;
-  definitionHash?: string;
-  artifactRevision?: string;
-  rowCount?: number;
-  byteSize?: number;
-  error?: string;
-  events: Array<{
-    type: string;
-    timestamp: Date;
-    message: string;
-    metadata?: Record<string, unknown>;
-  }>;
-}
-
-const MaterializationRunSchema = new Schema<IMaterializationRun>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    dashboardId: {
-      type: Schema.Types.ObjectId,
-      ref: "Dashboard",
-      required: true,
-    },
-    dataSourceId: { type: String, required: true },
-    runId: { type: String, required: true, unique: true },
-    triggerType: {
-      type: String,
-      enum: ["manual", "schedule", "dashboard_update"],
-      required: true,
-    },
-    status: {
-      type: String,
-      enum: ["queued", "building", "ready", "error", "abandoned", "cancelled"],
-      required: true,
-    },
-    requestedAt: { type: Date, required: true, default: Date.now },
-    startedAt: { type: Date },
-    finishedAt: { type: Date },
-    lastHeartbeat: { type: Date },
-    workerId: { type: String },
-    stage: { type: String },
-    attempt: { type: Number, default: 1 },
-    artifactKey: { type: String },
-    version: { type: String },
-    definitionHash: { type: String },
-    artifactRevision: { type: String },
-    rowCount: { type: Number },
-    byteSize: { type: Number },
-    error: { type: String },
-    events: [
-      {
-        type: { type: String, required: true },
-        timestamp: { type: Date, required: true },
-        message: { type: String, required: true },
-        metadata: { type: Schema.Types.Mixed },
-      },
-    ],
-  },
-  {
-    collection: "materialization_runs",
-    timestamps: false,
-  },
-);
-
-MaterializationRunSchema.index({
-  dashboardId: 1,
-  dataSourceId: 1,
-  requestedAt: -1,
-});
-MaterializationRunSchema.index({ workspaceId: 1, requestedAt: -1 });
-MaterializationRunSchema.index({ status: 1, lastHeartbeat: 1 });
-MaterializationRunSchema.index(
-  { requestedAt: 1 },
-  { expireAfterSeconds: 7 * 24 * 60 * 60 },
-);
-
-/**
- * Dashboard model interface (AI-native dashboard engine)
- */
-export interface IDashboard extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  title: string;
-  description?: string;
-  /**
-   * Client-supplied creation idempotency key (the agent toolCallId). Multiple
-   * windows attached to the same chat stream each dispatch the same
-   * create_dashboard call; the unique partial index on
-   * { workspaceId, creationIdempotencyKey } makes the second insert a
-   * duplicate, and the create route returns the existing dashboard instead.
-   */
-  creationIdempotencyKey?: string;
-
-  dataSources: IDashboardDataSource[];
-
-  relationships: Array<{
-    id: string;
-    from: { dataSourceId: string; column: string };
-    to: { dataSourceId: string; column: string };
-    type: "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many";
-  }>;
-
-  widgets: Array<{
-    id: string;
-    title?: string;
-    type: "chart" | "kpi" | "table";
-    dataSourceId: string;
-    localSql: string;
-    vegaLiteSpec?: Record<string, unknown>;
-    kpiConfig?: {
-      valueField: string;
-      format?: string;
-      comparisonField?: string;
-      comparisonLabel?: string;
-    };
-    tableConfig?: { columns?: string[]; pageSize?: number };
-    crossFilter: { enabled: boolean; fields?: string[] };
-    layouts: {
-      lg: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-      md?: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-      sm?: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-      xs?: {
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        minW?: number;
-        minH?: number;
-      };
-    };
-  }>;
-
-  globalFilters: Array<{
-    id: string;
-    type: "date-range" | "select" | "multi-select" | "search";
-    label: string;
-    dataSourceId: string;
-    column: string;
-    config: Record<string, unknown>;
-    layout: { order: number; width?: number };
-  }>;
-
-  crossFilter: {
-    enabled: boolean;
-    resolution: "intersect" | "union";
-    engine?: "mosaic" | "legacy";
-  };
-
-  materializationSchedule: {
-    enabled: boolean;
-    cron: string | null;
-    timezone?: string;
-    dataFreshnessTtlMs?: number | null;
-  };
-
-  layout: {
-    columns: number;
-    rowHeight: number;
-  };
-
-  cache: {
-    lastRefreshedAt?: Date;
-  };
-
-  snapshots?: Record<
-    string,
-    {
-      version: string;
-      generatedAt: Date;
-      rowCount: number;
-      rows: Record<string, unknown>[];
-      fields: Array<{ name: string; type: string }>;
-    }
-  >;
-
-  version: number;
-  versionHistory: Array<{
-    version: number;
-    snapshot: Record<string, unknown>;
-    createdAt: Date;
-    createdBy: string;
-    message?: string;
-  }>;
-
-  editLock?: {
-    userId: string;
-    userName: string;
-    lockedAt: Date;
-    expiresAt: Date;
-  };
-
-  /**
-   * Last published definition snapshot (draft/published split, mirrors
-   * MakoApp). The top-level definition fields are the working draft; `published`
-   * is what public/shared viewers render. Set on every explicit save (which
-   * also creates a version); a restore reverts the draft only, leaving
-   * `published` until the next save. Absent until first save — readers fall
-   * back to the live definition for back-compat. Shape = buildDashboardSnapshot.
-   */
-  published?: Record<string, unknown>;
-  /** EntityVersion number that was published into `published`. */
-  publishedVersion?: number;
-  publishedAt?: Date;
-
-  folderId?: Types.ObjectId;
-  access: "private" | "workspace";
-  /** Role granted to workspace members when access is "workspace". */
-  workspaceRole?: ResourceShareRole;
-  /**
-   * Per-user collaborators (viewer/editor), independent of the `access`
-   * level. Editors can read + write; viewers can only read.
-   */
-  sharedWith?: IResourceShareEntry[];
-  /** Public link sharing (read-only, snapshot data, optional password). */
-  publicShare?: IPublicShare;
-  owner_id?: string;
-  createdBy: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 /**
  * NotebookFolder model interface — organizational folders for notebooks
- * (My Notebooks vs Workspace sections mirror dashboards/consoles).
+ * (My Notebooks vs Workspace sections mirror consoles).
  */
 export interface INotebookFolder extends Document {
   _id: Types.ObjectId;
@@ -3730,388 +3456,6 @@ export interface INotebookIndex extends Document {
   sharedWith?: IResourceShareEntry[];
   updatedAt: Date;
 }
-
-/**
- * DashboardFolder model interface
- */
-export interface IDashboardFolder extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  name: string;
-  parentId?: Types.ObjectId;
-  ownerId?: string;
-  access: "private" | "workspace";
-  createdAt: Date;
-}
-
-export interface IDashboardQueryDefinition {
-  connectionId: Types.ObjectId;
-  language: "sql" | "javascript" | "mongodb";
-  code: string;
-  databaseId?: string;
-  databaseName?: string;
-  mongoOptions?: {
-    collection?: string;
-    operation?:
-      | "find"
-      | "aggregate"
-      | "insertMany"
-      | "updateMany"
-      | "deleteMany"
-      | "findOne"
-      | "updateOne"
-      | "deleteOne";
-  };
-}
-
-export interface IDashboardDataSourceOrigin {
-  type: "saved_console" | "local";
-  consoleId?: Types.ObjectId;
-  consoleName?: string;
-  importedAt?: Date;
-  /** Agent toolCallId that created this data source (creation idempotency). */
-  createdByToolCallId?: string;
-}
-
-export interface IDashboardDataSource {
-  id: string;
-  name: string;
-  tableRef: string;
-  query: IDashboardQueryDefinition;
-  origin?: IDashboardDataSourceOrigin;
-  timeDimension?: string;
-  rowLimit?: number;
-  /**
-   * How the data reaches widgets. `parquet` (default) materializes to a cached
-   * artifact; `live` streams the query server-side into DuckDB on every load.
-   */
-  materialization: "live" | "parquet";
-  computedColumns?: Array<{
-    name: string;
-    expression: string;
-    type: "quantitative" | "temporal" | "nominal" | "ordinal";
-  }>;
-  cache?: {
-    lastRefreshedAt?: Date;
-    rowCount?: number;
-    byteSize?: number;
-    parquetArtifactKey?: string;
-    definitionHash?: string;
-    artifactRevision?: string;
-    parquetVersion?: string;
-    parquetBuiltAt?: Date;
-    parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
-    parquetLastError?: string;
-    parquetUrl?: string;
-  };
-}
-
-/**
- * Dashboard Schema
- */
-const DashboardSchema = new Schema<IDashboard>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    title: { type: String, required: true },
-    description: { type: String },
-    creationIdempotencyKey: { type: String },
-
-    dataSources: [
-      {
-        id: { type: String, required: true },
-        name: { type: String, required: true },
-        tableRef: { type: String, required: true },
-        query: {
-          connectionId: {
-            type: Schema.Types.ObjectId,
-            ref: "DatabaseConnection",
-            required: true,
-          },
-          language: {
-            type: String,
-            enum: ["sql", "javascript", "mongodb"],
-            required: true,
-          },
-          code: { type: String, required: true },
-          databaseId: { type: String },
-          databaseName: { type: String },
-          mongoOptions: {
-            collection: { type: String },
-            operation: {
-              type: String,
-              enum: [
-                "find",
-                "aggregate",
-                "insertMany",
-                "updateMany",
-                "deleteMany",
-                "findOne",
-                "updateOne",
-                "deleteOne",
-              ],
-            },
-          },
-        },
-        origin: {
-          type: {
-            type: String,
-            enum: ["saved_console", "local"],
-          },
-          consoleId: {
-            type: Schema.Types.ObjectId,
-            ref: "SavedConsole",
-          },
-          consoleName: { type: String },
-          importedAt: { type: Date },
-          createdByToolCallId: { type: String },
-        },
-        timeDimension: { type: String },
-        rowLimit: { type: Number },
-        materialization: {
-          type: String,
-          enum: ["live", "parquet"],
-          default: "parquet",
-        },
-        computedColumns: [
-          {
-            name: { type: String, required: true },
-            expression: { type: String, required: true },
-            type: {
-              type: String,
-              enum: ["quantitative", "temporal", "nominal", "ordinal"],
-              required: true,
-            },
-          },
-        ],
-        cache: {
-          lastRefreshedAt: { type: Date },
-          rowCount: { type: Number },
-          byteSize: { type: Number },
-          parquetArtifactKey: { type: String },
-          definitionHash: { type: String },
-          artifactRevision: { type: String },
-          parquetVersion: { type: String },
-          parquetBuiltAt: { type: Date },
-          parquetBuildStatus: {
-            type: String,
-            enum: ["missing", "queued", "building", "ready", "error", null],
-          },
-          parquetLastError: { type: String },
-        },
-      },
-    ],
-
-    relationships: [
-      {
-        id: { type: String, required: true },
-        from: {
-          dataSourceId: { type: String, required: true },
-          column: { type: String, required: true },
-        },
-        to: {
-          dataSourceId: { type: String, required: true },
-          column: { type: String, required: true },
-        },
-        type: {
-          type: String,
-          enum: ["one-to-one", "one-to-many", "many-to-one", "many-to-many"],
-          required: true,
-        },
-      },
-    ],
-
-    widgets: [
-      {
-        id: { type: String, required: true },
-        title: { type: String },
-        type: {
-          type: String,
-          enum: ["chart", "kpi", "table"],
-          required: true,
-        },
-        dataSourceId: { type: String, required: true },
-        localSql: { type: String, required: true },
-        vegaLiteSpec: { type: Schema.Types.Mixed },
-        kpiConfig: {
-          valueField: { type: String },
-          format: { type: String },
-          comparisonField: { type: String },
-          comparisonLabel: { type: String },
-        },
-        tableConfig: {
-          columns: [{ type: String }],
-          pageSize: { type: Number },
-        },
-        crossFilter: {
-          enabled: { type: Boolean, default: true },
-          fields: [{ type: String }],
-        },
-        layouts: {
-          lg: {
-            x: { type: Number, required: true },
-            y: { type: Number, required: true },
-            w: { type: Number, required: true },
-            h: { type: Number, required: true },
-            minW: { type: Number },
-            minH: { type: Number },
-          },
-          md: {
-            x: { type: Number },
-            y: { type: Number },
-            w: { type: Number },
-            h: { type: Number },
-            minW: { type: Number },
-            minH: { type: Number },
-            custom: { type: Boolean },
-          },
-          sm: {
-            x: { type: Number },
-            y: { type: Number },
-            w: { type: Number },
-            h: { type: Number },
-            minW: { type: Number },
-            minH: { type: Number },
-            custom: { type: Boolean },
-          },
-          xs: {
-            x: { type: Number },
-            y: { type: Number },
-            w: { type: Number },
-            h: { type: Number },
-            minW: { type: Number },
-            minH: { type: Number },
-            custom: { type: Boolean },
-          },
-        },
-      },
-    ],
-
-    globalFilters: [
-      {
-        id: { type: String, required: true },
-        type: {
-          type: String,
-          enum: ["date-range", "select", "multi-select", "search"],
-          required: true,
-        },
-        label: { type: String, required: true },
-        dataSourceId: { type: String, required: true },
-        column: { type: String, required: true },
-        config: { type: Schema.Types.Mixed, default: {} },
-        layout: {
-          order: { type: Number, default: 0 },
-          width: { type: Number },
-        },
-      },
-    ],
-
-    crossFilter: {
-      enabled: { type: Boolean, default: true },
-      resolution: {
-        type: String,
-        enum: ["intersect", "union"],
-        default: "intersect",
-      },
-      engine: {
-        type: String,
-        enum: ["mosaic", "legacy"],
-        default: "mosaic",
-      },
-    },
-
-    materializationSchedule: {
-      enabled: { type: Boolean, default: true },
-      cron: { type: String, default: "0 0 * * *" },
-      timezone: { type: String, default: "UTC" },
-      dataFreshnessTtlMs: { type: Number, default: null },
-    },
-
-    layout: {
-      columns: { type: Number, default: 12 },
-      rowHeight: { type: Number, default: 80 },
-    },
-
-    cache: {
-      lastRefreshedAt: { type: Date },
-    },
-
-    snapshots: { type: Schema.Types.Mixed, default: {} },
-
-    version: { type: Number, default: 1 },
-    versionHistory: [
-      {
-        version: { type: Number, required: true },
-        snapshot: { type: Schema.Types.Mixed, required: true },
-        createdAt: { type: Date, default: Date.now },
-        createdBy: { type: String, required: true },
-        message: { type: String },
-      },
-    ],
-
-    editLock: {
-      userId: { type: String },
-      userName: { type: String },
-      lockedAt: { type: Date },
-      expiresAt: { type: Date },
-    },
-
-    // Draft/published split (mirrors MakoApp): `published` holds the last
-    // committed definition snapshot (Mixed — same shape as
-    // buildDashboardSnapshot). Public/shared viewers render this.
-    published: { type: Schema.Types.Mixed, default: undefined },
-    publishedVersion: { type: Number },
-    publishedAt: { type: Date },
-
-    folderId: {
-      type: Schema.Types.ObjectId,
-      ref: "DashboardFolder",
-    },
-    access: {
-      type: String,
-      enum: ["private", "workspace"],
-      default: "private",
-    },
-    workspaceRole: {
-      type: String,
-      enum: ["viewer", "editor"],
-      default: "viewer",
-    },
-    sharedWith: {
-      type: [ResourceShareEntrySchema],
-      default: [],
-    },
-    publicShare: { type: PublicShareSchema, default: undefined },
-    owner_id: { type: String },
-    createdBy: { type: String, required: true },
-  },
-  {
-    collection: "dashboards",
-    timestamps: true,
-  },
-);
-
-DashboardSchema.index({ workspaceId: 1 });
-DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
-DashboardSchema.index({ workspaceId: 1, access: 1, owner_id: 1 });
-DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
-DashboardSchema.index(
-  { "publicShare.token": 1 },
-  { unique: true, sparse: true },
-);
-// Creation idempotency (see IDashboard.creationIdempotencyKey). Partial (not
-// sparse): a sparse COMPOUND index still indexes docs that have workspaceId
-// but no key, which would make every keyless dashboard collide.
-DashboardSchema.index(
-  { workspaceId: 1, creationIdempotencyKey: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { creationIdempotencyKey: { $type: "string" } },
-  },
-);
 
 /**
  * NotebookFolder Schema
@@ -4194,42 +3538,6 @@ NotebookIndexSchema.index({ workspaceId: 1, notebookId: 1 }, { unique: true });
 NotebookIndexSchema.index({ workspaceId: 1, folderId: 1 });
 NotebookIndexSchema.index({ workspaceId: 1, access: 1, ownerId: 1 });
 
-/**
- * DashboardFolder Schema
- */
-const DashboardFolderSchema = new Schema<IDashboardFolder>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    parentId: {
-      type: Schema.Types.ObjectId,
-      ref: "DashboardFolder",
-    },
-    ownerId: {
-      type: String,
-      ref: "User",
-    },
-    access: {
-      type: String,
-      enum: ["private", "workspace"],
-      default: "private",
-    },
-  },
-  {
-    timestamps: { createdAt: true, updatedAt: false },
-  },
-);
-
-DashboardFolderSchema.index({ workspaceId: 1, parentId: 1 });
-
 // Models
 export const Workspace = mongoose.model<IWorkspace>(
   "Workspace",
@@ -4256,10 +3564,12 @@ export const SourceConnection = mongoose.model<ISourceConnection>(
 /** @deprecated use SourceConnection */
 export const Connector = SourceConnection;
 /**
- * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
+ * EntityVersion — immutable append-only version snapshots for consoles.
+ * (The collection also still holds rows from the removed dashboards feature,
+ * `entityType: "dashboard"`; nothing reads them.)
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard";
+export type VersionableEntityType = "console";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -4284,7 +3594,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard"],
+      enum: ["console"],
       required: true,
     },
     entityId: {
@@ -4394,14 +3704,6 @@ export const NotificationDelivery = mongoose.model<INotificationDelivery>(
   "NotificationDelivery",
   NotificationDeliverySchema,
 );
-export const MaterializationRun = mongoose.model<IMaterializationRun>(
-  "MaterializationRun",
-  MaterializationRunSchema,
-);
-export const DashboardFolder = mongoose.model<IDashboardFolder>(
-  "DashboardFolder",
-  DashboardFolderSchema,
-);
 export const NotebookFolder = mongoose.model<INotebookFolder>(
   "NotebookFolder",
   NotebookFolderSchema,
@@ -4409,10 +3711,6 @@ export const NotebookFolder = mongoose.model<INotebookFolder>(
 export const NotebookIndex = mongoose.model<INotebookIndex>(
   "NotebookIndex",
   NotebookIndexSchema,
-);
-export const Dashboard = mongoose.model<IDashboard>(
-  "Dashboard",
-  DashboardSchema,
 );
 
 // Skills are files in the workspace repo (apps.md §27); no model.
@@ -5553,7 +4851,7 @@ export interface IAppProject extends Document {
   };
   /**
    * Anonymous read-only link to the PUBLISHED deployment, optionally password
-   * protected. Same primitive dashboards and v1 apps use, so the management
+   * protected. Same primitive v1 apps used, so the management
    * routes and the /api/share/:token consumption side are shared verbatim.
    */
   publicShare?: IPublicShare;
@@ -5626,7 +4924,7 @@ const AppProjectSchema = new Schema<IAppProject>(
 
 AppProjectSchema.index({ workspaceId: 1, updatedAt: -1 });
 // Anonymous share lookup is by token alone, so it must be indexed and unique
-// across the collection — same shape as v1 apps and dashboards.
+// across the collection — same shape as v1 apps.
 AppProjectSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
@@ -5834,7 +5132,7 @@ export const AppIndexHead = mongoose.model<IAppIndexHead>(
 // Favourites — one person's bookmark tree, never a location
 // ---------------------------------------------------------------------------
 
-export type FavouriteKind = "app" | "console" | "notebook" | "dashboard";
+export type FavouriteKind = "app" | "console" | "notebook";
 
 /**
  * Browser-bookmark shape (Firefox's `moz_bookmarks`): folders and items are
@@ -5873,7 +5171,9 @@ const FavouriteSchema = new Schema<IFavourite>(
     parentId: { type: String, default: null },
     type: { type: String, enum: ["folder", "item"], required: true },
     title: { type: String, trim: true },
-    kind: { type: String, enum: ["app", "console", "notebook", "dashboard"] },
+    // "dashboard" rows from the removed dashboards feature may still exist;
+    // listFavourites() filters them out.
+    kind: { type: String, enum: ["app", "console", "notebook"] },
     refId: { type: String },
     position: { type: Number, required: true, default: 0 },
   },

@@ -44,7 +44,7 @@ import { ensureBoxAgent } from "./box-agent";
 import { getBoxState, probeReachable } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
 import { resolveAppEnv } from "./env.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 const logger = loggers.api("apps-dev-server");
 
@@ -660,7 +660,7 @@ async function stageBindingData(
   const stageDir = dataDir(handle);
   await provider.exec(ctx, `mkdir -p ${stageDir}`, { timeoutMs: 30_000 });
 
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
   const staged: string[] = [];
   // A marker (no parquet) tells the dev server's data middleware to fetch this
   // binding FRESH from Mako on each request. Listed in index.json so the SDK

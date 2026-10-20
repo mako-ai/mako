@@ -180,7 +180,7 @@ import {
   listAppEnvVars,
   setAppEnvVar,
 } from "../apps/env.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -1737,7 +1737,7 @@ appsRoutes.openapi(
         loaded.userId ?? "",
       );
       const response = key
-        ? await serveParquetArtifact(getDashboardArtifactStore(), key, {
+        ? await serveParquetArtifact(getArtifactStore(), key, {
             cacheControl: "no-store",
           })
         : null;
@@ -1913,7 +1913,7 @@ appsRoutes.openapi(
       const result = plan.kind === "build" ? await plan.run() : plan;
       if (result.kind === "artifact") {
         const response = await serveParquetArtifact(
-          getDashboardArtifactStore(),
+          getArtifactStore(),
           result.artifactKey,
           {
             cacheControl: "no-store",
@@ -2046,7 +2046,7 @@ appsRoutes.openapi(
         );
       }
       const response = await serveParquetArtifact(
-        getDashboardArtifactStore(),
+        getArtifactStore(),
         job.result.artifactKey,
         {
           cacheControl: "no-store",
@@ -3365,7 +3365,7 @@ appsRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { shot } = c.req.valid("param");
       const key = eyesShotKey(loaded.project._id.toString(), shot);
-      const store = getDashboardArtifactStore();
+      const store = getArtifactStore();
       const stream = await store.openReadStream(key);
       if (!stream) {
         return c.json({ success: false, error: "Screenshot not found" }, 404);
@@ -3443,7 +3443,7 @@ appsRoutes.get("/:id/live/*", serveLive);
 /**
  * The published app's `POST __data/<name>/refresh` — the SDK's `refresh()`,
  * for a member viewing the app signed in (see binding-refresh.ts). Read
- * access is enough, as it is for a dashboard's refresh: the query that runs
+ * access is enough: the query that runs
  * is the owner's published SQL under the owner's connection, never the
  * viewer's. Rebuilds the binding AT the published commit, since that is the
  * artifact this viewer is reading.
@@ -3471,7 +3471,7 @@ appsRoutes.post("/:id/live/__data/:name/refresh", async c => {
   }
 });
 
-// Sharing — the SAME primitive dashboards and consoles use, all three
+// Sharing — the SAME primitive consoles use, all three
 // surfaces of it: per-user collaborators (viewer/editor), general access
 // (private/workspace + workspace role) and public links (bcrypt password +
 // AES copy for reveal, token rotation, owner/admin gate). The v1 rip-out

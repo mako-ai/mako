@@ -26,13 +26,10 @@ import { flowRoutes } from "./flows";
 import { usageRoutes } from "./usage";
 import { billingRoutes } from "./billing";
 import { stripeWebhookRoutes } from "./stripe-webhook";
-import { dashboardRoutes } from "./dashboards";
 import { notebookDataRoutes } from "./notebook-data";
 import { notebookRoutes } from "./notebooks";
 import { notebookSessionRoutes } from "./notebook-sessions";
 import { publicShareRoutes } from "./public-share";
-import { dashboardMaterializationRoutes } from "./dashboard-materialization";
-import { resourceDataSourceRoutes } from "./resource-data-sources";
 import { scheduledQueryRoutes } from "./scheduled-queries";
 import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
@@ -110,7 +107,6 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
 
   app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
   app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
-  app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
   app.route("/api/workspaces/:workspaceId/notebook", notebookDataRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookSessionRoutes);
@@ -119,7 +115,7 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // The workspace repo itself (status, branches, commits, GitHub connect) —
   // the repo is workspace infrastructure; apps/consoles/dbt are lenses on it.
   app.route("/api/workspaces/:workspaceId/repo", workspaceRepoRoutes);
-  // One person's bookmark tree over apps/consoles/notebooks/dashboards. Not
+  // One person's bookmark tree over apps/consoles/notebooks. Not
   // part of any entity's surface: it stores a view and can never change an
   // entity's identity, folder, sharing or deployment.
   app.route("/api/workspaces/:workspaceId/favourites", favouriteRoutes);
@@ -143,15 +139,7 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // box from before the rename has been recycled.
   app.route("/api/apps-v2-git", appsGitRoutes);
   app.route("/api/apps-v2-box", appsBoxRoutes);
-  app.route(
-    "/api/workspaces/:workspaceId/data-sources",
-    resourceDataSourceRoutes,
-  );
-  app.route(
-    "/api/workspaces/:workspaceId/dashboards/:dashboardId",
-    dashboardMaterializationRoutes,
-  );
-  // Intentionally public: token-gated read-only shares (dashboards + apps).
+  // Intentionally public: token-gated read-only shares (apps).
   app.route("/api/share", publicShareRoutes);
   app.route("/api/agent", agentRoutes);
   app.route("/api/admin", adminRoutes);

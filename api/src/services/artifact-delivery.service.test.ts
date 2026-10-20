@@ -11,7 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import type { DashboardArtifactStore } from "./dashboard-artifact-store.service";
+import type { ArtifactStore } from "./artifact-store.service";
 import {
   artifactDeliveryMode,
   serveParquetArtifact,
@@ -19,10 +19,10 @@ import {
 } from "./artifact-delivery.service";
 
 function fakeStore(
-  overrides: Partial<DashboardArtifactStore> & {
-    type: DashboardArtifactStore["type"];
+  overrides: Partial<ArtifactStore> & {
+    type: ArtifactStore["type"];
   },
-): DashboardArtifactStore {
+): ArtifactStore {
   return {
     exists: async () => true,
     put: async () => undefined,

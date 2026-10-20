@@ -1,8 +1,8 @@
 /**
  * Shared Parquet materialization core.
  *
- * The single "query -> Parquet artifact" pipeline used by BOTH dashboard data
- * sources and app data bindings: schema probe -> streaming query -> node
+ * The single "query -> Parquet artifact" pipeline used by app data bindings:
+ * schema probe -> streaming query -> node
  * DuckDB Parquet build -> artifact store upload. Callers own everything
  * domain-specific (definition hashes, artifact keys, cache metadata writes,
  * run records, snapshots, queueing).
@@ -19,7 +19,7 @@ import {
   buildParquetFromBatches,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
-import { storeArtifact } from "./dashboard-cache.service";
+import { storeArtifact } from "./artifact-store.service";
 import { databaseConnectionService } from "./database-connection.service";
 import { isWrite } from "../access/connection-writes";
 import { checkPreviewQuerySafety } from "./query-pagination.service";
@@ -32,7 +32,7 @@ export const PARQUET_ROW_LIMIT = 500_000;
 
 const STREAM_BATCH_SIZE = 5000;
 
-/** SQL string, or a MongoDB executable descriptor (dashboard data sources). */
+/** SQL string, or a MongoDB executable descriptor. */
 export type ExecutableQuery =
   string | { collection: string; operation: string; query: string };
 

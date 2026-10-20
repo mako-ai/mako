@@ -1,6 +1,6 @@
 /**
- * Folder-tree mechanics shared by every foldered resource (dashboards,
- * notebooks, consoles). These were copied into each manager: the cycle
+ * Folder-tree mechanics shared by every foldered resource (notebooks,
+ * consoles). These were copied into each manager: the cycle
  * check was byte-identical modulo the folder model, and the "folders first,
  * then alphabetical" sort existed three times.
  */

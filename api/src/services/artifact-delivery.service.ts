@@ -14,7 +14,7 @@
  * cross-origin redirect carries an Origin header, and if the bucket has no
  * CORS rule the browser downloads the response and then refuses to hand it
  * to the page. That is exactly why an earlier signed-URL attempt retreated
- * to proxying (see dashboard-materialization.ts). So redirect mode is
+ * to proxying (in the since-removed dashboards artifact route). So redirect mode is
  * entered only after the store confirms — installing it if missing — the
  * bucket's CORS rule, once per process, and quietly stays on streaming when
  * it cannot (no permission to read bucket metadata, S3 with no checker).
@@ -23,7 +23,7 @@
  * "on" for a bucket whose CORS an operator configured by hand (or whose
  * service account may not read bucket metadata), "off" as the kill switch.
  */
-import type { DashboardArtifactStore } from "./dashboard-artifact-store.service";
+import type { ArtifactStore } from "./artifact-store.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("artifact-delivery");
@@ -37,13 +37,10 @@ export type ArtifactDeliveryMode = "redirect" | "stream";
  */
 export const SIGNED_URL_TTL_SECONDS = 600;
 
-const modeByStore = new WeakMap<
-  DashboardArtifactStore,
-  Promise<ArtifactDeliveryMode>
->();
+const modeByStore = new WeakMap<ArtifactStore, Promise<ArtifactDeliveryMode>>();
 
 export async function artifactDeliveryMode(
-  store: DashboardArtifactStore,
+  store: ArtifactStore,
 ): Promise<ArtifactDeliveryMode> {
   let mode = modeByStore.get(store);
   if (!mode) {
@@ -54,7 +51,7 @@ export async function artifactDeliveryMode(
 }
 
 async function resolveMode(
-  store: DashboardArtifactStore,
+  store: ArtifactStore,
 ): Promise<ArtifactDeliveryMode> {
   const override = (process.env.APPS_ARTIFACT_REDIRECTS || "").toLowerCase();
   if (override === "off" || override === "false" || override === "0") {
@@ -89,7 +86,7 @@ async function resolveMode(
  * does not exist — the route decides what a 404 looks like there.
  */
 export async function serveParquetArtifact(
-  store: DashboardArtifactStore,
+  store: ArtifactStore,
   key: string,
   opts: {
     cacheControl: string;

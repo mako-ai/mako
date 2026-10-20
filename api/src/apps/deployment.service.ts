@@ -13,7 +13,7 @@
  * repoint (ensureDeploymentBindings), so an old sha never brings old numbers
  * back with it.
  *
- * Deployments live in the same artifact store as dashboards and bindings (GCS
+ * Deployments live in the same artifact store as bindings (GCS
  * in deployed environments), so they survive API restarts and are shared
  * across instances — unlike the developer preview, whose token lives in one
  * process's memory for thirty minutes.
@@ -27,9 +27,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import {
   getArtifactSourceStore,
-  getDashboardArtifactStore,
-  type DashboardArtifactStore,
-} from "../services/dashboard-artifact-store.service";
+  getArtifactStore,
+  type ArtifactStore,
+} from "../services/artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import {
   bindingArtifactKey,
@@ -83,15 +83,15 @@ export function legacyDeploymentKey(
 }
 
 interface StoredDeploymentAsset {
-  store: DashboardArtifactStore;
+  store: ArtifactStore;
   key: string;
 }
 
 /** The writable store first, then the optional read-only canonical source. */
 export async function artifactStoreForRead(
   key: string,
-): Promise<DashboardArtifactStore | null> {
-  const primary = getDashboardArtifactStore();
+): Promise<ArtifactStore | null> {
+  const primary = getArtifactStore();
   if (await primary.exists(key)) return primary;
   const source = getArtifactSourceStore();
   if (source && (await source.exists(key))) return source;
@@ -184,7 +184,7 @@ export async function uploadDeployment(
   distDir: string,
 ): Promise<PublishResult> {
   const projectId = project._id.toString();
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
 
   // index.html is the marker: if it is already there, this sha is deployed.
   if (await deploymentExists(projectId, sha)) {
@@ -328,7 +328,7 @@ export interface DeploymentBindingReadiness {
  * it from the run it recorded at `builtAt`.
  */
 async function isBindingArtifactCurrent(
-  store: DashboardArtifactStore,
+  store: ArtifactStore,
   key: string,
   binding: AppBinding,
   context: { projectId: string; sha: string; now: Date },
@@ -402,7 +402,7 @@ async function writeDeploymentBindingIndex(
     bindings.map(binding => [binding.name, bindingArtifactKey(binding)]),
   );
   try {
-    await getDashboardArtifactStore().putBuffer(
+    await getArtifactStore().putBuffer(
       Buffer.from(JSON.stringify(keys)),
       deploymentKey(projectId, sha, DEPLOYMENT_BINDING_INDEX),
       "application/json",

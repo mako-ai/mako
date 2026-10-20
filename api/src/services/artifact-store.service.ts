@@ -1,13 +1,25 @@
+/**
+ * The object store for materialized artifacts: app binding parquet, app
+ * deployment bundles, dbt outputs and chat attachments.
+ *
+ * The configuration names are historical (this store was first built for the
+ * since-removed dashboards) and are kept so existing deployments keep
+ * working: DASHBOARD_ARTIFACT_STORE (filesystem | gcs | s3),
+ * DASHBOARD_ARTIFACT_DIR, DASHBOARD_ARTIFACT_PREFIX and GCS_DASHBOARD_BUCKET,
+ * plus the `/data/dashboard-artifacts` / `.data/dashboard-artifacts`
+ * filesystem roots and the `dashboard-artifacts/...` key prefixes, which
+ * address data that already exists.
+ */
 import { promises as fsPromises } from "fs";
 import crypto from "crypto";
 import path from "path";
 import { Storage } from "@google-cloud/storage";
 import { loggers } from "../logging";
 
-export type DashboardArtifactStoreType = "filesystem" | "gcs" | "s3";
+export type ArtifactStoreType = "filesystem" | "gcs" | "s3";
 
-export interface DashboardArtifactStore {
-  readonly type: DashboardArtifactStoreType;
+export interface ArtifactStore {
+  readonly type: ArtifactStoreType;
   exists(key: string): Promise<boolean>;
   put(
     localPath: string,
@@ -50,9 +62,9 @@ export interface DashboardArtifactStore {
   ensureBrowserCors?(): Promise<boolean>;
 }
 
-const logger = loggers.api("dashboard-artifact-store");
+const logger = loggers.api("artifact-store");
 
-function getStoreType(): DashboardArtifactStoreType {
+function getStoreType(): ArtifactStoreType {
   const raw = process.env.DASHBOARD_ARTIFACT_STORE;
   return raw === "gcs" || raw === "s3" ? raw : "filesystem";
 }
@@ -84,7 +96,7 @@ function getFilesystemRoot(): string {
   return path.resolve(process.cwd(), ".data", "dashboard-artifacts");
 }
 
-class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
+class FilesystemArtifactStore implements ArtifactStore {
   readonly type = "filesystem" as const;
 
   private resolvePath(key: string): string {
@@ -131,7 +143,7 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
       );
     }
     const stat = await fsPromises.stat(targetPath);
-    logger.info("Stored dashboard artifact in filesystem", {
+    logger.info("Stored artifact in filesystem", {
       key,
       bytes: stat.size,
       durationMs: Date.now() - startedAt,
@@ -213,7 +225,7 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
   }
 }
 
-class GcsDashboardArtifactStore implements DashboardArtifactStore {
+class GcsArtifactStore implements ArtifactStore {
   readonly type = "gcs" as const;
   private readonly storage = new Storage();
   private readonly bucketName: string;
@@ -258,7 +270,7 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
       resumable: false,
     });
     const [metadataResult] = await this.file(key).getMetadata();
-    logger.info("Stored dashboard artifact in GCS", {
+    logger.info("Stored artifact in GCS", {
       key,
       bytes: Number(metadataResult.size || 0),
       durationMs: Date.now() - startedAt,
@@ -386,7 +398,7 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
   }
 }
 
-class S3DashboardArtifactStore implements DashboardArtifactStore {
+class S3ArtifactStore implements ArtifactStore {
   readonly type = "s3" as const;
   private readonly bucket = process.env.S3_DASHBOARD_BUCKET || "";
   private readonly region = process.env.S3_REGION || "us-east-1";
@@ -620,7 +632,7 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
         `S3 PUT failed with ${response.status} ${response.statusText}`,
       );
     }
-    logger.info("Stored dashboard artifact in S3", {
+    logger.info("Stored artifact in S3", {
       key,
       bytes: body.byteLength,
       durationMs: Date.now() - startedAt,
@@ -710,22 +722,22 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
   }
 }
 
-let artifactStore: DashboardArtifactStore | null = null;
+let artifactStore: ArtifactStore | null = null;
 
-export function getDashboardArtifactStore(): DashboardArtifactStore {
+export function getArtifactStore(): ArtifactStore {
   if (artifactStore) {
     return artifactStore;
   }
 
   switch (getStoreType()) {
     case "gcs":
-      artifactStore = new GcsDashboardArtifactStore();
+      artifactStore = new GcsArtifactStore();
       break;
     case "s3":
-      artifactStore = new S3DashboardArtifactStore();
+      artifactStore = new S3ArtifactStore();
       break;
     default:
-      artifactStore = new FilesystemDashboardArtifactStore();
+      artifactStore = new FilesystemArtifactStore();
       break;
   }
 
@@ -740,16 +752,46 @@ export function getDashboardArtifactStore(): DashboardArtifactStore {
  * source; writes always stay in the live store. Unset (prod and normal runs)
  * returns null, and callers use the main store exactly as before.
  */
-export function getArtifactSourceStore(): DashboardArtifactStore | null {
+export function getArtifactSourceStore(): ArtifactStore | null {
   const bucket = process.env.APPS_ARTIFACT_SOURCE_BUCKET; // pre-rename name
   if (!bucket) return null;
-  return new GcsDashboardArtifactStore(bucket);
+  return new GcsArtifactStore(bucket);
 }
 
 export function getFilesystemArtifactPath(key: string): string {
   return path.join(getFilesystemRoot(), ensureSafeKey(key));
 }
 
-export function getDashboardArtifactStoreType(): DashboardArtifactStoreType {
-  return getDashboardArtifactStore().type;
+export function getArtifactStoreType(): ArtifactStoreType {
+  return getArtifactStore().type;
+}
+
+/**
+ * Object-store key prefix for all materialized artifacts (app bindings and
+ * deployments share the same bucket/prefix). The defaults are historical and
+ * address existing objects — do not rename them.
+ */
+export function getArtifactPrefix(): string {
+  const rawPrefix = process.env.DASHBOARD_ARTIFACT_PREFIX;
+  if (rawPrefix) {
+    return rawPrefix.replace(/^\/+|\/+$/g, "");
+  }
+
+  if (process.env.PR_NUMBER) {
+    return `dashboard-artifacts/pr-${process.env.PR_NUMBER}`;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    return "dashboard-artifacts/prod";
+  }
+
+  return "dashboards";
+}
+
+export async function storeArtifact(
+  localPath: string,
+  key: string,
+  metadata?: Record<string, string>,
+): Promise<void> {
+  await getArtifactStore().put(localPath, key, metadata);
 }

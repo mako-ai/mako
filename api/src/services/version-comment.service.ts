@@ -202,30 +202,8 @@ export async function generateVersionComment(
 }
 
 // ---------------------------------------------------------------------------
-// Dashboard version comments
+// Snapshot (JSON) diff helpers
 // ---------------------------------------------------------------------------
-
-const DASHBOARD_VERSION_COMMENT_SYSTEM_PROMPT = `You are to act as an author of a version comment for a saved BI dashboard.
-Your mission is to create a clean, specific commit message that explains WHAT changed in the dashboard and WHY.
-I'll send you a JSON diff of the dashboard definition (widgets, data sources, layout, filters, relationships) and, when available, the chat prompts the user gave the AI that produced the change. You convert this into a single commit message.
-
-Rules:
-- Use present tense, imperative mood (e.g. "Add revenue-by-country pie chart", "Switch demos data source to last 40 weeks")
-- Be specific: mention widget titles/types, data source names, filters, metrics — not raw JSON keys or array indices
-- Prefer the user's intent from the chat prompts when it clarifies the change
-- Maximum 72 characters
-- Do NOT wrap the message in quotes or backticks
-- Do NOT add a trailing period
-- Do NOT add any prefix like "feat:" or "fix:"
-- Do NOT add explanations beyond the single commit line
-- Respond with ONLY the commit message text, nothing else`;
-
-export interface DashboardVersionCommentContext {
-  previousSnapshot: Record<string, unknown> | null;
-  newSnapshot: Record<string, unknown>;
-  /** User prompts from chat sessions that contributed to the change, if any. */
-  chatPrompts?: string[];
-}
 
 // Server-managed / materialization state that is irrelevant to a human-facing
 // "what changed" commit message and only adds noise to the JSON diff.
@@ -253,7 +231,7 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Diff two dashboard snapshots by stable-stringifying their JSON (sorted keys
+ * Diff two JSON snapshots by stable-stringifying their JSON (sorted keys
  * so unrelated reordering doesn't show up) and producing a unified diff.
  */
 export function computeSnapshotDiff(
@@ -266,8 +244,8 @@ export function computeSnapshotDiff(
 }
 
 /**
- * Shared "diff + chat prompts → single commit line" pipeline used by the
- * dashboard and app version-comment generators. The caller supplies the
+ * Shared "diff + chat prompts → single commit line" pipeline for snapshot-based
+ * version-comment generators (apps). The caller supplies the
  * entity-appropriate system prompt, precomputed diff and diff label; this
  * folds in the chat prompts block and calls the utility model.
  */
@@ -312,20 +290,6 @@ async function generateSnapshotVersionComment(opts: {
     });
     return { comment: null, diff };
   }
-}
-
-export async function generateDashboardVersionComment(
-  context: DashboardVersionCommentContext,
-  trackingCtx?: VersionCommentTrackingContext,
-): Promise<VersionCommentResult> {
-  return generateSnapshotVersionComment({
-    systemPrompt: DASHBOARD_VERSION_COMMENT_SYSTEM_PROMPT,
-    diff: computeSnapshotDiff(context.previousSnapshot, context.newSnapshot),
-    diffLabel: "Dashboard definition diff",
-    chatPrompts: context.chatPrompts,
-    entityLabel: "dashboard",
-    trackingCtx,
-  });
 }
 
 // ---------------------------------------------------------------------------

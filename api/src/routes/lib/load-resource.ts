@@ -1,8 +1,8 @@
 /**
  * Loading a workspace-scoped resource by route param — the one shape every
  * router used to write for itself: validate the ids, `findOne({ _id,
- * workspaceId })`, null when absent. consoles and dashboards had
- * byte-identical copies, dbt had a third with a different param name, and
+ * workspaceId })`, null when absent. consoles and (since removed) dashboards
+ * had byte-identical copies, dbt had a third with a different param name, and
  * flows wrote the query inline nineteen times.
  */
 import { Types, type Model } from "mongoose";

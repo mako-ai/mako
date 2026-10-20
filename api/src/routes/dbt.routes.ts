@@ -93,7 +93,7 @@ import {
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 const logger = loggers.api("dbt");
 
@@ -1291,7 +1291,7 @@ dbtRoutes.get(
       if (!key) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
-      const store = getDashboardArtifactStore();
+      const store = getArtifactStore();
       const stream = await store.openReadStream(key);
       if (!stream) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
@@ -1808,7 +1808,7 @@ dbtRoutes.get(
           lineage: { nodes: [], edges: [], generatedAt: null },
         });
       }
-      const store = getDashboardArtifactStore();
+      const store = getArtifactStore();
       const stream = await store.openReadStream(run.artifactKeys.manifest);
       if (!stream) {
         return c.json({ success: false, error: "Manifest not found" }, 404);

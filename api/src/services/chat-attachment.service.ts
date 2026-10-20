@@ -5,7 +5,7 @@ import {
   ChatAttachment,
   type IChatAttachment,
 } from "../database/workspace-schema";
-import { getDashboardArtifactStore } from "./dashboard-artifact-store.service";
+import { getArtifactStore } from "./artifact-store.service";
 import { loggers } from "../logging";
 
 const logger = loggers.agent();
@@ -114,7 +114,7 @@ async function uploadChatImage(params: {
   }
 
   const storageKey = buildStorageKey(workspaceId, chatId, sha256);
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
   await store.putBuffer(buffer, storageKey, mediaType, {
     workspaceId,
     chatId,
@@ -279,7 +279,7 @@ export async function resolveChatAttachmentsForModel(
   workspaceId: string,
   options: { supportsVision?: boolean } = {},
 ): Promise<UIMessage[]> {
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
   const blind = options.supportsVision === false;
 
   return await Promise.all(
@@ -374,6 +374,6 @@ export async function getChatAttachmentForUser(
 export async function openChatAttachmentStream(
   storageKey: string,
 ): Promise<NodeJS.ReadableStream | null> {
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
   return await store.openReadStream(storageKey);
 }

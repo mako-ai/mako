@@ -33,7 +33,7 @@ import {
   type AppBinding,
   type AppBindingStateDoc,
 } from "../../apps/bindings.service";
-import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
+import { isCronDue, nextCronRunAt } from "../../services/cron-due";
 
 import { APPS_BINDING_BUILD_CONCURRENCY } from "./apps-binding-concurrency";
 
@@ -66,13 +66,13 @@ export function isBindingDueAt(
 ): boolean {
   if (!binding.schedule) return false;
   const lastAttempt = state?.history?.[0]?.at ?? null;
-  return isDashboardMaterializationDue({
-    schedule: {
-      enabled: true,
-      cron: binding.schedule,
-      timezone: binding.timezone,
-    },
-    lastRefreshedAt: lastAttempt ?? state?.lastMaterializedAt ?? null,
+  // Parse up front so an invalid cron/timezone throws even before the first
+  // run (callers log-and-skip), instead of reading as "never ran → due".
+  nextCronRunAt(binding.schedule, { timezone: binding.timezone });
+  return isCronDue({
+    cron: binding.schedule,
+    timezone: binding.timezone,
+    lastRunAt: lastAttempt ?? state?.lastMaterializedAt ?? null,
     now,
   });
 }

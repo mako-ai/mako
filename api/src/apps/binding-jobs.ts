@@ -23,7 +23,7 @@
  */
 import fs from "node:fs/promises";
 import mongoose, { Schema, Types } from "mongoose";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 /**
  * A job's row lives this long past its last state change or heartbeat; a
@@ -250,7 +250,7 @@ export async function heartbeatBindingJob(
 
 async function deleteQuietly(key: string): Promise<void> {
   try {
-    await getDashboardArtifactStore().delete(key);
+    await getArtifactStore().delete(key);
   } catch {
     // Missing already, or the store is unreachable: the prune retries.
   }
@@ -293,7 +293,7 @@ export async function storeJobDraft(
 ): Promise<string> {
   const key = jobDraftKey(job.projectId, job._id.toString());
   try {
-    await getDashboardArtifactStore().put(filePath, key, {
+    await getArtifactStore().put(filePath, key, {
       appProjectId: job.projectId,
       binding: job.name,
       draft: "true",

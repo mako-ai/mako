@@ -1,14 +1,14 @@
 /**
  * Folder CRUD + move routes shared by every foldered resource kind
- * (consoles, notebooks, dashboards). Each kind used to hand-roll the same
- * five handlers — create/rename/delete/move folder plus move-item — with
- * drifting validation, permissions, and error envelopes (dashboards' folder
+ * (consoles, notebooks). Each kind used to hand-roll the same five
+ * handlers — create/rename/delete/move folder plus move-item — with
+ * drifting validation, permissions, and error envelopes (one kind's folder
  * move had no permission check at all; consoles' rename had none either).
  *
  * The registrar owns the route shape: typed request bodies, ObjectId
  * validation, the `{ success, data?, error? }` envelope, and the try/catch.
  * A `FolderBackend` owns the storage semantics; `createModelFolderBackend`
- * covers the plain-Mongoose kinds (notebooks, dashboards) so a kind only
+ * covers the plain-Mongoose kinds (notebooks) so a kind only
  * supplies its item-move logic, while consoles wrap their git-backed
  * manager.
  *
@@ -89,8 +89,8 @@ export interface FolderRoutesConfig {
   /** Per-route middleware for routers that don't mount auth at router level. */
   middleware?: readonly MiddlewareHandler[];
   /**
-   * "user-required": reject requests with no session user (consoles,
-   * dashboards). "allow-system": API-key requests act as "system"
+   * "user-required": reject requests with no session user (consoles).
+   * "allow-system": API-key requests act as "system"
    * (notebooks).
    */
   actor?: "user-required" | "allow-system";
@@ -329,7 +329,7 @@ export function registerFolderRoutes(
 }
 
 // ---------------------------------------------------------------------------
-// Model-backed backend (notebooks, dashboards)
+// Model-backed backend (notebooks)
 // ---------------------------------------------------------------------------
 
 interface FolderDocLike {

@@ -39,7 +39,6 @@ import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 import { writeParquetTempFile } from "../utils/parquet-serializer";
-import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
 import { workspaceService } from "../services/workspace.service";
 import { promises as fsPromises } from "fs";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -2594,8 +2593,6 @@ workspaceExecuteRoutes.openapi(
         batchSize,
         executionId,
         filename,
-        dashboardId,
-        dataSourceId,
       } = body;
       const effectiveConnectionId =
         queryDefinition?.connectionId || connectionId;
@@ -2704,22 +2701,6 @@ workspaceExecuteRoutes.openapi(
       };
 
       if (normalizedFormat === "parquet") {
-        if (
-          typeof dashboardId === "string" &&
-          dashboardId &&
-          typeof dataSourceId === "string" &&
-          dataSourceId
-        ) {
-          return c.redirect(
-            buildDashboardMaterializationArtifactPath({
-              workspaceId: workspace._id.toString(),
-              dashboardId,
-              dataSourceId,
-            }),
-            303,
-          );
-        }
-
         return await createAdHocParquetResponse({
           database,
           executableQuery,

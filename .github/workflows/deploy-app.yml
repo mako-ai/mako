@@ -545,12 +545,6 @@ jobs:
             db.query_executions.createIndex({ workspaceId: 1, status: 1 });
             db.query_executions.createIndex({ executedAt: 1 }, { expireAfterSeconds: 7776000 });
 
-            db.createCollection('materialization_runs');
-            db.materialization_runs.createIndex({ dashboardId: 1, dataSourceId: 1, requestedAt: -1 });
-            db.materialization_runs.createIndex({ workspaceId: 1, requestedAt: -1 });
-            db.materialization_runs.createIndex({ status: 1, lastHeartbeat: 1 });
-            db.materialization_runs.createIndex({ requestedAt: 1 }, { expireAfterSeconds: 2592000 });
-
             db.createCollection('chats');
             db.chats.createIndex({ workspaceId: 1 });
             db.chats.createIndex({ workspaceId: 1, title: 1 });
@@ -564,22 +558,6 @@ jobs:
 
             print('Empty collections with indexes created');
           "
-
-          # Reset stale materialization statuses inherited from production.
-          # Without this, dashboards stuck in "building" state from prod remain
-          # permanently stuck since the PR has no matching materialization runs.
-          echo "Resetting stale materialization statuses..."
-          mongosh "$EPHEMERAL_DB_URL" --quiet --eval "
-            const result = db.dashboards.updateMany(
-              { 'dataSources.cache.parquetBuildStatus': { \$in: ['building', 'queued'] } },
-              { \$set: {
-                'dataSources.\$[ds].cache.parquetBuildStatus': null,
-                'dataSources.\$[ds].cache.parquetLastError': null
-              }},
-              { arrayFilters: [{ 'ds.cache.parquetBuildStatus': { \$in: ['building', 'queued'] } }] }
-            );
-            print('Reset ' + result.modifiedCount + ' dashboard(s) with stale materialization status');
-          " || echo "⚠️ Failed to reset materialization statuses (non-fatal)"
 
       - name: Set database URL
         id: db-url

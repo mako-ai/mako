@@ -50,7 +50,7 @@ import {
   latestDevModification,
   type DevRelationListing,
 } from "../dbt/dbt-defer";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 import {
   draftHash,
   forgetDraftBuild,
@@ -218,7 +218,7 @@ const defaultDeps: DevBuildDeps = {
       ),
     };
   },
-  artifactExists: key => getDashboardArtifactStore().exists(key),
+  artifactExists: key => getArtifactStore().exists(key),
   materialize: (project, resolved, actorId) =>
     materializeAppBinding(project, resolved.binding.name, actorId, {
       keepFile: true,

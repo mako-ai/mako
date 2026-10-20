@@ -144,10 +144,9 @@ export async function loadDbtDeferState(project: {
   const key = project.lastProdManifestKey;
   if (!key) return undefined;
   try {
-    const { getDashboardArtifactStore } = await import(
-      "../services/dashboard-artifact-store.service"
-    );
-    const stream = await getDashboardArtifactStore().openReadStream(key);
+    const { getArtifactStore } =
+      await import("../services/artifact-store.service");
+    const stream = await getArtifactStore().openReadStream(key);
     if (!stream) return undefined;
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {

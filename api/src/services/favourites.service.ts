@@ -24,7 +24,6 @@ export const FAVOURITE_KINDS: readonly FavouriteKind[] = [
   "app",
   "console",
   "notebook",
-  "dashboard",
 ];
 export const MAX_FOLDER_NAME_LENGTH = 120;
 export const MAX_FAVOURITE_DEPTH = 8;
@@ -87,7 +86,15 @@ export async function listFavourites(
   const rows = await Favourite.find(scopeFilter(scope))
     .sort({ parentId: 1, position: 1, _id: 1 })
     .lean();
-  return rows.map(toJson);
+  // Items of a kind that no longer exists (e.g. stars on the removed
+  // dashboards) stay in the table but are never sent to the client.
+  return rows
+    .filter(
+      row =>
+        row.type !== "item" ||
+        (row.kind !== undefined && FAVOURITE_KINDS.includes(row.kind)),
+    )
+    .map(toJson);
 }
 
 async function nextPosition(
@@ -204,7 +211,7 @@ export async function addFavourite(
   }).lean();
   if (existing) {
     // Idempotent star — but a star INTO a folder of something already
-    // starred is a move, not a no-op: dropping a starred dashboard on a
+    // starred is a move, not a no-op: dropping a starred console on a
     // Starred folder must land there rather than snap back.
     if (
       input.parentId !== undefined &&

@@ -1,10 +1,10 @@
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import type { ArtifactStore } from "../services/artifact-store.service";
 
 const stores = vi.hoisted(() => ({
-  primary: undefined as DashboardArtifactStore | undefined,
-  source: undefined as DashboardArtifactStore | undefined,
+  primary: undefined as ArtifactStore | undefined,
+  source: undefined as ArtifactStore | undefined,
   bindings: [] as Array<
     Pick<
       AppBinding,
@@ -20,8 +20,8 @@ const stores = vi.hoisted(() => ({
   skipped: [] as Array<{ path: string; error: string }>,
 }));
 
-vi.mock("../services/dashboard-artifact-store.service", () => ({
-  getDashboardArtifactStore: () => stores.primary,
+vi.mock("../services/artifact-store.service", () => ({
+  getArtifactStore: () => stores.primary,
   getArtifactSourceStore: () => stores.source ?? null,
 }));
 
@@ -96,7 +96,7 @@ function mockStore(
   existingKeys: string[],
   /** Write time per key; an existing key without one has an unknown time. */
   modifiedAt: Record<string, Date> = {},
-): DashboardArtifactStore {
+): ArtifactStore {
   const keys = new Set(existingKeys);
   return {
     type: "gcs",

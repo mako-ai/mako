@@ -33,7 +33,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import mongoose, { Schema, Types } from "mongoose";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 import { cooldownMsFor } from "./live-binding-guard";
 import { loggers } from "../logging";
 
@@ -213,7 +213,7 @@ export async function recordDraftBuilt(input: {
     input.hash,
     randomBytes(6).toString("hex"),
   );
-  await getDashboardArtifactStore().put(input.filePath, key, {
+  await getArtifactStore().put(input.filePath, key, {
     appProjectId: input.projectId,
     binding: input.name,
     draft: "true",
@@ -289,7 +289,7 @@ async function pruneExpiredDrafts(projectId: string, now: Date) {
     .limit(200)
     .lean()) as unknown as Array<Pick<DraftDoc, "_id" | "key">>;
   if (expired.length === 0) return;
-  const store = getDashboardArtifactStore();
+  const store = getArtifactStore();
   for (const doc of expired) {
     if (!doc.key) continue;
     try {

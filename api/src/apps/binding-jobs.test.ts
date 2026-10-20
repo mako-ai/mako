@@ -44,7 +44,7 @@ import {
 } from "./binding-jobs";
 import { runBindingJob, type BindingJobRunnerDeps } from "./binding-job-runner";
 import { DevBuildError } from "./binding-dev-build";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -172,7 +172,7 @@ describe("binding jobs", () => {
       build: "draft",
       rowCount: 4,
     });
-    expect(await getDashboardArtifactStore().exists(key)).toBe(true);
+    expect(await getArtifactStore().exists(key)).toBe(true);
   });
 
   it("uses the draft cache's per-build key when the build was kept there", async () => {
@@ -280,7 +280,7 @@ describe("binding jobs", () => {
     );
     const committedKey = "apps/bindings/c/keep.parquet";
     const committedFile = await localFile();
-    await getDashboardArtifactStore().put(committedFile, committedKey);
+    await getArtifactStore().put(committedFile, committedKey);
     const committedJob = await newJob({ kind: "materialize" }, t0);
     await mongoose.connection.collection("app_binding_jobs").updateOne(
       { _id: committedJob._id },
@@ -294,7 +294,7 @@ describe("binding jobs", () => {
     );
 
     await newJob();
-    const store = getDashboardArtifactStore();
+    const store = getArtifactStore();
     expect(await store.exists(draftKey)).toBe(false);
     expect(await store.exists(committedKey)).toBe(true);
     expect(await getBindingJobById(draftJob._id.toString())).toBeNull();
@@ -345,7 +345,7 @@ describe("leases and expiry", () => {
     await markBindingJob(id, { status: "running" });
     // The worker uploaded its draft, then died before recording it.
     const orphan = await storeJobDraft(job, await localFile());
-    const store = getDashboardArtifactStore();
+    const store = getArtifactStore();
     expect(await store.exists(orphan)).toBe(true);
 
     const soon = new Date(Date.now() + JOB_LEASE_MS / 2);

@@ -19,7 +19,7 @@ import {
 import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
-import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
 import { createRouter } from "../openapi/core";
@@ -126,7 +126,7 @@ async function serveAsset(c: Context): Promise<Response> {
       ? await bindingArtifactKeyByName(project, dataMatch[1], "")
       : null;
     const response = key
-      ? await serveParquetArtifact(getDashboardArtifactStore(), key, {
+      ? await serveParquetArtifact(getArtifactStore(), key, {
           cacheControl: "no-store",
           // The preview page fetches cross-origin; without ACAO the browser
           // rejects both the stream and the redirect before following it.

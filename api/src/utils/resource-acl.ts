@@ -1,6 +1,6 @@
 /**
  * Unified Google Workspace-style ACL resolution for shareable resources
- * (dashboards, consoles, apps).
+ * (consoles, apps).
  *
  * Resolution order (first match wins):
  *   1. Owner (`owner_id`, falling back to `createdBy`)      → "owner"

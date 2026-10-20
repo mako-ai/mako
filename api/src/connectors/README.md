@@ -45,7 +45,7 @@ Where it is **not yet** applied — left with a reason:
 - **Flow YAML discriminant** `source.type: connector` — public on-disk key; means "this source is a source connection", not connector code.
 - **Analytics** `connector_created` still fires; `source_connection_created` is dual-fired alongside.
 - **File path** `sync/database-data-source-manager.ts` — exports are `SourceConnectionConfig` / `sourceConnectionManager`; the filename is historical.
-- **DuckDB dashboard data sources** (`list_data_sources`, `DashboardDataSourceEditor`, `/api/workspaces/:wid/data-sources`) — correctly named; not this vocabulary.
+- **App DuckDB data sources** (`list_data_sources` / `inspect_data_source` over app bindings) — correctly named; not this vocabulary.
 
 When touching any of those, move them toward this vocabulary; when writing
 prompts, skills or tool descriptions, use these words from the start.

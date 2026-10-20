@@ -1,7 +1,7 @@
 /**
  * An app binding is read as the WHOLE result — DuckDB in the page sums it —
  * so its parquet must never be a silent cut. The builder's default keeps the
- * first `rowLimit` rows and carries on (right for a dashboard's declared
+ * first `rowLimit` rows and carries on (right for a caller with a declared
  * cap); every app binding build asks it to fail instead. On 2026-10-19 a
  * 526,470-row binding was served as exactly 500,000 rows and every total on
  * the app read ~5% short, with nothing recorded anywhere.

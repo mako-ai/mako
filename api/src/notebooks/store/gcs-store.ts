@@ -2,7 +2,7 @@
  * GCS NotebookStore — the durable, shareable default in deployed environments.
  * One object per notebook; bucket object-versioning keeps prior generations so
  * a notebook's history is recoverable. Authenticated via Application Default
- * Credentials (the Cloud Run runtime SA), same as the dashboard artifact store.
+ * Credentials (the Cloud Run runtime SA), same as the artifact store.
  *
  * Object key: `documents/workspaces/<ws>/notebooks/<id>.json`. The notebook's
  * name + updatedAt are mirrored into object custom-metadata so `list()` reads

@@ -14,11 +14,6 @@ import {
   cdcMaterializeSchedulerFunction,
 } from "./functions/webhook-flow";
 import {
-  dashboardRefreshFunction,
-  dashboardSchedulerFunction,
-  cleanupAbandonedMaterializationRunsFunction,
-} from "./functions/dashboard-refresh";
-import {
   appsBindingMaterializeFunction,
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
@@ -66,8 +61,6 @@ const baseFunctions = [
   cleanupAbandonedFlowsFunction,
   syncBackfillEntityFunction,
   cdcRepartitionFunction,
-  dashboardRefreshFunction,
-  cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsDeployFunction,
@@ -115,7 +108,6 @@ export function getFunctions() {
         ...webhookFunctions,
         flowSchedulerFunction,
         cdcScheduledBackfillFunction,
-        dashboardSchedulerFunction,
         appsBindingSchedulerFunction,
         appsBindingJobSweeperFunction,
         appsDeployReconcileFunction,
@@ -165,9 +157,6 @@ export {
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
-  dashboardRefreshFunction,
-  dashboardSchedulerFunction,
-  cleanupAbandonedMaterializationRunsFunction,
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsBindingJobSweeperFunction,
