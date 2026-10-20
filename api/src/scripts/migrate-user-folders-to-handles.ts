@@ -305,7 +305,10 @@ async function migrateWorkspace(
   }
 
   if (!args.write) return;
-  if (!repoDir) return;
+  if (repoDir === null) {
+    // parseArgs refuses --repo with --write; reaching here is a bug.
+    throw new Error("--write needs Mako's own clone of the workspace repo");
+  }
 
   const stored = await ensureWorkspaceHandles(workspaceId, userSegments(files));
   // Re-plan against what was actually stored (a concurrent assignment may
