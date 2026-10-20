@@ -20,6 +20,7 @@ import {
   TriangleAlert as AttentionIcon,
 } from "lucide-react";
 import AppThumbnail from "./AppThumbnail";
+import { folderLabel } from "../../lib/command-palette/app-search";
 import {
   describeAttention,
   ownerHandle,
@@ -57,7 +58,7 @@ export default function AppCard({
 }: AppCardProps) {
   const owner = ownerHandle(app);
   const freshness = relativeTime(app.dataRefreshedAt);
-  const folder = app.path.split("/").slice(0, -1).join(" / ");
+  const folder = folderLabel(app.path) ?? "";
 
   return (
     <Card variant="outlined" sx={{ height: "100%", minWidth: 0 }}>

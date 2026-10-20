@@ -8,7 +8,7 @@
  * Popularity and recent views come from the usage API; where it is not
  * deployed those two shelves hide and the rest still work.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Box,
   CircularProgress,
@@ -85,12 +85,14 @@ export default function AppsHome() {
   const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
   const discovery = useAppsDiscoveryStore(selectDiscovery(workspaceId));
-  const search = useAppsDiscoveryStore(s => s.search);
+  const search = useAppsDiscoveryStore(s => s.searches.home);
   const fetchDiscovery = useAppsDiscoveryStore(s => s.fetchDiscovery);
   const fetchUsage = useAppsDiscoveryStore(s => s.fetchUsage);
   const fetchRecent = useAppsDiscoveryStore(s => s.fetchRecent);
   const searchApps = useAppsDiscoveryStore(s => s.searchApps);
-  const [query, setQuery] = useState("");
+  // In the store, so the palette can open this tab already searching.
+  const query = useAppsDiscoveryStore(s => s.homeQuery);
+  const setQuery = useAppsDiscoveryStore(s => s.setHomeQuery);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -102,7 +104,10 @@ export default function AppsHome() {
   // Debounced: a search re-reads the index server-side on every call.
   useEffect(() => {
     if (!workspaceId) return;
-    const timer = setTimeout(() => void searchApps(workspaceId, query), 200);
+    const timer = setTimeout(
+      () => void searchApps(workspaceId, query, "home"),
+      200,
+    );
     return () => clearTimeout(timer);
   }, [workspaceId, query, searchApps]);
 

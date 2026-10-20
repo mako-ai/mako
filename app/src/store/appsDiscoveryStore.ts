@@ -1,18 +1,16 @@
 /**
- * Apps discovery — what the Apps home and the explorer's Recently viewed /
- * Popular sections render: the discovery listing (owner, age, thumbnail,
- * health), the usage API's popularity and this person's recent views, and
- * the search results.
+ * Apps discovery — what the Apps home, the explorer's Recently viewed /
+ * Popular sections and the command palette's Apps results render: the
+ * discovery listing (owner, age, thumbnail, health), the usage API's
+ * popularity and this person's recent views, and app search.
  *
- * Usage and recent views come from the usage API, which may not be deployed
- * everywhere yet. A 404 from either is not an error: the store records the
- * capability as unavailable and every popularity surface simply hides. The
- * next fetch asks again, so the sections appear as soon as the API does.
+ * Usage and recent views come from the usage API. A 404 from either (an
+ * older API) is not an error: the store records the capability as
+ * unavailable and every popularity surface simply hides.
  */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, ApiError, toErrorMessage, unwrapBody } from "../api";
-import { apiClient } from "../lib/api-client";
 import type {
   AppUsageStats,
   DiscoveryApp,
@@ -35,7 +33,13 @@ export interface WorkspaceDiscovery {
   recentAvailable: boolean | null;
 }
 
-interface SearchState {
+/**
+ * Who is searching. The Apps home and the command palette search
+ * independently, so one's results never show up under the other's query.
+ */
+export type AppSearchScope = "home" | "palette";
+
+export interface AppSearchState {
   workspaceId: string | null;
   query: string;
   results: DiscoverySearchHit[];
@@ -45,16 +49,23 @@ interface SearchState {
 
 interface AppsDiscoveryState {
   byWorkspace: Record<string, WorkspaceDiscovery>;
-  search: SearchState;
+  searches: Record<AppSearchScope, AppSearchState>;
+  /** The Apps home's search box — set by the palette's "open in Apps home". */
+  homeQuery: string;
 }
 
 interface AppsDiscoveryActions {
   fetchDiscovery: (workspaceId: string) => Promise<void>;
   fetchUsage: (workspaceId: string) => Promise<void>;
   fetchRecent: (workspaceId: string) => Promise<void>;
-  /** Run a search; a newer call supersedes an older one in flight. */
-  searchApps: (workspaceId: string, query: string) => Promise<void>;
-  clearSearch: () => void;
+  /** Run a search; a newer call in the same scope supersedes an older one. */
+  searchApps: (
+    workspaceId: string,
+    query: string,
+    scope?: AppSearchScope,
+  ) => Promise<void>;
+  clearSearch: (scope?: AppSearchScope) => void;
+  setHomeQuery: (query: string) => void;
   reset: () => void;
 }
 
@@ -71,7 +82,7 @@ const emptyWorkspace = (): WorkspaceDiscovery => ({
 
 const EMPTY_WORKSPACE: WorkspaceDiscovery = emptyWorkspace();
 
-const emptySearch = (): SearchState => ({
+const emptySearch = (): AppSearchState => ({
   workspaceId: null,
   query: "",
   results: [],
@@ -88,7 +99,7 @@ export const selectDiscovery =
 const isMissingEndpoint = (e: unknown) =>
   e instanceof ApiError && (e.status === 404 || e.status === 405);
 
-let searchSeq = 0;
+const searchSeq: Record<AppSearchScope, number> = { home: 0, palette: 0 };
 
 export const useAppsDiscoveryStore = create<
   AppsDiscoveryState & AppsDiscoveryActions
@@ -99,7 +110,8 @@ export const useAppsDiscoveryStore = create<
 
     return {
       byWorkspace: {},
-      search: emptySearch(),
+      searches: { home: emptySearch(), palette: emptySearch() },
+      homeQuery: "",
 
       fetchDiscovery: async workspaceId => {
         set(s => {
@@ -130,10 +142,14 @@ export const useAppsDiscoveryStore = create<
 
       fetchUsage: async workspaceId => {
         try {
-          const body = await apiClient.get<{ apps?: AppUsageStats[] }>(
-            `/workspaces/${workspaceId}/apps/usage`,
-            { days: String(USAGE_WINDOW_DAYS) },
-          );
+          const body = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/apps/usage", {
+              params: {
+                path: { workspaceId },
+                query: { days: USAGE_WINDOW_DAYS },
+              },
+            }),
+          ) as { apps?: AppUsageStats[] };
           set(s => {
             const w = ws(s, workspaceId);
             w.usage = Object.fromEntries(
@@ -158,10 +174,11 @@ export const useAppsDiscoveryStore = create<
 
       fetchRecent: async workspaceId => {
         try {
-          const body = await apiClient.get<{ apps?: RecentAppView[] }>(
-            `/workspaces/${workspaceId}/apps/recent`,
-            { limit: "20" },
-          );
+          const body = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/apps/recent", {
+              params: { path: { workspaceId }, query: { limit: 20 } },
+            }),
+          ) as { apps?: RecentAppView[] };
           set(s => {
             const w = ws(s, workspaceId);
             w.recent = body.apps ?? [];
@@ -180,20 +197,21 @@ export const useAppsDiscoveryStore = create<
         }
       },
 
-      searchApps: async (workspaceId, query) => {
+      searchApps: async (workspaceId, query, scope = "home") => {
         const q = query.trim();
-        const seq = ++searchSeq;
+        const seq = ++searchSeq[scope];
         if (!q) {
           set(s => {
-            s.search = { ...emptySearch(), workspaceId };
+            s.searches[scope] = { ...emptySearch(), workspaceId };
           });
           return;
         }
         set(s => {
-          s.search.workspaceId = workspaceId;
-          s.search.query = q;
-          s.search.loading = true;
-          s.search.error = null;
+          const st = s.searches[scope];
+          st.workspaceId = workspaceId;
+          st.query = q;
+          st.loading = true;
+          st.error = null;
         });
         try {
           const body = unwrapBody(
@@ -201,32 +219,40 @@ export const useAppsDiscoveryStore = create<
               params: { path: { workspaceId }, query: { q, limit: 50 } },
             }),
           ) as { apps?: DiscoverySearchHit[] };
-          if (seq !== searchSeq) return;
+          if (seq !== searchSeq[scope]) return;
           set(s => {
-            s.search.results = body.apps ?? [];
-            s.search.loading = false;
+            s.searches[scope].results = body.apps ?? [];
+            s.searches[scope].loading = false;
           });
         } catch (e) {
-          if (seq !== searchSeq) return;
+          if (seq !== searchSeq[scope]) return;
           set(s => {
-            s.search.loading = false;
-            s.search.results = [];
-            s.search.error = toErrorMessage(e, "Search failed");
+            const st = s.searches[scope];
+            st.loading = false;
+            st.results = [];
+            st.error = toErrorMessage(e, "Search failed");
           });
         }
       },
 
-      clearSearch: () =>
+      clearSearch: (scope = "home") =>
         set(s => {
-          searchSeq++;
-          s.search = emptySearch();
+          searchSeq[scope]++;
+          s.searches[scope] = emptySearch();
+        }),
+
+      setHomeQuery: query =>
+        set(s => {
+          s.homeQuery = query;
         }),
 
       reset: () =>
         set(s => {
-          searchSeq++;
+          searchSeq.home++;
+          searchSeq.palette++;
           s.byWorkspace = {};
-          s.search = emptySearch();
+          s.searches = { home: emptySearch(), palette: emptySearch() };
+          s.homeQuery = "";
         }),
     };
   }),

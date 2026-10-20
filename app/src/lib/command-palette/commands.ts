@@ -22,7 +22,10 @@ import {
   CHAT_ICON,
   EXPLORER_ICONS,
   SETTINGS_SECTION_ICONS,
+  TAB_KIND_ICONS,
 } from "../entity-icons";
+import { focusAppsHomeTab } from "../../apps-runtime/shell";
+import { useAppsDiscoveryStore } from "../../store/appsDiscoveryStore";
 import {
   selectTabBySettingsSection,
   useConsoleStore,
@@ -99,6 +102,18 @@ export function buildCommands(options: {
       },
     });
   }
+
+  commands.push({
+    id: "view.apps-home",
+    title: "Open Apps home",
+    section: "Navigate",
+    keywords: ["apps", "catalogue", "popular", "discover", "browse"],
+    icon: TAB_KIND_ICONS["apps-home"],
+    run: () => {
+      useAppsDiscoveryStore.getState().setHomeQuery("");
+      focusAppsHomeTab();
+    },
+  });
 
   commands.push(
     {

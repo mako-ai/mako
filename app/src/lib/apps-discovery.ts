@@ -47,6 +47,8 @@ export interface DiscoveryApp {
   description?: string;
   access: "private" | "workspace";
   ownerId?: string;
+  /** The owner's workspace handle (`users/<handle>/`), when they have one. */
+  ownerHandle?: string;
   ownerEmail?: string;
   authorEmail?: string;
   createdAt?: string;
@@ -65,7 +67,8 @@ export interface DiscoveryApp {
 
 export interface DiscoverySearchHit extends DiscoveryApp {
   score: number;
-  matches: Array<"title" | "description" | "path" | "owner" | "tables">;
+  /** Fields that matched: title, description, path, owner, tables. */
+  matches: string[];
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -74,7 +77,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const STALE_DATA_MS = 3 * DAY_MS;
 
 /** Who an app belongs to, as a short human handle. */
-export function ownerHandle(app: DiscoveryApp): string | null {
+export function ownerHandle(
+  app: Pick<DiscoveryApp, "ownerHandle" | "ownerEmail" | "authorEmail">,
+): string | null {
+  if (app.ownerHandle) return app.ownerHandle;
   const email = app.ownerEmail ?? app.authorEmail;
   return email ? email.split("@")[0] : null;
 }
@@ -171,16 +177,13 @@ export function newApps(
 }
 
 /** The viewer's recently viewed apps, in their order, dropping vanished ones. */
-export function recentlyViewedApps(
-  apps: readonly DiscoveryApp[] | ReadonlyMap<string, DiscoveryApp>,
+export function recentlyViewedApps<T extends { id: string }>(
+  apps: readonly T[],
   recent: readonly RecentAppView[],
   limit: number,
-): DiscoveryApp[] {
-  const byId =
-    apps instanceof Map
-      ? apps
-      : new Map((apps as readonly DiscoveryApp[]).map(a => [a.id, a]));
-  const out: DiscoveryApp[] = [];
+): T[] {
+  const byId = new Map(apps.map(a => [a.id, a]));
+  const out: T[] = [];
   for (const r of recent) {
     const app = byId.get(r.appId);
     if (app) out.push(app);
