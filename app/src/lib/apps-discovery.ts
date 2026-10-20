@@ -94,6 +94,82 @@ export interface DiscoveryApp {
   };
 }
 
+/**
+ * A card's worth of facts from the explorer's app list (the persisted
+ * `apps-store` cache), for painting the Apps home before /discovery
+ * answers: title, folder, dates; no picture (the placeholder), no health.
+ * The real card replaces it in place, keyed by the same id.
+ */
+export function discoveryFromMeta(meta: {
+  id: string;
+  title: string;
+  slug?: string;
+  path?: string;
+  scope?: "workspace" | "private";
+  description?: string;
+  access?: "private" | "workspace";
+  owner_id?: string;
+  createdAt?: string;
+  publishedAt?: string;
+  publishedSha?: string;
+  verified?: boolean;
+}): DiscoveryApp {
+  const path = meta.path ?? `apps/${meta.slug ?? meta.id}`;
+  return {
+    id: meta.id,
+    slug: meta.slug ?? path.split("/").pop() ?? meta.id,
+    path,
+    scope: meta.scope ?? "workspace",
+    title: meta.title,
+    ...(meta.description ? { description: meta.description } : {}),
+    access: meta.access ?? "workspace",
+    ...(meta.owner_id ? { ownerId: meta.owner_id } : {}),
+    ...(meta.createdAt ? { createdAt: meta.createdAt } : {}),
+    ...(meta.publishedAt ? { publishedAt: meta.publishedAt } : {}),
+    ...(meta.publishedSha ? { publishedSha: meta.publishedSha } : {}),
+    verified: meta.verified === true,
+    thumbnail: null,
+    scheduled: false,
+    tables: [],
+    dataRefreshedAt: null,
+    health: { bindingErrors: [] },
+  };
+}
+
+/**
+ * Until the server's feed answers: Popular and New from what is already
+ * known, then everything else by popularity and title — the same shelves the
+ * feed will fill, so the swap moves as little as possible.
+ */
+export function provisionalFeed(
+  apps: readonly DiscoveryApp[],
+  usage: Readonly<Record<string, AppUsageStats>>,
+  limits: { shelf: number; page: number },
+  now = Date.now(),
+): {
+  popular: DiscoveryApp[];
+  fresh: DiscoveryApp[];
+  items: DiscoveryApp[];
+} {
+  const popular = popularApps(apps, usage, limits.shelf);
+  const taken = new Set(popular.map(a => a.id));
+  const fresh = newApps(
+    apps.filter(a => !taken.has(a.id)),
+    7,
+    now,
+  ).slice(0, limits.shelf);
+  for (const a of fresh) taken.add(a.id);
+  const items = apps
+    .filter(a => !taken.has(a.id))
+    .sort(
+      (a, b) =>
+        (usage[b.id]?.score ?? 0) - (usage[a.id]?.score ?? 0) ||
+        a.title.localeCompare(b.title),
+    )
+    .slice(0, limits.page);
+  return { popular, fresh, items };
+}
+
 export interface DiscoverySearchHit extends DiscoveryApp {
   score: number;
   /** Fields that matched: title, description, path, owner, tables. */

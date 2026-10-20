@@ -9,6 +9,7 @@
  * unavailable and every popularity surface simply hides.
  */
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { api, ApiError, toErrorMessage, unwrapBody } from "../api";
 import type {
@@ -157,236 +158,275 @@ const searchSeq: Record<AppSearchScope, number> = { home: 0, palette: 0 };
 export const useAppsDiscoveryStore = create<
   AppsDiscoveryState & AppsDiscoveryActions
 >()(
-  immer((set, get) => {
-    const ws = (state: AppsDiscoveryState, workspaceId: string) =>
-      (state.byWorkspace[workspaceId] ??= emptyWorkspace());
+  persist(
+    immer((set, get) => {
+      const ws = (state: AppsDiscoveryState, workspaceId: string) =>
+        (state.byWorkspace[workspaceId] ??= emptyWorkspace());
 
-    return {
-      byWorkspace: {},
-      searches: { home: emptySearch(), palette: emptySearch() },
-      homeQuery: "",
+      return {
+        byWorkspace: {},
+        searches: { home: emptySearch(), palette: emptySearch() },
+        homeQuery: "",
 
-      fetchDiscovery: async workspaceId => {
-        set(s => {
-          const w = ws(s, workspaceId);
-          w.appsLoading = true;
-          w.appsError = null;
-        });
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/discovery", {
-              params: { path: { workspaceId } },
-            }),
-          ) as { apps?: DiscoveryApp[] };
+        fetchDiscovery: async workspaceId => {
           set(s => {
             const w = ws(s, workspaceId);
-            w.apps = body.apps ?? [];
-            w.appsLoaded = true;
-            w.appsLoading = false;
+            w.appsLoading = true;
+            w.appsError = null;
           });
-        } catch (e) {
-          set(s => {
-            const w = ws(s, workspaceId);
-            w.appsLoading = false;
-            w.appsError = toErrorMessage(e, "Could not load apps");
-          });
-        }
-      },
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps/discovery", {
+                params: { path: { workspaceId } },
+              }),
+            ) as { apps?: DiscoveryApp[] };
+            set(s => {
+              const w = ws(s, workspaceId);
+              w.apps = body.apps ?? [];
+              w.appsLoaded = true;
+              w.appsLoading = false;
+            });
+          } catch (e) {
+            set(s => {
+              const w = ws(s, workspaceId);
+              w.appsLoading = false;
+              w.appsError = toErrorMessage(e, "Could not load apps");
+            });
+          }
+        },
 
-      fetchUsage: async workspaceId => {
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/usage", {
-              params: {
-                path: { workspaceId },
-                query: { days: USAGE_WINDOW_DAYS },
-              },
-            }),
-          ) as { apps?: AppUsageStats[] };
-          set(s => {
-            const w = ws(s, workspaceId);
-            w.usage = Object.fromEntries(
-              (body.apps ?? []).map(a => [a.appId, a]),
-            );
-            w.usageAvailable = true;
-          });
-        } catch (e) {
-          set(s => {
-            const w = ws(s, workspaceId);
-            // Missing API: hide popularity. Any other failure keeps what we
-            // had — a flaky request must not blank a working shelf.
-            if (isMissingEndpoint(e)) {
-              w.usage = {};
-              w.usageAvailable = false;
-            } else if (w.usageAvailable === null) {
-              w.usageAvailable = false;
-            }
-          });
-        }
-      },
+        fetchUsage: async workspaceId => {
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps/usage", {
+                params: {
+                  path: { workspaceId },
+                  query: { days: USAGE_WINDOW_DAYS },
+                },
+              }),
+            ) as { apps?: AppUsageStats[] };
+            set(s => {
+              const w = ws(s, workspaceId);
+              w.usage = Object.fromEntries(
+                (body.apps ?? []).map(a => [a.appId, a]),
+              );
+              w.usageAvailable = true;
+            });
+          } catch (e) {
+            set(s => {
+              const w = ws(s, workspaceId);
+              // Missing API: hide popularity. Any other failure keeps what we
+              // had — a flaky request must not blank a working shelf.
+              if (isMissingEndpoint(e)) {
+                w.usage = {};
+                w.usageAvailable = false;
+              } else if (w.usageAvailable === null) {
+                w.usageAvailable = false;
+              }
+            });
+          }
+        },
 
-      fetchRecent: async workspaceId => {
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/recent", {
-              params: { path: { workspaceId }, query: { limit: 48 } },
-            }),
-          ) as { apps?: RecentAppView[] };
-          set(s => {
-            const w = ws(s, workspaceId);
-            w.recent = body.apps ?? [];
-            w.recentAvailable = true;
-          });
-        } catch (e) {
-          set(s => {
-            const w = ws(s, workspaceId);
-            if (isMissingEndpoint(e)) {
-              w.recent = [];
-              w.recentAvailable = false;
-            } else if (w.recentAvailable === null) {
-              w.recentAvailable = false;
-            }
-          });
-        }
-      },
+        fetchRecent: async workspaceId => {
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps/recent", {
+                params: { path: { workspaceId }, query: { limit: 48 } },
+              }),
+            ) as { apps?: RecentAppView[] };
+            set(s => {
+              const w = ws(s, workspaceId);
+              w.recent = body.apps ?? [];
+              w.recentAvailable = true;
+            });
+          } catch (e) {
+            set(s => {
+              const w = ws(s, workspaceId);
+              if (isMissingEndpoint(e)) {
+                w.recent = [];
+                w.recentAvailable = false;
+              } else if (w.recentAvailable === null) {
+                w.recentAvailable = false;
+              }
+            });
+          }
+        },
 
-      fetchFeed: async workspaceId => {
-        const gen = (feedGeneration[workspaceId] =
-          (feedGeneration[workspaceId] ?? 0) + 1);
-        set(s => {
-          const w = ws(s, workspaceId);
-          w.feed = { ...emptyFeed(), loading: true };
-        });
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/feed", {
-              params: {
-                path: { workspaceId },
-                query: { limit: FEED_PAGE_SIZE },
-              },
-            }),
-          ) as FeedPageBody;
-          if (gen !== feedGeneration[workspaceId]) return;
+        fetchFeed: async workspaceId => {
+          const gen = (feedGeneration[workspaceId] =
+            (feedGeneration[workspaceId] ?? 0) + 1);
+          set(s => {
+            const w = ws(s, workspaceId);
+            w.feed = { ...emptyFeed(), loading: true };
+          });
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps/feed", {
+                params: {
+                  path: { workspaceId },
+                  query: { limit: FEED_PAGE_SIZE },
+                },
+              }),
+            ) as FeedPageBody;
+            if (gen !== feedGeneration[workspaceId]) return;
+            set(s => {
+              const f = ws(s, workspaceId).feed;
+              f.popular = body.popular ?? [];
+              f.fresh = body.fresh ?? [];
+              f.items = body.apps ?? [];
+              f.nextCursor = body.nextCursor ?? null;
+              f.total = body.total ?? 0;
+              f.loaded = true;
+              f.loading = false;
+              f.loadedAt = Date.now();
+            });
+          } catch (e) {
+            if (gen !== feedGeneration[workspaceId]) return;
+            set(s => {
+              const f = ws(s, workspaceId).feed;
+              f.loading = false;
+              f.error = toErrorMessage(e, "Could not load apps");
+            });
+          }
+        },
+
+        fetchMoreFeed: async workspaceId => {
+          const current = get().byWorkspace[workspaceId]?.feed;
+          if (!current?.nextCursor || current.loading || current.expired) {
+            return;
+          }
+          const cursor = current.nextCursor;
+          const gen = feedGeneration[workspaceId];
           set(s => {
             const f = ws(s, workspaceId).feed;
-            f.popular = body.popular ?? [];
-            f.fresh = body.fresh ?? [];
-            f.items = body.apps ?? [];
-            f.nextCursor = body.nextCursor ?? null;
-            f.total = body.total ?? 0;
-            f.loaded = true;
-            f.loading = false;
-            f.loadedAt = Date.now();
+            f.loading = true;
+            f.error = null;
           });
-        } catch (e) {
-          if (gen !== feedGeneration[workspaceId]) return;
-          set(s => {
-            const f = ws(s, workspaceId).feed;
-            f.loading = false;
-            f.error = toErrorMessage(e, "Could not load apps");
-          });
-        }
-      },
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps/feed", {
+                params: {
+                  path: { workspaceId },
+                  query: { cursor, limit: FEED_PAGE_SIZE },
+                },
+              }),
+            ) as FeedPageBody;
+            if (gen !== feedGeneration[workspaceId]) return;
+            set(s => {
+              const f = ws(s, workspaceId).feed;
+              // The server never repeats an app; this only guards a retry.
+              const have = new Set(f.items.map(a => a.id));
+              f.items.push(...(body.apps ?? []).filter(a => !have.has(a.id)));
+              f.nextCursor = body.nextCursor ?? null;
+              f.loading = false;
+            });
+          } catch (e) {
+            if (gen !== feedGeneration[workspaceId]) return;
+            set(s => {
+              const f = ws(s, workspaceId).feed;
+              f.loading = false;
+              if (e instanceof ApiError && e.status === 410) {
+                f.expired = true;
+              } else {
+                f.error = toErrorMessage(e, "Could not load more apps");
+              }
+            });
+          }
+        },
 
-      fetchMoreFeed: async workspaceId => {
-        const current = get().byWorkspace[workspaceId]?.feed;
-        if (!current?.nextCursor || current.loading || current.expired) return;
-        const cursor = current.nextCursor;
-        const gen = feedGeneration[workspaceId];
-        set(s => {
-          const f = ws(s, workspaceId).feed;
-          f.loading = true;
-          f.error = null;
-        });
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/feed", {
-              params: {
-                path: { workspaceId },
-                query: { cursor, limit: FEED_PAGE_SIZE },
-              },
-            }),
-          ) as FeedPageBody;
-          if (gen !== feedGeneration[workspaceId]) return;
-          set(s => {
-            const f = ws(s, workspaceId).feed;
-            // The server never repeats an app; this only guards a retry.
-            const have = new Set(f.items.map(a => a.id));
-            f.items.push(...(body.apps ?? []).filter(a => !have.has(a.id)));
-            f.nextCursor = body.nextCursor ?? null;
-            f.loading = false;
-          });
-        } catch (e) {
-          if (gen !== feedGeneration[workspaceId]) return;
-          set(s => {
-            const f = ws(s, workspaceId).feed;
-            f.loading = false;
-            if (e instanceof ApiError && e.status === 410) {
-              f.expired = true;
-            } else {
-              f.error = toErrorMessage(e, "Could not load more apps");
-            }
-          });
-        }
-      },
-
-      searchApps: async (workspaceId, query, scope = "home") => {
-        const q = query.trim();
-        const seq = ++searchSeq[scope];
-        if (!q) {
-          set(s => {
-            s.searches[scope] = { ...emptySearch(), workspaceId };
-          });
-          return;
-        }
-        set(s => {
-          const st = s.searches[scope];
-          st.workspaceId = workspaceId;
-          st.query = q;
-          st.loading = true;
-          st.error = null;
-        });
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps/search", {
-              params: { path: { workspaceId }, query: { q, limit: 50 } },
-            }),
-          ) as { apps?: DiscoverySearchHit[] };
-          if (seq !== searchSeq[scope]) return;
-          set(s => {
-            s.searches[scope].results = body.apps ?? [];
-            s.searches[scope].loading = false;
-          });
-        } catch (e) {
-          if (seq !== searchSeq[scope]) return;
+        searchApps: async (workspaceId, query, scope = "home") => {
+          const q = query.trim();
+          const seq = ++searchSeq[scope];
+          if (!q) {
+            set(s => {
+              s.searches[scope] = { ...emptySearch(), workspaceId };
+            });
+            return;
+          }
           set(s => {
             const st = s.searches[scope];
-            st.loading = false;
-            st.results = [];
-            st.error = toErrorMessage(e, "Search failed");
+            st.workspaceId = workspaceId;
+            st.query = q;
+            st.loading = true;
+            st.error = null;
           });
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps/search", {
+                params: { path: { workspaceId }, query: { q, limit: 50 } },
+              }),
+            ) as { apps?: DiscoverySearchHit[] };
+            if (seq !== searchSeq[scope]) return;
+            set(s => {
+              s.searches[scope].results = body.apps ?? [];
+              s.searches[scope].loading = false;
+            });
+          } catch (e) {
+            if (seq !== searchSeq[scope]) return;
+            set(s => {
+              const st = s.searches[scope];
+              st.loading = false;
+              st.results = [];
+              st.error = toErrorMessage(e, "Search failed");
+            });
+          }
+        },
+
+        clearSearch: (scope = "home") =>
+          set(s => {
+            searchSeq[scope]++;
+            s.searches[scope] = emptySearch();
+          }),
+
+        setHomeQuery: query =>
+          set(s => {
+            s.homeQuery = query;
+          }),
+
+        reset: () =>
+          set(s => {
+            searchSeq.home++;
+            searchSeq.palette++;
+            s.byWorkspace = {};
+            s.searches = { home: emptySearch(), palette: emptySearch() };
+            s.homeQuery = "";
+          }),
+      };
+    }),
+    {
+      name: "apps-discovery-store",
+      version: 1,
+      // The Apps home paints from the last listing (titles, thumbnails,
+      // owners, popularity) while the live requests run: a cold API under
+      // load takes seconds, and the page should not be blank meanwhile.
+      // Only that snapshot survives; everything else is live state.
+      partialize: s => ({
+        byWorkspace: Object.fromEntries(
+          Object.entries(
+            s.byWorkspace as Record<string, WorkspaceDiscovery>,
+          ).map(([id, w]) => [id, { apps: w.apps, usage: w.usage }]),
+        ),
+      }),
+      merge: (persisted, current) => {
+        const saved = (
+          persisted as {
+            byWorkspace?: Record<
+              string,
+              Pick<WorkspaceDiscovery, "apps" | "usage">
+            >;
+          } | null
+        )?.byWorkspace;
+        if (!saved) return current;
+        const byWorkspace: Record<string, WorkspaceDiscovery> = {};
+        for (const [id, w] of Object.entries(saved)) {
+          byWorkspace[id] = {
+            ...emptyWorkspace(),
+            apps: Array.isArray(w?.apps) ? w.apps : [],
+            usage: w?.usage && typeof w.usage === "object" ? w.usage : {},
+          };
         }
+        return { ...current, byWorkspace };
       },
-
-      clearSearch: (scope = "home") =>
-        set(s => {
-          searchSeq[scope]++;
-          s.searches[scope] = emptySearch();
-        }),
-
-      setHomeQuery: query =>
-        set(s => {
-          s.homeQuery = query;
-        }),
-
-      reset: () =>
-        set(s => {
-          searchSeq.home++;
-          searchSeq.palette++;
-          s.byWorkspace = {};
-          s.searches = { home: emptySearch(), palette: emptySearch() };
-          s.homeQuery = "";
-        }),
-    };
-  }),
+    },
+  ),
 );

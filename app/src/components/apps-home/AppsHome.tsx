@@ -33,11 +33,13 @@ import {
   selectDiscovery,
   useAppsDiscoveryStore,
 } from "../../store/appsDiscoveryStore";
-import { appUrlSlug } from "../../store/appsStore";
+import { appUrlSlug, useAppsStore } from "../../store/appsStore";
 import { focusAppsTab } from "../../apps-runtime/shell";
 import {
   attentionReasons,
+  discoveryFromMeta,
   isMyApp,
+  provisionalFeed,
   recentlyViewedApps,
   type AttentionReason,
   type DiscoveryApp,
@@ -48,6 +50,9 @@ import AppCard, { AppCardSkeleton } from "./AppCard";
 /** A feed older than this is re-ranked when the home is shown again. */
 const FEED_MAX_AGE_MS = 10 * 60_000;
 const RECENT_LIMIT = 48;
+/** Cards on a shelf row, and how many skeletons hold its place. */
+const SHELF_SIZE = 10;
+const SHELF_SKELETONS = 5;
 
 type Filter = "all" | "recent" | "mine" | "attention";
 
@@ -135,6 +140,17 @@ export default function AppsHome() {
   const [filter, setFilter] = useState<Filter>("all");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // The next page waits for the person to scroll (or for a first page too
+  // short to scroll): the first paint needs one page, not three.
+  const [scrolled, setScrolled] = useState(false);
+  // The explorer's app list, persisted: names to paint before /discovery.
+  const explorerApps = useAppsStore(s =>
+    s.apps.length > 0
+      ? s.apps
+      : workspaceId
+        ? s.appsCacheByWorkspace[workspaceId]
+        : undefined,
+  );
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -161,7 +177,48 @@ export default function AppsHome() {
   const searching = query.trim().length > 0;
   const feedMode = filter === "all" && !searching;
   const canLoadMore =
-    feedMode && !!feed.nextCursor && !feed.loading && !feed.expired;
+    feedMode && scrolled && !!feed.nextCursor && !feed.loading && !feed.expired;
+
+  // Best-known apps, richest source first: the live (or persisted) discovery
+  // listing, else the explorer's cached list. Cards upgrade in place as the
+  // richer sources arrive (same key = same id).
+  const knownApps = useMemo(
+    () =>
+      discovery.apps.length > 0
+        ? discovery.apps
+        : (explorerApps ?? []).map(discoveryFromMeta),
+    [discovery.apps, explorerApps],
+  );
+  const provisional = useMemo(
+    () =>
+      provisionalFeed(knownApps, discovery.usage, {
+        shelf: SHELF_SIZE,
+        page: FEED_PAGE_SIZE,
+      }),
+    [knownApps, discovery.usage],
+  );
+  const usageKnown = Object.keys(discovery.usage).length > 0;
+
+  useEffect(() => {
+    if (knownApps.length === 0 && !feed.loaded) return;
+    try {
+      if (
+        performance.getEntriesByName("apps-home:names", "mark").length === 0
+      ) {
+        performance.mark("apps-home:names");
+      }
+    } catch {
+      // No Performance API.
+    }
+  }, [knownApps.length, feed.loaded]);
+
+  // A first page that does not fill the scroller can never be scrolled:
+  // let the sentinel load more on its own then.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || scrolled || !feed.loaded) return;
+    if (el.scrollHeight <= el.clientHeight + 200) setScrolled(true);
+  }, [feed.loaded, feed.items.length, scrolled]);
 
   const loadMore = useCallback(() => {
     if (workspaceId) void fetchMoreFeed(workspaceId);
@@ -177,7 +234,7 @@ export default function AppsHome() {
       entries => {
         if (entries.some(e => e.isIntersecting)) loadMore();
       },
-      { root: scrollRef.current, rootMargin: "0px 0px 800px 0px" },
+      { root: scrollRef.current, rootMargin: "0px 0px 600px 0px" },
     );
     observer.observe(target);
     return () => observer.disconnect();
@@ -259,16 +316,55 @@ export default function AppsHome() {
     scrollRef.current?.scrollTo({ top: 0 });
   };
 
-  const renderFeed = () => {
-    if (!feed.loaded && feed.loading) {
-      return (
-        <Box sx={GRID_SX} aria-busy="true" aria-label="Loading apps">
-          {Array.from({ length: 12 }, (_, i) => (
-            <AppCardSkeleton key={i} />
-          ))}
+  const skeletonRow = (title: string) => (
+    <ShelfRow title={title}>
+      {Array.from({ length: SHELF_SKELETONS }, (_, i) => (
+        <Box key={i} role="listitem" sx={{ minWidth: 0 }}>
+          <AppCardSkeleton />
         </Box>
-      );
-    }
+      ))}
+    </ShelfRow>
+  );
+
+  // Before the ranked feed answers: the same layout, from what is known —
+  // shelves (or their reserved skeleton rows) and a first grid of cards,
+  // never a spinner.
+  const renderProvisional = () => (
+    <Box aria-busy="true">
+      {usageKnown && provisional.popular.length > 0 ? (
+        <ShelfRow title="Popular" hint="Opened most by others this month">
+          {provisional.popular.map((app, i) => card(app, "popular", i))}
+        </ShelfRow>
+      ) : (
+        skeletonRow("Popular")
+      )}
+      {provisional.fresh.length > 0 ? (
+        <ShelfRow title="New" hint="First published this week">
+          {provisional.fresh.map((app, i) => card(app, "new", i))}
+        </ShelfRow>
+      ) : (
+        skeletonRow("New")
+      )}
+      <Box component="section" aria-label="Recommended">
+        <SectionTitle
+          title="Recommended"
+          hint="From what you and your teammates use"
+        />
+        <Box sx={GRID_SX}>
+          {provisional.items.map((app, i) => card(app, "recommended", i))}
+          {Array.from(
+            { length: provisional.items.length > 0 ? 4 : 12 },
+            (_, i) => (
+              <AppCardSkeleton key={`skeleton-${i}`} />
+            ),
+          )}
+        </Box>
+      </Box>
+    </Box>
+  );
+
+  const renderFeed = () => {
+    if (!feed.loaded && !feed.error) return renderProvisional();
     if (feed.error && !feed.loaded) {
       return (
         <Stack spacing={1} sx={{ alignItems: "flex-start" }}>
@@ -421,6 +517,7 @@ export default function AppsHome() {
   return (
     <Box
       ref={scrollRef}
+      onScroll={scrolled ? undefined : () => setScrolled(true)}
       sx={{ height: "100%", overflow: "auto", bgcolor: "background.default" }}
     >
       <Box
@@ -445,9 +542,9 @@ export default function AppsHome() {
               Apps
             </Typography>
             <Typography variant="body2" sx={{ color: "text.secondary" }}>
-              {discovery.appsLoaded
-                ? `${discovery.apps.length} apps in ${currentWorkspace?.name ?? "this workspace"}`
-                : "Loading apps…"}
+              {knownApps.length > 0
+                ? `${knownApps.length} apps in ${currentWorkspace?.name ?? "this workspace"}`
+                : "\u00a0"}
             </Typography>
           </Box>
           <TextField

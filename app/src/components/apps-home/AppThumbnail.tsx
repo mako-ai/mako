@@ -17,6 +17,17 @@ import {
   type DiscoveryApp,
 } from "../../lib/apps-discovery";
 
+/** A Performance mark, once per page load (first thumbnail painted). */
+function markOnce(name: string): void {
+  try {
+    if (performance.getEntriesByName(name, "mark").length === 0) {
+      performance.mark(name);
+    }
+  } catch {
+    // No Performance API: nothing to measure.
+  }
+}
+
 /** The Mako mark (public/mako-icon.svg), inline so it takes currentColor. */
 const MAKO_MARK =
   "m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z";
@@ -104,7 +115,11 @@ export default function AppThumbnail({
           sizes="(max-width: 599px) 50vw, 300px"
           alt=""
           loading="lazy"
-          onLoad={() => setLoaded(true)}
+          decoding="async"
+          onLoad={() => {
+            setLoaded(true);
+            markOnce("apps-home:first-thumbnail");
+          }}
           onError={() => setFailed(true)}
           sx={{
             position: "absolute",

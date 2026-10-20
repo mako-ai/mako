@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   attentionReasons,
+  discoveryFromMeta,
   isMyApp,
+  provisionalFeed,
   newApps,
   ownerHandle,
   placeholderFor,
@@ -212,5 +214,42 @@ describe("presentation", () => {
       count: 1,
       tooltip: "1 visit-day by 1 person in the last 28 days, authors included",
     });
+  });
+});
+
+describe("progressive paint", () => {
+  it("turns an explorer list entry into a placeholder card", () => {
+    const card = discoveryFromMeta({
+      id: "x",
+      title: "Report",
+      path: "apps/Sales/report",
+    });
+    expect(card).toMatchObject({
+      id: "x",
+      title: "Report",
+      slug: "report",
+      thumbnail: null,
+      health: { bindingErrors: [] },
+    });
+  });
+
+  it("fills Popular, New and a first page, each app once", () => {
+    const stats = (score: number) =>
+      ({ appId: "", score }) as unknown as AppUsageStats;
+    const apps = [
+      app("hit"),
+      app("new", { createdAt: new Date(NOW - DAY).toISOString() }),
+      app("b"),
+      app("a"),
+    ];
+    const feed = provisionalFeed(
+      apps,
+      { hit: stats(5), b: stats(1) },
+      { shelf: 10, page: 24 },
+      NOW,
+    );
+    expect(feed.popular.map(a => a.id)).toEqual(["hit", "b"]);
+    expect(feed.fresh.map(a => a.id)).toEqual(["new"]);
+    expect(feed.items.map(a => a.id)).toEqual(["a"]);
   });
 });
