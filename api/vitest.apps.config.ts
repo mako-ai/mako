@@ -84,8 +84,6 @@ export default defineConfig({
       "src/services/share-og.service.test.ts",
       // Who opens which app: daily rollup, popularity score, authors.
       "src/apps/app-usage.service.test.ts",
-      // Reconstructing usage from Cloud Run logs and PostHog.
-      "src/apps/app-usage-backfill.test.ts",
       // Stale / unviewed apps: the planner, archive moves, the dry-run default.
       "src/apps/app-lifecycle.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",

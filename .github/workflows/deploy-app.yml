@@ -850,6 +850,9 @@ jobs:
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: https://app.mako.ai
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      # App lifecycle (stale notices, archive, paused schedules): unset = dry
+      # run everywhere; "all", or a comma-separated list of workspace ids.
+      APPS_LIFECYCLE_ENFORCE: ${{ vars.APPS_LIFECYCLE_ENFORCE }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
       GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
@@ -1062,6 +1065,7 @@ jobs:
             --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
             --set-env-vars API_RATE_LIMIT_MODE=enforce \
+            --set-env-vars "APPS_LIFECYCLE_ENFORCE=${APPS_LIFECYCLE_ENFORCE}" \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
             --set-env-vars DASHBOARD_ARTIFACT_PREFIX=${DASHBOARD_ARTIFACT_PREFIX} \

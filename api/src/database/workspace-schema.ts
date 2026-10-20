@@ -5100,8 +5100,8 @@ export interface IAppUsageEvent extends Document {
   throttled?: boolean;
   /**
    * Reconstructed from history rather than recorded live: `cloud-run`
-   * (request logs, backfill-app-usage.ts) or `posthog` (page views,
-   * backfill-app-usage-posthog.ts).
+   * (request logs) or `posthog` (page views), by a one-off backfill of
+   * Mako's hosted workspaces in October 2026.
    */
   backfill?: "cloud-run" | "posthog";
 }
