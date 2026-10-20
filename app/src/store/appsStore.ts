@@ -442,7 +442,17 @@ interface AppsStore {
     workspaceId: string,
     installationId: number,
   ) => Promise<{ ok: boolean; error?: string }>;
-  fetchApps: (workspaceId: string) => Promise<void>;
+  /**
+   * Load the app list. Calls while one is already on the wire share it —
+   * on load the explorer, the URL sync, every restored app tab and the
+   * editors each ask at once. `fresh`: the caller just changed something
+   * and needs a list read AFTER that change, so it gets one trailing
+   * request (shared by every such caller) instead of the one in flight.
+   */
+  fetchApps: (
+    workspaceId: string,
+    options?: { fresh?: boolean },
+  ) => Promise<void>;
   /** Drag between rail sections: flip private <-> workspace. */
   setAppAccess: (
     workspaceId: string,
@@ -699,6 +709,15 @@ interface AppsStore {
 
 const fileKey = (appId: string, path: string) => `${appId}\u0000${path}`;
 
+/**
+ * The app-list request on the wire per workspace (fetchApps), and the one
+ * trailing request `fresh` callers queue behind it.
+ */
+const appsListFetches = new Map<
+  string,
+  { run: Promise<void>; again: Promise<void> | null }
+>();
+
 export const useAppsStore = create<AppsStore>()(
   persist(
     immer((set, get) => ({
@@ -887,7 +906,9 @@ export const useAppsStore = create<AppsStore>()(
             }
           });
           // An import can make apps appear instantly; refetch either way.
-          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
+          refreshGitDerivedExplorers(workspaceId, id =>
+            get().fetchApps(id, { fresh: true }),
+          );
           return { ok: true, adoption: body.adoption };
         } catch (e) {
           return { ok: false, error: message(e, "Failed to connect repo") };
@@ -909,7 +930,9 @@ export const useAppsStore = create<AppsStore>()(
           });
           // canCreate follows the probe — no GitHub binding means no creates.
           void get().probeEnabled(workspaceId);
-          refreshGitDerivedExplorers(workspaceId, get().fetchApps);
+          refreshGitDerivedExplorers(workspaceId, id =>
+            get().fetchApps(id, { fresh: true }),
+          );
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to disconnect repo");
@@ -934,61 +957,82 @@ export const useAppsStore = create<AppsStore>()(
         }
       },
 
-      fetchApps: async workspaceId => {
-        set(s => {
-          // Instant paint from the persisted list while the request runs; a
-          // cache miss (first visit) shows the skeleton instead.
-          const cached = s.appsCacheByWorkspace[workspaceId];
-          if (cached && s.apps.length === 0) s.apps = cached;
-          s.appsLoading = true;
-          s.error = null;
-        });
-        try {
-          const body = unwrapBody(
-            await api.GET("/api/workspaces/{workspaceId}/apps", {
-              params: { path: { workspaceId } },
-            }),
-          ) as { apps?: AppMeta[]; folders?: string[]; personalRoot?: string };
-          const apps = body.apps ?? [];
-          set(s => {
-            s.apps = apps;
-            s.folders = body.folders ?? [];
-            s.personalRoot = body.personalRoot ?? null;
-            s.appsCacheByWorkspace[workspaceId] = apps;
-            s.appsLoading = false;
-          });
-          // Drop tabs pointing at apps this workspace does not have, so a
-          // deleted app cannot leave a working-looking workspace view behind.
-          reconcileAppsTabs(new Set(apps.map(a => a.id)));
-          // And keep the survivors' URL handles current: a push that moved
-          // an app changes what its tabs' links should say.
-          healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
-        } catch (e) {
-          // GET /apps is 412 without a GitHub binding. That is an empty
-          // explorer (disconnect, never linked), not a load failure. Keeping
-          // the previous list and persisted cache left the sidebar populated
-          // after unlink.
-          const githubRequired = e instanceof ApiError && e.status === 412;
-          if (githubRequired) {
-            set(s => {
-              s.apps = [];
-              s.folders = [];
-              s.personalRoot = null;
-              delete s.appsCacheByWorkspace[workspaceId];
-              s.appsLoading = false;
-              s.error = null;
-            });
-            reconcileAppsTabs(new Set());
-            return;
-          }
-          set(s => {
-            s.appsLoading = false;
-            // A 404 here means the flag is off — not an error worth surfacing.
-            if (!(e instanceof ApiError && e.status === 404)) {
-              s.error = message(e, "Failed to load apps");
-            }
-          });
+      fetchApps: (workspaceId, options) => {
+        const current = appsListFetches.get(workspaceId);
+        if (current) {
+          if (!options?.fresh) return current.run;
+          current.again ??= current.run
+            .catch(() => undefined)
+            .then(() => get().fetchApps(workspaceId));
+          return current.again;
         }
+        const load = async () => {
+          set(s => {
+            // Instant paint from the persisted list while the request runs; a
+            // cache miss (first visit) shows the skeleton instead.
+            const cached = s.appsCacheByWorkspace[workspaceId];
+            if (cached && s.apps.length === 0) s.apps = cached;
+            s.appsLoading = true;
+            s.error = null;
+          });
+          try {
+            const body = unwrapBody(
+              await api.GET("/api/workspaces/{workspaceId}/apps", {
+                params: { path: { workspaceId } },
+              }),
+            ) as {
+              apps?: AppMeta[];
+              folders?: string[];
+              personalRoot?: string;
+            };
+            const apps = body.apps ?? [];
+            set(s => {
+              s.apps = apps;
+              s.folders = body.folders ?? [];
+              s.personalRoot = body.personalRoot ?? null;
+              s.appsCacheByWorkspace[workspaceId] = apps;
+              s.appsLoading = false;
+            });
+            // Drop tabs pointing at apps this workspace does not have, so a
+            // deleted app cannot leave a working-looking workspace view behind.
+            reconcileAppsTabs(new Set(apps.map(a => a.id)));
+            // And keep the survivors' URL handles current: a push that moved
+            // an app changes what its tabs' links should say.
+            healAppsTabs(new Map(apps.map(a => [a.id, appUrlSlug(a)])));
+          } catch (e) {
+            // GET /apps is 412 without a GitHub binding. That is an empty
+            // explorer (disconnect, never linked), not a load failure. Keeping
+            // the previous list and persisted cache left the sidebar populated
+            // after unlink.
+            const githubRequired = e instanceof ApiError && e.status === 412;
+            if (githubRequired) {
+              set(s => {
+                s.apps = [];
+                s.folders = [];
+                s.personalRoot = null;
+                delete s.appsCacheByWorkspace[workspaceId];
+                s.appsLoading = false;
+                s.error = null;
+              });
+              reconcileAppsTabs(new Set());
+              return;
+            }
+            set(s => {
+              s.appsLoading = false;
+              // A 404 here means the flag is off — not an error worth surfacing.
+              if (!(e instanceof ApiError && e.status === 404)) {
+                s.error = message(e, "Failed to load apps");
+              }
+            });
+          }
+        };
+        const run = load().finally(() => {
+          if (appsListFetches.get(workspaceId)?.run === run) {
+            appsListFetches.delete(workspaceId);
+          }
+        });
+        appsListFetches.set(workspaceId, { run, again: null });
+        return run;
       },
 
       setAppAccess: async (workspaceId, appId, access) => {
@@ -1005,7 +1049,7 @@ export const useAppsStore = create<AppsStore>()(
             }),
           );
         } catch {
-          void get().fetchApps(workspaceId);
+          void get().fetchApps(workspaceId, { fresh: true });
         }
       },
 
@@ -1054,7 +1098,7 @@ export const useAppsStore = create<AppsStore>()(
           });
           const moved = get().apps.find(a => a.id === appId);
           if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
-          void get().fetchApps(workspaceId);
+          void get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -1075,7 +1119,7 @@ export const useAppsStore = create<AppsStore>()(
           set(s => {
             if (!s.folders.includes(path)) s.folders.push(path);
           });
-          void get().fetchApps(workspaceId);
+          void get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -1093,7 +1137,7 @@ export const useAppsStore = create<AppsStore>()(
               body: { path, to },
             }),
           );
-          await get().fetchApps(workspaceId);
+          await get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -1131,7 +1175,7 @@ export const useAppsStore = create<AppsStore>()(
               params: { path: { workspaceId, id: appId } },
             }),
           );
-          await get().fetchApps(workspaceId);
+          await get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -1190,7 +1234,7 @@ export const useAppsStore = create<AppsStore>()(
           });
           const moved = get().apps.find(a => a.id === appId);
           if (moved) healAppsTabs(new Map([[appId, appUrlSlug(moved)]]));
-          void get().fetchApps(workspaceId);
+          void get().fetchApps(workspaceId, { fresh: true });
           return true;
         } catch (e) {
           set(s => {
@@ -2393,7 +2437,7 @@ onRealtimeEvent("app.updated", "appsStore", (event, ctx) => {
   if (!workspaceId) return;
   const v2 = useAppsStore.getState();
   // Explorer list (titles, new/deleted apps).
-  void v2.fetchApps(workspaceId);
+  void v2.fetchApps(workspaceId, { fresh: true });
   if (event.origin === "lifecycle") return;
   // A deploy from main changes what is live, not the files: refresh the
   // published chip (a failed deploy leaves the sha alone, so nothing else

@@ -37,6 +37,7 @@ import {
 import { User } from "../database/schema";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
 import { SWEEP_COMMIT_APP_LIMIT, getAppUsageStats } from "./app-usage.service";
+import { invalidateAppsHomeBase } from "./app-home-base.service";
 import { runGit } from "./git";
 import { archiveProject, repoForWorkspace } from "./worktree.service";
 import { APPS_DIR, USERS_DIR } from "./app-paths";
@@ -677,18 +678,23 @@ export async function setAppVerified(
   verified: boolean,
   userId: string,
 ): Promise<{ verified: boolean; verifiedAt?: Date; verifiedBy?: string }> {
-  if (verified) {
-    const at = new Date();
-    await upsertState(workspaceId, appId, {
-      $set: { verifiedAt: at, verifiedBy: userId },
-    });
-    return { verified: true, verifiedAt: at, verifiedBy: userId };
+  try {
+    if (verified) {
+      const at = new Date();
+      await upsertState(workspaceId, appId, {
+        $set: { verifiedAt: at, verifiedBy: userId },
+      });
+      return { verified: true, verifiedAt: at, verifiedBy: userId };
+    }
+    await AppLifecycleState.updateOne(
+      { workspaceId: new Types.ObjectId(workspaceId), appId },
+      { $unset: { verifiedAt: 1, verifiedBy: 1 } },
+    );
+    return { verified: false };
+  } finally {
+    // The Apps home memoizes the marks; the admin sees the badge change now.
+    invalidateAppsHomeBase(workspaceId);
   }
-  await AppLifecycleState.updateOne(
-    { workspaceId: new Types.ObjectId(workspaceId), appId },
-    { $unset: { verifiedAt: 1, verifiedBy: 1 } },
-  );
-  return { verified: false };
 }
 
 /** Workspaces the daily job visits: every one with an apps index. */

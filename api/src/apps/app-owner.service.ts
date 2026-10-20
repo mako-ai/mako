@@ -134,11 +134,21 @@ async function fetchLoginId(login: string): Promise<void> {
  * GitHub ids for these logins, from a process-wide memo filled by a public
  * API lookup. Only worth asking when someone in the workspace has a linked
  * GitHub sign-in (the id is what matches). A slow GitHub does not hold the
- * page: the lookup is waited for up to its timeout, and a miss is memoized.
+ * page: the lookup is waited for up to its timeout (or not at all, with
+ * `wait: false`), and a miss is memoized.
  */
 export async function githubIdsOfLogins(
   logins: string[],
   people: PeopleDirectory,
+  options: {
+    /**
+     * Wait for the lookups still missing (default). False: answer from the
+     * memo and let the lookups land for the next caller — what a request
+     * path wants, since a rate-limited or slow GitHub would otherwise cost
+     * every Apps home load up to the timeout.
+     */
+    wait?: boolean;
+  } = {},
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (logins.length === 0 || !people.hasGitHubIdentities) return out;
@@ -155,7 +165,7 @@ export async function githubIdsOfLogins(
     }
     pending.push(p);
   }
-  if (pending.length) await Promise.all(pending);
+  if (pending.length && options.wait !== false) await Promise.all(pending);
   for (const login of logins) {
     const id = loginIds.get(login)?.id;
     if (id) out.set(login, id);

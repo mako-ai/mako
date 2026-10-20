@@ -17,7 +17,12 @@ import { AppFeedSnapshot } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { loggers } from "../logging";
 import { timed } from "../middleware/server-timing";
-import { listDiscoveryApps, type DiscoveryApp } from "./app-discovery.service";
+import type { DiscoveryApp } from "./app-discovery.service";
+import {
+  feedSignalsFrom,
+  listHomeDiscoveryApps,
+  loadHomeBase,
+} from "./app-home-base.service";
 import {
   buildFeedOrder,
   coUsageScores,
@@ -142,14 +147,33 @@ export async function loadFeedSignals(
   }
 }
 
+/**
+ * The home's signals, from the shared memo (app-home-base.service) — the
+ * same rollups the Popular shelf and /usage read, one computation for all.
+ */
+async function memoizedFeedSignals(
+  workspaceId: string,
+  viewer: FeedViewer,
+): Promise<FeedSignals> {
+  try {
+    return feedSignalsFrom(await loadHomeBase(workspaceId), viewer);
+  } catch (error) {
+    logger.warn("Feed usage signals unavailable", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return EMPTY_SIGNALS;
+  }
+}
+
 export const defaultFeedDeps: FeedDeps = {
-  listApps: listDiscoveryApps,
+  listApps: listHomeDiscoveryApps,
   loadViewer: async userId => {
     if (!userId || !Types.ObjectId.isValid(userId)) return { id: userId };
     const user = await User.findById(userId).select("email").lean();
     return { id: userId, email: user?.email ?? undefined };
   },
-  loadSignals: loadFeedSignals,
+  loadSignals: memoizedFeedSignals,
   saveSnapshot: async (snapshot, now) => {
     const doc = await AppFeedSnapshot.create({
       workspaceId: new Types.ObjectId(snapshot.workspaceId),

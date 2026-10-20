@@ -47,7 +47,7 @@ import { loadAppsIndex } from "./app-index.service";
 import { canSeeIndexedApp } from "./app-authorization";
 import { onAppOpened } from "./app-lifecycle-state";
 import { runGit } from "./git";
-import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
+import { DEFAULT_BRANCH } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
 import { performance } from "node:perf_hooks";
 import { currentTimings, timed } from "../middleware/server-timing";
@@ -369,10 +369,19 @@ export function parseCommitAuthors(
   log: string,
   apps: ReadonlyArray<{ appId: string; path: string }>,
 ): Map<string, Set<string>> {
-  const roots = [...apps].sort((a, b) => b.path.length - a.path.length);
+  // A file's app is its deepest ancestor folder that is an app: walk the
+  // file's own ancestors (a handful) rather than every app per file — a
+  // year of history is tens of thousands of paths, and this runs on the
+  // event loop.
+  const byPath = new Map(apps.map(a => [a.path, a.appId]));
   const appOf = (file: string): string | null => {
-    for (const app of roots) {
-      if (file.startsWith(`${app.path}/`)) return app.appId;
+    for (
+      let i = file.lastIndexOf("/");
+      i > 0;
+      i = file.lastIndexOf("/", i - 1)
+    ) {
+      const appId = byPath.get(file.slice(0, i));
+      if (appId) return appId;
     }
     return null;
   };
@@ -397,14 +406,62 @@ export function parseCommitAuthors(
   return out;
 }
 
+/**
+ * What commit authorship depends on: which folder each app is, and what is
+ * in it. A commit that touches an app changes that app's tree, so main
+ * moving without any app tree changing (a dbt edit, a flow, a console —
+ * most of this workspace's 200+ commits a day) cannot change who authored
+ * an app, and must not cost a `git log` over a year of history.
+ */
+export function appTreesKey(
+  apps: ReadonlyArray<{ appId: string; path: string; treeOid?: string }>,
+): string {
+  return apps
+    .map(a => `${a.appId}:${a.path}:${a.treeOid ?? ""}`)
+    .sort()
+    .join("\n");
+}
+
 const commitAuthorCache = new Map<
   string,
-  { sha: string; byApp: Map<string, Set<string>> }
+  { key: string; byApp: Map<string, Set<string>> }
+>();
+const commitAuthorsInFlight = new Map<
+  string,
+  { key: string; run: Promise<Map<string, Set<string>>> }
 >();
 
 async function commitAuthorUserIds(
   workspaceId: string,
+  apps: ReadonlyArray<{ appId: string; path: string; treeOid?: string }>,
+  options: { allowStale?: boolean } = {},
+): Promise<Map<string, Set<string>>> {
+  const key = appTreesKey(apps);
+  const cached = commitAuthorCache.get(workspaceId);
+  if (cached?.key === key) return cached.byApp;
+  // One `git log` per workspace at a time: the Apps home's parallel calls
+  // all need it at once after main moves.
+  let pending = commitAuthorsInFlight.get(workspaceId);
+  if (pending?.key !== key) {
+    const run = readCommitAuthors(workspaceId, apps, key).finally(() => {
+      if (commitAuthorsInFlight.get(workspaceId)?.run === run) {
+        commitAuthorsInFlight.delete(workspaceId);
+      }
+    });
+    pending = { key, run };
+    commitAuthorsInFlight.set(workspaceId, pending);
+  }
+  // Who authored an app changes only for the app a commit touched, and
+  // only matters to the popularity score: the last answer is good enough
+  // while the new one is read.
+  if (options.allowStale && cached) return cached.byApp;
+  return pending.run;
+}
+
+async function readCommitAuthors(
+  workspaceId: string,
   apps: ReadonlyArray<{ appId: string; path: string }>,
+  key: string,
 ): Promise<Map<string, Set<string>>> {
   try {
     // A READ: no bound repo means no history to attribute, not a skipped
@@ -412,12 +469,6 @@ async function commitAuthorUserIds(
     const repoDir = await boundRepoDirIfExists(workspaceId);
     if (repoDir === null) return new Map();
     const ref = `refs/heads/${DEFAULT_BRANCH}`;
-    const sha = await timed("authors.revParse", () =>
-      resolveCommit(repoDir, ref),
-    );
-    if (!sha) return new Map();
-    const cached = commitAuthorCache.get(workspaceId);
-    if (cached?.sha === sha) return cached.byApp;
     const started = performance.now();
     const { stdout } = await runGit(
       [
@@ -455,7 +506,7 @@ async function commitAuthorUserIds(
       );
       if (ids.size) byApp.set(appId, ids);
     }
-    commitAuthorCache.set(workspaceId, { sha, byApp });
+    commitAuthorCache.set(workspaceId, { key, byApp });
     return byApp;
   } catch (error) {
     // Authorship from history is a refinement; the row owners still apply.
@@ -465,6 +516,12 @@ async function commitAuthorUserIds(
     });
     return new Map();
   }
+}
+
+/** Forget the commit-author memo (tests). */
+export function invalidateCommitAuthors(workspaceId?: string): void {
+  if (workspaceId) commitAuthorCache.delete(workspaceId);
+  else commitAuthorCache.clear();
 }
 
 /**
@@ -482,8 +539,34 @@ export async function getAppAuthors(
       .select("_id owner_id createdBy")
       .lean(),
   ]);
-  const authors = await timed("authors.commits", () =>
-    commitAuthorUserIds(workspaceId, snapshot.apps),
+  return appAuthorsFrom(workspaceId, snapshot.apps, rows);
+}
+
+/** getAppAuthors over an index and state rows the caller already read. */
+export async function appAuthorsFrom(
+  workspaceId: string,
+  apps: ReadonlyArray<{
+    appId: string;
+    path: string;
+    treeOid?: string;
+    ownerId?: string;
+  }>,
+  rows: ReadonlyArray<{
+    _id: { toString(): string };
+    owner_id?: string | null;
+    createdBy?: string | null;
+  }>,
+  options: {
+    /** Answer from the last history read while a new one runs. */
+    allowStale?: boolean;
+  } = {},
+): Promise<Map<string, Set<string>>> {
+  const fromCommits = await timed("authors.commits", () =>
+    commitAuthorUserIds(workspaceId, apps, options),
+  );
+  // A copy: the memo is shared by every caller.
+  const authors = new Map(
+    [...fromCommits].map(([id, set]) => [id, new Set(set)]),
   );
   const add = (appId: string, userId: string | null | undefined) => {
     if (!userId) return;
@@ -491,7 +574,7 @@ export async function getAppAuthors(
     if (!set) authors.set(appId, (set = new Set()));
     set.add(userId);
   };
-  for (const app of snapshot.apps) add(app.appId, app.ownerId);
+  for (const app of apps) add(app.appId, app.ownerId);
   for (const row of rows) {
     add(row._id.toString(), row.owner_id);
     add(row._id.toString(), row.createdBy);

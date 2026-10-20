@@ -227,3 +227,31 @@ describe("fetchApps after unlink", () => {
     expect(reconcileAppsTabs).toHaveBeenCalledWith(new Set());
   });
 });
+
+describe("fetchApps on load", () => {
+  const listCalls = () =>
+    calls.filter(p => p === "/api/workspaces/{workspaceId}/apps").length;
+
+  it("shares one request among everyone asking at once", async () => {
+    calls.length = 0;
+    // The explorer, the URL sync, three restored app tabs, an editor.
+    await Promise.all(
+      Array.from({ length: 6 }, () => useAppsStore.getState().fetchApps(WS)),
+    );
+    expect(listCalls()).toBe(1);
+    // Once it has landed, the next ask is a new request.
+    await useAppsStore.getState().fetchApps(WS);
+    expect(listCalls()).toBe(2);
+  });
+
+  it("a caller that just wrote gets one request after the in-flight one", async () => {
+    calls.length = 0;
+    const first = useAppsStore.getState().fetchApps(WS);
+    const afterWrites = [
+      useAppsStore.getState().fetchApps(WS, { fresh: true }),
+      useAppsStore.getState().fetchApps(WS, { fresh: true }),
+    ];
+    await Promise.all([first, ...afterWrites]);
+    expect(listCalls()).toBe(2);
+  });
+});

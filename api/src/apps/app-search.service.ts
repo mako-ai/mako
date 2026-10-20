@@ -1,6 +1,7 @@
 /**
  * What app search needs beyond ranking (app-search.ts): the tables each
- * app's bindings read, and how much each app is used (app-usage.service).
+ * app's bindings read, and how much each app is used (app-usage.service,
+ * through the Apps home's memo — app-home-base.service).
  *
  * The tables are indexed with the app (app-index.service reads every
  * `bindings/*.sql` once per push and runs extractTables over it), so a
@@ -9,7 +10,7 @@
  */
 import { loggers } from "../logging";
 import type { AppsIndexSnapshot } from "./app-index.service";
-import { getAppUsageStats } from "./app-usage.service";
+import { homeUsageStats } from "./app-home-base.service";
 
 const logger = loggers.api("app-search");
 
@@ -25,7 +26,7 @@ export async function appUsageScores(
   workspaceId: string,
 ): Promise<Map<string, number> | null> {
   try {
-    const stats = await getAppUsageStats(workspaceId, { days: 28 });
+    const stats = await homeUsageStats(workspaceId, { days: 28 });
     return new Map([...stats].map(([id, s]) => [id, s.score]));
   } catch (error) {
     logger.warn("App usage unavailable for search", {

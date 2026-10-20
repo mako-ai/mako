@@ -67,7 +67,6 @@ import {
   fileVersions,
   forgetBoxCaches,
   gitPathsAction,
-  listAppFolders,
   listBranches,
   listFiles,
   mergeBranchToMain,
@@ -89,7 +88,6 @@ import {
   createAppFolder,
   deleteAppFolder,
   folderTargetFromPath,
-  listAppFolderPaths,
   moveAppFolder,
   moveProject,
   stampAppId,
@@ -103,18 +101,18 @@ import {
 import {
   acceptUsageBeat,
   classifyUserAgent,
-  getAppUsageStats,
   getRecentlyViewedApps,
   recordAppUsage,
   recordServedOpen,
-  visibleIndexedAppIds,
 } from "../apps/app-usage.service";
+import {
+  homeUsageStats,
+  listHomeDiscoveryApps,
+  visibleHomeAppIds,
+} from "../apps/app-home-base.service";
 import { appTreeRoot, parseAppRepoPath } from "../apps/app-paths";
 import { loadOwnerDirectory } from "../apps/user-handles.service";
-import {
-  listDiscoveryApps,
-  searchDiscoveryApps,
-} from "../apps/app-discovery.service";
+import { searchDiscoveryApps } from "../apps/app-discovery.service";
 import { appUsageScores } from "../apps/app-search.service";
 import { FeedCursorError, getFeedPage } from "../apps/app-feed.service";
 import { readThumbnailBlob, thumbnailResponse } from "../apps/app-thumbnail";
@@ -812,7 +810,9 @@ appsRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
       const userId = actingUserId(c);
-      const role = await memberRoleFor(workspaceId, userId);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
 
       // The REPO is the list. An app exists because a folder with a
       // `mako.json` exists (anywhere under apps/ or users/<handle>/apps/), so a
@@ -820,12 +820,12 @@ appsRoutes.openapi(
       // step (§13). Mongo is consulted only for what cannot live in a repo
       // the customer can clone: visibility, the deployed sha, the share
       // token — and the derived index that makes this read one query.
-      const [folders, folderPaths] = await timed("list.index", () =>
-        Promise.all([
-          listAppFolders(workspaceId),
-          listAppFolderPaths(workspaceId),
-        ]),
+      // One index read for both (each used to fetch and rev-parse on its own).
+      const snapshot = await timed("list.index", () =>
+        loadAppsIndex(workspaceId),
       );
+      const folders = snapshot.apps.map(app => ({ ...app, id: app.appId }));
+      const folderPaths = snapshot.folders;
       // Keep the repo's agent-facing template current for whoever is looking
       // at it (throttled, off the request path — see workspace-template.ts).
       repoForWorkspace(workspaceId)
@@ -833,7 +833,11 @@ appsRoutes.openapi(
         .catch(() => undefined);
       const [docs, verified] = await Promise.all([
         timed("list.projects", () =>
-          AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
+          AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
+            .select(
+              "_id access workspaceRole sharedWith owner_id createdBy publicShare publishedSha publishedAt chatEnabled",
+            )
+            .lean(),
         ),
         timed("list.verified", () => verifiedAppIds(workspaceId)),
       ]);
@@ -1182,9 +1186,9 @@ appsRoutes.openapi(
         (c.get("memberRole") as string | undefined) ??
         (await memberRoleFor(workspaceId, userId));
       const [stats, visible] = await Promise.all([
-        timed("usage.stats", () => getAppUsageStats(workspaceId, { days })),
+        timed("usage.stats", () => homeUsageStats(workspaceId, { days })),
         timed("usage.visible", () =>
-          visibleIndexedAppIds(workspaceId, userId, role),
+          visibleHomeAppIds(workspaceId, userId, role),
         ),
       ]);
       const apps = [...stats.values()].filter(s => visible.has(s.appId));
@@ -1227,7 +1231,7 @@ appsRoutes.openapi(
         getRecentlyViewedApps(workspaceId, userId, {
           limit: Math.min(100, limit + 20),
         }),
-        visibleIndexedAppIds(workspaceId, userId, role),
+        visibleHomeAppIds(workspaceId, userId, role),
       ]);
       const apps = recent.filter(r => visible.has(r.appId)).slice(0, limit);
       return c.json({ success: true as const, apps }, 200);
@@ -1351,8 +1355,10 @@ appsRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
       const userId = actingUserId(c);
-      const role = await memberRoleFor(workspaceId, userId);
-      const apps = await listDiscoveryApps(workspaceId, userId, role);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      const apps = await listHomeDiscoveryApps(workspaceId, userId, role);
       return c.json({ success: true as const, apps }, 200);
     } catch (error) {
       if (error instanceof RepoRequiredError) {
@@ -1396,7 +1402,9 @@ appsRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { cursor, limit } = c.req.valid("query");
       const userId = actingUserId(c);
-      const role = await memberRoleFor(workspaceId, userId);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
       const page = await getFeedPage(workspaceId, userId, role, {
         cursor: cursor || null,
         limit,
@@ -1461,9 +1469,11 @@ appsRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { q, limit } = c.req.valid("query");
       const userId = actingUserId(c);
-      const role = await memberRoleFor(workspaceId, userId);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
       const [visible, usage] = await Promise.all([
-        listDiscoveryApps(workspaceId, userId, role),
+        listHomeDiscoveryApps(workspaceId, userId, role),
         appUsageScores(workspaceId),
       ]);
       const apps = searchDiscoveryApps(visible, q, {

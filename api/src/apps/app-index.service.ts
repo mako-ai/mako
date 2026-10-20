@@ -1095,6 +1095,15 @@ export async function loadAppsIndex(
   return synced ? withOwners(synced, directory) : EMPTY;
 }
 
+/**
+ * The commit this instance's index memo describes, without touching git —
+ * how a memo built on the index (app-home-base.service) notices that main
+ * moved here since, for free. Undefined when nothing is memoized.
+ */
+export function peekAppsIndexSha(workspaceId: string): string | undefined {
+  return snapshotCache.get(workspaceId)?.sha;
+}
+
 /** Forget the memo (tests, and after a lifecycle commit on this instance). */
 export function invalidateAppsIndexCache(workspaceId?: string): void {
   if (workspaceId) snapshotCache.delete(workspaceId);

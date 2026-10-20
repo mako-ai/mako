@@ -87,6 +87,11 @@ export async function timed<T>(name: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Run `fn` as a timed request (tests; the middleware does this per route). */
+export function runWithTimings<T>(timings: RequestTimings, fn: () => T): T {
+  return storage.run(timings, fn);
+}
+
 /** Record a fact about how the current request was served. */
 export function noteTiming(name: string, value: string): void {
   storage.getStore()?.note(name, value);

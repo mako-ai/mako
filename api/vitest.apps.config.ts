@@ -86,6 +86,8 @@ export default defineConfig({
       "src/services/share-og.service.test.ts",
       // Who opens which app: daily rollup, popularity score, authors.
       "src/apps/app-usage.service.test.ts",
+      // The Apps home's memo: single-flight, freshness, never visibility.
+      "src/apps/app-home-base.service.test.ts",
       // The Apps home feed: ranking formula, shelves, frozen-order paging.
       "src/apps/app-feed.test.ts",
       // Stale / unviewed apps: the planner, archive moves, the dry-run default.
