@@ -3,8 +3,8 @@
  *
  * The transport (realtimeStore: EventSource, reconnect, watchdog) parses
  * frames and dispatches them through here; each resource kind registers its
- * reaction NEXT TO ITS OWN STORE (dashboardStore reacts to
- * dashboard.updated, dbtStore to dbt.*, …) instead of the transport file
+ * reaction NEXT TO ITS OWN STORE (appsStore reacts to
+ * app events, dbtStore to dbt.*, …) instead of the transport file
  * reaching into six stores. `suppressOwnEcho` is the one copy of the
  * clientId echo guard that used to be pasted into every handler.
  *
@@ -85,14 +85,6 @@ export type RealtimeEvent =
       clientId?: string;
     }
   | { type: "dbt.project.updated"; projectId?: string; clientId?: string }
-  | {
-      type: "dashboard.updated";
-      dashboardId: string;
-      version: number;
-      updatedBy: string;
-      clientId?: string;
-      origin: "agent" | "save";
-    }
   | {
       type: "notebook.updated";
       notebookId: string;

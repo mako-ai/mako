@@ -15,9 +15,9 @@ import {
 
 const ctx = { workspaceId: "ws1", currentUserId: "u1" };
 
-const dashboardEvent = (clientId?: string): RealtimeEvent => ({
-  type: "dashboard.updated",
-  dashboardId: "d1",
+const notebookEvent = (clientId?: string): RealtimeEvent => ({
+  type: "notebook.updated",
+  notebookId: "n1",
   version: 2,
   updatedBy: "u2",
   clientId,
@@ -27,11 +27,11 @@ const dashboardEvent = (clientId?: string): RealtimeEvent => ({
 describe("realtime-channel", () => {
   it("routes an event to its type's handlers with the dispatch context", () => {
     const seen = vi.fn();
-    onRealtimeEvent("dashboard.updated", "t-route", seen);
-    dispatchRealtimeEvent(dashboardEvent(), ctx);
+    onRealtimeEvent("notebook.updated", "t-route", seen);
+    dispatchRealtimeEvent(notebookEvent(), ctx);
     expect(seen).toHaveBeenCalledTimes(1);
     expect(seen).toHaveBeenCalledWith(
-      expect.objectContaining({ dashboardId: "d1" }),
+      expect.objectContaining({ notebookId: "n1" }),
       ctx,
     );
     // Other types don't reach it.
@@ -42,23 +42,23 @@ describe("realtime-channel", () => {
   it("re-registering the same (type, key) replaces, not stacks", () => {
     const first = vi.fn();
     const second = vi.fn();
-    onRealtimeEvent("dashboard.updated", "t-replace", first);
-    onRealtimeEvent("dashboard.updated", "t-replace", second);
-    dispatchRealtimeEvent(dashboardEvent(), ctx);
+    onRealtimeEvent("notebook.updated", "t-replace", first);
+    onRealtimeEvent("notebook.updated", "t-replace", second);
+    dispatchRealtimeEvent(notebookEvent(), ctx);
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
   });
 
   it("suppressOwnEcho drops this window's own writes only", () => {
     const seen = vi.fn();
-    onRealtimeEvent("dashboard.updated", "t-echo", seen, {
+    onRealtimeEvent("notebook.updated", "t-echo", seen, {
       suppressOwnEcho: true,
     });
-    dispatchRealtimeEvent(dashboardEvent(realtimeClientId), ctx);
+    dispatchRealtimeEvent(notebookEvent(realtimeClientId), ctx);
     expect(seen).not.toHaveBeenCalled();
-    dispatchRealtimeEvent(dashboardEvent("someone-else"), ctx);
+    dispatchRealtimeEvent(notebookEvent("someone-else"), ctx);
     expect(seen).toHaveBeenCalledTimes(1);
-    dispatchRealtimeEvent(dashboardEvent(undefined), ctx);
+    dispatchRealtimeEvent(notebookEvent(undefined), ctx);
     expect(seen).toHaveBeenCalledTimes(2);
   });
 
@@ -67,11 +67,11 @@ describe("realtime-channel", () => {
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const survivor = vi.fn();
-    onRealtimeEvent("dashboard.updated", "t-throws", () => {
+    onRealtimeEvent("notebook.updated", "t-throws", () => {
       throw new Error("boom");
     });
-    onRealtimeEvent("dashboard.updated", "t-survives", survivor);
-    dispatchRealtimeEvent(dashboardEvent(), ctx);
+    onRealtimeEvent("notebook.updated", "t-survives", survivor);
+    dispatchRealtimeEvent(notebookEvent(), ctx);
     expect(survivor).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();

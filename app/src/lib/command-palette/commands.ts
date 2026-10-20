@@ -37,7 +37,6 @@ import type { PaletteCommand } from "./types";
 const EXPLORER_VIEWS: Array<{ view: LeftPaneView; label: string }> = [
   { view: "databases", label: "Databases" },
   { view: "consoles", label: "Consoles" },
-  { view: "dashboards", label: "Dashboards" },
   { view: "apps", label: "Apps" },
   { view: "dbt", label: "Transforms" },
   { view: "workflows", label: "Workflows" },

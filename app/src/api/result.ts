@@ -99,7 +99,7 @@ export class ApiError extends Error {
 }
 
 /**
- * Structured load failure for a single entity (app, dashboard, ...) kept in
+ * Structured load failure for a single entity (app, console, ...) kept in
  * store state so views can render "not found" / "access denied" instead of an
  * infinite loading placeholder.
  */

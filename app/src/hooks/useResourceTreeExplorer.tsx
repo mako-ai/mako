@@ -3,8 +3,8 @@
  * re-implement above its <ResourceTree>: select the two sections for the
  * current workspace, fetch on workspace change, the loading/error flags,
  * the "delete this node?" state, and the move / rename / create-folder /
- * delete / resort handlers that just forward to the store. Notebooks and
- * dashboards had these blocks line-for-line; consoles and apps had their
+ * delete / resort handlers that just forward to the store. Foldered
+ * resources had these blocks line-for-line; consoles and apps had their
  * own variants. With createResourceTreeStore owning the store side, an
  * explorer is now its kind-specific bits (create, click, icons, extra
  * dialogs) on top of this hook.
@@ -41,8 +41,7 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
   options: {
     /**
      * Whether a node that renders as a directory is a real folder for the
-     * store (dashboards render as folders holding their data sources, but
-     * are items). Default: the node's own `isDirectory`.
+     * store (an item may render as a folder holding sub-rows). Default: the node's own `isDirectory`.
      */
     isFolder?: (id: string, isDirectory: boolean) => boolean;
     /**

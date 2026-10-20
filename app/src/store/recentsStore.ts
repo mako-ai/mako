@@ -13,11 +13,11 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-export type RecentKind = "console" | "dashboard" | "notebook" | "app";
+export type RecentKind = "console" | "notebook" | "app";
 
 export interface RecentEntry {
   kind: RecentKind;
-  /** The entity id (console id, dashboard id, ...). */
+  /** The entity id (console id, app id, ...). */
   id: string;
   title: string;
   /** Apps: the slug rides along so the URL upgrades on reopen. */

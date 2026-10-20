@@ -24,7 +24,6 @@ export type ToolIconKey =
 export type AgentToolDomain =
   | "console"
   | "chart"
-  | "dashboard"
   | "flow"
   | "app"
   | "dbt"
@@ -32,10 +31,11 @@ export type AgentToolDomain =
   | "memory"
   | "database"
   | "notebook"
-  | "plan";
+  | "plan"
+  | "screenshot";
 
 export type ClientToolExecutor =
-  "console" | "dashboard" | "flow" | "app" | "dbt" | "data" | "notebook";
+  "console" | "flow" | "app" | "dbt" | "data" | "notebook" | "screenshot";
 
 export interface ToolUiConfig {
   getLabel: (input?: unknown) => string;
@@ -200,149 +200,17 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "bar-chart",
     preview: { field: "vegaLiteSpec", language: "json" },
   },
-  list_open_dashboards: {
-    domain: "dashboard",
+  get_chart_template: {
+    domain: "chart",
     execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Listing open dashboards",
-    icon: "list",
-  },
-  search_dashboards: {
-    domain: "search",
-    execution: "server",
-    getLabel: input => {
-      const query = (input as Record<string, unknown>)?.query;
-      return query
-        ? `Searching dashboards: "${query}"`
-        : "Searching dashboards";
-    },
-    icon: "search",
-  },
-  open_dashboard: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Opening dashboard",
-    icon: "external-link",
-  },
-  create_dashboard: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const title = (input as Record<string, unknown>)?.title;
-      return title ? `Creating dashboard "${title}"` : "Creating dashboard";
-    },
-    icon: "plus",
-  },
-  enter_edit_mode: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Entering edit mode",
-    icon: "pencil",
-  },
-  add_widget: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const type = (input as Record<string, unknown>)?.type;
-      return type ? `Adding ${type} widget` : "Adding widget";
-    },
-    icon: "plus",
-    preview: { field: "localSql", language: "sql" },
-  },
-  modify_widget: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Modifying widget",
-    icon: "pencil",
-    preview: { field: "localSql", language: "sql" },
-  },
-  remove_widget: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Removing widget",
-    icon: "trash",
-  },
-  create_data_source: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const inp = input as Record<string, unknown>;
-      const name = inp?.name;
-      if (inp?.consoleId) {
-        return name
-          ? `Importing console as "${name}"`
-          : "Importing console as data source";
-      }
-      return name ? `Creating data source "${name}"` : "Creating data source";
-    },
-    icon: "plus",
-    preview: { field: "code", language: "sql" },
-  },
-  update_data_source_query: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const inp = input as Record<string, unknown>;
-      const action = inp?.action;
-      const run = inp?.run === true;
-      const suffix = run ? "" : " (definition only)";
-      if (action === "patch") return `Patching data source query${suffix}`;
-      if (action === "append") return `Appending to data source query${suffix}`;
-      return `Updating data source query${suffix}`;
-    },
-    icon: "pencil",
-    preview: { field: "code", language: "sql" },
-  },
-  run_data_source_query: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Running data source query",
-    icon: "play",
-  },
-  import_console_as_data_source: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Importing console as data source",
-    icon: "download",
-  },
-  add_data_source: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Importing data source",
-    icon: "download",
-  },
-  get_dashboard_state: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Reading dashboard state",
+    clientExecutor: "console",
+    getLabel: () => "Reading chart template",
     icon: "eye",
   },
   capture_screenshot: {
-    domain: "dashboard",
+    domain: "screenshot",
     execution: "client",
-    clientExecutor: "dashboard",
+    clientExecutor: "screenshot",
     longRunning: true,
     getLabel: input => {
       const target = (input as Record<string, unknown>)?.target;
@@ -351,109 +219,6 @@ export const AGENT_TOOL_MANIFEST = {
         : "Capturing screenshot";
     },
     icon: "eye",
-  },
-  add_global_filter: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: input => {
-      const label = (input as Record<string, unknown>)?.label;
-      return label ? `Adding filter "${label}"` : "Adding filter";
-    },
-    icon: "filter",
-  },
-  remove_global_filter: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Removing filter",
-    icon: "trash",
-  },
-  link_tables: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Linking tables",
-    icon: "link",
-  },
-  set_time_dimension: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Setting time dimension",
-    icon: "clock",
-  },
-  get_chart_templates: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Listing chart templates",
-    icon: "list",
-  },
-  get_chart_template: {
-    domain: "chart",
-    execution: "client",
-    clientExecutor: "dashboard",
-    getLabel: () => "Reading chart template",
-    icon: "eye",
-  },
-  save_version: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const inp = input as Record<string, unknown>;
-      const comment = inp?.comment;
-      const entity = inp?.entityType === "app" ? "app" : "dashboard";
-      return comment
-        ? `Publishing version: "${comment}"`
-        : `Publishing ${entity} version`;
-    },
-    icon: "clock",
-  },
-  restore_version: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const inp = input as Record<string, unknown>;
-      const version = inp?.version;
-      const entity = inp?.entityType === "app" ? "app" : "dashboard";
-      return version
-        ? `Restoring ${entity} version ${version}`
-        : `Restoring ${entity} version`;
-    },
-    icon: "clock",
-  },
-  // Deprecated aliases of save_version / restore_version (entityType:
-  // "dashboard"); entries kept so historical chats render proper tool cards.
-  dashboard_save_version: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const comment = (input as Record<string, unknown>)?.comment;
-      return comment
-        ? `Publishing version: "${comment}"`
-        : "Publishing dashboard version";
-    },
-    icon: "clock",
-  },
-  dashboard_restore_version: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: input => {
-      const version = (input as Record<string, unknown>)?.version;
-      return version
-        ? `Restoring version ${version}`
-        : "Restoring dashboard version";
-    },
-    icon: "clock",
   },
   // Legacy (pre-git) app tools. The v1 server implementations are gone;
   // entries are kept so historical chats still render labeled tool cards.
@@ -1287,10 +1052,6 @@ function createToolNameSet(
   );
 }
 
-export const DASHBOARD_EXECUTOR_TOOL_NAMES = createToolNameSet(
-  entry => entry.execution === "client" && entry.clientExecutor === "dashboard",
-);
-
 export const CONSOLE_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "console",
 );
@@ -1307,11 +1068,9 @@ export const NOTEBOOK_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "notebook",
 );
 
-export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(
+export const SCREENSHOT_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry =>
-    entry.execution === "client" &&
-    entry.clientExecutor === "dashboard" &&
-    entry.longRunning === true,
+    entry.execution === "client" && entry.clientExecutor === "screenshot",
 );
 
 /**

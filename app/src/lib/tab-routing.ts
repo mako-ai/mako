@@ -50,8 +50,6 @@ export const TAB_DEEP_LINK_PATTERNS = {
   console: /^\/c\/([a-zA-Z0-9-]+)/,
   connectors: /^\/cx\/([a-zA-Z0-9-]+)/,
   "flow-editor": /^\/f\/([a-zA-Z0-9-]+)/,
-  dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
-  "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
   // Apps live at /apps/:slug (the folder name in the workspace repo) or
   // /apps/:id (nested apps). Folder names are Unicode, so the segment is
@@ -92,17 +90,6 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         : null;
     case "flow-editor":
       return tab.metadata?.flowId ? `/f/${tab.metadata.flowId}` : null;
-    case "dashboard":
-      return tab.metadata?.dashboardId
-        ? `/d/${tab.metadata.dashboardId}`
-        : null;
-    case "dashboard-data-source": {
-      const dashboardId = tab.metadata?.dashboardId as string | undefined;
-      const dataSourceId = tab.metadata?.dataSourceId as string | undefined;
-      return dashboardId && dataSourceId
-        ? `/d/${dashboardId}/data/${dataSourceId}`
-        : null;
-    }
     case "table-data": {
       const schema = tab.metadata?.schema as string | undefined;
       const table = tab.metadata?.table as string | undefined;

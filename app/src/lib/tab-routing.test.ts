@@ -30,14 +30,6 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "flow-editor",
     metadata: { flowId: "flow-1" },
   }),
-  dashboard: baseTab({
-    kind: "dashboard",
-    metadata: { dashboardId: "dash-1" },
-  }),
-  "dashboard-data-source": baseTab({
-    kind: "dashboard-data-source",
-    metadata: { dashboardId: "dash-1", dataSourceId: "ds_1" },
-  }),
   "table-data": baseTab({
     kind: "table-data",
     connectionId: "651234567890abcdef1234",
@@ -122,11 +114,10 @@ describe("tab-routing", () => {
   );
 
   it("keeps nested routes from being captured by their parent patterns", () => {
-    // /d/:id/data/:dsId must not be treated as a dashboard URL, and
-    // /a/:id/file|data/... must not be treated as an app URL — hydration
+    // /apps/:id/file/... must not be treated as an app URL — hydration
     // relies on the parent patterns being anchored.
-    const dsUrl = tabUrlPath("t", FIXTURES["dashboard-data-source"]) as string;
-    expect(dsUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.dashboard);
+    const appFileUrl = tabUrlPath("t", FIXTURES["app-file"]) as string;
+    expect(appFileUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
 
     // /x/:id/file|job|runs must not be captured by the bare console pattern.
     const dbtFileUrl = tabUrlPath("t", FIXTURES["dbt-file"]) as string;

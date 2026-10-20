@@ -22,7 +22,6 @@ import {
   Bot,
   BrainCircuit,
   CalendarClock,
-  ChartPie,
   ClipboardList,
   CloudUpload,
   Database,
@@ -37,7 +36,6 @@ import {
   Workflow,
   Palette,
   Plug,
-  Gauge,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -70,7 +68,6 @@ export const EXPLORER_ICONS = {
   workflows: Workflow,
   "source-control": GitBranch,
   connectors: Plug,
-  dashboards: ChartPie,
   apps: AppWindowMac,
   notebooks: Notebook,
   settings: Settings,
@@ -81,7 +78,7 @@ export const CHAT_ICON: LucideIcon = MessageCircleMore;
 
 /**
  * Icon per tab kind, as rendered in the Editor tab bar. Entity rows in
- * explorers and palette results use the same map so a dashboard looks the
+ * explorers and palette results use the same map so an app looks the
  * same everywhere it appears.
  */
 export const TAB_KIND_ICONS = {
@@ -90,8 +87,6 @@ export const TAB_KIND_ICONS = {
   connectors: CloudUpload,
   members: Users,
   "flow-editor": ArrowLeftRight,
-  dashboard: ChartPie,
-  "dashboard-data-source": Database,
   "table-data": Table,
   app: AppWindowMac,
   "app-file": FileCode,
@@ -119,7 +114,6 @@ export const SETTINGS_SECTION_ICONS = {
   agents: Bot,
   "coding-agents": BrainCircuit,
   models: Sparkles,
-  limits: Gauge,
   billing: Wallet,
   members: Users,
   "api-keys": KeySquare,

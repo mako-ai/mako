@@ -7,7 +7,6 @@ import {
   type ChatActiveView,
 } from "../agent-runtime/request-context";
 import { useConsoleStore } from "../store/consoleStore";
-import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 
 const MAX_CONTEXT_CHARS = 6_000;
@@ -64,23 +63,11 @@ export function buildAcpUiContextBlock(args: {
   const activeTab = activeTabId ? consoleStore.tabs[activeTabId] : undefined;
 
   let activeView: ChatActiveView = "empty";
-  if (activeTab?.kind === "dashboard") {
-    activeView = "dashboard";
-  } else if (activeTab?.kind === "flow-editor") {
+  if (activeTab?.kind === "flow-editor") {
     activeView = "flow-editor";
   } else if (activeTab?.kind === "console" || !activeTab?.kind) {
     activeView = "console";
   }
-
-  const pinnedDashboardId =
-    activeTab?.kind === "dashboard"
-      ? ((activeTab.metadata?.dashboardId as string | undefined) ?? null)
-      : null;
-
-  const connectionsByWorkspace = useSchemaStore.getState().connections ?? {};
-  const workspaceConnections = args.workspaceId
-    ? (connectionsByWorkspace[args.workspaceId] ?? [])
-    : [];
 
   const body = buildChatRequestBody({
     messages: [],
@@ -96,8 +83,6 @@ export function buildAcpUiContextBlock(args: {
       activeTab?.kind === "console" || !activeTab?.kind
         ? activeTabId
         : undefined,
-    workspaceConnections,
-    pinnedDashboardId,
   });
 
   const lines: string[] = [
@@ -114,7 +99,6 @@ export function buildAcpUiContextBlock(args: {
           title: t.title,
           isActive: t.isActive,
           id: t.id,
-          dashboardId: t.dashboardId,
           notebookId: t.notebookId,
           dbtProjectId: t.dbtProjectId,
         })),
@@ -132,21 +116,6 @@ export function buildAcpUiContextBlock(args: {
       contentTruncated: c.contentTruncated,
     }));
     lines.push(`openConsoles: ${JSON.stringify(consoles)}`);
-  }
-
-  if (body.activeDashboardContext) {
-    lines.push(
-      `activeDashboard: ${JSON.stringify({
-        dashboardId: body.activeDashboardContext.dashboardId,
-        title: body.activeDashboardContext.title,
-        widgetCount: Array.isArray(body.activeDashboardContext.widgets)
-          ? body.activeDashboardContext.widgets.length
-          : 0,
-        dataSourceCount: Array.isArray(body.activeDashboardContext.dataSources)
-          ? body.activeDashboardContext.dataSources.length
-          : 0,
-      })}`,
-    );
   }
 
   lines.push(

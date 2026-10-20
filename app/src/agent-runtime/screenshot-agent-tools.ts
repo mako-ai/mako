@@ -1,20 +1,9 @@
-import { useDashboardStore } from "../store/dashboardStore";
-
-type ScreenshotTarget =
-  | "active_dashboard"
-  | "active_tab"
-  | "app_shell"
-  | "dashboard"
-  | "viewport"
-  | "widget"
-  | "selector";
+type ScreenshotTarget = "active_tab" | "app_shell" | "viewport" | "selector";
 
 type ScreenshotRendererName = "modern-screenshot" | "app-preview-self-capture";
 
 interface CaptureScreenshotInput {
   target?: ScreenshotTarget;
-  dashboardId?: string;
-  widgetId?: string;
   selector?: string;
   scale?: number;
   backgroundColor?: string | null;
@@ -102,36 +91,14 @@ function memoryDeltaBytes(
   return after.usedJSHeapSize - before.usedJSHeapSize;
 }
 
-function escapeAttributeValue(value: string): string {
-  const css = globalThis.CSS as
-    { escape?: (value: string) => string } | undefined;
-  return css?.escape ? css.escape(value) : value.replace(/["\\]/g, "\\$&");
-}
-
-function getDashboardCanvasSelector(dashboardId: string): string {
-  return `[data-mako-dashboard-canvas="true"][data-mako-dashboard-id="${escapeAttributeValue(
-    dashboardId,
-  )}"]`;
-}
-
-function getWidgetSelector(dashboardId: string, widgetId: string): string {
-  return `[data-mako-dashboard-widget-id="${escapeAttributeValue(
-    widgetId,
-  )}"][data-mako-dashboard-id="${escapeAttributeValue(dashboardId)}"]`;
-}
-
 function resolveTarget(input: CaptureScreenshotInput): {
   element: HTMLElement | null;
   requestedTarget: ScreenshotTarget;
   resolvedTarget: string;
-  dashboardId?: string;
-  widgetId?: string;
   selector?: string;
   error?: string;
 } {
-  const requestedTarget = input.target ?? "active_dashboard";
-  const store = useDashboardStore.getState();
-  const dashboardId = input.dashboardId ?? store.activeDashboardId ?? undefined;
+  const requestedTarget = input.target ?? "active_tab";
 
   if (requestedTarget === "viewport") {
     return {
@@ -178,50 +145,11 @@ function resolveTarget(input: CaptureScreenshotInput): {
     };
   }
 
-  if (requestedTarget === "widget") {
-    if (!dashboardId || !input.widgetId) {
-      return {
-        element: null,
-        requestedTarget,
-        resolvedTarget: "widget",
-        dashboardId,
-        widgetId: input.widgetId,
-        error: "dashboardId and widgetId are required when target is widget.",
-      };
-    }
-    const selector = getWidgetSelector(dashboardId, input.widgetId);
-    return {
-      element: document.querySelector(selector) as HTMLElement | null,
-      requestedTarget,
-      resolvedTarget: "widget",
-      dashboardId,
-      widgetId: input.widgetId,
-      selector,
-    };
-  }
-
-  if (!dashboardId) {
-    return {
-      element: null,
-      requestedTarget,
-      resolvedTarget: requestedTarget,
-      error:
-        "No active dashboard found. Open a dashboard or pass dashboardId explicitly.",
-    };
-  }
-
-  const selector = getDashboardCanvasSelector(dashboardId);
-  const element =
-    (document.querySelector(selector) as HTMLElement | null) ??
-    (document.querySelector(".layout") as HTMLElement | null);
-
   return {
-    element,
+    element: null,
     requestedTarget,
-    resolvedTarget:
-      requestedTarget === "dashboard" ? "dashboard" : "active_dashboard",
-    dashboardId,
-    selector,
+    resolvedTarget: String(requestedTarget),
+    error: `Unsupported screenshot target: ${String(requestedTarget)}. Use active_tab, app_shell, viewport or selector.`,
   };
 }
 
@@ -304,28 +232,11 @@ function dataUrlToBytes(dataUrl: string): number {
   return Math.floor((base64.length * 3) / 4);
 }
 
-function sanitizeFilenamePart(value: string): string {
-  return value
-    .trim()
-    .replace(/[^a-z0-9_-]+/gi, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-}
-
 function buildScreenshotFilename(params: {
   renderer: ScreenshotRendererName;
   resolvedTarget: string;
-  dashboardId?: string;
-  widgetId?: string;
 }): string {
-  const parts = [
-    "mako",
-    "screenshot",
-    params.renderer,
-    params.resolvedTarget,
-    params.dashboardId ? sanitizeFilenamePart(params.dashboardId) : null,
-    params.widgetId ? sanitizeFilenamePart(params.widgetId) : null,
-  ].filter(Boolean);
+  const parts = ["mako", "screenshot", params.renderer, params.resolvedTarget];
   return `${parts.join("-")}.png`;
 }
 
@@ -601,8 +512,6 @@ export async function captureScreenshot(
       target: {
         requested: target.requestedTarget,
         resolved: target.resolvedTarget,
-        dashboardId: target.dashboardId,
-        widgetId: target.widgetId,
         selector: target.selector,
       },
     };
@@ -644,8 +553,6 @@ export async function captureScreenshot(
     const filename = buildScreenshotFilename({
       renderer: "modern-screenshot",
       resolvedTarget: target.resolvedTarget,
-      dashboardId: target.dashboardId,
-      widgetId: target.widgetId,
     });
     const attachment = createVisionAttachment({
       renderer: "modern-screenshot",
@@ -689,8 +596,6 @@ export async function captureScreenshot(
       target: {
         requested: target.requestedTarget,
         resolved: target.resolvedTarget,
-        dashboardId: target.dashboardId,
-        widgetId: target.widgetId,
         selector: target.selector,
         ...domSummary,
       },
@@ -734,8 +639,6 @@ export async function captureScreenshot(
       target: {
         requested: target.requestedTarget,
         resolved: target.resolvedTarget,
-        dashboardId: target.dashboardId,
-        widgetId: target.widgetId,
         selector: target.selector,
         ...domSummary,
       },

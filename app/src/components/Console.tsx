@@ -135,8 +135,8 @@ interface ConsoleProps {
   onUpdateSchedule?: () => void;
   /**
    * Surface this console UI is rendering. "console" (default) is a saved query
-   * console; "data-source" reuses the same toolbar/editor for an app/dashboard
-   * data source (run/save/connection are identical; callers supply
+   * console; "data-source" reuses the same toolbar/editor for an app
+   * data binding (run/save/connection are identical; callers supply
    * `headerExtras` for surface-specific controls like materialization).
    */
   variant?: "console" | "data-source";

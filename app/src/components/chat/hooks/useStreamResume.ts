@@ -321,10 +321,10 @@ export function useStreamResume({
     const hasResumableTurn = (): boolean => {
       if (manualStopRequestedRef.current) return false;
       // A client tool executing locally is NOT a stranded turn: the segment's
-      // stream already ended (dashboard/app tools dispatch fire-and-forget)
+      // stream already ended (client tools dispatch fire-and-forget)
       // and the turn resumes via sendAutomaticallyWhen once the tool settles.
       // Reattaching here would replay the finished segment for nothing — and
-      // long tools (a 2-3 min create_data_source materialization) kept this
+      // long tools (a multi-minute materialization) kept this
       // window open for minutes, turning every tab switch into a replay.
       if (activeClientToolCallsRef.current.size > 0) return false;
       const s = statusRef.current;

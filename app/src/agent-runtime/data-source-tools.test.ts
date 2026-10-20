@@ -19,15 +19,6 @@ vi.mock("../store/appsStore", () => ({
 vi.mock("../store/uiStore", () => ({
   useUIStore: { getState: () => ({ currentWorkspaceId: "workspace-1" }) },
 }));
-vi.mock("../store/dashboardStore", () => ({
-  useDashboardStore: { getState: () => ({ openDashboards: {} }) },
-}));
-vi.mock("../dashboard-runtime/gateway", () => ({
-  queryDashboardRuntime: vi.fn(),
-}));
-vi.mock("../dashboard-runtime/commands", () => ({
-  previewDashboardQuery: vi.fn(),
-}));
 vi.mock("../lib/duckdb", () => ({
   collectStreamBytes: mocks.collectStreamBytes,
   createDuckDBInstance: mocks.createDuckDBInstance,
@@ -58,6 +49,18 @@ beforeEach(() => {
 });
 
 describe("app data-source tools", () => {
+  it("rejects surfaces other than apps", async () => {
+    const result = await executeDataSourceTool("list_data_sources", {
+      surface: { kind: "notebook", id: "nb-1" },
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: "Unknown surface kind: notebook",
+    });
+    expect(mocks.fetchAppBindings).not.toHaveBeenCalled();
+  });
+
   it("lists git-backed app bindings instead of rejecting app surfaces", async () => {
     const result = await executeDataSourceTool("list_data_sources", {
       surface: { kind: "app", id: "road-to-75" },

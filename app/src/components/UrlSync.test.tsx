@@ -76,13 +76,7 @@ vi.mock("../lib/source-connection-tabs", () => ({
 
 // Stores/shells only touched by branches the notebook path never enters; stub
 // their named exports so module import resolves without pulling real deps.
-vi.mock("../store/dashboardStore", () => ({
-  useDashboardStore: { getState: () => ({}) },
-}));
 vi.mock("../store/dbtStore", () => ({ useDbtStore: { getState: () => ({}) } }));
-vi.mock("../dashboard-runtime/shell", () => ({
-  focusDashboardDataSourceTab: vi.fn(),
-}));
 vi.mock("../dbt-runtime/shell", () => ({
   focusDbtConsoleTab: vi.fn(),
   focusDbtFileTab: vi.fn(),

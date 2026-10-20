@@ -1,10 +1,7 @@
 import type { ConsoleTab } from "../store/lib/types";
-import type { Connection } from "../store/schemaStore";
 import type { ActiveExplorer } from "../store/uiStore";
-import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
-import { useDashboardStore } from "../store/dashboardStore";
 
-export type ChatActiveView = "console" | "dashboard" | "flow-editor" | "empty";
+export type ChatActiveView = "console" | "flow-editor" | "empty";
 
 export interface ActiveConsoleResultsContext {
   viewMode: "table" | "json" | "chart";
@@ -13,13 +10,6 @@ export interface ActiveConsoleResultsContext {
   columns: string[];
   sampleRows: Record<string, unknown>[];
   chartSpec: Record<string, unknown> | null;
-}
-
-interface BuildDashboardRequestContextOptions {
-  activeView: ChatActiveView;
-  pinnedDashboardId?: string | null;
-  pinnedDashboardTitle?: string | null;
-  workspaceConnections: Connection[];
 }
 
 interface BuildChatRequestBodyOptions {
@@ -35,8 +25,6 @@ interface BuildChatRequestBodyOptions {
   activeConsoleId?: string | null;
   activeConsoleResults?: ActiveConsoleResultsContext;
   flowFormState?: Record<string, unknown>;
-  workspaceConnections: Connection[];
-  pinnedDashboardId?: string | null;
 }
 
 function buildOpenConsoles(tabs: ConsoleTab[]) {
@@ -78,10 +66,6 @@ export function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
     kind: tab.kind || "console",
     title: tab.title,
     isActive: tab.id === activeTabId,
-    dashboardId:
-      tab.kind === "dashboard"
-        ? (tab.metadata?.dashboardId as string | undefined)
-        : undefined,
     flowId:
       tab.kind === "flow-editor"
         ? (tab.metadata?.flowId as string | undefined)
@@ -101,92 +85,6 @@ export function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
   }));
 }
 
-export function buildDashboardRequestContext({
-  activeView,
-  pinnedDashboardId,
-  pinnedDashboardTitle,
-  workspaceConnections,
-}: BuildDashboardRequestContextOptions) {
-  if (activeView !== "dashboard" || !pinnedDashboardId) {
-    return {};
-  }
-
-  try {
-    const dashboardStore = useDashboardStore.getState();
-    const connectionById = new Map(
-      workspaceConnections.map(connection => [connection.id, connection]),
-    );
-    const SAMPLE_LIMIT = 3;
-
-    const openDashboardsFromStore = Object.values(
-      dashboardStore.openDashboards,
-    ).map((dashboard: any) => ({
-      id: dashboard._id,
-      title: dashboard.title,
-      isActive: dashboard._id === pinnedDashboardId,
-    }));
-
-    const snapshot = getDashboardStateSnapshot(pinnedDashboardId);
-    const openDashboards =
-      openDashboardsFromStore.length > 0
-        ? openDashboardsFromStore
-        : [
-            {
-              id: snapshot._id,
-              title: snapshot.title,
-              isActive: true,
-            },
-          ];
-
-    return {
-      openDashboards,
-      activeDashboardContext: {
-        dashboardId: snapshot._id,
-        title: snapshot.title,
-        description: snapshot.description,
-        crossFilterEnabled: !!snapshot.crossFilter?.enabled,
-        crossFilter: snapshot.crossFilter,
-        layout: snapshot.layout,
-        materializationSchedule: snapshot.materializationSchedule,
-        dataSources: snapshot.dataSources.map((dataSource: any) => {
-          const { _id: _dataSourceId, sampleRows, ...rest } = dataSource;
-          return {
-            ...rest,
-            sampleRows: sampleRows?.slice(0, SAMPLE_LIMIT),
-            connectionType:
-              connectionById.get(dataSource.query?.connectionId)?.type ||
-              undefined,
-            sqlDialect:
-              connectionById.get(dataSource.query?.connectionId)?.type ===
-              "mongodb"
-                ? undefined
-                : (
-                    connectionById.get(dataSource.query?.connectionId) as
-                      { sqlDialect?: string } | undefined
-                  )?.sqlDialect ||
-                  (dataSource.query?.language === "sql" ? "duckdb" : undefined),
-          };
-        }),
-        widgets: snapshot.widgets.map(
-          ({ _id: _widgetId, ...widget }: any) => widget,
-        ),
-      },
-    };
-  } catch {
-    return pinnedDashboardTitle
-      ? {
-          openDashboards: [
-            {
-              id: pinnedDashboardId,
-              title: pinnedDashboardTitle,
-              isActive: true,
-            },
-          ],
-        }
-      : {};
-  }
-}
-
 export function buildChatRequestBody({
   messages,
   workspaceId,
@@ -200,8 +98,6 @@ export function buildChatRequestBody({
   activeConsoleId,
   activeConsoleResults,
   flowFormState,
-  workspaceConnections,
-  pinnedDashboardId,
 }: BuildChatRequestBodyOptions) {
   return {
     messages,
@@ -218,12 +114,5 @@ export function buildChatRequestBody({
     tabKind: activeTab?.kind,
     flowType: activeTab?.metadata?.flowType,
     flowFormState,
-    ...buildDashboardRequestContext({
-      activeView,
-      pinnedDashboardId,
-      pinnedDashboardTitle:
-        activeTab?.kind === "dashboard" ? activeTab.title || null : null,
-      workspaceConnections,
-    }),
   };
 }

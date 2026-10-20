@@ -7,15 +7,10 @@
  * converted to items here.
  */
 
-import { focusDashboardTab } from "../../dashboard-runtime/shell";
 import { focusDbtConsoleTab } from "../../dbt-runtime/shell";
 import { focusFlowTab, getFlowTitle } from "../../flow-runtime/shell";
 import type { ConsoleSearchResult } from "../../store/commandPaletteStore";
 import { useConsoleStore } from "../../store/consoleStore";
-import {
-  useDashboardTreeStore,
-  type DashboardEntry,
-} from "../../store/dashboardTreeStore";
 import { useDbtStore } from "../../store/dbtStore";
 import { useFlowStore } from "../../store/flowStore";
 import { EXPLORER_ICONS, TAB_KIND_ICONS, tabKindIcon } from "../entity-icons";
@@ -76,48 +71,6 @@ export function consoleResultItems(
         void useConsoleStore.getState().loadConsole(workspaceId, result.id);
       },
     }));
-}
-
-function flattenDashboards(entries: DashboardEntry[]): DashboardEntry[] {
-  const out: DashboardEntry[] = [];
-  for (const entry of entries) {
-    if (entry.isDirectory) {
-      out.push(...flattenDashboards(entry.children ?? []));
-    } else {
-      out.push(entry);
-    }
-  }
-  return out;
-}
-
-export function searchDashboards(
-  workspaceId: string,
-  query: string,
-): PaletteEntityItem[] {
-  const state = useDashboardTreeStore.getState();
-  const entries = [
-    ...flattenDashboards(state.myItems[workspaceId] ?? []),
-    ...flattenDashboards(state.workspaceItems[workspaceId] ?? []),
-  ];
-  const seen = new Set<string>();
-  const scored: Scored[] = [];
-  for (const entry of entries) {
-    if (seen.has(entry.id)) continue;
-    seen.add(entry.id);
-    scored.push({
-      score: matchScore(query, entry.name),
-      item: {
-        id: `dashboard:${entry.id}`,
-        title: entry.name,
-        section: "Dashboards",
-        icon: TAB_KIND_ICONS.dashboard,
-        run: () => {
-          focusDashboardTab(entry.id, entry.name);
-        },
-      },
-    });
-  }
-  return sorted(scored, 5);
 }
 
 export function searchDbtProjects(query: string): PaletteEntityItem[] {

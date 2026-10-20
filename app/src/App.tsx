@@ -67,8 +67,6 @@ import DbtProjectDrawersHost from "./components/DbtProjectDrawersHost";
 import { FlowsExplorer } from "./components/FlowsExplorer";
 import { WorkflowsExplorer } from "./components/WorkflowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
-const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
-const DashboardsExplorer = lazy(loadDashboardsExplorer);
 const loadNotebooksExplorer = () => import("./components/NotebooksExplorer");
 const NotebooksExplorer = lazy(loadNotebooksExplorer);
 const loadAppsExplorer = () => import("./components/AppsExplorer");
@@ -193,12 +191,6 @@ function MainApp() {
     const record = useRecentsStore.getState().record;
     if (kind === "console") {
       record(workspaceId, { kind, id: tab.id, title: tab.title });
-    } else if (kind === "dashboard" && tab.metadata?.dashboardId) {
-      record(workspaceId, {
-        kind,
-        id: tab.metadata.dashboardId as string,
-        title: tab.title,
-      });
     } else if (kind === "notebook" && tab.metadata?.notebookId) {
       record(workspaceId, {
         kind,
@@ -562,8 +554,6 @@ function MainApp() {
         return <SourceConnectionExplorer />;
       case "flows":
         return <FlowsExplorer />;
-      case "dashboards":
-        return <DashboardsExplorer />;
       case "apps":
         return <AppsExplorer />;
       case "notebooks":
@@ -604,38 +594,6 @@ function MainApp() {
     ),
     [],
   );
-
-  useEffect(() => {
-    const win = window as Window & {
-      requestIdleCallback?: (cb: () => void) => number;
-      cancelIdleCallback?: (id: number) => void;
-    };
-
-    let idleId: number | undefined;
-    let timeoutId: number | undefined;
-
-    if (typeof win.requestIdleCallback === "function") {
-      idleId = win.requestIdleCallback(() => {
-        void loadDashboardsExplorer();
-      });
-    } else {
-      timeoutId = window.setTimeout(() => {
-        void loadDashboardsExplorer();
-      }, 1500);
-    }
-
-    return () => {
-      if (
-        idleId !== undefined &&
-        typeof win.cancelIdleCallback === "function"
-      ) {
-        win.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== undefined) {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, []);
 
   // ── Mobile shell (< md) ───────────────────────────────────────────────
   // One full-screen pane at a time behind a FIXED bottom nav — Browse ·
@@ -693,7 +651,7 @@ function MainApp() {
                 }
               />
             </Box>
-            {/* View: the active tab (console, app, dashboard, ...). */}
+            {/* View: the active tab (console, app, notebook, ...). */}
             <Box
               sx={{
                 position: "absolute",

@@ -23,7 +23,7 @@ export interface PaletteCommand {
   run: (ctx: PaletteRunContext) => void;
 }
 
-/** A navigable entity (open tab, console, dashboard, ...) in default mode. */
+/** A navigable entity (open tab, console, app, ...) in default mode. */
 export interface PaletteEntityItem {
   id: string;
   title: string;

@@ -43,16 +43,16 @@ describe("tree-helpers", () => {
     const nodes: TestNode[] = [
       {
         id: "folder-1",
-        name: "Dashboards",
+        name: "Reports",
         isDirectory: true,
         children: [{ id: "file-1", name: "Sales", isDirectory: false }],
       },
     ];
 
-    expect(filterTree(nodes, "dash")).toEqual([
+    expect(filterTree(nodes, "rep")).toEqual([
       {
         id: "folder-1",
-        name: "Dashboards",
+        name: "Reports",
         isDirectory: true,
         children: [],
       },
@@ -63,21 +63,21 @@ describe("tree-helpers", () => {
     const nodes: TestNode[] = [
       {
         id: "folder-1",
-        name: "Dashboards",
+        name: "Reports",
         isDirectory: true,
         children: [{ id: "file-1", name: "Sales", isDirectory: false }],
       },
     ];
 
-    expect(
-      filterTree(nodes, "dash", { includeMatchingFolders: false }),
-    ).toEqual([]);
+    expect(filterTree(nodes, "rep", { includeMatchingFolders: false })).toEqual(
+      [],
+    );
     expect(
       filterTree(nodes, "sale", { includeMatchingFolders: false }),
     ).toEqual([
       {
         id: "folder-1",
-        name: "Dashboards",
+        name: "Reports",
         isDirectory: true,
         children: [{ id: "file-1", name: "Sales", isDirectory: false }],
       },

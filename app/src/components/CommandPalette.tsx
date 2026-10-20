@@ -2,7 +2,7 @@
  * Command palette (Cmd/Ctrl+K).
  *
  * Default mode searches navigable entities (open tabs, consoles via the
- * server search endpoint, dashboards, apps, dbt projects, flows) plus the
+ * server search endpoint, apps, dbt projects, flows) plus the
  * top-matching commands. Typing `>` switches to commands-only mode
  * (VS Code style). Built on MUI primitives — no extra dependencies.
  */
@@ -21,7 +21,6 @@ import { useTheme as useAppTheme } from "../contexts/ThemeContext";
 import { buildCommands } from "../lib/command-palette/commands";
 import {
   consoleResultItems,
-  searchDashboards,
   searchDbtProjects,
   searchFlows,
   searchOpenTabs,
@@ -32,7 +31,6 @@ import {
   type PaletteRunContext,
 } from "../lib/command-palette/types";
 import { useCommandPaletteStore } from "../store/commandPaletteStore";
-import { useDashboardTreeStore } from "../store/dashboardTreeStore";
 import { useDbtStore } from "../store/dbtStore";
 import { useFlowStore } from "../store/flowStore";
 import { useUIStore } from "../store/uiStore";
@@ -103,7 +101,6 @@ export default function CommandPalette() {
     setSelectedIndex(0);
     pointerRef.current = null;
     const swallow = () => undefined;
-    void useDashboardTreeStore.getState().fetchTree(workspaceId).catch(swallow);
     void useDbtStore.getState().fetchProjects(workspaceId).catch(swallow);
     void useFlowStore.getState().fetchFlows(workspaceId).catch(swallow);
   }, [open, workspaceId]);
@@ -148,7 +145,6 @@ export default function CommandPalette() {
       ...(effectiveQuery.length >= 2
         ? consoleResultItems(workspaceId, consoleResults)
         : []),
-      ...searchDashboards(workspaceId, effectiveQuery),
       ...searchDbtProjects(effectiveQuery),
       ...searchFlows(workspaceId, effectiveQuery),
     ];
@@ -249,7 +245,7 @@ export default function CommandPalette() {
           fullWidth
           inputRef={inputRef}
           value={query}
-          placeholder="Search consoles, dashboards, apps… type > for commands"
+          placeholder="Search consoles, apps… type > for commands"
           onChange={event => {
             setQuery(event.target.value);
             setSelectedIndex(0);

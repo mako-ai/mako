@@ -2,7 +2,7 @@
  * Entity labels: single source of truth for the human noun of each tab kind.
  *
  * Used by the shared entity load/error states ("App not found", "You don't
- * have access to this dashboard", "Loading flow…") so the copy stays
+ * have access to this app", "Loading flow…") so the copy stays
  * consistent everywhere a resource fails to load.
  *
  * REGRESSION GUARD: exhaustive over `TabKind` (same pattern as
@@ -16,8 +16,6 @@ export const TAB_KIND_ENTITY_LABELS = {
   console: "console",
   connectors: "source connection",
   "flow-editor": "flow",
-  dashboard: "dashboard",
-  "dashboard-data-source": "data source",
   "table-data": "table",
   app: "app",
   "app-file": "file",
@@ -41,7 +39,7 @@ export function tabKindEntityLabel(kind: TabKind | undefined): string {
 
 /**
  * 404 `LoadError` for a sub-entity missing from a loaded parent (file removed
- * from an app, data source removed from a dashboard, job deleted from a
+ * from an app, job deleted from a
  * project, ...). Renders with the "not found" treatment in
  * EntityLoadErrorState; pass `detail` there for context-specific copy.
  */

@@ -242,11 +242,18 @@ export const useUIStore = create<UIStore>()(
     })),
     {
       name: "ui-store",
-      // Pre-rename persisted pane selections ("apps-v2") land on the Apps
-      // explorer instead of falling through to the default pane.
+      // Persisted pane selections for retired explorers ("apps-v2" before the
+      // rename, "dashboards" before apps replaced them) land on the Apps
+      // explorer instead of an explorer that no longer renders.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<UIStore>;
-        if ((p.leftPane as string) === "apps-v2") p.leftPane = "apps";
+        const legacyPane = p.leftPane as string | undefined;
+        if (legacyPane === "apps-v2" || legacyPane === "dashboards") {
+          p.leftPane = "apps";
+        }
+        if ((p.activeView as string | undefined) === "dashboards") {
+          p.activeView = "apps";
+        }
         return { ...current, ...p };
       },
       // Only persist navigation and workspace - not loading states or editor content
@@ -292,7 +299,6 @@ export type ActiveExplorer =
   | "consoles"
   | "connectors"
   | "flows"
-  | "dashboards"
   | "apps"
   | "notebooks"
   | "dbt"
@@ -309,7 +315,6 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "consoles",
   "connectors",
   "flows",
-  "dashboards",
   "apps",
   "notebooks",
   "dbt",

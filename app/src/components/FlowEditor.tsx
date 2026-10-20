@@ -160,7 +160,7 @@ export function FlowEditor({
   };
 
   // Post-save view, keyed on the ENGINE: CDC flows get the pipeline
-  // dashboard (with a Run History tab when a poll schedule exists); legacy
+  // overview (with a Run History tab when a poll schedule exists); legacy
   // flows get the plain run history.
   const renderInfoView = () => {
     if (!currentFlowId) return null;

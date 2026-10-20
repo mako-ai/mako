@@ -66,7 +66,6 @@ import Settings from "../pages/Settings";
 import SourceConnectionTab from "./SourceConnectionTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
-import DashboardCanvas from "./DashboardCanvas";
 import NotebookRenderer from "./NotebookRenderer";
 import AppWorkspace from "./AppWorkspace";
 import { useAppsStore } from "../store/appsStore";
@@ -83,7 +82,6 @@ import DbtJobView from "./DbtJobView";
 import DbtConsoleView from "./DbtConsoleView";
 import DbtRunsView from "./DbtRunsView";
 import WorkflowView from "./WorkflowView";
-import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState from "./EntityLoadErrorState";
@@ -102,10 +100,8 @@ import ConflictResolutionDialog, {
 import FileExplorerDialog from "./FileExplorerDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
-import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
-import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
@@ -120,10 +116,7 @@ import { getApiBasePath } from "../lib/api-base-path";
 import { separatorDragRef } from "../lib/iframe-drag-guard";
 import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
-import {
-  computeConsoleStateHash,
-  computeDashboardStateHash,
-} from "../utils/stateHash";
+import { computeConsoleStateHash } from "../utils/stateHash";
 import type {
   ScheduledQueryRunItem,
   ConsoleVersionConflict,
@@ -202,49 +195,6 @@ interface EditorProps {
     ((payload: ChartSpecChangePayload) => void) | undefined
   >;
   resultsContextRef?: React.MutableRefObject<ConsoleResultsContext | null>;
-}
-
-function LockConflictDialog() {
-  const prompt = useDashboardStore(state => state.lockConflictPrompt);
-  const setPrompt = useDashboardStore(state => state.setLockConflictPrompt);
-
-  useEffect(() => {
-    return () => {
-      const current = useDashboardStore.getState().lockConflictPrompt;
-      if (current) {
-        current.resolve(false);
-        useDashboardStore.getState().setLockConflictPrompt(null);
-      }
-    };
-  }, []);
-
-  const handleTakeOver = () => {
-    prompt?.resolve(true);
-    setPrompt(null);
-  };
-
-  const handleCancel = () => {
-    prompt?.resolve(false);
-    setPrompt(null);
-  };
-
-  return (
-    <Dialog open={prompt !== null} onClose={handleCancel}>
-      <DialogTitle>Dashboard Locked</DialogTitle>
-      <DialogContent>
-        <Typography>
-          {prompt?.lockedBy ?? "Another user"} is currently editing this
-          dashboard. Do you want to take over?
-        </Typography>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={handleCancel}>Cancel</Button>
-        <Button onClick={handleTakeOver} variant="contained" color="warning">
-          Take over
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
 }
 
 /**
@@ -513,12 +463,6 @@ function Editor({
     tabId: string;
   } | null>(null);
 
-  // Version history panel state (dashboards)
-  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
-  const [versionHistoryTabId, setVersionHistoryTabId] = useState<string | null>(
-    null,
-  );
-
   // Unified share dialog state (consoles)
   const [shareConsoleTabId, setShareConsoleTabId] = useState<string | null>(
     null,
@@ -562,10 +506,6 @@ function Editor({
   // Concurrent-edit (optimistic concurrency) conflict state
   const [versionConflictData, setVersionConflictData] =
     useState<ConsoleVersionConflict | null>(null);
-
-  const [pendingDashboardCloseTabId, setPendingDashboardCloseTabId] = useState<
-    string | null
-  >(null);
 
   const [pendingSaveData, setPendingSaveData] = useState<{
     tabId: string;
@@ -1073,57 +1013,7 @@ function Editor({
   };
 
   const closeConsole = (id: string) => {
-    const closingTab = tabs[id];
-    if (closingTab?.kind === "dashboard") {
-      const dbId = closingTab.metadata?.dashboardId as string | undefined;
-      if (dbId) {
-        const store = useDashboardStore.getState();
-        const dashboard = store.openDashboards[dbId];
-        if (dashboard) {
-          const savedHash = store.getDashboardSavedStateHash(dbId);
-          const currentHash = computeDashboardStateHash(dashboard);
-          if (savedHash !== undefined && currentHash !== savedHash) {
-            setPendingDashboardCloseTabId(id);
-            return;
-          }
-        }
-        store.closeDashboard(dbId);
-      }
-    }
     cleanupTab(id);
-  };
-
-  const finalizeDashboardClose = (tabId: string) => {
-    const closingTab = tabs[tabId];
-    const dbId = closingTab?.metadata?.dashboardId as string | undefined;
-    if (dbId) {
-      useDashboardStore.getState().closeDashboard(dbId);
-    }
-    cleanupTab(tabId);
-  };
-
-  const handleDashboardCloseSave = async () => {
-    if (!pendingDashboardCloseTabId || !currentWorkspace) return;
-    const tab = tabs[pendingDashboardCloseTabId];
-    const dbId = tab?.metadata?.dashboardId as string | undefined;
-    if (dbId) {
-      const result = await useDashboardStore
-        .getState()
-        .saveDashboard(currentWorkspace.id, dbId);
-      if (!result.ok) return;
-    }
-    finalizeDashboardClose(pendingDashboardCloseTabId);
-    setPendingDashboardCloseTabId(null);
-  };
-
-  const handleDashboardCloseDiscard = () => {
-    if (!pendingDashboardCloseTabId) return;
-    finalizeDashboardClose(pendingDashboardCloseTabId);
-    setPendingDashboardCloseTabId(null);
-  };
-
-  const handleDashboardCloseCancel = () => {
-    setPendingDashboardCloseTabId(null);
   };
 
   const handleConsoleExecute = async (
@@ -2533,7 +2423,7 @@ function Editor({
 
           {/* Breadcrumb path (Cursor-style) — one consistent bar for every
               tab kind. Views that embed their own actions in the bar
-              (table data, app files/bindings, dashboard data sources)
+              (table data, dbt files and runs)
               render EntityBreadcrumbs themselves. */}
           {(() => {
             const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
@@ -2543,7 +2433,6 @@ function Editor({
             if (isMobile) return null;
             const rendersOwnBreadcrumbs =
               activeTab.kind === "table-data" ||
-              activeTab.kind === "dashboard-data-source" ||
               activeTab.kind === "dbt-file" ||
               activeTab.kind === "dbt-runs";
             if (rendersOwnBreadcrumbs) return null;
@@ -2926,24 +2815,6 @@ function Editor({
                     />
                   ) : tab.kind === "table-data" ? (
                     <TableDataView tabId={tab.id} />
-                  ) : tab.kind === "dashboard" ? (
-                    <DashboardCanvas
-                      dashboardId={tab.metadata?.dashboardId as string}
-                      isNew={tab.metadata?.isNew as boolean}
-                      onCreated={(newId: string) => {
-                        useConsoleStore.setState(state => {
-                          const existingTab = state.tabs[tab.id];
-                          if (existingTab) {
-                            existingTab.metadata = {
-                              ...existingTab.metadata,
-                              dashboardId: newId,
-                              isNew: false,
-                            };
-                            existingTab.title = "Untitled Dashboard";
-                          }
-                        });
-                      }}
-                    />
                   ) : tab.kind === "notebook" ? (
                     <NotebookRenderer
                       notebookId={tab.metadata?.notebookId as string}
@@ -3029,12 +2900,6 @@ function Editor({
                         tab.metadata?.workflowId as string | undefined
                       }
                       path={tab.metadata?.path as string | undefined}
-                    />
-                  ) : tab.kind === "dashboard-data-source" ? (
-                    <DashboardDataSourceEditor
-                      tabId={tab.id}
-                      dashboardId={tab.metadata?.dashboardId as string}
-                      dataSourceId={tab.metadata?.dataSourceId as string}
                     />
                   ) : (
                     /* Console tab: editor + results split (desktop) or a single
@@ -3253,24 +3118,6 @@ function Editor({
         />
       )}
 
-      {/* Version history panel (dashboards) */}
-      {versionHistoryTabId && (
-        <VersionHistoryPanel
-          open={versionHistoryOpen}
-          onClose={() => {
-            setVersionHistoryOpen(false);
-            setVersionHistoryTabId(null);
-          }}
-          entityType="dashboard"
-          entityId={versionHistoryTabId}
-          onRestore={() => {
-            if (currentWorkspace && versionHistoryTabId) {
-              reloadConsole(currentWorkspace.id, versionHistoryTabId);
-            }
-          }}
-        />
-      )}
-
       {shareConsoleTab && (
         <ShareDialog
           open={!!shareConsoleTabId}
@@ -3338,32 +3185,6 @@ function Editor({
           {snackbarMessage}
         </Alert>
       </Snackbar>
-
-      {/* Lock Conflict Dialog (human-in-the-loop for agent enter_edit_mode) */}
-      <LockConflictDialog />
-
-      {/* Unsaved Dashboard Changes Dialog */}
-      <Dialog
-        open={pendingDashboardCloseTabId !== null}
-        onClose={handleDashboardCloseCancel}
-      >
-        <DialogTitle>Unsaved Changes</DialogTitle>
-        <DialogContent>
-          <Typography>
-            This dashboard has unsaved changes. Do you want to save before
-            closing?
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleDashboardCloseDiscard} color="error">
-            Discard
-          </Button>
-          <Button onClick={handleDashboardCloseCancel}>Cancel</Button>
-          <Button onClick={handleDashboardCloseSave} variant="contained">
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }

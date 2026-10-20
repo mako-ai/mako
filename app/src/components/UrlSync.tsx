@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
-import { useDashboardStore } from "../store/dashboardStore";
 import { appUrlSlug, useAppsStore } from "../store/appsStore";
 import { resolveAppRef } from "../lib/apps-explorer-tree";
 import {
@@ -23,10 +22,6 @@ import { useDbtStore } from "../store/dbtStore";
 import { useMcpStore } from "../store/mcpStore";
 import { useSourceConnectionEntitiesStore } from "../store/sourceConnectionEntitiesStore";
 import { closeSourceConnectionTabsFor } from "../lib/source-connection-tabs";
-import {
-  focusDashboardDataSourceTab,
-  focusDashboardTab,
-} from "../dashboard-runtime/shell";
 import { focusFlowTabById } from "../flow-runtime/shell";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
@@ -118,10 +113,6 @@ export function UrlSync() {
     const consoleMatch = path.match(TAB_DEEP_LINK_PATTERNS.console);
     const connectorMatch = path.match(TAB_DEEP_LINK_PATTERNS.connectors);
     const flowMatch = path.match(TAB_DEEP_LINK_PATTERNS["flow-editor"]);
-    const dashboardDataSourceMatch = path.match(
-      TAB_DEEP_LINK_PATTERNS["dashboard-data-source"],
-    );
-    const dashboardMatch = path.match(TAB_DEEP_LINK_PATTERNS.dashboard);
     const tableMatch = path.match(TAB_DEEP_LINK_PATTERNS["table-data"]);
     const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
     const appMatch = path.match(TAB_DEEP_LINK_PATTERNS["app"]);
@@ -179,31 +170,6 @@ export function UrlSync() {
       setLeftPane("flows");
 
       focusFlowTabById(flowId);
-    } else if (dashboardDataSourceMatch) {
-      // /d/:dashboardId/data/:dataSourceId
-      const dashboardId = dashboardDataSourceMatch[1];
-      const dataSourceId = dashboardDataSourceMatch[2];
-      setLeftPane("dashboards");
-
-      // Placeholder title — DashboardDataSourceEditor syncs the real name
-      // onto the tab once the dashboard loads.
-      focusDashboardDataSourceTab(dashboardId, dataSourceId, "Data source");
-    } else if (dashboardMatch) {
-      // /d/:dashboardId
-      const dashboardId = dashboardMatch[1];
-      setLeftPane("dashboards");
-
-      // Focus if open; else resolve the title, then open (focusDashboardTab
-      // dedupes again in case a tab appeared while the list was loading).
-      if (!focusOrOpenTab({ kind: "dashboard", metadata: { dashboardId } })) {
-        useDashboardStore
-          .getState()
-          .fetchDashboards(currentWorkspace.id)
-          .then(dashboards => {
-            const dashboard = dashboards.find(d => d._id === dashboardId);
-            focusDashboardTab(dashboardId, dashboard?.title || "Dashboard");
-          });
-      }
     } else if (tableMatch) {
       // /t/:connectionId/:schema/:table (+ ?db=<name>&dbid=<id>)
       const connectionId = tableMatch[1];
@@ -373,7 +339,7 @@ export function UrlSync() {
   // The URL follows the active tab (the document open in the editor), not the
   // left-pane view. That way switching between tabs — or opening the app with
   // a persisted active tab while the left pane is on a different view — still
-  // produces a shareable /c/:id (or /d/:id, /f/:id, /cx/:id) URL.
+  // produces a shareable /c/:id (or /f/:id, /cx/:id) URL.
   //
   // `activeTabPath` is a primitive string derived inside the zustand selector,
   // so this effect only fires when the URL it would produce actually changes

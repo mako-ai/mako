@@ -22,7 +22,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  ExternalLink as DashboardIcon,
+  ExternalLink as ExternalLinkIcon,
   FileCode as FileIcon,
   Folder as FolderIcon,
   RefreshCw as RefreshIcon,
@@ -266,7 +266,7 @@ export function WorkflowsExplorer() {
                 target="_blank"
                 rel="noreferrer"
               >
-                <DashboardIcon size={20} strokeWidth={2} />
+                <ExternalLinkIcon size={20} strokeWidth={2} />
               </IconButton>
             </Tooltip>
           )}

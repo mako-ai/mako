@@ -19,7 +19,6 @@ import type { ConsoleTab, TabKind } from "../store/lib/types";
 // binding: "<appId>::binding::<bindingId>".
 export const APP_FILE_SEP = "::file::";
 export const APP_DIR_SEP = "::dir::";
-export const DASHBOARD_DATA_SOURCE_SEP = "::dashboard-data-source::";
 
 // dbt (Transforms) ResourceTree node-id encoding (kept in sync with
 // DbtExplorer, which imports these). Project node: "<projectId>";
@@ -32,13 +31,7 @@ export const DBT_RUNS_SEP = "::runs::";
 
 /** Left-pane explorers that support reveal/scroll-to-row. */
 export type RevealExplorer =
-  | "consoles"
-  | "dashboards"
-  | "apps"
-  | "connectors"
-  | "flows"
-  | "dbt"
-  | "notebooks";
+  "consoles" | "apps" | "connectors" | "flows" | "dbt" | "notebooks";
 
 export interface ExplorerRevealTarget {
   explorer: RevealExplorer;
@@ -64,20 +57,6 @@ export function tabRevealTarget(
     case "console":
       // Console rows in the Consoles explorer use the console (tab) id.
       return { explorer: "consoles", nodeId: tab.id };
-    case "dashboard": {
-      const id = meta.dashboardId as string | undefined;
-      return id ? { explorer: "dashboards", nodeId: id } : null;
-    }
-    case "dashboard-data-source": {
-      const dashboardId = meta.dashboardId as string | undefined;
-      const dataSourceId = meta.dataSourceId as string | undefined;
-      return dashboardId && dataSourceId
-        ? {
-            explorer: "dashboards",
-            nodeId: `${dashboardId}${DASHBOARD_DATA_SOURCE_SEP}${dataSourceId}`,
-          }
-        : null;
-    }
     case "app": {
       // Apps explorer app rows are keyed by the project id.
       const appId = meta.appId as string | undefined;

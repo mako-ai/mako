@@ -13,12 +13,12 @@ describe("recentsStore", () => {
   it("puts the latest activation first and dedupes by kind + id", () => {
     const s = useRecentsStore.getState();
     s.record("w1", { kind: "console", id: "c1", title: "First" });
-    s.record("w1", { kind: "dashboard", id: "d1", title: "Board" });
+    s.record("w1", { kind: "notebook", id: "n1", title: "Notes" });
     s.record("w1", { kind: "console", id: "c1", title: "First (renamed)" });
     const list = selectRecents("w1")(useRecentsStore.getState());
     expect(list.map(e => `${e.kind}:${e.id}`)).toEqual([
       "console:c1",
-      "dashboard:d1",
+      "notebook:n1",
     ]);
     expect(list[0].title).toBe("First (renamed)");
   });

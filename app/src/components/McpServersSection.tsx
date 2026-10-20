@@ -522,7 +522,7 @@ function OAuthClientForm({
               rel="noreferrer"
               sx={{ color: "primary.main" }}
             >
-              Open the provider&apos;s app dashboard
+              Open the provider&apos;s app settings
             </Box>
           </>
         )}

@@ -13,7 +13,6 @@ export type NavigationView =
   | "consoles"
   | "connectors"
   | "flows"
-  | "dashboards"
   | "notebooks"
   | "apps"
   | "dbt"
@@ -41,7 +40,6 @@ export const topNavigationItems: {
   { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
   { view: "workflows", icon: EXPLORER_ICONS.workflows, label: "Workflows" },
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Sources" },
-  { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
   { view: "apps", icon: EXPLORER_ICONS["apps"], label: "Apps" },
 ];

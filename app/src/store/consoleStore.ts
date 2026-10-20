@@ -638,7 +638,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         // each kind owns exactly one duty: pin the tab when its content is
         // modified (console: first keystroke; app-file / dbt-file: first
         // keystroke; app workbench: entering edit mode; flow: entering edit;
-        // dashboard: its own shouldPin; notebook / dbt-console / connector /
+        // notebook / dbt-console / connector /
         // plan: durable documents, pinned at open). A double-click on the
         // tab title pins any kind.
         //

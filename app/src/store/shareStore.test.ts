@@ -8,14 +8,13 @@ import {
 
 /** Deep-link pattern for resources that open inside the Mako shell. */
 const TAB_PATTERN_FOR_RESOURCE: Partial<Record<ShareResourceType, RegExp>> = {
-  dashboard: TAB_DEEP_LINK_PATTERNS.dashboard,
   console: TAB_DEEP_LINK_PATTERNS.console,
 };
 
 describe("buildWorkspaceResourceUrl", () => {
   it("builds an absolute URL from the current origin", () => {
-    expect(buildWorkspaceResourceUrl("dashboard", "dash-123")).toBe(
-      `${window.location.origin}/d/dash-123`,
+    expect(buildWorkspaceResourceUrl("console", "console-123")).toBe(
+      `${window.location.origin}/c/console-123`,
     );
   });
 

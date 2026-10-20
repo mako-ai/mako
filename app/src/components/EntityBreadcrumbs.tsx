@@ -4,7 +4,6 @@ import { ChevronRight as BreadcrumbChevronIcon } from "lucide-react";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useAppsStore } from "../store/appsStore";
-import { useDashboardStore } from "../store/dashboardStore";
 import { useDbtStore } from "../store/dbtStore";
 import { useUIStore } from "../store/uiStore";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
@@ -23,8 +22,6 @@ interface BreadcrumbSegment {
 interface EntityContext {
   workspaceName: string;
   connectionName?: string;
-  dashboardTitle?: string;
-  dashboardDataSourceName?: string;
   appTitle?: string;
   dbtProjectName?: string;
 }
@@ -77,15 +74,6 @@ function segmentsForTab(
         tab.databaseName,
         (tab.metadata?.schema as string | undefined) || undefined,
         (tab.metadata?.table as string | undefined) || undefined,
-      ]);
-    case "dashboard":
-      return plain(["Dashboards", ctx.dashboardTitle || tab.title]);
-    case "dashboard-data-source":
-      return plain([
-        "Dashboards",
-        ctx.dashboardTitle,
-        "Data sources",
-        ctx.dashboardDataSourceName || tab.title,
       ]);
     case "app":
       return plain(["Apps", ctx.appTitle || tab.title]);
@@ -215,26 +203,11 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
       : undefined,
   );
 
-  const dashboardId = tab?.metadata?.dashboardId as string | undefined;
-  const dataSourceId = tab?.metadata?.dataSourceId as string | undefined;
-  const dashboardTitle = useDashboardStore(s =>
-    dashboardId ? s.openDashboards[dashboardId]?.title : undefined,
-  );
-  const dashboardDataSourceName = useDashboardStore(s =>
-    dashboardId && dataSourceId
-      ? s.openDashboards[dashboardId]?.dataSources.find(
-          ds => ds.id === dataSourceId,
-        )?.name
-      : undefined,
-  );
-
   if (!tab) return null;
 
   const segments = segmentsForTab(tab, {
     workspaceName: currentWorkspace?.name || "Workspace",
     connectionName,
-    dashboardTitle,
-    dashboardDataSourceName,
     appTitle,
     dbtProjectName,
   });

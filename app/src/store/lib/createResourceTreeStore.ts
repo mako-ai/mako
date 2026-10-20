@@ -1,11 +1,11 @@
 /**
- * ONE tree store for every foldered resource (notebooks, dashboards,
- * consoles, …).
+ * ONE tree store for every foldered resource (notebooks, consoles,
+ * …).
  *
  * The two-section tree ("My X" / "Workspace X"), the optimistic move /
  * rename / create-folder / delete with refresh-on-failure, the per-workspace
  * loading and error flags — all of it was copied per resource:
- * notebookTreeStore and dashboardTreeStore differed by 29 lines out of 400
+ * notebookTreeStore and a sibling tree store differed by 29 lines out of 400
  * once the noun was renamed, and consoleTreeStore forked to grow a third
  * section and then drifted 600 lines. A resource now supplies only its
  * entry type and its endpoints; the mechanics live here once. Anything a

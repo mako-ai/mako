@@ -7,8 +7,8 @@
  * additional concurrent consumers (the SDK never aborts the previous
  * `activeResponse` when a resume attaches). Tool PARTS merge by `toolCallId`
  * so the duplication is invisible in the transcript, but the dispatch is not
- * deduped anywhere — one `create_dashboard` call executed N times (the
- * "3 dashboards / 3 data sources from a single tool call" incident).
+ * deduped anywhere — one create call executed N times (the "3 entities / 3
+ * data sources from a single tool call" incident).
  *
  * The gate is scoped to a chat and a page instance:
  *  - `markDispatched` returns false when this page instance already dispatched

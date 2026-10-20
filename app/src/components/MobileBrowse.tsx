@@ -40,7 +40,6 @@ import {
 import { tabKindIcon } from "../lib/entity-icons";
 import { relativeTime } from "../lib/relative-time";
 import { tabKindEntityLabel } from "../lib/entity-labels";
-import { focusDashboardTab } from "../dashboard-runtime/shell";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import { focusAppsTab } from "../apps-runtime/shell";
 
@@ -214,9 +213,6 @@ export default function MobileBrowse({
             });
           break;
         }
-        case "dashboard":
-          focusDashboardTab(entry.id, entry.title);
-          break;
         case "notebook":
           focusNotebookTab(entry.id, entry.title);
           break;
@@ -294,7 +290,7 @@ export default function MobileBrowse({
         </Tooltip>
       </Box>
 
-      {/* Search = the command palette: consoles (server search), dashboards,
+      {/* Search = the command palette: consoles (server search),
           flows, projects and open tabs, one field. */}
       <Box sx={{ px: 1.5, pb: 1 }}>
         <ButtonBase
@@ -321,7 +317,7 @@ export default function MobileBrowse({
               color: "text.secondary",
             }}
           >
-            Search consoles, dashboards, apps…
+            Search consoles, apps…
           </Typography>
         </ButtonBase>
       </Box>

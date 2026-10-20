@@ -105,7 +105,7 @@ describe("convertStoredMessages", () => {
         role: "assistant",
         parts: [
           {
-            type: "tool-create_dashboard",
+            type: "tool-create_console",
             toolCallId: "c1",
             state: "output-available",
             output: { success: true },
@@ -125,7 +125,7 @@ describe("convertStoredMessages", () => {
         role: "assistant",
         parts: [
           {
-            type: "tool-create_data_source",
+            type: "tool-app_create_data_binding",
             toolCallId: "c1",
             state: "input-available",
             input: { name: "x" },
@@ -160,7 +160,7 @@ describe("convertStoredMessages", () => {
           role: "assistant",
           parts: [
             {
-              type: "tool-create_dashboard",
+              type: "tool-create_console",
               toolCallId: "c1",
               state: "input-available",
               input: { title: "X" },

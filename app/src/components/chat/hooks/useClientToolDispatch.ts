@@ -11,15 +11,15 @@ import type { UIMessage } from "ai";
 import { useConsoleStore } from "../../../store/consoleStore";
 import { generateObjectId } from "../../../utils/objectId";
 import { executeConsoleAgentTool } from "../../../agent-runtime/console-agent-tools";
-import { executeDashboardAgentTool } from "../../../dashboard-runtime/agent-tools";
 import { executeDbtAgentTool } from "../../../dbt-runtime/agent-tools";
 import { executeNotebookAgentTool } from "../../../notebook-runtime/agent-tools";
 import { executeDataSourceTool } from "../../../agent-runtime/data-source-tools";
+import { captureScreenshot } from "../../../agent-runtime/screenshot-agent-tools";
 import {
-  DASHBOARD_EXECUTOR_TOOL_NAMES,
   DBT_EXECUTOR_TOOL_NAMES,
   DATA_SOURCE_EXECUTOR_TOOL_NAMES,
   NOTEBOOK_EXECUTOR_TOOL_NAMES,
+  SCREENSHOT_EXECUTOR_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../../../agent-runtime/client-tool-manifest";
@@ -89,7 +89,7 @@ export interface UseClientToolDispatchArgs {
 
 /**
  * Client-side tool dispatch: the `onToolCall` body (executor routing for
- * console/dashboard/app/dbt/data-source/flow tools), the orphan recovery
+ * console/app/dbt/notebook/data-source/flow tools), the orphan recovery
  * re-dispatch, and the orphan-rescue effect. All dispatch flows through the
  * registry's ToolDispatchGate so a replayed or re-delivered tool call can
  * never execute twice.
@@ -146,8 +146,8 @@ export function useClientToolDispatch({
       // wake/refresh/error) and additional concurrent stream consumers
       // re-deliver `tool-input-available` chunks for calls this page already
       // dispatched. The tool PART merges by id so the transcript looks fine,
-      // but re-dispatching re-runs the side effect — one create_dashboard call
-      // must never create two dashboards.
+      // but re-dispatching re-runs the side effect — one create call must never
+      // create two entities.
       if (!toolDispatchGateRef.current.markDispatched(toolCall.toolCallId)) {
         return;
       }
@@ -170,74 +170,21 @@ export function useClientToolDispatch({
           return;
         }
 
-        // --- Dashboard tools (client-side) ---
-        if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
-          const activeDashboardTool = registerActiveClientToolCall(
-            toolName,
-            toolCall.toolCallId,
-          );
-
-          // Fire-and-forget for ALL dashboard client work, never await it here.
-          // The AI SDK awaits onToolCall while reading the SSE stream, and only
-          // sends the follow-up request with the tool output once the stream
-          // reaches its finish chunk. Awaiting any client work inside
-          // onToolCall blocks the reader from processing that finish chunk, so
-          // the continuation hangs until the HTTP/proxy stream times out — even
-          // for tools that resolve in milliseconds (e.g. remove_widget,
-          // get_dashboard_state). Settling asynchronously lets the finish chunk
-          // be read immediately and the stream close cleanly.
-          void (async () => {
-            try {
-              const dashboardToolOutput = await executeDashboardAgentTool(
-                toolName,
-                input,
-                {
-                  executionId: activeDashboardTool.executionId,
-                  signal: activeDashboardTool.abortController.signal,
-                  // Server-side idempotency: another window attached to the
-                  // same stream may execute this exact call too.
-                  toolCallId: toolCall.toolCallId,
-                },
-              );
-
-              if (activeDashboardTool.abortController.signal.aborted) {
-                return;
-              }
-
-              void settleActiveClientToolCall(
-                toolName,
-                toolCall.toolCallId,
-                dashboardToolOutput ?? {
-                  success: false,
-                  error: `Dashboard tool "${toolName}" did not return a result.`,
-                },
-              );
-            } catch (dashboardError) {
-              if (
-                manualStopRequestedRef.current ||
-                activeDashboardTool.abortController.signal.aborted
-              ) {
-                return;
-              }
-              void settleActiveClientToolCall(toolName, toolCall.toolCallId, {
-                success: false,
-                error:
-                  dashboardError instanceof Error
-                    ? dashboardError.message
-                    : "Dashboard tool execution failed",
-              });
-            }
-          })();
-          return;
-        }
-
         // --- dbt tools (client-side) ---
         if (DBT_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
           const activeDbtTool = registerActiveClientToolCall(
             toolName,
             toolCall.toolCallId,
           );
-          // Fire-and-forget, same rationale as app tools above.
+          // Fire-and-forget for ALL client tool work, never await it here.
+          // The AI SDK awaits onToolCall while reading the SSE stream, and only
+          // sends the follow-up request with the tool output once the stream
+          // reaches its finish chunk. Awaiting any client work inside
+          // onToolCall blocks the reader from processing that finish chunk, so
+          // the continuation hangs until the HTTP/proxy stream times out — even
+          // for tools that resolve in milliseconds. Settling asynchronously
+          // lets the finish chunk be read immediately and the stream close
+          // cleanly.
           void (async () => {
             try {
               const dbtToolOutput = await executeDbtAgentTool(toolName, input);
@@ -275,7 +222,7 @@ export function useClientToolDispatch({
             toolName,
             toolCall.toolCallId,
           );
-          // Fire-and-forget, same rationale as app tools above.
+          // Fire-and-forget, same rationale as dbt tools above.
           void (async () => {
             try {
               const notebookOutput = await executeNotebookAgentTool(
@@ -314,7 +261,44 @@ export function useClientToolDispatch({
           return;
         }
 
-        // --- Shared data source tools (apps + dashboards) ---
+        // --- Screenshot tool (client-side) ---
+        if (SCREENSHOT_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeScreenshotTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          // Fire-and-forget, same rationale as dbt tools above.
+          void (async () => {
+            try {
+              const screenshotOutput = await captureScreenshot(input, {
+                signal: activeScreenshotTool.abortController.signal,
+              });
+              if (activeScreenshotTool.abortController.signal.aborted) return;
+              void settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                screenshotOutput,
+              );
+            } catch (screenshotError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeScreenshotTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              void settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  screenshotError instanceof Error
+                    ? screenshotError.message
+                    : "Screenshot capture failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- Shared data source tools (apps) ---
         if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
           const activeDataTool = registerActiveClientToolCall(
             toolName,
@@ -577,20 +561,15 @@ export function useClientToolDispatch({
             signal: AbortSignal;
           }) => Promise<Record<string, unknown> | null | undefined>)
         | null = null;
-      if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(name)) {
-        run = ({ executionId, signal }) =>
-          executeDashboardAgentTool(toolName, input, {
-            executionId,
-            signal,
-            toolCallId,
-          });
-      } else if (DBT_EXECUTOR_TOOL_NAMES.has(name)) {
+      if (DBT_EXECUTOR_TOOL_NAMES.has(name)) {
         run = () => executeDbtAgentTool(toolName, input);
       } else if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(name)) {
         run = () => executeDataSourceTool(toolName, input);
       } else if (NOTEBOOK_EXECUTOR_TOOL_NAMES.has(name)) {
         run = ({ executionId, signal }) =>
           executeNotebookAgentTool(toolName, input, { executionId, signal });
+      } else if (SCREENSHOT_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = ({ signal }) => captureScreenshot(input, { signal });
       }
       if (!run) return false;
 

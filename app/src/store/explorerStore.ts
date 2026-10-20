@@ -4,7 +4,6 @@
  * Manages expanded/collapsed state for all explorer panels:
  * - Database explorer (servers, databases, collections, views, nodes)
  * - Console explorer (folders)
- * - Dashboard explorer (folders)
  * - View explorer (collections)
  *
  * Uses Record<string, true> for O(1) lookups.
@@ -27,10 +26,6 @@ interface ExplorerState {
   };
 
   console: {
-    expandedFolders: ExpandedMap;
-  };
-
-  dashboard: {
     expandedFolders: ExpandedMap;
   };
 
@@ -72,11 +67,6 @@ interface ExplorerActions {
   expandFolder: (folderKey: string) => void;
   isFolderExpanded: (folderKey: string) => boolean;
 
-  // Dashboard explorer
-  toggleDashboardFolder: (folderKey: string) => void;
-  expandDashboardFolder: (folderKey: string) => void;
-  isDashboardFolderExpanded: (folderKey: string) => boolean;
-
   // Notebook explorer
   toggleNotebookFolder: (folderKey: string) => void;
   expandNotebookFolder: (folderKey: string) => void;
@@ -112,9 +102,6 @@ const createInitialState = (): ExplorerState => ({
     expandedNodes: {},
   },
   console: {
-    expandedFolders: {},
-  },
-  dashboard: {
     expandedFolders: {},
   },
   notebook: {
@@ -199,19 +186,6 @@ export const useExplorerStore = create<ExplorerStore>()(
         }),
 
       isFolderExpanded: folderKey => !!get().console.expandedFolders[folderKey],
-
-      toggleDashboardFolder: folderKey =>
-        set(state => {
-          toggleKey(state.dashboard.expandedFolders, folderKey);
-        }),
-
-      expandDashboardFolder: folderKey =>
-        set(state => {
-          state.dashboard.expandedFolders[folderKey] = true;
-        }),
-
-      isDashboardFolderExpanded: folderKey =>
-        !!get().dashboard.expandedFolders[folderKey],
 
       toggleNotebookFolder: folderKey =>
         set(state => {
@@ -307,13 +281,6 @@ export const useExplorerStore = create<ExplorerStore>()(
           }
           if (s?.console) {
             s.console.expandedFolders = migrateArray(s.console.expandedFolders);
-          }
-          if (s?.dashboard) {
-            s.dashboard.expandedFolders = migrateArray(
-              s.dashboard.expandedFolders,
-            );
-          } else {
-            s.dashboard = { expandedFolders: {} };
           }
           if (s?.notebook) {
             s.notebook.expandedFolders = migrateArray(

@@ -3,34 +3,32 @@ import { immer } from "zustand/middleware/immer";
 import { api, unwrap, toErrorMessage as errMessage } from "../api";
 
 /**
- * Typed base path per resource. Collaborator + sharing endpoints exist for all
- * three resources, so these literal templates resolve to valid spec paths and
+ * Typed base path per resource. Collaborator + sharing endpoints exist for both
+ * resources, so these literal templates resolve to valid spec paths and
  * give the typed client compile-time path/param checking.
  */
 const RESOURCE_BASE = {
-  dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}",
   console: "/api/workspaces/{workspaceId}/consoles/{id}",
   app: "/api/workspaces/{workspaceId}/apps/{id}",
 } as const;
 
 /**
- * Public links are only supported for dashboards and apps (not consoles), so
+ * Public links are only supported for apps (not consoles), so
  * these literal templates resolve to valid spec paths for the typed client.
  */
 const PUBLIC_SHARE_BASE = {
-  dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}/public-share",
   app: "/api/workspaces/{workspaceId}/apps/{id}/public-share",
 } as const;
 
 /**
- * Unified sharing store for dashboards, consoles and apps.
+ * Unified sharing store for consoles and apps.
  *
  * Backs the Google Workspace-style ShareDialog: per-user collaborators
  * (viewer/editor), general access (private/workspace + workspace role) and
- * public links with optional password (dashboards + apps).
+ * public links with optional password (apps only).
  */
 
-export type ShareResourceType = "dashboard" | "console" | "app";
+export type ShareResourceType = "console" | "app";
 export type ShareRole = "viewer" | "editor";
 export type ShareAccess = "private" | "workspace";
 
@@ -90,7 +88,6 @@ export function buildPublicShareUrl(
  * lib/tab-routing.ts so the copied link hydrates into the right tab.
  */
 const RESOURCE_URL_PREFIX: Record<ShareResourceType, string> = {
-  dashboard: "d",
   console: "c",
   app: "apps",
 };
