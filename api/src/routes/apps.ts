@@ -163,7 +163,13 @@ import {
   type ViewerIdentity,
 } from "../apps/app-viewer.service";
 import { ensureAutoJoin } from "../services/auto-join.service";
-import { liveViewerRedirect } from "../apps/live-viewer-redirect";
+import {
+  anonymousViewerRedirect,
+  liveViewerRedirect,
+} from "../apps/live-viewer-redirect";
+import { getCookie } from "hono/cookie";
+import type { Context } from "hono";
+import { sessionManager } from "../auth/session";
 import {
   forgetTerminalCaches,
   killAllTerminalSessions,
@@ -214,6 +220,28 @@ const logger = loggers.api("apps");
 
 export const appsRoutes = createRouter();
 
+async function anonymousLiveLinkToViewer(
+  c: Context,
+  next: () => Promise<void>,
+): Promise<Response | void> {
+  const target =
+    c.req.method === "GET"
+      ? anonymousViewerRedirect({
+          hasCredentials:
+            !!c.req.header("authorization") ||
+            !!getCookie(c, sessionManager.sessionCookieName),
+          accept: c.req.header("accept"),
+          userAgent: c.req.header("user-agent"),
+          workspaceId: c.req.param("workspaceId"),
+          ref: c.req.param("id"),
+          path: c.req.path,
+          url: c.req.url,
+        })
+      : null;
+  if (target) return c.redirect(target, 302);
+  await next();
+}
+
 const WorkspaceParam = z.object({
   workspaceId: z
     .string()
@@ -222,6 +250,14 @@ const WorkspaceParam = z.object({
 const ProjectParam = WorkspaceParam.extend({
   id: z.string().openapi({ param: { name: "id", in: "path" } }),
 });
+
+// A copied workspace link (`…/apps/<id>/live/`) opened without any session —
+// a person signed out, or a chat app's link-preview crawler — goes to the
+// viewer page instead of a 401: the page signs people in, and its HTML
+// carries the app's link-preview tags (share-og.service). Only the app's
+// top-level page, only for browsers and crawlers; API clients still get 401.
+appsRoutes.use("/:id/live/*", anonymousLiveLinkToViewer);
+appsRoutes.use("/:id/live", anonymousLiveLinkToViewer);
 
 appsRoutes.use("*", unifiedAuthMiddleware);
 

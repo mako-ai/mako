@@ -34,3 +34,43 @@ export function liveViewerRedirect(input: {
   if (url.searchParams.has("raw")) return null;
   return `/view/${encodeURIComponent(workspaceId)}/${encodeURIComponent(ref)}${url.search}`;
 }
+
+/**
+ * Link-preview crawlers (WhatsApp, Slack, LinkedIn, Facebook/iMessage,
+ * Teams, X, Discord, Telegram). They are never signed in, and many send
+ * `Accept: *` rather than text/html.
+ */
+const PREVIEW_CRAWLER =
+  /WhatsApp|facebookexternalhit|Facebot|Slackbot|LinkedInBot|Twitterbot|TelegramBot|Discordbot|SkypeUriPreview|Teams|redditbot|Pinterest|Embedly|Applebot/i;
+
+export function isPreviewCrawler(userAgent: string | undefined): boolean {
+  return !!userAgent && PREVIEW_CRAWLER.test(userAgent);
+}
+
+/**
+ * Where an UNAUTHENTICATED open of an app's live link goes: the viewer page,
+ * whose HTML signs people in and carries the app's link-preview tags. Only
+ * the app's top-level page, only with no credentials at all, and only for a
+ * browser (asks for HTML) or a preview crawler — an API client keeps its 401.
+ */
+export function anonymousViewerRedirect(input: {
+  hasCredentials: boolean;
+  accept: string | undefined;
+  userAgent: string | undefined;
+  workspaceId: string | undefined;
+  ref: string | undefined;
+  path: string;
+  url: string;
+}): string | null {
+  if (input.hasCredentials) return null;
+  const wantsHtml = (input.accept ?? "").includes("text/html");
+  if (!wantsHtml && !isPreviewCrawler(input.userAgent)) return null;
+  return liveViewerRedirect({
+    fetchDest: "document",
+    fetchMode: "navigate",
+    workspaceId: input.workspaceId,
+    ref: input.ref,
+    path: input.path,
+    url: input.url,
+  });
+}

@@ -18,8 +18,17 @@
  * uses the static generic `/og-default.png` (no server-side rasterizer is
  * available, and adding a native image stack for this is not worth it).
  */
-import { AppProject, type IAppProject } from "../database/workspace-schema";
-import { resolveAppRef, type AppThumbnailRef } from "../apps/app-index.service";
+import { Types } from "mongoose";
+import {
+  AppProject,
+  Workspace,
+  type IAppProject,
+} from "../database/workspace-schema";
+import {
+  resolveAppRef,
+  type AppIndexRow,
+  type AppThumbnailRef,
+} from "../apps/app-index.service";
 import { readThumbnailBlob } from "../apps/app-thumbnail";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 
@@ -141,7 +150,14 @@ export async function shareImageFor(
 ): Promise<ShareImage | null> {
   const workspaceId = app.workspaceId.toString();
   const row = await resolveAppRef(workspaceId, app._id.toString());
-  const thumb: AppThumbnailRef | undefined = row?.thumbnail;
+  return rasterThumbnail(workspaceId, row?.thumbnail);
+}
+
+/** An app's raster thumbnail by its index ref; null for SVG or none. */
+export async function rasterThumbnail(
+  workspaceId: string,
+  thumb: AppThumbnailRef | undefined,
+): Promise<ShareImage | null> {
   const contentType = thumb ? rasterTypeOf(thumb.file) : null;
   if (!thumb || !contentType) return null;
   const hit = imageCache.get(thumb.oid);
@@ -193,15 +209,7 @@ export async function ogTagsForShare(
   origin: string,
   pathname: string,
 ): Promise<OgTags> {
-  const generic: OgTags = {
-    title: GENERIC_SHARE_TITLE,
-    description: GENERIC_SHARE_DESCRIPTION,
-    url: `${origin}${pathname}`,
-    image: `${origin}/og-default.png`,
-    imageType: "image/png",
-    imageWidth: 1200,
-    imageHeight: 630,
-  };
+  const generic = genericTags(origin, pathname);
   const app = await findShareByToken(token);
   if (!isOpenShare(app)) return generic;
   const row = await resolveAppRef(
@@ -227,6 +235,131 @@ export async function ogTagsForShare(
           imageHeight: generic.imageHeight,
         }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// In-app links (/view/<workspace>/<app>)
+// ---------------------------------------------------------------------------
+
+/**
+ * The in-app viewer URL (`/view/<workspaceId>/<appRef>`), the page every
+ * copied workspace link lands on. `/apps/<ref>` tab URLs carry no workspace,
+ * so they cannot be resolved without a session and stay generic.
+ */
+const VIEW_PATH = /^\/view\/([0-9a-fA-F]{24})\/([^/?#]+)\/?$/;
+
+export function appLinkFromPath(
+  pathname: string,
+): { workspaceId: string; ref: string } | null {
+  const m = VIEW_PATH.exec(pathname);
+  if (!m) return null;
+  let ref: string;
+  try {
+    ref = decodeURIComponent(m[2]);
+  } catch {
+    return null;
+  }
+  return { workspaceId: m[1].toLowerCase(), ref };
+}
+
+/**
+ * The app behind an in-app link, when its preview may name it: the crawler
+ * is anonymous, so only what every member of the workspace can already see
+ * qualifies. That is a WORKSPACE-tree app (`apps/…`, never a personal tree)
+ * whose state row, if any, is workspace-wide access — and only while the
+ * workspace has not turned link previews off (`settings.linkPreviews`).
+ * Anything else, including an unknown workspace or app, is null (generic).
+ */
+export async function previewableWorkspaceApp(
+  workspaceId: string,
+  ref: string,
+): Promise<AppIndexRow | null> {
+  if (!Types.ObjectId.isValid(workspaceId)) return null;
+  const ws = new Types.ObjectId(workspaceId);
+  const workspace = await Workspace.findById(ws)
+    .select("settings.linkPreviews")
+    .lean();
+  if (!workspace || workspace.settings?.linkPreviews === false) return null;
+  const row = await resolveAppRef(workspaceId, ref).catch(() => null);
+  if (!row || row.scope !== "workspace") return null;
+  if (Types.ObjectId.isValid(row.appId)) {
+    const state = await AppProject.findOne({
+      _id: new Types.ObjectId(row.appId),
+      workspaceId: ws,
+    })
+      .select("access")
+      .lean();
+    if (state && state.access !== "workspace") return null;
+  }
+  return row;
+}
+
+/** The public image URL of a previewable app, by id. */
+export function appLinkImagePath(
+  workspaceId: string,
+  appId: string,
+  oid: string,
+): string {
+  return `/api/og/app-image/${workspaceId}/${appId}?v=${oid.slice(0, 12)}`;
+}
+
+/** Tags for an in-app link: the app's when previewable, generic otherwise. */
+export async function ogTagsForAppLink(
+  workspaceId: string,
+  ref: string,
+  origin: string,
+  pathname: string,
+): Promise<OgTags> {
+  const generic = genericTags(origin, pathname);
+  const row = await previewableWorkspaceApp(workspaceId, ref);
+  if (!row) return generic;
+  const image = await rasterThumbnail(workspaceId, row.thumbnail).catch(
+    () => null,
+  );
+  return {
+    title: row.title || GENERIC_SHARE_TITLE,
+    description: clip(row.description || GENERIC_SHARE_DESCRIPTION, 200),
+    url: `${origin}${pathname}`,
+    ...(image
+      ? {
+          image: `${origin}${appLinkImagePath(workspaceId, row.appId, image.oid)}`,
+          imageType: image.contentType,
+          imageWidth: image.width,
+          imageHeight: image.height,
+        }
+      : {
+          image: generic.image,
+          imageType: generic.imageType,
+          imageWidth: generic.imageWidth,
+          imageHeight: generic.imageHeight,
+        }),
+  };
+}
+
+function genericTags(origin: string, pathname: string): OgTags {
+  return {
+    title: GENERIC_SHARE_TITLE,
+    description: GENERIC_SHARE_DESCRIPTION,
+    url: `${origin}${pathname}`,
+    image: `${origin}/og-default.png`,
+    imageType: "image/png",
+    imageWidth: 1200,
+    imageHeight: 630,
+  };
+}
+
+/** Tags for any URL the SPA serves that has a preview; null otherwise. */
+export async function ogTagsForPath(
+  pathname: string,
+  origin: string,
+): Promise<OgTags | null> {
+  const token = shareTokenFromPath(pathname);
+  if (token) return ogTagsForShare(token, origin, pathname);
+  const link = appLinkFromPath(pathname);
+  if (link) {
+    return ogTagsForAppLink(link.workspaceId, link.ref, origin, pathname);
+  }
+  return null;
 }
 
 const escapeAttr = (s: string) =>

@@ -15,6 +15,7 @@ import {
   AppIndexEntry,
   AppIndexHead,
   AppProject,
+  Workspace,
 } from "../database/workspace-schema";
 import { initRepo, repoDirFor } from "../apps/repository.service";
 import {
@@ -22,11 +23,15 @@ import {
   unbindTestWorkspaceRepo,
 } from "../apps/bind-test-workspace-repo";
 import { invalidateAppsIndexCache } from "../apps/app-index.service";
+import { anonymousViewerRedirect } from "../apps/live-viewer-redirect";
 import { publicShareRoutes } from "../routes/public-share";
+import { ogRoutes } from "../routes/og";
 import {
   GENERIC_SHARE_TITLE,
+  appLinkFromPath,
   imageSize,
   injectOgTags,
+  ogTagsForPath,
   ogTagsForShare,
   publicOrigin,
   shareTokenFromPath,
@@ -55,6 +60,9 @@ const WS = new Types.ObjectId().toString();
 const OPEN = new Types.ObjectId();
 const LOCKED = new Types.ObjectId();
 const SVG_ONLY = new Types.ObjectId();
+const PLAIN = new Types.ObjectId();
+const RESTRICTED = new Types.ObjectId();
+const PERSONAL = new Types.ObjectId();
 const ORIGIN = "https://app.mako.ai";
 
 const manifest = (id: Types.ObjectId, title: string, description?: string) =>
@@ -87,8 +95,20 @@ beforeEach(async () => {
       `A very long description ${"word ".repeat(80)}end`,
     ),
     "apps/svg/thumbnail.svg": "<svg/>",
+    // In-app links: a workspace app with no state row, a restricted one,
+    // and one in a personal tree.
+    "apps/plain/mako.json": manifest(PLAIN, "Team board", "Weekly numbers"),
+    "apps/plain/thumbnail.png": "PLAIN-PNG",
+    "apps/restricted/mako.json": manifest(RESTRICTED, "Board pack"),
+    "apps/restricted/thumbnail.png": "RESTRICTED-PNG",
+    "users/alice/apps/mine/mako.json": manifest(PERSONAL, "Alice's notes"),
+    "users/alice/apps/mine/thumbnail.png": "PERSONAL-PNG",
   });
   await bindTestWorkspaceRepo(WS);
+  await Workspace.updateOne(
+    { _id: new Types.ObjectId(WS) },
+    { $unset: { "settings.linkPreviews": 1 } },
+  );
   const base = {
     workspaceId: new Types.ObjectId(WS),
     access: "workspace" as const,
@@ -119,6 +139,15 @@ beforeEach(async () => {
       slug: "svg",
       path: "apps/svg",
       publicShare: { enabled: true, token: "svg-share" },
+    },
+    {
+      ...base,
+      _id: RESTRICTED,
+      title: "Board pack",
+      slug: "restricted",
+      path: "apps/restricted",
+      access: "private",
+      owner_id: new Types.ObjectId().toString(),
     },
   ]);
 });
@@ -195,6 +224,133 @@ describe("share link previews", () => {
       const res = await publicShareRoutes.request(`/${token}/og-image`);
       expect(res.status).toBe(404);
     }
+  });
+});
+
+describe("in-app link previews", () => {
+  const view = (id: Types.ObjectId | string) =>
+    `/view/${WS}/${encodeURIComponent(typeof id === "string" ? id : id.toHexString())}`;
+
+  it("parses the viewer URL and nothing else", () => {
+    expect(appLinkFromPath(view(PLAIN))).toEqual({
+      workspaceId: WS,
+      ref: PLAIN.toHexString(),
+    });
+    expect(appLinkFromPath(`/view/${WS}/team%20board/`)?.ref).toBe(
+      "team board",
+    );
+    expect(appLinkFromPath("/apps/plain")).toBeNull();
+    expect(appLinkFromPath(`/view/not-an-id/${PLAIN}`)).toBeNull();
+  });
+
+  it("names a workspace-wide app, by id or by slug, with its raster thumbnail", async () => {
+    for (const ref of [PLAIN.toHexString(), "plain"]) {
+      const tags = await ogTagsForPath(view(ref), ORIGIN);
+      expect(tags?.title).toBe("Team board");
+      expect(tags?.description).toBe("Weekly numbers");
+      expect(tags?.url).toBe(`${ORIGIN}${view(ref)}`);
+      expect(tags?.image).toMatch(
+        new RegExp(
+          `^${ORIGIN}/api/og/app-image/${WS}/${PLAIN.toHexString()}\\?v=[0-9a-f]{12}$`,
+        ),
+      );
+    }
+  });
+
+  it("stays generic for restricted, personal, unknown apps and opted-out workspaces", async () => {
+    for (const ref of [
+      RESTRICTED.toHexString(),
+      PERSONAL.toHexString(),
+      "users/alice/apps/mine",
+      "no-such-app",
+    ]) {
+      const tags = await ogTagsForPath(view(ref), ORIGIN);
+      expect(tags?.title).toBe(GENERIC_SHARE_TITLE);
+      expect(tags?.image).toBe(`${ORIGIN}/og-default.png`);
+      expect(JSON.stringify(tags)).not.toMatch(/Board pack|Alice/);
+    }
+    await Workspace.updateOne(
+      { _id: new Types.ObjectId(WS) },
+      { $set: { "settings.linkPreviews": false } },
+    );
+    const tags = await ogTagsForPath(view(PLAIN), ORIGIN);
+    expect(tags?.title).toBe(GENERIC_SHARE_TITLE);
+  });
+
+  it("serves the image under the same rule", async () => {
+    const ok = await ogRoutes.request(
+      `/app-image/${WS}/${PLAIN.toHexString()}`,
+    );
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("content-type")).toBe("image/png");
+    expect(ok.headers.get("cache-control")).toBe("public, max-age=86400");
+    expect(await ok.text()).toBe("PLAIN-PNG");
+    for (const id of [RESTRICTED, PERSONAL, SVG_ONLY]) {
+      const res = await ogRoutes.request(
+        `/app-image/${WS}/${id.toHexString()}`,
+      );
+      expect(res.status).toBe(404);
+    }
+    await Workspace.updateOne(
+      { _id: new Types.ObjectId(WS) },
+      { $set: { "settings.linkPreviews": false } },
+    );
+    const off = await ogRoutes.request(
+      `/app-image/${WS}/${PLAIN.toHexString()}`,
+    );
+    expect(off.status).toBe(404);
+  });
+
+  it("sends an anonymous browser or crawler from a live link to the viewer page", () => {
+    const base = {
+      workspaceId: WS,
+      ref: "plain",
+      path: `/api/workspaces/${WS}/apps/plain/live/`,
+      url: `https://app.mako.ai/api/workspaces/${WS}/apps/plain/live/?q=1`,
+    };
+    expect(
+      anonymousViewerRedirect({
+        ...base,
+        hasCredentials: false,
+        accept: "*/*",
+        userAgent: "WhatsApp/2.23.20.0",
+      }),
+    ).toBe(`/view/${WS}/plain?q=1`);
+    expect(
+      anonymousViewerRedirect({
+        ...base,
+        hasCredentials: false,
+        accept: "text/html,application/xhtml+xml",
+        userAgent: "Mozilla/5.0",
+      }),
+    ).toBe(`/view/${WS}/plain?q=1`);
+    // An API client keeps its 401; a signed-in request is served as before.
+    expect(
+      anonymousViewerRedirect({
+        ...base,
+        hasCredentials: false,
+        accept: "application/json",
+        userAgent: "curl/8",
+      }),
+    ).toBeNull();
+    expect(
+      anonymousViewerRedirect({
+        ...base,
+        hasCredentials: true,
+        accept: "text/html",
+        userAgent: "WhatsApp/2.23",
+      }),
+    ).toBeNull();
+    // Only the app's page: its assets are not redirected.
+    expect(
+      anonymousViewerRedirect({
+        ...base,
+        path: `/api/workspaces/${WS}/apps/plain/live/assets/x.js`,
+        hasCredentials: false,
+        accept: "*/*",
+        userAgent: "WhatsApp/2.23",
+      }),
+    ).toBeNull();
   });
 });
 

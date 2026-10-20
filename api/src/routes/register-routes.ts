@@ -30,6 +30,7 @@ import { notebookDataRoutes } from "./notebook-data";
 import { notebookRoutes } from "./notebooks";
 import { notebookSessionRoutes } from "./notebook-sessions";
 import { publicShareRoutes } from "./public-share";
+import { ogRoutes } from "./og";
 import { scheduledQueryRoutes } from "./scheduled-queries";
 import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
@@ -141,6 +142,8 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/apps-v2-box", appsBoxRoutes);
   // Intentionally public: token-gated read-only shares (apps).
   app.route("/api/share", publicShareRoutes);
+  // Intentionally public: link-preview images of workspace-wide apps.
+  app.route("/api/og", ogRoutes);
   app.route("/api/agent", agentRoutes);
   app.route("/api/admin", adminRoutes);
   app.route("/api/connectors", connectorRoutes);

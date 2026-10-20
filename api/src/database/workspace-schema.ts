@@ -124,6 +124,13 @@ export interface IWorkspace extends Document {
      * app's link, signs in, and is simply in.
      */
     autoJoin?: IWorkspaceAutoJoin;
+    /**
+     * Whether in-app app links (`/view/<workspace>/<app>`) unfurl with the
+     * app's title, description and thumbnail in chat apps (Open Graph,
+     * share-og.service). Only workspace-wide apps ever do. Default on;
+     * `false` makes every in-app link preview generic.
+     */
+    linkPreviews?: boolean;
   };
   billing: IWorkspaceBilling;
   apiKeys?: IWorkspaceApiKey[];
@@ -1391,6 +1398,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         ),
         required: false,
       },
+      linkPreviews: { type: Boolean, required: false },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },

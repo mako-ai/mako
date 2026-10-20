@@ -90,6 +90,7 @@ const AutoJoinBody = jsonBody(
     role: z.enum(["member", "viewer"]).default("viewer"),
   }),
 );
+const LinkPreviewsBody = jsonBody(z.object({ enabled: z.boolean() }));
 const CreateInviteBody = jsonBody(
   z.object({ email: z.string(), role: MemberRole }),
 );
@@ -1279,6 +1280,70 @@ workspaceRoutes.openapi(
         500,
       );
     }
+  },
+);
+
+// In-app link previews — read
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/link-previews",
+    tags: ["Workspaces"],
+    summary: "In-app link previews setting",
+    description:
+      "Whether in-app app links (/view/<workspace>/<app>) unfurl in chat apps with the app's title, description and thumbnail. Only workspace-tree apps visible to every member ever do; default on.",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+    }
+    const fresh = await Workspace.findById(workspace._id)
+      .select("settings.linkPreviews")
+      .lean();
+    return c.json({
+      success: true,
+      data: { enabled: fresh?.settings?.linkPreviews !== false },
+    });
+  },
+);
+
+// In-app link previews — write (owners and admins)
+workspaceRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/link-previews",
+    tags: ["Workspaces"],
+    summary: "Turn in-app link previews on or off",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: LinkPreviewsBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+    }
+    const { enabled } = c.req.valid("json");
+    await Workspace.updateOne(
+      { _id: workspace._id },
+      { $set: { "settings.linkPreviews": enabled } },
+    );
+    logger.info("Workspace link previews updated", {
+      workspaceId: workspace._id.toString(),
+      by: c.get("user")?.id,
+      enabled,
+    });
+    return c.json({ success: true, data: { enabled } });
   },
 );
 

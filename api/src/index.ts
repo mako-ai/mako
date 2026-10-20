@@ -13,9 +13,8 @@ import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
 import {
   injectOgTags,
-  ogTagsForShare,
+  ogTagsForPath,
   publicOrigin,
-  shareTokenFromPath,
 } from "./services/share-og.service";
 import { registerApiRoutes } from "./routes/register-routes";
 import { edgeOriginMiddleware } from "./middleware/edge-origin";
@@ -310,24 +309,22 @@ app.use("*", async (c, next) => {
 });
 
 /**
- * A public share link's HTML carries Open Graph tags (share-og.service):
- * link-preview crawlers do not run the SPA. Any failure serves the page
- * untouched — a preview is never worth a broken share.
+ * Link previews (share-og.service): a public share's HTML, and an in-app
+ * app link's (`/view/<workspace>/<app>`), carry Open Graph tags —
+ * link-preview crawlers do not run the SPA, and are never signed in. Only
+ * the head changes; any failure serves the page untouched.
  */
 async function withShareLinkPreview(
   c: Context,
   requestPath: string,
   html: string,
 ): Promise<string> {
-  const token = shareTokenFromPath(requestPath);
-  if (!token) return html;
   try {
-    const tags = await ogTagsForShare(
-      token,
-      publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
+    const tags = await ogTagsForPath(
       requestPath,
+      publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
     );
-    return injectOgTags(html, tags);
+    return tags ? injectOgTags(html, tags) : html;
   } catch {
     return html;
   }
