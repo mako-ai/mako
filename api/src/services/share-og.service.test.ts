@@ -81,7 +81,11 @@ beforeEach(async () => {
     "apps/open/thumbnail.png": "PNG-BYTES",
     "apps/locked/mako.json": manifest(LOCKED, "Secret board", "Do not leak"),
     "apps/locked/thumbnail.png": "SECRET-PNG",
-    "apps/svg/mako.json": manifest(SVG_ONLY, "Vector only"),
+    "apps/svg/mako.json": manifest(
+      SVG_ONLY,
+      "Vector only",
+      `A very long description ${"word ".repeat(80)}end`,
+    ),
     "apps/svg/thumbnail.svg": "<svg/>",
   });
   await bindTestWorkspaceRepo(WS);
@@ -171,6 +175,9 @@ describe("share link previews", () => {
   it("falls back to the generic raster image when the app only has an SVG", async () => {
     const tags = await ogTagsForShare("svg-share", ORIGIN, "/share/svg-share");
     expect(tags.title).toBe("Vector only");
+    // A paragraph-long description is clipped for the preview card.
+    expect(tags.description.length).toBeLessThanOrEqual(200);
+    expect(tags.description.endsWith("…")).toBe(true);
     expect(tags.image).toBe(`${ORIGIN}/og-default.png`);
     expect(tags.imageWidth).toBe(1200);
     expect(tags.imageHeight).toBe(630);

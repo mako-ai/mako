@@ -178,6 +178,15 @@ export interface OgTags {
   imageHeight?: number;
 }
 
+/** Previews show ~2 lines; a mako.json description can be a paragraph. */
+function clip(text: string, max: number): string {
+  const t = text.trim().replace(/\s+/g, " ");
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 /** Tags for a share URL: the app's for an open share, generic otherwise. */
 export async function ogTagsForShare(
   token: string,
@@ -202,7 +211,7 @@ export async function ogTagsForShare(
   const image = await shareImageFor(app).catch(() => null);
   return {
     title: row?.title || app.title || GENERIC_SHARE_TITLE,
-    description: row?.description || GENERIC_SHARE_DESCRIPTION,
+    description: clip(row?.description || GENERIC_SHARE_DESCRIPTION, 200),
     url: `${origin}${pathname}`,
     ...(image
       ? {
