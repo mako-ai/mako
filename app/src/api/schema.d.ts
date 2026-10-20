@@ -3641,6 +3641,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Apps home feed: shelves, then every other app ranked, paged
+         * @description Without `cursor`: the Popular and New shelves (`popular`, `fresh`) and the first page of the Recommended grid (`apps`), every visible app appearing exactly once across the three. The Recommended order is ranked server-side (popularity, recency, the caller's own reads, co-usage, quality, a per-viewer-per-day exploration jitter) and frozen for 24 h; pass `nextCursor` back for the next page until it is null. Same card shape and visibility as /discovery; visibility is re-checked on every page. 410 when the cursor's snapshot expired (reload the feed).
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_feed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps/search": {
         parameters: {
             query?: never;
@@ -17662,6 +17682,13 @@ export interface operations {
                     sessionId?: string;
                     /** @enum {string} */
                     referrerKind?: "internal" | "external" | "direct";
+                    placement?: {
+                        /** @enum {string} */
+                        surface: "home";
+                        /** @enum {string} */
+                        shelf: "popular" | "new" | "recommended" | "recent" | "mine" | "attention" | "search";
+                        position: number;
+                    };
                 };
             };
         };
@@ -17698,6 +17725,49 @@ export interface operations {
     get_api_workspaces_workspaceId_apps_discovery: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_feed: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
             header?: never;
             path: {
                 workspaceId: string;

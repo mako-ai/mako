@@ -1,4 +1,8 @@
 import { useEffect, useRef } from "react";
+import {
+  takePlacement,
+  type AppOpenPlacement,
+} from "../lib/app-open-placement";
 
 /** The server credits each heartbeat with this many active seconds. */
 export const APP_USAGE_HEARTBEAT_MS = 60_000;
@@ -48,6 +52,7 @@ function sendUsage(
     kind: UsageKind;
     sessionId: string;
     referrerKind?: UsageReferrerKind;
+    placement?: AppOpenPlacement;
   },
 ): Promise<number | null> {
   try {
@@ -101,10 +106,13 @@ export function useAppUsageBeacon(input: {
     openedFor.current = key;
     const sessionId = newSessionId();
     sessionRef.current = sessionId;
+    // Opened from a card on the Apps home: say which one.
+    const placement = takePlacement(appId);
     void sendUsage(workspaceId, appId, {
       kind: "open",
       sessionId,
       ...(referrerKind ? { referrerKind } : {}),
+      ...(placement ? { placement } : {}),
     }).then(status => {
       if (status === 404 || status === 403) goneFor.current = key;
     });

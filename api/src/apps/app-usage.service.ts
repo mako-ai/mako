@@ -37,6 +37,7 @@ import {
   AppProject,
   AppUsageDaily,
   AppUsageEvent,
+  type AppUsagePlacement,
   type AppUsageReferrerKind,
   type AppUsageUaClass,
 } from "../database/workspace-schema";
@@ -172,6 +173,8 @@ export interface RecordAppUsageInput {
    * event log, flagged, and left out of the rollup counters.
    */
   throttled?: boolean;
+  /** The Apps home card it was opened from (opens only). */
+  placement?: AppUsagePlacement | null;
 }
 
 /**
@@ -199,6 +202,9 @@ export async function recordAppUsage(
     ...(input.referrerKind ? { referrerKind: input.referrerKind } : {}),
     uaClass,
     ...(input.throttled ? { throttled: true } : {}),
+    ...(input.placement && input.kind === "open"
+      ? { placement: input.placement }
+      : {}),
   });
   if (input.throttled || uaClass === "bot") {
     await event;
@@ -584,6 +590,45 @@ export function computeAppUsageStats(
 }
 
 /**
+ * Per (app, viewer) usage since the UTC day `since` (inclusive): the
+ * distinct days, opens, active seconds and last activity — the input of
+ * computeAppUsageStats and of the Apps home feed's ranking (app-feed.ts).
+ */
+export function loadUsageRollups(
+  workspaceId: string,
+  since: string,
+): Promise<AppUsageRollup[]> {
+  return AppUsageDaily.aggregate<AppUsageRollup>([
+    {
+      $match: {
+        workspaceId: new Types.ObjectId(workspaceId),
+        day: { $gte: since },
+      },
+    },
+    {
+      $group: {
+        _id: { appId: "$appId", userId: "$userId" },
+        days: { $addToSet: "$day" },
+        opens: { $sum: "$opens" },
+        activeSeconds: { $sum: "$activeSeconds" },
+        lastAt: { $max: "$lastAt" },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        appId: "$_id.appId",
+        userId: "$_id.userId",
+        days: 1,
+        opens: 1,
+        activeSeconds: 1,
+        lastAt: 1,
+      },
+    },
+  ]);
+}
+
+/**
  * Usage of every app in the workspace over the last `days` (default 28)
  * UTC days, today included. Every indexed app is present (zeros when
  * unviewed); apps with usage but no folder any more are kept too.
@@ -599,34 +644,7 @@ export async function getAppUsageStats(
   );
   const since = utcDay(new Date(now.getTime() - (days - 1) * DAY_MS));
   const [rollups, authors, snapshot] = await Promise.all([
-    AppUsageDaily.aggregate<AppUsageRollup>([
-      {
-        $match: {
-          workspaceId: new Types.ObjectId(workspaceId),
-          day: { $gte: since },
-        },
-      },
-      {
-        $group: {
-          _id: { appId: "$appId", userId: "$userId" },
-          days: { $addToSet: "$day" },
-          opens: { $sum: "$opens" },
-          activeSeconds: { $sum: "$activeSeconds" },
-          lastAt: { $max: "$lastAt" },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          appId: "$_id.appId",
-          userId: "$_id.userId",
-          days: 1,
-          opens: 1,
-          activeSeconds: 1,
-          lastAt: 1,
-        },
-      },
-    ]),
+    loadUsageRollups(workspaceId, since),
     getAppAuthors(workspaceId),
     loadAppsIndex(workspaceId, { freshen: false }),
   ]);

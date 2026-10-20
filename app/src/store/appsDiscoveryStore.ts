@@ -31,7 +31,39 @@ export interface WorkspaceDiscovery {
   usageAvailable: boolean | null;
   recent: RecentAppView[];
   recentAvailable: boolean | null;
+  feed: FeedState;
 }
+
+/**
+ * The Apps home feed (GET /apps/feed): the Popular and New shelves, then
+ * the Recommended grid, paged by an opaque cursor over an order the server
+ * froze on the first page — so pages never repeat or skip an app.
+ */
+export interface FeedState {
+  popular: DiscoveryApp[];
+  fresh: DiscoveryApp[];
+  items: DiscoveryApp[];
+  nextCursor: string | null;
+  /** Apps in the server's snapshot (shelves + Recommended). */
+  total: number;
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+  /** The snapshot expired (410): the feed has to start over. */
+  expired: boolean;
+  loadedAt: number | null;
+}
+
+interface FeedPageBody {
+  popular?: DiscoveryApp[];
+  fresh?: DiscoveryApp[];
+  apps?: DiscoveryApp[];
+  nextCursor?: string | null;
+  total?: number;
+}
+
+/** Cards per Recommended page. */
+export const FEED_PAGE_SIZE = 24;
 
 /**
  * Who is searching. The Apps home and the command palette search
@@ -58,6 +90,10 @@ interface AppsDiscoveryActions {
   fetchDiscovery: (workspaceId: string) => Promise<void>;
   fetchUsage: (workspaceId: string) => Promise<void>;
   fetchRecent: (workspaceId: string) => Promise<void>;
+  /** Start the feed over: a fresh ranking, shelves and the first page. */
+  fetchFeed: (workspaceId: string) => Promise<void>;
+  /** The next Recommended page; a no-op while loading or at the end. */
+  fetchMoreFeed: (workspaceId: string) => Promise<void>;
   /** Run a search; a newer call in the same scope supersedes an older one. */
   searchApps: (
     workspaceId: string,
@@ -69,6 +105,22 @@ interface AppsDiscoveryActions {
   reset: () => void;
 }
 
+const emptyFeed = (): FeedState => ({
+  popular: [],
+  fresh: [],
+  items: [],
+  nextCursor: null,
+  total: 0,
+  loaded: false,
+  loading: false,
+  error: null,
+  expired: false,
+  loadedAt: null,
+});
+
+/** Bumped on every restart, so a page from an older feed is dropped. */
+const feedGeneration: Record<string, number> = {};
+
 const emptyWorkspace = (): WorkspaceDiscovery => ({
   apps: [],
   appsLoaded: false,
@@ -78,6 +130,7 @@ const emptyWorkspace = (): WorkspaceDiscovery => ({
   usageAvailable: null,
   recent: [],
   recentAvailable: null,
+  feed: emptyFeed(),
 });
 
 const EMPTY_WORKSPACE: WorkspaceDiscovery = emptyWorkspace();
@@ -104,7 +157,7 @@ const searchSeq: Record<AppSearchScope, number> = { home: 0, palette: 0 };
 export const useAppsDiscoveryStore = create<
   AppsDiscoveryState & AppsDiscoveryActions
 >()(
-  immer(set => {
+  immer((set, get) => {
     const ws = (state: AppsDiscoveryState, workspaceId: string) =>
       (state.byWorkspace[workspaceId] ??= emptyWorkspace());
 
@@ -176,7 +229,7 @@ export const useAppsDiscoveryStore = create<
         try {
           const body = unwrapBody(
             await api.GET("/api/workspaces/{workspaceId}/apps/recent", {
-              params: { path: { workspaceId }, query: { limit: 20 } },
+              params: { path: { workspaceId }, query: { limit: 48 } },
             }),
           ) as { apps?: RecentAppView[] };
           set(s => {
@@ -192,6 +245,86 @@ export const useAppsDiscoveryStore = create<
               w.recentAvailable = false;
             } else if (w.recentAvailable === null) {
               w.recentAvailable = false;
+            }
+          });
+        }
+      },
+
+      fetchFeed: async workspaceId => {
+        const gen = (feedGeneration[workspaceId] =
+          (feedGeneration[workspaceId] ?? 0) + 1);
+        set(s => {
+          const w = ws(s, workspaceId);
+          w.feed = { ...emptyFeed(), loading: true };
+        });
+        try {
+          const body = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/apps/feed", {
+              params: {
+                path: { workspaceId },
+                query: { limit: FEED_PAGE_SIZE },
+              },
+            }),
+          ) as FeedPageBody;
+          if (gen !== feedGeneration[workspaceId]) return;
+          set(s => {
+            const f = ws(s, workspaceId).feed;
+            f.popular = body.popular ?? [];
+            f.fresh = body.fresh ?? [];
+            f.items = body.apps ?? [];
+            f.nextCursor = body.nextCursor ?? null;
+            f.total = body.total ?? 0;
+            f.loaded = true;
+            f.loading = false;
+            f.loadedAt = Date.now();
+          });
+        } catch (e) {
+          if (gen !== feedGeneration[workspaceId]) return;
+          set(s => {
+            const f = ws(s, workspaceId).feed;
+            f.loading = false;
+            f.error = toErrorMessage(e, "Could not load apps");
+          });
+        }
+      },
+
+      fetchMoreFeed: async workspaceId => {
+        const current = get().byWorkspace[workspaceId]?.feed;
+        if (!current?.nextCursor || current.loading || current.expired) return;
+        const cursor = current.nextCursor;
+        const gen = feedGeneration[workspaceId];
+        set(s => {
+          const f = ws(s, workspaceId).feed;
+          f.loading = true;
+          f.error = null;
+        });
+        try {
+          const body = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/apps/feed", {
+              params: {
+                path: { workspaceId },
+                query: { cursor, limit: FEED_PAGE_SIZE },
+              },
+            }),
+          ) as FeedPageBody;
+          if (gen !== feedGeneration[workspaceId]) return;
+          set(s => {
+            const f = ws(s, workspaceId).feed;
+            // The server never repeats an app; this only guards a retry.
+            const have = new Set(f.items.map(a => a.id));
+            f.items.push(...(body.apps ?? []).filter(a => !have.has(a.id)));
+            f.nextCursor = body.nextCursor ?? null;
+            f.loading = false;
+          });
+        } catch (e) {
+          if (gen !== feedGeneration[workspaceId]) return;
+          set(s => {
+            const f = ws(s, workspaceId).feed;
+            f.loading = false;
+            if (e instanceof ApiError && e.status === 410) {
+              f.expired = true;
+            } else {
+              f.error = toErrorMessage(e, "Could not load more apps");
             }
           });
         }

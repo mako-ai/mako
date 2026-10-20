@@ -8,6 +8,7 @@ import {
   Card,
   CardActionArea,
   Chip,
+  Skeleton,
   Stack,
   Tooltip,
   Typography,
@@ -211,6 +212,24 @@ export default function AppCard({
           )}
         </Box>
       </CardActionArea>
+    </Card>
+  );
+}
+
+/** A card-shaped placeholder while a page of the feed loads. */
+export function AppCardSkeleton() {
+  return (
+    <Card variant="outlined" sx={{ height: "100%", minWidth: 0 }} aria-hidden>
+      <Skeleton
+        variant="rectangular"
+        animation="wave"
+        sx={{ aspectRatio: "16 / 10", height: "auto", width: "100%" }}
+      />
+      <Box sx={{ p: 1.5 }}>
+        <Skeleton variant="text" width="70%" />
+        <Skeleton variant="text" width="95%" sx={{ fontSize: "0.8rem" }} />
+        <Skeleton variant="text" width="40%" sx={{ fontSize: "0.75rem" }} />
+      </Box>
     </Card>
   );
 }

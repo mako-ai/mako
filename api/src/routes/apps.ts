@@ -13,6 +13,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { eyesShotKey } from "../apps/eyes.service";
 import { Types } from "mongoose";
 import {
+  APP_USAGE_PLACEMENT_SHELVES,
   AppProject,
   Chat,
   GitHubInstallation,
@@ -115,6 +116,7 @@ import {
   searchDiscoveryApps,
 } from "../apps/app-discovery.service";
 import { appUsageScores } from "../apps/app-search.service";
+import { FeedCursorError, getFeedPage } from "../apps/app-feed.service";
 import { readThumbnailBlob, thumbnailResponse } from "../apps/app-thumbnail";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
@@ -1237,6 +1239,14 @@ appsRoutes.openapi(
               referrerKind: z
                 .enum(["internal", "external", "direct"])
                 .optional(),
+              /** The Apps home card it was opened from (opens only). */
+              placement: z
+                .object({
+                  surface: z.literal("home"),
+                  shelf: z.enum(APP_USAGE_PLACEMENT_SHELVES),
+                  position: z.number().int().min(0).max(10_000),
+                })
+                .optional(),
             }),
           },
         },
@@ -1247,7 +1257,8 @@ appsRoutes.openapi(
   async c => {
     try {
       const { workspaceId, id } = c.req.valid("param");
-      const { kind, source, sessionId, referrerKind } = c.req.valid("json");
+      const { kind, source, sessionId, referrerKind, placement } =
+        c.req.valid("json");
       const userId = actingUserId(c);
       if (!userId) return c.body(null, 204);
       const accepted = acceptUsageBeat(`${workspaceId}:${userId}:${id}`, kind);
@@ -1287,6 +1298,7 @@ appsRoutes.openapi(
         referrerKind: referrerKind ?? null,
         uaClass: classifyUserAgent(c.req.header("user-agent")),
         throttled: !accepted,
+        placement: placement ?? null,
       });
       return c.body(null, 204);
     } catch (error) {
@@ -1322,6 +1334,72 @@ appsRoutes.openapi(
     } catch (error) {
       if (error instanceof RepoRequiredError) {
         return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/feed",
+    tags: ["Apps"],
+    summary: "Apps home feed: shelves, then every other app ranked, paged",
+    description:
+      "Without `cursor`: the Popular and New shelves (`popular`, `fresh`) and the first page of the Recommended grid (`apps`), every visible app appearing exactly once across the three. The Recommended order is ranked server-side (popularity, recency, the caller's own reads, co-usage, quality, a per-viewer-per-day exploration jitter) and frozen for 24 h; pass `nextCursor` back for the next page until it is null. Same card shape and visibility as /discovery; visibility is re-checked on every page. 410 when the cursor's snapshot expired (reload the feed).",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        cursor: z
+          .string()
+          .max(512)
+          .optional()
+          .openapi({ param: { name: "cursor", in: "query" } }),
+        limit: z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(60)
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { cursor, limit } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const page = await getFeedPage(workspaceId, userId, role, {
+        cursor: cursor || null,
+        limit,
+      });
+      return c.json({ success: true as const, ...page }, 200);
+    } catch (error) {
+      if (error instanceof FeedCursorError) {
+        return c.json(
+          { success: false as const, error: error.message },
+          error.status,
+        );
+      }
+      if (error instanceof RepoRequiredError) {
+        return c.json(
+          {
+            success: true as const,
+            popular: [],
+            fresh: [],
+            apps: [],
+            offset: 0,
+            nextCursor: null,
+            total: 0,
+            recommendedTotal: 0,
+          },
+          200,
+        );
       }
       return handleError(c, error);
     }

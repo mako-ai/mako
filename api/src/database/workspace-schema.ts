@@ -5081,6 +5081,20 @@ export const AppUsageDaily = mongoose.model<IAppUsageDaily>(
  */
 export type AppUsageUaClass = "desktop" | "mobile" | "bot" | "unknown";
 export type AppUsageReferrerKind = "internal" | "external" | "direct";
+export const APP_USAGE_PLACEMENT_SHELVES = [
+  "popular",
+  "new",
+  "recommended",
+  "recent",
+  "mine",
+  "attention",
+  "search",
+] as const;
+export interface AppUsagePlacement {
+  surface: "home";
+  shelf: (typeof APP_USAGE_PLACEMENT_SHELVES)[number];
+  position: number;
+}
 
 export interface IAppUsageEvent extends Document {
   workspaceId: Types.ObjectId;
@@ -5098,6 +5112,12 @@ export interface IAppUsageEvent extends Document {
   uaClass: AppUsageUaClass;
   /** Refused by the rollup's throttle (a reload burst, a double mount). */
   throttled?: boolean;
+  /**
+   * Where in Mako the view was opened from, when it was a card on the Apps
+   * home: the shelf or grid, and the card's 0-based position in it — so
+   * click-through per position can be computed from this log later.
+   */
+  placement?: AppUsagePlacement;
   /**
    * Reconstructed from history rather than recorded live: `cloud-run`
    * (request logs) or `posthog` (page views), by a one-off backfill of
@@ -5130,6 +5150,17 @@ const AppUsageEventSchema = new Schema<IAppUsageEvent>(
       required: true,
     },
     throttled: { type: Boolean },
+    placement: {
+      type: new Schema(
+        {
+          surface: { type: String, enum: ["home"] },
+          shelf: { type: String, enum: APP_USAGE_PLACEMENT_SHELVES },
+          position: Number,
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     backfill: { type: String, enum: ["cloud-run", "posthog"] },
   },
   { collection: "app_usage_events", versionKey: false },
@@ -5145,6 +5176,50 @@ AppUsageEventSchema.index(
 export const AppUsageEvent = mongoose.model<IAppUsageEvent>(
   "AppUsageEvent",
   AppUsageEventSchema,
+);
+
+/**
+ * One person's Apps home feed, frozen when its first page was served
+ * (app-feed.service): the Recommended order, so scrolling never repeats or
+ * skips an app however usage moves underneath. The cursor names the
+ * snapshot; pages re-check visibility on read. Expires after a day.
+ */
+export interface IAppFeedSnapshot extends Document {
+  workspaceId: Types.ObjectId;
+  /** The viewer it was ranked for; null for a caller without a user. */
+  userId: string | null;
+  popular: string[];
+  fresh: string[];
+  recommended: string[];
+  createdAt: Date;
+}
+
+export const APP_FEED_SNAPSHOT_TTL_SECONDS = 24 * 60 * 60;
+
+const AppFeedSnapshotSchema = new Schema<IAppFeedSnapshot>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    userId: { type: String, default: null },
+    popular: { type: [String], default: [] },
+    fresh: { type: [String], default: [] },
+    recommended: { type: [String], default: [] },
+    createdAt: { type: Date, required: true },
+  },
+  { collection: "app_feed_snapshots", versionKey: false },
+);
+
+AppFeedSnapshotSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: APP_FEED_SNAPSHOT_TTL_SECONDS },
+);
+
+export const AppFeedSnapshot = mongoose.model<IAppFeedSnapshot>(
+  "AppFeedSnapshot",
+  AppFeedSnapshotSchema,
 );
 
 // ---------------------------------------------------------------------------
