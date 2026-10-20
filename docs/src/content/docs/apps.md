@@ -121,7 +121,7 @@ Each card shows the app's own **thumbnail**: an image at the app's root, named `
 
 **Prefer `thumbnail.png`.** The thumbnail is also the app's **link preview**: a public share link (no password) posted in WhatsApp, Slack, LinkedIn, iMessage, Teams or X unfurls with the app's title, its `mako.json` description and the thumbnail. Those crawlers ignore SVG, so an app with only an SVG thumbnail unfurls with a generic Mako image. Keep the PNG under ~300 KB, and keep the key content inside the centred **1200×630** band of the 1200×750 image, because previews crop to that. Password-protected shares unfurl generically (no title, no picture), and links to the app inside Mako unfurl nothing.
 
-Go wild with it: a thumbnail is the app's poster. Show what the app is for — a headline number, a stylised chart, the team's colours — like a product marketing shot rather than a screenshot. Design it as an SVG (and export to PNG if it uses fonts or filters), or ask an image model for one. SVG thumbnails are displayed as images only: scripts, external fonts and external images do not load.
+Go wild with it: a thumbnail is the app's poster. Headline it with the question the app answers, add one stylised motif of what it shows (a leaderboard, a funnel, a radar), bold type on a strong background — like a YouTube thumbnail rather than a screenshot. Never put numbers on it that look like real data. Design it as an SVG (and export to PNG if it uses fonts or filters), or ask an image model for one. SVG thumbnails are displayed as images only: scripts, external fonts and external images do not load.
 
 ## Access Control
 
