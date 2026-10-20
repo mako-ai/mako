@@ -116,20 +116,18 @@ async function readBlob(
   thumbnail: AppThumbnailRef,
   timings: Timings,
 ): Promise<Buffer | null> {
+  // A read, not a write: no repo simply means no picture (null, not a skip).
   const repoDir = await timings.time("repo", () =>
     boundRepoDirIfExists(workspaceId),
   );
-  if (!repoDir) return null;
-  let bytes = await timings.time("blob", () =>
-    readThumbnailBlob(repoDir, thumbnail),
+  const read = () =>
+    repoDir ? readThumbnailBlob(repoDir, thumbnail) : Promise.resolve(null);
+  const bytes = await timings.time("blob", read);
+  if (bytes || !repoDir) return bytes;
+  await timings.time("fetch", () =>
+    freshenForServe(workspaceId, 0).catch(() => undefined),
   );
-  if (!bytes) {
-    await timings.time("fetch", () =>
-      freshenForServe(workspaceId, 0).catch(() => undefined),
-    );
-    bytes = await readThumbnailBlob(repoDir, thumbnail);
-  }
-  return bytes;
+  return read();
 }
 
 async function generate(
