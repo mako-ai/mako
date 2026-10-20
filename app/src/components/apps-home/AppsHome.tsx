@@ -14,7 +14,14 @@
  * the usage beacon attaches to the view's `open` — click-through per
  * position, computable later from the raw usage log.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Box,
   Button,
@@ -39,6 +46,7 @@ import {
   attentionReasons,
   discoveryFromMeta,
   isMyApp,
+  keepOnScreen,
   provisionalFeed,
   recentlyViewedApps,
   type AttentionReason,
@@ -46,6 +54,10 @@ import {
 } from "../../lib/apps-discovery";
 import { notePlacement, type AppOpenShelf } from "../../lib/app-open-placement";
 import AppCard, { AppCardSkeleton } from "./AppCard";
+import { useInfiniteSentinel } from "./useInfiniteSentinel";
+
+type OnScreen = { popular: string[]; new: string[]; recommended: string[] };
+const NOTHING_ON_SCREEN: OnScreen = { popular: [], new: [], recommended: [] };
 
 /** A feed older than this is re-ranked when the home is shown again. */
 const FEED_MAX_AGE_MS = 10 * 60_000;
@@ -140,9 +152,13 @@ export default function AppsHome() {
   const [filter, setFilter] = useState<Filter>("all");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  // The next page waits for the person to scroll (or for a first page too
-  // short to scroll): the first paint needs one page, not three.
-  const [scrolled, setScrolled] = useState(false);
+  // Provisional cards in view, per section, so the ranked feed can keep
+  // them where they are when it arrives (keepOnScreen).
+  const onScreenRef = useRef<OnScreen>(NOTHING_ON_SCREEN);
+  const frozenRef = useRef<{ at: number | null; ids: OnScreen }>({
+    at: null,
+    ids: NOTHING_ON_SCREEN,
+  });
   // The explorer's app list, persisted: names to paint before /discovery.
   const explorerApps = useAppsStore(s =>
     s.apps.length > 0
@@ -177,7 +193,12 @@ export default function AppsHome() {
   const searching = query.trim().length > 0;
   const feedMode = filter === "all" && !searching;
   const canLoadMore =
-    feedMode && scrolled && !!feed.nextCursor && !feed.loading && !feed.expired;
+    feedMode &&
+    feed.loaded &&
+    !!feed.nextCursor &&
+    !feed.loading &&
+    !feed.expired &&
+    !feed.error;
 
   // Best-known apps, richest source first: the live (or persisted) discovery
   // listing, else the explorer's cached list. Cards upgrade in place as the
@@ -212,33 +233,42 @@ export default function AppsHome() {
     }
   }, [knownApps.length, feed.loaded]);
 
-  // A first page that does not fill the scroller can never be scrolled:
-  // let the sentinel load more on its own then.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || scrolled || !feed.loaded) return;
-    if (el.scrollHeight <= el.clientHeight + 200) setScrolled(true);
-  }, [feed.loaded, feed.items.length, scrolled]);
-
   const loadMore = useCallback(() => {
     if (workspaceId) void fetchMoreFeed(workspaceId);
   }, [workspaceId, fetchMoreFeed]);
 
-  // The sentinel below the grid pulls the next page well before it is
-  // reached. Its root is the home's own scroller (not the viewport), so the
-  // margin applies where the scrolling happens.
-  useEffect(() => {
-    const target = sentinelRef.current;
-    if (!canLoadMore || !target) return;
-    const observer = new IntersectionObserver(
-      entries => {
-        if (entries.some(e => e.isIntersecting)) loadMore();
-      },
-      { root: scrollRef.current, rootMargin: "0px 0px 600px 0px" },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [canLoadMore, loadMore, feed.items.length]);
+  // The next page is fetched ~800px before the sentinel comes into view,
+  // whichever element actually scrolls (see useInfiniteSentinel), and
+  // pages keep coming while the content does not fill the screen.
+  useInfiniteSentinel({
+    sentinelRef,
+    enabled: canLoadMore,
+    onLoadMore: loadMore,
+    version: feed.items.length,
+  });
+
+  // While the provisional feed shows, remember which of its cards are in
+  // view (after each render and on scroll).
+  const captureOnScreen = useCallback(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const view = root.getBoundingClientRect();
+    const ids: OnScreen = { popular: [], new: [], recommended: [] };
+    root
+      .querySelectorAll<HTMLElement>("[data-app-id][data-shelf]")
+      .forEach(el => {
+        const r = el.getBoundingClientRect();
+        const shelf = el.dataset.shelf as keyof OnScreen;
+        if (!(shelf in ids)) return;
+        if (r.bottom > view.top && r.top < view.bottom && r.width > 0) {
+          ids[shelf].push(el.dataset.appId ?? "");
+        }
+      });
+    onScreenRef.current = ids;
+  }, []);
+  useLayoutEffect(() => {
+    if (feedMode && !feed.loaded) captureOnScreen();
+  });
 
   const lists = useMemo(() => {
     const apps = discovery.apps;
@@ -268,6 +298,8 @@ export default function AppsHome() {
   ) => (
     <Box
       key={app.id}
+      data-app-id={app.id}
+      data-shelf={shelf}
       role={shelf === "popular" || shelf === "new" ? "listitem" : undefined}
       sx={{ minWidth: 0 }}
     >
@@ -386,16 +418,25 @@ export default function AppsHome() {
       );
     }
     const done = feed.loaded && !feed.nextCursor && !feed.expired;
+    // The first render of this feed freezes what was on screen before it.
+    if (frozenRef.current.at !== feed.loadedAt) {
+      frozenRef.current = { at: feed.loadedAt, ids: onScreenRef.current };
+      onScreenRef.current = NOTHING_ON_SCREEN;
+    }
+    const kept = frozenRef.current.ids;
+    const popular = keepOnScreen(kept.popular, feed.popular);
+    const fresh = keepOnScreen(kept.new, feed.fresh);
+    const items = keepOnScreen(kept.recommended, feed.items);
     return (
       <>
         {feed.popular.length > 0 && (
           <ShelfRow title="Popular" hint="Opened most by others this month">
-            {feed.popular.map((app, i) => card(app, "popular", i))}
+            {popular.map((app, i) => card(app, "popular", i))}
           </ShelfRow>
         )}
         {feed.fresh.length > 0 && (
           <ShelfRow title="New" hint="First published this week">
-            {feed.fresh.map((app, i) => card(app, "new", i))}
+            {fresh.map((app, i) => card(app, "new", i))}
           </ShelfRow>
         )}
         {(feed.items.length > 0 || feed.nextCursor) && (
@@ -423,7 +464,7 @@ export default function AppsHome() {
               aria-labelledby="apps-recommended"
               sx={GRID_SX}
             >
-              {feed.items.map((app, i) => (
+              {items.map((app, i) => (
                 <Box
                   key={app.id}
                   component="article"
@@ -517,7 +558,7 @@ export default function AppsHome() {
   return (
     <Box
       ref={scrollRef}
-      onScroll={scrolled ? undefined : () => setScrolled(true)}
+      onScroll={feedMode && !feed.loaded ? captureOnScreen : undefined}
       sx={{ height: "100%", overflow: "auto", bgcolor: "background.default" }}
     >
       <Box

@@ -170,6 +170,43 @@ export function provisionalFeed(
   return { popular, fresh, items };
 }
 
+/**
+ * When the ranked feed replaces the provisional one, the cards a person is
+ * already looking at should not jump: those of `onScreen` that the new
+ * list also has keep their previous order at its front; everything else
+ * follows in the new order. Same set, same length — only the order moves.
+ */
+export function keepOnScreen<T extends { id: string }>(
+  onScreen: readonly string[],
+  items: readonly T[],
+): T[] {
+  if (onScreen.length === 0) return [...items];
+  const byId = new Map(items.map(a => [a.id, a]));
+  const first: T[] = [];
+  for (const id of onScreen) {
+    const hit = byId.get(id);
+    if (hit) {
+      first.push(hit);
+      byId.delete(id);
+    }
+  }
+  return [...first, ...items.filter(a => byId.has(a.id))];
+}
+
+/**
+ * Upgrade cached cards with fresher ones (same id), keeping the cache's
+ * order and membership — so a feed page that lands before /discovery puts
+ * its posters and owners into the persisted listing for the next visit.
+ */
+export function upgradeCards(
+  cached: readonly DiscoveryApp[],
+  fresh: readonly DiscoveryApp[],
+): DiscoveryApp[] {
+  if (cached.length === 0 || fresh.length === 0) return [...cached];
+  const byId = new Map(fresh.map(a => [a.id, a]));
+  return cached.map(a => byId.get(a.id) ?? a);
+}
+
 export interface DiscoverySearchHit extends DiscoveryApp {
   score: number;
   /** Fields that matched: title, description, path, owner, tables. */

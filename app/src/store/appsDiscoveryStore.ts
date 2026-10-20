@@ -12,11 +12,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { api, ApiError, toErrorMessage, unwrapBody } from "../api";
-import type {
-  AppUsageStats,
-  DiscoveryApp,
-  DiscoverySearchHit,
-  RecentAppView,
+import {
+  upgradeCards,
+  type AppUsageStats,
+  type DiscoveryApp,
+  type DiscoverySearchHit,
+  type RecentAppView,
 } from "../lib/apps-discovery";
 
 /** The usage window the home calls "this month". */
@@ -270,7 +271,17 @@ export const useAppsDiscoveryStore = create<
             ) as FeedPageBody;
             if (gen !== feedGeneration[workspaceId]) return;
             set(s => {
-              const f = ws(s, workspaceId).feed;
+              const w = ws(s, workspaceId);
+              // Posters and owners for the persisted listing when the feed
+              // beats /discovery (it usually does on a busy prod load).
+              if (!w.appsLoaded) {
+                w.apps = upgradeCards(w.apps, [
+                  ...(body.popular ?? []),
+                  ...(body.fresh ?? []),
+                  ...(body.apps ?? []),
+                ]);
+              }
+              const f = w.feed;
               f.popular = body.popular ?? [];
               f.fresh = body.fresh ?? [];
               f.items = body.apps ?? [];

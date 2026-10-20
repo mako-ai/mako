@@ -3,6 +3,8 @@ import {
   attentionReasons,
   discoveryFromMeta,
   isMyApp,
+  keepOnScreen,
+  upgradeCards,
   provisionalFeed,
   newApps,
   ownerHandle,
@@ -251,5 +253,27 @@ describe("progressive paint", () => {
     expect(feed.popular.map(a => a.id)).toEqual(["hit", "b"]);
     expect(feed.fresh.map(a => a.id)).toEqual(["new"]);
     expect(feed.items.map(a => a.id)).toEqual(["a"]);
+  });
+});
+
+describe("feed swap", () => {
+  it("keeps on-screen cards in place and moves nothing else in or out", () => {
+    const items = ["a", "b", "c", "d", "e"].map(id => ({ id }));
+    expect(keepOnScreen(["d", "zz", "b"], items).map(a => a.id)).toEqual([
+      "d",
+      "b",
+      "a",
+      "c",
+      "e",
+    ]);
+    expect(keepOnScreen([], items)).toEqual(items);
+  });
+
+  it("upgrades cached cards with fresher ones without changing the list", () => {
+    const cached = [app("a"), app("b")];
+    const poster = app("b", { thumbnail: { file: "thumbnail.png", oid: "1" } });
+    const out = upgradeCards(cached, [poster, app("new")]);
+    expect(out.map(a => a.id)).toEqual(["a", "b"]);
+    expect(out[1].thumbnail?.oid).toBe("1");
   });
 });
