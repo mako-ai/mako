@@ -354,6 +354,27 @@ export function injectOgTags(html: string, tags: OgTags): string {
 }
 
 /**
+ * A tiny HTML page for a link-preview crawler that hit a URL which, for a
+ * browser, redirects to `viewerPath` (an app's raw `/live/` link). Some
+ * crawlers — WhatsApp's among them — do not follow redirects when building
+ * a preview, so they get the viewer page's tags here, with the viewer URL as
+ * og:url and canonical, and a refresh in case anything renders it.
+ */
+export async function crawlerPreviewPage(
+  viewerPath: string,
+  origin: string,
+): Promise<string> {
+  const pathname = viewerPath.split("?")[0];
+  const tags =
+    (await ogTagsForPath(pathname, origin)) ?? genericTags(origin, pathname);
+  const href = escapeAttr(`${origin}${viewerPath}`);
+  return injectOgTags(
+    `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="utf-8" />\n    <title>Mako</title>\n    <link rel="canonical" href="${href}" />\n    <meta http-equiv="refresh" content="0;url=${href}" />\n  </head>\n  <body><a href="${href}">Open in Mako</a></body>\n</html>\n`,
+    tags,
+  );
+}
+
+/**
  * The public origin links are built on: CLIENT_URL (where the SPA lives),
  * else the request's own host. Crawlers want absolute https URLs.
  */

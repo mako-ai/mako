@@ -178,8 +178,10 @@ import {
 import { ensureAutoJoin } from "../services/auto-join.service";
 import {
   anonymousViewerRedirect,
+  isPreviewCrawler,
   liveViewerRedirect,
 } from "../apps/live-viewer-redirect";
+import { crawlerPreviewPage, publicOrigin } from "../services/share-og.service";
 import { getCookie } from "hono/cookie";
 import type { Context } from "hono";
 import { sessionManager } from "../auth/session";
@@ -238,6 +240,26 @@ async function anonymousLiveLinkToViewer(
   c: Context,
   next: () => Promise<void>,
 ): Promise<Response | void> {
+  // A link-preview crawler gets the viewer page's tags right here, with a
+  // 200: WhatsApp (and others) do not follow the redirect for previews.
+  // Browsers keep the 302 below.
+  if (c.req.method === "GET" && isPreviewCrawler(c.req.header("user-agent"))) {
+    const viewerPath = liveViewerRedirect({
+      fetchDest: "document",
+      fetchMode: "navigate",
+      workspaceId: c.req.param("workspaceId"),
+      ref: c.req.param("id"),
+      path: c.req.path,
+      url: c.req.url,
+    });
+    if (viewerPath) {
+      const html = await crawlerPreviewPage(
+        viewerPath,
+        publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
+      );
+      return c.html(html, 200, { "Cache-Control": "no-cache" });
+    }
+  }
   const target =
     c.req.method === "GET"
       ? anonymousViewerRedirect({

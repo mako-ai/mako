@@ -33,9 +33,9 @@ describe("buildWorkspaceResourceUrl", () => {
     },
   );
 
-  it("builds a fullscreen published-app URL for workspace members", () => {
-    expect(buildWorkspaceResourceUrl("app", "app-123", "workspace-456")).toBe(
-      `${window.location.origin}/api/workspaces/workspace-456/apps/app-123/live/`,
-    );
+  it("copies the canonical viewer URL for an app, never the raw /live/ route", () => {
+    const url = buildWorkspaceResourceUrl("app", "app-123", "workspace-456");
+    expect(url).toBe(`${window.location.origin}/view/workspace-456/app-123`);
+    expect(url).not.toContain("/live");
   });
 });

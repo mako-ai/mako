@@ -73,6 +73,7 @@ import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
 import ShareDialog from "./ShareDialog";
+import { appViewerPath } from "../store/shareStore";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -1191,13 +1192,15 @@ export default function AppWorkspace({
   });
   const appsLoading = useAppsStore(s => s.appsLoading);
   const hiddenPaused = useHiddenPause();
-  // Durable, session-authorized URL for the published app — for normal tabs.
-  // The token URL (viewUrl) exists ONLY for the sandboxed iframe, whose
-  // opaque origin cannot send cookies; tokens are short-lived and in-memory,
-  // so handing them to window.open produced "Preview expired" minutes later.
+  // Durable URL for the published app in a normal tab: its viewer page, the
+  // canonical address people copy (the raw /api/…/live/ route only redirects
+  // there). The token URL (viewUrl) exists ONLY for the sandboxed iframe,
+  // whose opaque origin cannot send cookies; tokens are short-lived and
+  // in-memory, so handing them to window.open produced "Preview expired"
+  // minutes later.
   const liveUrl =
     app?.publishedSha && workspaceId
-      ? `/api/workspaces/${workspaceId}/apps/${appId}/live/`
+      ? appViewerPath(workspaceId, appId)
       : undefined;
   const fetchViewUrl = useAppsStore(s => s.fetchViewUrl);
   // Phone: the workbench is one pane at a time (preview OR terminal),

@@ -93,9 +93,19 @@ const RESOURCE_URL_PREFIX: Record<ShareResourceType, string> = {
 };
 
 /**
- * Workspace-internal URL for logged-in collaborators. Apps use their
- * published deployment route so the copied link opens fullscreen without the
- * Mako shell; other resources still open their normal deep-linked tab.
+ * The canonical in-app URL of a published app: the viewer page, full-screen
+ * with its chat. This — not the raw `/api/…/live/` deployment route, which
+ * only redirects here — is what people copy and paste: it signs visitors in,
+ * and its HTML carries the app's link-preview tags.
+ */
+export function appViewerPath(workspaceId: string, appId: string): string {
+  return `/view/${encodeURIComponent(workspaceId)}/${encodeURIComponent(appId)}`;
+}
+
+/**
+ * Workspace-internal URL for logged-in collaborators. Apps use their viewer
+ * page (appViewerPath) so the copied link opens fullscreen without the Mako
+ * shell; other resources still open their normal deep-linked tab.
  *
  * Built from ids rather than read off the address bar so it also works in the
  * desktop shell, which has no address bar to copy from.
@@ -106,7 +116,7 @@ export function buildWorkspaceResourceUrl(
   workspaceId?: string,
 ): string {
   if (resourceType === "app" && workspaceId) {
-    return `${window.location.origin}/api/workspaces/${encodeURIComponent(workspaceId)}/apps/${encodeURIComponent(resourceId)}/live/`;
+    return `${window.location.origin}${appViewerPath(workspaceId, resourceId)}`;
   }
   return `${window.location.origin}/${RESOURCE_URL_PREFIX[resourceType]}/${resourceId}`;
 }
