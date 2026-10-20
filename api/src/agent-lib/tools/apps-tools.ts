@@ -88,6 +88,7 @@ import {
 import {
   authorizeAppMove,
   authorizeFolderTarget,
+  canSeeIndexedApp,
 } from "../../apps/app-authorization";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
@@ -372,11 +373,9 @@ function buildTools(
     const role = await memberRole();
     return folders
       .map(folder => ({ folder, state: stateById.get(folder.id) }))
-      .filter(({ folder: f, state }) => {
-        if (state) return !userId || canReadResource(state, userId, role);
-        if (f.scope === "private") return !userId || f.ownerId === userId;
-        return true;
-      });
+      .filter(({ folder, state }) =>
+        canSeeIndexedApp(folder, state, userId, role),
+      );
   };
 
   /** `users/<handle>/apps` for the acting person, when there is one. */
@@ -485,7 +484,9 @@ function buildTools(
                 : {}),
             })),
             ...(usage === null
-              ? { note: "Usage is not tracked yet; ranked by relevance only." }
+              ? {
+                  note: "Usage is unavailable right now; ranked by relevance only.",
+                }
               : {}),
           };
         } catch (error) {

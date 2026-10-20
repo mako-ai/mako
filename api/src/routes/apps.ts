@@ -105,6 +105,7 @@ import {
   getRecentlyViewedApps,
   recordAppUsage,
   recordServedOpen,
+  visibleIndexedAppIds,
 } from "../apps/app-usage.service";
 import { appTreeRoot, parseAppRepoPath } from "../apps/app-paths";
 import { loadOwnerDirectory } from "../apps/user-handles.service";
@@ -1080,28 +1081,6 @@ appsRoutes.openapi(
 // Both report only apps the caller can see in the list.
 // ---------------------------------------------------------------------------
 
-/** The ids of the indexed apps the caller can see — the list's rule. */
-async function visibleAppIds(
-  workspaceId: string,
-  userId: string | undefined,
-  role: string | undefined,
-): Promise<Set<string>> {
-  const [snapshot, rows] = await Promise.all([
-    loadAppsIndex(workspaceId, { freshen: false }),
-    AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
-      .select("_id access workspaceRole sharedWith owner_id createdBy")
-      .lean(),
-  ]);
-  const stateById = new Map(rows.map(r => [r._id.toString(), r]));
-  return new Set(
-    snapshot.apps
-      .filter(app =>
-        canSeeIndexedApp(app, stateById.get(app.appId), userId, role),
-      )
-      .map(app => app.appId),
-  );
-}
-
 appsRoutes.openapi(
   createRoute({
     method: "get",
@@ -1129,7 +1108,7 @@ appsRoutes.openapi(
         (await memberRoleFor(workspaceId, userId));
       const [stats, visible] = await Promise.all([
         getAppUsageStats(workspaceId, { days }),
-        visibleAppIds(workspaceId, userId, role),
+        visibleIndexedAppIds(workspaceId, userId, role),
       ]);
       const apps = [...stats.values()].filter(s => visible.has(s.appId));
       return c.json({ success: true as const, apps }, 200);
@@ -1171,7 +1150,7 @@ appsRoutes.openapi(
         getRecentlyViewedApps(workspaceId, userId, {
           limit: Math.min(100, limit + 20),
         }),
-        visibleAppIds(workspaceId, userId, role),
+        visibleIndexedAppIds(workspaceId, userId, role),
       ]);
       const apps = recent.filter(r => visible.has(r.appId)).slice(0, limit);
       return c.json({ success: true as const, apps }, 200);

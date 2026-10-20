@@ -60,6 +60,7 @@ import {
   stampAppId,
 } from "./worktree.service";
 import { appFolderChanged } from "./deploy-on-push";
+import { getAppAuthors, visibleIndexedAppIds } from "./app-usage.service";
 import { runGit } from "./git";
 import { canReadResource } from "../utils/resource-acl";
 import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
@@ -240,6 +241,42 @@ describe("personal trees resolve through the handle mapping only", () => {
     const byId = await resolveProjectRef(WS, `users/${USER}/apps/by-id`);
     expect(byId?.access).toBe("private");
     expect(byId?.owner_id).toBeUndefined();
+  });
+
+  it("usage surfaces (/usage, /recent) and authorship follow the mapping, not the folder name", async () => {
+    const OTHER = new Types.ObjectId().toString();
+    await WorkspaceUserHandle.create({
+      workspaceId: new Types.ObjectId(WS),
+      userId: OTHER,
+      handle: "bob",
+    });
+    invalidateOwnerDirectory();
+    // A folder spelled like OTHER's raw id: not a handle, so not OTHER's.
+    await externalCommit({
+      [`users/${OTHER}/apps/by-id/mako.json`]: manifest("By id"),
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const idOf = (p: string) => snapshot.apps.find(a => a.path === p)!.appId;
+    const alices = idOf(`users/${HANDLE}/apps/c`);
+    const byId = idOf(`users/${OTHER}/apps/by-id`);
+
+    const forOwner = await visibleIndexedAppIds(WS, USER, "member");
+    const forOther = await visibleIndexedAppIds(WS, OTHER, "admin");
+    expect(forOwner.has(alices)).toBe(true);
+    // Another member — even an admin — never sees a personal app's numbers.
+    expect(forOther.has(alices)).toBe(false);
+    // …nor gains a tree by its folder being named after their id.
+    expect(forOther.has(byId)).toBe(false);
+    expect(forOwner.has(byId)).toBe(false);
+    // Workspace apps stay visible to everyone.
+    expect(forOther.has(idOf("apps/a"))).toBe(true);
+
+    // The mapped owner counts as the app's author (their views are not
+    // popularity); the id-named folder has no tree owner at all.
+    const authors = await getAppAuthors(WS);
+    expect(authors.get(alices)?.has(USER)).toBe(true);
+    expect(authors.get(alices)?.has(OTHER) ?? false).toBe(false);
+    expect(authors.get(byId)?.has(OTHER) ?? false).toBe(false);
   });
 
   it("refuses to file an app under a handle that is not the owner's", async () => {

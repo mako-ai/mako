@@ -1,7 +1,7 @@
 /**
  * What app search needs beyond the index rows: the tables each app's
- * bindings read (from `bindings/*.sql` at main) and, when the usage service
- * exists, how much each app is used. Ranking itself is app-search.ts.
+ * bindings read (from `bindings/*.sql` at main) and how much each app is
+ * used (app-usage.service). Ranking itself is app-search.ts.
  */
 import { loggers } from "../logging";
 import {
@@ -10,6 +10,7 @@ import {
   type AppsIndexSnapshot,
 } from "./app-index.service";
 import { extractTables } from "./app-search";
+import { getAppUsageStats } from "./app-usage.service";
 import { readBlobsBatch } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
 
@@ -62,34 +63,12 @@ export async function bindingTablesByApp(
   return out;
 }
 
-interface UsageModule {
-  getAppUsageStats?: (
-    workspaceId: string,
-    opts?: { days?: number },
-  ) => Promise<Map<string, { score: number; viewers: number }>>;
-}
-
-/**
- * appId → popularity score, or null when usage is not tracked here.
- *
- * TODO(app-usage): `app-usage.service.ts` is Lane A's (feat/app-usage, see the
- * discovery brief's contract) and is not on master yet. The specifier is a
- * variable so this compiles without it; once it lands this starts returning
- * scores with no change here — then replace with a static import.
- */
+/** appId → popularity score (app-usage.service), or null when unavailable. */
 export async function appUsageScores(
   workspaceId: string,
 ): Promise<Map<string, number> | null> {
-  const specifier = "./app-usage.service";
-  let mod: UsageModule;
   try {
-    mod = (await import(specifier)) as UsageModule;
-  } catch {
-    return null;
-  }
-  if (typeof mod.getAppUsageStats !== "function") return null;
-  try {
-    const stats = await mod.getAppUsageStats(workspaceId, { days: 28 });
+    const stats = await getAppUsageStats(workspaceId, { days: 28 });
     return new Map([...stats].map(([id, s]) => [id, s.score]));
   } catch (error) {
     logger.warn("App usage unavailable for search", {

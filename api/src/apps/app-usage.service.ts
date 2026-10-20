@@ -24,6 +24,7 @@ import { AppProject, AppUsageDaily } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { loggers } from "../logging";
 import { loadAppsIndex } from "./app-index.service";
+import { canSeeIndexedApp } from "./app-authorization";
 import { runGit } from "./git";
 import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
@@ -298,7 +299,9 @@ async function commitAuthorUserIds(
 
 /**
  * Each app's authors (user ids): the row's owner and creator, the owner of
- * the personal tree it lives in, and its committers on main.
+ * the personal tree it lives in (the index's `ownerId`, resolved from the
+ * `users/<handle>` segment through the handle mapping), and its committers
+ * on main.
  */
 export async function getAppAuthors(
   workspaceId: string,
@@ -486,4 +489,32 @@ export async function getRecentlyViewedApps(
     appId: r._id,
     lastOpenedAt: r.lastAt.toISOString(),
   }));
+}
+
+/**
+ * The ids of the indexed apps the caller can see — the app list's rule, for
+ * GET /usage and GET /recent. A personal app's owner is the index row's
+ * `ownerId`, which the index resolves through the handle mapping
+ * (user-handles.ts): a `users/<handle>/` app is visible to the person that
+ * handle names, never to whoever a folder name happens to spell.
+ */
+export async function visibleIndexedAppIds(
+  workspaceId: string,
+  userId: string | undefined,
+  role: string | undefined,
+): Promise<Set<string>> {
+  const [snapshot, rows] = await Promise.all([
+    loadAppsIndex(workspaceId, { freshen: false }),
+    AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
+      .select("_id access workspaceRole sharedWith owner_id createdBy")
+      .lean(),
+  ]);
+  const stateById = new Map(rows.map(r => [r._id.toString(), r]));
+  return new Set(
+    snapshot.apps
+      .filter(app =>
+        canSeeIndexedApp(app, stateById.get(app.appId), userId, role),
+      )
+      .map(app => app.appId),
+  );
 }
