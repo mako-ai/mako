@@ -595,20 +595,42 @@ function rowToIndex(row: Pick<IAppIndexEntry, keyof AppIndexRow>): AppIndexRow {
 }
 
 /**
- * Who first committed each app's manifest, and when, by app path: one
- * `git log` over the history, newest first, so the LAST addition seen for a
- * path is its first. Only asked for apps the index has not dated yet (new
- * folders), so the walk runs when an app appears, not on every push. Moves
- * are additions too (`--no-renames`), which is why a row that already has a
- * date keeps it: the identity follows the app across a move, and so does
- * its age. Best effort — a failure leaves the rows undated.
+ * Platform identities that commit on people's behalf (the box agent's
+ * fallback, GitHub apps): never an app's author. A person's GitHub noreply
+ * address (`123+name@users.noreply.github.com`) is a person and stays.
  */
-export async function firstManifestCommits(
+export function isBotCommitter(email: string): boolean {
+  const e = email.toLowerCase();
+  const local = e.split("@")[0];
+  return PLATFORM_LOCAL_PARTS.has(local) || e.includes("[bot]");
+}
+
+/** Local parts Mako and git hosts commit as (`bot@mako.ai`, `session@mako.ai`). */
+const PLATFORM_LOCAL_PARTS = new Set([
+  "bot",
+  "session",
+  "publish",
+  "noreply",
+  "no-reply",
+]);
+
+/**
+ * When each app folder first appeared, and who made it, by app path: one
+ * `git log` limited to the folders the index has not dated yet (new apps),
+ * newest first — so the last commit seen for a folder is its oldest. The
+ * author is the oldest HUMAN author: the commit that put a folder at its
+ * path is often a platform one (an import, a reorganisation, bot@mako.ai),
+ * while the person who built the app is the first to edit it. A move starts
+ * a folder's history over at the new path, which is why a row that already
+ * has a date keeps it — the identity follows the app, and so does its age.
+ * Best effort: a failure leaves the rows undated.
+ */
+export async function firstCommitsOf(
   repoDir: string,
   sha: string,
   paths: ReadonlySet<string>,
-): Promise<Map<string, { email: string; at: string }>> {
-  const out = new Map<string, { email: string; at: string }>();
+): Promise<Map<string, { email?: string; at: string }>> {
+  const out = new Map<string, { email?: string; at: string }>();
   if (paths.size === 0) return out;
   let stdout: string;
   try {
@@ -618,16 +640,14 @@ export async function firstManifestCommits(
         repoDir,
         "log",
         "--no-renames",
-        "--diff-filter=A",
         "--name-only",
         "-z",
         "--format=%x01%ae%x00%aI",
         sha,
         "--",
-        `:(glob)${APPS_DIR}/**/${APP_MANIFEST}`,
-        `:(glob)${USERS_DIR}/**/${APP_MANIFEST}`,
+        ...[...paths].map(p => `:(literal)${p}`),
       ],
-      { timeoutMs: 60_000 },
+      { timeoutMs: 60_000, maxBufferBytes: 128 * 1024 * 1024 },
     ));
   } catch (error) {
     logger.warn("Apps index: could not date apps from history", {
@@ -635,15 +655,29 @@ export async function firstManifestCommits(
     });
     return out;
   }
+  const appOf = (file: string): string | null => {
+    for (
+      let i = file.lastIndexOf("/");
+      i > 0;
+      i = file.lastIndexOf("/", i - 1)
+    ) {
+      const dir = file.slice(0, i);
+      if (paths.has(dir)) return dir;
+    }
+    return null;
+  };
   for (const commit of stdout.split("\x01")) {
     const [email, rawAt, ...files] = commit.split("\0").map(s => s.trim());
     const ms = Date.parse(rawAt ?? "");
     if (!email || !Number.isFinite(ms)) continue;
     const at = new Date(ms).toISOString();
+    const human = !isBotCommitter(email);
+    const seen = new Set<string>();
     for (const file of files) {
-      if (!file.endsWith(`/${APP_MANIFEST}`)) continue;
-      const dir = file.slice(0, -APP_MANIFEST.length - 1);
-      if (paths.has(dir)) out.set(dir, { email, at });
+      const dir = file ? appOf(file) : null;
+      if (!dir || seen.has(dir)) continue;
+      seen.add(dir);
+      out.set(dir, { email: human ? email : out.get(dir)?.email, at });
     }
   }
   return out;
@@ -789,7 +823,11 @@ async function syncNow(
   // not make an app "new"), read from history only for the rest.
   const datedById = new Map(
     existing
-      .filter(r => r.firstCommitAt)
+      // A bot author on a dated row is an older reading of history: redo it.
+      .filter(
+        r =>
+          r.firstCommitAt && !(r.authorEmail && isBotCommitter(r.authorEmail)),
+      )
       .map(r => [
         r.appId,
         {
@@ -803,7 +841,7 @@ async function syncNow(
       .filter(a => !datedById.has(ids.get(a.path)?.appId ?? ""))
       .map(a => a.path),
   );
-  const firstCommits = await firstManifestCommits(repoDir, sha, undated);
+  const firstCommits = await firstCommitsOf(repoDir, sha, undated);
 
   const rows: AppIndexRow[] = read.apps.map(app => {
     const manifest = read.manifests.get(app.path)!;

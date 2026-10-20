@@ -345,6 +345,23 @@ describe("discovery facts", () => {
     expect(moved?.tables).toEqual([]);
   });
 
+  it("credits the first human, not the platform commit that created the folder", async () => {
+    await commitBlobsOnBranch(
+      repoDirFor(WS),
+      DEFAULT_BRANCH,
+      { writes: { "apps/e/mako.json": manifest("E") }, deletes: [] },
+      {
+        message: "import",
+        author: { name: "Mako", email: "bot@mako.ai" },
+      },
+    );
+    await externalCommit({ "apps/e/src/main.tsx": "export {}\n" });
+    invalidateAppsIndexCache(WS);
+    const e = (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/e");
+    expect(e?.authorEmail).toBe("laptop@example.com");
+    expect(e?.firstCommitAt).toBeTruthy();
+  });
+
   it("lists and searches with the list's visibility", async () => {
     const other = new Types.ObjectId().toString();
     const mine = await listDiscoveryApps(WS, USER, "member");
