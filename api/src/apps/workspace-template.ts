@@ -38,7 +38,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 22;
+export const WORKSPACE_TEMPLATE_VERSION = 23;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -80,8 +80,11 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 - **Thumbnail:** an app's card on the Apps home shows \`thumbnail.png\`
   (or \`.webp\`/\`.jpg\`/\`.svg\`) from the app's root, 1200×750 (16:10).
   New apps start with a placeholder \`thumbnail.svg\`; replace it with a
-  real showcase of what the app does — design one as SVG (export to PNG if
-  you like) or generate it with an image model. Make it look great.
+  real showcase of what the app does — design one as SVG and export a PNG,
+  or generate it with an image model. Prefer PNG: it is also the link
+  preview of the app's public share (WhatsApp, Slack, LinkedIn ignore SVG),
+  which crops to 1200×630 — keep the key content in that centred band.
+  Make it look great.
 - **Package manager: pnpm.** Use \`pnpm install\`, \`pnpm add <pkg>\`,
   \`pnpm dev\`, \`pnpm build\` — never \`npm install\` in a pnpm app: it
   ignores \`pnpm-lock.yaml\` and writes a competing \`package-lock.json\`.

@@ -119,6 +119,8 @@ The **Apps home** (`/apps`, or the grid button in the Apps explorer) is the work
 
 Each card shows the app's own **thumbnail**: an image at the app's root, named `thumbnail.png` (or `thumbnail.webp`, `.jpg`, `.jpeg`, `.svg` — the first one found wins), ideally **1200×750 (16:10)** and under 3 MB. Mako never screenshots apps; the builder ships the picture, and it updates with the next commit on `main`. New apps start with a placeholder `thumbnail.svg` (the app's title and the Mako mark); an app without any thumbnail gets a generated placeholder.
 
+**Prefer `thumbnail.png`.** The thumbnail is also the app's **link preview**: a public share link (no password) posted in WhatsApp, Slack, LinkedIn, iMessage, Teams or X unfurls with the app's title, its `mako.json` description and the thumbnail. Those crawlers ignore SVG, so an app with only an SVG thumbnail unfurls with a generic Mako image. Keep the PNG under ~300 KB, and keep the key content inside the centred **1200×630** band of the 1200×750 image, because previews crop to that. Password-protected shares unfurl generically (no title, no picture), and links to the app inside Mako unfurl nothing.
+
 Go wild with it: a thumbnail is the app's poster. Show what the app is for — a headline number, a stylised chart, the team's colours — like a product marketing shot rather than a screenshot. Design it as an SVG (and export to PNG if it uses fonts or filters), or ask an image model for one. SVG thumbnails are displayed as images only: scripts, external fonts and external images do not load.
 
 ## Access Control

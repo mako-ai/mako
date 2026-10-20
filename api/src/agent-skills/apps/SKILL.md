@@ -246,9 +246,12 @@ screenshots apps: the builder ships the picture. New apps start with a
 placeholder `thumbnail.svg` (title + Mako mark). When an app is worth
 sharing, replace it with a marketing-style showcase of what it does — the
 headline number, a stylised chart, the brand colours — designed as SVG
-(then exported to PNG if it uses fonts or filters) or generated with an
-image model. Delete the placeholder when you add a PNG. An SVG is shown as
-an `<img>`: no scripts, no external fonts or images.
+then exported to PNG, or generated with an image model. **Prefer PNG** (keep
+it under ~300 KB): it doubles as the link-preview image of the app's public
+share, and WhatsApp, Slack, LinkedIn and X ignore SVG. Previews crop to
+1200×630, so keep the key content inside the centred 1200×630 band of the
+1200×750 image. Delete the placeholder when you add a PNG. An SVG is shown
+as an `<img>`: no scripts, no external fonts or images.
 
 ## Styling & UI components
 

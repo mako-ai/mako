@@ -9,7 +9,14 @@ import { Scalar } from "@scalar/hono-api-reference";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
+import {
+  injectOgTags,
+  ogTagsForShare,
+  publicOrigin,
+  shareTokenFromPath,
+} from "./services/share-og.service";
 import { registerApiRoutes } from "./routes/register-routes";
 import { edgeOriginMiddleware } from "./middleware/edge-origin";
 import { apiRateLimitMiddleware } from "./middleware/rate-limit";
@@ -272,7 +279,7 @@ app.use("*", async (c, next) => {
       // index.html must always be revalidated so a reload after a deploy
       // picks up the new bundle (stale-client detection depends on this).
       c.header("Cache-Control", "no-cache");
-      return c.html(content);
+      return c.html(await withShareLinkPreview(c, requestPath, content));
     }
   }
 
@@ -301,6 +308,30 @@ app.use("*", async (c, next) => {
 
   return c.text("Frontend not found", 404);
 });
+
+/**
+ * A public share link's HTML carries Open Graph tags (share-og.service):
+ * link-preview crawlers do not run the SPA. Any failure serves the page
+ * untouched — a preview is never worth a broken share.
+ */
+async function withShareLinkPreview(
+  c: Context,
+  requestPath: string,
+  html: string,
+): Promise<string> {
+  const token = shareTokenFromPath(requestPath);
+  if (!token) return html;
+  try {
+    const tags = await ogTagsForShare(
+      token,
+      publicOrigin(c.req.url, c.req.header("x-forwarded-proto")),
+      requestPath,
+    );
+    return injectOgTags(html, tags);
+  } catch {
+    return html;
+  }
+}
 
 function getContentType(ext: string): string {
   const types: Record<string, string> = {

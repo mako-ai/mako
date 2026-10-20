@@ -5069,6 +5069,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/share/{token}/og-image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Link-preview image of an open share
+         * @description The app's own raster thumbnail (thumbnail.png/.jpg/.webp), unchanged, for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.
+         */
+        get: operations["get_api_share_token_og_image"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/share/{token}/artifacts/{artifactId}": {
         parameters: {
             query?: never;
@@ -21350,6 +21370,46 @@ export interface operations {
         };
     };
     get_api_share_token_content: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_share_token_og_image: {
         parameters: {
             query?: never;
             header?: never;

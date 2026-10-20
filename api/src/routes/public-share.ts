@@ -19,7 +19,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import { type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { getArtifactStore } from "../services/artifact-store.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
@@ -32,6 +32,11 @@ import {
   recordServedOpen,
   servedOpenSource,
 } from "../apps/app-usage.service";
+import {
+  findShareByToken,
+  isOpenShare,
+  shareImageFor,
+} from "../services/share-og.service";
 
 const logger = loggers.api("public-share");
 
@@ -64,12 +69,7 @@ type SharedResource = { type: "app"; doc: IAppProject };
 
 async function findByToken(token: string): Promise<SharedResource | null> {
   // Tokens are readable slugs (possibly short) or legacy random strings.
-  if (!token || token.length < 3 || token.length > 128) return null;
-  if (!/^[a-zA-Z0-9_-]+$/.test(token)) return null;
-  const app = await AppProject.findOne({
-    "publicShare.token": token,
-    "publicShare.enabled": true,
-  });
+  const app = await findShareByToken(token);
   if (app) return { type: "app", doc: app };
   return null;
 }
@@ -284,6 +284,48 @@ app.openapi(
     } catch (error) {
       logger.error("Error building share content", { error });
       return c.json({ success: false, error: "Failed to load content" }, 500);
+    }
+  },
+);
+
+// GET /:token/og-image — the link-preview picture (share-og.service)
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{token}/og-image",
+    tags: ["Public Shares"],
+    summary: "Link-preview image of an open share",
+    description:
+      "The app's own raster thumbnail (thumbnail.png/.jpg/.webp), unchanged, for Open Graph crawlers. Only for a share anyone can open (enabled, no password); otherwise — or when the app has no raster thumbnail — 404, and the share page points crawlers at the generic /og-default.png instead. Cached publicly by blob oid.",
+    security: [],
+    request: { params: TokenParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token") as string;
+      const app = await findShareByToken(token);
+      const image = isOpenShare(app) ? await shareImageFor(app) : null;
+      if (!image) {
+        return c.json({ success: false, error: "No preview image" }, 404, {
+          "Cache-Control": "no-store",
+        });
+      }
+      return new Response(new Uint8Array(image.bytes), {
+        status: 200,
+        headers: {
+          "Content-Type": image.contentType,
+          "Content-Length": String(image.bytes.length),
+          // Crawlers and their CDNs cache by URL; the URL carries the oid.
+          // A day, not forever: unsharing must eventually stop serving it.
+          "Cache-Control": "public, max-age=86400",
+          ETag: `"${image.oid}"`,
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (error) {
+      logger.error("Error serving share preview image", { error });
+      return c.json({ success: false, error: "Failed to load image" }, 500);
     }
   },
 );
