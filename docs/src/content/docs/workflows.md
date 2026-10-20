@@ -126,6 +126,12 @@ Mako needs two things: a Hatchet API token, and a worker.
 
 Hatchet dashboard: `http://localhost:8086` (`admin@example.com` / `Admin123!!`). The link icon in the Workflows panel opens it. This bundled Hatchet is for testing, not for production.
 
+### Test from your checkout
+
+`mako workflow run <name> --input '{"limit":3}'` runs `workflows/<name>/workflow.ts` from your checkout, uncommitted edits included, in one Node process with no Hatchet engine. Steps run once each, parents first. Every Mako call is real and carries your `mako login` (or `MAKO_API_KEY`, which needs the `workflows:run` scope). The whole run is saved to `.mako/runs/<name>.json`, and `--task <step>` reruns one step from its saved outputs. See the [CLI README](https://github.com/mako-ai/mako/blob/master/packages/cli/README.md) for details.
+
+When a person runs workflow code this way, calls to the worker's SQL, model and agent routes act as that person, with exactly the rights they have over `/api/mcp`. The `X-Mako-Workflow` header from a person's credential grants nothing extra. The deployed worker's key keeps meaning the workflow's own rights.
+
 ### Production
 
 1. Create an API token in [Hatchet Cloud](https://cloud.onhatchet.run), or in a Hatchet you run yourself.

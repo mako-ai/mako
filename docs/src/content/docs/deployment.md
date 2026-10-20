@@ -87,6 +87,17 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `LANGFUSE_SECRET_KEY`          | Optional    | Langfuse LLM observability — secret key |
 | `LANGFUSE_BASE_URL`            | Optional    | Langfuse region base URL (EU `https://cloud.langfuse.com`, US `https://us.cloud.langfuse.com`) |
 | `LANGFUSE_TRACING_ENVIRONMENT` | Optional    | Trace environment label (defaults to `NODE_ENV`) |
+| `API_RATE_LIMIT_MODE`          | Optional    | Per-caller API budget: `shadow` (default, logs who would be refused), `enforce` (429 + `Retry-After`), or `off`. The Cloud Run deploy workflow sets `enforce` |
+| `API_RATE_LIMIT_PER_MINUTE`    | Optional    | Cost units per caller per minute (default `1200`) |
+| `EDGE_ORIGIN_SECRET`           | Optional    | When set, requests must carry `x-mako-edge: <secret>` (set by a Cloudflare Transform Rule) so the `*.run.app` URL cannot bypass Cloudflare. Logs only until `EDGE_ORIGIN_CHECK=enforce` |
+
+### API Protection
+
+Three guards keep one noisy caller from taking an instance down:
+
+- **Per-caller rate limit** — each session, token or client IP gets a per-minute budget of cost units, shared across instances through `REDIS_URL` (without Redis it is per-instance; if Redis is unreachable the limit fails open). Heavy routes (branch listing, sandbox and git reads, query execution, agent chat) cost more than a plain read. Inngest, provider webhooks and health checks are exempt. Over budget, enforce mode answers `429` with `Retry-After`.
+- **Concurrency pool** — the git and sandbox read routes allow 12 requests at once per instance. A request that waits more than 10 seconds gets `503` with `Retry-After`, so a slow endpoint cannot starve the UI, webhooks and Inngest.
+- **Edge-origin check** — optional; see `EDGE_ORIGIN_SECRET` above.
 
 ### LLM Observability (Langfuse)
 

@@ -176,6 +176,7 @@ preview the app as a specific workspace member during `pnpm dev`.
 ## Security Model
 
 - Binding queries are validated against the workspace's connections and run server-side with read-only enforcement on materialization SQL.
+- A binding is the app's whole data, so one past the 500,000-row Parquet limit **fails its build** (the run records the error, and the previously built artifact keeps being served) instead of being silently cut to 500,000 rows. Narrow or aggregate the binding's SQL.
 - The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
 - The preview iframe is sandboxed; app code receives query *results* only — never credentials.
 

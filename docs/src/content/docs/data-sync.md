@@ -82,6 +82,19 @@ For connectors that can update their provider-side webhook subscription (Stripe 
 - Saving a flow with a changed entity selection retargets the subscription automatically. Failures surface as save warnings, never errors; re-provision from the Triggers step to fix them.
 - A push to `flows/<slug>.yml` that changes entities emits a `flow.webhook.resubscribe` Inngest event that does the same.
 
+### Incremental Resyncs (Close)
+
+A **scheduled** resync of a Close flow (`backfill_schedule` / `resync:`) no longer re-reads everything each time. Leads, contacts, opportunities and every `activities:*` entity fetch only records with `date_updated` since that entity's last completed backfill run (minus a 6-hour overlap), through the same Search API window incremental polls use. Everything else stays a full fetch:
+
+- other Close entities (users, custom fields, groups, statuses, …)
+- every manual, API or MCP backfill and resync, and layout-change backfills
+- flows with `write_mode` `overwrite` or `append`
+- any entity whose last full fetch started 7 or more days ago, or that has none on record (new flow, first run after deploy, after a resync wiped state)
+
+Deletions come from the live stream, not from backfills, so the weekly full fetch is a re-read, not a delete sweep. Other connectors are unaffected. Self-hosters can set `CDC_INCREMENTAL_RESYNC=off` to turn it off, and tune `CDC_INCREMENTAL_RESYNC_OVERLAP_HOURS` and `CDC_FULL_RESYNC_INTERVAL_DAYS`.
+
+A completed backfill also clears an earlier failure's error from the flow's state, so a flow that failed once no longer keeps reporting the old error after clean runs.
+
 ### Schema Evolution (BigQuery)
 
 When a connector's expected column types drift from the live BigQuery table (for example, a column created as `STRING` in a legacy run that should now be `TIMESTAMP`), Mako auto-corrects the drift before merging CDC events. This prevents merge failures from type mismatches.
