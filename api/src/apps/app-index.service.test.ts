@@ -24,7 +24,9 @@ import {
   AppIndexEntry,
   AppIndexHead,
   AppProject,
+  WorkspaceUserHandle,
 } from "../database/workspace-schema";
+import { invalidateOwnerDirectory } from "./user-handles.service";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -82,6 +84,8 @@ afterAll(async () => {
 
 const WS = new Types.ObjectId().toString();
 const USER = new Types.ObjectId().toString();
+/** USER's personal folder name: `users/<handle>/`, never their id. */
+const HANDLE = "alice";
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 const B_ID = new Types.ObjectId().toHexString();
 
@@ -93,6 +97,13 @@ beforeEach(async () => {
   await AppIndexEntry.deleteMany({});
   await AppIndexHead.deleteMany({});
   await AppProject.deleteMany({});
+  await WorkspaceUserHandle.deleteMany({});
+  await WorkspaceUserHandle.create({
+    workspaceId: new Types.ObjectId(WS),
+    userId: USER,
+    handle: HANDLE,
+  });
+  invalidateOwnerDirectory();
   await unbindTestWorkspaceRepo(WS);
   invalidateAppsIndexCache();
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
@@ -107,7 +118,7 @@ beforeEach(async () => {
       "-- connection: c1\n-- schedule: 0 * * * *\nselect 1\n",
     "apps/Empty/.gitkeep": "",
     "apps/README.md": "stray file, not an app\n",
-    [`users/${USER}/apps/c/mako.json`]: manifest("C"),
+    [`users/${HANDLE}/apps/c/mako.json`]: manifest("C"),
     "consoles/x.sql": "select 1\n",
   });
   await bindTestWorkspaceRepo(WS);
@@ -184,13 +195,75 @@ describe("discoverApps", () => {
       { type: "tree", oid: "t12", path: "users/u1/consoles" },
     ]);
     // Sorted by path, locale-aware (so "a" sorts before "Sales").
-    expect(out.apps.map(a => [a.path, a.scope, a.ownerId, a.treeOid])).toEqual([
+    // Discovery is pure: it reports the folder's handle, not an owner.
+    expect(
+      out.apps.map(a => [a.path, a.scope, a.ownerHandle, a.treeOid]),
+    ).toEqual([
       ["apps/a", "workspace", undefined, "t2"],
       ["apps/Sales/CH/b", "workspace", undefined, "t6"],
       ["users/u1/apps/c", "private", "u1", "t11"],
     ]);
     expect(out.apps[1].bindingBlobs.get("rows")).toBe("b4");
     expect(out.folders).toEqual(["apps/Empty", "apps/Sales", "apps/Sales/CH"]);
+  });
+});
+
+describe("personal trees resolve through the handle mapping only", () => {
+  it("a folder's name makes nobody its owner; the mapping does", async () => {
+    const OTHER = new Types.ObjectId().toString();
+    await WorkspaceUserHandle.create({
+      workspaceId: new Types.ObjectId(WS),
+      userId: OTHER,
+      handle: "bob",
+    });
+    invalidateOwnerDirectory();
+    await externalCommit({
+      // Named by USER's raw id: not a handle → nobody's (the pre-migration
+      // shape, and what anyone could push to claim USER's tree).
+      [`users/${USER}/apps/by-id/mako.json`]: manifest("By id"),
+      // Named after someone else's handle: Bob's, whoever pushed it.
+      "users/bob/apps/planted/mako.json": manifest("Planted"),
+      // A handle nobody holds.
+      "users/ghost/apps/g/mako.json": manifest("Ghost"),
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const owner = (p: string) =>
+      snapshot.apps.find(a => a.path === p)?.ownerId ?? null;
+    expect(owner(`users/${HANDLE}/apps/c`)).toBe(USER);
+    expect(owner("users/bob/apps/planted")).toBe(OTHER);
+    expect(owner(`users/${USER}/apps/by-id`)).toBeNull();
+    expect(owner("users/ghost/apps/g")).toBeNull();
+    // Synthesized projects follow: private, owned by the mapping's answer.
+    const planted = await resolveProjectRef(WS, "users/bob/apps/planted");
+    expect(planted?.access).toBe("private");
+    expect(planted?.owner_id).toBe(OTHER);
+    const byId = await resolveProjectRef(WS, `users/${USER}/apps/by-id`);
+    expect(byId?.access).toBe("private");
+    expect(byId?.owner_id).toBeUndefined();
+  });
+
+  it("refuses to file an app under a handle that is not the owner's", async () => {
+    await expect(
+      createProject({
+        workspaceId: WS,
+        title: "Sneaky",
+        userId: USER,
+        folder: {
+          scope: "private",
+          ownerId: USER,
+          ownerHandle: "ghost",
+          folderSegments: [],
+        },
+      }),
+    ).rejects.toThrow(/does not belong/);
+    // Personal by default lands under the handle, never the id.
+    const mine = await createProject({
+      workspaceId: WS,
+      title: "Mine",
+      userId: USER,
+      folder: { scope: "private", folderSegments: [] },
+    });
+    expect(mine.path).toBe(`users/${HANDLE}/apps/mine`);
   });
 });
 
@@ -332,7 +405,7 @@ describe("the index", () => {
     expect(snapshot.apps.map(a => a.path)).toEqual([
       "apps/a",
       "apps/Sales/CH/b",
-      `users/${USER}/apps/c`,
+      `users/${HANDLE}/apps/c`,
     ]);
     const a = snapshot.apps.find(x => x.slug === "a")!;
     const b = snapshot.apps.find(x => x.slug === "b")!;
@@ -507,7 +580,7 @@ describe("moves", () => {
       folderSegments: ["Scratch"],
     });
     let row = (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID)!;
-    expect(row.path).toBe(`users/${USER}/apps/Scratch/b`);
+    expect(row.path).toBe(`users/${HANDLE}/apps/Scratch/b`);
     expect(row.scope).toBe("private");
     expect((await resolveProjectRef(WS, B_ID))?.access).toBe("private");
     await moveProject(b, { scope: "workspace", folderSegments: [] });
@@ -796,7 +869,7 @@ describe("visibility follows the tree", () => {
       { userId: USER },
     );
     let row = (await AppProject.findById(a._id))!;
-    expect(row.path).toBe(`users/${USER}/apps/a`);
+    expect(row.path).toBe(`users/${HANDLE}/apps/a`);
     expect(row.access).toBe("private");
     expect(row.owner_id).toBe(USER);
     expect(canReadResource(row, "someone-else", "member")).toBe(false);
@@ -816,15 +889,15 @@ describe("visibility follows the tree", () => {
     await ensureProjectRow((await resolveProjectRef(WS, "a"))!, USER);
     await externalCommit(
       {
-        [`users/${USER}/apps/a/mako.json`]: manifest("A"),
-        [`users/${USER}/apps/a/src/main.tsx`]: "export {}\n",
-        [`users/${USER}/apps/a/fixtures/mako.json`]: manifest("Not an app"),
+        [`users/${HANDLE}/apps/a/mako.json`]: manifest("A"),
+        [`users/${HANDLE}/apps/a/src/main.tsx`]: "export {}\n",
+        [`users/${HANDLE}/apps/a/fixtures/mako.json`]: manifest("Not an app"),
       },
       ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
     );
     await loadAppsIndex(WS);
     const row = (await AppProject.findById(aId))!;
-    expect(row.path).toBe(`users/${USER}/apps/a`);
+    expect(row.path).toBe(`users/${HANDLE}/apps/a`);
     expect(row.access).toBe("private");
     expect(row.owner_id).toBe(USER);
   });
@@ -834,7 +907,7 @@ describe("ambiguous slugs", () => {
   it("resolve to nothing rather than to whichever row Mongo returns first", async () => {
     await externalCommit({ "apps/Ops/c/mako.json": manifest("Ops C") });
     await loadAppsIndex(WS);
-    // "c" now names users/<USER>/apps/c and apps/Ops/c; neither is top-level.
+    // "c" now names users/<HANDLE>/apps/c and apps/Ops/c; neither is top-level.
     await ensureProjectRow((await resolveProjectRef(WS, "apps/Ops/c"))!, USER);
     expect(await resolveProjectRef(WS, "c")).toBeNull();
     expect((await resolveProjectRef(WS, "apps/Ops/c"))?.path).toBe(
@@ -891,7 +964,7 @@ describe("createProject", () => {
       userId: USER,
       folder: { scope: "private", folderSegments: [] },
     });
-    expect(personal.path).toBe(`users/${USER}/apps/hello`);
+    expect(personal.path).toBe(`users/${HANDLE}/apps/hello`);
     expect((await resolveProjectRef(WS, personal._id.toString()))?.access).toBe(
       "private",
     );

@@ -38,7 +38,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 20;
+export const WORKSPACE_TEMPLATE_VERSION = 21;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -66,7 +66,17 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
   its lockfile (commit it). Folders between \`apps/\` and
   the app are plain organisation — move an app with \`git mv\` and it keeps
   its identity, which is the \`id\` in its manifest, never its path.
-  \`users/<userId>/apps/…\` are personal apps.
+- \`users/<handle>/…\` — one person's own tree (apps, consoles,
+  notebooks), private to them. The handle is their email's local part
+  (\`joan@…\` → \`users/joan/\`; \`-2\` on a clash); \`app_list_apps\` returns
+  yours as \`personalFolder\`. A folder's name grants nothing: only Mako's
+  handle mapping makes a \`users/<x>/\` someone's.
+- **New apps are personal by default**: create them in
+  \`users/<your handle>/apps/<slug>/\`, not \`apps/\`, unless the user
+  explicitly asks for a shared workspace app. Sharing is a deliberate move
+  (\`git mv\` into \`apps/…\`, or Share with workspace in Mako) once it is
+  worth everyone's attention. Before creating one, call \`search_apps\` with
+  what it should do — if a close match exists, propose extending it instead.
 - **Package manager: pnpm.** Use \`pnpm install\`, \`pnpm add <pkg>\`,
   \`pnpm dev\`, \`pnpm build\` — never \`npm install\` in a pnpm app: it
   ignores \`pnpm-lock.yaml\` and writes a competing \`package-lock.json\`.
@@ -86,7 +96,7 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
   \`--brand\`, \`--canvas\`, \`--chart-1…5\`, …): style with them and use the
   kit — do not paste token blocks or fork those components into an app.
 - \`consoles/<folder>/<name>.sql\` — saved consoles (\`.js\`, \`.mongodb.js\`
-  for the other languages); \`users/<userId>/consoles/…\` are private ones.
+  for the other languages); \`users/<handle>/consoles/…\` are private ones.
   Leading \`-- key: value\` lines are metadata (\`connection\`, \`database\`,
   \`description\`, \`schedule\`); a commit here shows up in the app on push.
 - \`skills/<name>/SKILL.md\` — workspace-taught agent skills (YAML

@@ -88,7 +88,7 @@ const SERVER_INSTRUCTIONS = `Mako builds data apps (git-backed React projects + 
 Typical loop:
 1. Discover data: list_connections (every configured credential — kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page of an entity from its platform; list_connectors is the catalog of connector code.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
-3. app_list_apps → app_create_app → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
+3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. Verify with app_open_app (starts the dev server, focuses the user's UI) + app_dev_log (vite + browser console) + app_browse (headless browser: click, navigate, screenshot the running app).
 5. app_commit → app_merge_to_main (main is what publishes buildable state).
 
@@ -109,7 +109,7 @@ const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bin
 Typical loop:
 1. Discover data: list_connections (kind "database" for warehouses, kind "source" for Stripe/Close/… keys), then list_databases / list_tables / inspect_table on a database connection (they dispatch on engine — SQL or MongoDB). A source connection is not queryable: probe_connection reads one live page from its platform.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
-3. app_list_apps → app_create_app → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
+3. search_apps first (extend a close match rather than copy it) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
 5. app_open_app opens/refreshes the app tab in Desktop. Verify with app_dev_log (vite + browser console) and app_browse (headless browser inside the sandbox). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.

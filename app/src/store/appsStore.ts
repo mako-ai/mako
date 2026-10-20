@@ -107,12 +107,12 @@ export interface AppMeta {
   slug?: string;
   /**
    * Repo-relative folder the app lives in: `apps/Sales/CH/report` or
-   * `users/<id>/apps/scratch`. The folders between the tree root and the app
+   * `users/<handle>/apps/scratch`. The folders between the tree root and the app
    * are the explorer's tree. Identity is `id`, which the manifest carries, so
    * a move keeps everything.
    */
   path?: string;
-  /** Which tree: the workspace's, or one person's (`users/<id>/apps`). */
+  /** Which tree: the workspace's, or one person's (`users/<handle>/apps`). */
   scope?: "workspace" | "private";
   /**
    * Set on a copied folder whose mako.json still declares another app's id:
@@ -326,10 +326,16 @@ interface AppsStore {
   appsCacheByWorkspace: Record<string, AppMeta[]>;
   /**
    * Folders of the two app trees the caller can see (`apps/Sales`,
-   * `users/<me>/apps/Scratch`), empty ones included — real directories in
+   * `users/<handle>/apps/Scratch`), empty ones included — real directories in
    * the workspace repo, straight from the list endpoint.
    */
   folders: string[];
+  /**
+   * The caller's own tree, `users/<handle>/apps` — named by their handle in
+   * this workspace, which only the server knows. Null until the list loads,
+   * or for an actor with no personal tree.
+   */
+  personalRoot: string | null;
   appsLoading: boolean;
   error: string | null;
 
@@ -445,7 +451,7 @@ interface AppsStore {
     workspaceId: string,
     title: string,
     description?: string,
-    /** Destination folder path (`apps`, `apps/Sales`, `users/<me>/apps`). */
+    /** Destination folder path (`apps`, `apps/Sales`, `users/<handle>/apps`). */
     folder?: string,
   ) => Promise<AppMeta | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
@@ -684,6 +690,7 @@ export const useAppsStore = create<AppsStore>()(
       apps: [],
       appsCacheByWorkspace: {},
       folders: [],
+      personalRoot: null,
       appsLoading: false,
       error: null,
       filesByApp: {},
@@ -924,11 +931,12 @@ export const useAppsStore = create<AppsStore>()(
             await api.GET("/api/workspaces/{workspaceId}/apps", {
               params: { path: { workspaceId } },
             }),
-          ) as { apps?: AppMeta[]; folders?: string[] };
+          ) as { apps?: AppMeta[]; folders?: string[]; personalRoot?: string };
           const apps = body.apps ?? [];
           set(s => {
             s.apps = apps;
             s.folders = body.folders ?? [];
+            s.personalRoot = body.personalRoot ?? null;
             s.appsCacheByWorkspace[workspaceId] = apps;
             s.appsLoading = false;
           });
@@ -948,6 +956,7 @@ export const useAppsStore = create<AppsStore>()(
             set(s => {
               s.apps = [];
               s.folders = [];
+              s.personalRoot = null;
               delete s.appsCacheByWorkspace[workspaceId];
               s.appsLoading = false;
               s.error = null;

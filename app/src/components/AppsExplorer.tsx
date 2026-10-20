@@ -8,7 +8,7 @@
  *   dragging an app into one is a `git mv` on main (editors only). The app
  *   keeps its id, so its tab, deployment, sharing and everyone's stars
  *   follow it and nothing rebuilds.
- * - **Personal**: the same, under `users/<me>/apps/` — this person's own
+ * - **Personal**: the same, under `users/<handle>/apps/` — this person's own
  *   apps, visible to nobody else.
  *
  * Each app is a directory node whose children are its file tree (loaded
@@ -249,7 +249,8 @@ export default function AppsExplorer() {
   const folders = useAppsStore(s => s.folders);
   const { user } = useAuth();
   const userId = user?.id;
-  const personalRoot = userId ? `users/${userId}/apps` : null;
+  // Named by the person's handle, which only the server knows (GET /apps).
+  const personalRoot = useAppsStore(s => s.personalRoot);
   const loading = useAppsStore(s => s.appsLoading);
   const error = useAppsStore(s => s.error);
   const clearError = useAppsStore(s => s.clearError);
@@ -1200,7 +1201,9 @@ export default function AppsExplorer() {
             size="small"
             disabled={!canCreate}
             onClick={() => {
-              setCreateFolder(WORKSPACE_ROOT);
+              // Personal by default: sharing with the workspace is a
+              // deliberate move, not where a new app starts.
+              setCreateFolder(personalRoot ?? WORKSPACE_ROOT);
               setCreateOpen(true);
             }}
           >

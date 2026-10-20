@@ -85,7 +85,7 @@ function requireObjectId(kind: string, id: string): Types.ObjectId {
 // ---------------------------------------------------------------------------
 
 /**
- * The app folders this actor may see. A personal tree (`users/<id>/apps`)
+ * The app folders this actor may see. A personal tree (`users/<handle>/apps`)
  * is its owner's alone — the same rule the REST list and app_list_apps
  * apply; the connector must not be the one door that skips it.
  */

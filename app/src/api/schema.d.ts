@@ -3532,7 +3532,7 @@ export interface paths {
         put?: never;
         /**
          * Create an empty app folder
-         * @description Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<me>/apps/…`) are the caller's own.
+         * @description Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<handle>/apps/…`) are the caller's own.
          */
         post: operations["post_api_workspaces_workspaceId_apps_folders"];
         /** Delete an empty app folder */

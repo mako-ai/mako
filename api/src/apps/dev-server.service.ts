@@ -76,7 +76,7 @@ const MAX_RUNNING_DEV_SERVERS = 3;
 /**
  * One in-box identity per app for launcher, log, staged data, the port
  * registry and the box agent's reports: the app's ID. Folder basenames are
- * not unique once apps nest (`apps/sales/report`, `users/<me>/apps/report`),
+ * not unique once apps nest (`apps/sales/report`, `users/<handle>/apps/report`),
  * and a path is not a filename — so every site that used to key by the
  * basename keys by this instead, and they cannot disagree with each other.
  */

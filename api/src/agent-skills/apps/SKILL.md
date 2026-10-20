@@ -101,9 +101,16 @@ just compilation.
 
 ## Tool guidance
 
-1. `app_list_apps` to resolve the app id, or `app_create_app` for a new
-   private project (full scaffold: package.json, vite.config.ts, src/).
-   After creating, `app_open_app` so the user watches it live.
+1. `app_list_apps` to resolve the app id. Before building something new,
+   `search_apps` with what it should do (topic, tables): if a close match
+   exists, show it and propose extending it rather than scaffolding a
+   near-copy. Then `app_create_app` (full scaffold: package.json,
+   vite.config.ts, src/). New apps are PERSONAL by default — they land in the
+   user's own `users/<handle>/apps/` (`app_list_apps` → `personalFolder`),
+   private to them. Pass a `folder` under `apps/…` only when the user
+   explicitly asks for a shared workspace app; sharing an existing one is a
+   deliberate move (`app_move_app` into `apps/…`) when they ask, never a
+   default. After creating, `app_open_app` so the user watches it live.
 2. Inspect with `app_status` (branch, uncommitted changes). Locate code with
    `app_glob` (paths, e.g. `src/**/*.tsx`) and `app_grep` (contents, regex) —
    both read straight from git so they work even when the sandbox is paused or

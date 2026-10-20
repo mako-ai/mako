@@ -164,6 +164,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_status: bridge(),
   app_publish_status: bridge(),
   app_write_file: bridge(),
+  search_apps: bridge(),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
   get_mcp_capabilities: mcpOnly(),

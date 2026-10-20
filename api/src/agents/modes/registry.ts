@@ -149,6 +149,7 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
 export const APP_TOOL_NAMES = new Set<string>([
   "app_list_apps",
   "app_create_app",
+  "search_apps",
   "app_move_app",
   "app_bash",
   "app_read_file",

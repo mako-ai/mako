@@ -106,7 +106,8 @@ import {
   recordAppUsage,
   recordServedOpen,
 } from "../apps/app-usage.service";
-import { parseAppRepoPath } from "../apps/app-paths";
+import { appTreeRoot, parseAppRepoPath } from "../apps/app-paths";
+import { loadOwnerDirectory } from "../apps/user-handles.service";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
@@ -745,7 +746,7 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
 
       // The REPO is the list. An app exists because a folder with a
-      // `mako.json` exists (anywhere under apps/ or users/<id>/apps/), so a
+      // `mako.json` exists (anywhere under apps/ or users/<handle>/apps/), so a
       // folder pushed from a local checkout shows up with no registration
       // step (§13). Mongo is consulted only for what cannot live in a repo
       // the customer can clone: visibility, the deployed sha, the share
@@ -801,14 +802,29 @@ appsRoutes.openapi(
           };
         });
       // Folders of the two trees the caller can see: the workspace tree, and
-      // their own personal tree (never anyone else's).
+      // their own personal tree (never anyone else's) — by the handle
+      // mapping, not by what the folder is called.
+      const directory = await loadOwnerDirectory(workspaceId, {
+        forUserId: userId,
+      });
+      const handle = directory.handleOf(userId);
+      const personalRoot = handle ? appTreeRoot("private", handle) : undefined;
       const visibleFolders = folderPaths.filter(p => {
         if (p.startsWith("apps/")) return true;
-        return !!userId && p.startsWith(`users/${userId}/apps`);
+        return (
+          !!personalRoot &&
+          (p === personalRoot || p.startsWith(`${personalRoot}/`))
+        );
       });
 
       return c.json(
-        { success: true as const, apps, folders: visibleFolders },
+        {
+          success: true as const,
+          apps,
+          folders: visibleFolders,
+          // Where the caller's own apps go: `users/<handle>/apps`.
+          ...(personalRoot ? { personalRoot } : {}),
+        },
         200,
       );
     } catch (error) {
@@ -840,7 +856,7 @@ appsRoutes.openapi(
               description: z.string().optional(),
               /**
                * Folder to create it in: `apps` (default), `apps/Sales/CH`,
-               * or `users/<me>/apps[/…]` for a personal app.
+               * or `users/<my handle>/apps[/…]` for a personal app.
                */
               folder: z.string().optional(),
             }),
@@ -862,6 +878,7 @@ appsRoutes.openapi(
           target,
           userId,
           await memberRoleFor(workspaceId, userId),
+          await loadOwnerDirectory(workspaceId, { forUserId: userId }),
         );
         if (denied) return c.json({ success: false, error: denied }, 403);
       }
@@ -906,7 +923,7 @@ appsRoutes.openapi(
 // ---------------------------------------------------------------------------
 
 const FolderBody = z.object({
-  /** `apps/Sales/CH`, or `users/<me>/apps/Scratch`. */
+  /** `apps/Sales/CH`, or `users/<my handle>/apps/Scratch`. */
   path: z.string().min(1),
 });
 
@@ -917,7 +934,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Create an empty app folder",
     description:
-      "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<me>/apps/…`) are the caller's own.",
+      "Commits a `.gitkeep` so the folder exists on main. Workspace folders need an editing role; personal folders (`users/<handle>/apps/…`) are the caller's own.",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam,
@@ -938,6 +955,7 @@ appsRoutes.openapi(
         target,
         userId,
         await memberRoleFor(workspaceId, userId),
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
       if (denied) return c.json({ success: false, error: denied }, 403);
       const created = await createAppFolder(workspaceId, target, { userId });
@@ -979,9 +997,12 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
       const from = folderTargetFromPath(path);
       const target = folderTargetFromPath(to);
+      const directory = await loadOwnerDirectory(workspaceId, {
+        forUserId: userId,
+      });
       const denied =
-        authorizeFolderTarget(from, userId, role) ??
-        authorizeFolderTarget(target, userId, role);
+        authorizeFolderTarget(from, userId, role, directory) ??
+        authorizeFolderTarget(target, userId, role, directory);
       if (denied) return c.json({ success: false, error: denied }, 403);
       // Moving a folder moves every app in it, and a move into a personal
       // tree re-owns them: the caller must be allowed to write each one, as
@@ -1042,6 +1063,7 @@ appsRoutes.openapi(
         target,
         userId,
         await memberRoleFor(workspaceId, userId),
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
       );
       if (denied) return c.json({ success: false, error: denied }, 403);
       await deleteAppFolder(workspaceId, target, { userId });
@@ -1248,7 +1270,7 @@ appsRoutes.openapi(
         content: {
           "application/json": {
             schema: z.object({
-              /** Destination folder: `apps`, `apps/Sales`, `users/<me>/apps`. */
+              /** Destination folder: `apps`, `apps/Sales`, `users/<handle>/apps`. */
               folder: z.string().min(1),
               /** New folder name for the app itself (a rename). */
               name: z.string().min(1).optional(),
@@ -1269,7 +1291,13 @@ appsRoutes.openapi(
       const role = await memberRoleFor(workspaceId, userId);
       const target = folderTargetFromPath(folder);
       const source = parseAppRepoPath(appRootFor(loaded.project));
-      const denied = authorizeAppMove(source, target, userId, role);
+      const denied = authorizeAppMove(
+        source,
+        target,
+        userId,
+        role,
+        await loadOwnerDirectory(workspaceId, { forUserId: userId }),
+      );
       if (denied) return c.json({ success: false, error: denied }, 403);
       const moved = await moveProject(
         loaded.project,

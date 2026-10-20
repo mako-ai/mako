@@ -120,6 +120,7 @@ import {
   type AppScope,
 } from "./app-paths";
 import { appSdkDependency } from "./app-sdk-package";
+import { loadOwnerDirectory } from "./user-handles.service";
 import { workspaceService } from "../services/workspace.service";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 
@@ -768,17 +769,47 @@ export function slugify(title: string): string {
 /** Where a new app goes: a folder chain in one of the two trees. */
 export interface AppFolderTarget {
   scope: AppScope;
-  /** Required for `private`: the owner of the `users/<id>/apps` tree. */
+  /**
+   * For `private`: the owner's userId. Filled in by authorizeFolderTarget
+   * from the handle mapping — never taken from a folder name.
+   */
   ownerId?: string;
+  /** For `private`: the `users/<handle>` segment the tree lives under. */
+  ownerHandle?: string;
   folderSegments: string[];
 }
 
-/** Parse a folder path (`apps/Sales`, `users/<id>/apps`) into a target. */
+/**
+ * Make a private target consistent with the handle mapping before a path is
+ * built from it: an owner without a handle gets theirs filled in, and a
+ * handle that is not the owner's (or is nobody's) is refused — whatever the
+ * caller already checked. A no-op for workspace targets.
+ */
+async function settleTargetHandle(
+  workspaceId: string,
+  target: AppFolderTarget,
+): Promise<void> {
+  if (target.scope !== "private") return;
+  const directory = await loadOwnerDirectory(workspaceId, {
+    forUserId: target.ownerId,
+  });
+  target.ownerHandle ??= directory.handleOf(target.ownerId);
+  const owner = directory.ownerOf(target.ownerHandle);
+  if (!owner || (target.ownerId && owner !== target.ownerId)) {
+    throw new AppFolderError(
+      "That personal folder does not belong to the app's owner",
+      403,
+    );
+  }
+  target.ownerId = owner;
+}
+
+/** Parse a folder path (`apps/Sales`, `users/<handle>/apps`) into a target. */
 export function folderTargetFromPath(folderPath: string): AppFolderTarget {
   const parsed = parseAppFolderPath(folderPath.replace(/\/+$/, ""));
   if (!parsed) {
     throw new AppFolderError(
-      `Not an app folder: ${JSON.stringify(folderPath)} (expected apps/… or users/<id>/apps/…)`,
+      `Not an app folder: ${JSON.stringify(folderPath)} (expected apps/… or users/<handle>/apps/…)`,
     );
   }
   return parsed;
@@ -899,7 +930,7 @@ export async function createProject(input: {
   slug?: string;
   /**
    * Where to file it. Default: the top of the workspace tree (`apps/`). A
-   * `private` target puts it under the creator's `users/<id>/apps/`.
+   * `private` target puts it under the creator's `users/<handle>/apps/`.
    */
   folder?: AppFolderTarget;
 }): Promise<IAppProject> {
@@ -918,6 +949,7 @@ export async function createProject(input: {
     if (!target.ownerId) {
       throw new Error("A personal app needs a signed-in owner");
     }
+    await settleTargetHandle(input.workspaceId, target);
   }
   const slug =
     input.slug ?? (await uniqueSlug(input.workspaceId, title, target));
@@ -1049,7 +1081,7 @@ export async function deleteProject(project: IAppProject): Promise<void> {
 export class AppFolderError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 = 400,
+    readonly status: 400 | 403 | 404 | 409 = 400,
   ) {
     super(message);
     this.name = "AppFolderError";
@@ -1063,7 +1095,7 @@ function folderPathOf(target: AppFolderTarget): string {
     }
   }
   return [
-    appTreeRoot(target.scope, target.ownerId),
+    appTreeRoot(target.scope, target.ownerHandle),
     ...target.folderSegments,
   ].join("/");
 }
@@ -1078,7 +1110,7 @@ function isWithin(candidate: string, root: string): boolean {
  * knows it by — so a move never changes an identity, even for an app that
  * predates manifest ids. Paths are the NEW ones (post-move).
  */
-async function moveWritesUnder(
+export async function moveWritesUnder(
   workspaceId: string,
   repoDir: string,
   moves: Array<{ from: string; to: string }>,
@@ -1134,7 +1166,7 @@ async function moveWritesUnder(
  */
 type MainMutation = Parameters<typeof commitFilesOnBranch>[2];
 
-async function commitOnMainDurably(
+export async function commitOnMainDurably(
   workspaceId: string,
   repoDir: string,
   /**
@@ -1197,6 +1229,7 @@ export async function moveProject(
 ): Promise<{ from: string; to: string }> {
   const workspaceId = project.workspaceId.toString();
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, target);
   const from = appRootFor(project);
   const slug = target.slug ?? project.slug ?? from.split("/").pop() ?? "app";
   if (!isSafeSegment(slug)) {
@@ -1276,6 +1309,7 @@ export async function createAppFolder(
     throw new AppFolderError("A folder needs a name");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, target);
   const folderPath = folderPathOf(target);
   const snapshot = await loadAppsIndex(workspaceId);
   if (snapshot.folders.includes(folderPath)) {
@@ -1311,6 +1345,8 @@ export async function moveAppFolder(
     throw new AppFolderError("The tree roots cannot be moved");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, from);
+  await settleTargetHandle(workspaceId, to);
   const fromPath = folderPathOf(from);
   const toPath = folderPathOf(to);
   if (fromPath === toPath) return { from: fromPath, to: toPath, apps: 0 };
@@ -1360,6 +1396,7 @@ export async function deleteAppFolder(
     throw new AppFolderError("The tree roots cannot be deleted");
   }
   const repoDir = await requireWorkspaceRepo(workspaceId);
+  await settleTargetHandle(workspaceId, target);
   const folderPath = folderPathOf(target);
   const snapshot = await loadAppsIndex(workspaceId);
   if (!snapshot.folders.includes(folderPath)) {
@@ -2994,7 +3031,7 @@ export type AppFolder = AppIndexRow & { id: string };
  * Every app in a workspace, read from the repo (through the apps index).
  *
  * An app is a folder with a `mako.json`, anywhere under `apps/` or
- * `users/<id>/apps/`; that is the whole definition. It exists because the
+ * `users/<handle>/apps/`; that is the whole definition. It exists because the
  * folder exists, not because a row does — so pushing a folder from a local
  * checkout makes the app appear, and no registration step is needed.
  *
@@ -3128,7 +3165,7 @@ export function projectFromIndexRow(
     slug: folder.slug,
     path: folder.path,
     description: folder.description,
-    // A folder under users/<id>/apps is that person's: private to them
+    // A folder under users/<handle>/apps is that person's: private to them
     // until they share it, exactly like a private console.
     access: folder.scope === "private" ? "private" : "workspace",
     ...(folder.scope === "private" && folder.ownerId

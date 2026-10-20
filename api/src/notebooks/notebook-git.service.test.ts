@@ -8,7 +8,11 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { NotebookIndex } from "../database/workspace-schema";
+import {
+  NotebookIndex,
+  WorkspaceUserHandle,
+} from "../database/workspace-schema";
+import { invalidateOwnerDirectory } from "../apps/user-handles.service";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -59,6 +63,14 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await NotebookIndex.deleteMany({});
+  // u1's personal folder is `users/joan/` — named by handle, never by id.
+  await WorkspaceUserHandle.deleteMany({});
+  await WorkspaceUserHandle.create({
+    workspaceId: new Types.ObjectId(WS),
+    userId: "u1",
+    handle: "joan",
+  });
+  invalidateOwnerDirectory();
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await fs.rm(path.join(tmpRoot, "notebooks"), {
     recursive: true,
@@ -149,7 +161,7 @@ describe("checkpoint", () => {
     const id = await seedNotebook("Scratch pad", "private");
     await checkpointNotebook(WS, id, "u1");
     expect(
-      await fileAt("users/u1/notebooks/scratch-pad.deepnote"),
+      await fileAt("users/joan/notebooks/scratch-pad.deepnote"),
     ).toBeTruthy();
   });
 
@@ -161,7 +173,9 @@ describe("checkpoint", () => {
       { $set: { access: "workspace" } },
     );
     await checkpointNotebook(WS, id, "u1");
-    expect(await fileAt("users/u1/notebooks/shared-later.deepnote")).toBeNull();
+    expect(
+      await fileAt("users/joan/notebooks/shared-later.deepnote"),
+    ).toBeNull();
     expect(await fileAt("notebooks/shared-later.deepnote")).toBeTruthy();
     const [head] = await repoLog(repoDirFor(WS), MAIN, 1);
     expect(head.subject).toContain("move to notebooks/shared-later.deepnote");
@@ -235,7 +249,7 @@ describe("adoption", () => {
     expect(await fileAt(notebookRepoPath("first"))).toBeTruthy();
     expect(
       await fileAt(
-        notebookRepoPath("second", { access: "private", ownerId: "u1" }),
+        notebookRepoPath("second", { access: "private", ownerHandle: "joan" }),
       ),
     ).toBeTruthy();
     const again = await adoptWorkspaceNotebooks(WS);

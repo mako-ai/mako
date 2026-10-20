@@ -132,7 +132,7 @@ export interface IWorkspace extends Document {
    * detail: apps (and later consoles, dbt projects) mount into these. Mako
    * stores nothing in Mongo except these links: the repos themselves are the
    * durable store. Layout inside a repo: `<makoRoot>/apps/<app>` for
-   * workspace content, `<makoRoot>/users/<userId>/apps/<app>` for personal.
+   * workspace content, `<makoRoot>/users/<handle>/apps/<app>` for personal.
    * The model allows N repos; the product default is one.
    */
   workspaceRepos?: IWorkspaceRepoBinding[];
@@ -4801,12 +4801,12 @@ export interface IAppProject extends Document {
   /**
    * The app's own folder name — the last segment of `path`, and its URL
    * handle. Not unique per workspace any more: `apps/sales/report` and
-   * `users/<id>/apps/report` may coexist. Optional only for pre-migration docs.
+   * `users/<handle>/apps/report` may coexist. Optional only for pre-migration docs.
    */
   slug?: string;
   /**
    * Repo-relative folder the app lives in (`apps/sales/report`,
-   * `users/<id>/apps/scratch`). Maintained by the apps index sync from the
+   * `users/<handle>/apps/scratch`). Maintained by the apps index sync from the
    * tree at main; a move in git updates it here. Absent on legacy rows until
    * the backfill migration, where it is `apps/<slug>`.
    */
@@ -5076,12 +5076,12 @@ export interface IAppIndexEntry extends Document {
   workspaceId: Types.ObjectId;
   /** The app's identity (24 hex): manifest `id`, or derived from the path. */
   appId: string;
-  /** Repo-relative folder: `apps/sales/report`, `users/<id>/apps/x`. */
+  /** Repo-relative folder: `apps/sales/report`, `users/<handle>/apps/x`. */
   path: string;
   /** Last path segment — the URL handle. */
   slug: string;
   scope: "workspace" | "private";
-  /** Owner of the `users/<id>/apps` tree, for `private`. */
+  /** Owner of the `users/<handle>/apps` tree (resolved userId), for `private`. */
   ownerId?: string;
   /** git tree oid of the folder: equal ⇒ identical content ⇒ no rebuild. */
   treeOid: string;
@@ -5305,4 +5305,58 @@ AppWorktreeSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 export const AppWorktree = mongoose.model<IAppWorktree>(
   "AppWorktree",
   AppWorktreeSchema,
+);
+
+// ---------------------------------------------------------------------------
+// Personal folder handles — `users/<handle>/…` in the workspace repo
+// ---------------------------------------------------------------------------
+
+/**
+ * The readable name of one person's tree in a workspace repo:
+ * `joan@realadvisor.com` → `users/joan/`. A handle is the ONLY thing a
+ * `users/<segment>/` folder resolves through — a folder named anything else
+ * is nobody's tree — so who owns a personal app, console or notebook is
+ * decided by this mapping, never by what a folder happens to be called.
+ *
+ * Its own collection rather than a field on the membership: a handle must
+ * outlive the membership. When someone leaves, their `users/joan/` stays in
+ * git; if the handle went with the membership doc, the next `joan@…` to join
+ * would inherit that tree. Rows are never deleted, so a returning member
+ * gets their handle (and their folder) back, and a newcomer gets `joan-2`.
+ */
+export interface IWorkspaceUserHandle extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  userId: string;
+  handle: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const WorkspaceUserHandleSchema = new Schema<IWorkspaceUserHandle>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    userId: { type: String, ref: "User", required: true },
+    handle: { type: String, required: true },
+  },
+  { collection: "workspace_user_handles", timestamps: true },
+);
+
+// One handle per person per workspace, one person per handle.
+WorkspaceUserHandleSchema.index(
+  { workspaceId: 1, userId: 1 },
+  { unique: true },
+);
+WorkspaceUserHandleSchema.index(
+  { workspaceId: 1, handle: 1 },
+  { unique: true },
+);
+
+export const WorkspaceUserHandle = mongoose.model<IWorkspaceUserHandle>(
+  "WorkspaceUserHandle",
+  WorkspaceUserHandleSchema,
 );

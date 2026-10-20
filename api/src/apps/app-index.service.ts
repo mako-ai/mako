@@ -2,7 +2,7 @@
  * The apps index — git is the list, Mongo is the derived read model.
  *
  * Every app in a workspace is a folder holding `mako.json`, anywhere under
- * `apps/` or `users/<id>/apps/` (apps.md §13.6, folders per §16's consoles
+ * `apps/` or `users/<handle>/apps/` (apps.md §13.6, folders per §16's consoles
  * pattern). This module reads that tree at `main` ONCE per push and writes
  * one flat row per app (`app_index`), so the sidebar, the agent's list, search
  * and the binding scheduler never open the repo themselves. The rows are
@@ -34,6 +34,8 @@ import {
 } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
 import { createSerializer } from "./serialized";
+import type { OwnerDirectory } from "./user-handles";
+import { loadOwnerDirectory } from "./user-handles.service";
 import {
   APPS_DIR,
   APP_MANIFEST,
@@ -64,6 +66,11 @@ export interface AppIndexRow {
   path: string;
   slug: string;
   scope: AppScope;
+  /**
+   * For a personal app: the userId the `users/<handle>` segment resolves to
+   * through the workspace's handle mapping — absent when the handle is
+   * nobody's. Never the raw folder name.
+   */
   ownerId?: string;
   treeOid: string;
   title: string;
@@ -77,11 +84,49 @@ export interface AppsIndexSnapshot {
   /** The main commit the rows describe; "" when the workspace has no repo. */
   sha: string;
   apps: AppIndexRow[];
-  /** Every folder in the app trees (`apps/Sales`, `users/<id>/apps/x`). */
+  /** Every folder in the app trees (`apps/Sales`, `users/<handle>/apps/x`). */
   folders: string[];
 }
 
 const EMPTY: AppsIndexSnapshot = { sha: "", apps: [], folders: [] };
+
+/** The userId a personal app's folder belongs to, by the handle mapping. */
+export function ownerOfAppPath(
+  path: string,
+  directory: OwnerDirectory,
+): string | undefined {
+  const loc = parseAppRepoPath(path);
+  if (loc?.scope !== "private") return undefined;
+  return directory.ownerOf(loc.ownerHandle) ?? undefined;
+}
+
+const resolvedSnapshots = new WeakMap<
+  AppsIndexSnapshot,
+  { directory: OwnerDirectory; snapshot: AppsIndexSnapshot }
+>();
+
+/**
+ * The snapshot with every personal row's owner resolved against the CURRENT
+ * mapping. Stored rows carry the owner as of their sync; a handle assigned
+ * since (a member who just joined) must not wait for the next push.
+ */
+function withOwners(
+  snapshot: AppsIndexSnapshot,
+  directory: OwnerDirectory,
+): AppsIndexSnapshot {
+  const hit = resolvedSnapshots.get(snapshot);
+  if (hit?.directory === directory) return hit.snapshot;
+  const resolved: AppsIndexSnapshot = {
+    ...snapshot,
+    apps: snapshot.apps.map(app => {
+      if (app.scope !== "private") return app;
+      const ownerId = ownerOfAppPath(app.path, directory);
+      return ownerId === app.ownerId ? app : { ...app, ownerId };
+    }),
+  };
+  resolvedSnapshots.set(snapshot, { directory, snapshot: resolved });
+  return resolved;
+}
 
 // ---------------------------------------------------------------------------
 // Discovery — pure over a tree listing
@@ -91,7 +136,8 @@ export interface DiscoveredApp {
   path: string;
   slug: string;
   scope: AppScope;
-  ownerId?: string;
+  /** The raw `users/<handle>` segment; resolved into a row's ownerId. */
+  ownerHandle?: string;
   treeOid: string;
   manifestOid: string;
   /** `bindings/<name>.sql` blobs, by binding name. */
@@ -144,7 +190,7 @@ export function discoverApps(records: TreeRecord[]): Discovery {
   // of its own (a manifest-less project under apps/, or its src/) is not a
   // folder, and neither is anything beneath it. `.gitkeep` is the one file
   // a folder may hold (an empty folder is a commit of that marker).
-  // The tree roots (`apps`, `users/<id>/apps`) may hold stray files
+  // The tree roots (`apps`, `users/<handle>/apps`) may hold stray files
   // (a README) without disqualifying everything beneath them.
   const withOwnFiles = new Set<string>();
   for (const r of records) {
@@ -173,7 +219,7 @@ export function discoverApps(records: TreeRecord[]): Discovery {
     }
     if (insideApp(r.path) || insideProject(r.path)) continue;
     const folder = parseAppFolderPath(r.path);
-    // The tree roots themselves (`apps`, `users/<id>/apps`) are implicit.
+    // The tree roots themselves (`apps`, `users/<handle>/apps`) are implicit.
     if (folder && folder.folderSegments.length > 0) folders.push(r.path);
   }
 
@@ -200,7 +246,7 @@ export function discoverApps(records: TreeRecord[]): Discovery {
       path: dir,
       slug: loc.slug,
       scope: loc.scope,
-      ownerId: loc.ownerId,
+      ownerHandle: loc.ownerHandle,
       treeOid,
       manifestOid: manifestOids.get(dir) ?? "",
       bindingBlobs: bindings.get(dir) ?? new Map(),
@@ -539,14 +585,12 @@ export function syncAppsIndexFromRepo(
     } catch (error) {
       // Another workspace may have claimed a manifest id after our read.
       // Re-read ownership and assign this copy its own id.
-      if (
-        !(
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === 11000
-        )
-      ) {
+      if (!(
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === 11000
+      )) {
         throw error;
       }
       return syncNow(workspaceId, { force: true });
@@ -610,6 +654,7 @@ async function syncNow(
   // a rejected index-build promise for the lifetime of the API process.
   await AppIndexEntry.collection.createIndex({ appId: 1 }, { unique: true });
   const read = await readAppsAt(repoDir, sha);
+  const directory = await loadOwnerDirectory(workspaceId);
   const existing = await AppIndexEntry.find({ workspaceId: ws }).lean();
   const incumbents = new Map<string, string>();
   for (const row of existing) incumbents.set(row.appId, row.path);
@@ -669,7 +714,10 @@ async function syncNow(
       path: app.path,
       slug: app.slug,
       scope: app.scope,
-      ownerId: app.ownerId,
+      ownerId:
+        app.scope === "private"
+          ? (directory.ownerOf(app.ownerHandle) ?? undefined)
+          : undefined,
       treeOid: app.treeOid,
       title: manifest.title,
       description: manifest.description,
@@ -770,11 +818,13 @@ async function syncNow(
         const location = parseAppRepoPath(row.path);
         const wasPrivate = parseAppRepoPath(p?.path ?? "")?.scope === "private";
         // Visibility follows the tree: an app filed into someone's personal
-        // tree is theirs (private, owner = the tree's owner); one filed back
-        // into the workspace tree is workspace content again.
+        // tree is theirs (private, owner = the tree's owner by the handle
+        // mapping); one filed back into the workspace tree is workspace
+        // content again. A folder whose handle is nobody's stays private to
+        // nobody — its name must not make it someone's.
         const access =
           location?.scope === "private"
-            ? { access: "private", owner_id: location.ownerId }
+            ? { access: "private", owner_id: row.ownerId ?? null }
             : wasPrivate
               ? { access: "workspace" }
               : {};
@@ -836,9 +886,11 @@ export async function loadAppsIndex(
   if (options.freshen !== false) await freshenForServe(workspaceId);
   const sha = await resolveCommit(repoDir, MAIN);
   if (!sha) return EMPTY;
+  const directory = await loadOwnerDirectory(workspaceId);
   const cached = snapshotCache.get(workspaceId);
-  if (cached?.sha === sha) return cached;
-  return (await syncAppsIndexFromRepo(workspaceId)) ?? EMPTY;
+  if (cached?.sha === sha) return withOwners(cached, directory);
+  const synced = await syncAppsIndexFromRepo(workspaceId);
+  return synced ? withOwners(synced, directory) : EMPTY;
 }
 
 /** Forget the memo (tests, and after a lifecycle commit on this instance). */

@@ -2,9 +2,10 @@
  * Where an app lives in the workspace repo, and what its manifest says.
  *
  * An app is a folder holding a `mako.json` (apps.md §13.6). The folder may sit
- * at any depth under `apps/` (the workspace tree) or `users/<id>/apps/` (that
- * person's tree) — real directories are the folders, exactly as consoles do
- * it. Nothing in this module touches git or Mongo: it is the grammar the
+ * at any depth under `apps/` (the workspace tree) or `users/<handle>/apps/`
+ * (that person's tree, user-handles.ts) — real directories are the folders,
+ * exactly as consoles do it. The parsers return the raw handle; who it names
+ * is the workspace's OwnerDirectory's answer, never the folder name's. Nothing in this module touches git or Mongo: it is the grammar the
  * index, the routes and the agent tools all parse paths with, so it stays
  * pure and unit-tested.
  *
@@ -15,6 +16,7 @@
  */
 import { createHash } from "node:crypto";
 import { Types } from "mongoose";
+import { isHandle } from "./user-handles";
 
 export const APPS_DIR = "apps";
 /** Workflows live next to apps: `workflows/<name>/workflow.ts`. */
@@ -28,8 +30,11 @@ export type AppScope = "workspace" | "private";
 
 export interface AppRepoLocation {
   scope: AppScope;
-  /** The user whose tree this is, for `private`. */
-  ownerId?: string;
+  /**
+   * For `private`: the `users/<handle>` segment, as written. NOT a userId —
+   * resolve it with OwnerDirectory.ownerOf before deciding anything by it.
+   */
+  ownerHandle?: string;
   /** Folders between the tree root and the app, top-down. */
   folderSegments: string[];
   /** The app's own folder name — its URL handle. */
@@ -40,7 +45,6 @@ export interface AppRepoLocation {
 // and dropping it from discovery left it published but unlisted. Slashes,
 // control characters and leading dots stay out.
 const SEGMENT_RE = /^[\p{L}\p{N}][\p{L}\p{N}._ -]*$/u;
-const USER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 /** A folder or app name git and every URL are happy with. */
 export function isSafeSegment(segment: string): boolean {
@@ -54,13 +58,13 @@ export function isSafeSegment(segment: string): boolean {
   );
 }
 
-/** Root folder of a tree: `apps` or `users/<id>/apps`. */
-export function appTreeRoot(scope: AppScope, ownerId?: string): string {
+/** Root folder of a tree: `apps` or `users/<handle>/apps`. */
+export function appTreeRoot(scope: AppScope, ownerHandle?: string): string {
   if (scope === "workspace") return APPS_DIR;
-  if (!ownerId || !USER_ID_RE.test(ownerId)) {
-    throw new Error("A private app tree needs its owner");
+  if (!ownerHandle || !isHandle(ownerHandle)) {
+    throw new Error("A private app tree needs its owner's handle");
   }
-  return `${USERS_DIR}/${ownerId}/${APPS_DIR}`;
+  return `${USERS_DIR}/${ownerHandle}/${APPS_DIR}`;
 }
 
 /**
@@ -71,7 +75,7 @@ export function appTreeRoot(scope: AppScope, ownerId?: string): string {
 export function parseAppRepoPath(path: string): AppRepoLocation | null {
   const segments = path.split("/");
   let scope: AppScope;
-  let ownerId: string | undefined;
+  let ownerHandle: string | undefined;
   let rest: string[];
   if (segments[0] === APPS_DIR) {
     scope = "workspace";
@@ -80,17 +84,17 @@ export function parseAppRepoPath(path: string): AppRepoLocation | null {
     segments[0] === USERS_DIR &&
     segments.length >= 4 &&
     segments[2] === APPS_DIR &&
-    USER_ID_RE.test(segments[1] ?? "")
+    isHandle(segments[1] ?? "")
   ) {
     scope = "private";
-    ownerId = segments[1];
+    ownerHandle = segments[1];
     rest = segments.slice(3);
   } else {
     return null;
   }
   if (rest.length === 0 || rest.some(s => !isSafeSegment(s))) return null;
   const slug = rest[rest.length - 1];
-  return { scope, ownerId, folderSegments: rest.slice(0, -1), slug };
+  return { scope, ownerHandle, folderSegments: rest.slice(0, -1), slug };
 }
 
 /** Inverse of {@link parseAppRepoPath}. */
@@ -101,7 +105,7 @@ export function appRepoPath(location: AppRepoLocation): string {
     }
   }
   return [
-    appTreeRoot(location.scope, location.ownerId),
+    appTreeRoot(location.scope, location.ownerHandle),
     ...location.folderSegments,
     location.slug,
   ].join("/");
@@ -113,17 +117,24 @@ export function appRepoPath(location: AppRepoLocation): string {
  */
 export function parseAppFolderPath(
   path: string,
-): { scope: AppScope; ownerId?: string; folderSegments: string[] } | null {
+): { scope: AppScope; ownerHandle?: string; folderSegments: string[] } | null {
   if (path === APPS_DIR) {
     return { scope: "workspace", folderSegments: [] };
   }
-  const root = path.match(/^users\/([A-Za-z0-9_-]+)\/apps$/);
-  if (root) return { scope: "private", ownerId: root[1], folderSegments: [] };
+  const root = path.split("/");
+  if (
+    root.length === 3 &&
+    root[0] === USERS_DIR &&
+    root[2] === APPS_DIR &&
+    isHandle(root[1])
+  ) {
+    return { scope: "private", ownerHandle: root[1], folderSegments: [] };
+  }
   const loc = parseAppRepoPath(path);
   if (!loc) return null;
   return {
     scope: loc.scope,
-    ownerId: loc.ownerId,
+    ownerHandle: loc.ownerHandle,
     folderSegments: [...loc.folderSegments, loc.slug],
   };
 }
