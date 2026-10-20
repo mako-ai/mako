@@ -1168,6 +1168,17 @@ export async function resolveAppRef(
   return found;
 }
 
+/** Every app row as persisted in Mongo for a workspace (no git). */
+export async function loadIndexedApps(
+  workspaceId: string,
+): Promise<AppIndexRow[]> {
+  if (!Types.ObjectId.isValid(workspaceId)) return [];
+  const rows = await AppIndexEntry.find({
+    workspaceId: new Types.ObjectId(workspaceId),
+  }).lean();
+  return rows.map(rowToIndex);
+}
+
 /**
  * Resolve a ref against the index rows as persisted in Mongo — no git at
  * all. For hot public paths (link-preview images, card thumbnails) that must

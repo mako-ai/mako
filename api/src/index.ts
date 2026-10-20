@@ -40,6 +40,7 @@ import { loggers, loggingMiddleware } from "./logging";
 import { asSystem } from "./access/connection-writes";
 import { checkPubSubBackendHealth } from "./services/pubsub.service";
 import { warmPricingCache } from "./services/gateway-pricing.service";
+import { scheduleThumbnailBackfillOnBoot } from "./apps/thumbnail-warm-boot";
 import { warmCatalog } from "./services/model-catalog.service";
 import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
 
@@ -433,6 +434,10 @@ async function main(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   });
+
+  // Fill the shared store with any missing card / link-preview variants so
+  // a crawler's first hit on a fresh instance is a store read, not a clone.
+  scheduleThumbnailBackfillOnBoot();
 
   warmPricingCache().catch(err => {
     logger.warn("Startup pricing cache warm failed", {

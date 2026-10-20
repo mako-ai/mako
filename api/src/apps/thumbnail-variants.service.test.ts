@@ -37,6 +37,7 @@ import {
   warmThumbnailVariants,
 } from "./thumbnail-variants.service";
 import { getArtifactStore } from "../services/artifact-store.service";
+import { backfillThumbnailVariants } from "./thumbnail-warm-boot";
 import { ogRoutes } from "../routes/og";
 
 let mongo: MongoMemoryServer;
@@ -212,6 +213,25 @@ describe("warmThumbnailVariants", () => {
     variantCache.clear();
     const second = await warmThumbnailVariants(WS, snapshot.apps);
     expect(second.generated).toBe(0);
+  });
+});
+
+describe("backfillThumbnailVariants (on boot)", () => {
+  it("fills missing variants from the persisted index, then finds nothing to do", async () => {
+    const { row } = await indexed();
+    invalidateAppsIndexCache();
+    const first = await backfillThumbnailVariants();
+    expect(first.workspaces).toBe(1);
+    expect(first.generated).toBe(2);
+    const oid = row(BOARD).thumbnail!.oid;
+    expect(await stored(variantStoreKey(WS, oid, { kind: "og" }))).toBe(true);
+    expect(
+      await stored(variantStoreKey(WS, oid, { kind: "width", width: 640 })),
+    ).toBe(true);
+    variantCache.clear();
+    const second = await backfillThumbnailVariants();
+    expect(second.generated).toBe(0);
+    expect(second.checked).toBe(first.checked);
   });
 });
 

@@ -265,7 +265,7 @@ export async function warmThumbnailVariants(
 }
 
 /** Whether main-moved pre-warming runs in this process. */
-function warmEnabled(): boolean {
+export function warmEnabled(): boolean {
   const flag = process.env.APPS_THUMBNAIL_WARM;
   if (flag) return flag !== "0" && flag !== "false";
   // Off under the test runner: suites call warmThumbnailVariants directly.
