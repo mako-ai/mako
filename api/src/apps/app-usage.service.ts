@@ -242,8 +242,10 @@ async function commitAuthorUserIds(
   apps: ReadonlyArray<{ appId: string; path: string }>,
 ): Promise<Map<string, Set<string>>> {
   try {
+    // A READ: no bound repo means no history to attribute, not a skipped
+    // write (no-silent-repo-skip guards writes).
     const repoDir = await boundRepoDirIfExists(workspaceId);
-    if (!repoDir) return new Map();
+    if (repoDir === null) return new Map();
     const ref = `refs/heads/${DEFAULT_BRANCH}`;
     const sha = await resolveCommit(repoDir, ref);
     if (!sha) return new Map();
