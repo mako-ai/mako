@@ -734,16 +734,6 @@ export async function deployBuild(
       await ensureDeploymentBindings(project, sha);
     }
     await setPublishedSha(project, sha);
-    // The Apps home picture of what just went live. Queued, never awaited
-    // work: a capture is a browser run in the box, not part of the deploy.
-    void import("./app-thumbnail.service")
-      .then(m =>
-        m.requestAppThumbnail(
-          project.workspaceId.toString(),
-          project._id.toString(),
-        ),
-      )
-      .catch(() => undefined);
     return result;
   } finally {
     await fs.rm(staging, { recursive: true, force: true });

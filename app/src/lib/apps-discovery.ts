@@ -6,17 +6,18 @@
 import { getApiBasePath } from "./api-base-path";
 
 /**
- * Where a card's picture comes from: the thumbnail route, which redirects to
- * a signed bucket URL. The version busts the browser cache when a new
- * picture lands.
+ * Where a card's picture comes from: the app's own `thumbnail.*`, served by
+ * the thumbnail route. Null when the app ships none (the card shows its
+ * placeholder and makes no request). The blob oid versions the URL, so a
+ * new picture is a new URL and the old one caches forever.
  */
 export function appThumbnailUrl(
   workspaceId: string,
-  app: Pick<DiscoveryApp, "id" | "thumbnailAt" | "publishedSha">,
-): string {
+  app: Pick<DiscoveryApp, "id" | "thumbnail">,
+): string | null {
+  if (!app.thumbnail) return null;
   const base = getApiBasePath(import.meta.env.VITE_API_URL);
-  const v = encodeURIComponent(app.thumbnailAt ?? app.publishedSha ?? "");
-  return `${base}/workspaces/${workspaceId}/apps/${app.id}/thumbnail?v=${v}`;
+  return `${base}/workspaces/${workspaceId}/apps/${app.id}/thumbnail?v=${encodeURIComponent(app.thumbnail.oid)}`;
 }
 
 /** The usage API's per-app stats (Lane A contract, app-usage.service). */
@@ -55,7 +56,8 @@ export interface DiscoveryApp {
   publishedAt?: string;
   publishedSha?: string;
   verified: boolean;
-  thumbnailAt: string | null;
+  /** The app's own `thumbnail.*` (file, blob oid); null = placeholder. */
+  thumbnail: { file: string; oid: string } | null;
   scheduled: boolean;
   tables: string[];
   dataRefreshedAt: string | null;

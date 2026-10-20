@@ -123,7 +123,7 @@ try {
   }, 75000);
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: Number(args.scale) > 0 ? Number(args.scale) : 1 });
+    await page.setViewport({ width: 1280, height: 800 });
     page.setDefaultTimeout(8000);
     page.on("console", m => {
       const t = m.type();
@@ -302,6 +302,11 @@ export async function browseApp(
   const runtime = await ensureEyesRuntime(ctx);
   if (!runtime.ok) return { ok: false, error: runtime.error };
 
+  await provider.writeFile(
+    ctx,
+    RUNNER_PATH,
+    new TextEncoder().encode(runnerSource()),
+  );
   let base = `http://127.0.0.1:${port}`;
   if (opts.origin === "public") {
     // Peek, never create (§13.9): the box exists — a dev server is running
@@ -317,55 +322,6 @@ export async function browseApp(
     }
     base = url;
   }
-  return runEyes(ctx, base, {
-    steps: opts.steps ?? [],
-    screenshot: opts.screenshot !== false,
-  });
-}
-
-/**
- * A screenshot of any URL the box can reach — the published app, for its
- * Apps home thumbnail (app-thumbnail.service). No dev server, no checkout:
- * only the box's browser, against the deployment's cookie-free token URL.
- * `scale` renders the 1280×800 layout at that device scale, so a thumbnail
- * is a quarter of the pixels (and bytes) of a full browse frame.
- */
-export async function captureScreenshot(
-  ctx: { sessionKey: string },
-  url: string,
-  opts: { settleMs?: number; scale?: number } = {},
-): Promise<{ ok: true; jpeg: Buffer } | { ok: false; error: string }> {
-  if (getSandboxProvider().id === "local") {
-    return { ok: false, error: "screenshots need the E2B sandbox" };
-  }
-  const runtime = await ensureEyesRuntime(ctx);
-  if (!runtime.ok) return { ok: false, error: runtime.error };
-  const result = await runEyes(ctx, url, {
-    // "./" resolves against the token prefix; "/" would be the API's root.
-    steps: [
-      { action: "navigate", path: "./" },
-      { action: "wait", ms: opts.settleMs ?? 4000 },
-    ],
-    screenshot: true,
-    scale: opts.scale,
-  });
-  if (!result.ok || !result.screenshotBase64) {
-    return { ok: false, error: result.error ?? "no frame captured" };
-  }
-  return { ok: true, jpeg: Buffer.from(result.screenshotBase64, "base64") };
-}
-
-async function runEyes(
-  ctx: { sessionKey: string },
-  base: string,
-  opts: { steps: EyesStep[]; screenshot: boolean; scale?: number },
-): Promise<EyesResult> {
-  const provider = getSandboxProvider();
-  await provider.writeFile(
-    ctx,
-    RUNNER_PATH,
-    new TextEncoder().encode(runnerSource()),
-  );
   // Unique per browse: two browses in the same box must not read each
   // other's frame, and a stale file must never be mistaken for this run's.
   const shotPath = `${EYES_DIR}/shot-${Date.now().toString(36)}${Math.random()
@@ -373,10 +329,9 @@ async function runEyes(
     .slice(2, 8)}.jpg`;
   const args = JSON.stringify({
     base,
-    steps: opts.steps,
-    screenshot: opts.screenshot,
+    steps: opts.steps ?? [],
+    screenshot: opts.screenshot !== false,
     shotPath,
-    ...(opts.scale ? { scale: opts.scale } : {}),
   });
   const result = await provider.exec(
     ctx,

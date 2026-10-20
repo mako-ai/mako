@@ -65,6 +65,7 @@ import {
   listDiscoveryApps,
   searchDiscoveryApps,
 } from "./app-discovery.service";
+import { readThumbnailBlob, thumbnailHeaders } from "./app-thumbnail";
 import { runGit } from "./git";
 import { canReadResource } from "../utils/resource-acl";
 import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
@@ -360,6 +361,31 @@ describe("discovery facts", () => {
     const e = (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/e");
     expect(e?.authorEmail).toBe("laptop@example.com");
     expect(e?.firstCommitAt).toBeTruthy();
+  });
+
+  it("indexes the app's own thumbnail (png before svg) and serves it inert", async () => {
+    await externalCommit({
+      "apps/a/thumbnail.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      "apps/a/thumbnail.png": "PNGBYTES",
+      // Not at the app root: not the app's thumbnail.
+      "apps/Sales/CH/b/public/thumbnail.png": "nope",
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const a = snapshot.apps.find(x => x.path === "apps/a");
+    expect(a?.thumbnail?.file).toBe("thumbnail.png");
+    expect(
+      snapshot.apps.find(x => x.path === "apps/Sales/CH/b")?.thumbnail,
+    ).toBeUndefined();
+    const bytes = await readThumbnailBlob(repoDirFor(WS), a!.thumbnail!);
+    expect(bytes?.toString()).toBe("PNGBYTES");
+    const discovered = await listDiscoveryApps(WS, USER, "member");
+    expect(discovered.find(x => x.path === "apps/a")?.thumbnail?.oid).toBe(
+      a?.thumbnail?.oid,
+    );
+    const svg = thumbnailHeaders("thumbnail.svg", 10);
+    expect(svg["Content-Type"]).toBe("image/svg+xml");
+    expect(svg["Content-Security-Policy"]).toContain("sandbox");
+    expect(svg["Content-Security-Policy"]).toContain("default-src 'none'");
   });
 
   it("lists and searches with the list's visibility", async () => {

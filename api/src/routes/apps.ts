@@ -114,10 +114,8 @@ import {
   searchDiscoveryApps,
 } from "../apps/app-discovery.service";
 import { appUsageScores } from "../apps/app-search.service";
-import {
-  requestAppThumbnail,
-  thumbnailIsFresh,
-} from "../apps/app-thumbnail.service";
+import { readThumbnailBlob, thumbnailHeaders } from "../apps/app-thumbnail";
+import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
@@ -138,7 +136,6 @@ import {
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
 import {
-  artifactStoreForRead,
   buildApp,
   buildLogPath,
   deployBuild,
@@ -3694,9 +3691,9 @@ appsRoutes.openapi(
     method: "get",
     path: "/{id}/thumbnail",
     tags: ["Apps"],
-    summary: "The published app's thumbnail",
+    summary: "The app's own thumbnail image",
     description:
-      "A screenshot of the live deployment, taken in the publish box after each deploy. Redirects to a short-lived signed bucket URL (streams on stores without one). 404 when there is none yet — and, for a published app, that request queues one (backfill on first view), so the next load has it.",
+      "The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main, served by blob oid with immutable caching; /apps/discovery says which apps have one (and its oid, the cache version). 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.",
     security: AUTH_SECURITY,
     request: { params: ProjectParam },
     responses: OPEN_RESPONSES,
@@ -3705,50 +3702,28 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const { project } = loaded;
-      if (project.publishedSha && !thumbnailIsFresh(project)) {
-        void requestAppThumbnail(
-          project.workspaceId.toString(),
-          project._id.toString(),
+      const workspaceId = loaded.project.workspaceId.toString();
+      const row = await resolveAppRef(
+        workspaceId,
+        loaded.project._id.toString(),
+      );
+      const repoDir = row?.thumbnail
+        ? await boundRepoDirIfExists(workspaceId)
+        : null;
+      const bytes =
+        row?.thumbnail && repoDir
+          ? await readThumbnailBlob(repoDir, row.thumbnail)
+          : null;
+      if (!row?.thumbnail || !bytes) {
+        return c.json(
+          { success: false, error: "This app has no thumbnail" },
+          404,
         );
       }
-      // An older deployment's picture beats a placeholder while the current
-      // one is taken.
-      const key = project.thumbnail?.key;
-      // The canonical source store too: a rehearsal environment serves the
-      // pictures production took.
-      const store = key ? await artifactStoreForRead(key) : null;
-      if (!key || !store) {
-        return c.json({ success: false, error: "No thumbnail yet" }, 404);
-      }
-      const signed = await store.getSignedUrl(key, 600).catch(() => null);
-      if (signed) {
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: signed,
-            // Shorter than the signature, so a cached redirect never points
-            // at an expired URL.
-            "Cache-Control": "private, max-age=300",
-          },
-        });
-      }
-      const stream = await store.openReadStream(key);
-      if (!stream) {
-        return c.json({ success: false, error: "No thumbnail yet" }, 404);
-      }
-      const size = await store.getSize(key);
-      return new Response(
-        Readable.toWeb(stream as Readable) as ReadableStream,
-        {
-          status: 200,
-          headers: {
-            "Content-Type": "image/jpeg",
-            ...(size !== null ? { "Content-Length": String(size) } : {}),
-            "Cache-Control": "private, max-age=300",
-          },
-        },
-      );
+      return new Response(new Uint8Array(bytes), {
+        status: 200,
+        headers: thumbnailHeaders(row.thumbnail.file, bytes.length),
+      });
     } catch (error) {
       return handleError(c, error);
     }

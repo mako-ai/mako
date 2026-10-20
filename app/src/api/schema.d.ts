@@ -4501,8 +4501,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The published app's thumbnail
-         * @description A screenshot of the live deployment, taken in the publish box after each deploy. Redirects to a short-lived signed bucket URL (streams on stores without one). 404 when there is none yet — and, for a published app, that request queues one (backfill on first view), so the next load has it.
+         * The app's own thumbnail image
+         * @description The image the app ships at its root (thumbnail.png, or .webp/.jpg/.jpeg/.svg) as of main, served by blob oid with immutable caching; /apps/discovery says which apps have one (and its oid, the cache version). 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.
          */
         get: operations["get_api_workspaces_workspaceId_apps_id_thumbnail"];
         put?: never;

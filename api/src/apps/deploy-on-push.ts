@@ -257,9 +257,6 @@ export async function deployOneApp(
     // The frontend was already uploaded (the Publish button got there
     // first, or a retry after a binding failure); it is just made live.
     await setPublishedSha(project, sha);
-    void import("./app-thumbnail.service")
-      .then(m => m.requestAppThumbnail(workspaceId, project._id.toString()))
-      .catch(() => undefined);
     return { app: appRef, sha, outcome: "already-built" };
   }
 

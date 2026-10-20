@@ -113,6 +113,14 @@ directly); poll
 - History is git history: every commit, by person or agent, is browsable in Source Control.
 - **Live status:** the published chip and `GET /api/workspaces/:wid/apps/:id/publish-state` show the deployed commit (author, time, and subject), publication time, whether app changes on the default branch are still pending, and the most recent deploy error. Reading this status does not start a sandbox.
 
+## Discovery: Apps home and thumbnails
+
+The **Apps home** (`/apps`, or the grid button in the Apps explorer) is the workspace's catalogue: Popular this month, New this week, Recently viewed, My apps, and — for an app's owner — Needs attention (failed deploy, failing data refresh, stale scheduled data). Its search, the `search_apps` agent tool and the command palette (Cmd/Ctrl+K) all search title, description, folder, owner and the warehouse tables each app's bindings read.
+
+Each card shows the app's own **thumbnail**: an image at the app's root, named `thumbnail.png` (or `thumbnail.webp`, `.jpg`, `.jpeg`, `.svg` — the first one found wins), ideally **1200×750 (16:10)** and under 3 MB. Mako never screenshots apps; the builder ships the picture, and it updates with the next commit on `main`. New apps start with a placeholder `thumbnail.svg` (the app's title and the Mako mark); an app without any thumbnail gets a generated placeholder.
+
+Go wild with it: a thumbnail is the app's poster. Show what the app is for — a headline number, a stylised chart, the team's colours — like a product marketing shot rather than a screenshot. Design it as an SVG (and export to PNG if it uses fonts or filters), or ask an image model for one. SVG thumbnails are displayed as images only: scripts, external fonts and external images do not load.
+
 ## Access Control
 
 Apps have two access levels:

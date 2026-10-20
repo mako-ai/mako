@@ -25,7 +25,6 @@ import {
   appsDeployFunction,
   appsDeployReconcileFunction,
 } from "./functions/apps-deploy";
-import { appsThumbnailFunction } from "./functions/apps-thumbnail";
 import {
   workflowsDeployFunction,
   workflowsDeployReconcileFunction,
@@ -65,7 +64,6 @@ const baseFunctions = [
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsDeployFunction,
-  appsThumbnailFunction,
   workflowsDeployFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,

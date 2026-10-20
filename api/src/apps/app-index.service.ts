@@ -53,7 +53,8 @@ import {
 const logger = loggers.api("apps-index");
 
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
-// 2: rows carry `tables` (search) and who first added the app (discovery).
+// 2: rows carry `tables` (search), who first added the app and its
+// thumbnail (discovery).
 const INDEX_SCHEMA_VERSION = 2;
 
 export interface AppSchedule {
@@ -89,7 +90,28 @@ export interface AppIndexRow {
    */
   authorEmail?: string;
   firstCommitAt?: string;
+  /** The app's own thumbnail image at its root (see APP_THUMBNAIL_FILES). */
+  thumbnail?: AppThumbnailRef;
 }
+
+export interface AppThumbnailRef {
+  file: string;
+  oid: string;
+}
+
+/**
+ * The thumbnail convention: an image at the app's root, first match wins.
+ * Builders ship it themselves (the starter template writes a placeholder);
+ * the Apps home shows it on the app's card. Served by blob oid, so a new
+ * picture is a new URL and an old one caches forever.
+ */
+export const APP_THUMBNAIL_FILES = [
+  "thumbnail.png",
+  "thumbnail.webp",
+  "thumbnail.jpg",
+  "thumbnail.jpeg",
+  "thumbnail.svg",
+] as const;
 
 export interface AppsIndexSnapshot {
   /** The main commit the rows describe; "" when the workspace has no repo. */
@@ -153,6 +175,7 @@ export interface DiscoveredApp {
   manifestOid: string;
   /** `bindings/<name>.sql` blobs, by binding name. */
   bindingBlobs: Map<string, string>;
+  thumbnail?: AppThumbnailRef;
 }
 
 export interface Discovery {
@@ -235,10 +258,21 @@ export function discoverApps(records: TreeRecord[]): Discovery {
   }
 
   const bindings = new Map<string, Map<string, string>>();
+  const thumbnails = new Map<string, AppThumbnailRef>();
+  const thumbRank = (file: string) =>
+    (APP_THUMBNAIL_FILES as readonly string[]).indexOf(file);
   for (const r of records) {
     if (r.type !== "blob") continue;
     const app = insideApp(r.path);
     if (!app) continue;
+    const rel = r.path.slice(app.length + 1);
+    if (thumbRank(rel) >= 0) {
+      const prev = thumbnails.get(app);
+      if (!prev || thumbRank(rel) < thumbRank(prev.file)) {
+        thumbnails.set(app, { file: rel, oid: r.oid });
+      }
+      continue;
+    }
     const m = /^bindings\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.sql$/.exec(
       r.path.slice(app.length + 1),
     );
@@ -261,6 +295,7 @@ export function discoverApps(records: TreeRecord[]): Discovery {
       treeOid,
       manifestOid: manifestOids.get(dir) ?? "",
       bindingBlobs: bindings.get(dir) ?? new Map(),
+      ...(thumbnails.get(dir) ? { thumbnail: thumbnails.get(dir) } : {}),
     });
   }
   apps.sort((a, b) => a.path.localeCompare(b.path));
@@ -591,6 +626,9 @@ function rowToIndex(row: Pick<IAppIndexEntry, keyof AppIndexRow>): AppIndexRow {
     firstCommitAt: row.firstCommitAt
       ? new Date(row.firstCommitAt).toISOString()
       : undefined,
+    thumbnail: row.thumbnail
+      ? { file: row.thumbnail.file, oid: row.thumbnail.oid }
+      : undefined,
   };
 }
 
@@ -865,6 +903,7 @@ async function syncNow(
       tables: read.tables.get(app.path) ?? [],
       authorEmail: first?.email || undefined,
       firstCommitAt: first?.at,
+      thumbnail: app.thumbnail,
     };
   });
 
@@ -902,6 +941,7 @@ async function syncNow(
               firstCommitAt: row.firstCommitAt
                 ? new Date(row.firstCommitAt)
                 : null,
+              thumbnail: row.thumbnail ?? null,
               indexedSha: sha,
             },
           },

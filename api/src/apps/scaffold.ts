@@ -241,6 +241,84 @@ Built with Mako Apps: a real Vite + React project stored in a Mako-managed
 git repository. Run \`pnpm install\` and \`pnpm dev\` locally (this app uses pnpm — do
 not run \`npm install\`, it would write a competing \`package-lock.json\`),
 or edit it from Mako chat.
+
+The card picture on the Apps home is \`thumbnail.png\` (or \`.svg\`, \`.webp\`,
+\`.jpg\`) at the app's root, 1200×750. The one here is a placeholder — replace
+it with a showcase of what the app does.
 `,
+    "thumbnail.svg": defaultThumbnailSvg(safeTitle),
   };
+}
+
+const MAKO_MARK =
+  "m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z";
+
+const escapeXml = (s: string) =>
+  s.replace(
+    /[<>&"']/g,
+    c =>
+      ({
+        "<": "&lt;",
+        ">": "&gt;",
+        "&": "&amp;",
+        '"': "&quot;",
+        "'": "&apos;",
+      })[c] as string,
+  );
+
+/** Title on two lines at most, by words, for a 1200px-wide card. */
+function titleLines(title: string, perLine = 26): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of title.split(/\s+/).filter(Boolean)) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > perLine && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > 2) {
+    lines[1] = `${lines[1].slice(0, perLine - 1)}…`;
+    lines.length = 2;
+  }
+  return lines.map(l =>
+    l.length > perLine ? `${l.slice(0, perLine - 1)}…` : l,
+  );
+}
+
+/**
+ * The starter thumbnail: the app's title on a colour derived from it, with
+ * the Mako mark — so a new app's card is recognisable before its builder
+ * replaces it with a real showcase. 1200×750 (16:10), plain SVG, no fonts
+ * or images to fetch.
+ */
+export function defaultThumbnailSvg(title: string): string {
+  let hash = 0;
+  for (const ch of title) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const hue = hash % 360;
+  const lines = titleLines(title);
+  const firstY = lines.length === 1 ? 420 : 380;
+  const text = lines
+    .map(
+      (l, i) =>
+        `  <text x="96" y="${firstY + i * 96}" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="80" font-weight="700" fill="#fff">${escapeXml(l)}</text>`,
+    )
+    .join("\n");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="hsl(${hue} 55% 42%)"/>
+      <stop offset="1" stop-color="hsl(${(hue + 40) % 360} 60% 24%)"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="750" fill="url(#bg)"/>
+  <path d="${MAKO_MARK}" fill="#fff" fill-opacity="0.08" transform="translate(720 300) scale(5)"/>
+  <path d="${MAKO_MARK}" fill="#fff" transform="translate(96 96) scale(0.8)"/>
+${text}
+  <text x="96" y="660" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="28" fill="#fff" fill-opacity="0.7">Built with Mako</text>
+</svg>
+`;
 }

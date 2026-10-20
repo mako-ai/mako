@@ -3,7 +3,7 @@
  *
  * One composition over reads that already exist: the apps index (title,
  * description, path, tables, who first added it), the state rows (owner,
- * deployment, last deploy error, thumbnail, `verified`), and the binding
+ * deployment, last deploy error, `verified`), and the binding
  * state (data freshness, failed refreshes). Visibility is the list route's,
  * exactly (canSeeIndexedApp), so the home can never show an app the
  * explorer hides. Popularity is NOT here: that is the usage API
@@ -40,8 +40,8 @@ export interface DiscoveryApp {
   publishedSha?: string;
   /** Curated by an admin (lifecycle lane); rendered as a badge. */
   verified: boolean;
-  /** When the app's latest picture was taken; null = none yet. */
-  thumbnailAt: string | null;
+  /** The app's `thumbnail.*` file and blob oid; null = none (placeholder). */
+  thumbnail: { file: string; oid: string } | null;
   /** Has at least one scheduled binding. */
   scheduled: boolean;
   tables: string[];
@@ -80,7 +80,7 @@ export async function listDiscoveryApps(
     loadAppsIndex(workspaceId),
     AppProject.find({ workspaceId: ws })
       .select(
-        "_id access workspaceRole sharedWith owner_id createdBy publishedSha publishedAt lastDeployError thumbnail createdAt verified",
+        "_id access workspaceRole sharedWith owner_id createdBy publishedSha publishedAt lastDeployError createdAt verified",
       )
       .lean(),
     loadOwnerDirectory(workspaceId),
@@ -164,9 +164,9 @@ export async function listDiscoveryApps(
       publishedAt: iso(state?.publishedAt),
       publishedSha: state?.publishedSha,
       verified: state?.verified === true,
-      // Any picture, even of an older deployment: the route serves it while
-      // the current one is being taken. A cache-buster for the client.
-      thumbnailAt: iso(state?.thumbnail?.at) ?? null,
+      // The app's own picture, when its folder ships one — so a card only
+      // asks for an image that exists, versioned by content.
+      thumbnail: folder.thumbnail ?? null,
       scheduled: folder.schedules.length > 0,
       tables: folder.tables,
       dataRefreshedAt: oldest ? oldest.toISOString() : null,

@@ -1,9 +1,10 @@
 /**
- * An app's picture: the screenshot of its live deployment when there is one
- * (GET /apps/:id/thumbnail — a redirect to a signed bucket URL), otherwise a
- * generated placeholder of its initials on a colour derived from its id, so
- * the same app looks the same everywhere. A missing or failed image falls
- * back to the placeholder without a broken-image flash.
+ * An app's picture: the `thumbnail.*` its builder ships at the app's root
+ * (GET /apps/:id/thumbnail, versioned by blob oid), otherwise a generated
+ * placeholder — the Mako mark and the app's initials on a colour derived from
+ * its id, so the same app looks the same everywhere. Apps without a
+ * thumbnail make no request; an image that fails to load falls back to the
+ * placeholder without a broken-image flash.
  */
 import { useState } from "react";
 import { Box } from "@mui/material";
@@ -14,21 +15,37 @@ import {
   type DiscoveryApp,
 } from "../../lib/apps-discovery";
 
+/** The Mako mark (public/mako-icon.svg), inline so it takes currentColor. */
+const MAKO_MARK =
+  "m58 0 44 77-8 13H7L0 77 43 0h15ZM6 77l3 5 36-64 9 16 17 30h6L45 8 6 77Zm79-8H34l-3 5h64L55 5h-6l36 64Zm-48-5h28L51 39 37 64Z";
+
+function MakoMark({ size, opacity }: { size: number; opacity: number }) {
+  return (
+    <Box
+      component="svg"
+      viewBox="0 0 102 90"
+      aria-hidden
+      sx={{ width: size, height: (size * 90) / 102, opacity, display: "block" }}
+    >
+      <path d={MAKO_MARK} fill="currentColor" />
+    </Box>
+  );
+}
+
 export default function AppThumbnail({
   workspaceId,
   app,
 }: {
   workspaceId: string;
-  app: Pick<DiscoveryApp, "id" | "title" | "thumbnailAt" | "publishedSha">;
+  app: Pick<DiscoveryApp, "id" | "title" | "thumbnail">;
 }) {
   const theme = useTheme();
   const dark = theme.palette.mode === "dark";
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  // Only published apps can have a picture (and asking for one is what
-  // queues the backfill), so unpublished ones never make the request.
-  const tryImage = !!app.publishedSha && !failed;
+  const src = failed ? null : appThumbnailUrl(workspaceId, app);
   const { initials, hue } = placeholderFor(app);
+  const ink = `hsl(${hue} 45% ${dark ? "80%" : "28%"})`;
 
   return (
     <Box
@@ -38,7 +55,9 @@ export default function AppThumbnail({
         overflow: "hidden",
         borderBottom: 1,
         borderColor: "divider",
-        bgcolor: `hsl(${hue} ${dark ? "30%" : "45%"} ${dark ? "26%" : "88%"})`,
+        background: dark
+          ? `linear-gradient(135deg, hsl(${hue} 32% 28%), hsl(${(hue + 40) % 360} 36% 16%))`
+          : `linear-gradient(135deg, hsl(${hue} 55% 90%), hsl(${(hue + 40) % 360} 50% 80%))`,
       }}
     >
       {!loaded && (
@@ -47,23 +66,36 @@ export default function AppThumbnail({
           sx={{
             position: "absolute",
             inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 28,
-            fontWeight: 600,
-            letterSpacing: "0.04em",
-            color: `hsl(${hue} ${dark ? "45%" : "40%"} ${dark ? "78%" : "32%"})`,
+            color: ink,
             userSelect: "none",
           }}
         >
-          {initials}
+          <Box sx={{ position: "absolute", top: 12, left: 12 }}>
+            <MakoMark size={18} opacity={0.7} />
+          </Box>
+          <Box sx={{ position: "absolute", right: "-6%", bottom: "-12%" }}>
+            <MakoMark size={150} opacity={0.12} />
+          </Box>
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 30,
+              fontWeight: 700,
+              letterSpacing: "0.04em",
+            }}
+          >
+            {initials}
+          </Box>
         </Box>
       )}
-      {tryImage && (
+      {src && (
         <Box
           component="img"
-          src={appThumbnailUrl(workspaceId, app)}
+          src={src}
           alt=""
           loading="lazy"
           onLoad={() => setLoaded(true)}
@@ -74,7 +106,6 @@ export default function AppThumbnail({
             width: "100%",
             height: "100%",
             objectFit: "cover",
-            objectPosition: "top left",
             opacity: loaded ? 1 : 0,
             transition: "opacity 150ms ease",
           }}

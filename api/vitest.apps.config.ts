@@ -78,6 +78,8 @@ export default defineConfig({
       // Apps in real folders: the index over the tree at main, manifest
       // identity, moves that keep it, and the folder commits.
       "src/apps/app-index.service.test.ts",
+      // The starter project, including its placeholder thumbnail.
+      "src/apps/scaffold.test.ts",
       // Who opens which app: daily rollup, popularity score, authors.
       "src/apps/app-usage.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",

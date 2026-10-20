@@ -25,7 +25,7 @@ const app = (
   title: id.toUpperCase(),
   access: "workspace",
   verified: false,
-  thumbnailAt: null,
+  thumbnail: null,
   scheduled: false,
   tables: [],
   dataRefreshedAt: null,

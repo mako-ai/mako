@@ -4857,12 +4857,6 @@ export interface IAppProject extends Document {
   publicShare?: IPublicShare;
   /** Per-app environment variables, values encrypted at rest (env.service). */
   env?: IAppEnvVar[];
-  /**
-   * A screenshot of the published app (app-thumbnail.service), for the Apps
-   * home cards. `sha` is the deployment it shows, so a redeploy of the same
-   * commit does not retake it.
-   */
-  thumbnail?: { sha: string; key: string; at: Date };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4924,17 +4918,6 @@ const AppProjectSchema = new Schema<IAppProject>(
     },
     publicShare: { type: PublicShareSchema, default: undefined },
     env: { type: [AppEnvVarSchema], default: undefined },
-    thumbnail: {
-      type: new Schema(
-        {
-          sha: { type: String, required: true },
-          key: { type: String, required: true },
-          at: { type: Date, required: true },
-        },
-        { _id: false },
-      ),
-      default: undefined,
-    },
   },
   { collection: "app_projects", timestamps: true },
 );
@@ -5119,6 +5102,12 @@ export interface IAppIndexEntry extends Document {
   /** Who first committed the app's manifest, and when (discovery). */
   authorEmail?: string;
   firstCommitAt?: Date;
+  /**
+   * The app's own `thumbnail.{png,webp,jpg,jpeg,svg}` at its root, when it
+   * ships one: the file name and its blob oid (content-addressed, so the
+   * Apps home caches it forever under `?v=<oid>`).
+   */
+  thumbnail?: { file: string; oid: string };
   /** The main commit this row was built from. */
   indexedSha: string;
   createdAt: Date;
@@ -5162,6 +5151,16 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
     tables: { type: [String], default: undefined },
     authorEmail: { type: String },
     firstCommitAt: { type: Date },
+    thumbnail: {
+      type: new Schema(
+        {
+          file: { type: String, required: true },
+          oid: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     indexedSha: { type: String, required: true },
   },
   { collection: "app_index", timestamps: true },
