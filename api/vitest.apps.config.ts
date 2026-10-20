@@ -82,6 +82,8 @@ export default defineConfig({
       "src/apps/scaffold.test.ts",
       // Who opens which app: daily rollup, popularity score, authors.
       "src/apps/app-usage.service.test.ts",
+      // Reconstructing usage from Cloud Run logs and PostHog.
+      "src/apps/app-usage-backfill.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
       // A deploy's outcome as a GitHub commit status on the pushed sha.

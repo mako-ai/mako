@@ -137,8 +137,19 @@ export function anonIdFromCookie(cookie: string): string {
   return `${ANON_PREFIX}${createHash("sha256").update(cookie).digest("base64url").slice(0, 22)}`;
 }
 
+/**
+ * A PostHog anonymous visitor (backfill only), stored the same way: a
+ * prefixed hash of PostHog's distinct id.
+ */
+export function anonIdFromPosthog(distinctId: string): string {
+  return `ph:${createHash("sha256").update(distinctId).digest("base64url").slice(0, 22)}`;
+}
+
+/** An anonymous viewer's id (`anon:` live cookie, `ph:` PostHog backfill). */
 export function isAnonViewerId(userId: string | null): userId is string {
-  return !!userId && userId.startsWith(ANON_PREFIX);
+  return (
+    !!userId && (userId.startsWith(ANON_PREFIX) || userId.startsWith("ph:"))
+  );
 }
 
 export interface RecordAppUsageInput {

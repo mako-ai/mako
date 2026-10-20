@@ -5090,8 +5090,12 @@ export interface IAppUsageEvent extends Document {
   uaClass: AppUsageUaClass;
   /** Refused by the rollup's throttle (a reload burst, a double mount). */
   throttled?: boolean;
-  /** Reconstructed from request logs by backfill-app-usage.ts. */
-  backfill?: boolean;
+  /**
+   * Reconstructed from history rather than recorded live: `cloud-run`
+   * (request logs, backfill-app-usage.ts) or `posthog` (page views,
+   * backfill-app-usage-posthog.ts).
+   */
+  backfill?: "cloud-run" | "posthog";
 }
 
 /** ~13 months: a year of history plus a month to compare it with. */
@@ -5118,7 +5122,7 @@ const AppUsageEventSchema = new Schema<IAppUsageEvent>(
       required: true,
     },
     throttled: { type: Boolean },
-    backfill: { type: Boolean },
+    backfill: { type: String, enum: ["cloud-run", "posthog"] },
   },
   { collection: "app_usage_events", versionKey: false },
 );
