@@ -19,7 +19,12 @@
  */
 import { runGitBuffer } from "./git";
 import type { AppThumbnailRef } from "./app-index.service";
-import { cachedVariant, thumbnailWidth, toWebpVariant } from "./image-variants";
+import {
+  cachedVariant,
+  thumbnailWidth,
+  toWebpVariant,
+  type ImageVariant,
+} from "./image-variants";
 
 /** Larger than any sensible card image; refuse rather than stream a video. */
 export const MAX_THUMBNAIL_BYTES = 3 * 1024 * 1024;
@@ -104,11 +109,14 @@ function etagMatches(header: string | null | undefined, etag: string): boolean {
  * The HTTP answer for a thumbnail the caller is already allowed to see:
  * the original (no `w`, or SVG) or a WebP at the nearest allowed width,
  * cached per process by (oid, width). Null when the blob cannot be read.
- * `read` is only called on a cache miss.
+ * `read` is only called on a cache miss. `variant`, when given, supplies the
+ * resized image instead (the routes pass the store-backed
+ * getThumbnailVariant, shared by every instance).
  */
 export async function thumbnailResponse(opts: {
   thumbnail: AppThumbnailRef;
   read: () => Promise<Buffer | null>;
+  variant?: (width: number) => Promise<ImageVariant | null>;
   v?: string | null;
   w?: string | null;
   ifNoneMatch?: string | null;
@@ -139,21 +147,20 @@ export async function thumbnailResponse(opts: {
     });
   }
 
-  const variant = await cachedVariant(
-    `${thumbnail.oid}:w${width}`,
-    async () => {
-      const source = await opts.read();
-      if (!source) return null;
-      return (
-        (await toWebpVariant(source, width)) ?? {
-          // The resizer failed: the original, still correct, just heavier.
-          bytes: source,
-          contentType: thumbnailContentType(thumbnail.file) ?? "image/png",
-          transformed: false,
-        }
-      );
-    },
-  );
+  const variant = opts.variant
+    ? await opts.variant(width)
+    : await cachedVariant(`${thumbnail.oid}:w${width}`, async () => {
+        const source = await opts.read();
+        if (!source) return null;
+        return (
+          (await toWebpVariant(source, width)) ?? {
+            // The resizer failed: the original, still correct, just heavier.
+            bytes: source,
+            contentType: thumbnailContentType(thumbnail.file) ?? "image/png",
+            transformed: false,
+          }
+        );
+      });
   if (!variant) return null;
   return new Response(new Uint8Array(variant.bytes), {
     status: 200,

@@ -27,12 +27,14 @@ import {
 } from "../database/workspace-schema";
 import {
   resolveAppRef,
+  resolveIndexedAppRef,
   type AppIndexRow,
   type AppThumbnailRef,
 } from "../apps/app-index.service";
-import { readThumbnailBlob } from "../apps/app-thumbnail";
-import { toOgJpeg } from "../apps/image-variants";
-import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
+import {
+  getThumbnailVariant,
+  type Timings,
+} from "../apps/thumbnail-variants.service";
 
 /** The share URL shapes the SPA serves (see app/src/App.tsx). */
 const SHARE_PATH = /^\/share\/(?:[^/]+\/)?([A-Za-z0-9_-]{3,128})\/?$/;
@@ -73,67 +75,7 @@ export function rasterTypeOf(file: string): string | null {
   return RASTER_TYPES[file.split(".").pop()?.toLowerCase() ?? ""] ?? null;
 }
 
-/**
- * Width × height from the header of a PNG, JPEG or WebP, without decoding —
- * og:image:width/height let crawlers lay the card out before fetching.
- */
-export function imageSize(
-  bytes: Uint8Array,
-): { width: number; height: number } | null {
-  const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  // PNG: signature, then IHDR width/height (big-endian) at 16/20.
-  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47) {
-    return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
-  }
-  // JPEG: walk markers to the first SOFn.
-  if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
-    let i = 2;
-    while (i + 9 < b.length) {
-      if (b[i] !== 0xff) return null;
-      const marker = b[i + 1];
-      const len = b.readUInt16BE(i + 2);
-      if (
-        marker >= 0xc0 &&
-        marker <= 0xcf &&
-        marker !== 0xc4 &&
-        marker !== 0xc8 &&
-        marker !== 0xcc
-      ) {
-        return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
-      }
-      i += 2 + len;
-    }
-    return null;
-  }
-  // WebP: RIFF....WEBP then VP8 / VP8L / VP8X.
-  if (
-    b.length >= 30 &&
-    b.toString("ascii", 0, 4) === "RIFF" &&
-    b.toString("ascii", 8, 12) === "WEBP"
-  ) {
-    const chunk = b.toString("ascii", 12, 16);
-    if (chunk === "VP8X") {
-      return {
-        width: 1 + b.readUIntLE(24, 3),
-        height: 1 + b.readUIntLE(27, 3),
-      };
-    }
-    if (chunk === "VP8L") {
-      const bits = b.readUInt32LE(21);
-      return {
-        width: 1 + (bits & 0x3fff),
-        height: 1 + ((bits >> 14) & 0x3fff),
-      };
-    }
-    if (chunk === "VP8 ") {
-      return {
-        width: b.readUInt16LE(26) & 0x3fff,
-        height: b.readUInt16LE(28) & 0x3fff,
-      };
-    }
-  }
-  return null;
-}
+export { imageSize } from "../apps/image-variants";
 
 export interface ShareImage {
   bytes: Buffer;
@@ -145,54 +87,48 @@ export interface ShareImage {
   height?: number;
 }
 
-/** Per-process memo by blob oid: a blob never changes. */
-const imageCache = new Map<string, ShareImage>();
-
 /** The raster thumbnail of an open share's app, or null (use the default). */
 export async function shareImageFor(
   app: IAppProject,
+  timings?: Timings,
 ): Promise<ShareImage | null> {
   const workspaceId = app.workspaceId.toString();
-  const row = await resolveAppRef(workspaceId, app._id.toString());
-  return rasterThumbnail(workspaceId, row?.thumbnail);
+  const appId = app._id.toString();
+  const row =
+    (await resolveIndexedAppRef(workspaceId, appId)) ??
+    (await resolveAppRef(workspaceId, appId));
+  return rasterThumbnail(workspaceId, row?.thumbnail, timings);
 }
 
-/** An app's raster thumbnail by its index ref; null for SVG or none. */
+/**
+ * An app's link-preview picture by its index ref; null for SVG or none.
+ * The OG variant (a JPEG ≤1200 wide, ≤300 KB) from the shared store, so a
+ * fresh instance answers without touching git; the original bytes only
+ * when the encoder cannot read the image.
+ */
 export async function rasterThumbnail(
   workspaceId: string,
   thumb: AppThumbnailRef | undefined,
+  timings?: Timings,
 ): Promise<ShareImage | null> {
   const contentType = thumb ? rasterTypeOf(thumb.file) : null;
   if (!thumb || !contentType) return null;
-  const hit = imageCache.get(thumb.oid);
-  if (hit) return hit;
-  const repoDir = await boundRepoDirIfExists(workspaceId);
-  const bytes = repoDir ? await readThumbnailBlob(repoDir, thumb) : null;
-  if (!bytes) return null;
-  const jpeg = await toOgJpeg(bytes);
-  // Keep the original when the encoder failed, or when it already was a
-  // within-budget JPEG the re-encode would only make bigger.
-  const image: ShareImage =
-    jpeg && !(contentType === "image/jpeg" && bytes.length <= jpeg.bytes.length)
-      ? {
-          bytes: jpeg.bytes,
-          contentType: jpeg.contentType,
-          oid: thumb.oid,
-          etag: `"${thumb.oid}-og"`,
-          ...(jpeg.width && jpeg.height
-            ? { width: jpeg.width, height: jpeg.height }
-            : {}),
-        }
-      : {
-          bytes,
-          contentType,
-          oid: thumb.oid,
-          etag: `"${thumb.oid}"`,
-          ...(imageSize(bytes) ?? {}),
-        };
-  if (imageCache.size > 200) imageCache.clear();
-  imageCache.set(thumb.oid, image);
-  return image;
+  const image = await getThumbnailVariant(
+    workspaceId,
+    thumb,
+    { kind: "og" },
+    timings,
+  );
+  if (!image) return null;
+  return {
+    bytes: image.bytes,
+    contentType: image.contentType,
+    oid: thumb.oid,
+    etag: image.transformed ? `"${thumb.oid}-og"` : `"${thumb.oid}"`,
+    ...(image.width && image.height
+      ? { width: image.width, height: image.height }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +234,10 @@ export async function previewableWorkspaceApp(
     .select("settings.linkPreviews")
     .lean();
   if (!workspace || workspace.settings?.linkPreviews === false) return null;
-  const row = await resolveAppRef(workspaceId, ref).catch(() => null);
+  // Persisted rows first (no git: a crawler must not wait on a clone).
+  const row =
+    (await resolveIndexedAppRef(workspaceId, ref).catch(() => null)) ??
+    (await resolveAppRef(workspaceId, ref).catch(() => null));
   if (!row || row.scope !== "workspace") return null;
   if (Types.ObjectId.isValid(row.appId)) {
     const state = await AppProject.findOne({

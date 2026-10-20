@@ -12,6 +12,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { loggers } from "../logging";
+import { Timings } from "../apps/thumbnail-variants.service";
 import {
   previewableWorkspaceApp,
   rasterThumbnail,
@@ -47,14 +48,18 @@ ogRoutes.openapi(
   async c => {
     try {
       const { workspaceId, appId } = c.req.valid("param");
-      const row = await previewableWorkspaceApp(
-        workspaceId.toLowerCase(),
-        appId.toLowerCase(),
+      const timings = new Timings();
+      const row = await timings.time("lookup", () =>
+        previewableWorkspaceApp(workspaceId.toLowerCase(), appId.toLowerCase()),
       );
       // The ref must resolve to THIS id: a slug or path is not accepted here.
       const image =
         row && row.appId === appId.toLowerCase()
-          ? await rasterThumbnail(workspaceId.toLowerCase(), row.thumbnail)
+          ? await rasterThumbnail(
+              workspaceId.toLowerCase(),
+              row.thumbnail,
+              timings,
+            )
           : null;
       if (!image) {
         return c.json({ success: false, error: "No preview image" }, 404, {
@@ -69,6 +74,7 @@ ogRoutes.openapi(
           "Cache-Control": "public, max-age=86400",
           ETag: image.etag,
           "X-Content-Type-Options": "nosniff",
+          "Server-Timing": timings.header(),
         },
       });
     } catch (error) {

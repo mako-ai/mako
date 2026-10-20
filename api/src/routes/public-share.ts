@@ -21,6 +21,7 @@ import { getCookie, setCookie } from "hono/cookie";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { Timings } from "../apps/thumbnail-variants.service";
 import { getArtifactStore } from "../services/artifact-store.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
@@ -304,8 +305,9 @@ app.openapi(
   async c => {
     try {
       const token = c.req.param("token") as string;
-      const app = await findShareByToken(token);
-      const image = isOpenShare(app) ? await shareImageFor(app) : null;
+      const timings = new Timings();
+      const app = await timings.time("lookup", () => findShareByToken(token));
+      const image = isOpenShare(app) ? await shareImageFor(app, timings) : null;
       if (!image) {
         return c.json({ success: false, error: "No preview image" }, 404, {
           "Cache-Control": "no-store",
@@ -321,6 +323,7 @@ app.openapi(
           "Cache-Control": "public, max-age=86400",
           ETag: image.etag,
           "X-Content-Type-Options": "nosniff",
+          "Server-Timing": timings.header(),
         },
       });
     } catch (error) {

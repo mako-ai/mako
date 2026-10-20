@@ -11,11 +11,15 @@
  * platform, an image libvips cannot decode) degrades to serving the original
  * bytes — a thumbnail must never break because the resizer did.
  */
+import type SharpDefault from "sharp";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps-image-variants");
 
-type Sharp = typeof import("sharp");
+// The default export is the sharp function under both CommonJS (this
+// package) and ESM resolution (the app's tsc, which type-checks api files it
+// reaches transitively); `typeof import("sharp")` is not.
+type Sharp = typeof SharpDefault;
 
 let sharpLoad: Promise<Sharp | null> | undefined;
 
@@ -23,7 +27,8 @@ let sharpLoad: Promise<Sharp | null> | undefined;
 export function loadSharp(): Promise<Sharp | null> {
   sharpLoad ??= import("sharp")
     .then(mod => {
-      const sharp = ((mod as { default?: Sharp }).default ?? mod) as Sharp;
+      const loaded = mod as unknown as { default?: Sharp };
+      const sharp = (loaded.default ?? mod) as unknown as Sharp;
       // Our own LRU holds the outputs; libvips' operation cache would only
       // keep decoded inputs we never ask for twice.
       sharp.cache(false);
@@ -55,6 +60,68 @@ export function thumbnailWidth(raw: string | null | undefined): number | null {
     if (Math.abs(w - n) <= Math.abs(best - n)) best = w;
   }
   return best;
+}
+
+/**
+ * Width × height from the header of a PNG, JPEG or WebP, without decoding —
+ * og:image:width/height let crawlers lay the card out before fetching.
+ */
+export function imageSize(
+  bytes: Uint8Array,
+): { width: number; height: number } | null {
+  const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // PNG: signature, then IHDR width/height (big-endian) at 16/20.
+  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47) {
+    return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
+  }
+  // JPEG: walk markers to the first SOFn.
+  if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) return null;
+      const marker = b[i + 1];
+      const len = b.readUInt16BE(i + 2);
+      if (
+        marker >= 0xc0 &&
+        marker <= 0xcf &&
+        marker !== 0xc4 &&
+        marker !== 0xc8 &&
+        marker !== 0xcc
+      ) {
+        return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
+      }
+      i += 2 + len;
+    }
+    return null;
+  }
+  // WebP: RIFF....WEBP then VP8 / VP8L / VP8X.
+  if (
+    b.length >= 30 &&
+    b.toString("ascii", 0, 4) === "RIFF" &&
+    b.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    const chunk = b.toString("ascii", 12, 16);
+    if (chunk === "VP8X") {
+      return {
+        width: 1 + b.readUIntLE(24, 3),
+        height: 1 + b.readUIntLE(27, 3),
+      };
+    }
+    if (chunk === "VP8L") {
+      const bits = b.readUInt32LE(21);
+      return {
+        width: 1 + (bits & 0x3fff),
+        height: 1 + ((bits >> 14) & 0x3fff),
+      };
+    }
+    if (chunk === "VP8 ") {
+      return {
+        width: b.readUInt16LE(26) & 0x3fff,
+        height: b.readUInt16LE(28) & 0x3fff,
+      };
+    }
+  }
+  return null;
 }
 
 export interface ImageVariant {

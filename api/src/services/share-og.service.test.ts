@@ -49,6 +49,7 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
+  process.env.DASHBOARD_ARTIFACT_DIR = path.join(tmpRoot, "artifacts");
   process.env.SESSION_SECRET ||= "test-secret";
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());

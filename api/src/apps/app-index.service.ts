@@ -36,6 +36,7 @@ import {
 } from "./repository.service";
 import { boundRepoDirIfExists } from "./workspace-repo-required";
 import { createSerializer } from "./serialized";
+import { scheduleThumbnailWarm } from "./thumbnail-variants.service";
 import type { OwnerDirectory } from "./user-handles";
 import { loadOwnerDirectory } from "./user-handles.service";
 import {
@@ -1092,6 +1093,10 @@ export async function loadAppsIndex(
   const synced = await timed("index.sync", () =>
     syncAppsIndexFromRepo(workspaceId),
   );
+  // Main moved (or this instance just started): make sure the posters'
+  // card and link-preview variants are in the shared store before the
+  // first crawler or Apps home asks. Once per sha (Inngest does the work).
+  if (synced) scheduleThumbnailWarm(workspaceId, synced);
   return synced ? withOwners(synced, directory) : EMPTY;
 }
 
@@ -1161,6 +1166,34 @@ export async function resolveAppRef(
     );
   }
   return found;
+}
+
+/**
+ * Resolve a ref against the index rows as persisted in Mongo — no git at
+ * all. For hot public paths (link-preview images, card thumbnails) that must
+ * not pay a mirror clone on a fresh instance: the rows are written by
+ * whichever instance last synced main, so they are at most one sync behind.
+ * Null when the ref is unknown there (callers fall back to resolveAppRef).
+ */
+export async function resolveIndexedAppRef(
+  workspaceId: string,
+  ref: string,
+): Promise<AppIndexRow | null> {
+  if (!Types.ObjectId.isValid(workspaceId)) return null;
+  const ws = new Types.ObjectId(workspaceId);
+  const clean = ref.trim().toLowerCase();
+  if (isAppId(clean)) {
+    const row = await AppIndexEntry.findOne({
+      workspaceId: ws,
+      appId: clean,
+    }).lean();
+    if (row) return rowToIndex(row);
+  }
+  const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+  return findAppInSnapshot(
+    { sha: "", apps: rows.map(rowToIndex), folders: [] },
+    ref,
+  );
 }
 
 /** Resolve historical folders using the same identities as the current index. */

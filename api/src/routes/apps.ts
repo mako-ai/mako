@@ -97,7 +97,12 @@ import {
   findAppInSnapshot,
   loadAppsIndex,
   resolveAppRef,
+  resolveIndexedAppRef,
 } from "../apps/app-index.service";
+import {
+  Timings,
+  getThumbnailVariant,
+} from "../apps/thumbnail-variants.service";
 import {
   acceptUsageBeat,
   classifyUserAgent,
@@ -4213,9 +4218,15 @@ appsRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const workspaceId = loaded.project.workspaceId.toString();
-      const row = await resolveAppRef(
-        workspaceId,
-        loaded.project._id.toString(),
+      const appId = loaded.project._id.toString();
+      const timings = new Timings();
+      // The persisted index first: a fresh instance must not clone the
+      // mirror just to learn a blob oid the store already has a variant of.
+      const row = await timings.time(
+        "lookup",
+        async () =>
+          (await resolveIndexedAppRef(workspaceId, appId)) ??
+          (await resolveAppRef(workspaceId, appId)),
       );
       const thumbnail = row?.thumbnail;
       const { v, w } = c.req.valid("query");
@@ -4229,6 +4240,13 @@ appsRoutes.openapi(
               const repoDir = await boundRepoDirIfExists(workspaceId);
               return repoDir ? readThumbnailBlob(repoDir, thumbnail) : null;
             },
+            variant: width =>
+              getThumbnailVariant(
+                workspaceId,
+                thumbnail,
+                { kind: "width", width },
+                timings,
+              ),
           })
         : null;
       if (!res) {
@@ -4237,6 +4255,7 @@ appsRoutes.openapi(
           404,
         );
       }
+      res.headers.set("Server-Timing", timings.header());
       return res;
     } catch (error) {
       return handleError(c, error);
