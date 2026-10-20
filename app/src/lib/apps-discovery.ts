@@ -57,6 +57,12 @@ export interface DiscoveryApp {
   ownerHandle?: string;
   ownerEmail?: string;
   authorEmail?: string;
+  /**
+   * The owner as a person (the server resolves the author email to a
+   * workspace member): what cards and search show. No `userId` = nobody
+   * in the workspace; `name` is then the email's local part.
+   */
+  owner?: { userId?: string; name: string; handle?: string; email?: string };
   createdAt?: string;
   publishedAt?: string;
   publishedSha?: string;
@@ -83,13 +89,18 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Data older than this on a scheduled app is stale (its schedule stalled). */
 export const STALE_DATA_MS = 3 * DAY_MS;
 
-/** Who an app belongs to, as a short human handle. */
+/** Who an app belongs to, as a short human label (the person's name). */
 export function ownerHandle(
-  app: Pick<DiscoveryApp, "ownerHandle" | "ownerEmail" | "authorEmail">,
+  app: Pick<
+    DiscoveryApp,
+    "owner" | "ownerHandle" | "ownerEmail" | "authorEmail"
+  >,
 ): string | null {
+  if (app.owner?.name) return app.owner.name;
   if (app.ownerHandle) return app.ownerHandle;
   const email = app.ownerEmail ?? app.authorEmail;
-  return email ? email.split("@")[0] : null;
+  // A GitHub noreply address's `<id>+` prefix is not a name.
+  return email ? email.split("@")[0].replace(/^\d+\+/, "") : null;
 }
 
 /**
@@ -102,6 +113,9 @@ export function isMyApp(
   me: { id?: string; email?: string },
 ): boolean {
   if (app.ownerId) return !!me.id && app.ownerId === me.id;
+  // The server matched the author to a member (a laptop email, a GitHub
+  // noreply address): that member's id is the answer.
+  if (app.owner?.userId) return !!me.id && app.owner.userId === me.id;
   return (
     !!me.email &&
     !!app.authorEmail &&

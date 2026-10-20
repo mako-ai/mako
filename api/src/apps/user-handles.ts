@@ -129,6 +129,11 @@ export class OwnerDirectory {
   get size(): number {
     return this.byHandle.size;
   }
+
+  /** Every (userId, handle) the workspace has assigned. */
+  rows(): HandleRow[] {
+    return [...this.byUser].map(([userId, handle]) => ({ userId, handle }));
+  }
 }
 
 /** An empty directory: every `users/<x>/` is nobody's. */

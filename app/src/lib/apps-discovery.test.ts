@@ -3,6 +3,7 @@ import {
   attentionReasons,
   isMyApp,
   newApps,
+  ownerHandle,
   placeholderFor,
   popularApps,
   recentlyViewedApps,
@@ -97,6 +98,34 @@ describe("ownership and attention", () => {
         email: "joan@x.com",
       }),
     ).toBe(false);
+  });
+
+  it("is mine when the server resolved the author to me", () => {
+    const resolved = app("a", {
+      authorEmail: "rodriguezjoan@gmail.com",
+      owner: { userId: "u1", name: "joan", handle: "joan" },
+    });
+    expect(isMyApp(resolved, { id: "u1", email: "joan@x.com" })).toBe(true);
+    expect(isMyApp(resolved, { id: "u2", email: "x@x.com" })).toBe(false);
+  });
+
+  it("labels the owner by the resolved name, never a noreply id", () => {
+    expect(
+      ownerHandle(
+        app("a", {
+          authorEmail: "wieseljonas@users.noreply.github.com",
+          owner: { userId: "u1", name: "jonas", handle: "jonas" },
+        }),
+      ),
+    ).toBe("jonas");
+    // An older payload without `owner`: still no `165400805+`.
+    expect(
+      ownerHandle(
+        app("a", { authorEmail: "165400805+t-m-v@users.noreply.github.com" }),
+      ),
+    ).toBe("t-m-v");
+    expect(ownerHandle(app("a", { ownerHandle: "maria" }))).toBe("maria");
+    expect(ownerHandle(app("a"))).toBeNull();
   });
 
   it("flags failed deploys, failing bindings and stale scheduled data", () => {

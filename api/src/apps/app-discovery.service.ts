@@ -17,6 +17,8 @@ import { canSeeIndexedApp } from "./app-authorization";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
 import { rankApps } from "./app-search";
 import { loadOwnerDirectory } from "./user-handles.service";
+import { resolveAppOwner, type AppOwner } from "./app-owner";
+import { githubIdsOfLogins, loadPeopleDirectory } from "./app-owner.service";
 import { verifiedAppIds } from "./app-lifecycle-state";
 import "./bindings.service";
 
@@ -35,6 +37,12 @@ export interface DiscoveryApp {
   ownerEmail?: string;
   /** Who first committed its manifest — the owner of a folder-only app. */
   authorEmail?: string;
+  /**
+   * The owner as a person, for display: the sharing/tree owner, else the
+   * workspace member the author email resolves to (app-owner.ts), else the
+   * email's local part (`name` only — no `userId`).
+   */
+  owner?: AppOwner;
   /** First commit of the manifest, else when the state row appeared. */
   createdAt?: string;
   publishedAt?: string;
@@ -100,7 +108,7 @@ export async function listDiscoveryApps(
     const owner = ownerOf(folder, stateById.get(folder.appId));
     if (owner) ownerIds.add(owner);
   }
-  const [users, bindingRows] = await Promise.all([
+  const [users, bindingRows, people] = await Promise.all([
     ownerIds.size > 0
       ? User.find({ _id: { $in: [...ownerIds] } })
           .select("_id email")
@@ -122,8 +130,17 @@ export async function listDiscoveryApps(
       })
       .lean()
       .then(rows => rows as unknown as BindingStateRow[]),
+    loadPeopleDirectory(workspaceId, directory),
   ]);
   const emailById = new Map(users.map(u => [String(u._id), u.email]));
+  const githubIdOfLogin = await githubIdsOfLogins(
+    people.loginsToLookUp(
+      visible
+        .filter(f => !ownerOf(f, stateById.get(f.appId)))
+        .map(f => f.authorEmail),
+    ),
+    people,
+  );
   const bindingsByApp = new Map<string, BindingStateRow[]>();
   for (const row of bindingRows) {
     const id = row.projectId.toString();
@@ -167,6 +184,18 @@ export async function listDiscoveryApps(
         ? { ownerEmail: emailById.get(ownerId) }
         : {}),
       ...(folder.authorEmail ? { authorEmail: folder.authorEmail } : {}),
+      ...withOwner(
+        resolveAppOwner(
+          {
+            ownerId,
+            ownerHandle: directory.handleOf(ownerId),
+            ownerEmail: ownerId ? emailById.get(ownerId) : undefined,
+            authorEmail: folder.authorEmail,
+          },
+          people,
+          githubIdOfLogin,
+        ),
+      ),
       createdAt: folder.firstCommitAt ?? iso(state?.createdAt),
       publishedAt: iso(state?.publishedAt),
       publishedSha: state?.publishedSha,
@@ -195,6 +224,8 @@ export async function listDiscoveryApps(
   });
 }
 
+const withOwner = (owner: AppOwner | undefined) => (owner ? { owner } : {});
+
 /** The person behind an app: its sharing owner, else its tree's owner. */
 function ownerOf(
   folder: Pick<AppIndexRow, "scope" | "ownerId">,
@@ -222,8 +253,15 @@ export function searchDiscoveryApps(
       path: a.path,
       title: a.title,
       description: a.description,
-      owner: [a.ownerHandle, a.ownerEmail, a.authorEmail]
-        .filter((e): e is string => !!e)
+      owner: [
+        a.owner?.name,
+        a.owner?.handle,
+        a.owner?.email,
+        a.ownerHandle,
+        a.ownerEmail,
+        a.authorEmail,
+      ]
+        .filter((e, i, all): e is string => !!e && all.indexOf(e) === i)
         .join(" "),
       tables: a.tables,
       usageScore: options.usage?.get(a.id),

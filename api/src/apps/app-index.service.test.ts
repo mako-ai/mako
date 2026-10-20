@@ -24,9 +24,12 @@ import {
   AppIndexEntry,
   AppIndexHead,
   AppProject,
+  WorkspaceMember,
   WorkspaceUserHandle,
 } from "../database/workspace-schema";
+import { OAuthAccount, User } from "../database/schema";
 import { invalidateOwnerDirectory } from "./user-handles.service";
+import { invalidatePeopleDirectory } from "./app-owner.service";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -388,6 +391,92 @@ describe("discovery facts", () => {
     const e = (await loadAppsIndex(WS)).apps.find(a => a.path === "apps/e");
     expect(e?.authorEmail).toBe("laptop@example.com");
     expect(e?.firstCommitAt).toBeTruthy();
+  });
+
+  it("shows each app's owner as the workspace member, not a commit email", async () => {
+    const ws = new Types.ObjectId(WS);
+    const joan = new Types.ObjectId().toString();
+    const tim = new Types.ObjectId().toString();
+    await User.create([
+      { _id: USER, email: "alice@acme.test", emailVerified: true },
+      { _id: joan, email: "joan@acme.test", emailVerified: true },
+      { _id: tim, email: "tim@acme.test", emailVerified: true },
+    ]);
+    await WorkspaceMember.create([
+      { workspaceId: ws, userId: USER, role: "owner", joinedAt: new Date(1) },
+      { workspaceId: ws, userId: joan, role: "member", joinedAt: new Date(2) },
+      { workspaceId: ws, userId: tim, role: "member", joinedAt: new Date(3) },
+    ]);
+    await OAuthAccount.create([
+      // Joan signs in with GitHub (id 42) whose email is his gmail.
+      {
+        userId: joan,
+        provider: "github",
+        providerUserId: "42",
+        email: "rodriguezjoan@gmail.com",
+      },
+    ]);
+    const commitAs = async (email: string, writes: Record<string, string>) => {
+      await commitBlobsOnBranch(
+        repoDirFor(WS),
+        DEFAULT_BRANCH,
+        { writes, deletes: [] },
+        { message: "laptop", author: { name: "Someone", email } },
+      );
+      invalidateAppsIndexCache(WS);
+    };
+    await commitAs("rodriguezjoan@gmail.com", {
+      "apps/alias/mako.json": manifest("Alias"),
+    });
+    await commitAs("42+joan-gh@users.noreply.github.com", {
+      "apps/noreply/mako.json": manifest("Noreply"),
+    });
+    await commitAs("tim@personal.example", {
+      "apps/local/mako.json": manifest("Local part"),
+    });
+    await commitAs("165400805+t-m-v@users.noreply.github.com", {
+      "apps/stranger/mako.json": manifest("Stranger"),
+    });
+    await commitAs("alice@gmail.com", {
+      "apps/gmail/mako.json": manifest("Gmail"),
+    });
+    try {
+      invalidateOwnerDirectory();
+      invalidatePeopleDirectory();
+      const apps = await listDiscoveryApps(WS, USER, "owner");
+      const owner = (p: string) => apps.find(a => a.path === p)?.owner;
+      const joanHandle = (await WorkspaceUserHandle.findOne({ userId: joan }))
+        ?.handle;
+      expect(joanHandle).toBe("joan");
+      expect(owner("apps/alias")).toMatchObject({ userId: joan, name: "joan" });
+      expect(owner("apps/noreply")).toMatchObject({
+        userId: joan,
+        name: "joan",
+      });
+      // The workspace's domain is acme.test; tim@ there is the only `tim`.
+      expect(owner("apps/local")).toMatchObject({ userId: tim, name: "tim" });
+      // Nobody here: the GitHub login, never the numeric prefix.
+      expect(owner("apps/stranger")).toEqual({ name: "t-m-v" });
+      // A public mail domain never matches by local part.
+      expect(owner("apps/gmail")).toEqual({ name: "alice" });
+      // The personal app: its tree's owner.
+      expect(owner(`users/${HANDLE}/apps/c`)).toMatchObject({
+        userId: USER,
+        name: HANDLE,
+        email: "alice@acme.test",
+      });
+      // Search finds an app by its owner's member handle.
+      expect(
+        searchDiscoveryApps(apps, "joan")
+          .map(a => a.path)
+          .sort(),
+      ).toEqual(["apps/alias", "apps/noreply"]);
+    } finally {
+      await User.deleteMany({});
+      await WorkspaceMember.deleteMany({});
+      await OAuthAccount.deleteMany({});
+      invalidatePeopleDirectory();
+    }
   });
 
   it("indexes the app's own thumbnail (png before svg) and serves it inert", async () => {
