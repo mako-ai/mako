@@ -634,6 +634,33 @@ export async function requestDbtRunCancel(params: {
   };
 }
 
+/**
+ * Auto-disable a scheduled job after this many consecutive failures so a
+ * persistently broken job stops re-running on every tick. 0 disables the
+ * behavior. Override with DBT_AUTO_DISABLE_AFTER_FAILURES.
+ */
+export const DBT_AUTO_DISABLE_AFTER_FAILURES = Number(
+  process.env.DBT_AUTO_DISABLE_AFTER_FAILURES ?? "10",
+);
+
+/**
+ * Filter matching an enabled job whose failure count already reached the
+ * auto-disable threshold. Only a job someone re-enabled after an auto-disable
+ * can be in that state, and it must start a fresh count: otherwise its very
+ * next failure disables it again.
+ */
+export function reenabledAfterAutoDisableFilter(
+  jobId: Types.ObjectId,
+  threshold = DBT_AUTO_DISABLE_AFTER_FAILURES,
+): Record<string, unknown> | null {
+  if (!(threshold > 0)) return null;
+  return {
+    _id: jobId,
+    enabled: true,
+    "scheduledRun.consecutiveFailures": { $gte: threshold },
+  };
+}
+
 /** Recompute a job's next scheduled run after a schedule edit. */
 export async function applyJobScheduleChange(job: IDbtJob): Promise<void> {
   if (job.schedule?.cron && job.enabled) {
@@ -647,6 +674,12 @@ export async function applyJobScheduleChange(job: IDbtJob): Promise<void> {
       { _id: job._id },
       { $set: { "scheduledRun.nextAt": nextAt } },
     );
+    const reenabled = reenabledAfterAutoDisableFilter(job._id);
+    if (reenabled) {
+      await DbtJob.updateOne(reenabled, {
+        $set: { "scheduledRun.consecutiveFailures": 0 },
+      });
+    }
   } else {
     await DbtJob.updateOne(
       { _id: job._id },

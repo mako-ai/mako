@@ -38,6 +38,7 @@ import {
   type DbtLogLine,
 } from "../../dbt/runner.service";
 import {
+  DBT_AUTO_DISABLE_AFTER_FAILURES,
   finalizeCancelledDbtRun,
   promotesProdManifest,
   triggerDbtJobRun,
@@ -608,8 +609,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
 
         // Stop a broken scheduled job from hammering the warehouse forever:
         // after a threshold of consecutive failures, disable the schedule and
-        // surface why. A manual run (which resets consecutiveFailures on
-        // success) re-enables normal cadence after the user re-enables it.
+        // surface why. Re-enabling the job resets the count
+        // (applyJobScheduleChange), so it gets a full threshold again.
         const failures = updatedJob?.scheduledRun?.consecutiveFailures ?? 0;
         if (
           failed &&
@@ -825,15 +826,6 @@ function detectDbtTerminalOutcome(
  */
 const DBT_RUN_RETENTION_DAYS = Number(
   process.env.DBT_RUN_RETENTION_DAYS ?? "30",
-);
-
-/**
- * Auto-disable a scheduled job after this many consecutive failures so a
- * persistently broken job stops re-running on every tick. 0 disables the
- * behavior. Override with DBT_AUTO_DISABLE_AFTER_FAILURES.
- */
-const DBT_AUTO_DISABLE_AFTER_FAILURES = Number(
-  process.env.DBT_AUTO_DISABLE_AFTER_FAILURES ?? "10",
 );
 
 export const dbtRunSweeperFunction = inngest.createFunction(
