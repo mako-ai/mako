@@ -1,6 +1,6 @@
 /**
  * One app on the Apps home: picture, title, description (from mako.json),
- * and a meta line — owner, viewers this month, data freshness — plus a
+ * and a meta line — owner, visit-days in the last 28 days, data freshness — plus a
  * `Verified` badge for curated apps and, on the Needs attention shelf, why.
  */
 import {
@@ -25,6 +25,7 @@ import {
   describeAttention,
   ownerHandle,
   relativeTime,
+  visitSummary,
   type AppUsageStats,
   type AttentionReason,
   type DiscoveryApp,
@@ -58,6 +59,7 @@ export default function AppCard({
 }: AppCardProps) {
   const owner = ownerHandle(app);
   const freshness = relativeTime(app.dataRefreshedAt);
+  const visits = visitSummary(usage);
   const folder = folderLabel(app.path) ?? "";
 
   return (
@@ -146,20 +148,20 @@ export default function AppCard({
                 {owner}
               </Typography>
             )}
-            {usage && usage.viewers > 0 && (
-              <Tooltip title={`${usage.viewers} viewers in the last 28 days`}>
+            {visits && (
+              <Tooltip title={visits.tooltip}>
                 <Stack
                   direction="row"
                   spacing={0.25}
                   sx={{ alignItems: "center" }}
                 >
                   <ViewersIcon size={12} />
-                  <Typography variant="caption">{usage.viewers}</Typography>
+                  <Typography variant="caption">{visits.count}</Typography>
                 </Stack>
               </Tooltip>
             )}
             {freshness && (
-              <Tooltip title="Data last refreshed">
+              <Tooltip title="Data last refreshed (its least recently built data source)">
                 <Stack
                   direction="row"
                   spacing={0.25}

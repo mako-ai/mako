@@ -31,7 +31,7 @@ import { MessageCircle } from "lucide-react";
 import { useAuth } from "../contexts/auth-context";
 import { appViewerKey, useAppViewerStore } from "../store/appViewerStore";
 import { AppChatPanel } from "../components/AppChatPanel";
-import { useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
+import { referrerKindOf, useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
 
 const CHAT_OPEN_KEY = "mako:app-viewer-chat-open";
 const CHAT_WIDTH_KEY = "mako:app-viewer-chat-width";
@@ -123,7 +123,16 @@ export default function AppViewerPage() {
       : null;
   const error = viewer?.status === "error" ? viewer.error : null;
   const [frameLoaded, setFrameLoaded] = useState(false);
-  useAppUsageBeacon({ workspaceId, appId, active: !!app && frameLoaded });
+  // Where the viewer came from — a link in Slack, a bookmark — read once.
+  const [referrerKind] = useState(() =>
+    referrerKindOf(document.referrer, window.location.origin),
+  );
+  useAppUsageBeacon({
+    workspaceId,
+    appId,
+    active: !!app && frameLoaded,
+    referrerKind,
+  });
   const [chatOpen, setChatOpenState] = useState(readChatOpen);
   const setChatOpen = useCallback((open: boolean) => {
     setChatOpenState(open);

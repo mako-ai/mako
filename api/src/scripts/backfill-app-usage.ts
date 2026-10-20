@@ -16,7 +16,13 @@
  *     the 302s are browser visits redirected to /view/, already counted by
  *     their view token.
  *   - `GET /api/share/<token>/app/` (request log, anonymous) — a share-link
- *     page load; a referer from another site marks an embed. Bots dropped.
+ *     page load; a referer from another site marks an embed. Bots are kept
+ *     as raw events (uaClass bot) and never counted.
+ *
+ * With `--write` it also writes RAW events (`app_usage_events`, `backfill:
+ * true`): every open above, the dropped ones kept with `throttled: true`.
+ * Anonymous events carry `anonId: null` — the logs only have an IP, which is
+ * never turned into an id — and `sessionId: null`.
  *
  * Nothing in the logs measures time on page, so backfilled rows carry
  * activeSeconds 0. Writes are idempotent (`$max` / `$min`), so a re-run, or
@@ -45,9 +51,14 @@ import {
   AppIndexEntry,
   AppProject,
   AppUsageDaily,
+  AppUsageEvent,
+  type AppUsageReferrerKind,
+  type AppUsageUaClass,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import {
+  classifyReferrer,
+  classifyUserAgent,
   computeAppUsageStats,
   parseCommitAuthors,
   utcDay,
@@ -57,9 +68,6 @@ import {
 
 const BURST_MS = 3_000;
 const DEDUPE_MS = 10 * 60 * 1000;
-const BOT_UA =
-  /bot|crawl|spider|slurp|preview|facebookexternalhit|embedly|whatsapp|curl|wget|python|go-http|headless/i;
-
 interface Args {
   days: number;
   before: Date;
@@ -152,6 +160,13 @@ interface RawOpen {
   source: AppUsageSource;
   /** Anonymous: the client, for counting distinct share viewers. */
   client?: string;
+  uaClass: AppUsageUaClass;
+  referrerKind?: AppUsageReferrerKind;
+  /**
+   * A tab-restore burst or a repeat within DEDUPE_MS: kept as a raw event,
+   * flagged, and left out of the rollup — the same rule live tracking uses.
+   */
+  throttled?: boolean;
 }
 
 const APP_PATH =
@@ -241,6 +256,8 @@ async function main() {
       userId: p.userId,
       at: new Date(p.timestamp ?? e.timestamp),
       source: "app",
+      // The stdout http log carries no User-Agent.
+      uaClass: "unknown",
     });
   }
 
@@ -253,6 +270,8 @@ async function main() {
     byUser.set(o.userId!, list);
   }
   const kept: RawOpen[] = [];
+  // Opens the rollup leaves out but the raw event log keeps, flagged.
+  const flagged: RawOpen[] = [];
   for (const list of byUser.values()) {
     let i = 0;
     while (i < list.length) {
@@ -265,8 +284,12 @@ async function main() {
       }
       const group = list.slice(i, j);
       const distinct = new Set(group.map(g => g.ref));
-      if (distinct.size >= 2) counters.restoreBursts += group.length;
-      else kept.push(...group);
+      if (distinct.size >= 2) {
+        counters.restoreBursts += group.length;
+        flagged.push(...group.map(g => ({ ...g, throttled: true })));
+      } else {
+        kept.push(...group);
+      }
       i = j;
     }
   }
@@ -279,6 +302,7 @@ async function main() {
     const last = lastKept.get(k);
     if (last !== undefined && o.at.getTime() - last < DEDUPE_MS) {
       counters.deduped++;
+      flagged.push({ ...o, throttled: true });
       continue;
     }
     lastKept.set(k, o.at.getTime());
@@ -302,10 +326,6 @@ async function main() {
   )) {
     const req = e.httpRequest;
     if (!req?.requestUrl || req.status !== 200) continue;
-    if (BOT_UA.test(req.userAgent ?? "")) {
-      counters.shareBots++;
-      continue;
-    }
     const token = new URL(req.requestUrl).pathname.match(
       /^\/api\/share\/([^/]+)\/app\/?$/,
     )?.[1];
@@ -316,31 +336,38 @@ async function main() {
     }
     const workspaceId = row.workspaceId.toString();
     if (args.workspaceId && workspaceId !== args.workspaceId) continue;
-    const client = `${(req.remoteIp ?? "").split(",")[0]}|${req.userAgent ?? ""}`;
     const at = new Date(e.timestamp);
-    const k = `${client}:${token}`;
-    const last = lastShare.get(k);
-    if (last !== undefined && at.getTime() - last < DEDUPE_MS) {
-      counters.deduped++;
-      continue;
-    }
-    lastShare.set(k, at.getTime());
-    let referHost: string;
-    try {
-      referHost = req.referer ? new URL(req.referer).host : "";
-    } catch {
-      referHost = "";
-    }
-    const external = !!referHost && !/(^|\.)mako\.ai$/.test(referHost);
-    counters.shares++;
-    opens.push({
+    const referrerKind = classifyReferrer(req.referer, "app.mako.ai");
+    const base = {
       workspaceId,
       ref: row._id.toString(),
       userId: null,
       at,
-      source: external ? "embed" : "share",
-      client,
-    });
+      // A frame on another site is an embed; the logs cannot say better.
+      source: (referrerKind === "external"
+        ? "embed"
+        : "share") as AppUsageSource,
+      uaClass: classifyUserAgent(req.userAgent),
+      referrerKind,
+    };
+    if (base.uaClass === "bot") {
+      counters.shareBots++;
+      flagged.push(base);
+      continue;
+    }
+    // The IP+UA pair only dedupes reloads here; it never becomes an id —
+    // backfilled anonymous viewers stay anonId null (indistinguishable).
+    const client = `${(req.remoteIp ?? "").split(",")[0]}|${req.userAgent ?? ""}`;
+    const k = `${client}:${token}`;
+    const last = lastShare.get(k);
+    if (last !== undefined && at.getTime() - last < DEDUPE_MS) {
+      counters.deduped++;
+      flagged.push({ ...base, throttled: true });
+      continue;
+    }
+    lastShare.set(k, at.getTime());
+    counters.shares++;
+    opens.push({ ...base, client });
   }
 
   // ── Resolve refs → app ids via the index ──
@@ -414,8 +441,36 @@ async function main() {
     if (o.at > row.lastAt) row.lastAt = o.at;
   }
 
+  // Raw events: every open the logs show, counted or not, flagged as the
+  // live log flags them. Anonymous ones have no id — an IP is not a person.
+  const events: Array<Record<string, unknown>> = [];
+  for (const o of [...opens, ...flagged]) {
+    const appId = resolve(o.workspaceId, o.ref);
+    if (!appId) continue;
+    events.push({
+      workspaceId: new Types.ObjectId(o.workspaceId),
+      appId,
+      at: o.at,
+      kind: "open",
+      source: o.source,
+      userId: o.userId,
+      anonId: null,
+      sessionId: null,
+      ...(o.referrerKind ? { referrerKind: o.referrerKind } : {}),
+      uaClass: o.uaClass,
+      ...(o.throttled ? { throttled: true } : {}),
+      backfill: true,
+    });
+  }
+  events.sort((a, b) => (a.at as Date).getTime() - (b.at as Date).getTime());
+
   console.log("\nCounters:", counters);
   console.log(`Daily rows: ${daily.size}`);
+  const flaggedEvents = events.filter(e => e.throttled).length;
+  const botEvents = events.filter(e => e.uaClass === "bot").length;
+  console.log(
+    `Raw events: ${events.length} (${events.length - flaggedEvents - botEvents} counted, ${flaggedEvents} flagged throttled, ${botEvents} bots)`,
+  );
 
   // ── Summary per workspace ──
   const projects = await AppProject.find({
@@ -558,6 +613,23 @@ async function main() {
       await AppUsageDaily.bulkWrite(ops.slice(i, i + 1000), { ordered: false });
     }
     console.log(`\nWrote ${ops.length} daily rows.`);
+    // Raw events are replaced, not merged: drop this window's earlier
+    // backfill (never live events) and insert the fresh reconstruction, so
+    // a re-run is idempotent.
+    const since = new Date(args.before.getTime() - args.days * 86_400_000);
+    const removed = await AppUsageEvent.deleteMany({
+      backfill: true,
+      workspaceId: { $in: workspaceIds.map(id => new Types.ObjectId(id)) },
+      at: { $gte: since, $lt: args.before },
+    });
+    for (let i = 0; i < events.length; i += 1000) {
+      await AppUsageEvent.insertMany(events.slice(i, i + 1000), {
+        ordered: false,
+      });
+    }
+    console.log(
+      `Replaced ${removed.deletedCount} backfilled events with ${events.length}.`,
+    );
   }
   await mongoose.disconnect();
 }

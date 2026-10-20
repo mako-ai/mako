@@ -5003,9 +5003,12 @@ export const AppDeployCommitStatus = mongoose.model<IAppDeployCommitStatus>(
  * Who looked at which app, rolled up per UTC day (app-usage.service). One row
  * per (workspace, app, viewer, day), bumped with `$inc` upserts, so a viewer
  * who keeps an app open all day is one row, not a row per heartbeat.
- * `userId` is null for anonymous share-link viewers — they collapse into one
- * row per app per day. `appId` is the app identity (manifest id), never its
- * path, so a move keeps the history.
+ * `userId` is a person's id, `anon:<hash>` for an anonymous share-link or
+ * embed viewer carrying Mako's first-party anonymous cookie, or null for an
+ * anonymous viewer nobody can tell apart (backfilled from logs, or a frame
+ * whose cookie could not be set) — those collapse into one row per app per
+ * day. `appId` is the app identity (manifest id), never its path, so a move
+ * keeps the history.
  */
 export interface IAppUsageDaily extends Document {
   workspaceId: Types.ObjectId;
@@ -5060,6 +5063,78 @@ export const AppUsageDaily = mongoose.model<IAppUsageDaily>(
   AppUsageDailySchema,
 );
 
+/**
+ * Every view event, append-only (app-usage.service): the raw log the daily
+ * rollup above is derived from, kept so ranking can be re-derived from
+ * scratch — "opened every day" vs "opened once by mistake" is a question
+ * about events, not counters. Nothing is dropped here: a reload burst the
+ * rollup's throttle refused is kept with `throttled: true`, a bot with
+ * `uaClass: "bot"`. Expires after ~13 months.
+ */
+export type AppUsageUaClass = "desktop" | "mobile" | "bot" | "unknown";
+export type AppUsageReferrerKind = "internal" | "external" | "direct";
+
+export interface IAppUsageEvent extends Document {
+  workspaceId: Types.ObjectId;
+  appId: string;
+  at: Date;
+  kind: "open" | "heartbeat";
+  source: "app" | "share" | "embed";
+  /** Signed-in viewer, else null. */
+  userId: string | null;
+  /** `anon:<hash>` of the first-party anonymous cookie, else null. */
+  anonId: string | null;
+  /** One per view: an open and its heartbeats share it. */
+  sessionId: string | null;
+  referrerKind?: AppUsageReferrerKind | null;
+  uaClass: AppUsageUaClass;
+  /** Refused by the rollup's throttle (a reload burst, a double mount). */
+  throttled?: boolean;
+  /** Reconstructed from request logs by backfill-app-usage.ts. */
+  backfill?: boolean;
+}
+
+/** ~13 months: a year of history plus a month to compare it with. */
+export const APP_USAGE_EVENT_TTL_SECONDS = 400 * 24 * 60 * 60;
+
+const AppUsageEventSchema = new Schema<IAppUsageEvent>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    at: { type: Date, required: true },
+    kind: { type: String, enum: ["open", "heartbeat"], required: true },
+    source: { type: String, enum: ["app", "share", "embed"], required: true },
+    userId: { type: String, default: null },
+    anonId: { type: String, default: null },
+    sessionId: { type: String, default: null },
+    referrerKind: { type: String, enum: ["internal", "external", "direct"] },
+    uaClass: {
+      type: String,
+      enum: ["desktop", "mobile", "bot", "unknown"],
+      required: true,
+    },
+    throttled: { type: Boolean },
+    backfill: { type: Boolean },
+  },
+  { collection: "app_usage_events", versionKey: false },
+);
+
+AppUsageEventSchema.index({ workspaceId: 1, appId: 1, at: 1 });
+AppUsageEventSchema.index({ workspaceId: 1, userId: 1, at: 1 });
+AppUsageEventSchema.index(
+  { at: 1 },
+  { expireAfterSeconds: APP_USAGE_EVENT_TTL_SECONDS },
+);
+
+export const AppUsageEvent = mongoose.model<IAppUsageEvent>(
+  "AppUsageEvent",
+  AppUsageEventSchema,
+);
+
 // ---------------------------------------------------------------------------
 // Apps index — derived from the tree at main, rebuilt on every push
 // ---------------------------------------------------------------------------
@@ -5099,6 +5174,8 @@ export interface IAppIndexEntry extends Document {
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
   /** Tables the app's bindings read (`FROM`/`JOIN`) — search input. */
   tables?: string[];
+  /** Binding names on main — which binding state rows are current. */
+  bindings?: string[];
   /** Who first committed the app's manifest, and when (discovery). */
   authorEmail?: string;
   firstCommitAt?: Date;
@@ -5149,6 +5226,7 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
       default: [],
     },
     tables: { type: [String], default: undefined },
+    bindings: { type: [String], default: undefined },
     authorEmail: { type: String },
     firstCommitAt: { type: Date },
     thumbnail: {

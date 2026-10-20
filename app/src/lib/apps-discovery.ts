@@ -26,6 +26,11 @@ export interface AppUsageStats {
   viewers: number;
   nonAuthorViewers: number;
   viewerDays: number;
+  /** Visit-days by all signed-in viewers, authors included (the card). */
+  allViewerDays?: number;
+  /** Anonymous share-link / embed viewers with a first-party id. */
+  anonViewers?: number;
+  anonViewerDays?: number;
   opens: number;
   activeSeconds: number;
   lastOpenedAt: string | null;
@@ -235,4 +240,29 @@ export function relativeTime(
   if (months < 12) return months === 1 ? "a month ago" : `${months} months ago`;
   const years = Math.round(months / 12);
   return years === 1 ? "a year ago" : `${years} years ago`;
+}
+
+const plural = (n: number, one: string, many: string) =>
+  `${n} ${n === 1 ? one : many}`;
+
+/**
+ * The card's usage figure: visit-days (person-days in the window), which
+ * tells an app opened daily by a few people from one opened once by many —
+ * a count of distinct viewers cannot. Authors' own visits are included
+ * here (the popularity score excludes them) and the tooltip says so.
+ * Anonymous share-link viewers go in the tooltip, not the figure.
+ */
+export function visitSummary(
+  usage: AppUsageStats | undefined,
+  windowDays = 28,
+): { count: number; tooltip: string } | null {
+  if (!usage) return null;
+  const days = usage.allViewerDays ?? usage.viewerDays;
+  const anon = usage.anonViewers ?? 0;
+  if (days <= 0 && anon <= 0) return null;
+  let tooltip = `${plural(days, "visit-day", "visit-days")} by ${plural(usage.viewers, "person", "people")} in the last ${windowDays} days, authors included`;
+  if (anon > 0) {
+    tooltip += ` (+${plural(anon, "anonymous viewer", "anonymous viewers")} via share links)`;
+  }
+  return { count: days, tooltip };
 }

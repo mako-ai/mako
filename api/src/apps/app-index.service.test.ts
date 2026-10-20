@@ -319,6 +319,7 @@ describe("discovery facts", () => {
     const snapshot = await loadAppsIndex(WS);
     const b = snapshot.apps.find(a => a.path === "apps/Sales/CH/b");
     expect(b?.tables).toEqual(["analytics.fct_leads", "dim_agents"]);
+    expect(b?.bindings).toEqual(["leads", "rows"]);
     const d = snapshot.apps.find(a => a.path === "apps/d");
     expect(d?.authorEmail).toBe("laptop@example.com");
     expect(d?.firstCommitAt).toBeTruthy();
@@ -344,6 +345,32 @@ describe("discovery facts", () => {
     // A move is not a new app.
     expect(moved?.firstCommitAt).toBe(firstAt);
     expect(moved?.tables).toEqual([]);
+    expect(moved?.bindings).toEqual(["rows"]);
+
+    // Freshness reads only the bindings the app still has: the deleted
+    // `leads` binding's months-old state row must not age the app.
+    const State = mongoose.model("AppBindingState");
+    const fresh = new Date(Date.now() - 60_000);
+    await State.create([
+      {
+        projectId: new Types.ObjectId(B_ID),
+        name: "rows",
+        lastMaterializedAt: fresh,
+        history: [{ at: fresh, status: "ready" }],
+      },
+      {
+        projectId: new Types.ObjectId(B_ID),
+        name: "leads",
+        lastMaterializedAt: new Date("2026-08-01T00:00:00Z"),
+        history: [{ at: new Date("2026-08-01T00:00:00Z"), status: "error" }],
+      },
+    ]);
+    const discovered = (await listDiscoveryApps(WS, USER, "member")).find(
+      a => a.id === B_ID,
+    );
+    expect(discovered?.dataRefreshedAt).toBe(fresh.toISOString());
+    expect(discovered?.health.bindingErrors).toEqual([]);
+    await State.deleteMany({ projectId: new Types.ObjectId(B_ID) });
   });
 
   it("credits the first human, not the platform commit that created the folder", async () => {

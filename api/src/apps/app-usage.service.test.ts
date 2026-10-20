@@ -5,15 +5,23 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { AppProject, AppUsageDaily } from "../database/workspace-schema";
+import {
+  AppProject,
+  AppUsageDaily,
+  AppUsageEvent,
+} from "../database/workspace-schema";
 import {
   acceptUsageBeat,
+  anonIdFromCookie,
+  classifyReferrer,
+  classifyUserAgent,
   computeAppUsageStats,
   getAppUsageStats,
   getRecentlyViewedApps,
   parseCommitAuthors,
   recencyWeight,
   recordAppUsage,
+  recordServedOpen,
   resetUsageThrottle,
   servedOpenSource,
   type AppUsageRollup,
@@ -44,6 +52,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await AppUsageDaily.deleteMany({});
+  await AppUsageEvent.deleteMany({});
   await AppProject.deleteMany({});
   resetUsageThrottle();
 });
@@ -380,5 +389,255 @@ describe("throttle and served opens", () => {
     expect(servedOpenSource("script", "text/javascript", "share")).toBeNull();
     expect(servedOpenSource("empty", "text/html", "share")).toBeNull();
     expect(servedOpenSource(undefined, "text/html", "share")).toBeNull();
+  });
+});
+
+describe("raw event log", () => {
+  it("keeps every event, with what ranking needs later", async () => {
+    await recordAppUsage({
+      workspaceId: WS,
+      appId: APP,
+      userId: "u1",
+      kind: "open",
+      source: "app",
+      sessionId: "s1",
+      referrerKind: "external",
+      uaClass: "desktop",
+      at: at("2026-10-20T09:00:00Z"),
+    });
+    await recordAppUsage({
+      workspaceId: WS,
+      appId: APP,
+      userId: "u1",
+      kind: "heartbeat",
+      source: "app",
+      sessionId: "s1",
+      uaClass: "desktop",
+      at: at("2026-10-20T09:01:00Z"),
+    });
+    const events = await AppUsageEvent.find({}).sort({ at: 1 }).lean();
+    expect(events.map(e => e.kind)).toEqual(["open", "heartbeat"]);
+    expect(events[0]).toMatchObject({
+      userId: "u1",
+      anonId: null,
+      sessionId: "s1",
+      referrerKind: "external",
+      uaClass: "desktop",
+    });
+    expect(events.every(e => !e.throttled)).toBe(true);
+  });
+
+  it("logs a throttled open flagged, and leaves it out of the rollup", async () => {
+    const base = {
+      workspaceId: WS,
+      appId: APP,
+      userId: "u1",
+      kind: "open",
+      source: "app",
+    } as const;
+    await recordAppUsage({ ...base, at: NOW });
+    await recordAppUsage({ ...base, at: NOW, throttled: true });
+    const events = await AppUsageEvent.find({}).lean();
+    expect(events).toHaveLength(2);
+    expect(events.filter(e => e.throttled)).toHaveLength(1);
+    const [row] = await AppUsageDaily.find({}).lean();
+    expect(row.opens).toBe(1);
+  });
+
+  it("logs bots but never counts them", async () => {
+    await recordAppUsage({
+      workspaceId: WS,
+      appId: APP,
+      userId: null,
+      anonId: anonIdFromCookie("abcdefghijklmnopqrstuv"),
+      kind: "open",
+      source: "share",
+      uaClass: "bot",
+      at: NOW,
+    });
+    expect(await AppUsageEvent.countDocuments({ uaClass: "bot" })).toBe(1);
+    expect(await AppUsageDaily.countDocuments({})).toBe(0);
+  });
+
+  it("expires events after about 13 months", async () => {
+    await AppUsageEvent.syncIndexes();
+    const ttl = (await AppUsageEvent.collection.indexes()).find(
+      i => i.expireAfterSeconds !== undefined,
+    );
+    expect(ttl?.key).toEqual({ at: 1 });
+    expect(ttl?.expireAfterSeconds).toBe(400 * 24 * 60 * 60);
+  });
+});
+
+describe("anonymous viewers", () => {
+  const anonA = anonIdFromCookie("cookie-a-0123456789abcdef");
+  const anonB = anonIdFromCookie("cookie-b-0123456789abcdef");
+
+  it("hashes the cookie under an anon: prefix, never storing it", () => {
+    expect(anonA).toMatch(/^anon:[A-Za-z0-9_-]{22}$/);
+    expect(anonA).not.toContain("cookie-a");
+    expect(anonIdFromCookie("cookie-a-0123456789abcdef")).toBe(anonA);
+    expect(anonB).not.toBe(anonA);
+  });
+
+  it("are counted apart from people, and never in the score", async () => {
+    const open = (anonId: string | null, iso: string) =>
+      recordAppUsage({
+        workspaceId: WS,
+        appId: APP,
+        userId: null,
+        anonId,
+        kind: "open",
+        source: "share",
+        at: at(iso),
+      });
+    await open(anonA, "2026-10-19T08:00:00Z");
+    await open(anonA, "2026-10-20T08:00:00Z");
+    await open(anonB, "2026-10-20T09:00:00Z");
+    await open(null, "2026-10-20T10:00:00Z");
+    await recordAppUsage({
+      workspaceId: WS,
+      appId: APP,
+      userId: "u1",
+      kind: "open",
+      source: "app",
+      at: at("2026-10-20T11:00:00Z"),
+    });
+    const stats = must((await getAppUsageStats(WS, { now: NOW })).get(APP));
+    expect(stats).toMatchObject({
+      viewers: 1,
+      nonAuthorViewers: 1,
+      viewerDays: 1,
+      allViewerDays: 1,
+      anonViewers: 2,
+      anonViewerDays: 3,
+      opens: 5,
+      score: 1,
+    });
+    expect(stats.lastNonAuthorOpenedAt).toBe("2026-10-20T11:00:00.000Z");
+  });
+
+  it("include the authors' own days in allViewerDays only", () => {
+    const stats = must(
+      computeAppUsageStats(
+        [
+          {
+            appId: APP,
+            userId: "author",
+            days: ["2026-10-19", "2026-10-20"],
+            opens: 2,
+            activeSeconds: 0,
+            lastAt: NOW,
+          },
+        ],
+        new Map([[APP, new Set(["author"])]]),
+        NOW,
+      ).get(APP),
+    );
+    expect(stats).toMatchObject({
+      viewers: 1,
+      allViewerDays: 2,
+      viewerDays: 0,
+    });
+  });
+});
+
+describe("served opens", () => {
+  it("records a share page load with its anon id, referrer and client", async () => {
+    const anonId = anonIdFromCookie("served-cookie-0123456789");
+    const served = {
+      workspaceId: WS,
+      appId: APP,
+      userId: null,
+      anonId,
+      viewerKey: "anon:served-cookie",
+      fetchDest: "document",
+      contentType: "text/html",
+      pageSource: "share",
+    } as const;
+    const counted = recordServedOpen({
+      ...served,
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148",
+      referer: "https://app.slack.com/client/T1/C1",
+      host: "app.mako.ai",
+    });
+    expect(counted).toBe(true);
+    await expect
+      .poll(() => AppUsageEvent.countDocuments({}), { timeout: 2000 })
+      .toBe(1);
+    const event = await AppUsageEvent.findOne({}).lean();
+    expect(event).toMatchObject({
+      source: "share",
+      userId: null,
+      anonId,
+      uaClass: "mobile",
+      referrerKind: "external",
+    });
+    expect(event?.sessionId).toBeTruthy();
+    // A reload a second later is logged, flagged, and not double counted.
+    recordServedOpen(served);
+    await expect
+      .poll(() => AppUsageEvent.countDocuments({ throttled: true }), {
+        timeout: 2000,
+      })
+      .toBe(1);
+    const row = await AppUsageDaily.findOne({}).lean();
+    expect(row?.opens).toBe(1);
+    expect(row?.userId).toBe(anonId);
+  });
+
+  it("ignores the bundle's own requests", () => {
+    expect(
+      recordServedOpen({
+        workspaceId: WS,
+        appId: APP,
+        userId: null,
+        viewerKey: "x",
+        fetchDest: "script",
+        contentType: "text/javascript",
+        pageSource: "share",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("classifiers", () => {
+  it("tells bots, phones and desktops apart", () => {
+    expect(
+      classifyUserAgent(
+        "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+      ),
+    ).toBe("bot");
+    expect(classifyUserAgent("facebookexternalhit/1.1")).toBe("bot");
+    expect(classifyUserAgent("Mozilla/5.0 (compatible; Googlebot/2.1)")).toBe(
+      "bot",
+    );
+    expect(classifyUserAgent("curl/8.4.0")).toBe("bot");
+    expect(
+      classifyUserAgent(
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/130 Mobile Safari/537.36",
+      ),
+    ).toBe("mobile");
+    expect(
+      classifyUserAgent(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/154.0.0.0 Safari/537.36",
+      ),
+    ).toBe("desktop");
+    expect(classifyUserAgent(undefined)).toBe("unknown");
+  });
+
+  it("tells our own pages from other sites and from nothing", () => {
+    expect(classifyReferrer(undefined, "app.mako.ai")).toBe("direct");
+    expect(classifyReferrer("https://app.mako.ai/share/x", "app.mako.ai")).toBe(
+      "internal",
+    );
+    expect(classifyReferrer("https://pr-12.mako.ai/view/w/a", "run.app")).toBe(
+      "internal",
+    );
+    expect(classifyReferrer("https://www.notion.so/page", "app.mako.ai")).toBe(
+      "external",
+    );
+    expect(classifyReferrer("not a url", "app.mako.ai")).toBe("direct");
   });
 });

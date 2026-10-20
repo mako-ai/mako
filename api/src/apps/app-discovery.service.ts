@@ -135,7 +135,14 @@ export async function listDiscoveryApps(
   return visible.map(folder => {
     const state = stateById.get(folder.appId);
     const ownerId = ownerOf(folder, state);
-    const bindings = bindingsByApp.get(folder.appId) ?? [];
+    // Only the bindings the app HAS on main. State rows outlive the files
+    // they describe: a renamed or deleted binding leaves its row (and its
+    // last build date) behind forever, and the oldest of those made a
+    // dashboard refreshed every 15 minutes read "2 months ago".
+    const current = new Set(folder.bindings);
+    const bindings = (bindingsByApp.get(folder.appId) ?? []).filter(b =>
+      current.has(b.name),
+    );
     let oldest: Date | null = null;
     for (const b of bindings) {
       if (!b.lastMaterializedAt) continue;

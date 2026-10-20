@@ -26,7 +26,12 @@ import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
-import { recordServedOpen } from "../apps/app-usage.service";
+import {
+  anonIdFromCookie,
+  classifyUserAgent,
+  recordServedOpen,
+  servedOpenSource,
+} from "../apps/app-usage.service";
 
 const logger = loggers.api("public-share");
 
@@ -340,6 +345,70 @@ app.openapi(
   },
 );
 
+// ── Anonymous viewer id (usage) ──
+//
+// A share link's viewers have no account, and an IP is neither one person
+// (an office NAT) nor stable (a phone). So the first view of any shared app
+// gets a random first-party id in a long-lived cookie, and usage stores only
+// a prefixed hash of it (`anon:<hash>`, see anonIdFromCookie) — never the IP,
+// never linked to one. `SameSite=None; Secure` so the same viewer is
+// recognised when the app is framed on another site, where browsers that
+// block third-party cookies simply leave it unrecognised.
+
+const ANON_COOKIE = "mako_viewer";
+const ANON_COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
+const ANON_COOKIE_VALUE = /^[A-Za-z0-9_-]{16,64}$/;
+
+export function recordSharedAppOpen(
+  c: Context,
+  response: Response,
+  workspaceId: string,
+  appId: string,
+): void {
+  const fetchDest = c.req.header("sec-fetch-dest");
+  const contentType = response.headers.get("content-type");
+  if (!servedOpenSource(fetchDest, contentType, "share")) return;
+  const userAgent = c.req.header("user-agent");
+  const isBot = classifyUserAgent(userAgent) === "bot";
+  const existing = getCookie(c, ANON_COOKIE);
+  let cookie = existing && ANON_COOKIE_VALUE.test(existing) ? existing : null;
+  let anonId = cookie ? anonIdFromCookie(cookie) : null;
+  if (!cookie) {
+    cookie = crypto.randomBytes(18).toString("base64url");
+    // A top-level page keeps the cookie it is given, so this view is that
+    // viewer's first. A frame may be refused it (third-party cookies), and
+    // an id that never comes back would count one viewer per load — so a
+    // frame's first view is recorded as not-yet-identifiable instead.
+    if (fetchDest === "document") anonId = anonIdFromCookie(cookie);
+    if (!isBot) {
+      const secure = process.env.NODE_ENV === "production";
+      response.headers.append(
+        "Set-Cookie",
+        [
+          `${ANON_COOKIE}=${cookie}`,
+          "Path=/api/share",
+          `Max-Age=${ANON_COOKIE_MAX_AGE_S}`,
+          "HttpOnly",
+          secure ? "SameSite=None; Secure" : "SameSite=Lax",
+        ].join("; "),
+      );
+    }
+  }
+  recordServedOpen({
+    workspaceId,
+    appId,
+    userId: null,
+    anonId,
+    viewerKey: `anon:${cookie}`,
+    fetchDest,
+    contentType,
+    pageSource: "share",
+    userAgent,
+    referer: c.req.header("referer"),
+    host: c.req.header("host"),
+  });
+}
+
 /**
  * Serve a shared Apps deployment's files (§13).
  *
@@ -383,15 +452,7 @@ async function serveSharedApp(c: Context): Promise<Response> {
   });
   if (response) {
     // The share page navigates straight here, so this page load IS the view.
-    recordServedOpen({
-      workspaceId: project.workspaceId.toString(),
-      appId: projectId,
-      userId: null,
-      viewerKey: `ip:${clientIp(c)}`,
-      fetchDest: c.req.header("sec-fetch-dest"),
-      contentType: response.headers.get("content-type"),
-      pageSource: "share",
-    });
+    recordSharedAppOpen(c, response, project.workspaceId.toString(), projectId);
   }
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }

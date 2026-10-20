@@ -55,7 +55,9 @@ const logger = loggers.api("apps-index");
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 // 2: rows carry `tables` (search), who first added the app and its
 // thumbnail (discovery).
-const INDEX_SCHEMA_VERSION = 2;
+// 3: rows carry `bindings` (the names on main), so freshness ignores state
+// rows left behind by deleted or renamed bindings.
+const INDEX_SCHEMA_VERSION = 3;
 
 export interface AppSchedule {
   binding: string;
@@ -81,6 +83,8 @@ export interface AppIndexRow {
   hasManifestId: boolean;
   duplicateOf?: string;
   schedules: AppSchedule[];
+  /** Binding names on main (`bindings/<name>.sql`). */
+  bindings: string[];
   /** Tables the app's bindings read (`FROM`/`JOIN`), for search. */
   tables: string[];
   /**
@@ -622,6 +626,7 @@ function rowToIndex(row: Pick<IAppIndexEntry, keyof AppIndexRow>): AppIndexRow {
       ...(s.timezone ? { timezone: s.timezone } : {}),
     })),
     tables: row.tables ?? [],
+    bindings: row.bindings ?? [],
     authorEmail: row.authorEmail ?? undefined,
     firstCommitAt: row.firstCommitAt
       ? new Date(row.firstCommitAt).toISOString()
@@ -901,6 +906,7 @@ async function syncNow(
       duplicateOf: identity.duplicateOf,
       schedules: read.schedules.get(app.path) ?? [],
       tables: read.tables.get(app.path) ?? [],
+      bindings: [...app.bindingBlobs.keys()].sort(),
       authorEmail: first?.email || undefined,
       firstCommitAt: first?.at,
       thumbnail: app.thumbnail,
@@ -937,6 +943,7 @@ async function syncNow(
               duplicateOf: row.duplicateOf ?? null,
               schedules: row.schedules,
               tables: row.tables,
+              bindings: row.bindings,
               authorEmail: row.authorEmail ?? null,
               firstCommitAt: row.firstCommitAt
                 ? new Date(row.firstCommitAt)

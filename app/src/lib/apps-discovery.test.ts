@@ -7,6 +7,7 @@ import {
   popularApps,
   recentlyViewedApps,
   relativeTime,
+  visitSummary,
   type AppUsageStats,
   type DiscoveryApp,
 } from "./apps-discovery";
@@ -150,5 +151,37 @@ describe("presentation", () => {
     expect(relativeTime(new Date(NOW - DAY).toISOString(), NOW)).toBe(
       "yesterday",
     );
+  });
+
+  it("counts visit-days, authors included, with anonymous viewers aside", () => {
+    expect(visitSummary(undefined)).toBeNull();
+    expect(
+      visitSummary({
+        ...stats("a", 0),
+        viewers: 0,
+        viewerDays: 0,
+        allViewerDays: 0,
+      }),
+    ).toBeNull();
+    expect(
+      visitSummary({
+        ...stats("a", 3),
+        viewers: 14,
+        viewerDays: 40,
+        allViewerDays: 52,
+        anonViewers: 3,
+      }),
+    ).toEqual({
+      count: 52,
+      tooltip:
+        "52 visit-days by 14 people in the last 28 days, authors included (+3 anonymous viewers via share links)",
+    });
+    // An older API without allViewerDays still shows something sensible.
+    expect(
+      visitSummary({ ...stats("a", 1), viewers: 1, viewerDays: 1 }),
+    ).toEqual({
+      count: 1,
+      tooltip: "1 visit-day by 1 person in the last 28 days, authors included",
+    });
   });
 });

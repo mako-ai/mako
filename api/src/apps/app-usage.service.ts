@@ -8,6 +8,18 @@
  * traffic. The in-editor dev preview never reports: that is the author
  * building, not someone using the app.
  *
+ * Every event is ALSO appended, raw, to `app_usage_events` (13-month TTL):
+ * who, when, which view (`sessionId`), from where (`referrerKind`), on what
+ * (`uaClass`). The rollup is one ranking's input; the log lets the next
+ * ranking be computed from scratch. Nothing is dropped from it — a reload
+ * burst the throttle keeps out of the rollup is logged `throttled: true`, a
+ * bot `uaClass: "bot"`.
+ *
+ * Anonymous share-link and embed viewers are told apart by a first-party
+ * cookie, stored only as `anon:<hash>` (anonIdFromCookie) — never an IP —
+ * and counted in their own fields (anonViewers, anonViewerDays), never in
+ * the signed-in numbers or the score.
+ *
  * Popularity excludes the app's AUTHORS (see getAppAuthors): the owner on
  * the app's row, the owner of the personal tree it lives in, and whoever
  * committed to its folder on main — minus sweeping commits that touch many
@@ -19,8 +31,15 @@
  * in the window, each day weighted 0.5^(age_days / 14). Daily use by many
  * beats daily use by one, which beats one look by many.
  */
+import { createHash, randomUUID } from "node:crypto";
 import { Types } from "mongoose";
-import { AppProject, AppUsageDaily } from "../database/workspace-schema";
+import {
+  AppProject,
+  AppUsageDaily,
+  AppUsageEvent,
+  type AppUsageReferrerKind,
+  type AppUsageUaClass,
+} from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { loggers } from "../logging";
 import { loadAppsIndex } from "./app-index.service";
@@ -74,33 +93,126 @@ export function recencyWeight(day: string, today: string): number {
 // Recording
 // ---------------------------------------------------------------------------
 
-export async function recordAppUsage(input: {
+/** Link unfurlers, crawlers and scripted clients: never a viewer. */
+const BOT_UA =
+  /bot\b|bot\/|crawl|spider|slurp|preview|unfurl|facebookexternalhit|embedly|whatsapp|telegram|discord|skype|curl\/|wget|python|go-http|java\/|okhttp|axios|node-fetch|headless|lighthouse|pingdom|uptime/i;
+const MOBILE_UA = /mobi|android|iphone|ipad|ipod/i;
+
+/** What kind of client sent a request, from its User-Agent. */
+export function classifyUserAgent(
+  ua: string | null | undefined,
+): AppUsageUaClass {
+  if (!ua) return "unknown";
+  if (BOT_UA.test(ua)) return "bot";
+  return MOBILE_UA.test(ua) ? "mobile" : "desktop";
+}
+
+/**
+ * Where a page load came from: our own pages (`internal`), another site
+ * (`external` — a link in Slack's web client, an embedding page), or
+ * nowhere (`direct` — a bookmark, a desktop app, a stripped referrer).
+ */
+export function classifyReferrer(
+  referer: string | null | undefined,
+  ownHost: string | null | undefined,
+): AppUsageReferrerKind {
+  if (!referer) return "direct";
+  try {
+    const host = new URL(referer).host;
+    if (ownHost && host === ownHost) return "internal";
+    return /(^|\.)mako\.ai$/.test(host) ? "internal" : "external";
+  } catch {
+    return "direct";
+  }
+}
+
+const ANON_PREFIX = "anon:";
+
+/**
+ * The stored form of an anonymous viewer's cookie: a prefixed hash, so the
+ * raw cookie value never sits in the database and the id cannot be confused
+ * with a user id. Never derived from an IP.
+ */
+export function anonIdFromCookie(cookie: string): string {
+  return `${ANON_PREFIX}${createHash("sha256").update(cookie).digest("base64url").slice(0, 22)}`;
+}
+
+export function isAnonViewerId(userId: string | null): userId is string {
+  return !!userId && userId.startsWith(ANON_PREFIX);
+}
+
+export interface RecordAppUsageInput {
   workspaceId: string;
   appId: string;
+  /** Signed-in viewer; null for anonymous ones (see anonId). */
   userId: string | null;
   kind: "open" | "heartbeat";
   source: AppUsageSource;
   at?: Date;
-}): Promise<void> {
+  /** `anon:<hash>` (anonIdFromCookie) for an anonymous viewer we can tell apart. */
+  anonId?: string | null;
+  /** The view this event belongs to; an open and its heartbeats share it. */
+  sessionId?: string | null;
+  referrerKind?: AppUsageReferrerKind | null;
+  uaClass?: AppUsageUaClass;
+  /**
+   * The throttle refused it (a reload burst, a double mount): kept in the
+   * event log, flagged, and left out of the rollup counters.
+   */
+  throttled?: boolean;
+}
+
+/**
+ * Record one view event: always into the raw log (`app_usage_events`), and —
+ * unless it was throttled or a bot — into the daily rollup. Anonymous
+ * viewers with an id roll up under `userId: "anon:<hash>"`, so the rollup's
+ * unique key keeps telling them apart without a schema change; those without
+ * one share the collapsed `null` row.
+ */
+export async function recordAppUsage(
+  input: RecordAppUsageInput,
+): Promise<void> {
   const at = input.at ?? new Date();
+  const uaClass = input.uaClass ?? "unknown";
+  const anonId = input.userId ? null : (input.anonId ?? null);
+  const event = AppUsageEvent.create({
+    workspaceId: new Types.ObjectId(input.workspaceId),
+    appId: input.appId,
+    at,
+    kind: input.kind,
+    source: input.source,
+    userId: input.userId,
+    anonId,
+    sessionId: input.sessionId ?? null,
+    ...(input.referrerKind ? { referrerKind: input.referrerKind } : {}),
+    uaClass,
+    ...(input.throttled ? { throttled: true } : {}),
+  });
+  if (input.throttled || uaClass === "bot") {
+    await event;
+    return;
+  }
   const inc: Record<string, number> =
     input.kind === "open"
       ? { opens: 1, [`sources.${input.source}`]: 1 }
       : { activeSeconds: HEARTBEAT_SECONDS };
-  await AppUsageDaily.updateOne(
-    {
-      workspaceId: new Types.ObjectId(input.workspaceId),
-      appId: input.appId,
-      userId: input.userId,
-      day: utcDay(at),
-    },
-    {
-      $inc: inc,
-      $min: { firstAt: at },
-      $max: { lastAt: at },
-    },
-    { upsert: true },
-  );
+  await Promise.all([
+    event,
+    AppUsageDaily.updateOne(
+      {
+        workspaceId: new Types.ObjectId(input.workspaceId),
+        appId: input.appId,
+        userId: input.userId ?? anonId,
+        day: utcDay(at),
+      },
+      {
+        $inc: inc,
+        $min: { firstAt: at },
+        $max: { lastAt: at },
+      },
+      { upsert: true },
+    ),
+  ]);
 }
 
 /**
@@ -153,36 +265,57 @@ export function servedOpenSource(
   return null;
 }
 
-/** Record a served open without holding up the response, or failing it. */
+/**
+ * Record a served open without holding up the response, or failing it.
+ * Returns whether it counted as an open at all (an HTML page or frame).
+ */
 export function recordServedOpen(input: {
   workspaceId: string;
   appId: string;
   userId: string | null;
-  /** Who to throttle by: the user, or the client IP for anonymous views. */
+  /**
+   * Anonymous viewers: the `anon:<hash>` id, or null when this request
+   * cannot be told apart from others (a frame whose cookie may not stick).
+   */
+  anonId?: string | null;
+  /**
+   * Who to throttle by: the user, or the anonymous cookie (even one minted
+   * on this very request). Never an IP.
+   */
   viewerKey: string;
   fetchDest: string | undefined;
   contentType: string | null | undefined;
   pageSource: "app" | "share";
-}): void {
+  userAgent?: string | null;
+  referer?: string | null;
+  host?: string | null;
+}): boolean {
   const source = servedOpenSource(
     input.fetchDest,
     input.contentType,
     input.pageSource,
   );
-  if (!source) return;
-  if (!acceptUsageBeat(`${input.viewerKey}:${input.appId}`, "open")) return;
+  if (!source) return false;
+  const accepted = acceptUsageBeat(`${input.viewerKey}:${input.appId}`, "open");
   recordAppUsage({
     workspaceId: input.workspaceId,
     appId: input.appId,
     userId: input.userId,
+    anonId: input.anonId ?? null,
     kind: "open",
     source,
+    // A served page has no heartbeats to attach; the open is its own view.
+    sessionId: randomUUID(),
+    referrerKind: classifyReferrer(input.referer, input.host),
+    uaClass: classifyUserAgent(input.userAgent),
+    throttled: !accepted,
   }).catch(error => {
     logger.warn("Could not record an app open", {
       appId: input.appId,
       error: error instanceof Error ? error.message : String(error),
     });
   });
+  return true;
 }
 
 /** Forget the throttle (tests). */
@@ -339,6 +472,15 @@ export interface AppUsageStats {
   nonAuthorViewers: number;
   /** Σ over non-author viewers of their distinct active days. */
   viewerDays: number;
+  /**
+   * Σ over ALL signed-in viewers, authors included, of their distinct
+   * active days — "visit-days by people", what the app card shows.
+   */
+  allViewerDays: number;
+  /** Distinct anonymous viewers (share links, embeds) with a first-party id. */
+  anonViewers: number;
+  /** Σ over those anonymous viewers of their distinct active days. */
+  anonViewerDays: number;
   /** All opens in the window, anyone's (authors and share links included). */
   opens: number;
   activeSeconds: number;
@@ -365,6 +507,9 @@ export function emptyAppUsageStats(appId: string): AppUsageStats {
     viewers: 0,
     nonAuthorViewers: 0,
     viewerDays: 0,
+    allViewerDays: 0,
+    anonViewers: 0,
+    anonViewerDays: 0,
     opens: 0,
     activeSeconds: 0,
     lastOpenedAt: null,
@@ -393,12 +538,20 @@ export function computeAppUsageStats(
     if (!isAuthor) {
       s.lastNonAuthorOpenedAt = latest(s.lastNonAuthorOpenedAt, r.lastAt);
     }
-    // Anonymous share viewers are one collapsed row per day: activity, but
-    // no viewer to count.
+    // Anonymous viewers with no id are one collapsed row per day: activity,
+    // but no viewer to count.
     if (!r.userId) continue;
-    s.viewers += 1;
-    if (isAuthor) continue;
     const days = new Set(r.days);
+    // Anonymous viewers with an id are counted apart, so the signed-in
+    // numbers — and the score — stay about people in the workspace.
+    if (isAnonViewerId(r.userId)) {
+      s.anonViewers += 1;
+      s.anonViewerDays += days.size;
+      continue;
+    }
+    s.viewers += 1;
+    s.allViewerDays += days.size;
+    if (isAuthor) continue;
     s.nonAuthorViewers += 1;
     s.viewerDays += days.size;
     for (const day of days) s.score += recencyWeight(day, today);

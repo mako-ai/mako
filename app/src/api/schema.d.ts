@@ -3591,7 +3591,7 @@ export interface paths {
         put?: never;
         /**
          * Report a view of the published app
-         * @description Sent by Mako's own app views: `open` once per view, `heartbeat` every 60 s while the page is visible (each worth 60 active seconds). Throttled per viewer and app (429). API keys without a user are not viewers and are ignored. Answers 204.
+         * @description Sent by Mako's own app views: `open` once per view, `heartbeat` every 60 s while the page is visible (each worth 60 active seconds), both carrying the view's `sessionId`. Every accepted report lands in the raw event log; a repeat open inside the throttle window is logged flagged `throttled` and left out of the daily counters, a heartbeat flood is refused (429). API keys without a user are not viewers and are ignored. Answers 204.
          */
         post: operations["post_api_workspaces_workspaceId_apps_id_usage"];
         delete?: never;
@@ -17452,6 +17452,9 @@ export interface operations {
                      * @enum {string}
                      */
                     source?: "app" | "share" | "embed";
+                    sessionId?: string;
+                    /** @enum {string} */
+                    referrerKind?: "internal" | "external" | "direct";
                 };
             };
         };

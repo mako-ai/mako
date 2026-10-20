@@ -26,10 +26,13 @@ vi.mock("../auth/unified-auth.middleware", () => ({
 
 import { createRouter } from "../openapi/core";
 import { appsRoutes } from "../routes/apps";
-import { publicShareRoutes } from "../routes/public-share";
+import { publicShareRoutes, recordSharedAppOpen } from "../routes/public-share";
+import { anonIdFromCookie, resetUsageThrottle } from "./app-usage.service";
 import { User } from "../database/schema";
 import {
   AppProject,
+  AppUsageDaily,
+  AppUsageEvent,
   Workspace,
   WorkspaceMember,
   type IAppProject,
@@ -210,5 +213,73 @@ describe("app sharing authorization", () => {
       (await manage("public-share", "POST", { password: "test-password" }))
         .status,
     ).toBe(403);
+  });
+});
+
+describe("anonymous share viewers (usage)", () => {
+  // The share route's open recording, on a stand-in for the served entry:
+  // the real one needs a built deployment in the artifact store.
+  const APP_ID = new Types.ObjectId().toString();
+  const probe = createRouter();
+  probe.get("/api/share/t/app/", c => {
+    const response = new Response("<!doctype html>", {
+      headers: { "Content-Type": "text/html" },
+    });
+    recordSharedAppOpen(c, response, workspaceId.toString(), APP_ID);
+    return response;
+  });
+  const load = (headers: Record<string, string>) =>
+    probe.request("/api/share/t/app/", { headers });
+  const events = () =>
+    AppUsageEvent.find({ appId: APP_ID }).sort({ at: 1 }).lean();
+
+  beforeEach(async () => {
+    resetUsageThrottle();
+    await AppUsageEvent.deleteMany({});
+    await AppUsageDaily.deleteMany({});
+  });
+
+  it("gives a first-time viewer a cookie and records only its hash", async () => {
+    const first = await load({ "sec-fetch-dest": "document" });
+    const setCookie = first.headers.get("set-cookie") ?? "";
+    const cookie = /mako_viewer=([^;]+)/.exec(setCookie)?.[1] ?? "";
+    expect(cookie).toBeTruthy();
+    expect(setCookie).toContain("HttpOnly");
+    await vi.waitFor(async () => expect(await events()).toHaveLength(1));
+    const [event] = await events();
+    expect(event.anonId).toBe(anonIdFromCookie(cookie));
+    expect(JSON.stringify(event)).not.toContain(cookie);
+
+    // The same browser later, from another network: same id, no new cookie.
+    resetUsageThrottle();
+    const again = await load({
+      "sec-fetch-dest": "document",
+      Cookie: `mako_viewer=${cookie}`,
+      "x-forwarded-for": "203.0.113.9",
+    });
+    expect(again.headers.get("set-cookie")).toBeNull();
+    await vi.waitFor(async () => expect(await events()).toHaveLength(2));
+    expect(new Set((await events()).map(e => e.anonId)).size).toBe(1);
+  });
+
+  it("does not trust a frame's first view to be identifiable", async () => {
+    await load({ "sec-fetch-dest": "iframe" });
+    await vi.waitFor(async () => expect(await events()).toHaveLength(1));
+    expect((await events())[0]).toMatchObject({
+      source: "embed",
+      anonId: null,
+    });
+  });
+
+  it("records link unfurlers as bots, and counts them nowhere", async () => {
+    const res = await load({
+      "sec-fetch-dest": "document",
+      "user-agent":
+        "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+    });
+    expect(res.headers.get("set-cookie")).toBeNull();
+    await vi.waitFor(async () => expect(await events()).toHaveLength(1));
+    expect((await events())[0].uaClass).toBe("bot");
+    expect(await AppUsageDaily.countDocuments({ appId: APP_ID })).toBe(0);
   });
 });

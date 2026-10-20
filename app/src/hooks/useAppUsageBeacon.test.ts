@@ -37,10 +37,19 @@ describe("useAppUsageBeacon", () => {
     rerender({ active: true });
     await vi.advanceTimersByTimeAsync(0);
     expect(kinds(fetchMock)).toEqual(["open"]);
+    const openBody = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(openBody.sessionId).toBeTruthy();
     expect(fetchMock.mock.calls[0][0]).toBe("/api/workspaces/w/apps/a/usage");
 
     await vi.advanceTimersByTimeAsync(APP_USAGE_HEARTBEAT_MS);
     expect(kinds(fetchMock)).toEqual(["open", "heartbeat"]);
+    // The heartbeat belongs to the open: same per-view session.
+    expect(
+      JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)
+        .sessionId,
+    ).toBe(openBody.sessionId);
 
     visibility = "hidden";
     await vi.advanceTimersByTimeAsync(APP_USAGE_HEARTBEAT_MS);

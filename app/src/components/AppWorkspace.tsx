@@ -1187,6 +1187,7 @@ export default function AppWorkspace({
     workspaceId,
     appId,
     active: !editing && pubLoaded && isFrontTab,
+    referrerKind: "internal",
   });
   const appsLoading = useAppsStore(s => s.appsLoading);
   const hiddenPaused = useHiddenPause();
