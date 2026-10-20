@@ -49,6 +49,7 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "app-file",
     metadata: { appId: "66f000000000000000000001", path: "src/App.tsx" },
   }),
+  "apps-home": baseTab({ kind: "apps-home" }),
   "app-diff": baseTab({
     kind: "app-diff",
     metadata: {

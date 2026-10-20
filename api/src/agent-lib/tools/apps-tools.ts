@@ -452,7 +452,7 @@ function buildTools(
             loadOwnerDirectory(workspaceId),
             appUsageScores(workspaceId),
           ]);
-          const tables = await bindingTablesByApp(workspaceId, snapshot);
+          const tables = bindingTablesByApp(snapshot);
           const results = rankApps(
             apps.map(({ folder: f, state }) => ({
               appId: f.id,

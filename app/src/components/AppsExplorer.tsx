@@ -35,6 +35,8 @@ import {
   User as UserIcon,
   Users as SharedIcon,
   Braces as JsonFileIcon,
+  Clock as RecentIcon,
+  TrendingUp as PopularIcon,
   Database as BindingIcon,
   File as PlainFileIcon,
   FileCode as CodeFileIcon,
@@ -76,7 +78,6 @@ import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import AppEnvDialog from "./AppEnvDialog";
-import { focusAppsFileTab, focusAppsTab } from "../apps-runtime/shell";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -107,21 +108,46 @@ import {
   FolderNameDialog,
   isValidFolderName,
 } from "./apps-explorer/AppFolderDialogs";
+import {
+  buildShortcutSection,
+  parseShortcutRow,
+} from "./starred/shortcut-section";
+import {
+  selectDiscovery,
+  useAppsDiscoveryStore,
+} from "../store/appsDiscoveryStore";
+import { popularApps } from "../lib/apps-discovery";
+import {
+  focusAppsFileTab,
+  focusAppsHomeTab,
+  focusAppsTab,
+} from "../apps-runtime/shell";
 
 const AppIcon = TAB_KIND_ICONS["app"];
+const AppsHomeIcon = TAB_KIND_ICONS["apps-home"];
 
 const WORKSPACE_ROOT = "apps";
 const WORKSPACE_SECTION = "workspace";
 const PERSONAL_SECTION = "personal";
 const SHARED_SECTION = "shared-with-me";
 
+const RECENT_SECTION = "recently-viewed";
+const POPULAR_SECTION = "popular";
+/** Rows per shortcut section: a glance, not a second tree. */
+const SHORTCUT_LIMIT = 5;
+
 type ParsedNode =
-  | { kind: "app"; appId: string; pinned: boolean }
+  /** `pinned`: a Starred copy; `shortcut`: a Recently viewed / Popular one. */
+  | { kind: "app"; appId: string; pinned: boolean; shortcut?: boolean }
   | { kind: "dir" | "file"; appId: string; path: string }
   | { kind: "folder"; folderPath: string }
   | { kind: "starfolder"; favId: string };
 
 function parseNodeId(id: string): ParsedNode {
+  const shortcut = parseShortcutRow(id);
+  if (shortcut) {
+    return { kind: "app", appId: shortcut.refId, pinned: true, shortcut: true };
+  }
   const folderPath = folderPathFromNodeId(id);
   if (folderPath !== null) return { kind: "folder", folderPath };
   const favId = favouriteIdFromFolderRow(id);
@@ -283,6 +309,12 @@ export default function AppsExplorer() {
   const clearFavouritesError = useFavouritesStore(s => s.clearError);
   const starred = useMemo(() => starredRefs(favourites, "app"), [favourites]);
 
+  // Recently viewed + Popular come from the usage API; until it is deployed
+  // both 404 and their sections simply do not render.
+  const discovery = useAppsDiscoveryStore(selectDiscovery(workspaceId));
+  const fetchUsage = useAppsDiscoveryStore(s => s.fetchUsage);
+  const fetchRecent = useAppsDiscoveryStore(s => s.fetchRecent);
+
   const openGitHubSettings = useCallback(() => {
     const state = useConsoleStore.getState();
     const existing = selectTabBySettingsSection("github")(state);
@@ -354,8 +386,10 @@ export default function AppsExplorer() {
     if (workspaceId) {
       void fetchApps(workspaceId);
       void fetchFavourites(workspaceId);
+      void fetchUsage(workspaceId);
+      void fetchRecent(workspaceId);
     }
-  }, [workspaceId, fetchApps, fetchFavourites]);
+  }, [workspaceId, fetchApps, fetchFavourites, fetchUsage, fetchRecent]);
 
   // Green dots for live dev servers — discovery, refreshed while the
   // explorer is on screen.
@@ -424,8 +458,40 @@ export default function AppsExplorer() {
       },
       { droppable: true },
     );
+    // Shortcuts, resolved against the same listing (so a private app the
+    // usage API mentions but this person cannot see never shows).
+    const shortcutRow = (appId: string) => {
+      const app = appById.get(appId);
+      return app
+        ? {
+            name: app.title,
+            path: appRootOf(app),
+            entityType: "app",
+            access: app.access,
+            owner_id: app.owner_id,
+          }
+        : undefined;
+    };
+    const recentSection = buildShortcutSection({
+      key: RECENT_SECTION,
+      label: "Recently viewed",
+      icon: <RecentIcon size={16} strokeWidth={1.5} />,
+      refIds: discovery.recent.map(r => r.appId),
+      resolve: shortcutRow,
+      limit: SHORTCUT_LIMIT,
+    });
+    const popularSection = buildShortcutSection({
+      key: POPULAR_SECTION,
+      label: "Popular",
+      icon: <PopularIcon size={16} strokeWidth={1.5} />,
+      refIds: popularApps(apps, discovery.usage, SHORTCUT_LIMIT).map(a => a.id),
+      resolve: shortcutRow,
+      limit: SHORTCUT_LIMIT,
+    });
     return [
       ...starredSection,
+      ...recentSection,
+      ...popularSection,
       {
         key: WORKSPACE_SECTION,
         label: "Workspace",
@@ -479,7 +545,17 @@ export default function AppsExplorer() {
           ]
         : []),
     ];
-  }, [apps, folders, favourites, appById, appChildren, personalRoot, userId]);
+  }, [
+    apps,
+    folders,
+    favourites,
+    appById,
+    appChildren,
+    personalRoot,
+    userId,
+    discovery.recent,
+    discovery.usage,
+  ]);
 
   /** An app in someone else's personal tree: readable, never movable here. */
   const isSharedWithMe = useCallback(
@@ -602,6 +678,9 @@ export default function AppsExplorer() {
       if (!workspaceId || !targetId) return;
       const dragged = parseNodeId(nodeId);
       const target = parseNodeId(targetId);
+      // Shortcut rows are views of a row below: nothing to drop onto.
+      if (target.kind === "app" && target.shortcut) return;
+      if (dragged.kind === "app" && dragged.shortcut) return;
       // A shared app can be starred (a pinned row is a view of it), never
       // filed: it is the owner's to move, and the server would refuse.
       if (
@@ -808,6 +887,7 @@ export default function AppsExplorer() {
   const handleDeleteNode = useCallback(
     (node: ResourceTreeNode) => {
       const parsed = parseNodeId(node.id);
+      if (parsed.kind === "app" && parsed.shortcut) return;
       if (parsed.kind === "app" && parsed.pinned) {
         handleToggleStar(parsed.appId);
       } else if (parsed.kind === "app") void handleDelete(parsed.appId);
@@ -1164,6 +1244,9 @@ export default function AppsExplorer() {
           </MenuItem>,
         ];
       }
+      if (sectionKey !== WORKSPACE_SECTION && sectionKey !== PERSONAL_SECTION) {
+        return null;
+      }
       const root =
         sectionKey === PERSONAL_SECTION ? personalRoot : WORKSPACE_ROOT;
       if (!root) return null;
@@ -1195,6 +1278,11 @@ export default function AppsExplorer() {
 
   const actions = (
     <>
+      <Tooltip title="Apps home">
+        <IconButton size="small" onClick={() => focusAppsHomeTab()}>
+          <AppsHomeIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
       <Tooltip title={canCreate ? "New app" : "Link a GitHub repo first"}>
         <span>
           <IconButton
@@ -1219,6 +1307,8 @@ export default function AppsExplorer() {
             if (!workspaceId) return;
             void fetchApps(workspaceId);
             void fetchFavourites(workspaceId);
+            void fetchUsage(workspaceId);
+            void fetchRecent(workspaceId);
           }}
         >
           <RefreshIcon size={20} strokeWidth={2} />
@@ -1447,6 +1537,7 @@ export default function AppsExplorer() {
                     if (parsed.kind === "file" || parsed.kind === "dir") {
                       return false;
                     }
+                    if (parsed.kind === "app" && parsed.shortcut) return false;
                     if (parsed.kind === "app" && !parsed.pinned) {
                       return !isSharedWithMe(parsed.appId);
                     }

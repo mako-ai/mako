@@ -61,6 +61,10 @@ import {
 } from "./worktree.service";
 import { appFolderChanged } from "./deploy-on-push";
 import { getAppAuthors, visibleIndexedAppIds } from "./app-usage.service";
+import {
+  listDiscoveryApps,
+  searchDiscoveryApps,
+} from "./app-discovery.service";
 import { runGit } from "./git";
 import { canReadResource } from "../utils/resource-acl";
 import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
@@ -301,6 +305,70 @@ describe("personal trees resolve through the handle mapping only", () => {
       folder: { scope: "private", folderSegments: [] },
     });
     expect(mine.path).toBe(`users/${HANDLE}/apps/mine`);
+  });
+});
+
+describe("discovery facts", () => {
+  it("indexes the tables bindings read and who added each app, and keeps the date across a move", async () => {
+    await externalCommit({
+      "apps/Sales/CH/b/bindings/leads.sql":
+        "-- connection: c1\nSELECT * FROM analytics.fct_leads l JOIN dim_agents a ON a.id = l.agent\n",
+      "apps/d/mako.json": manifest("D"),
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const b = snapshot.apps.find(a => a.path === "apps/Sales/CH/b");
+    expect(b?.tables).toEqual(["analytics.fct_leads", "dim_agents"]);
+    const d = snapshot.apps.find(a => a.path === "apps/d");
+    expect(d?.authorEmail).toBe("laptop@example.com");
+    expect(d?.firstCommitAt).toBeTruthy();
+    // The seed commit dated the others.
+    expect(
+      snapshot.apps.find(a => a.path === "apps/a")?.firstCommitAt,
+    ).toBeTruthy();
+
+    const firstAt = b?.firstCommitAt;
+    await externalCommit(
+      {
+        "apps/Moved/b/mako.json": manifest("B", B_ID),
+        "apps/Moved/b/bindings/rows.sql": "select 1\n",
+      },
+      [
+        "apps/Sales/CH/b/mako.json",
+        "apps/Sales/CH/b/bindings/rows.sql",
+        "apps/Sales/CH/b/bindings/leads.sql",
+      ],
+    );
+    const moved = (await loadAppsIndex(WS)).apps.find(a => a.appId === B_ID);
+    expect(moved?.path).toBe("apps/Moved/b");
+    // A move is not a new app.
+    expect(moved?.firstCommitAt).toBe(firstAt);
+    expect(moved?.tables).toEqual([]);
+  });
+
+  it("lists and searches with the list's visibility", async () => {
+    const other = new Types.ObjectId().toString();
+    const mine = await listDiscoveryApps(WS, USER, "member");
+    expect(mine.map(a => a.path).sort()).toEqual([
+      "apps/Sales/CH/b",
+      "apps/a",
+      `users/${HANDLE}/apps/c`,
+    ]);
+    // Someone else's personal tree is not theirs to discover.
+    const theirs = await listDiscoveryApps(WS, other, "member");
+    expect(theirs.map(a => a.path)).not.toContain(`users/${HANDLE}/apps/c`);
+    const c = mine.find(a => a.path === `users/${HANDLE}/apps/c`);
+    expect(c?.ownerId).toBe(USER);
+    expect(c?.ownerHandle).toBe(HANDLE);
+    expect(searchDiscoveryApps(mine, HANDLE).map(a => a.path)).toEqual([
+      `users/${HANDLE}/apps/c`,
+    ]);
+    expect(c?.health.bindingErrors).toEqual([]);
+    expect(c?.verified).toBe(false);
+
+    expect(searchDiscoveryApps(theirs, "laptop").map(a => a.path)).toEqual([]);
+    expect(searchDiscoveryApps(mine, "sales").map(a => a.path)).toEqual([
+      "apps/Sales/CH/b",
+    ]);
   });
 });
 

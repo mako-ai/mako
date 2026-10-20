@@ -81,6 +81,7 @@ import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
 import DbtConsoleView from "./DbtConsoleView";
 import DbtRunsView from "./DbtRunsView";
+import AppsHome from "./apps-home/AppsHome";
 import WorkflowView from "./WorkflowView";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -2886,6 +2887,8 @@ function Editor({
                     <DbtConsoleView
                       projectId={tab.metadata?.projectId as string}
                     />
+                  ) : tab.kind === "apps-home" ? (
+                    <AppsHome />
                   ) : tab.kind === "dbt-runs" ? (
                     <DbtRunsView
                       tabId={tab.id}

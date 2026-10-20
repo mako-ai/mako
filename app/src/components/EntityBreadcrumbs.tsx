@@ -77,6 +77,8 @@ function segmentsForTab(
       ]);
     case "app":
       return plain(["Apps", ctx.appTitle || tab.title]);
+    case "apps-home":
+      return plain(["Apps", "Home"]);
     case "app-file": {
       const path = (tab.metadata?.path as string | undefined) || "";
       return plain(["Apps", ctx.appTitle, ...path.split("/").filter(Boolean)]);

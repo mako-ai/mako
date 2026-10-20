@@ -7,6 +7,7 @@ import { resolveAppRef } from "../lib/apps-explorer-tree";
 import {
   closeAppsTabsFor,
   focusAppsFileTab,
+  focusAppsHomeTab,
   focusAppsTab,
 } from "../apps-runtime/shell";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -116,6 +117,7 @@ export function UrlSync() {
     const tableMatch = path.match(TAB_DEEP_LINK_PATTERNS["table-data"]);
     const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
     const appMatch = path.match(TAB_DEEP_LINK_PATTERNS["app"]);
+    const appsHomeMatch = path.match(TAB_DEEP_LINK_PATTERNS["apps-home"]);
     const dbtFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-file"]);
     const dbtJobMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-job"]);
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
@@ -198,6 +200,10 @@ export function UrlSync() {
           metadata: { schema, table },
         }),
       );
+    } else if (appsHomeMatch) {
+      // /apps — the Apps home (the bare tree root; an app is /apps/:ref)
+      setLeftPane("apps");
+      focusAppsHomeTab();
     } else if (appFileMatch) {
       // /a/:appId/file/:path — Apps file editor
       const appId = decodeUrlSegment(appFileMatch[1]);

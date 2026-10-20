@@ -110,6 +110,15 @@ import {
 import { appTreeRoot, parseAppRepoPath } from "../apps/app-paths";
 import { loadOwnerDirectory } from "../apps/user-handles.service";
 import {
+  listDiscoveryApps,
+  searchDiscoveryApps,
+} from "../apps/app-discovery.service";
+import { appUsageScores } from "../apps/app-search.service";
+import {
+  requestAppThumbnail,
+  thumbnailIsFresh,
+} from "../apps/app-thumbnail.service";
+import {
   authorizeAppMove,
   authorizeFolderTarget,
   canSeeIndexedApp,
@@ -129,6 +138,7 @@ import {
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
 import {
+  artifactStoreForRead,
   buildApp,
   buildLogPath,
   deployBuild,
@@ -1228,6 +1238,90 @@ appsRoutes.openapi(
       });
       return c.body(null, 204);
     } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Discovery — the Apps home and its search. Static paths, registered before
+// /{id} so the param route can't shadow them.
+// ---------------------------------------------------------------------------
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/discovery",
+    tags: ["Apps"],
+    summary: "Apps home: every visible app with its discovery facts",
+    description:
+      "Owner, creation date, deployment, thumbnail, data freshness and health (failed deploy, failed binding refreshes) for every app the caller can see — the same visibility as the list. Popularity is the usage API's, joined on the id by the client.",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const apps = await listDiscoveryApps(workspaceId, userId, role);
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/search",
+    tags: ["Apps"],
+    summary: "Search apps",
+    description:
+      "Free-text search over each visible app's title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Every term must match somewhere; results are ranked, best first, with the fields that matched.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        q: z
+          .string()
+          .max(200)
+          .openapi({ param: { name: "q", in: "query" } }),
+        limit: z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { q, limit } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const [visible, usage] = await Promise.all([
+        listDiscoveryApps(workspaceId, userId, role),
+        appUsageScores(workspaceId),
+      ]);
+      const apps = searchDiscoveryApps(visible, q, {
+        limit: limit ?? 50,
+        usage,
+      });
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
       return handleError(c, error);
     }
   },
@@ -3586,6 +3680,72 @@ appsRoutes.openapi(
             "Content-Type": "image/jpeg",
             ...(size !== null ? { "Content-Length": String(size) } : {}),
             "Cache-Control": "private, max-age=31536000, immutable",
+          },
+        },
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/thumbnail",
+    tags: ["Apps"],
+    summary: "The published app's thumbnail",
+    description:
+      "A screenshot of the live deployment, taken in the publish box after each deploy. Redirects to a short-lived signed bucket URL (streams on stores without one). 404 when there is none yet — and, for a published app, that request queues one (backfill on first view), so the next load has it.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { project } = loaded;
+      if (project.publishedSha && !thumbnailIsFresh(project)) {
+        void requestAppThumbnail(
+          project.workspaceId.toString(),
+          project._id.toString(),
+        );
+      }
+      // An older deployment's picture beats a placeholder while the current
+      // one is taken.
+      const key = project.thumbnail?.key;
+      // The canonical source store too: a rehearsal environment serves the
+      // pictures production took.
+      const store = key ? await artifactStoreForRead(key) : null;
+      if (!key || !store) {
+        return c.json({ success: false, error: "No thumbnail yet" }, 404);
+      }
+      const signed = await store.getSignedUrl(key, 600).catch(() => null);
+      if (signed) {
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: signed,
+            // Shorter than the signature, so a cached redirect never points
+            // at an expired URL.
+            "Cache-Control": "private, max-age=300",
+          },
+        });
+      }
+      const stream = await store.openReadStream(key);
+      if (!stream) {
+        return c.json({ success: false, error: "No thumbnail yet" }, 404);
+      }
+      const size = await store.getSize(key);
+      return new Response(
+        Readable.toWeb(stream as Readable) as ReadableStream,
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "image/jpeg",
+            ...(size !== null ? { "Content-Length": String(size) } : {}),
+            "Cache-Control": "private, max-age=300",
           },
         },
       );

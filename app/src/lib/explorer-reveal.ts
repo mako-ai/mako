@@ -118,6 +118,9 @@ export function tabRevealTarget(
     case "workflow":
       // The Workflows explorer marks its open item from the active tab itself.
       return null;
+    case "apps-home":
+      // A view over every app, not one of them: no row to reveal.
+      return null;
     case "app-diff":
     case "history-diff":
     case "repo-diff":

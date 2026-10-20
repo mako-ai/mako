@@ -57,6 +57,8 @@ export const TAB_DEEP_LINK_PATTERNS = {
   // the consumer.
   app: /^\/apps\/([^/?#]+)\/?$/,
   "app-file": /^\/apps\/([^/?#]+)\/file\/(.+)$/,
+  // The Apps home: the bare /apps (an app is always /apps/:ref).
+  "apps-home": /^\/apps\/?$/,
   "app-diff": null,
   "history-diff": null,
   "repo-diff": null,
@@ -132,6 +134,8 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         ? `/apps/${encodeURIComponent(ref)}/file/${encodePathSegments(path)}`
         : null;
     }
+    case "apps-home":
+      return "/apps";
     case "app-diff":
     case "history-diff":
     case "repo-diff":

@@ -4857,6 +4857,12 @@ export interface IAppProject extends Document {
   publicShare?: IPublicShare;
   /** Per-app environment variables, values encrypted at rest (env.service). */
   env?: IAppEnvVar[];
+  /**
+   * A screenshot of the published app (app-thumbnail.service), for the Apps
+   * home cards. `sha` is the deployment it shows, so a redeploy of the same
+   * commit does not retake it.
+   */
+  thumbnail?: { sha: string; key: string; at: Date };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4918,6 +4924,17 @@ const AppProjectSchema = new Schema<IAppProject>(
     },
     publicShare: { type: PublicShareSchema, default: undefined },
     env: { type: [AppEnvVarSchema], default: undefined },
+    thumbnail: {
+      type: new Schema(
+        {
+          sha: { type: String, required: true },
+          key: { type: String, required: true },
+          at: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
   },
   { collection: "app_projects", timestamps: true },
 );
@@ -5097,6 +5114,11 @@ export interface IAppIndexEntry extends Document {
   duplicateOf?: string;
   /** Scheduled bindings, so the scheduler never opens the repo. */
   schedules: Array<{ binding: string; cron: string; timezone?: string }>;
+  /** Tables the app's bindings read (`FROM`/`JOIN`) — search input. */
+  tables?: string[];
+  /** Who first committed the app's manifest, and when (discovery). */
+  authorEmail?: string;
+  firstCommitAt?: Date;
   /** The main commit this row was built from. */
   indexedSha: string;
   createdAt: Date;
@@ -5137,6 +5159,9 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
       ],
       default: [],
     },
+    tables: { type: [String], default: undefined },
+    authorEmail: { type: String },
+    firstCommitAt: { type: Date },
     indexedSha: { type: String, required: true },
   },
   { collection: "app_index", timestamps: true },

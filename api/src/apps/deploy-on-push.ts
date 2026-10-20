@@ -204,9 +204,8 @@ export async function deployOneApp(
   if (appPath && appPath !== appRootFor(discovered)) {
     const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
     if (head && head !== sha) {
-      const { requestAppDeploys } = await import(
-        "../inngest/functions/apps-deploy"
-      );
+      const { requestAppDeploys } =
+        await import("../inngest/functions/apps-deploy");
       await requestAppDeploys(workspaceId, [appId], head, "push");
     }
     return { app: appRef, sha, outcome: "superseded" };
@@ -258,6 +257,9 @@ export async function deployOneApp(
     // The frontend was already uploaded (the Publish button got there
     // first, or a retry after a binding failure); it is just made live.
     await setPublishedSha(project, sha);
+    void import("./app-thumbnail.service")
+      .then(m => m.requestAppThumbnail(workspaceId, project._id.toString()))
+      .catch(() => undefined);
     return { app: appRef, sha, outcome: "already-built" };
   }
 
@@ -317,9 +319,8 @@ export async function deployAppsForPush(input: {
   const appIds = await changedApps(workspaceId, repoDir, before, after);
   if (appIds.length === 0) return [];
   const sha = await deployTargetForPush(repoDir, after);
-  const { requestAppDeploys } = await import(
-    "../inngest/functions/apps-deploy"
-  );
+  const { requestAppDeploys } =
+    await import("../inngest/functions/apps-deploy");
   await requestAppDeploys(workspaceId, appIds, sha, "push");
   logger.info("Apps deploys requested from push", {
     workspaceId,

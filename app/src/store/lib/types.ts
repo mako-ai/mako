@@ -18,6 +18,7 @@ export type TabKind =
   | "app"
   | "app-file"
   | "app-diff"
+  | "apps-home"
   | "history-diff"
   | "repo-diff"
   | "plan"

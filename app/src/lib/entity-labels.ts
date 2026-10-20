@@ -20,6 +20,7 @@ export const TAB_KIND_ENTITY_LABELS = {
   app: "app",
   "app-file": "file",
   "app-diff": "diff",
+  "apps-home": "apps home",
   "history-diff": "diff",
   "repo-diff": "diff",
   plan: "plan",

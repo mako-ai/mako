@@ -25,6 +25,7 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { parseBindingFrontMatter } from "./bindings.service";
+import { extractTables } from "./app-search";
 import { freshenForServe } from "./cloud-repo.service";
 import { runGit } from "./git";
 import {
@@ -52,7 +53,8 @@ import {
 const logger = loggers.api("apps-index");
 
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
-const INDEX_SCHEMA_VERSION = 1;
+// 2: rows carry `tables` (search) and who first added the app (discovery).
+const INDEX_SCHEMA_VERSION = 2;
 
 export interface AppSchedule {
   binding: string;
@@ -78,6 +80,15 @@ export interface AppIndexRow {
   hasManifestId: boolean;
   duplicateOf?: string;
   schedules: AppSchedule[];
+  /** Tables the app's bindings read (`FROM`/`JOIN`), for search. */
+  tables: string[];
+  /**
+   * Who committed the app's `mako.json` first, and when — the closest thing
+   * a folder-only app has to an author and a creation date. Absent when git
+   * could not say (history rewritten, a shallow clone).
+   */
+  authorEmail?: string;
+  firstCommitAt?: string;
 }
 
 export interface AppsIndexSnapshot {
@@ -297,6 +308,7 @@ export async function readAppsAt(
   Discovery & {
     manifests: Map<string, ReturnType<typeof parseAppManifest>>;
     schedules: Map<string, AppSchedule[]>;
+    tables: Map<string, string[]>;
   }
 > {
   const discovery = discoverApps(await listAppTrees(repoDir, sha));
@@ -310,6 +322,7 @@ export async function readAppsAt(
   const blobs = await readBlobsBatch(repoDir, sha, paths);
   const manifests = new Map<string, ReturnType<typeof parseAppManifest>>();
   const schedules = new Map<string, AppSchedule[]>();
+  const tables = new Map<string, string[]>();
   for (const app of discovery.apps) {
     const manifest = blobs.get(`${app.path}/${APP_MANIFEST}`);
     manifests.set(
@@ -317,10 +330,15 @@ export async function readAppsAt(
       parseAppManifest(manifest ? manifest.toString("utf8") : null, app.slug),
     );
     const list: AppSchedule[] = [];
+    const reads = new Map<string, string>();
     for (const name of [...app.bindingBlobs.keys()].sort()) {
       const blob = blobs.get(`${app.path}/bindings/${name}.sql`);
       if (!blob) continue;
-      const meta = parseBindingFrontMatter(blob.toString("utf8"));
+      const sql = blob.toString("utf8");
+      for (const t of extractTables(sql)) {
+        if (!reads.has(t.toLowerCase())) reads.set(t.toLowerCase(), t);
+      }
+      const meta = parseBindingFrontMatter(sql);
       if (meta.schedule) {
         list.push({
           binding: name,
@@ -330,8 +348,9 @@ export async function readAppsAt(
       }
     }
     schedules.set(app.path, list);
+    tables.set(app.path, [...reads.values()]);
   }
-  return { ...discovery, manifests, schedules };
+  return { ...discovery, manifests, schedules, tables };
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +586,67 @@ function rowToIndex(row: Pick<IAppIndexEntry, keyof AppIndexRow>): AppIndexRow {
       cron: s.cron,
       ...(s.timezone ? { timezone: s.timezone } : {}),
     })),
+    tables: row.tables ?? [],
+    authorEmail: row.authorEmail ?? undefined,
+    firstCommitAt: row.firstCommitAt
+      ? new Date(row.firstCommitAt).toISOString()
+      : undefined,
   };
+}
+
+/**
+ * Who first committed each app's manifest, and when, by app path: one
+ * `git log` over the history, newest first, so the LAST addition seen for a
+ * path is its first. Only asked for apps the index has not dated yet (new
+ * folders), so the walk runs when an app appears, not on every push. Moves
+ * are additions too (`--no-renames`), which is why a row that already has a
+ * date keeps it: the identity follows the app across a move, and so does
+ * its age. Best effort — a failure leaves the rows undated.
+ */
+export async function firstManifestCommits(
+  repoDir: string,
+  sha: string,
+  paths: ReadonlySet<string>,
+): Promise<Map<string, { email: string; at: string }>> {
+  const out = new Map<string, { email: string; at: string }>();
+  if (paths.size === 0) return out;
+  let stdout: string;
+  try {
+    ({ stdout } = await runGit(
+      [
+        "-C",
+        repoDir,
+        "log",
+        "--no-renames",
+        "--diff-filter=A",
+        "--name-only",
+        "-z",
+        "--format=%x01%ae%x00%aI",
+        sha,
+        "--",
+        `:(glob)${APPS_DIR}/**/${APP_MANIFEST}`,
+        `:(glob)${USERS_DIR}/**/${APP_MANIFEST}`,
+      ],
+      { timeoutMs: 60_000 },
+    ));
+  } catch (error) {
+    logger.warn("Apps index: could not date apps from history", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return out;
+  }
+  for (const commit of stdout.split("\x01")) {
+    const [email, rawAt, ...files] = commit.split("\0").map(s => s.trim());
+    const ms = Date.parse(rawAt ?? "");
+    if (!email || !Number.isFinite(ms)) continue;
+    const at = new Date(ms).toISOString();
+    for (const file of files) {
+      if (!file.endsWith(`/${APP_MANIFEST}`)) continue;
+      const dir = file.slice(0, -APP_MANIFEST.length - 1);
+      if (paths.has(dir)) out.set(dir, { email, at });
+    }
+  }
+  return out;
 }
 
 /**
@@ -706,9 +785,30 @@ async function syncNow(
     head?.sha ? await renamedAppFolders(repoDir, head.sha, sha) : new Map(),
   );
 
+  // Author + creation date: kept from the row when it has them (a move must
+  // not make an app "new"), read from history only for the rest.
+  const datedById = new Map(
+    existing
+      .filter(r => r.firstCommitAt)
+      .map(r => [
+        r.appId,
+        {
+          email: r.authorEmail ?? "",
+          at: new Date(r.firstCommitAt as Date).toISOString(),
+        },
+      ]),
+  );
+  const undated = new Set(
+    read.apps
+      .filter(a => !datedById.has(ids.get(a.path)?.appId ?? ""))
+      .map(a => a.path),
+  );
+  const firstCommits = await firstManifestCommits(repoDir, sha, undated);
+
   const rows: AppIndexRow[] = read.apps.map(app => {
     const manifest = read.manifests.get(app.path)!;
     const identity = ids.get(app.path)!;
+    const first = datedById.get(identity.appId) ?? firstCommits.get(app.path);
     return {
       appId: identity.appId,
       path: app.path,
@@ -724,6 +824,9 @@ async function syncNow(
       hasManifestId: identity.hasManifestId,
       duplicateOf: identity.duplicateOf,
       schedules: read.schedules.get(app.path) ?? [],
+      tables: read.tables.get(app.path) ?? [],
+      authorEmail: first?.email || undefined,
+      firstCommitAt: first?.at,
     };
   });
 
@@ -756,6 +859,11 @@ async function syncNow(
               hasManifestId: row.hasManifestId,
               duplicateOf: row.duplicateOf ?? null,
               schedules: row.schedules,
+              tables: row.tables,
+              authorEmail: row.authorEmail ?? null,
+              firstCommitAt: row.firstCommitAt
+                ? new Date(row.firstCommitAt)
+                : null,
               indexedSha: sha,
             },
           },
