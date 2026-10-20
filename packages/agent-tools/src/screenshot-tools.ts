@@ -11,30 +11,14 @@ import { tool } from "ai";
 import { z } from "zod";
 
 const screenshotTargetSchema = z
-  .enum([
-    "active_dashboard",
-    "active_tab",
-    "app_shell",
-    "dashboard",
-    "viewport",
-    "widget",
-    "selector",
-  ])
-  .default("active_dashboard")
+  .enum(["active_tab", "app_shell", "viewport", "selector"])
+  .default("active_tab")
   .describe(
-    "What to capture. Use active_dashboard for dashboard visual QA, active_tab for the current main tab, app_shell for the full Mako app UI, widget for a specific dashboard widget, viewport for the current visible page, or selector for a CSS selector.",
+    "What to capture. Use active_tab for the current main tab, app_shell for the full Mako app UI, viewport for the current visible page, or selector for a CSS selector.",
   );
 
 export const captureScreenshotSchema = z.object({
   target: screenshotTargetSchema,
-  dashboardId: z
-    .string()
-    .optional()
-    .describe("Dashboard ID. Required when target is dashboard or widget."),
-  widgetId: z
-    .string()
-    .optional()
-    .describe("Widget ID. Required when target is widget."),
   selector: z
     .string()
     .optional()
@@ -78,7 +62,7 @@ export const clientScreenshotTools = {
     description:
       "Capture a screenshot with modern-screenshot for visual debugging. " +
       "Use this when the user asks what is visible, why something looks wrong, or when visual context would help debug the app. " +
-      "Supports active_dashboard, active_tab, app_shell, viewport, widget, and selector targets. " +
+      "Supports active_tab, app_shell, viewport, and selector targets. " +
       "By default, the PNG is passed to the next LLM step as a real image input; it can also be downloaded in the user's browser.",
     inputSchema: captureScreenshotSchema,
     // No execute function - this is a client-side tool

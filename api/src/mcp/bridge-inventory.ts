@@ -14,7 +14,6 @@ import { Types } from "mongoose";
 
 import { createFlowTools } from "../agents/flow";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
-import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
@@ -86,7 +85,6 @@ export function collectLiveAgentToolNames(): string[] {
   add(keysOf(universal));
 
   add(keysOf(createConsoleSearchTools(INVENTORY_WORKSPACE_ID)));
-  add(keysOf(createDashboardSearchTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createVersionHistoryTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createSkillTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createSelfDirectiveTools(INVENTORY_WORKSPACE_ID)));

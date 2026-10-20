@@ -13,19 +13,12 @@ import type { CapabilityGrant } from "@mako/agent-tools";
 
 /** Dynamic expertise modes the model can enable via `enable_mode`. */
 export type ExpertiseModeId =
-  | "query"
-  | "dashboard"
-  | "flow"
-  | "app"
-  | "transform"
-  | "workflow"
-  | "notebook"
-  | "explore";
+  "query" | "flow" | "app" | "transform" | "workflow" | "notebook" | "explore";
 
 /**
  * A registered expertise mode. Modes reference tools *by name* — the actual
  * tool objects come from the existing builders (`createUniversalTools`,
- * `createFlowTools`, `clientDashboardTools`, ...). `prepareStep` intersects
+ * `createFlowTools`, `clientNotebookTools`, ...). `prepareStep` intersects
  * the registered `toolNames` with the full tool set to derive `activeTools`.
  */
 export interface AgentMode {

@@ -15,7 +15,6 @@ import type { InferUITools, UIDataTypes, UIMessage } from "ai";
 
 import { clientConsoleTools } from "./console-tools";
 import { clientChartTools } from "./chart-tools";
-import { clientDashboardTools } from "./dashboard-tools";
 import { clientFlowTools } from "./flow-tools";
 import { clientAppTools } from "./app-tools";
 import { clientDbtTools } from "./dbt-tools";
@@ -55,12 +54,6 @@ export type {
 export { clientChartTools } from "./chart-tools";
 export type { ModifyChartSpecInput } from "./chart-tools";
 
-export {
-  clientDashboardTools,
-  updateDataSourceQuerySchema,
-  resolveDataSourceCodeEdit,
-  type UpdateDataSourceQueryInput,
-} from "./dashboard-tools";
 export { clientFlowTools } from "./flow-tools";
 
 // Legacy (pre-git) app tool schemas — kept for historical chat typing only;
@@ -295,13 +288,14 @@ export {
 
 /**
  * The complete set of client-side agent tools, across every agent surface
- * (console, chart, dashboard, flow). Used to derive the typed UI message /
+ * (console, chart, flow, app, dbt, data source, plan, notebook, screenshot).
+ * Used to derive the typed UI message /
  * tool-call types below.
  */
 export const clientAgentTools = {
   ...clientConsoleTools,
   ...clientChartTools,
-  ...clientDashboardTools,
+  ...clientScreenshotTools,
   ...clientFlowTools,
   ...clientAppTools,
   ...clientDbtTools,

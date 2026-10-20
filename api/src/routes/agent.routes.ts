@@ -409,18 +409,11 @@ agentRoutes.openapi(
       kind: string;
       title: string;
       isActive: boolean;
-      dashboardId?: string;
       flowId?: string;
       notebookId?: string;
       connectionId?: string;
       databaseName?: string;
       dbtProjectId?: string;
-    }
-
-    interface OpenDashboardContext {
-      id: string;
-      title: string;
-      isActive: boolean;
     }
 
     const {
@@ -429,7 +422,6 @@ agentRoutes.openapi(
       workspaceId,
       openConsoles,
       openTabs,
-      openDashboards,
       consoleId,
       modelId,
       activeConsoleResults,
@@ -440,7 +432,6 @@ agentRoutes.openapi(
       tabKind,
       flowType,
       flowFormState,
-      activeDashboardContext,
       screenshotVisionAttachments,
       appId,
       appSearch,
@@ -450,14 +441,12 @@ agentRoutes.openapi(
       workspaceId?: string;
       openConsoles?: OpenConsoleContext[];
       openTabs?: OpenTabContext[];
-      openDashboards?: OpenDashboardContext[];
       consoleId?: string;
       modelId?: string;
       activeConsoleResults?: ActiveConsoleResults;
       agentId?: string;
-      activeView?: "console" | "dashboard" | "flow-editor" | "empty";
-      activeExplorer?:
-        "databases" | "consoles" | "connectors" | "flows" | "dashboards" | null;
+      activeView?: "console" | "flow-editor" | "empty";
+      activeExplorer?: "databases" | "consoles" | "connectors" | "flows" | null;
       tabKind?: string;
       flowType?: string;
       flowFormState?: Record<string, unknown>;
@@ -466,27 +455,6 @@ agentRoutes.openapi(
       appId?: string;
       /** The app's query string as the viewer sees it (filters, tabs). */
       appSearch?: string;
-      activeDashboardContext?: {
-        dashboardId: string;
-        title: string;
-        dataSources: Array<{
-          id: string;
-          name: string;
-          tableRef?: string;
-          status?: "idle" | "loading" | "ready" | "error" | null;
-          rowsLoaded?: number;
-          error?: string | null;
-          columns: Array<{ name: string; type: string }>;
-          sampleRows?: Record<string, unknown>[];
-        }>;
-        widgets: Array<{
-          id: string;
-          title?: string;
-          type: string;
-          dataSourceId: string;
-        }>;
-        crossFilterEnabled: boolean;
-      };
     };
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -819,17 +787,6 @@ agentRoutes.openapi(
       }
     }
 
-    const dashboardContext =
-      activeView === "dashboard"
-        ? {
-            openDashboards,
-            activeDashboardContext,
-          }
-        : {
-            openDashboards: undefined,
-            activeDashboardContext: undefined,
-          };
-
     // MCP tools (Close CRM etc.): built from DB-cached tool definitions, so
     // this never blocks on remote MCP servers. Executions connect on demand.
     let mcpChatTools: Awaited<ReturnType<typeof buildMcpToolsForChat>> = {
@@ -886,7 +843,6 @@ agentRoutes.openapi(
       notebookId: openTabs?.find(t => t.isActive && t.kind === "notebook")
         ?.notebookId,
       openTabs,
-      openDashboards: dashboardContext.openDashboards,
       databases: workspaceDatabases.map(db => ({
         id: db._id.toString(),
         name: db.name,
@@ -900,7 +856,6 @@ agentRoutes.openapi(
       skillsBlock,
       dbtRulesBlock,
       activeConsoleResults,
-      activeDashboardContext: dashboardContext.activeDashboardContext,
       toolExecutionContext,
       canManageScheduledQueries,
       mcpTools: mcpChatTools.tools,
@@ -1121,7 +1076,7 @@ agentRoutes.openapi(
     const MAX_STEPS = 256;
 
     // "No client attached" fallback (issue #475): when a turn dead-ends on
-    // client-only tools (e.g. capture_screenshot, dashboard tools) and no
+    // client-only tools (e.g. capture_screenshot, console tools) and no
     // browser window is attached to the workspace, the server synthesizes the
     // tool results and continues the turn itself so the model can adapt
     // instead of the chat stalling until someone reattaches. Bounded so a

@@ -338,7 +338,7 @@ async function grantEnforcement() {
     {
       name: "browse_version_history",
       source: { kind: "builtin", domain: "version-history" },
-      description: "Browse saved versions of a console or dashboard.",
+      description: "Browse saved versions of a console.",
       readOnly: true,
       tier: "deferred",
     },
@@ -525,9 +525,9 @@ async function endToEnd() {
     Object.keys(seeingRuntime.tools).includes("capture_screenshot"),
     "a vision model keeps it",
   );
-  // The other dashboard tools are unaffected by the gate.
+  // The other client tools are unaffected by the gate.
   assert.ok(
-    Object.keys(blindRuntime.tools).includes("list_open_dashboards"),
+    Object.keys(blindRuntime.tools).includes("list_data_sources"),
     "the gate removes only the screenshot tool",
   );
 

@@ -8,19 +8,19 @@ import {
 export const createVersionHistoryTools = (workspaceId: string) => ({
   browse_version_history: tool({
     description:
-      "Browse the version history of a saved console, dashboard, or legacy " +
-      "(pre-git) app. " +
+      "Browse the version history of a saved console. " +
       "Returns a list of past versions with who saved them, when, and their commit comment. " +
-      "Use after search_consoles or search_dashboards to inspect change history, " +
+      "Use after search_consoles to inspect change history, " +
       "understand who changed what, or help the user decide which version to restore " +
-      "(restore dashboards with restore_version; consoles restore via their own " +
-      "flows; legacy app history is read-only — git-backed apps version through git). " +
+      "(consoles restore via their own flows; git-backed apps version through git). " +
       "Pass the entityId from a search result.",
     inputSchema: z.object({
       entityType: z
-        .enum(["console", "dashboard"])
-        .describe("Whether this is a console, dashboard, or app"),
-      entityId: z.string().describe("The ID of the console, dashboard, or app"),
+        .enum(["console"])
+        .describe(
+          "The versioned entity type (only consoles are versioned here)",
+        ),
+      entityId: z.string().describe("The ID of the console"),
       limit: z
         .number()
         .optional()
@@ -61,16 +61,16 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
 
   get_version_snapshot: tool({
     description:
-      "Get the full snapshot of a specific version of a console, dashboard, or app. " +
+      "Get the full snapshot of a specific version of a console. " +
       "Use this to show the user what a past version looked like, or to compare " +
-      "with the current state. For consoles, the snapshot includes the code; " +
-      "for dashboards, it includes widgets, data sources, and layout; for apps, " +
-      "it includes the files, dependencies, and data binding queries.",
+      "with the current state. The snapshot includes the console's code.",
     inputSchema: z.object({
       entityType: z
-        .enum(["console", "dashboard"])
-        .describe("Whether this is a console, dashboard, or app"),
-      entityId: z.string().describe("The ID of the console, dashboard, or app"),
+        .enum(["console"])
+        .describe(
+          "The versioned entity type (only consoles are versioned here)",
+        ),
+      entityId: z.string().describe("The ID of the console"),
       version: z.number().describe("The version number to retrieve"),
     }),
     execute: async ({ entityType, entityId, version }) => {

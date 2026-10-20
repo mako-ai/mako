@@ -101,7 +101,7 @@ const readSkillResourceSchema = z.object({
     .string()
     .min(1)
     .describe(
-      "Name of the `[system]` skill that owns the resource, e.g. `dashboards`.",
+      "Name of the `[system]` skill that owns the resource, e.g. `apps`.",
     ),
   path: z
     .string()

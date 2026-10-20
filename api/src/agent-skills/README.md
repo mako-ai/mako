@@ -52,7 +52,7 @@ same relative lookup works under both `tsx src/index.ts` and `node dist/index.js
 System skills are always shown in the skills catalog with a `[system]` tag.
 Their bodies are auto-injected only when the current user request overlaps the
 skill trigger strongly enough, or when the agent explicitly calls
-`load_skill(name)`. Dashboard references are tier-3 material: the agent should
+`load_skill(name)`. Reference files are tier-3 material: the agent should
 call `read_skill_resource(name, "references/file.md")` only when the core skill
 points to a needed detail. The catalog lists available `references/*.md` paths
 for each system skill.
@@ -63,7 +63,7 @@ reference filename or duplicating a prompt literal.
 
 ## Authoring rules
 
-1. Keep base prompts lean. Put vendor, database, dashboard, flow, connector, or
+1. Keep base prompts lean. Put vendor, database, app, flow, connector, or
    domain guidance here instead of in `api/src/agent-lib/prompts/**` or
    `api/src/agents/**/prompt.ts`.
 2. Use one skill per capability or vendor dialect.

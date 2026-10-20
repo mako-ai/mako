@@ -96,7 +96,7 @@ import {
   devLogPath,
   ensureDevServer,
 } from "../../apps/dev-server.service";
-import { getDashboardArtifactStore } from "../../services/dashboard-artifact-store.service";
+import { getArtifactStore } from "../../services/artifact-store.service";
 import { browseApp, eyesShotKey } from "../../apps/eyes.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
@@ -1140,7 +1140,7 @@ function buildTools(
                 loaded.project._id.toString(),
                 `${shotId}.jpg`,
               );
-              await getDashboardArtifactStore().putBuffer(
+              await getArtifactStore().putBuffer(
                 Buffer.from(result.screenshotBase64, "base64"),
                 key,
                 "image/jpeg",

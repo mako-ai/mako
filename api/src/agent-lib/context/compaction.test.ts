@@ -400,9 +400,9 @@ t(
         { type: "step-start" },
         { type: "text", text: LONG_A },
         {
-          type: "tool-create_dashboard",
+          type: "tool-create_console",
           toolCallId: "c1",
-          toolName: "create_dashboard",
+          toolName: "create_console",
           input: { title: "Recon" },
           output: { success: true },
           state: "output-available",
@@ -440,10 +440,7 @@ t(
       );
     }
     // The tool part is untouched.
-    assert.equal(
-      parts.filter(p => p.type === "tool-create_dashboard").length,
-      1,
-    );
+    assert.equal(parts.filter(p => p.type === "tool-create_console").length, 1);
   },
 );
 

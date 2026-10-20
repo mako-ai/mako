@@ -1,7 +1,6 @@
 import type { AgentConfig, AgentContext, AgentMeta } from "../types";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import {
-  clientDashboardTools,
   clientDbtTools,
   clientDataSourceTools,
   clientNotebookTools,
@@ -12,7 +11,6 @@ import { createAppsTools } from "../../agent-lib/tools/apps-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
-import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
 import { createFlowFileTools } from "../../agent-lib/tools/flow-file-tools";
 import { createWorkflowTools } from "../../agent-lib/tools/workflow-tools";
@@ -24,8 +22,7 @@ import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 export const unifiedAgentMeta: AgentMeta = {
   id: "unified",
   name: "Workspace Assistant",
-  description:
-    "Unified assistant for consoles, dashboards, and database sync flows",
+  description: "Unified assistant for consoles, apps, and database sync flows",
   enabled: true,
 };
 
@@ -48,10 +45,6 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const skillTools = createSkillTools(workspaceId, userId);
   const consoleSearchTools = createConsoleSearchTools(
-    workspaceId,
-    context.toolExecutionContext,
-  );
-  const dashboardSearchTools = createDashboardSearchTools(
     workspaceId,
     context.toolExecutionContext,
   );
@@ -84,7 +77,6 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
 
   const tools = {
     ...universalTools,
-    ...clientDashboardTools,
     ...appsTools,
     ...clientDbtTools,
     ...dbtServerTools,
@@ -98,7 +90,6 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     ...selfDirectiveTools,
     ...skillTools,
     ...consoleSearchTools,
-    ...dashboardSearchTools,
     ...versionHistoryTools,
     ...webTools,
     // MCP tools (Close CRM etc.) resolved per request in agent.routes.ts.
@@ -108,9 +99,8 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   // Vision gate. capture_screenshot exists to give the model eyes ("what is
   // visible", "why does this look wrong"); a model that cannot read images
   // gets nothing from it but a wasted round-trip and an image the server then
-  // has to strip. Applied to the MERGED set on purpose — the tool is spread in
-  // from two places (createUniversalTools and clientDashboardTools), so gating
-  // either source alone silently leaves the other one registered. Removing it
+  // has to strip. Applied to the MERGED set on purpose, so a second source
+  // spreading the tool in can never leave it registered. Removing it
   // from the registered set (not just the working set) also keeps the
   // system-prompt tool inventory in sync with what is actually callable.
   // undefined = assume vision (external MCP clients).

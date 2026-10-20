@@ -381,7 +381,6 @@ async function main() {
       "sql_execute_query",
       "mongo_list_connections",
       "search_consoles",
-      "search_dashboards",
       "search_skills",
       "list_skills",
       "get_relevant_skills",
@@ -1098,7 +1097,7 @@ async function main() {
       content: { text: string }[];
     };
     assert.equal(badIdResult.isError, true);
-    assert.match(badIdResult.content[0].text, /console, dashboard, app/);
+    assert.match(badIdResult.content[0].text, /console, app, or skill/);
 
     const [badKind] = await chatGptExchange([
       {

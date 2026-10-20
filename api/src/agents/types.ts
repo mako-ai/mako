@@ -77,8 +77,7 @@ export interface AgentContext {
    */
   chatId?: string;
   /** What the user is currently looking at (the active editor tab's kind) */
-  activeView?:
-    "console" | "dashboard" | "flow-editor" | "app" | "dbt" | "empty";
+  activeView?: "console" | "flow-editor" | "app" | "dbt" | "empty";
   /**
    * Which left-pane explorer is currently open and visible, or `null` if the
    * left pane is collapsed. Use this when guiding the user to a specific
@@ -90,7 +89,6 @@ export interface AgentContext {
     | "consoles"
     | "connectors"
     | "flows"
-    | "dashboards"
     | "apps"
     | "dbt"
     | "settings"
@@ -109,18 +107,11 @@ export interface AgentContext {
     kind: string;
     title: string;
     isActive: boolean;
-    dashboardId?: string;
     flowId?: string;
     connectionId?: string;
     /** dbt project the tab belongs to (dbt-file / dbt-job / dbt-console tabs). */
     dbtProjectId?: string;
     databaseName?: string;
-  }>;
-  /** Lightweight summary of open dashboards for explicit dashboard selection */
-  openDashboards?: Array<{
-    id: string;
-    title: string;
-    isActive: boolean;
   }>;
   /** Database connections in workspace */
   databases?: Array<{
@@ -158,43 +149,6 @@ export interface AgentContext {
     columns: string[];
     sampleRows: Record<string, unknown>[];
     chartSpec: Record<string, unknown> | null;
-  };
-  /** Active dashboard context (for dashboard agent) */
-  activeDashboardContext?: {
-    dashboardId: string;
-    title: string;
-    dataSources: Array<{
-      id: string;
-      name: string;
-      tableRef?: string;
-      connectionType?: string;
-      sqlDialect?: string;
-      queryCode?: string;
-      queryLanguage?: string;
-      status?: "idle" | "loading" | "ready" | "error" | null;
-      rowsLoaded?: number;
-      rowCount?: number;
-      error?: string | null;
-      columns: Array<{ name: string; type: string }>;
-      sampleRows?: Record<string, unknown>[];
-    }>;
-    widgets: Array<{
-      id: string;
-      title?: string;
-      type: string;
-      dataSourceId: string;
-      localSql?: string;
-      queryEngine?: "mosaic";
-      queryStatus?: "idle" | "loading" | "ready" | "error";
-      queryError?: string | null;
-      queryErrorKind?: string | null;
-      renderStatus?: "idle" | "ready" | "error";
-      renderError?: string | null;
-      renderErrorKind?: string | null;
-      queryRowCount?: number | null;
-      queryFields?: string[];
-    }>;
-    crossFilterEnabled: boolean;
   };
   /** Request-scoped execution registry for cancellable server tools */
   toolExecutionContext?: AgentToolExecutionContext;

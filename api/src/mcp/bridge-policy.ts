@@ -182,11 +182,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   get_chart_template: exclude(
     "client-only",
-    "Chart templates are a console/dashboard UI concern.",
-  ),
-  get_chart_templates: exclude(
-    "client-only",
-    "Dashboard chart template catalog; not part of the apps MCP loop.",
+    "Chart templates are a console chart UI concern.",
   ),
   modify_chart_spec: exclude(
     "client-only",
@@ -233,59 +229,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Flow sync validation; MCP uses sql_execute_query for query checks.",
   ),
 
-  // ── Dashboards (client mutations + server search) ─────────────────────
-  add_data_source: exclude(
-    "client-only",
-    "Dashboard builder is browser-driven; MCP focuses on apps.",
-  ),
-  add_global_filter: exclude("client-only", "Dashboard builder UI."),
-  add_widget: exclude("client-only", "Dashboard builder UI."),
-  create_dashboard: exclude("client-only", "Dashboard builder UI."),
-  // NOT a connector tool, despite the name. This creates a DASHBOARD-LOCAL
-  // data source: a query materialized into the browser's DuckDB for widgets.
-  // It cannot create a Stripe/Close/GCS connector — that is
-  // `POST /workspaces/{id}/sources`, which no agent tool exposes. The old
-  // note here ("Dashboard builder UI.") was true and misleading: it reads as
-  // "the UI way to do the thing you want" rather than "a different thing",
-  // and it led an RFC to plan connector creation as a one-line
-  // reclassification. Use list_connectors / inspect_connector for connectors.
-  create_data_source: exclude(
-    "client-only",
-    "Creates a dashboard-local DuckDB data source in the browser — NOT a workspace connection. Connections are list_connections / inspect_connection; connector types are list_connectors.",
-  ),
-  dashboard_restore_version: exclude(
-    "deferred",
-    "Deprecated alias of restore_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
-  ),
-  dashboard_save_version: exclude(
-    "deferred",
-    "Deprecated alias of save_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
-  ),
-  enter_edit_mode: exclude("client-only", "Dashboard builder UI."),
-  get_dashboard_state: exclude(
-    "client-only",
-    "Reads open dashboard tab state.",
-  ),
-  import_console_as_data_source: exclude(
-    "client-only",
-    "Dashboard builder UI.",
-  ),
-  link_tables: exclude("client-only", "Dashboard builder UI."),
-  list_open_dashboards: exclude(
-    "client-only",
-    "Lists open dashboard tabs; MCP uses search_dashboards.",
-  ),
-  modify_widget: exclude("client-only", "Dashboard builder UI."),
-  open_dashboard: exclude("client-only", "Opens a dashboard tab."),
-  remove_global_filter: exclude("client-only", "Dashboard builder UI."),
-  remove_widget: exclude("client-only", "Dashboard builder UI."),
-  run_data_source_query: exclude("client-only", "Dashboard builder UI."),
-  search_dashboards: bridge(),
-  set_time_dimension: exclude("client-only", "Dashboard builder UI."),
-  // update_data_source_query migrated to the capability registry (dashboard
-  // domain) with a server leg — its bridge entry now derives from there.
-
-  // ── Shared DuckDB data-source primitives (client) ─────────────────────
+  // ── App DuckDB data-source primitives (client) ────────────────────────
   inspect_data_source: exclude(
     "client-only",
     "Inspects in-browser DuckDB materializations.",
@@ -390,17 +334,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
   get_version_snapshot: bridge(),
-  // Generic save/restore dispatches in the browser (dashboard drafts live in
-  // the open tab); MCP keeps the server-side app_save_version /
-  // app_restore_version pair instead.
-  restore_version: exclude(
-    "client-only",
-    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_restore_version.",
-  ),
-  save_version: exclude(
-    "client-only",
-    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_save_version.",
-  ),
 
   // ── Web ───────────────────────────────────────────────────────────────
   fetch_url: bridge({ openWorldHint: true }),

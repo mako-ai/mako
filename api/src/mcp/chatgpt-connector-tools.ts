@@ -7,7 +7,7 @@
  * id — each as a single JSON-encoded text content item. Without them the
  * server is reachable only in ChatGPT's developer mode. Both tools are plain
  * read-only views over content the rest of the MCP surface already exposes
- * (consoles, dashboards, apps, skills), so registering them for every
+ * (consoles, apps, skills), so registering them for every
  * external client adds capability for ChatGPT without widening access.
  *
  * Contract reference: OpenAI "Building MCP servers for ChatGPT and the API"
@@ -19,16 +19,11 @@ import { Types } from "mongoose";
 import { z } from "zod";
 
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
-import { searchDashboardsByQuery } from "../agent-lib/tools/dashboard-search-tools";
 import {
   getSystemSkillIndex,
   getSystemSkillFullText,
 } from "../agent-lib/skills/system-skills";
-import {
-  AppProject,
-  Dashboard,
-  SavedConsole,
-} from "../database/workspace-schema";
+import { AppProject, SavedConsole } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   listTree,
@@ -42,7 +37,7 @@ import type { BridgeableTool, MakoMcpContext } from "./mako-mcp-server";
 
 const logger = loggers.api("mcp-chatgpt");
 
-/** Per-kind cap keeps one search exchange bounded (4 kinds × 5 = ≤20 results). */
+/** Per-kind cap keeps one search exchange bounded (3 kinds × 5 = ≤15 results). */
 const RESULTS_PER_KIND = 5;
 
 /** fetch() text ceiling — ChatGPT ingests the document into model context. */
@@ -68,11 +63,8 @@ function clientBaseUrl(): string {
 }
 
 /** Workspace deep links (same prefixes the app's Copy-link share uses). */
-function resourceUrl(
-  kind: "console" | "dashboard" | "app",
-  id: string,
-): string {
-  const prefix = { console: "c", dashboard: "d", app: "a" }[kind];
+function resourceUrl(kind: "console" | "app", id: string): string {
+  const prefix = { console: "c", app: "a" }[kind];
   return `${clientBaseUrl()}/${prefix}/${id}`;
 }
 
@@ -169,9 +161,8 @@ async function executeSearch(
   userId: string | undefined,
   query: string,
 ): Promise<{ results: SearchResultDoc[] }> {
-  const [consoles, dashboards, apps, skills] = await Promise.allSettled([
+  const [consoles, apps, skills] = await Promise.allSettled([
     searchConsoles(query, workspaceId, RESULTS_PER_KIND),
-    searchDashboardsByQuery(query, workspaceId, RESULTS_PER_KIND),
     searchWorkspaceApps(workspaceId, userId, query),
     searchAllSkills(workspaceId, query),
   ]);
@@ -191,26 +182,10 @@ async function executeSearch(
       });
     }
   }
-  if (dashboards.status === "fulfilled") {
-    for (const d of dashboards.value) {
-      results.push({
-        id: `dashboard:${d.id}`,
-        title: `Dashboard: ${d.title}`,
-        text:
-          d.description ||
-          `Dashboard with ${d.widgetCount} widget(s)` +
-            (d.dataSourceNames.length
-              ? ` over ${d.dataSourceNames.join(", ")}`
-              : "") +
-            ".",
-        url: resourceUrl("dashboard", d.id),
-      });
-    }
-  }
   if (apps.status === "fulfilled") results.push(...apps.value);
   if (skills.status === "fulfilled") results.push(...skills.value);
 
-  for (const outcome of [consoles, dashboards, apps, skills]) {
+  for (const outcome of [consoles, apps, skills]) {
     if (outcome.status === "rejected") {
       logger.warn("ChatGPT connector search leg failed", {
         workspaceId,
@@ -257,47 +232,6 @@ async function fetchConsoleDoc(
     text: truncate(text),
     url: resourceUrl("console", id),
     metadata: { kind: "console", language: console_.language },
-  };
-}
-
-async function fetchDashboardDoc(
-  workspaceId: string,
-  id: string,
-): Promise<FetchedDoc | null> {
-  const dashboard = await Dashboard.findOne({
-    _id: requireObjectId("dashboard", id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select("title description widgets dataSources")
-    .lean();
-  if (!dashboard) return null;
-  const widgets = (
-    (dashboard.widgets ?? []) as Array<{ title?: string; type?: string }>
-  ).map(w => `- ${w.title || "Untitled"}${w.type ? ` (${w.type})` : ""}`);
-  const dataSources = (dashboard.dataSources ?? []).map(ds =>
-    [
-      `### ${ds.name || "Unnamed source"}`,
-      ds.query?.code ? `\`\`\`\n${ds.query.code}\n\`\`\`` : "",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  );
-  const text = [
-    dashboard.description || "",
-    widgets.length ? `## Widgets\n${widgets.join("\n")}` : "",
-    dataSources.length ? `## Data sources\n${dataSources.join("\n\n")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  return {
-    id: `dashboard:${id}`,
-    title: dashboard.title || "Untitled dashboard",
-    text: truncate(text || "Empty dashboard."),
-    url: resourceUrl("dashboard", id),
-    metadata: {
-      kind: "dashboard",
-      widgetCount: dashboard.widgets?.length ?? 0,
-    },
   };
 }
 
@@ -421,16 +355,13 @@ async function executeFetch(
   if (!kind || !rest) {
     throw new Error(
       `Invalid document id "${id}". Expected "<kind>:<id>" where kind is ` +
-        "console, dashboard, app, or skill — use ids returned by search.",
+        "console, app, or skill — use ids returned by search.",
     );
   }
   let doc: FetchedDoc | null;
   switch (kind) {
     case "console":
       doc = await fetchConsoleDoc(workspaceId, rest);
-      break;
-    case "dashboard":
-      doc = await fetchDashboardDoc(workspaceId, rest);
       break;
     case "app":
       doc = await fetchAppDoc(workspaceId, userId, rest);
@@ -440,7 +371,7 @@ async function executeFetch(
       break;
     default:
       throw new Error(
-        `Unknown document kind "${kind}". Supported: console, dashboard, app, skill.`,
+        `Unknown document kind "${kind}". Supported: console, app, skill.`,
       );
   }
   if (!doc) {
@@ -466,7 +397,7 @@ export function createChatGptConnectorTools(
     search: tool({
       description:
         "Search this Mako workspace for saved consoles (queries), " +
-        "dashboards, apps, and skills matching a query. Returns a list of " +
+        "apps, and skills matching a query. Returns a list of " +
         "documents with ids to pass to fetch. Searches workspace content " +
         "only — use sql_execute_query to query the connected databases " +
         "themselves.",
@@ -481,8 +412,8 @@ export function createChatGptConnectorTools(
     fetch: tool({
       description:
         "Retrieve the full content of one workspace document found via " +
-        "search: a saved console (including its SQL), dashboard (widgets + " +
-        "data source queries), app (files + data bindings), or skill.",
+        "search: a saved console (including its SQL), app (files + data " +
+        "bindings), or skill.",
       inputSchema: z.object({
         id: z
           .string()

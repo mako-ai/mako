@@ -23,9 +23,9 @@
  * as in the UI. It is kept out of the in-product chat so a prompt-injected
  * page cannot plant a credential the workspace then syncs from.
  *
- * Deliberately NOT the same thing as the dashboard `list_data_sources` /
- * `create_data_source` family, which operate on in-browser DuckDB
- * materializations. The similar naming has already misled one design
+ * Deliberately NOT the same thing as the `list_data_sources` /
+ * `inspect_data_source` family, which operate on in-browser DuckDB
+ * materializations of app bindings. The similar naming has already misled one design
  * document into believing connector creation was a policy line away.
  */
 import {

@@ -41,10 +41,8 @@ import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
-import { createServerDashboardTools } from "../agent-lib/tools/server-dashboard-tools";
 import { createNotebookServerTools } from "../agent-lib/tools/server-notebook-tools";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
-import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
@@ -103,7 +101,7 @@ Skills (same knowledge as the in-product agent):
 - get_relevant_skills({ query }) → ranked bodies for your task (call this early).
 - load_skill / read_skill_resource / mako://skills/{name} for specifics.
 Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
-Optional: search_dashboards, web_search / fetch_url for public docs.`;
+Optional: web_search / fetch_url for public docs.`;
 
 /** ACP Desktop Chat — no headless preview tokens; the user already has a live tab. */
 const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside Mako Desktop Chat.
@@ -123,7 +121,7 @@ Skills (same knowledge as the in-product agent):
 - get_relevant_skills({ query }) → ranked bodies for your task (call this early).
 - load_skill / read_skill_resource / mako://skills/{name} for specifics.
 Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
-Optional: search_dashboards, web_search / fetch_url for public docs.`;
+Optional: web_search / fetch_url for public docs.`;
 
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
@@ -178,17 +176,6 @@ export function buildMakoMcpCandidateTools(
     surface: "mcp",
   });
 
-  // Dashboards manage data sources the same way apps manage bindings: the
-  // server leg of update_data_source_query (per-surface adapter, run_app
-  // pattern) lets headless agents edit queries, toggle materialization, and
-  // set the dashboard refresh schedule.
-  const dashboardTools = createServerDashboardTools({
-    workspaceId,
-    userId,
-    chatId,
-    queryAccess,
-  });
-
   const notebookTools = createNotebookServerTools({
     workspaceId,
     userId,
@@ -207,7 +194,6 @@ export function buildMakoMcpCandidateTools(
   const { list_connections, list_databases, list_tables, inspect_table } =
     createUniversalTools(workspaceId, [], undefined, userId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
-  const dashboardSearchTools = createDashboardSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
   const skillTools = createSkillTools(workspaceId, userId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
@@ -237,7 +223,6 @@ export function buildMakoMcpCandidateTools(
     ...appsTools,
     ...memberTools,
     ...consoleTools,
-    ...dashboardTools,
     ...notebookTools,
     ...selfDirectiveTools,
     // Unified cross-engine discovery (dispatches on connection type). The
@@ -257,7 +242,6 @@ export function buildMakoMcpCandidateTools(
     // buildMakoMcpToolset will strip it.
     mongo_execute_query: mongoTools.execute_query,
     ...consoleSearchTools,
-    ...dashboardSearchTools,
     ...versionHistoryTools,
     ...skillTools,
     ...webTools,

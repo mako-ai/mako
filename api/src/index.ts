@@ -72,7 +72,6 @@ const REQUIRED_SYSTEM_SKILLS = [
   "dialect-mysql",
   "dialect-sqlite",
   "mongodb-queries",
-  "dashboards",
   "flows",
 ];
 
