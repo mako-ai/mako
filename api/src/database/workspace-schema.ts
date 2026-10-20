@@ -4999,6 +4999,67 @@ export const AppDeployCommitStatus = mongoose.model<IAppDeployCommitStatus>(
   AppDeployCommitStatusSchema,
 );
 
+/**
+ * Who looked at which app, rolled up per UTC day (app-usage.service). One row
+ * per (workspace, app, viewer, day), bumped with `$inc` upserts, so a viewer
+ * who keeps an app open all day is one row, not a row per heartbeat.
+ * `userId` is null for anonymous share-link viewers — they collapse into one
+ * row per app per day. `appId` is the app identity (manifest id), never its
+ * path, so a move keeps the history.
+ */
+export interface IAppUsageDaily extends Document {
+  workspaceId: Types.ObjectId;
+  appId: string;
+  userId: string | null;
+  /** UTC day, `YYYY-MM-DD`. */
+  day: string;
+  opens: number;
+  activeSeconds: number;
+  /** Opens by where the app was opened. */
+  sources: { app?: number; share?: number; embed?: number };
+  firstAt: Date;
+  lastAt: Date;
+}
+
+const AppUsageDailySchema = new Schema<IAppUsageDaily>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    userId: { type: String, default: null },
+    day: { type: String, required: true },
+    opens: { type: Number, default: 0 },
+    activeSeconds: { type: Number, default: 0 },
+    sources: {
+      type: new Schema(
+        { app: Number, share: Number, embed: Number },
+        { _id: false },
+      ),
+      default: {},
+    },
+    firstAt: { type: Date, required: true },
+    lastAt: { type: Date, required: true },
+  },
+  { collection: "app_usage_daily", versionKey: false },
+);
+
+AppUsageDailySchema.index(
+  { workspaceId: 1, appId: 1, userId: 1, day: 1 },
+  { unique: true },
+);
+// The window scan behind the popularity stats.
+AppUsageDailySchema.index({ workspaceId: 1, day: 1 });
+// "Recently viewed" for one person.
+AppUsageDailySchema.index({ workspaceId: 1, userId: 1, lastAt: -1 });
+
+export const AppUsageDaily = mongoose.model<IAppUsageDaily>(
+  "AppUsageDaily",
+  AppUsageDailySchema,
+);
+
 // ---------------------------------------------------------------------------
 // Apps index — derived from the tree at main, rebuilt on every push
 // ---------------------------------------------------------------------------

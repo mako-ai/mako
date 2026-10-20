@@ -94,11 +94,23 @@ import {
   stampAppId,
   type AppFolderTarget,
 } from "../apps/worktree.service";
-import { loadAppsIndex, resolveAppRef } from "../apps/app-index.service";
+import {
+  findAppInSnapshot,
+  loadAppsIndex,
+  resolveAppRef,
+} from "../apps/app-index.service";
+import {
+  acceptUsageBeat,
+  getAppUsageStats,
+  getRecentlyViewedApps,
+  recordAppUsage,
+  recordServedOpen,
+} from "../apps/app-usage.service";
 import { parseAppRepoPath } from "../apps/app-paths";
 import {
   authorizeAppMove,
   authorizeFolderTarget,
+  canSeeIndexedApp,
 } from "../apps/app-authorization";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
@@ -753,17 +765,12 @@ appsRoutes.openapi(
       const stateById = new Map(docs.map(d => [d._id.toString(), d]));
 
       const apps = folders
-        .filter(folder => {
-          const state = stateById.get(folder.id);
-          if (state) return !userId || canReadResource(state, userId, role);
-          // No record yet means nothing has restricted it — a folder someone
-          // pushed is workspace content, visible like any other file in the
-          // repo. A folder in someone's personal tree is theirs alone.
-          if (folder.scope === "private") {
-            return !userId || folder.ownerId === userId;
-          }
-          return true;
-        })
+        // No record yet means nothing has restricted it — a folder someone
+        // pushed is workspace content, visible like any other file in the
+        // repo. A folder in someone's personal tree is theirs alone.
+        .filter(folder =>
+          canSeeIndexedApp(folder, stateById.get(folder.id), userId, role),
+        )
         .map(folder => {
           const state = stateById.get(folder.id);
           return {
@@ -1039,6 +1046,186 @@ appsRoutes.openapi(
       if (denied) return c.json({ success: false, error: denied }, 403);
       await deleteAppFolder(workspaceId, target, { userId });
       return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Usage — who opens which app (app-usage.service). The two reads are
+// registered before /{id} so "usage" and "recent" are never read as app refs.
+// Both report only apps the caller can see in the list.
+// ---------------------------------------------------------------------------
+
+/** The ids of the indexed apps the caller can see — the list's rule. */
+async function visibleAppIds(
+  workspaceId: string,
+  userId: string | undefined,
+  role: string | undefined,
+): Promise<Set<string>> {
+  const [snapshot, rows] = await Promise.all([
+    loadAppsIndex(workspaceId, { freshen: false }),
+    AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
+      .select("_id access workspaceRole sharedWith owner_id createdBy")
+      .lean(),
+  ]);
+  const stateById = new Map(rows.map(r => [r._id.toString(), r]));
+  return new Set(
+    snapshot.apps
+      .filter(app =>
+        canSeeIndexedApp(app, stateById.get(app.appId), userId, role),
+      )
+      .map(app => app.appId),
+  );
+}
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/usage",
+    tags: ["Apps"],
+    summary: "Usage and popularity of the apps the caller can see",
+    description:
+      "Per app, over the last `days` UTC days (default 28): distinct viewers, viewers who are not the app's authors, their viewer-days, opens, active seconds, last open (anyone / non-author) and a popularity score — the sum over non-author viewers of distinct active days, each weighted 0.5^(age_days/14). Every visible app is listed, zeros when unviewed.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        days: z.coerce.number().int().min(1).max(400).optional(),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { days } = c.req.valid("query");
+      const userId = actingUserId(c);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      const [stats, visible] = await Promise.all([
+        getAppUsageStats(workspaceId, { days }),
+        visibleAppIds(workspaceId, userId, role),
+      ]);
+      const apps = [...stats.values()].filter(s => visible.has(s.appId));
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/recent",
+    tags: ["Apps"],
+    summary: "Apps the caller opened most recently",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const limit = c.req.valid("query").limit ?? 20;
+      const userId = actingUserId(c);
+      if (!userId) return c.json({ success: true as const, apps: [] }, 200);
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      // Over-fetch: an app may have been deleted or made private since.
+      const [recent, visible] = await Promise.all([
+        getRecentlyViewedApps(workspaceId, userId, {
+          limit: Math.min(100, limit + 20),
+        }),
+        visibleAppIds(workspaceId, userId, role),
+      ]);
+      const apps = recent.filter(r => visible.has(r.appId)).slice(0, limit);
+      return c.json({ success: true as const, apps }, 200);
+    } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json({ success: true as const, apps: [] }, 200);
+      }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/usage",
+    tags: ["Apps"],
+    summary: "Report a view of the published app",
+    description:
+      "Sent by Mako's own app views: `open` once per view, `heartbeat` every 60 s while the page is visible (each worth 60 active seconds). Throttled per viewer and app (429). API keys without a user are not viewers and are ignored. Answers 204.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              kind: z.enum(["open", "heartbeat"]),
+              source: z.enum(["app", "share", "embed"]).default("app"),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId, id } = c.req.valid("param");
+      const { kind, source } = c.req.valid("json");
+      const userId = actingUserId(c);
+      if (!userId) return c.body(null, 204);
+      if (!acceptUsageBeat(`${workspaceId}:${userId}:${id}`, kind)) {
+        return c.json({ success: false, error: "Too many usage reports" }, 429);
+      }
+      // The index without a mirror fetch: a heartbeat a minute must not
+      // pull from GitHub. A miss (an app pushed seconds ago to another
+      // instance) falls back to the fetching resolve.
+      const app =
+        findAppInSnapshot(
+          await loadAppsIndex(workspaceId, { freshen: false }),
+          id,
+        ) ?? (await resolveAppRef(workspaceId, id));
+      if (!app) {
+        return c.json({ success: false, error: "App not found" }, 404);
+      }
+      const state = await AppProject.findOne({
+        _id: new Types.ObjectId(app.appId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+        .select("access workspaceRole sharedWith owner_id createdBy")
+        .lean();
+      const role =
+        (c.get("memberRole") as string | undefined) ??
+        (await memberRoleFor(workspaceId, userId));
+      if (!canSeeIndexedApp(app, state, userId, role)) {
+        return c.json({ success: false, error: "App not found" }, 404);
+      }
+      await recordAppUsage({
+        workspaceId,
+        appId: app.appId,
+        userId,
+        kind,
+        source,
+      });
+      return c.body(null, 204);
     } catch (error) {
       return handleError(c, error);
     }
@@ -3114,6 +3301,19 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     assetPath: rest.replace(/^\/+/, ""),
     viewer: viewerOf(c),
   });
+  if (response && loaded.userId) {
+    // A raw `/live/` page load or a frame on another site; the in-Mako views
+    // load from a view token and report themselves.
+    recordServedOpen({
+      workspaceId: project.workspaceId.toString(),
+      appId: projectId,
+      userId: loaded.userId,
+      viewerKey: loaded.userId,
+      fetchDest: c.req.header("sec-fetch-dest"),
+      contentType: response.headers.get("content-type"),
+      pageSource: "app",
+    });
+  }
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
 

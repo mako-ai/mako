@@ -14,6 +14,30 @@
  */
 import type { AppFolderTarget } from "./worktree.service";
 import type { AppRepoLocation } from "./app-paths";
+import {
+  canReadResource,
+  type ShareableResourceLike,
+} from "../utils/resource-acl";
+
+/**
+ * Whether the caller sees an indexed app at all — the app list's rule, shared
+ * with every surface that reports on apps (usage stats, recently viewed) so
+ * none of them can leak a private app the list hides. An app with a state row
+ * follows its ACL; a folder-only app is workspace content, unless it sits in
+ * someone's personal tree, which is theirs alone. No user (an API key) sees
+ * everything, as the list does.
+ */
+export function canSeeIndexedApp(
+  folder: { scope: string; ownerId?: string },
+  state: ShareableResourceLike | null | undefined,
+  userId: string | undefined,
+  role: string | undefined,
+): boolean {
+  if (!userId) return true;
+  if (state) return canReadResource(state, userId, role);
+  if (folder.scope === "private") return folder.ownerId === userId;
+  return true;
+}
 
 /** Who may reorganise the WORKSPACE tree: any editing member. */
 export function canOrganizeWorkspaceTree(role: string | undefined): boolean {

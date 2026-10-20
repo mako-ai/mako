@@ -71,6 +71,7 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { useUIStore } from "../store/uiStore";
 import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import { useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
 import ShareDialog from "./ShareDialog";
 
 // ---------------------------------------------------------------------------
@@ -1178,6 +1179,15 @@ export default function AppWorkspace({
   // (a publish moved the app on) shows the opening card again until it loads.
   const [pubLoadedUrl, setPubLoadedUrl] = useState<string | null>(null);
   const pubLoaded = !!viewUrl && pubLoadedUrl === viewUrl;
+  // Usage: only the PUBLISHED view counts, and only while this tab is the
+  // one in front — background tabs stay mounted (display: none), and the
+  // dev-mode preview is the author building, not someone using the app.
+  const isFrontTab = useConsoleStore(s => s.activeTabId === _tabId);
+  useAppUsageBeacon({
+    workspaceId,
+    appId,
+    active: !editing && pubLoaded && isFrontTab,
+  });
   const appsLoading = useAppsStore(s => s.appsLoading);
   const hiddenPaused = useHiddenPause();
   // Durable, session-authorized URL for the published app — for normal tabs.

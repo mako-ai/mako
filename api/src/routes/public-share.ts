@@ -26,6 +26,7 @@ import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import { recordServedOpen } from "../apps/app-usage.service";
 
 const logger = loggers.api("public-share");
 
@@ -380,6 +381,18 @@ async function serveSharedApp(c: Context): Promise<Response> {
     // Anonymous: `__data/viewer.json` is null — there is nobody to describe.
     viewer: null,
   });
+  if (response) {
+    // The share page navigates straight here, so this page load IS the view.
+    recordServedOpen({
+      workspaceId: project.workspaceId.toString(),
+      appId: projectId,
+      userId: null,
+      viewerKey: `ip:${clientIp(c)}`,
+      fetchDest: c.req.header("sec-fetch-dest"),
+      contentType: response.headers.get("content-type"),
+      pageSource: "share",
+    });
+  }
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
 
