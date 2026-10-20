@@ -23,7 +23,10 @@ import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
 } from "../apps/bind-test-workspace-repo";
-import { invalidateAppsIndexCache } from "../apps/app-index.service";
+import {
+  invalidateAppsIndexCache,
+  loadAppsIndex,
+} from "../apps/app-index.service";
 import { anonymousViewerRedirect } from "../apps/live-viewer-redirect";
 import { publicShareRoutes } from "../routes/public-share";
 import { ogRoutes } from "../routes/og";
@@ -33,6 +36,7 @@ import { Hono } from "hono";
 import {
   GENERIC_SHARE_TITLE,
   appLinkFromPath,
+  clearTabRefCache,
   imageSize,
   injectOgTags,
   ogTagsForPath,
@@ -386,6 +390,81 @@ describe("in-app link previews", () => {
         userAgent: "WhatsApp/2.23",
       }),
     ).toBeNull();
+  });
+});
+
+describe("app tab links (/apps/<ref>)", () => {
+  const OTHER_WS = new Types.ObjectId();
+  beforeEach(async () => {
+    clearTabRefCache();
+    await loadAppsIndex(WS); // the index rows the lookup reads
+    await Workspace.deleteOne({ _id: OTHER_WS });
+  });
+
+  it("resolves an id to its own workspace", async () => {
+    const tags = await ogTagsForPath(`/apps/${PLAIN.toHexString()}`, ORIGIN);
+    expect(tags?.title).toBe("Team board");
+    expect(tags?.url).toBe(`${ORIGIN}/apps/${PLAIN.toHexString()}`);
+  });
+
+  it("resolves a slug held by exactly one workspace app, ignoring the query string", async () => {
+    // The SPA hands over the path only; the app's own state (?country=…)
+    // never reaches the matcher, and og:url stays the canonical app URL.
+    const tags = await ogTagsForPath(
+      new URL(`${ORIGIN}/apps/plain?country=FR&lang=fr&view=sim`).pathname,
+      ORIGIN,
+    );
+    expect(tags?.title).toBe("Team board");
+    expect(tags?.url).toBe(`${ORIGIN}/apps/plain`);
+  });
+
+  it("stays generic when a slug is ambiguous across workspaces", async () => {
+    await Workspace.create({
+      _id: OTHER_WS,
+      name: "other",
+      slug: `other-${OTHER_WS.toHexString()}`,
+      createdBy: "test",
+      settings: {},
+      billing: {},
+    });
+    await AppIndexEntry.create({
+      workspaceId: OTHER_WS,
+      appId: new Types.ObjectId().toHexString(),
+      path: "apps/plain",
+      slug: "plain",
+      scope: "workspace",
+      treeOid: "0".repeat(40),
+      title: "Someone else's board",
+      hasManifestId: true,
+      schedules: [],
+      indexedSha: "0".repeat(40),
+    });
+    const tags = await ogTagsForPath("/apps/plain", ORIGIN);
+    expect(tags?.title).toBe(GENERIC_SHARE_TITLE);
+
+    // A workspace that opted out of previews does not count as a candidate.
+    await Workspace.updateOne(
+      { _id: OTHER_WS },
+      { $set: { "settings.linkPreviews": false } },
+    );
+    clearTabRefCache();
+    expect((await ogTagsForPath("/apps/plain", ORIGIN))?.title).toBe(
+      "Team board",
+    );
+  });
+
+  it("stays generic for personal, restricted and unknown apps", async () => {
+    for (const ref of [
+      PERSONAL.toHexString(),
+      "mine",
+      RESTRICTED.toHexString(),
+      "restricted",
+      "no-such-app",
+    ]) {
+      const tags = await ogTagsForPath(`/apps/${ref}`, ORIGIN);
+      expect(tags?.title).toBe(GENERIC_SHARE_TITLE);
+      expect(JSON.stringify(tags)).not.toMatch(/Alice|Board pack/);
+    }
   });
 });
 

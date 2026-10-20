@@ -5337,6 +5337,9 @@ AppIndexEntrySchema.index({ appId: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, appId: 1 });
 AppIndexEntrySchema.index({ workspaceId: 1, path: 1 }, { unique: true });
 AppIndexEntrySchema.index({ workspaceId: 1, slug: 1 });
+// Link previews of `/apps/<slug>` tab URLs carry no workspace: find the
+// app by its folder name across workspaces (share-og.service).
+AppIndexEntrySchema.index({ slug: 1, scope: 1 });
 
 export const AppIndexEntry = mongoose.model<IAppIndexEntry>(
   "AppIndexEntry",
