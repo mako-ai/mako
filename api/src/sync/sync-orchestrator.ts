@@ -368,6 +368,7 @@ async function performSyncChunkSql(
 
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",
+    flowId: options.flowId,
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
@@ -1016,6 +1017,7 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
 
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",
+    flowId: options.flowId,
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {

@@ -10,6 +10,7 @@
  * zod-openapi's `{param}` syntax cannot express. Static asset serving does
  * not belong in the API reference anyway.
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import type { Context } from "hono";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import {
@@ -59,12 +60,16 @@ async function serveAsset(c: Context): Promise<Response> {
     if (!name || !project) {
       return c.json({ success: false, error: "Not found" }, 404);
     }
-    const { status, body, headers } = await refreshBindingHttp({
-      project,
-      name,
-      actorId: "",
-      at: grant.publishedSha,
-    });
+    const { status, body, headers } = await withQueryLabels(
+      { mako_trigger: "preview" },
+      () =>
+        refreshBindingHttp({
+          project,
+          name,
+          actorId: "",
+          at: grant.publishedSha,
+        }),
+    );
     return c.json(body, status, {
       ...headers,
       "Access-Control-Allow-Origin": "*",

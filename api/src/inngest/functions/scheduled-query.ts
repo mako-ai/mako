@@ -171,6 +171,13 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
             actor: consoleDoc.savedConsole.createdBy
               ? `user:${consoleDoc.savedConsole.createdBy}`
               : undefined,
+            labels: {
+              mako_source: "scheduled_query",
+              mako_console: consoleId,
+              mako_trigger: "scheduler",
+              mako_user: consoleDoc.savedConsole.createdBy,
+              mako_workspace: workspaceId,
+            },
           },
         );
 

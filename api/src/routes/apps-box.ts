@@ -7,6 +7,7 @@
  * names the workspace and the user, which is exactly the (workspace, user)
  * pair that identifies a box, so the box cannot report as anyone but itself.
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import { createRouter } from "../openapi/core";
 import type { Context } from "hono";
 import { z } from "zod";
@@ -170,9 +171,8 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
     // Guarded: a binding that cannot succeed must not be re-queried as fast as
     // a page can re-request it. See live-binding-guard.ts — 41 abandoned
     // BigQuery jobs in 48 minutes is what this exists to stop.
-    built = await withLiveBindingGuard(
-      { workspaceId, slug, name },
-      async () => {
+    built = await withLiveBindingGuard({ workspaceId, slug, name }, () =>
+      withQueryLabels({ mako_trigger: "live" }, async () => {
         const store =
           persist &&
           (await readBindingMaterialization(project, name, payload.userId)) ===
@@ -187,7 +187,7 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
           },
         );
         return { ...result, filePath: result.filePath as string };
-      },
+      }),
     );
   } catch (error) {
     if (error instanceof LiveBindingCoolingDown) {

@@ -242,6 +242,7 @@ async function createAdHocParquetResponse(options: {
       databaseId: options.queryDefinition.databaseId,
       databaseName: options.queryDefinition.databaseName,
       readOnly: true,
+      labels: { mako_source: "export" },
     },
   );
 
@@ -1383,7 +1384,11 @@ workspaceDatabaseRoutes.openapi(
       const result = await databaseConnectionService.executeQuery(
         database,
         body.query,
-        { ...body.options, readOnly: queryAccess === "read" },
+        {
+          ...body.options,
+          readOnly: queryAccess === "read",
+          labels: { mako_source: "adhoc" },
+        },
       );
 
       return c.json(result);
@@ -2312,6 +2317,13 @@ workspaceExecuteRoutes.openapi(
         databaseName: effectiveQueryDefinition.databaseName || databaseName,
         executionId,
         readOnly: queryAccess === "read",
+        labels: {
+          // A console tab runs through here; its id says which console.
+          mako_source: consoleId ? "console" : "adhoc",
+          mako_console: typeof consoleId === "string" ? consoleId : undefined,
+          mako_trigger: apiKey ? "api" : String(source || "console_ui"),
+          mako_user: user?.id ?? apiKey?.createdBy?.toString(),
+        },
       };
 
       const isPreviewMode = mode === "preview";
@@ -2698,6 +2710,8 @@ workspaceExecuteRoutes.openapi(
         executionId: typeof executionId === "string" ? executionId : undefined,
         signal: c.req.raw.signal,
         readOnly: true,
+        // On the query itself: the stream runs after this handler returns.
+        labels: { mako_source: "export", mako_user: c.get("user")?.id },
       };
 
       if (normalizedFormat === "parquet") {

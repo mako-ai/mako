@@ -13,6 +13,7 @@
  *   GET  /api/share/:token/app/*      — the app's published deployment files
  */
 
+import { withQueryLabels } from "../services/bigquery-labels";
 import crypto from "node:crypto";
 import bcrypt from "bcrypt";
 import { createRoute, z } from "@hono/zod-openapi";
@@ -538,13 +539,17 @@ app.post("/:token/app/__data/:name/refresh", async c => {
     );
   }
   try {
-    const { status, body, headers } = await refreshBindingHttp({
-      project,
-      name: c.req.param("name"),
-      actorId: "",
-      at: project.publishedSha,
-      cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
-    });
+    const { status, body, headers } = await withQueryLabels(
+      { mako_trigger: "public" },
+      () =>
+        refreshBindingHttp({
+          project,
+          name: c.req.param("name"),
+          actorId: "",
+          at: project.publishedSha,
+          cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
+        }),
+    );
     return c.json(body, status, headers);
   } catch (error) {
     logger.error("Error refreshing a shared app's binding", { error });

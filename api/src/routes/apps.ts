@@ -9,6 +9,7 @@
  * subdirectories in it, worked on inside E2B sandboxes. Always available (no
  * feature flag).
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import { createRoute, z } from "@hono/zod-openapi";
 import { eyesShotKey } from "../apps/eyes.service";
 import { Types } from "mongoose";
@@ -2679,10 +2680,8 @@ appsRoutes.openapi(
           202,
         );
       }
-      const result = await materializeAppBinding(
-        loaded.project,
-        name,
-        loaded.userId ?? "api-key",
+      const result = await withQueryLabels({ mako_trigger: "manual" }, () =>
+        materializeAppBinding(loaded.project, name, loaded.userId ?? "api-key"),
       );
       return c.json({ success: true as const, ...result }, 200);
     } catch (error) {
@@ -4422,12 +4421,16 @@ appsRoutes.post("/:id/live/__data/:name/refresh", async c => {
         404,
       );
     }
-    const { status, body, headers } = await refreshBindingHttp({
-      project: loaded.project,
-      name: c.req.param("name"),
-      actorId: loaded.userId ?? "api-key",
-      at: sha,
-    });
+    const { status, body, headers } = await withQueryLabels(
+      { mako_trigger: "viewer" },
+      () =>
+        refreshBindingHttp({
+          project: loaded.project,
+          name: c.req.param("name"),
+          actorId: loaded.userId ?? "api-key",
+          at: sha,
+        }),
+    );
     return c.json(body, status, headers);
   } catch (error) {
     return handleError(c, error);

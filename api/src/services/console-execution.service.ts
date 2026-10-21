@@ -10,6 +10,7 @@
  * survive detached agent sessions) and publishes console.run.completed on
  * the workspace realtime channel.
  */
+import { withQueryLabels } from "./bigquery-labels";
 import { Types } from "mongoose";
 import {
   SavedConsole,
@@ -242,10 +243,19 @@ async function runResolvedConsole(args: {
         { ...savedConsole.mongoOptions, ...executionOptions },
       )) as typeof result;
     } else {
-      result = (await databaseConnectionService.executeQuery(
-        database,
-        savedConsole.code,
-        executionOptions,
+      result = (await withQueryLabels(
+        {
+          mako_source: "console",
+          mako_console: consoleId,
+          mako_trigger: String(source),
+          mako_user: userId,
+        },
+        () =>
+          databaseConnectionService.executeQuery(
+            database,
+            savedConsole.code,
+            executionOptions,
+          ),
       )) as typeof result;
     }
   } catch (error) {
@@ -495,25 +505,21 @@ export async function startDetachedConsoleRun(
     // of capping at the interactive 5-minute default.
     bigQueryJobMaxWaitMs: QUERY_HARD_MAX_EXECUTION_MS,
   })
-    .catch(
-      (error): ExecuteSavedConsoleResult => ({
-        success: false,
-        rows: [],
-        rowCount: 0,
-        fields: null,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Detached console run failed",
-        durationMs: Date.now() - startTime,
-        status: "error",
-        console: {
-          id: savedConsole._id.toString(),
-          name: savedConsole.name,
-          language: savedConsole.language,
-        },
-      }),
-    )
+    .catch((error): ExecuteSavedConsoleResult => ({
+      success: false,
+      rows: [],
+      rowCount: 0,
+      fields: null,
+      error:
+        error instanceof Error ? error.message : "Detached console run failed",
+      durationMs: Date.now() - startTime,
+      status: "error",
+      console: {
+        id: savedConsole._id.toString(),
+        name: savedConsole.name,
+        language: savedConsole.language,
+      },
+    }))
     .finally(() => {
       clearTimeout(hardCapTimer);
       databaseConnectionService.releaseDetachedExecution(executionId);

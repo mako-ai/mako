@@ -603,7 +603,10 @@ export function createNotebookServerTools({
             typeof databaseConnectionService.executeQuery
           >[0],
           cell.source,
-          { readOnly: true },
+          {
+            readOnly: true,
+            labels: { mako_source: "notebook", mako_notebook: id },
+          },
         );
         if (!result.success) {
           const message = result.error || "Query failed";

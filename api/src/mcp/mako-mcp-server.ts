@@ -14,6 +14,7 @@
  * One Server instance is built per HTTP request (stateless Streamable HTTP,
  * JSON response mode) — see stateless-transport.ts and mcp-server.routes.ts.
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -615,12 +616,23 @@ export function buildMakoMcpServer(
       };
     }
 
+    const execute = tool.execute;
     try {
-      const result = await tool.execute(input as never, {
-        toolCallId: nanoid(),
-        messages: [],
-        context: undefined,
-      });
+      const result = await withQueryLabels(
+        {
+          mako_source: "agent",
+          mako_trigger: context.acpDesktop ? "desktop" : "mcp",
+          mako_tool: name,
+          mako_user: context.userId,
+          mako_workspace: context.workspaceId,
+        },
+        () =>
+          execute(input as never, {
+            toolCallId: nanoid(),
+            messages: [],
+            context: undefined,
+          }),
+      );
       const richContent = extractMcpContent(result);
       if (richContent) {
         return { content: richContent };

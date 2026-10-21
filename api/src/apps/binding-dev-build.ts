@@ -29,6 +29,7 @@
  * …/artifact` needs); building anything needs write access (what
  * materialize needs).
  */
+import { withDefaultQueryLabels } from "../services/bigquery-labels";
 import type {
   IAppProject,
   IDatabaseConnection,
@@ -263,6 +264,23 @@ export async function devBuildAppBinding(
 export async function planDevBuild(
   input: DevBuildInput,
   deps: DevBuildDeps = defaultDeps,
+): Promise<DevBuildPlan> {
+  // Dev builds and their defer listings are tagged as such in BigQuery; the
+  // returned run() may execute later (a binding job), so it re-enters.
+  const labels = { mako_trigger: "dev", mako_user: input.actorId };
+  const plan = await withDefaultQueryLabels(labels, () =>
+    planDevBuildUnlabelled(input, deps),
+  );
+  if (plan.kind !== "build") return plan;
+  return {
+    kind: "build",
+    run: () => withDefaultQueryLabels(labels, plan.run),
+  };
+}
+
+async function planDevBuildUnlabelled(
+  input: DevBuildInput,
+  deps: DevBuildDeps,
 ): Promise<DevBuildPlan> {
   const { project, name, actorId } = input;
   if (!NAME_RE.test(name)) {

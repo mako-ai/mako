@@ -10,6 +10,7 @@ import { ClickHouseDestinationAdapter } from "./clickhouse";
 import { MongoDbDestinationAdapter } from "./mongodb";
 import { PostgreSqlDestinationAdapter } from "./postgresql";
 import { MySqlDestinationAdapter } from "./mysql";
+import { withQueryLabels } from "../../services/bigquery-labels";
 
 /** Airbyte-style destination write mode. Default: "append_dedup" (upsert). */
 export type CdcWriteMode = "append_dedup" | "append" | "overwrite";
@@ -94,6 +95,25 @@ export interface CdcDestinationAdapter {
   }>;
 }
 
+/**
+ * Every method of the adapter runs inside a BigQuery label context, so each
+ * DDL, MERGE and LOAD job it starts says which flow and table it served
+ * (services/bigquery-labels.ts).
+ */
+function withCdcQueryLabels<T extends object>(
+  adapter: T,
+  labels: Record<string, string | undefined>,
+): T {
+  return new Proxy(adapter, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) =>
+        withQueryLabels(labels, () => value.apply(target, args));
+    },
+  });
+}
+
 export function resolveCdcDestinationAdapter(params: {
   destinationType: string;
   destinationDatabaseId: string;
@@ -103,15 +123,25 @@ export function resolveCdcDestinationAdapter(params: {
     schema: string;
     tableName: string;
   };
+  /** Labels the adapter's BigQuery jobs with this flow. */
+  flowId?: string;
 }): CdcDestinationAdapter {
   const normalizedType = params.destinationType.toLowerCase();
 
   if (normalizedType === "bigquery") {
-    return new BigQueryDestinationAdapter({
-      destinationDatabaseId: params.destinationDatabaseId,
-      destinationDatabaseName: params.destinationDatabaseName,
-      tableDestination: params.tableDestination,
-    });
+    return withCdcQueryLabels(
+      new BigQueryDestinationAdapter({
+        destinationDatabaseId: params.destinationDatabaseId,
+        destinationDatabaseName: params.destinationDatabaseName,
+        tableDestination: params.tableDestination,
+      }),
+      {
+        mako_source: "cdc",
+        mako_flow: params.flowId,
+        mako_dataset: params.tableDestination.schema,
+        mako_table: params.tableDestination.tableName,
+      },
+    );
   }
 
   if (normalizedType === "clickhouse") {
@@ -175,9 +205,9 @@ export function hasStagingSupport(
 } {
   return Boolean(
     adapter?.loadStagingFromParquet &&
-      adapter?.mergeFromStaging &&
-      adapter?.cleanupStaging &&
-      adapter?.prepareStaging,
+    adapter?.mergeFromStaging &&
+    adapter?.cleanupStaging &&
+    adapter?.prepareStaging,
   );
 }
 
@@ -191,10 +221,7 @@ export function resolveEntityPartitioning(
       field: entityLayout.partitionField,
       granularity:
         (entityLayout.partitionGranularity as
-          | "day"
-          | "hour"
-          | "month"
-          | "year") || "day",
+          "day" | "hour" | "month" | "year") || "day",
       requirePartitionFilter: tableDestination?.requirePartitionFilter,
     };
   }

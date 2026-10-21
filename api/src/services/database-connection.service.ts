@@ -31,6 +31,7 @@ import { createBigQueryPollBudget } from "./bigquery-poll-budget";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
 import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
+import { bigQueryJobLabels, type QueryLabels } from "./bigquery-labels";
 import {
   type PreviewPageInfo,
   buildBigQueryCursor,
@@ -123,6 +124,11 @@ export interface QueryExecuteOptions {
    * Throwing stops the read; the query fails with that error.
    */
   onRows?: (rows: Record<string, unknown>[]) => void;
+  /**
+   * BigQuery only: job labels for cost attribution, merged over the
+   * enclosing withQueryLabels context (these win). See bigquery-labels.ts.
+   */
+  labels?: QueryLabels;
 }
 
 /** Rows a Postgres cursor fetches at a time. */
@@ -1629,7 +1635,9 @@ export class DatabaseConnectionService {
           ORDER BY table_name, ordinal_position
         `;
 
-        const result = await this.executeBigQueryQuery(database, query);
+        const result = await this.executeBigQueryQuery(database, query, {
+          labels: { mako_source: "metadata" },
+        });
         if (result.success && Array.isArray(result.data)) {
           if (!schema[datasetId]) schema[datasetId] = {};
 
@@ -1726,6 +1734,23 @@ export class DatabaseConnectionService {
     return Math.max(100, configured);
   }
 
+  /**
+   * The `labels` map for a BigQuery job on this connection (see
+   * bigquery-labels.ts), or undefined for a local emulator: emulator jobs
+   * cost nothing, and an emulator that rejects the field must not fail them.
+   */
+  private bigQueryLabels(
+    database: IDatabaseConnection,
+    apiBaseUrl: string | undefined,
+    options?: Pick<QueryExecuteOptions, "labels">,
+  ): Record<string, string> | undefined {
+    if (isLocalBigQueryEmulator(apiBaseUrl)) return undefined;
+    return bigQueryJobLabels({
+      workspaceId: database.workspaceId,
+      explicit: options?.labels,
+    });
+  }
+
   private async testBigQueryConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
@@ -1750,6 +1775,10 @@ export class DatabaseConnectionService {
         maxResults: 1,
       };
       if (location) body.location = location;
+      const labels = this.bigQueryLabels(database, api_base_url, {
+        labels: { mako_source: "connection_test" },
+      });
+      if (labels) body.labels = labels;
       await client.post(`/projects/${project_id}/queries`, body);
       return { success: true };
     } catch (error: any) {
@@ -1808,6 +1837,8 @@ export class DatabaseConnectionService {
         maxResults: batchSize,
       };
       if (configuredLocation) startBody.location = configuredLocation;
+      const labels = this.bigQueryLabels(database, api_base_url, options);
+      if (labels) startBody.labels = labels;
       checkAborted();
       let response = await client.post(
         `/projects/${project_id}/queries`,
@@ -2043,6 +2074,8 @@ export class DatabaseConnectionService {
         if (configuredLocation) {
           startBody.location = configuredLocation;
         }
+        const labels = this.bigQueryLabels(database, api_base_url, options);
+        if (labels) startBody.labels = labels;
 
         response = await client.post(
           `/projects/${project_id}/queries`,
@@ -2214,6 +2247,8 @@ export class DatabaseConnectionService {
       if (configuredLocation) {
         startBody.location = configuredLocation;
       }
+      const labels = this.bigQueryLabels(database, api_base_url, options);
+      if (labels) startBody.labels = labels;
 
       checkAborted();
       let response = await client.post(
@@ -2466,6 +2501,8 @@ export class DatabaseConnectionService {
         dryRun: true, // Key: validates query and returns schema without running
       };
       if (location) body.location = location;
+      const labels = this.bigQueryLabels(database, api_base_url);
+      if (labels) body.labels = labels;
 
       const response = await client.post(
         `/projects/${project_id}/queries`,

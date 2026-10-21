@@ -122,6 +122,11 @@ export async function runWorkflowQuery(
         readOnly: target.readOnly,
         timeoutMs,
         onRows,
+        labels: {
+          mako_source: "workflow",
+          mako_user: worker.userId,
+          mako_workspace: worker.workspaceId,
+        },
       }),
     { signal, timeoutMs },
   ).catch(error => {

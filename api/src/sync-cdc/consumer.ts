@@ -80,6 +80,7 @@ export class CdcConsumerService {
     );
     const adapter = resolveCdcDestinationAdapter({
       destinationType: destination.type,
+      flowId: String(flow._id),
       destinationDatabaseId: String(flow.destinationDatabaseId),
       destinationDatabaseName: flow.destinationDatabaseName,
       tableDestination: {

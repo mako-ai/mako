@@ -4,6 +4,7 @@
  * Uses agent registry for multi-agent support
  */
 
+import { withToolQueryLabels } from "../agent-lib/tool-query-labels";
 import {
   readWorkspacePromptFile,
   readWorkspaceSelfDirectiveFile,
@@ -919,7 +920,16 @@ agentRoutes.openapi(
     // replayed on every later step and turn, so one oversized output is
     // re-billed many times. Per-tool caps sit below this; it catches the
     // tool nobody capped yet.
-    tools = withToolOutputBackstop(withToolFailureObservation(tools));
+    tools = withToolOutputBackstop(
+      withToolFailureObservation(
+        withToolQueryLabels(tools, {
+          mako_trigger: "chat",
+          mako_chat: chatId,
+          mako_user: actorId,
+          mako_workspace: workspaceId,
+        }),
+      ),
+    );
 
     const modelDef = await getModelById(resolvedModelId);
     // Self-heal wrapper: if the catalog still classifies this model as manual

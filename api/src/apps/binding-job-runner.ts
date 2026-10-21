@@ -2,6 +2,7 @@
  * The worker half of binding-jobs.ts: run one queued job to completion and
  * record what the synchronous route would have answered.
  */
+import { withQueryLabels } from "../services/bigquery-labels";
 import fs from "node:fs/promises";
 import type { IAppProject } from "../database/workspace-schema";
 import { resolveProjectRef } from "./worktree.service";
@@ -114,7 +115,9 @@ async function build(
   deps: BindingJobRunnerDeps,
 ): Promise<BindingJobResult> {
   if (job.kind === "materialize") {
-    const result = await deps.materialize(project, job.name, job.actorId);
+    const result = await withQueryLabels({ mako_trigger: "manual" }, () =>
+      deps.materialize(project, job.name, job.actorId),
+    );
     return {
       artifactKey: result.artifactKey,
       build: "materialized",

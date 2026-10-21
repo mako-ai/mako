@@ -5,6 +5,7 @@
  * chat marked `source: "workflow"`, which the chat history leaves out, so
  * what the agent did can be read afterwards.
  */
+import { withToolQueryLabels } from "../agent-lib/tool-query-labels";
 import {
   convertToModelMessages,
   stepCountIs,
@@ -68,7 +69,13 @@ export async function runStepAgent(params: {
     model: getModel(modelId),
     system: runtime.system,
     messages: await convertToModelMessages(messages),
-    tools: withToolOutputBackstop(runtime.tools),
+    tools: withToolOutputBackstop(
+      withToolQueryLabels(runtime.tools, {
+        mako_trigger: "workflow",
+        mako_user: userId,
+        mako_workspace: workspaceId,
+      }),
+    ),
     prepareStep: runtime.prepareStep,
     stopWhen: stepCountIs(
       Math.min(params.maxSteps ?? DEFAULT_MAX_STEPS, MAX_STEPS),
