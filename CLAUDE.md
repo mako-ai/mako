@@ -67,6 +67,12 @@ configs above (~2 min); bypass deliberately with `SKIP_PREPUSH_TESTS=1`.
 Run the whole config, never a single file: a test's location decides which
 config runs it, and CI's "API tests (tsx + vitest)" job runs all of them.
 
+blockwatch (`blockwatch.toml`, tags in comments) guards code that must agree
+with other code or docs: Mongoose enums and their TS unions, constants and the
+docs that list them, connector folders and the connector tables. It runs in CI
+only (`.github/workflows/blockwatch.yml`); locally,
+`git diff --patch HEAD | blockwatch --diff`; `blockwatch skill` prints the guide.
+
 
 ### Data Operations
 

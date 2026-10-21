@@ -27,6 +27,12 @@ If you add or rename an `api/src/**/*.test.ts` file, register it in the API
 `pnpm --filter api exec tsx src/test-coverage.test.ts`. The staged-files hook
 runs this guard automatically for API test-file changes.
 
+If a file you touched holds blockwatch `block` tags in comments, or
+`blockwatch.toml` points at it, keep the rules they declare: tagged lists and
+the docs they name change together. CI runs blockwatch on every PR (no hook);
+check locally with `git diff --patch HEAD | blockwatch --diff`. Full guide:
+`blockwatch skill`.
+
 ## Why the pre-commit hook is not enough
 
 - `lint-staged` only runs on staged files, not the full package.

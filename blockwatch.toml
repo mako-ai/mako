@@ -1,0 +1,12 @@
+# blockwatch: https://github.com/mennanov/blockwatch
+
+# The app router: production and canary read one KV namespace, and the
+# README's cutover commands write to it.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+name = 'app-routing-kv-id'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id,cloudflare/app-router/README.md:cutover-namespace'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'

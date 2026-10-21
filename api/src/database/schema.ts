@@ -523,7 +523,9 @@ export const LlmUsage =
 // ---------------------------------------------------------------------------
 
 type ModelCatalogSnapshotId =
+  // <block name="snapshot-id-union" same-as=":snapshot-id-enum" same-as-pattern='"(?P<value>[^"]+)"'>
   "gateway" | "gateway-raw" | "arena" | "pricing" | "curation" | "capabilities";
+// </block>
 
 export interface IModelCatalogSnapshot extends Document<ModelCatalogSnapshotId> {
   _id: ModelCatalogSnapshotId;
@@ -548,7 +550,16 @@ const ModelCatalogSnapshotSchema = new Schema(
     // the seed migration deletes them.
     _id: {
       type: String,
-      enum: ["gateway", "arena", "pricing", "curation", "capabilities"],
+      enum: [
+        // <block name="snapshot-id-enum" same-as=":snapshot-id-union" same-as-pattern='"(?P<value>[^"]+)"'>
+        "gateway",
+        "gateway-raw",
+        "arena",
+        "pricing",
+        "curation",
+        "capabilities",
+        // </block>
+      ],
     },
     data: { type: Schema.Types.Mixed, default: [] },
     fetchedAt: { type: Date, required: true },
