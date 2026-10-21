@@ -39,14 +39,18 @@ import {
   writeFile,
   scopeOf,
 } from "./worktree.service";
-import { AppWorktree } from "../database/workspace-schema";
+import { AppProject, AppWorktree } from "../database/workspace-schema";
 import { getSandboxProvider } from "./sandbox/provider";
 import {
+  DEFAULT_BRANCH,
   commitTree,
+  listTree,
   repoDirFor,
   resolveCommit,
   initRepo,
+  snapshotDirToTree,
 } from "./repository.service";
+import { mirrorPushNow } from "./cloud-repo.service";
 import { runGit } from "./git";
 import { RepoRequiredError } from "./config";
 import { seededTemplateFiles } from "./workspace-template";
@@ -133,6 +137,97 @@ describe("project lifecycle", () => {
     expect(history[0].subject).toContain('Create app "Test App"');
 
     await deleteProject(project);
+  });
+
+  it("creates durably without touching an unrelated active mirror branch", async () => {
+    const previousPushGate = process.env.APPS_CONNECTED_REPO_PUSH;
+    const previousRemoteBase = process.env.APPS_GITHUB_REMOTE_BASE;
+    const remoteRoot = path.join(tmpRoot, "mirrors");
+    const remoteDir = path.join(remoteRoot, "test-owner", "test-repo.git");
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    process.env.APPS_GITHUB_REMOTE_BASE = `file://${remoteRoot}`;
+
+    try {
+      await fs.mkdir(path.dirname(remoteDir), { recursive: true });
+      await runGit(["init", "--bare", "-b", DEFAULT_BRANCH, remoteDir]);
+      await mirrorPushNow(WS);
+
+      const repoDir = repoDirFor(WS);
+      const mainBeforeCreate = (
+        await runGit([
+          "-C",
+          repoDir,
+          "rev-parse",
+          `refs/heads/${DEFAULT_BRANCH}`,
+        ])
+      ).stdout.trim();
+      const branch = "feat/win-radar-deals";
+      await runGit([
+        "-C",
+        repoDir,
+        "update-ref",
+        `refs/heads/${branch}`,
+        mainBeforeCreate,
+      ]);
+
+      const featureWork = await fs.mkdtemp(
+        path.join(tmpRoot, "mirror-feature-"),
+      );
+      let remoteFeature: string;
+      try {
+        await fs.writeFile(
+          path.join(featureWork, "active-feature.txt"),
+          "keep\n",
+        );
+        const featureTree = await snapshotDirToTree(remoteDir, featureWork);
+        remoteFeature = await commitTree(remoteDir, {
+          treeOid: featureTree,
+          parents: [mainBeforeCreate],
+          message: "active feature branch commit",
+        });
+      } finally {
+        await fs.rm(featureWork, { recursive: true, force: true });
+      }
+      await runGit([
+        "-C",
+        remoteDir,
+        "update-ref",
+        `refs/heads/${branch}`,
+        remoteFeature,
+      ]);
+
+      const project = await createProject({
+        workspaceId: WS,
+        title: "Create without branch conflict",
+        userId: USER,
+      });
+
+      expect(await AppProject.findById(project._id)).not.toBeNull();
+      expect(
+        (await listTree(remoteDir, DEFAULT_BRANCH)).map(entry => entry.path),
+      ).toContain(`${project.path}/mako.json`);
+      expect(
+        (
+          await runGit(["-C", remoteDir, "rev-parse", `refs/heads/${branch}`])
+        ).stdout.trim(),
+      ).toBe(remoteFeature);
+      expect(
+        (
+          await runGit(["-C", repoDir, "rev-parse", `refs/heads/${branch}`])
+        ).stdout.trim(),
+      ).toBe(mainBeforeCreate);
+    } finally {
+      if (previousPushGate === undefined) {
+        delete process.env.APPS_CONNECTED_REPO_PUSH;
+      } else {
+        process.env.APPS_CONNECTED_REPO_PUSH = previousPushGate;
+      }
+      if (previousRemoteBase === undefined) {
+        delete process.env.APPS_GITHUB_REMOTE_BASE;
+      } else {
+        process.env.APPS_GITHUB_REMOTE_BASE = previousRemoteBase;
+      }
+    }
   });
 
   it("does not serve leftover local git history when no GitHub repo is bound", async () => {

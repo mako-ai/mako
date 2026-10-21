@@ -193,44 +193,102 @@ export async function ensureLocalRepo(workspaceId: string): Promise<void> {
 // wait for a push that STARTS after that commit; that is exactly what
 // `schedulePush` guarantees.
 const inFlight = new Map<string, Promise<void>>();
-// The single trailing push per workspace: every request that arrives while a
-// push is in flight collapses into one more push, which starts only after the
-// current one ends (so it sees all their commits). Awaiters share its promise.
-const trailing = new Map<string, Promise<void>>();
+type MirrorPushScope = "all" | "default-branch";
+// Requests of the same scope coalesce; different scopes stay separate so an
+// all-ref push cannot turn a queued create push into a failing operation.
+const queuedPushes = new Map<string, Map<MirrorPushScope, Promise<void>>>();
 
-async function runPush(workspaceId: string): Promise<void> {
+async function runPush(
+  workspaceId: string,
+  scope: MirrorPushScope,
+): Promise<void> {
   const target = await resolveMirrorTarget(workspaceId);
-  if (target) await pushMirror(workspaceId, target);
+  if (!target) return;
+  if (scope === "default-branch") {
+    await pushDefaultBranchMirror(workspaceId, target);
+    return;
+  }
+  await pushMirror(workspaceId, target);
 }
 
 /**
  * Schedule a mirror push that is guaranteed to START after this call, and
  * return a promise for its completion. Never runs two pushes for one workspace
- * at once; coalesces every request made during an in-flight push into a single
- * trailing push.
+ * at once; coalesces queued requests only when they have the same scope.
  */
-function schedulePush(workspaceId: string): Promise<void> {
+function schedulePush(
+  workspaceId: string,
+  scope: MirrorPushScope = "all",
+): Promise<void> {
   const running = inFlight.get(workspaceId);
   if (!running) {
-    const p = runPush(workspaceId).finally(() => {
+    const p = runPush(workspaceId, scope).finally(() => {
       if (inFlight.get(workspaceId) === p) inFlight.delete(workspaceId);
     });
     inFlight.set(workspaceId, p);
     return p;
   }
-  // A push is already running and may predate our commit — ride the single
-  // trailing push, which begins only once the current one finishes.
-  let t = trailing.get(workspaceId);
-  if (!t) {
-    t = running
-      .catch(() => undefined)
-      .then(() => {
-        trailing.delete(workspaceId);
-        return schedulePush(workspaceId);
-      });
-    trailing.set(workspaceId, t);
+  // A push is already running and may predate this commit. Keep this request's
+  // scope so an unrelated all-ref push cannot make a create fail.
+  let workspaceQueue = queuedPushes.get(workspaceId);
+  if (!workspaceQueue) {
+    workspaceQueue = new Map();
+    queuedPushes.set(workspaceId, workspaceQueue);
   }
-  return t;
+  const existing = workspaceQueue.get(scope);
+  if (existing) return existing;
+
+  const queued = running
+    .catch(() => undefined)
+    .then(() => {
+      // Remove this placeholder before scheduling. Otherwise a different
+      // queued scope can start first and this call would find and return its
+      // own still-pending placeholder, creating a promise cycle.
+      const queue = queuedPushes.get(workspaceId);
+      if (queue?.get(scope) === queued) queue.delete(scope);
+      if (queue?.size === 0) queuedPushes.delete(workspaceId);
+      return schedulePush(workspaceId, scope);
+    })
+    .finally(() => {
+      const queue = queuedPushes.get(workspaceId);
+      if (queue?.get(scope) === queued) queue.delete(scope);
+      if (queue?.size === 0) queuedPushes.delete(workspaceId);
+    });
+  workspaceQueue.set(scope, queued);
+  return queued;
+}
+
+async function pushDefaultBranchMirror(
+  workspaceId: string,
+  target: MirrorTarget,
+): Promise<void> {
+  const repoDir = repoDirFor(workspaceId);
+  const token = await tokenFor(target);
+  const url = remoteUrl(target.owner, target.repo);
+  const branchRef = `refs/heads/${DEFAULT_BRANCH}`;
+  const localOid = (
+    await runGit(["-C", repoDir, "rev-parse", "--verify", branchRef])
+  ).stdout.trim();
+
+  // App creation only adds content to the default branch. Pushing every local
+  // head here lets an unrelated stale feature branch reject creation after
+  // main has advanced. Keep active non-default branches out of this write.
+  await runGit([
+    "-C",
+    repoDir,
+    ...authArgs(token),
+    "push",
+    "--quiet",
+    url,
+    `${localOid}:${branchRef}`,
+  ]);
+  await runGit([
+    "-C",
+    repoDir,
+    "update-ref",
+    `${MIRROR_TRACKING_PREFIX}${DEFAULT_BRANCH}`,
+    localOid,
+  ]).catch(() => undefined);
 }
 
 async function pushMirror(
@@ -461,6 +519,14 @@ export function queueMirrorPush(workspaceId: string): void {
 export async function mirrorPushNow(workspaceId: string): Promise<void> {
   if (!connectedTierEnabled()) return;
   await schedulePush(workspaceId);
+}
+
+/** Awaitable durable push for a new scaffold committed only to the default branch. */
+export async function mirrorPushDefaultBranchNow(
+  workspaceId: string,
+): Promise<void> {
+  if (!connectedTierEnabled()) return;
+  await schedulePush(workspaceId, "default-branch");
 }
 
 /**
