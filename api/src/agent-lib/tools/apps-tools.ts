@@ -501,7 +501,12 @@ function buildTools(
         "Create a new app: a real Vite + React + TypeScript project scaffolded into a folder of the workspace repo. By DEFAULT it goes into the user's personal tree (users/<handle>/apps/<name>/, private to them) — pass `folder` under apps/… only when the user explicitly asks for a shared/workspace app; sharing is a deliberate later step (app_move_app). Call search_apps first and offer to extend a close match. The FOLDER is the app — creating one is just committing that directory, and you can equally create it yourself with app_bash + app_write_file (give its mako.json an `id`). Returns the app id and path that every other app_* tool takes.",
       inputSchema: z.object({
         title: z.string().min(1).describe("Human-readable app title"),
-        description: z.string().optional(),
+        description: z
+          .string()
+          .min(1)
+          .describe(
+            "One line: what the app measures, for whom, which markets. Shown under the title on the Apps home and read by search.",
+          ),
         folder: z
           .string()
           .optional()
