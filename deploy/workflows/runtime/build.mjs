@@ -1,7 +1,6 @@
 // What it takes to run `workflows/`: the shared files the image supplies, the
 // runtime's packages, a typecheck, and a started worker. Used by
-// entrypoint.mjs (a commit, in the workspace's worker) and run.mjs (a
-// checkout, in a person's sandbox) the same way.
+// entrypoint.mjs (a commit, in the workspace's worker).
 import { execFileSync, fork } from "node:child_process";
 import {
   copyFileSync,

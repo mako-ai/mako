@@ -125,7 +125,7 @@ export const WORKFLOW_MODE_SYSTEM_PROMPT = `## Workflow Mode
 A workflow is a folder in the workspace repo: \`workflows/<name>/workflow.ts\`, Hatchet
 TypeScript. Edit it with the \`workflow_*\` shell, file and git tools, which take the
 folder name as \`workflowId\`. Test before committing: \`workflows_run\` with \`sandbox: true\` runs
-your checkout as it is and returns the run. A commit on main is the deploy (admins only);
+your checkout as it is and answers a runId; \`workflows_status({ runId, wait: 90 })\` returns the run. A commit on main is the deploy (admins only);
 a deployed workflow's schedule and webhook stay off until \`workflows_triggers\` switches
 it active. A step reads every connection; it writes only through a connection whose
 Access tab lists the workflow, which an admin sets. Load the \`workflows\` system skill

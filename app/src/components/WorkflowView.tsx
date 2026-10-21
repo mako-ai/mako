@@ -160,8 +160,8 @@ function RunDialog({
     sandbox: boolean,
   ) => Promise<string | null>;
 }) {
-  // A sandbox run answers when it is finished, a few seconds at least.
-  // Mounted only while open, so the initial state is the dialog's state.
+  // A run, on main or in the sandbox, answers its runId at once and is
+  // followed in the panel. Mounted only while open, so the initial state is the dialog's state.
   const [target, setTarget] = useState<"main" | "sandbox">(
     deployed ? "main" : "sandbox",
   );
@@ -243,7 +243,7 @@ function RunDialog({
           disabled={busy}
           startIcon={busy ? <CircularProgress size={12} /> : undefined}
         >
-          {busy && target === "sandbox" ? "Running in sandbox…" : "Run"}
+          Run
         </Button>
       </DialogActions>
     </Dialog>
@@ -264,8 +264,21 @@ function RunsView({
   const setTriggers = useWorkflowsStore(s => s.setTriggers);
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  // The last sandbox run: shown in place of a selected run until one is picked.
-  const [sandboxRun, setSandboxRun] = useState<WorkflowRun | null>(null);
+  // The last sandbox run: shown in place of a selected run until one is
+  // picked. It is in no list (it ran in the viewer's own sandbox).
+  const [sandboxRunId, setSandboxRunId] = useState<string | null>(null);
+  const readSandboxRun = useWorkflowsStore(s =>
+    sandboxRunId ? s.runsById[sandboxRunId] : undefined,
+  );
+  const sandboxRun: WorkflowRun | null = sandboxRunId
+    ? (readSandboxRun ?? {
+        runId: sandboxRunId,
+        workflowId,
+        sandbox: true,
+        status: "RUNNING",
+        steps: [],
+      })
+    : null;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -313,8 +326,19 @@ function RunsView({
     fetchRun,
   ]);
 
+  // Follow the sandbox run until it ends.
+  const sandboxStatus = sandboxRun?.status;
+  useEffect(() => {
+    if (!sandboxRunId || !isActiveRun(sandboxStatus)) return;
+    const timer = setInterval(
+      () => void fetchRun(workspaceId, sandboxRunId),
+      ACTIVE_POLL_INTERVAL_MS,
+    );
+    return () => clearInterval(timer);
+  }, [workspaceId, sandboxRunId, sandboxStatus, fetchRun]);
+
   const select = (runId: string) => {
-    setSandboxRun(null);
+    setSandboxRunId(null);
     setSelectedRunId(runId);
   };
 
@@ -737,7 +761,7 @@ function RunsView({
               sandbox,
             );
             if (!result.ok) return result.error ?? "Failed to start the run";
-            if (result.run) setSandboxRun(result.run);
+            if (sandbox && result.runId) setSandboxRunId(result.runId);
             else {
               await fetchOverview(workspaceId);
               if (result.runId) select(result.runId);

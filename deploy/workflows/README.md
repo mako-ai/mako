@@ -47,17 +47,18 @@ on the direct endpoint, so the tables are created in `public`, the engine logs
 
 ## Sandbox runs
 
-Testing a workflow needs nothing here. A sandbox run happens inside the
-person's sandbox: `runtime/run.mjs` starts Hatchet's embedded engine (a local
-engine with a bundled Postgres, no token, no network), runs the checkout's
-workflow once with `runtime/worker.mjs`, and prints the run
+Testing a workflow needs nothing here. A sandbox run is `mako workflow run`
+(packages/cli) inside the person's sandbox, the same command as on a laptop:
+`runtime/run.mjs` calls it with the CLI's workflow files, installed next to it
+in `cli/`. It runs the checkout's workflow once in one process, with no
+Hatchet engine, started detached; Mako reads its result file back
 (`api/src/workflows/sandbox.ts`).
 
 Mako installs the runtime in the box itself, by content
 (`api/src/workflows/runtime-files.ts`): a box without it, or with an older
 one, gets the current files under `~/.mako-workflows` on its next sandbox
 run, so nothing has to be rebuilt when these scripts change. The sandbox
-image carries it preinstalled with the engine fetched
+image carries it preinstalled
 (`api/src/apps/e2b-template.ts`), which only saves the first run its ~40 s
 of install; rebuild it now and then with
 `pnpm --filter api apps:build-template`.

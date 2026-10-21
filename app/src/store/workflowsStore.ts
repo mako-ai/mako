@@ -65,10 +65,8 @@ interface WorkflowsOverview {
 type Result = {
   ok: boolean;
   error?: string;
-  /** A run started on main. */
+  /** The run started, on main or in the sandbox. */
   runId?: string;
-  /** A finished sandbox run. */
-  run?: WorkflowRun;
 };
 
 interface WorkflowsState {
@@ -172,8 +170,8 @@ export const useWorkflowsStore = create<WorkflowsState>()(
             params: { path: { workspaceId, name: workflowId } },
             body: { input, sandbox },
           }),
-        ) as { runId?: string; run?: WorkflowRun };
-        return { ok: true, runId: body.runId, run: body.run };
+        ) as { runId?: string };
+        return { ok: true, runId: body.runId };
       } catch (e) {
         return { ok: false, error: message(e, "Failed to start the run") };
       }

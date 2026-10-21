@@ -46,9 +46,10 @@ import {
   WorkflowQueryError,
   runWorkflowQuery,
 } from "../workflows/query";
-import { readRun, readWorkflowsOverview } from "../workflows/runs";
+import { readWorkflowsOverview } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
-import { runInSandbox } from "../workflows/sandbox";
+import { startSandboxRun } from "../workflows/sandbox";
+import { waitForRun } from "../workflows/status";
 import { isWebhookSecret, setTriggers } from "../workflows/webhook";
 
 const logger = loggers.api("workflows");
@@ -143,19 +144,34 @@ workflowRoutes.openapi(
     method: "get",
     path: "/runs/{id}",
     tags: ["Workflows"],
-    summary: "One run: its steps in order, with status, output, error and logs",
+    summary:
+      "One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole",
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam.extend({
         id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      query: z.object({
+        wait: z.coerce.number().min(0).optional(),
+        full: z
+          .enum(["true", "false"])
+          .optional()
+          .transform(value => value === "true"),
       }),
     },
     responses: OPEN_RESPONSES,
   }),
   async c => {
     const { workspaceId, id } = c.req.valid("param");
-    const run = await readRun(await requireTenant(workspaceId), id);
-    return c.json({ success: true as const, run }, 200);
+    const { wait, full } = c.req.valid("query");
+    const { run, done } = await waitForRun(workspaceId, c.get("user")?.id, id, {
+      wait,
+      full,
+    });
+    return c.json(
+      { success: true as const, run, ...(done ? {} : { running: true }) },
+      200,
+    );
   },
 );
 
@@ -211,7 +227,7 @@ workflowRoutes.openapi(
     path: "/{name}/run",
     tags: ["Workflows"],
     summary:
-      "Start a run of the deployed workflow (answers its runId), or with `sandbox` run the caller's checkout in their sandbox (answers the finished run)",
+      "Start a run of the deployed workflow (answers its runId), or with `sandbox` the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait=",
     security: AUTH_SECURITY,
     request: {
       params: NameParam,
@@ -237,8 +253,13 @@ workflowRoutes.openapi(
       if (!userId) {
         throw new HatchetError("A sandbox needs a signed-in user", 400);
       }
-      const run = await runInSandbox(workspaceId, userId, name, body.input);
-      return c.json({ success: true as const, run }, 200);
+      const { runId } = await startSandboxRun(
+        workspaceId,
+        userId,
+        name,
+        body.input,
+      );
+      return c.json({ success: true as const, runId, sandbox: true }, 200);
     }
     const runId = await startRun(await requireTenant(workspaceId), name, {
       input: body?.input,
@@ -305,7 +326,7 @@ workflowHookRoutes.post(
         ? body
         : { body };
     // The test URL: `?sandbox=<user id>` runs that member's checkout in
-    // their sandbox with this body and answers with the finished run. It
+    // their sandbox with this body and answers its runId (202). It
     // works whether or not the workflow is active.
     const tester = c.req.query("sandbox");
     if (tester) {
@@ -315,9 +336,10 @@ workflowHookRoutes.post(
         "member",
       ]);
       if (!member) return c.json({ error: "Not found" }, 404);
-      return c.json({
-        run: await runInSandbox(workspaceId, tester, name, input),
-      });
+      return c.json(
+        await startSandboxRun(workspaceId, tester, name, input),
+        202,
+      );
     }
     // The production URL works while the workflow is active, like its schedule.
     const tenant = active?.includes(name)
