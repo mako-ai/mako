@@ -14,10 +14,11 @@ import {
   Box,
   CircularProgress,
   Dialog,
+  IconButton,
   InputBase,
   Typography,
 } from "@mui/material";
-import { ChevronRight, Search } from "lucide-react";
+import { ChevronRight, Search, X as ClearIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../contexts/auth-context";
 import { useTheme as useAppTheme } from "../contexts/ThemeContext";
@@ -235,6 +236,7 @@ export default function CommandPalette() {
             path: hit.path,
             slug: hit.slug,
             owner: ownerHandle(hit) ?? undefined,
+            related: hit.matches?.includes("related") ?? false,
           }))
         : null;
       appItems = appPaletteItems(
@@ -379,7 +381,21 @@ export default function CommandPalette() {
           }}
           sx={{ fontSize: 14 }}
         />
-        {(searching || appSearch.loading) && <CircularProgress size={14} />}
+        {searching || appSearch.loading ? (
+          <CircularProgress size={14} />
+        ) : query ? (
+          <IconButton
+            size="small"
+            aria-label="Clear search"
+            onClick={() => {
+              setQuery("");
+              setSelectedIndex(0);
+              inputRef.current?.focus();
+            }}
+          >
+            <ClearIcon size={14} />
+          </IconButton>
+        ) : null}
       </Box>
 
       <Box ref={listRef} sx={{ maxHeight: 400, overflowY: "auto", py: 0.5 }}>

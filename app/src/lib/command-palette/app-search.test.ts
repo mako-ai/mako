@@ -58,6 +58,13 @@ describe("palette app search", () => {
     expect(mergeAppResults(local, [apps[2]], 1).map(a => a.id)).toEqual(["c"]);
   });
 
+  it("puts the server's related apps after every word match", () => {
+    const related: PaletteApp = { id: "r", title: "Related", related: true };
+    expect(
+      mergeAppResults([apps[0]], [related, apps[2]], 5).map(a => a.id),
+    ).toEqual(["c", "a", "r"]);
+  });
+
   it("labels the folder, not the app, and builds runnable items", () => {
     expect(folderLabel("apps/Sales/CH/leads")).toBe("Sales / CH");
     expect(folderLabel("apps/leads")).toBeUndefined();

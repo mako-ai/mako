@@ -37,6 +37,7 @@ import {
 import { boundRepoDirIfExists } from "./workspace-repo-required";
 import { createSerializer } from "./serialized";
 import { scheduleThumbnailWarm } from "./thumbnail-variants.service";
+import { scheduleAppEmbeddings } from "./app-embeddings.service";
 import type { OwnerDirectory } from "./user-handles";
 import { loadOwnerDirectory } from "./user-handles.service";
 import {
@@ -1097,6 +1098,9 @@ export async function loadAppsIndex(
   // card and link-preview variants are in the shared store before the
   // first crawler or Apps home asks. Once per sha (Inngest does the work).
   if (synced) scheduleThumbnailWarm(workspaceId, synced);
+  // Semantic search: re-embed apps whose content changed, in the
+  // background — never part of this read (app-embeddings.service).
+  if (synced) scheduleAppEmbeddings(workspaceId, synced);
   return synced ? withOwners(synced, directory) : EMPTY;
 }
 

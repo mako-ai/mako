@@ -100,7 +100,7 @@ const FIELDS: Array<{
 ];
 
 /** A query token matches a field token exactly, or as a prefix of 3+ chars. */
-function tokenMatch(q: string, words: string[]): number {
+export function tokenMatch(q: string, words: readonly string[]): number {
   let best = 0;
   for (const w of words) {
     if (w === q) return 1;
@@ -122,8 +122,117 @@ function tokenMatch(q: string, words: string[]): number {
 export function rankApps(
   apps: SearchableApp[],
   query: string,
-  options: { limit?: number } = {},
+  options: {
+    limit?: number;
+    /** Semantic signals (app-search.service); absent: lexical alone. */
+    related?: RelatedSignals | null;
+  } = {},
 ): AppSearchHit[] {
+  const limit = options.limit ?? 10;
+  const lexical = lexicalHits(apps, query);
+  if (!options.related || options.related.similarity.size === 0) {
+    return lexical.slice(0, limit);
+  }
+  return blendRelated(lexical, apps, query, options.related, { limit });
+}
+
+/** What semantic search knows about each app, for one query. */
+export interface RelatedSignals {
+  /** appId → cosine similarity of the app's document to the query. */
+  similarity: ReadonlyMap<string, number>;
+  /**
+   * appId → the words of the app's search document (README, UI labels):
+   * what the index's fields do not hold.
+   */
+  terms?: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * When an app is "related" to a query. Calibrated on the RealAdvisor
+ * workspace (116 apps, text-embedding-3-small over app-embedding-doc's
+ * documents). Cosines there are compressed and shift per query: the median
+ * app sits at 0.14 for "zebra" and 0.32 for "investor deck". So the bar is
+ * relative — RELATED_MIN_Z standard deviations above the workspace's mean
+ * for this query — with an absolute floor that nonsense queries never reach
+ * (their best app scores ~0.22; weak associations sit at 0.25–0.26).
+ */
+export const RELATED_MIN_SIMILARITY = 0.27;
+export const RELATED_MIN_Z = 1.8;
+/** Below this many apps the spread says nothing: an absolute bar only. */
+export const RELATED_MIN_POPULATION = 20;
+export const RELATED_SMALL_WORKSPACE_SIMILARITY = 0.35;
+/** Semantic-only results shown at most, after every lexical hit. */
+export const RELATED_MAX = 12;
+/** The match reason a semantic-only hit carries. */
+export const RELATED_MATCH = "related";
+
+/** The similarity an app needs to be related, given every app's score. */
+export function relatedThreshold(sims: number[]): number {
+  if (sims.length < RELATED_MIN_POPULATION) {
+    return RELATED_SMALL_WORKSPACE_SIMILARITY;
+  }
+  const mean = sims.reduce((a, b) => a + b, 0) / sims.length;
+  const sd = Math.sqrt(
+    sims.reduce((a, b) => a + (b - mean) ** 2, 0) / sims.length,
+  );
+  return Math.max(RELATED_MIN_SIMILARITY, mean + RELATED_MIN_Z * sd);
+}
+
+/**
+ * Lexical hits first, in their order (semantic similarity breaks exact
+ * ties), then the apps the index's words missed, closest first, at most
+ * RELATED_MAX, marked `related`:
+ *
+ * - similar enough on meaning alone (relatedThreshold), or
+ * - every query word is in the app's document (a README, a UI label: the
+ *   "Acquisition channel" filter of a sales dashboard) and the app is at
+ *   least as similar as the workspace's average app.
+ *
+ * Their score is the similarity, so it never outranks a word match.
+ */
+export function blendRelated(
+  lexical: AppSearchHit[],
+  apps: SearchableApp[],
+  query: string,
+  related: RelatedSignals,
+  options: { limit: number; maxRelated?: number },
+): AppSearchHit[] {
+  const { similarity, terms } = related;
+  const sim = (id: string) => similarity.get(id) ?? 0;
+  const words = [...lexical].sort(
+    (a, b) =>
+      b.score - a.score ||
+      sim(b.appId) - sim(a.appId) ||
+      a.path.localeCompare(b.path),
+  );
+  const scored = apps.filter(a => similarity.has(a.appId));
+  const all = scored.map(a => sim(a.appId));
+  const threshold = relatedThreshold(all);
+  const mean = all.length ? all.reduce((a, b) => a + b, 0) / all.length : 1;
+  const tokens = [...new Set(tokenize(query))];
+  const inDocument = (id: string) => {
+    const t = terms?.get(id);
+    return !!t && tokens.length > 0 && tokens.every(q => tokenMatch(q, t) > 0);
+  };
+  const found = new Set(words.map(h => h.appId));
+  const extra: AppSearchHit[] = scored
+    .filter(a => {
+      if (found.has(a.appId)) return false;
+      const s = sim(a.appId);
+      return s >= threshold || (s >= mean && inDocument(a.appId));
+    })
+    .sort((a, b) => sim(b.appId) - sim(a.appId) || a.path.localeCompare(b.path))
+    .slice(0, options.maxRelated ?? RELATED_MAX)
+    .map(a => ({
+      ...a,
+      score: Math.round(sim(a.appId) * 100) / 100,
+      matchedOn: [RELATED_MATCH],
+    }));
+  return [...words, ...extra].slice(0, options.limit);
+}
+
+/** Every app the query's words match, best first (no limit). */
+function lexicalHits(apps: SearchableApp[], query: string): AppSearchHit[] {
   const tokens = [...new Set(tokenize(query))];
   if (tokens.length === 0) return [];
   const phrase = query.trim().toLowerCase();
@@ -163,5 +272,5 @@ export function rankApps(
     });
   }
   hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-  return hits.slice(0, options.limit ?? 10);
+  return hits;
 }

@@ -115,7 +115,11 @@ import {
 import { appTreeRoot, parseAppRepoPath } from "../apps/app-paths";
 import { loadOwnerDirectory } from "../apps/user-handles.service";
 import { searchDiscoveryApps } from "../apps/app-discovery.service";
-import { appUsageScores } from "../apps/app-search.service";
+import {
+  appUsageScores,
+  prefetchQueryEmbedding,
+  relatedSignals,
+} from "../apps/app-search.service";
 import { FeedCursorError, getFeedPage } from "../apps/app-feed.service";
 import {
   ArchiveRestoreError,
@@ -1623,7 +1627,7 @@ appsRoutes.openapi(
     tags: ["Apps"],
     summary: "Search apps",
     description:
-      "Free-text search over each visible app's title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Every term must match somewhere; results are ranked, best first, with the fields that matched.",
+      'Free-text search over each visible app\'s title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Word matches come first, ranked best first, with the fields that matched. Then, when embeddings are available, up to 12 apps those fields missed, closest in meaning first, with `matches: ["related"]`: apps whose search document (title, description, README, UI labels) is semantically close to the query, or contains its words.',
     security: AUTH_SECURITY,
     request: {
       params: WorkspaceParam,
@@ -1651,13 +1655,20 @@ appsRoutes.openapi(
       const role =
         (c.get("memberRole") as string | undefined) ??
         (await memberRoleFor(workspaceId, userId));
+      prefetchQueryEmbedding(q);
       const [visible, usage] = await Promise.all([
         listHomeDiscoveryApps(workspaceId, userId, role),
         appUsageScores(workspaceId),
       ]);
+      const related = await relatedSignals(
+        workspaceId,
+        q,
+        visible.map(a => a.id),
+      );
       const apps = searchDiscoveryApps(visible, q, {
         limit: limit ?? 50,
         usage,
+        related,
       });
       return c.json({ success: true as const, apps }, 200);
     } catch (error) {

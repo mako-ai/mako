@@ -3730,7 +3730,7 @@ export interface paths {
         };
         /**
          * Search apps
-         * @description Free-text search over each visible app's title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Every term must match somewhere; results are ranked, best first, with the fields that matched.
+         * @description Free-text search over each visible app's title, description, path, owner and the warehouse tables its bindings read (FROM/JOIN identifiers in bindings/*.sql, indexed per push). Word matches come first, ranked best first, with the fields that matched. Then, when embeddings are available, up to 12 apps those fields missed, closest in meaning first, with `matches: ["related"]`: apps whose search document (title, description, README, UI labels) is semantically close to the query, or contains its words.
          */
         get: operations["get_api_workspaces_workspaceId_apps_search"];
         put?: never;

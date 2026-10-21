@@ -23,6 +23,8 @@ export interface PaletteApp {
   path?: string;
   slug?: string;
   owner?: string;
+  /** A server hit found by meaning, not words (matches: ["related"]). */
+  related?: boolean;
 }
 
 /** Usage only breaks ties between comparable text matches. */
@@ -60,9 +62,10 @@ export function rankAppsLocally(
 }
 
 /**
- * The server's ranking first when it has answered THIS query, then any local
- * hit it did not return (a prefix the server's tokenizer skipped); before it
- * answers, the local ranking alone.
+ * The server's word matches first when it has answered THIS query, then any
+ * local hit it did not return (a prefix the server's tokenizer skipped),
+ * then the server's related apps (found by meaning, so weaker than any word
+ * match); before it answers, the local ranking alone.
  */
 export function mergeAppResults(
   local: readonly PaletteApp[],
@@ -71,7 +74,11 @@ export function mergeAppResults(
 ): PaletteApp[] {
   if (!server) return local.slice(0, limit);
   const seen = new Set(server.map(a => a.id));
-  return [...server, ...local.filter(a => !seen.has(a.id))].slice(0, limit);
+  return [
+    ...server.filter(a => !a.related),
+    ...local.filter(a => !seen.has(a.id)),
+    ...server.filter(a => a.related),
+  ].slice(0, limit);
 }
 
 /** `apps/Sales/CH/report` → `Sales / CH` (the folder, not the app itself). */

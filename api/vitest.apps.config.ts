@@ -94,6 +94,11 @@ export default defineConfig({
       "src/apps/app-home-base.service.test.ts",
       // The Apps home feed: ranking formula, shelves, frozen-order paging.
       "src/apps/app-feed.test.ts",
+      // Semantic app search: the blend with word matches (fake vectors) and
+      // the document an app is embedded as, read from git.
+      "src/apps/app-search-related.test.ts",
+      // The refresh after a push: real git + Mongo, a fake embedding model.
+      "src/apps/app-embeddings.service.test.ts",
       // Archived apps: listing archive/ from main, restore rules, grace.
       "src/apps/app-archive.test.ts",
       // Stale / unviewed apps: the planner, archive moves, the dry-run default.

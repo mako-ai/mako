@@ -38,6 +38,8 @@ const SEARCH_FIELD_LABELS: Record<string, string> = {
   path: "folder",
   owner: "owner",
   tables: "tables",
+  // Semantic search: close in meaning, or named in its README / UI.
+  related: "related",
 };
 
 export interface AppCardProps {

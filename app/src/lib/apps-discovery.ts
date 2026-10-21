@@ -236,7 +236,7 @@ export function upgradeCards(
 
 export interface DiscoverySearchHit extends DiscoveryApp {
   score: number;
-  /** Fields that matched: title, description, path, owner, tables. */
+  /** Fields that matched: title, description, path, owner, tables — or `related` (semantic). */
   matches: string[];
 }
 

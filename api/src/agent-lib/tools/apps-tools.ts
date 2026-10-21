@@ -84,6 +84,8 @@ import { rankApps } from "../../apps/app-search";
 import {
   appUsageScores,
   bindingTablesByApp,
+  prefetchQueryEmbedding,
+  relatedSignals,
 } from "../../apps/app-search.service";
 import {
   authorizeAppMove,
@@ -428,7 +430,7 @@ function buildTools(
 
     search_apps: tool({
       description:
-        "Search the workspace's existing apps by what they do: free text over title, description (mako.json), path, owner and the warehouse tables their bindings read. Returns the best matches the caller can see, ranked by relevance (and usage, where tracked). Call this BEFORE app_create_app: if a close match exists, propose extending or reusing it instead of building a near-copy.",
+        'Search the workspace\'s existing apps by what they do: free text over title, description (mako.json), path, owner and the warehouse tables their bindings read, plus semantically related apps (matchedOn: ["related"], after the word matches). Returns the best matches the caller can see, ranked by relevance (and usage, where tracked). Call this BEFORE app_create_app: if a close match exists, propose extending or reusing it instead of building a near-copy.',
       inputSchema: z.object({
         query: z
           .string()
@@ -446,6 +448,7 @@ function buildTools(
       }),
       execute: async ({ query, limit }) => {
         try {
+          prefetchQueryEmbedding(query);
           const [apps, snapshot, directory, usage] = await Promise.all([
             visibleApps(),
             loadAppsIndex(workspaceId),
@@ -453,6 +456,11 @@ function buildTools(
             appUsageScores(workspaceId),
           ]);
           const tables = bindingTablesByApp(snapshot);
+          const related = await relatedSignals(
+            workspaceId,
+            query,
+            apps.map(({ folder: f }) => f.id),
+          );
           const results = rankApps(
             apps.map(({ folder: f, state }) => ({
               appId: f.id,
@@ -466,7 +474,7 @@ function buildTools(
               usageScore: usage?.get(f.id),
             })),
             query,
-            { limit },
+            { limit, related },
           );
           return {
             success: true,

@@ -5381,6 +5381,54 @@ export const AppIndexHead = mongoose.model<IAppIndexHead>(
   AppIndexHeadSchema,
 );
 
+/**
+ * One app's embedding for semantic search (app-embeddings.service): the
+ * vector of its search document (app-embedding-doc.ts) and the document's
+ * hash, so an app is re-embedded only when what it says changed. Derived
+ * and disposable like the index: drop it and the next index read refills it.
+ * Scanned per workspace in memory (a hundred apps), so no vector index.
+ */
+export interface IAppEmbedding extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  appId: string;
+  /** Path and tree the document was built from: equal ⇒ skip rebuilding. */
+  path: string;
+  treeOid: string;
+  docHash: string;
+  /** Embedding model label (getEmbeddingModelName): another ⇒ re-embed. */
+  embeddingModel: string;
+  vector: number[];
+  /** The document's distinct words (app-search tokenize), for search. */
+  terms?: string[];
+  updatedAt: Date;
+}
+
+const AppEmbeddingSchema = new Schema<IAppEmbedding>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    appId: { type: String, required: true },
+    path: { type: String, required: true },
+    treeOid: { type: String, required: true },
+    docHash: { type: String, required: true },
+    embeddingModel: { type: String, required: true },
+    vector: { type: [Number], required: true },
+    terms: { type: [String], default: undefined },
+  },
+  { collection: "app_embeddings", timestamps: true },
+);
+
+AppEmbeddingSchema.index({ workspaceId: 1, appId: 1 }, { unique: true });
+
+export const AppEmbedding = mongoose.model<IAppEmbedding>(
+  "AppEmbedding",
+  AppEmbeddingSchema,
+);
+
 // ---------------------------------------------------------------------------
 // App lifecycle + curation — keyed by app id, not by project row
 // ---------------------------------------------------------------------------

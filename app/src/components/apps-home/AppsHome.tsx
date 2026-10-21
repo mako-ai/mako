@@ -28,12 +28,13 @@ import {
   Button,
   Chip,
   CircularProgress,
+  IconButton,
   InputAdornment,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { Search as SearchIcon } from "lucide-react";
+import { Search as SearchIcon, X as ClearIcon } from "lucide-react";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useAuth } from "../../contexts/auth-context";
 import {
@@ -162,6 +163,7 @@ export default function AppsHome() {
   const setQuery = useAppsDiscoveryStore(s => s.setHomeQuery);
   const [filter, setFilter] = useState<Filter>("all");
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   // Provisional cards in view, per section, so the ranked feed can keep
   // them where they are when it arrives (keepOnScreen).
@@ -626,6 +628,7 @@ export default function AppsHome() {
             size="small"
             placeholder="Search apps, owners, tables…"
             value={query}
+            inputRef={searchInputRef}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => {
               if (e.key === "Escape") setQuery("");
@@ -641,6 +644,20 @@ export default function AppsHome() {
                 endAdornment: search.loading ? (
                   <InputAdornment position="end">
                     <CircularProgress size={14} />
+                  </InputAdornment>
+                ) : query ? (
+                  <InputAdornment position="end">
+                    <IconButton
+                      size="small"
+                      edge="end"
+                      aria-label="Clear search"
+                      onClick={() => {
+                        setQuery("");
+                        searchInputRef.current?.focus();
+                      }}
+                    >
+                      <ClearIcon size={14} />
+                    </IconButton>
                   </InputAdornment>
                 ) : undefined,
               },

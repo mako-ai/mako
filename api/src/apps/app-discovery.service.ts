@@ -19,7 +19,7 @@ import {
   type AppIndexRow,
   type AppsIndexSnapshot,
 } from "./app-index.service";
-import { rankApps } from "./app-search";
+import { rankApps, type RelatedSignals } from "./app-search";
 import { loadOwnerDirectory } from "./user-handles.service";
 import {
   resolveAppOwner,
@@ -365,12 +365,18 @@ function ownerOf(
 /**
  * Search the apps this person can see, best first: app-search.ts's ranking
  * (text relevance, usage breaking ties) over title, description, path, the
- * owner's handle/email and the tables the bindings read.
+ * owner's handle/email and the tables the bindings read, then the
+ * semantically related apps when `related` is given.
  */
 export function searchDiscoveryApps(
   apps: DiscoveryApp[],
   query: string,
-  options: { limit?: number; usage?: Map<string, number> | null } = {},
+  options: {
+    limit?: number;
+    usage?: Map<string, number> | null;
+    /** Semantic signals for the query (app-search.service). */
+    related?: RelatedSignals | null;
+  } = {},
 ): Array<DiscoveryApp & { score: number; matches: string[] }> {
   const byId = new Map(apps.map(a => [a.id, a]));
   return rankApps(
@@ -393,7 +399,7 @@ export function searchDiscoveryApps(
       usageScore: options.usage?.get(a.id),
     })),
     query,
-    { limit: options.limit },
+    { limit: options.limit, related: options.related },
   ).flatMap(hit => {
     const app = byId.get(hit.appId);
     return app ? [{ ...app, score: hit.score, matches: hit.matchedOn }] : [];
