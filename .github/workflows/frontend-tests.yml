@@ -79,3 +79,15 @@ jobs:
 
       - name: CLI tests
         run: pnpm --filter @makoai/cli test
+
+      # The CLI supports Node 20 (`engines`): `mako workflow run` must load a
+      # workflow's TypeScript there too, where Node cannot strip types itself.
+      # (`mako connector test` needs Node 22.18+ and says so; not run here.)
+      - name: Setup Node 20
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - name: mako workflow run tests on Node 20
+        working-directory: packages/cli
+        run: node --test src/workflow.test.mjs

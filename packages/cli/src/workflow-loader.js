@@ -13,7 +13,8 @@ export async function resolve(specifier, context, next) {
   if (parent?.startsWith(data.workflowsURL) && specifier.startsWith(".")) {
     const target = new URL(specifier, parent).href.replace(/\.ts$/, "");
     const supplied = data.supplied[target.slice(data.workflowsURL.length)];
-    if (supplied) return { url: supplied, shortCircuit: true };
+    // Through the chain, so tsx loads it as TypeScript on any Node.
+    if (supplied) return next(supplied, context);
   }
   try {
     const resolved = await next(specifier, context);
