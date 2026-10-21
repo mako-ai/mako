@@ -1431,10 +1431,11 @@ export default function AppWorkspace({
         // it only ITS OWN origin, never ours. It is required there:
         // with an opaque origin, Vite's HMR socket and its
         // cross-origin module scripts do not work.
+        // External record links open normal tabs. Keep the app itself isolated.
         sandbox={
           preview.mode === "dev"
-            ? "allow-scripts allow-forms allow-same-origin"
-            : "allow-scripts allow-forms"
+            ? "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+            : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
         }
         style={{ border: 0, width: "100%", height: "100%" }}
       />
@@ -1698,7 +1699,7 @@ export default function AppWorkspace({
                         : seededSearch)
                     : viewUrl
                 }
-                sandbox="allow-scripts allow-forms"
+                sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
                 onLoad={() => setPubLoadedUrl(viewUrl)}
                 style={{
                   border: 0,
