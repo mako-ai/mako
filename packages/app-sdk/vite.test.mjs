@@ -86,6 +86,20 @@ test("index.json lists valid bindings from disk; other paths fall through", asyn
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("an app with no bindings/ folder loads the plugin and lists no bindings", async () => {
+  // A new shell app (manifest + page, no data yet) has no bindings/ folder:
+  // the plugin must treat that as zero bindings, never throw ENOENT.
+  const { root, app } = repo();
+  fs.rmSync(path.join(app, "bindings"), { recursive: true, force: true });
+  const { server, handlers, logs } = fakeServer(app);
+  assert.doesNotThrow(() => makoData().configureServer(server));
+  const r = await request(handlers[0], "/__data/index.json");
+  assert.equal(r.status, 200);
+  assert.deepEqual(JSON.parse(r.body.toString()), []);
+  assert.match(logs.info.join("\n"), /0 binding\(s\)/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("an API without dev builds: committed artifact, materialized on 404, cached", async () => {
   const { app } = repo();
   const calls = [];

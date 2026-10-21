@@ -149,12 +149,18 @@ import {
   names with a build-time define in `vite.config.ts`:
 
   ```ts
-  import { readdirSync } from "node:fs";
+  import { existsSync, readdirSync } from "node:fs";
+  const bindingsDir = new URL("./bindings", import.meta.url);
   // inside defineConfig({ … }):
   define: {
     __APP_BINDING_NAMES__: JSON.stringify(
-      readdirSync(new URL("./bindings", import.meta.url))
-        .filter(f => f.endsWith(".sql")).map(f => f.slice(0, -4)),
+      // An app with no bindings/ folder yet (a new shell app) has none:
+      // without the existsSync guard the config throws ENOENT and
+      // `vite build` fails before it starts.
+      existsSync(bindingsDir)
+        ? readdirSync(bindingsDir)
+            .filter(f => f.endsWith(".sql")).map(f => f.slice(0, -4))
+        : [],
     ),
   },
   ```

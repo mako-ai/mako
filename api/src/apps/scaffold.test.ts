@@ -26,3 +26,12 @@ describe("starter thumbnail", () => {
     );
   });
 });
+
+describe("vite.config.ts", () => {
+  it("reads bindings/ only when it exists, so a shell app with no data builds", () => {
+    const config = createAppsScaffold({ title: "Shell" })["vite.config.ts"];
+    expect(config).toContain("existsSync(bindingsDir)");
+    // Every readdirSync of bindings/ sits behind the existsSync guard.
+    expect(config).not.toMatch(/readdirSync\(new URL\("\.\/bindings"/);
+  });
+});
