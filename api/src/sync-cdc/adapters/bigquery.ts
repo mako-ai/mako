@@ -223,6 +223,12 @@ export interface BuildMergeStatementParams {
   /** Live-table column types from INFORMATION_SCHEMA. */
   liveTypes: Map<string, string>;
   entitySchema?: ConnectorEntitySchema;
+  /**
+   * Extra predicate on `__live` ANDed into the ON clause, built by
+   * {@link buildLivePartitionFilter}. It must hold for every live row whose
+   * key is in staging, or the MERGE would insert duplicates.
+   */
+  livePartitionFilter?: string;
 }
 
 /**
@@ -240,6 +246,7 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     stagingCols,
     liveTypes,
     entitySchema,
+    livePartitionFilter,
   } = p;
 
   // Only consider staging cols that also exist on live (an ALTER TABLE add may
@@ -267,9 +274,11 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
   const usingSubquery = `(SELECT ${stagingSelectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1)`;
 
   // ON clause
-  const keyJoin = keyColumns
-    .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
-    .join(" AND ");
+  const keyJoin =
+    keyColumns
+      .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
+      .join(" AND ") +
+    (livePartitionFilter ? ` AND (${livePartitionFilter})` : "");
 
   // WHEN MATCHED — only UPDATE columns present in staging (excluding keys).
   // Columns that exist on live but not in staging are left untouched.
@@ -319,6 +328,118 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// MERGE partition pruning.
+//
+// `MERGE ... ON __live.id = __stg.id` reads every partition of the live table:
+// BigQuery prunes only on constant predicates, never through the join. On the
+// Close activity tables (thousands of daily partitions) that cost ~200k
+// slot-ms per merge for batches of ~10-40 rows. The fix is two queries:
+//   1. a narrow probe (key + partition column only) that lists the partitions
+//      holding live rows whose key is in staging;
+//   2. the MERGE with those partitions as literal ranges in the ON clause.
+// Correct by construction: every live row that can match a staged key lies in
+// a probed partition, so MATCHED/NOT MATCHED decisions are unchanged. Staging
+// rows whose key is absent from live still fall to NOT MATCHED and insert.
+// ---------------------------------------------------------------------------
+
+/** Above this many distinct live partitions the MERGE runs unfiltered. */
+export const MERGE_PRUNE_MAX_PARTITIONS = 400;
+
+type PartitionGranularity = "hour" | "day" | "month" | "year";
+
+function normalizeGranularity(g: string | undefined): PartitionGranularity {
+  const v = (g || "day").toLowerCase();
+  return v === "hour" || v === "month" || v === "year" ? v : "day";
+}
+
+/**
+ * Probe query listing the distinct partition buckets (UTC, `%FT%T`) of live
+ * rows whose key appears in staging. Staging keys are cast exactly as the
+ * MERGE casts them, so the probe joins the same pairs the MERGE would.
+ */
+export function buildLivePartitionProbeQuery(p: {
+  fullLive: string;
+  fullStaging: string;
+  keyColumns: string[];
+  partitionField: string;
+  granularity?: string;
+  liveTypes: Map<string, string>;
+  entitySchema?: ConnectorEntitySchema;
+  limit: number;
+}): string {
+  const gran = normalizeGranularity(p.granularity).toUpperCase();
+  const stgKeys = p.keyColumns
+    .map(k =>
+      buildColumnSelectExpr(k, escId, p.entitySchema, p.liveTypes.get(k)),
+    )
+    .join(", ");
+  const join = p.keyColumns
+    .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
+    .join(" AND ");
+  return (
+    `SELECT DISTINCT FORMAT_TIMESTAMP('%FT%T', TIMESTAMP_TRUNC(__live.${escId(p.partitionField)}, ${gran}), 'UTC') AS p ` +
+    `FROM ${p.fullLive} __live JOIN (SELECT DISTINCT ${stgKeys} FROM ${p.fullStaging}) __stg ON ${join} ` +
+    `LIMIT ${p.limit + 1}`
+  );
+}
+
+function addGranularity(d: Date, g: PartitionGranularity): Date {
+  const n = new Date(d.getTime());
+  if (g === "hour") n.setUTCHours(n.getUTCHours() + 1);
+  else if (g === "day") n.setUTCDate(n.getUTCDate() + 1);
+  else if (g === "month") n.setUTCMonth(n.getUTCMonth() + 1);
+  else n.setUTCFullYear(n.getUTCFullYear() + 1);
+  return n;
+}
+
+const bqTs = (d: Date) =>
+  `TIMESTAMP '${d.toISOString().slice(0, 19).replace("T", " ")} UTC'`;
+
+/**
+ * Turn probed buckets into a constant predicate on `__live.<field>`: one
+ * half-open range per run of adjacent buckets, plus `IS NULL` when a live row
+ * sits in the NULL partition. Literal ranges prune whatever granularity the
+ * table was actually created with. Returns `FALSE` when no live row matches
+ * (every staged row is new), and `undefined` when a bucket cannot be parsed
+ * (caller runs the MERGE unfiltered).
+ */
+export function buildLivePartitionFilter(p: {
+  partitionField: string;
+  granularity?: string;
+  buckets: Array<string | null>;
+}): string | undefined {
+  const gran = normalizeGranularity(p.granularity);
+  const col = `__live.${escId(p.partitionField)}`;
+  let hasNull = false;
+  const starts: Date[] = [];
+  for (const b of p.buckets) {
+    if (b == null) {
+      hasNull = true;
+      continue;
+    }
+    const d = new Date(`${b}Z`);
+    if (Number.isNaN(d.getTime())) return undefined;
+    starts.push(d);
+  }
+  starts.sort((a, b) => a.getTime() - b.getTime());
+  const ranges: Array<[Date, Date]> = [];
+  for (const s of starts) {
+    const e = addGranularity(s, gran);
+    const last = ranges[ranges.length - 1];
+    if (last && last[1].getTime() >= s.getTime()) {
+      if (e.getTime() > last[1].getTime()) last[1] = e;
+    } else {
+      ranges.push([s, e]);
+    }
+  }
+  const parts = ranges.map(
+    ([s, e]) => `(${col} >= ${bqTs(s)} AND ${col} < ${bqTs(e)})`,
+  );
+  if (hasNull) parts.push(`${col} IS NULL`);
+  return parts.length > 0 ? parts.join(" OR ") : "FALSE";
 }
 
 /**
@@ -563,6 +684,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         layout: params.layout,
         flow: params.flow,
         entitySchema: params.entitySchema,
+        // Live consumer only: cdc/materialize is a singleton per flow+entity,
+        // so nothing else writes this table between the probe and the MERGE.
+        prunePartitions: true,
       });
     }
 
@@ -649,7 +773,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
-    options?: { stagingSuffix?: string; knownStagingRowCount?: number },
+    options?: {
+      stagingSuffix?: string;
+      knownStagingRowCount?: number;
+      prunePartitions?: boolean;
+    },
   ): Promise<{ written: number }> {
     const stagingTable = this.getStagingTableName(
       layout.tableName,
@@ -658,6 +786,70 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     );
     return this.mergeStagingToLive(layout, stagingTable, entitySchema, {
       knownStagingRowCount: options?.knownStagingRowCount,
+      prunePartitions: options?.prunePartitions,
+    });
+  }
+
+  /**
+   * Probe the live partitions that hold the staged keys and return the
+   * constant ON-clause predicate for the MERGE (see buildLivePartitionFilter).
+   * Returns undefined — MERGE unfiltered, as before — when the table is not
+   * TIMESTAMP-partitioned, the batch spans too many partitions, or the probe
+   * fails.
+   */
+  private async resolveLivePartitionFilter(p: {
+    layout: CdcEntityLayout;
+    fullLive: string;
+    fullStaging: string;
+    liveTypes: Map<string, string>;
+    entitySchema?: ConnectorEntitySchema;
+    destination: Parameters<typeof databaseConnectionService.executeQuery>[0];
+    datasetLocation?: string;
+  }): Promise<string | undefined> {
+    if (process.env.CDC_BQ_MERGE_PARTITION_PRUNE === "off") return undefined;
+    const field = p.layout.partitioning?.field;
+    if (!field) return undefined;
+    if ((p.liveTypes.get(field) || "").toUpperCase() !== "TIMESTAMP") {
+      return undefined;
+    }
+    const granularity = p.layout.partitioning?.granularity;
+    const probe = buildLivePartitionProbeQuery({
+      fullLive: p.fullLive,
+      fullStaging: p.fullStaging,
+      keyColumns: p.layout.keyColumns,
+      partitionField: field,
+      granularity,
+      liveTypes: p.liveTypes,
+      entitySchema: p.entitySchema,
+      limit: MERGE_PRUNE_MAX_PARTITIONS,
+    });
+    const result = await databaseConnectionService.executeQuery(
+      p.destination,
+      probe,
+      { location: p.datasetLocation },
+    );
+    if (!result.success) {
+      log.warn("MERGE partition probe failed; merging unfiltered", {
+        liveTable: p.layout.tableName,
+        error: result.error,
+      });
+      return undefined;
+    }
+    const rows = ((result.data as any[]) || []) as Array<{ p?: unknown }>;
+    if (rows.length > MERGE_PRUNE_MAX_PARTITIONS) {
+      log.info("MERGE spans too many partitions; merging unfiltered", {
+        liveTable: p.layout.tableName,
+        partitions: rows.length,
+      });
+      return undefined;
+    }
+    const buckets = rows.map(r =>
+      r.p == null ? null : String((r.p as { value?: unknown })?.value ?? r.p),
+    );
+    return buildLivePartitionFilter({
+      partitionField: field,
+      granularity,
+      buckets,
     });
   }
 
@@ -665,7 +857,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout,
     stagingTable: string,
     entitySchema?: ConnectorEntitySchema,
-    options?: { knownStagingRowCount?: number },
+    options?: { knownStagingRowCount?: number; prunePartitions?: boolean },
   ): Promise<{ written: number }> {
     const { projectId, dataset, destination, datasetLocation } =
       await this.resolveBqClient();
@@ -879,18 +1071,31 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const writeMode = layout.writeMode || "append_dedup";
     const insertCols = allColumns.filter(c => stagingCols.has(c));
     const insertColList = insertCols.map(escId).join(", ");
-    const mergeStmt =
-      writeMode === "append" || writeMode === "overwrite"
-        ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
-        : buildMergeStatement({
+    const isDedup = writeMode !== "append" && writeMode !== "overwrite";
+    const livePartitionFilter =
+      isDedup && options?.prunePartitions
+        ? await this.resolveLivePartitionFilter({
+            layout,
             fullLive,
             fullStaging,
-            columns: allColumns,
-            keyColumns,
-            stagingCols,
             liveTypes,
             entitySchema,
-          });
+            destination,
+            datasetLocation,
+          })
+        : undefined;
+    const mergeStmt = !isDedup
+      ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
+      : buildMergeStatement({
+          fullLive,
+          fullStaging,
+          columns: allColumns,
+          keyColumns,
+          stagingCols,
+          liveTypes,
+          entitySchema,
+          livePartitionFilter,
+        });
 
     log.info("Starting staging-to-live MERGE", {
       liveTable,
@@ -899,6 +1104,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       stagingRowCount,
       columnCount: allColumns.length,
       schemaCacheHit,
+      partitionPruned: livePartitionFilter !== undefined,
     });
 
     await retryOnQuota(
@@ -1319,6 +1525,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
     entitySchema?: ConnectorEntitySchema;
+    /** Probe live partitions and prune the MERGE (see resolveLivePartitionFilter). */
+    prunePartitions?: boolean;
   }): Promise<{ written: number }> {
     if (params.records.length === 0) return { written: 0 };
 
@@ -1365,14 +1573,22 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       // mid-batch (deploy, timeout): such tables piled up for months, one
       // per crash. BigQuery deletes it on its own a day later regardless.
       await this.expireStagingTable(
-        this.getStagingTableName(params.layout.tableName, flowId, stagingSuffix),
+        this.getStagingTableName(
+          params.layout.tableName,
+          flowId,
+          stagingSuffix,
+        ),
       );
       await this.mergeFromStaging(
         params.layout,
         params.flow,
         flowId,
         params.entitySchema,
-        { stagingSuffix, knownStagingRowCount: loadResult.loaded },
+        {
+          stagingSuffix,
+          knownStagingRowCount: loadResult.loaded,
+          prunePartitions: params.prunePartitions,
+        },
       );
     } finally {
       await this.cleanupStaging(params.layout, flowId, { stagingSuffix }).catch(

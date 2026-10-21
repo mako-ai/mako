@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildLivePartitionFilter,
+  buildLivePartitionProbeQuery,
   buildMergeStatement,
   type BuildMergeStatementParams,
 } from "./bigquery";
@@ -151,5 +153,88 @@ describe("buildMergeStatement", () => {
     expect(sql).toContain(
       "ON __live.`tenant` = __stg.`tenant` AND __live.`id` = __stg.`id`",
     );
+  });
+});
+
+describe("MERGE partition pruning", () => {
+  it("ANDs the live partition filter into the ON clause, leaving the rest intact", () => {
+    const base = buildMergeStatement(params({}));
+    const pruned = buildMergeStatement(
+      params({ livePartitionFilter: "__live.`d` IS NULL" }),
+    );
+    expect(pruned).toContain(
+      "ON __live.`id` = __stg.`id` AND (__live.`d` IS NULL)\n",
+    );
+    expect(pruned.replace(" AND (__live.`d` IS NULL)", "")).toBe(base);
+  });
+
+  it("probes only key + partition columns, casting staging keys like the MERGE", () => {
+    const sql = buildLivePartitionProbeQuery({
+      fullLive: FULL_LIVE,
+      fullStaging: FULL_STAGING,
+      keyColumns: ["id"],
+      partitionField: "date_created",
+      granularity: "day",
+      liveTypes: new Map([["id", "STRING"]]),
+      limit: 400,
+    });
+    expect(sql).toBe(
+      "SELECT DISTINCT FORMAT_TIMESTAMP('%FT%T', TIMESTAMP_TRUNC(__live.`date_created`, DAY), 'UTC') AS p " +
+        "FROM `proj`.`ds`.live_users __live JOIN (SELECT DISTINCT SAFE_CAST(`id` AS STRING) AS `id` FROM `proj`.`mako_internal`.stg_users) __stg ON __live.`id` = __stg.`id` " +
+        "LIMIT 401",
+    );
+  });
+
+  it("merges adjacent day buckets into half-open ranges and keeps the NULL partition", () => {
+    expect(
+      buildLivePartitionFilter({
+        partitionField: "date_created",
+        granularity: "day",
+        buckets: [
+          "2026-10-21T00:00:00",
+          "2025-05-22T00:00:00",
+          "2026-10-20T00:00:00",
+          null,
+          "2026-10-21T00:00:00",
+        ],
+      }),
+    ).toBe(
+      "(__live.`date_created` >= TIMESTAMP '2025-05-22 00:00:00 UTC' AND __live.`date_created` < TIMESTAMP '2025-05-23 00:00:00 UTC')" +
+        " OR (__live.`date_created` >= TIMESTAMP '2026-10-20 00:00:00 UTC' AND __live.`date_created` < TIMESTAMP '2026-10-22 00:00:00 UTC')" +
+        " OR __live.`date_created` IS NULL",
+    );
+  });
+
+  it("handles month and hour granularity boundaries", () => {
+    expect(
+      buildLivePartitionFilter({
+        partitionField: "d",
+        granularity: "month",
+        buckets: ["2025-12-01T00:00:00"],
+      }),
+    ).toBe(
+      "(__live.`d` >= TIMESTAMP '2025-12-01 00:00:00 UTC' AND __live.`d` < TIMESTAMP '2026-01-01 00:00:00 UTC')",
+    );
+    expect(
+      buildLivePartitionFilter({
+        partitionField: "d",
+        granularity: "hour",
+        buckets: ["2026-10-21T23:00:00"],
+      }),
+    ).toBe(
+      "(__live.`d` >= TIMESTAMP '2026-10-21 23:00:00 UTC' AND __live.`d` < TIMESTAMP '2026-10-22 00:00:00 UTC')",
+    );
+  });
+
+  it("returns FALSE when no staged key exists in live (all rows insert)", () => {
+    expect(buildLivePartitionFilter({ partitionField: "d", buckets: [] })).toBe(
+      "FALSE",
+    );
+  });
+
+  it("gives up (undefined → unfiltered MERGE) on an unparseable bucket", () => {
+    expect(
+      buildLivePartitionFilter({ partitionField: "d", buckets: ["garbage"] }),
+    ).toBeUndefined();
   });
 });
