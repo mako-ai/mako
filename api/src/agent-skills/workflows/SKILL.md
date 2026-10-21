@@ -38,29 +38,45 @@ the file above is `path: "workflow.ts"`.
 
 ## The loop
 
-Three things, each one verb. **Sandbox**: `workflows_run` with
-`sandbox: true` runs the workflow as it is in your checkout right now,
-uncommitted edits included, inside your sandbox, with real data and no
-schedule, and returns the finished run. **Main**: a commit on main is the
-deploy. **Active**: a deployed workflow starts inactive (schedule and webhook
-off, Run works); an admin switches it on. Like n8n: test, then activate.
+Three things, each one verb. **Test**: `mako workflow run <name>` runs the
+workflow as it is in a checkout, uncommitted edits included, once, with real
+data, your own rights and no schedule. On a laptop it is that command; in
+your sandbox `workflows_run` with `sandbox: true` runs the same command
+there. **Main**: a commit on main is the deploy. **Active**: a deployed
+workflow starts inactive (schedule and webhook off, Run works); an admin
+switches it on. Like n8n: test, then activate.
 
 1. Write `workflow.ts` with `workflow_write_file` / `workflow_edit_file` and
    `workflowId: "<name>"`. A new name creates the folder. No commit yet.
-2. `workflows_run` with `sandbox: true` and an input. The answer is the run:
-   each step's status, output, error and log lines, or the type errors if
-   the file does not build. About ten seconds plus the workflow's own time.
-3. Fix and repeat from 1 until the run is `COMPLETED`.
-4. `workflow_commit`. On main that is the deploy; `workflows_status` until
-   `deployment.liveSha` is your commit (`deployment.buildError` says why
-   not; the previous version keeps running meanwhile). A member commits to
+2. `workflows_run` with `sandbox: true` and an input. It answers a `runId`
+   at once; the run goes on in your sandbox.
+3. `workflows_status({ runId, wait: 90 })` waits on the server until the
+   run ends and answers it: each step's status, output, error and log
+   lines. While it answers `running: true`, call it again the same way;
+   never sleep between calls. `full: true` gives each output and every log
+   line whole (an eval report, a long output), as far as one answer holds;
+   past that it says `cut`, and the whole run is `resultFile` in your
+   sandbox: read it with `workflow_bash` (`node -e` or `jq`).
+4. Fix and repeat from 1 until the run is `COMPLETED`.
+5. Go-live: `workflow_commit`. On main that is the deploy; `workflows_status`
+   until `deployment.liveSha` is your commit (`deployment.buildError` says
+   why not, type errors included: a test run does not typecheck, the build
+   does; the previous version keeps running meanwhile). A member commits to
    a branch and asks an admin to merge: only admins put workflows on main.
-5. Ask the user, then `workflows_triggers` with `active: true`: from then on its schedule and
-   webhook start runs by themselves.
+6. Run it once by hand on the workers (`workflows_run` without `sandbox`)
+   and read it with `workflows_status({ runId, wait: 90 })`. This is the
+   first run with the workflow's own rights: a write a test could do as
+   you fails here if the connection does not list the workflow.
+7. Ask the user, then `workflows_triggers` with `active: true`: from then on
+   its schedule and webhook start runs by themselves.
 
-A sandbox run is real: `query` reads real data, and `call` and `agent` act
-as you. Its engine is the sandbox's own, so the run is not in the
-workspace's list and a schedule never fires there.
+A test run is real: `query` reads real data, and `call`, `model` and `agent`
+act as you, with your rights. It runs once, in one process, no Hatchet
+engine: steps run parents first, each with the input and its ancestors'
+outputs. Only what workflows here use is supported (`ctx.logger`,
+`ctx.parentOutput`, `retries`, `executionTimeout`); anything else throws
+"not supported in test runs; run it on the workers". A test run is in no
+list: keep its `runId`.
 
 Changing an active workflow: the same loop; test in the sandbox, and say
 before committing that the new commit is live as soon as it builds.
@@ -154,7 +170,8 @@ the statement (`INSERT INTO mako_out.labels ...`): a workflow allowed only
 one place must say where it writes, in one statement. Run a write
 with `execute(connection, sql)`, which returns `{ rowCount }`, the rows it
 changed; `query` also runs a write and returns its `RETURNING` rows. A
-sandbox run writes as the person running it, under their own access. A dbt
+test run (laptop or sandbox) writes as the person running it, under their
+own access. A dbt
 job (`call("dbt_run_job", { ... })`) remains the way to rebuild models.
 
 ## Calling a Mako tool in a step
@@ -281,7 +298,8 @@ The schedule and the webhook work only while the workflow is **active**
 (`workflows_triggers` with `active: true`, or the switch on its tab). Run and `workflows_run`
 always work. The webhook URL with `?sandbox=<userId>` is a test URL: a POST
 to it runs that person's sandbox version with the body as input and answers
-with the finished run, whether or not the workflow is active.
+its `runId` (only that person reads it), whether or not the workflow is
+active.
 
 ## Hatchet's own documentation
 
@@ -298,6 +316,7 @@ markdown (`https://docs.hatchet.run/llms/<section>/<page>.md`).
 | `buildError` with `must default-export the workflow named …`     | Folder name and `name` differ, or the export is not the default.                |
 | `liveSha` is not `targetSha` after a minute, and no `buildError` | The worker is not running. Tell the user.                                       |
 | A run stays `QUEUED`                                             | No worker has that workflow: its build failed. Check `workflows_status`.        |
-| A sandbox run answers with type errors                           | Your checkout does not typecheck. Fix the file and run again.                   |
+| A test run passed, the run on the workers fails on a write       | The test ran with your rights; the workflow is not on the connection's writers. |
+| `running: true` after a wait                                     | The run goes on. Call `workflows_status({ runId, wait: 90 })` again.            |
 | The schedule did not fire                                        | The workflow is not active. `workflows_status` shows `active` per workflow.     |
 | Step `FAILED`                                                    | Read that step's `error` and `logs` in `workflows_status({ runId })`.           |

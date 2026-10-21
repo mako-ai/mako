@@ -4,7 +4,6 @@
 // whole run in a JSON file; `--task <step>` reruns one step from it.
 import fs from "node:fs";
 import path from "node:path";
-import { getAccessToken } from "@makoai/app-sdk/credentials";
 import { loadWorkflow, runWorkflow } from "./workflow-runner.js";
 
 const USAGE =
@@ -53,8 +52,12 @@ export async function workflow(ctx, positional, flags, io) {
   const input =
     flags.input !== undefined ? parseInput(flags.input) : (saved?.input ?? {});
 
+  // A sandbox passes its key; only a login needs the credentials store.
   const token =
-    ctx.apiKey || (await getAccessToken(ctx.apiUrl, ctx.workspaceId));
+    ctx.apiKey ||
+    (await (
+      await import("@makoai/app-sdk/credentials")
+    ).getAccessToken(ctx.apiUrl, ctx.workspaceId));
   if (!token) {
     io.log(
       `not signed in to ${ctx.apiUrl}: run \`mako login\` or set MAKO_API_KEY`,

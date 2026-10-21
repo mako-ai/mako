@@ -29928,7 +29928,7 @@
         "tags": [
           "Workflows"
         ],
-        "summary": "One run: its steps in order, with status, output, error and logs",
+        "summary": "One run, deployed or sandbox (the caller's own): its steps in order, with status, output, error and logs. `wait` (seconds, at most 90) waits for it to end (`running: true` when it had not); `full` gives a sandbox run whole",
         "security": [
           {
             "cookieAuth": []
@@ -29953,6 +29953,30 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "required": false,
+            "name": "wait",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "full",
+            "in": "query"
           }
         ],
         "responses": {
@@ -30082,7 +30106,7 @@
         "tags": [
           "Workflows"
         ],
-        "summary": "Start a run of the deployed workflow (answers its runId), or with `sandbox` run the caller's checkout in their sandbox (answers the finished run)",
+        "summary": "Start a run of the deployed workflow (answers its runId), or with `sandbox` the caller's checkout in their sandbox. Answers the runId at once; follow it with GET /runs/{id}?wait=",
         "security": [
           {
             "cookieAuth": []
