@@ -212,6 +212,10 @@ export default function AppsHome() {
   }, [workspaceId, query, searchApps]);
 
   const searching = query.trim().length > 0;
+  // From the first keystroke until results for this exact text arrive
+  // (200 ms debounce + the request).
+  const searchPending =
+    searching && (search.loading || search.query !== query.trim());
   const feedMode = filter === "all" && !searching;
   const canLoadMore =
     feedMode &&
@@ -713,24 +717,32 @@ export default function AppsHome() {
         </Box>
 
         {searching ? (
-          search.query && !search.loading && search.results.length === 0 ? (
+          !searchPending && search.results.length === 0 ? (
             <Typography variant="body2" sx={{ color: "text.secondary" }}>
               {search.error ?? `No apps match “${search.query}”.`}
             </Typography>
           ) : (
-            <Box component="section" aria-label="Search results">
+            <Box
+              component="section"
+              aria-label="Search results"
+              aria-busy={searchPending}
+            >
               <SectionTitle
                 title="Results"
                 hint={
-                  search.results.length > 0
+                  !searchPending && search.results.length > 0
                     ? `${search.results.length} match${search.results.length === 1 ? "" : "es"}`
                     : undefined
                 }
               />
               <Box sx={GRID_SX}>
-                {search.results.map((hit, i) =>
-                  card(hit, "search", i, { matches: hit.matches }),
-                )}
+                {searchPending
+                  ? Array.from({ length: 10 }, (_, i) => (
+                      <AppCardSkeleton key={`search-skeleton-${i}`} />
+                    ))
+                  : search.results.map((hit, i) =>
+                      card(hit, "search", i, { matches: hit.matches }),
+                    )}
               </Box>
             </Box>
           )
