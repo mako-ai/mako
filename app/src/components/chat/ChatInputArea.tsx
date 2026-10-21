@@ -57,6 +57,8 @@ interface ChatInputAreaProps {
   isLocalAgent?: boolean;
   /** Overrides the default composer placeholder. */
   placeholder?: string;
+  /** Text a screen wrote for this chat: replaces the composer's text. */
+  draft?: { text: string; at: number } | null;
   /** Model picker and usage badge (off where the server picks the model). */
   showModelControls?: boolean;
   /** Image attachments (off where the server does not accept them). */
@@ -88,6 +90,7 @@ export const ChatInputArea = React.memo(
     placeholder = "Ask Mako...",
     showModelControls = true,
     allowAttachments = true,
+    draft,
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -148,6 +151,12 @@ export const ChatInputArea = React.memo(
       const timer = setTimeout(() => inputRef.current?.focus(), 100);
       return () => clearTimeout(timer);
     }, [focusKey]);
+
+    // A screen's draft ("Ask Mako to fix"): written in, for the person to
+    // read, add to and send.
+    useEffect(() => {
+      if (draft) setInput(draft.text);
+    }, [draft]);
 
     useEffect(() => {
       const prevId = prevEditingIdRef.current;

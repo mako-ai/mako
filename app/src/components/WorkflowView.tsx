@@ -22,7 +22,11 @@ import {
   Typography,
 } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
-import { Play as RunIcon, Webhook as WebhookIcon } from "lucide-react";
+import {
+  Play as RunIcon,
+  Sparkles as AskIcon,
+  Webhook as WebhookIcon,
+} from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
@@ -32,6 +36,7 @@ import {
   type WorkflowRun,
   type WorkflowRunSummary,
 } from "../store/workflowsStore";
+import { useUIStore } from "../store/uiStore";
 import { formatDuration } from "../utils/format";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
 
@@ -579,6 +584,23 @@ function RunsView({
                 )}
               </Dim>
               <Dim>{selectedSummary.trigger ?? "schedule"}</Dim>
+              {selectedStatus === "FAILED" && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<AskIcon size={14} />}
+                  onClick={() =>
+                    useUIStore
+                      .getState()
+                      .askMako(
+                        fixRequest(workflowId, selectedSummary, selectedRun),
+                      )
+                  }
+                  sx={{ ml: "auto", textTransform: "none", height: 24 }}
+                >
+                  Ask Mako to fix
+                </Button>
+              )}
             </Box>
 
             <Box
@@ -726,6 +748,25 @@ function RunsView({
       )}
     </Box>
   );
+}
+
+/**
+ * The first message of a chat about a failed run: which workflow, which run
+ * and which step. The agent reads the rest with workflows_status. A sandbox
+ * run is not kept, so its error goes in the message.
+ */
+function fixRequest(
+  workflowId: string,
+  summary: WorkflowRunSummary,
+  run: WorkflowRun | undefined,
+): string {
+  const failed = run?.steps.find(step => step.status === "FAILED");
+  const step = failed?.step ? ` at step "${failed.step}"` : "";
+  if (summary.sandbox) {
+    const error = (failed?.error ?? summary.error ?? "").split("\n")[0];
+    return `My sandbox test run of the workflow "${workflowId}" failed${step}${error ? `: ${error}` : "."}\n\nFind out why and fix the workflow.`;
+  }
+  return `The workflow "${workflowId}" failed${step} in run ${summary.runId}.\n\nRead the run with workflows_status, find out why it failed and fix the workflow.`;
 }
 
 /** The last run's input, pretty-printed, as the starting point for a new run. */

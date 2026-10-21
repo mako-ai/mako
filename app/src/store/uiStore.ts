@@ -78,6 +78,13 @@ interface UIState {
 
   // Current workspace
   currentWorkspaceId: string | null;
+
+  /**
+   * A first message for a new chat, written by a screen ("Ask Mako to fix").
+   * The chat pane starts a new chat with it in the composer, then clears it.
+   * `at` tells two drafts with the same text apart. Not persisted.
+   */
+  chatDraft: { text: string; at: number } | null;
 }
 
 interface UIActions {
@@ -111,6 +118,11 @@ interface UIActions {
   // Workspace
   setCurrentWorkspaceId: (workspaceId: string | null) => void;
 
+  // Chat
+  /** Open the chat on a new chat with `text` written in the composer. */
+  askMako: (text: string) => void;
+  clearChatDraft: () => void;
+
   // Reset
   reset: () => void;
 }
@@ -125,6 +137,7 @@ const initialState: UIState = {
   leftPaneWidthPx: null,
   rightPaneWidthPx: null,
   mobileTab: "ask",
+  chatDraft: null,
   mobileBrowseView: "home",
   mobileConsolePane: "query",
   mobileAppPane: "preview",
@@ -193,6 +206,18 @@ export const useUIStore = create<UIStore>()(
 
       // Mobile navigation — plain setters; the nav is fixed and nothing here
       // is persisted (see partialize), so a reload lands on Ask.
+      askMako: text =>
+        set(state => {
+          state.chatDraft = { text, at: Date.now() };
+          state.rightPaneOpen = true;
+          state.mobileTab = "ask";
+        }),
+
+      clearChatDraft: () =>
+        set(state => {
+          state.chatDraft = null;
+        }),
+
       setMobileTab: tab =>
         set(state => {
           state.mobileTab = tab;

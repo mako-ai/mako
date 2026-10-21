@@ -968,6 +968,19 @@ const Chat: React.FC<ChatProps> = ({
     setIsExistingChat(false);
   };
 
+  // A screen asked for a new chat with a first message written
+  // ("Ask Mako to fix"): start one and put the message in the composer.
+  const chatDraft = useUIStore(s => s.chatDraft);
+  const [composerDraft, setComposerDraft] = useState<typeof chatDraft>(null);
+  const createNewSessionRef = useRef(createNewSession);
+  createNewSessionRef.current = createNewSession;
+  useEffect(() => {
+    if (!chatDraft) return;
+    createNewSessionRef.current();
+    setComposerDraft(chatDraft);
+    useUIStore.getState().clearChatDraft();
+  }, [chatDraft]);
+
   const handleSelectSession = (id: string) => {
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
@@ -1641,6 +1654,7 @@ const Chat: React.FC<ChatProps> = ({
         editingPrompt={editingPrompt}
         onCancelEdit={handleCancelEditQueuedPrompt}
         planFeedbackMode={isPlanAwaitingFeedback}
+        draft={composerDraft}
       />
 
       <Snackbar
