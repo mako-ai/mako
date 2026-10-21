@@ -10,3 +10,12 @@ same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=
 [[block]]
 target = 'cloudflare/app-router/wrangler.canary.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
 same-as = 'cloudflare/app-router/wrangler.jsonc#/kv_namespaces/~[binding=MAKO_APP_ROUTING]/id'
+
+# Canary exists to prove what production will run.
+[[block]]
+target = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+
+[[block]]
+target = 'cloudflare/app-router/wrangler.canary.jsonc#/compatibility_date'
+same-as = 'cloudflare/app-router/wrangler.jsonc#/compatibility_date'

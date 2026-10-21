@@ -400,8 +400,10 @@ function describeGoogleApiError(error: any, fallback: string): string {
  * instead — see `executeQuery`.
  */
 const READ_ONLY_UNSUPPORTED_TYPES = new Set<string>([
+  // <block name="read-only-unsupported-types" affects="docs/src/content/docs/mcp-server.md:read-only-unsupported-engines">
   "mongodb",
   "cloudflare-kv",
+  // </block>
 ]);
 
 /**

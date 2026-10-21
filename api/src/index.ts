@@ -214,6 +214,7 @@ app.get("/api/version", c => {
 registerApiRoutes(app);
 
 // Register database drivers
+// <block name="database-drivers" affects="README.md:supported-databases,docs/src/content/docs/architecture.md:supported-databases,CLAUDE.md:supported-databases">
 databaseRegistry.register(new BigQueryDatabaseDriver());
 databaseRegistry.register(new MongoDatabaseDriver());
 databaseRegistry.register(new PostgreSQLDatabaseDriver());
@@ -223,6 +224,7 @@ databaseRegistry.register(new CloudflareD1DatabaseDriver());
 databaseRegistry.register(new CloudflareKVDatabaseDriver());
 databaseRegistry.register(new ClickHouseDatabaseDriver());
 databaseRegistry.register(new RedshiftDatabaseDriver());
+// </block>
 
 // OpenAPI specification (machine-readable) and interactive reference UI.
 // Both are public so agents and external clients can discover the API surface.

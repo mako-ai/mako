@@ -177,8 +177,13 @@ Any mutation takes `--dry-run`. No command ever prints a secret value — output
 is names and status only — so a run is safe to paste into a ticket. `pull`
 edits `.env` in place (keeping its comments) and backs up the previous file to
 `.env.bak`; with no `.env` at all it builds one from `.env.example`.
+
+<!-- <block name="local-only-env-vars"> -->
 Machine-specific variables (`APPS_SANDBOX_PROVIDER`, `APPS_GIT_ROOT`,
-`APPS_SESSIONS_ROOT`, `NODE_ENV`) are deliberately never synced.
+`APPS_SESSIONS_ROOT`, `NODE_ENV`, `APPS_CONNECTED_REPO_PUSH`,
+`APPS_TUNNEL_NAME`, `APPS_TUNNEL_HOSTNAME`, and the pre-rename `APPS_V2_*`
+names) are deliberately never synced.
+<!-- </block> -->
 
 ## Apps: the sandbox is an ordinary clone
 
@@ -296,7 +301,9 @@ REDIS_URL=redis://localhost:6379
 
 ### Supported Databases
 
+<!-- <block name="supported-databases"> -->
 MongoDB, PostgreSQL, BigQuery, ClickHouse, Cloud SQL (Postgres), Cloudflare D1, Cloudflare KV, MySQL, Redshift
+<!-- </block> -->
 
 ## Key Principles
 
