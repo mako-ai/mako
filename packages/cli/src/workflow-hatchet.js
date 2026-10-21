@@ -35,6 +35,9 @@ export const TASK_OPTIONS = [
   "fn",
 ];
 
+/** Every workflow defined in this process, by name: a child run may name one. */
+export const workflows = new Map();
+
 export const hatchet = only(
   {
     workflow(options) {
@@ -49,14 +52,18 @@ export const hatchet = only(
           return recorded;
         },
       };
+      workflows.set(options.name, workflow);
       return only(workflow, "workflow");
     },
   },
   "hatchet",
 );
 
-/** A step's `ctx`: its logger and its ancestors' outputs. */
-export function makeContext(log, outputOf) {
+/**
+ * A step's `ctx`: its logger, its ancestors' outputs, its run's ids, and
+ * child runs, run in this process by `run.spawn` (workflow-runner.js).
+ */
+export function makeContext(log, outputOf, run) {
   const logger = only(
     Object.fromEntries(
       ["debug", "info", "warn", "error"].map(level => [
@@ -66,5 +73,24 @@ export function makeContext(log, outputOf) {
     ),
     "ctx.logger",
   );
-  return only({ logger, parentOutput: async task => outputOf(task) }, "ctx");
+  const bulk = children =>
+    children.map(c => run.spawn(c.workflow, c.input, c.options));
+  return only(
+    {
+      logger,
+      parentOutput: async task => outputOf(task),
+      workflowRunId: () => run.runId,
+      parentWorkflowRunId: () => run.parentRunId,
+      childIndex: () => run.childIndex,
+      childKey: () => run.childKey,
+      runChild: async (workflow, input, options) =>
+        run.spawn(workflow, input, options).output,
+      runNoWaitChild: async (workflow, input, options) =>
+        run.spawn(workflow, input, options),
+      bulkRunChildren: async children =>
+        Promise.all(bulk(children).map(ref => ref.output)),
+      bulkRunNoWaitChildren: async children => bulk(children),
+    },
+    "ctx",
+  );
 }

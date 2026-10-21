@@ -40,9 +40,12 @@ file the workers use, so every Mako call is real and carries your login (or
 `MAKO_API_KEY`). Each log line prints as it is written; the whole run (each
 step's status, timings, output, error and logs) is kept in
 `.mako/runs/<name>.json`, and `--task <step>` reruns one step from that file's
-saved outputs. Hatchet features the workspace's workflows do not use (child
-runs, durable tasks, concurrency, …) throw "not supported in test runs; run
-it on the workers".
+saved outputs. Child runs (`ctx.runChild`, `runNoWaitChild`,
+`bulkRunChildren`, with `childIndex()`, `childKey()` and the run ids) run in
+the same process; each child's steps and logs are kept under the step that
+started it, which ends once all its children have. Other Hatchet features
+(durable tasks, concurrency, …) throw "not supported in test runs; run it on
+the workers".
 
 Syncs: `mako sync ls` lists every sync with its triggers and state; `mako sync
 status <name|id>` shows per-entity mode, backlog, failures and the last runs;

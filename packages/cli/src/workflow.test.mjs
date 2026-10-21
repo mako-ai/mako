@@ -57,7 +57,7 @@ const once = wf.task({ name: "once", retries: 2, fn: async () => { if (++calls <
 const never = wf.task({ name: "never", retries: 1, fn: async () => { throw new Error("always"); } });
 wf.task({ name: "after", parents: [never], fn: async () => ({ ran: true }) });
 wf.task({ name: "slow", executionTimeout: "1s", fn: () => new Promise(r => setTimeout(r, 3000)) });
-wf.task({ name: "runid", fn: async (_i, ctx: any) => ctx.workflowRunId() });
+wf.task({ name: "runid", fn: async (_i, ctx: any) => ctx.putStream("x") });
 export default wf;
 `,
 );
@@ -95,6 +95,45 @@ import { hatchet } from "../hatchet";
 import { model } from "../lib/mako";
 const wf = hatchet.workflow({ name: "model" });
 wf.task({ name: "ask", fn: async () => ({ text: (await generateText({ model: model("anthropic/claude-haiku-4.5"), prompt: "hi" })).text }) });
+export default wf;
+`,
+);
+
+// A parent fanning out to child runs, as Plan B's classifier does: three
+// in bulk (one fails), one waited for, one started and awaited later.
+write(
+  "fanout",
+  `import { hatchet } from "../hatchet";
+
+export const batch = hatchet.workflow<{ n: number }>({ name: "fanout-batch" });
+batch.task({ name: "label", fn: async (input, ctx: any) => {
+  ctx.logger.info("batch " + input.n + " index " + ctx.childIndex() + " key " + ctx.childKey());
+  if (input.n === 2) throw new Error("batch 2 broke");
+  // The others end after it, as a real call would.
+  await new Promise(r => setTimeout(r, 50));
+  return { n: input.n * 10, parent: ctx.parentWorkflowRunId() };
+} });
+
+const wf = hatchet.workflow({ name: "fanout" });
+const ok = wf.task({ name: "ok", fn: async (_i, ctx: any) => {
+  const one = await ctx.runChild(batch, { n: 5 }, { key: "five" });
+  const ref = await ctx.runNoWaitChild("fanout-batch", { n: 7 });
+  // By name only, never imported here: its own folder in the checkout.
+  const other = await ctx.runChild("fanout-other", { n: 1 });
+  const missing = await ctx.runChild("no-such-flow", {}).catch((e: Error) => e.message);
+  return { one, later: await ref.output, other, missing, id: ctx.workflowRunId(), refId: ref.workflowRunId };
+} });
+wf.task({ name: "bulk", fn: async (_i, ctx: any) =>
+  ctx.bulkRunChildren([1, 2, 3].map(n => ({ workflow: batch, input: { n } }))) });
+export default wf;
+`,
+);
+
+write(
+  "fanout-other",
+  `import { hatchet } from "../hatchet";
+const wf = hatchet.workflow<{ n: number }>({ name: "fanout-other" });
+wf.task({ name: "x", fn: async input => ({ got: input.n }) });
 export default wf;
 `,
 );
@@ -191,7 +230,7 @@ test("retries, a failed parent cancels its children, timeouts, unsupported ctx",
   assert.match(by.slow.error, /executionTimeout \(1s\)/);
   assert.match(
     by.runid.error,
-    /ctx\.workflowRunId is not supported in test runs; run it on the workers/,
+    /ctx\.putStream is not supported in test runs; run it on the workers/,
   );
 });
 
@@ -265,4 +304,61 @@ test("a model call names the workflow, and Mako's refusal reads as Mako wrote it
     result.tasks[0].error,
     /Mako refused the model call \(403\): MCP OAuth tokens are restricted to the \/api\/mcp endpoint/,
   );
+});
+
+test("child runs: runChild, runNoWaitChild, bulkRunChildren, each kept under its parent step", async () => {
+  const lines = [];
+  const result = await runWorkflow(await loadWorkflow(repo, "fanout"), {
+    onLog: line => lines.push(`${line.task}: ${line.message}`),
+  });
+  const [ok, bulk] = result.tasks;
+  // Waited for: its outputs by step name; started and awaited later too.
+  assert.equal(ok.status, "COMPLETED");
+  assert.deepEqual(ok.output.one, { label: { n: 50, parent: result.runId } });
+  assert.deepEqual(ok.output.later, { label: { n: 70, parent: result.runId } });
+  assert.equal(ok.output.id, result.runId);
+  assert.deepEqual(ok.output.other, { x: { got: 1 } });
+  assert.match(
+    ok.output.missing,
+    /workflows\/no-such-flow\/workflow\.ts does not exist/,
+  );
+  assert.deepEqual(
+    ok.children.map(c => [c.workflow, c.index, c.key, c.status]),
+    [
+      ["fanout-batch", 0, "five", "COMPLETED"],
+      ["fanout-batch", 1, undefined, "COMPLETED"],
+      ["fanout-other", 2, undefined, "COMPLETED"],
+      ["no-such-flow", 3, undefined, "FAILED"],
+    ],
+  );
+  assert.equal(ok.output.refId, ok.children[1].runId);
+  // In bulk, one child fails: the parent step fails as Hatchet's would, and
+  // every child keeps its own steps and logs.
+  assert.equal(bulk.status, "FAILED");
+  assert.match(
+    bulk.error,
+    /child fanout-batch\[1\] failed in "label": Error: batch 2 broke/,
+  );
+  assert.deepEqual(
+    bulk.children.map(c => [c.index, c.status, c.tasks[0].status]),
+    [
+      [0, "COMPLETED", "COMPLETED"],
+      [1, "FAILED", "FAILED"],
+      [2, "COMPLETED", "COMPLETED"],
+    ],
+  );
+  assert.deepEqual(bulk.children[2].tasks[0].output, {
+    n: 30,
+    parent: result.runId,
+  });
+  assert.equal(
+    bulk.children[0].tasks[0].logs[0].message,
+    "batch 1 index 0 key undefined",
+  );
+  assert.ok(
+    lines.includes(
+      "bulk › fanout-batch[2] label: batch 3 index 2 key undefined",
+    ),
+  );
+  assert.equal(result.status, "FAILED");
 });

@@ -90,8 +90,13 @@ export async function workflow(ctx, positional, flags, io) {
       step.durationMs !== undefined
         ? ` ${(step.durationMs / 1000).toFixed(1)}s`
         : "";
+    const children = step.children ?? [];
+    const failed = children.filter(c => c.status !== "COMPLETED").length;
+    const spawned = children.length
+      ? ` (${children.length} child run${children.length === 1 ? "" : "s"}${failed ? `, ${failed} failed` : ""})`
+      : "";
     io.log(
-      `  ${step.status.padEnd(9)} ${step.name}${seconds}${step.error ? `: ${step.error.split("\n")[0]}` : ""}`,
+      `  ${step.status.padEnd(9)} ${step.name}${seconds}${spawned}${step.error ? `: ${step.error.split("\n")[0]}` : ""}`,
     );
   }
   io.log(
