@@ -214,6 +214,10 @@ import {
 } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
 import { DevBuildError, planDevBuild } from "../apps/binding-dev-build";
+import {
+  unregisteredDraftAccess,
+  unregisteredDraftProject,
+} from "../apps/unregistered-draft-app";
 import { installCommand } from "../apps/package-manager";
 import {
   getBindingJob,
@@ -437,6 +441,55 @@ async function loadProject(
     }
   }
   return { project, userId };
+}
+
+/**
+ * loadProject for the laptop dev-build loop (dev-build and its binding jobs):
+ * an app that is not on main yet — a new folder only in the developer's
+ * checkout — is a draft-only project (unregistered-draft-app.ts) instead of a
+ * 404, so `makoData()` shows data before anything is pushed. Every other
+ * answer of loadProject (a real app, a 403, a 404 for an app the caller may
+ * not see) is unchanged.
+ */
+async function loadDevBuildProject(
+  c: AuthenticatedContext,
+  opts: { checkWrite: boolean },
+): Promise<
+  | {
+      project: IAppProject;
+      userId?: string;
+      canWrite: boolean;
+      unregistered: boolean;
+    }
+  | { errorResponse: Response }
+> {
+  const loaded = await loadProject(c, { write: false });
+  if (!("errorResponse" in loaded)) {
+    const canWrite = opts.checkWrite
+      ? !("errorResponse" in (await loadProject(c, { write: true })))
+      : false;
+    return { ...loaded, canWrite, unregistered: false };
+  }
+  if (loaded.errorResponse.status !== 404) return loaded;
+  const workspaceId = c.req.param("workspaceId") as string;
+  const userId = actingUserId(c);
+  const access = unregisteredDraftAccess(
+    userId,
+    await memberRoleFor(workspaceId, userId),
+  );
+  if (access === "none") return loaded;
+  const project = await unregisteredDraftProject(
+    workspaceId,
+    c.req.param("id") ?? "",
+    userId,
+  );
+  if (!project) return loaded;
+  return {
+    project,
+    userId,
+    canWrite: access === "write",
+    unregistered: true,
+  };
 }
 
 function toProjectJson(
@@ -2699,19 +2752,19 @@ appsRoutes.openapi(
         refresh,
         async: asyncBuild,
       } = c.req.valid("json");
-      const loaded = await loadProject(c, { write: false });
+      const loaded = await loadDevBuildProject(c, { checkWrite: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const writer = await loadProject(c, { write: true });
       const request = {
         project: loaded.project,
         name,
         actorId: loaded.userId ?? "api-key",
         userId: loaded.userId,
-        canWrite: !("errorResponse" in writer),
+        canWrite: loaded.canWrite,
         source,
         dbtEnvironment,
         dbtDefer,
         refresh,
+        unregistered: loaded.unregistered,
       };
       // Refusals and a stored artifact answer at once either way; only an
       // actual build is handed to a job when the caller can poll for it.
@@ -2725,6 +2778,7 @@ appsRoutes.openapi(
           actorId: request.actorId,
           userId: request.userId,
           canWrite: request.canWrite,
+          ...(loaded.unregistered ? { unregistered: true } : {}),
           request: { source, dbtEnvironment, dbtDefer, refresh },
         });
         return c.json(
@@ -2793,7 +2847,9 @@ async function loadBindingJob(
   c: AuthenticatedContext,
   jobId: string,
 ): Promise<{ job: BindingJobDoc } | { errorResponse: Response }> {
-  const loaded = await loadProject(c, { write: false });
+  // A dev-build job of an app not on main yet is polled under the same
+  // synthesized id it was queued under.
+  const loaded = await loadDevBuildProject(c, { checkWrite: false });
   if ("errorResponse" in loaded) return loaded;
   const job = await getBindingJob(loaded.project._id.toString(), jobId);
   // Another member's job is as good as missing: a draft job's result is

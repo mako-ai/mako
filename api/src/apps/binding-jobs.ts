@@ -67,6 +67,11 @@ export interface BindingJobDoc {
   actorId: string;
   userId?: string;
   canWrite: boolean;
+  /**
+   * dev-build of an app not on main yet (unregistered-draft-app.ts): the
+   * worker synthesizes the same draft-only project the route did.
+   */
+  unregistered?: boolean;
   request: BindingJobRequest;
   status: BindingJobStatus;
   result?: BindingJobResult | null;
@@ -93,6 +98,7 @@ const AppBindingJob =
         actorId: { type: String, required: true },
         userId: { type: String },
         canWrite: { type: Boolean, default: false },
+        unregistered: { type: Boolean },
         request: { type: Schema.Types.Mixed, default: {} },
         status: {
           type: String,

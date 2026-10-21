@@ -40,6 +40,8 @@ export default defineConfig({
       "src/inngest/functions/apps-binding-concurrency.test.ts",
       // The laptop dev loop: uncommitted binding text built as a draft.
       "src/apps/binding-dev-build.test.ts",
+      // Dev builds of an app not on main yet: draft-only, role-gated.
+      "src/apps/unregistered-draft-app.test.ts",
       // A binding past the parquet row limit fails its build, never truncates.
       "src/apps/binding-row-limit.test.ts",
       // Draft reuse + failure backoff: real Mongo, filesystem artifact store.

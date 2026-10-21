@@ -5,6 +5,7 @@
 import fs from "node:fs/promises";
 import type { IAppProject } from "../database/workspace-schema";
 import { resolveProjectRef } from "./worktree.service";
+import { unregisteredDraftProject } from "./unregistered-draft-app";
 import { materializeAppBinding } from "./bindings.service";
 import { DevBuildError, planDevBuild } from "./binding-dev-build";
 import {
@@ -25,6 +26,12 @@ export interface BindingJobRunnerDeps {
     workspaceId: string,
     projectId: string,
   ) => Promise<IAppProject | null>;
+  /** The draft-only project of an app not on main yet, as the route made it. */
+  resolveUnregistered: (
+    workspaceId: string,
+    projectId: string,
+    userId: string | undefined,
+  ) => Promise<IAppProject | null>;
   materialize: typeof materializeAppBinding;
   plan: typeof planDevBuild;
   mark: typeof markBindingJob;
@@ -36,6 +43,7 @@ export interface BindingJobRunnerDeps {
 const defaultDeps: BindingJobRunnerDeps = {
   resolveProject: (workspaceId, projectId) =>
     resolveProjectRef(workspaceId, projectId),
+  resolveUnregistered: unregisteredDraftProject,
   materialize: materializeAppBinding,
   plan: planDevBuild,
   mark: markBindingJob,
@@ -49,7 +57,18 @@ export async function runBindingJob(
   deps: BindingJobRunnerDeps = defaultDeps,
 ): Promise<BindingJobDoc["status"]> {
   const jobId = job._id.toString();
-  const project = await deps.resolveProject(job.workspaceId, job.projectId);
+  // An app pushed since the job was queued resolves as itself; its drafts
+  // were keyed by the id it now has, so nothing is lost either way.
+  let project = await deps.resolveProject(job.workspaceId, job.projectId);
+  let unregistered = false;
+  if (!project && job.unregistered && job.kind === "dev-build") {
+    project = await deps.resolveUnregistered(
+      job.workspaceId,
+      job.projectId,
+      job.userId,
+    );
+    unregistered = project !== null;
+  }
   if (!project) {
     await deps.mark(jobId, {
       status: "error",
@@ -65,7 +84,7 @@ export async function runBindingJob(
     deps.heartbeat(jobId).catch(() => undefined);
   }, deps.heartbeatMs);
   try {
-    const result = await build(job, project, deps);
+    const result = await build(job, project, unregistered, deps);
     await deps.mark(jobId, { status: "ready", result });
     return "ready";
   } catch (error) {
@@ -91,6 +110,7 @@ export async function runBindingJob(
 async function build(
   job: BindingJobDoc,
   project: IAppProject,
+  unregistered: boolean,
   deps: BindingJobRunnerDeps,
 ): Promise<BindingJobResult> {
   if (job.kind === "materialize") {
@@ -115,6 +135,7 @@ async function build(
     dbtEnvironment: job.request.dbtEnvironment,
     dbtDefer: job.request.dbtDefer,
     refresh: job.request.refresh,
+    unregistered,
   });
   if (plan.kind === "artifact") {
     return { artifactKey: plan.artifactKey, build: "artifact" };

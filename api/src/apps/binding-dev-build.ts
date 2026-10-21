@@ -85,6 +85,11 @@ export interface DevBuildInput {
   dbtDefer?: boolean;
   /** Rebuild even when a stored artifact would answer. */
   refresh?: boolean;
+  /**
+   * The app is not on main yet (unregistered-draft-app.ts): there is no
+   * committed binding to serve or materialize, so every build is a draft.
+   */
+  unregistered?: boolean;
 }
 
 export type DevBuildResult =
@@ -311,9 +316,10 @@ export async function planDevBuild(
   // served or built: its key is the one published readers resolve, and
   // materializing it as read here (not re-read by name) means a commit
   // landing mid-request cannot put other SQL under this caller's text.
-  const committed = asPublished
-    ? await deps.committedBinding(project, name, actorId)
-    : null;
+  const committed =
+    asPublished && !input.unregistered
+      ? await deps.committedBinding(project, name, actorId)
+      : null;
   const isCommitted =
     committed !== null &&
     committed.materialization === "parquet" &&
@@ -329,9 +335,11 @@ export async function planDevBuild(
   }
   if (!input.canWrite) {
     throw new DevBuildError(
-      isCommitted
-        ? `Binding "${name}" is not materialized yet, and you have read-only access to this app`
-        : `Your bindings/${name}.sql differs from the committed one; building uncommitted SQL needs edit access to this app`,
+      input.unregistered
+        ? `This app is not on main yet; building its bindings/${name}.sql needs member (not viewer) access to the workspace`
+        : isCommitted
+          ? `Binding "${name}" is not materialized yet, and you have read-only access to this app`
+          : `Your bindings/${name}.sql differs from the committed one; building uncommitted SQL needs edit access to this app`,
       403,
     );
   }

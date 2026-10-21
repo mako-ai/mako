@@ -104,6 +104,7 @@ function deps(
 ): BindingJobRunnerDeps {
   return {
     resolveProject: vi.fn(async () => project),
+    resolveUnregistered: vi.fn(async () => null),
     materialize: vi.fn(async () => ({
       artifactKey: "apps/bindings/c/abc.parquet",
       rowCount: 9,
@@ -246,6 +247,36 @@ describe("binding jobs", () => {
       status: "error",
       errorStatus: 404,
     });
+  });
+
+  it("builds an app not on main yet as a draft only when the job says so", async () => {
+    const queued = await newJob({ unregistered: true });
+    const d = deps({
+      resolveProject: vi.fn(async () => null),
+      resolveUnregistered: vi.fn(async () => project),
+    });
+    expect(await runBindingJob(queued, d)).toBe("ready");
+    expect(d.resolveUnregistered).toHaveBeenCalledWith(WS, PROJECT, "u1");
+    expect(d.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ project, unregistered: true }),
+    );
+
+    // An ordinary job whose app vanished stays a 404: no synthesized app.
+    const ordinary = await newJob();
+    const o = deps({
+      resolveProject: vi.fn(async () => null),
+      resolveUnregistered: vi.fn(async () => project),
+    });
+    expect(await runBindingJob(ordinary, o)).toBe("error");
+    expect(o.resolveUnregistered).not.toHaveBeenCalled();
+
+    // Pushed since it was queued: built as the real app, committed rules on.
+    const pushed = await newJob({ unregistered: true });
+    const p = deps();
+    expect(await runBindingJob(pushed, p)).toBe("ready");
+    expect(p.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ unregistered: false }),
+    );
   });
 
   it("is visible only within its project, and a finished job until it expires", async () => {
