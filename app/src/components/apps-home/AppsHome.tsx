@@ -782,10 +782,15 @@ export default function AppsHome() {
   );
 }
 
+// Pixel strings: in MUI sx a bare 1 means 100%, which made this box as wide
+// as the viewport and scrolled the whole shell sideways.
 const visuallyHidden = {
   position: "absolute",
-  width: 1,
-  height: 1,
+  width: "1px",
+  height: "1px",
+  margin: "-1px",
+  padding: 0,
+  border: 0,
   overflow: "hidden",
   clip: "rect(0 0 0 0)",
   whiteSpace: "nowrap",
