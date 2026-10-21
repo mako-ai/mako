@@ -90,6 +90,7 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `API_RATE_LIMIT_MODE`          | Optional    | Per-caller API budget: `shadow` (default, logs who would be refused), `enforce` (429 + `Retry-After`), or `off`. The Cloud Run deploy workflow sets `enforce` |
 | `API_RATE_LIMIT_PER_MINUTE`    | Optional    | Cost units per caller per minute (default `1200`) |
 | `EDGE_ORIGIN_SECRET`           | Optional    | When set, requests must carry `x-mako-edge: <secret>` (set by a Cloudflare Transform Rule) so the `*.run.app` URL cannot bypass Cloudflare. Logs only until `EDGE_ORIGIN_CHECK=enforce` |
+| `APPS_LIFECYCLE_ENFORCE`       | Optional    | Enforces the daily [app lifecycle job](/apps/#app-lifecycle-stale-and-archived-apps) (stale notices, archiving, paused schedules): `all` or a comma-separated list of workspace ids. Unset = dry run, the job only logs its plan |
 
 ### API Protection
 

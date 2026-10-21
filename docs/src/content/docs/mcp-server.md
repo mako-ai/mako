@@ -212,7 +212,7 @@ repository root (`ai.mako/mako`, streamable HTTP at `https://app.mako.ai/api/mcp
 The app is a folder in the workspace's git monorepo and the agent works like
 a developer in a checkout:
 
-1. `app_list_apps` / `app_create_app` — discover or scaffold (`apps/<slug>/`, a real Vite project).
+1. `app_list_apps` / `search_apps` / `app_create_app` — discover, search (title, description, path, owner and the tables bindings read) or scaffold a real Vite project. New apps are personal by default and land in your `personalFolder` (`users/<handle>/apps/<slug>/`); sharing into `apps/` is a deliberate move (see [Apps](/apps/#personal-and-workspace-apps)).
 2. `app_read_file` / `app_write_file` / `app_edit_file` / `app_glob` / `app_grep` — ordinary file work; `app_bash` runs any shell command in the app's sandbox. Output is capped (same limits as the in-app agent): `app_read_file` takes `offset`/`limit` and returns at most 2000 lines or ~50k chars per call, `app_grep` returns at most 200 matches, and `app_bash` keeps the head and tail of long output, saving the full text to a sandbox file whose path is in the result.
 3. `app_materialize` — build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with front matter, not documents).
 4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.

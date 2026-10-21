@@ -7,7 +7,7 @@ Apps are real Vite + React + TypeScript projects that live in your workspace's g
 
 ## How It Works
 
-An app is a folder (`apps/<slug>/`) in the workspace monorepo:
+An app is a folder in the workspace monorepo — `users/<handle>/apps/<slug>/` while it is personal, `apps/<slug>/` once you share it with the workspace (see [Personal and workspace apps](#personal-and-workspace-apps)):
 
 - **A real git repository** — Mako hosts the bare repo and serves it over git's own HTTP protocol; every commit is also mirror-pushed to a private GitHub repo (Mako-hosted, or your own connected repo).
 - **A real working copy** — each editor gets a sandbox (an isolated microVM) that is an ordinary git clone with a real filesystem, a real shell, and a real remote. Committed-and-pushed work survives the sandbox dying; uncommitted work lives only in the sandbox, exactly as on a laptop.
@@ -115,7 +115,7 @@ directly); poll
 
 ## Discovery: Apps home and thumbnails
 
-The **Apps home** (`/apps`, or the grid button in the Apps explorer) is the workspace's catalogue: Popular this month, New this week, Recently viewed, My apps, and — for an app's owner — Needs attention (failed deploy, failing data refresh, stale scheduled data). Its search, the `search_apps` agent tool and the command palette (Cmd/Ctrl+K) all search title, description, folder, owner and the warehouse tables each app's bindings read.
+The **Apps home** (`/apps`, or the grid button in the Apps explorer) is the workspace's catalogue: Popular this month, New this week, Recently viewed, My apps, a **Recommended** grid through every other app (ranked server-side from popularity, recency, your own reads and quality, paged with infinite scroll), and — for an app's owner — Needs attention (failed deploy, failing data refresh, stale scheduled data). Its search, the `search_apps` agent tool and the command palette (Cmd/Ctrl+K) all search title, description, folder, owner and the warehouse tables each app's bindings read.
 
 Each card shows the app's own **thumbnail**: an image at the app's root, named `thumbnail.png` (or `thumbnail.webp`, `.jpg`, `.jpeg`, `.svg` — the first one found wins), ideally **1200×750 (16:10)** and under 3 MB. Mako never screenshots apps; the builder ships the picture, and it updates with the next commit on `main`. New apps start with a placeholder `thumbnail.svg` (the app's title and the Mako mark); an app without any thumbnail gets a generated placeholder.
 
@@ -133,6 +133,32 @@ Apps have two access levels:
 - **`workspace`**: visible and editable by any workspace member.
 
 Public links (optionally password-protected) render the published deployment for anonymous viewers.
+
+## Personal and workspace apps
+
+New apps are **personal by default**. A personal app lives under your own tree, `users/<handle>/apps/<slug>/`; the **handle** is the local part of your email (`joan@example.com` → `joan`, with `-2`, `-3` … on a collision inside the workspace; the longest-standing member keeps the bare one). The same `users/<handle>/` tree holds your personal consoles and notebooks. A folder's name grants nothing: ownership comes from the workspace's handle mapping, so a folder named after anything else (a user id, a typo) belongs to nobody.
+
+Sharing is a deliberate move. **Share with workspace** (in the app's context menu, or `POST /api/workspaces/:wid/apps/:id/share-with-workspace`) commits a move of the folder into the workspace `apps/` tree and writes a one-line description into `mako.json`. The app keeps its id, so its deployment, sharing and favourites follow it. Only the app's owner, with an editing role, can do this. The agent's `app_list_apps` returns your `personalFolder` and its `app_create_app` files new apps there; `search_apps` searches first, so the agent can propose extending a close match instead of scaffolding a near-copy.
+
+Workspace admins can mark a workspace app **verified** (context-menu toggle, `PUT /api/workspaces/:wid/apps/:id/verified`). Verified apps are never marked stale by the lifecycle job below.
+
+## Usage and popularity
+
+Every view of a published app is recorded: the in-Mako app tab and the `/view/` page report an `open` plus a heartbeat every 60 seconds while the app is visible (the dev preview never reports), and share links, raw `/live/` links and embeds are counted server-side when their HTML entry is served. Viewers on share links and embeds are keyed by a first-party random cookie (`mako_viewer`), not their IP address; crawlers and link unfurlers are logged as bots and counted nowhere.
+
+Counts roll up per viewer per UTC day (`app_usage_daily`), and every event is also kept raw (`app_usage_events`, 13-month TTL). `GET /api/workspaces/:wid/apps/usage?days=28` returns per app the viewers, non-author viewers, visit-days, opens, active seconds, last opens and a **popularity score**: the sum over non-author viewers of their distinct active days, each weighted by `0.5^(age_days/14)`. `GET .../apps/recent` returns the caller's recently viewed apps. The Apps home cards show visit-days (person-days in the last 28 days, authors included, plus anonymous viewers) and "Data last refreshed" for the app's current bindings only.
+
+## App lifecycle: stale and archived apps
+
+A daily job (`apps-lifecycle-daily`, 06:00 UTC) keeps the catalogue from filling up with abandoned apps:
+
+- **Stale** — nobody except the app's authors opened it in **60 days** and it has had no commit in that time. The owner (or, for an app without one, the workspace admins) gets an email notice. Apps younger than 14 days, verified apps, and apps restored in the last 60 days are never marked stale. A commit that touches many apps at once (an SDK bump) does not count as editing any of them.
+- **Archived** — **14 days** after the notice, unless the app was opened or edited meanwhile, a Mako bot commit moves it to `archive/<path>` in the repo. That folder is outside both app trees, so the app is neither indexed nor built.
+- **Paused schedules** — an app with scheduled bindings that nobody opened in **30 days** has its binding schedules skipped (its front matter is untouched) until the next open.
+
+Owners see their archived apps behind the **Archived** chip on the Apps home (`GET .../apps/archived`) and can **Restore** them (`POST .../apps/archived/restore`): the folder moves back to where it was, keeps its id, and starts a fresh 60-day grace period. Workspace admins can preview what the job would do with `GET .../apps/lifecycle/plan`.
+
+The job is a **dry run** (it only logs its plan) unless the `APPS_LIFECYCLE_ENFORCE` environment variable names the workspaces to enforce in: a comma-separated list of workspace ids, or `all`. See [Deployment](/deployment/#environment-variables).
 
 ## Chat with an app
 
@@ -194,4 +220,4 @@ preview the app as a specific workspace member during `pnpm dev`.
 
 ## API Surface
 
-Apps are managed under `/api/workspaces/:wid/apps` (list/create/delete, files, exec, branches, commit/merge, bindings and materialization, publish/rollback, public share, sandbox lifecycle). The workspace repo itself is served over git HTTP at `/api/apps-git/:workspaceId.git`, authorized by a scoped workspace git token. See the OpenAPI spec for full schemas, and [MCP Server](/mcp-server/) for driving all of this headlessly with the `app_*` tools.
+Apps are managed under `/api/workspaces/:wid/apps` (list/create/delete, files, exec, branches, commit/merge, bindings and materialization, publish/rollback, public share, sandbox lifecycle; plus `/discovery` and `/feed` for the Apps home, `/usage` and `/recent`, `/archived` and `/lifecycle/plan`). The workspace repo itself is served over git HTTP at `/api/apps-git/:workspaceId.git`, authorized by a scoped workspace git token. See the OpenAPI spec for full schemas, and [MCP Server](/mcp-server/) for driving all of this headlessly with the `app_*` tools.
