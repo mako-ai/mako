@@ -449,6 +449,41 @@ async function loadProject(
 }
 
 /**
+ * The view token's fast path: an app id whose row is published and readable
+ * by the caller. One Mongo read, no repo index and no git.
+ *
+ * Opening an app in Mako asks for its token by id, and the full resolver
+ * spent 0.8–1.1 s on prod freshening the workspace mirror (a git fetch when
+ * the last one is over 3 s old) to learn what the row already holds. For an
+ * id, resolveProjectRef returns this same row: the index only corrects its
+ * path and slug, and neither the grant nor the ACL reads them. Anything else
+ * (a slug, a path, no row, unpublished, not readable) returns null and takes
+ * loadProject, so its answers and 404s stay exactly as they were.
+ */
+async function loadPublishedRowById(
+  c: AuthenticatedContext,
+): Promise<{ project: IAppProject; userId?: string } | null> {
+  const workspaceId = c.req.param("workspaceId") as string;
+  const id = c.req.param("id")?.trim() ?? "";
+  if (!/^[0-9a-f]{24}$/i.test(id) || !Types.ObjectId.isValid(workspaceId)) {
+    return null;
+  }
+  const row = await AppProject.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (!row?.publishedSha) return null;
+  const userId = actingUserId(c);
+  if (userId) {
+    // The workspace middleware already read this member for this request.
+    const role =
+      c.get("memberRole") ?? (await memberRoleFor(workspaceId, userId));
+    if (!canReadResource(row, userId, role)) return null;
+  }
+  return { project: row, userId };
+}
+
+/**
  * loadProject for the laptop dev-build loop (dev-build and its binding jobs):
  * an app that is not on main yet — a new folder only in the developer's
  * checkout — is a draft-only project (unregistered-draft-app.ts) instead of a
@@ -4035,7 +4070,9 @@ appsRoutes.openapi(
   }),
   async c => {
     try {
-      const loaded = await loadProject(c, { write: false });
+      const loaded =
+        (await loadPublishedRowById(c)) ??
+        (await loadProject(c, { write: false }));
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const sha = loaded.project.publishedSha;
       if (!sha) {
@@ -4059,6 +4096,9 @@ appsRoutes.openapi(
           url: `/api/apps-preview/${grant.token}/`,
           sha,
           expiresAt: grant.expiresAt,
+          // Which app the ref named: the client may ask by slug before its
+          // app list has loaded, and files the token under this id.
+          appId: loaded.project._id.toString(),
         },
         200,
       );

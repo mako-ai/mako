@@ -70,6 +70,8 @@ export default defineConfig({
       "src/agent-lib/tools/shared/query-result-format.test.ts",
       "src/agent-lib/capabilities/runtime.test.ts",
       "src/apps/preview.service.test.ts",
+      // The view token: an app id answered from its row, no repo resolver.
+      "src/apps/view-token-route.test.ts",
       "src/apps/deployment.service.test.ts",
       // One store call per published asset: open + size, 404 on missing.
       "src/services/artifact-store-open-read.test.ts",
