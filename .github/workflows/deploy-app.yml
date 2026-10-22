@@ -1134,6 +1134,7 @@ jobs:
             --set-env-vars WORKFLOWS_RUNTIME_IMAGE=${WORKFLOWS_RUNTIME_IMAGE} \
             --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
             --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
+            --set-env-vars APPS_ORIGIN_BASE=https://makousercontent.com \
             --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
             --quiet
 

@@ -18,7 +18,7 @@
  * two apps open side by side are different origins and cannot reach into
  * each other's frames or storage.
  *
- * `APPS_ORIGIN_BASE` (e.g. `https://makoapps.dev`) turns it on. Unset = off:
+ * `APPS_ORIGIN_BASE` (e.g. `https://makousercontent.com`) turns it on. Unset = off:
  * the view token keeps its relative, opaque-origin URL exactly as before.
  *
  * Rules that must hold, each pinned by app-origin.test.ts:
@@ -40,7 +40,7 @@ const APP_LABEL = /^[0-9a-f]{24}$/;
 export interface AppOriginConfig {
   /** `https:` or `http:` (http only makes sense on a laptop). */
   protocol: string;
-  /** The apps domain, lowercase, no port: `makoapps.dev`. */
+  /** The apps domain, lowercase, no port: `makousercontent.com`. */
   hostname: string;
   /** Port suffix including the colon, or "" for the default port. */
   port: string;
@@ -106,7 +106,7 @@ function safeUrl(raw: string): URL | null {
   }
 }
 
-/** `https://<appId>.makoapps.dev`, or null when off or the id is unusable. */
+/** `https://<appId>.makousercontent.com`, or null when off or the id is unusable. */
 export function appOriginFor(
   appId: string,
   env: NodeJS.ProcessEnv = process.env,
