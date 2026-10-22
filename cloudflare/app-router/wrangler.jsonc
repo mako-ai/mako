@@ -8,8 +8,15 @@
     {
       "pattern": "app.mako.ai/*",
       "zone_name": "mako.ai"
+    },
+    {
+      "pattern": "*.makousercontent.com/*",
+      "zone_name": "makousercontent.com"
     }
   ],
+  "vars": {
+    "APPS_DOMAIN": "makousercontent.com"
+  },
   "kv_namespaces": [
     {
       "binding": "MAKO_APP_ROUTING",
