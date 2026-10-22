@@ -179,6 +179,14 @@ describe("liveViewerRedirect", () => {
   });
 });
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
 describe("loadAppChatData parquet mode", () => {
   const originalFlag = process.env.APP_CHAT_PARQUET_DIRECT_GCS;
   const originalHmacId = process.env.GCS_HMAC_KEY_ID;
@@ -210,15 +218,10 @@ describe("loadAppChatData parquet mode", () => {
   });
 
   afterEach(() => {
-    if (originalFlag === undefined)
-      delete process.env.APP_CHAT_PARQUET_DIRECT_GCS;
-    else process.env.APP_CHAT_PARQUET_DIRECT_GCS = originalFlag;
-    if (originalHmacId === undefined) delete process.env.GCS_HMAC_KEY_ID;
-    else process.env.GCS_HMAC_KEY_ID = originalHmacId;
-    if (originalHmacSecret === undefined) delete process.env.GCS_HMAC_SECRET;
-    else process.env.GCS_HMAC_SECRET = originalHmacSecret;
-    if (originalCacheDir === undefined) delete process.env.APPS_CHAT_CACHE_DIR;
-    else process.env.APPS_CHAT_CACHE_DIR = originalCacheDir;
+    restoreEnv("APP_CHAT_PARQUET_DIRECT_GCS", originalFlag);
+    restoreEnv("GCS_HMAC_KEY_ID", originalHmacId);
+    restoreEnv("GCS_HMAC_SECRET", originalHmacSecret);
+    restoreEnv("APPS_CHAT_CACHE_DIR", originalCacheDir);
   });
 
   it("defaults the direct-GCS flag off", () => {

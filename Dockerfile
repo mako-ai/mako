@@ -125,6 +125,16 @@ RUN mkdir -p packages/schemas/dist packages/agent-tools/dist
 
 RUN pnpm install --prod --filter api...
 
+# Bake DuckDB extensions with the exact @duckdb/node-api binary just installed
+# (same DuckDB version and linux_amd64 platform the server runs). Chat-with-app
+# direct-GCS mode LOADs httpfs from here with auto-install off, so no Cloud Run
+# instance downloads from extensions.duckdb.org. Cached until the lockfile or
+# this one compiled file changes.
+ENV DUCKDB_EXTENSION_DIRECTORY=/opt/duckdb-extensions
+COPY --from=builder /app/api/dist/apps/duckdb-extensions.js ./api/dist/apps/duckdb-extensions.js
+RUN node api/dist/apps/duckdb-extensions.js "$DUCKDB_EXTENSION_DIRECTORY" \
+    && test -n "$(find "$DUCKDB_EXTENSION_DIRECTORY" -name 'httpfs.duckdb_extension')"
+
 # Copy compiled shared packages + app/API output
 COPY --from=builder /app/packages/schemas/dist ./packages/schemas/dist
 COPY --from=builder /app/packages/agent-tools/dist ./packages/agent-tools/dist

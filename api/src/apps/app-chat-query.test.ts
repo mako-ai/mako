@@ -14,9 +14,15 @@ import {
   inferAppChatParquetMode,
   queryAppData,
   redactDuckDbError,
+  scrubRemoteSources,
   systemCaCertFile,
   type AppDataTable,
 } from "./app-chat-query";
+import {
+  bakeExtensions,
+  DUCKDB_EXTENSION_DIR_ENV,
+  loadBakedExtension,
+} from "./duckdb-extensions";
 
 let dir: string;
 let tables: AppDataTable[];
@@ -120,8 +126,14 @@ describe("direct httpfs mode", () => {
   let allowedUrl: string;
   let forbiddenUrl: string;
   let remoteTables: AppDataTable[];
+  let extensionDir: string;
+  const originalExtensionDir = process.env[DUCKDB_EXTENSION_DIR_ENV];
 
   beforeAll(async () => {
+    // Same path as the Docker build: bake httpfs once, runtime only LOADs.
+    extensionDir = fs.mkdtempSync(path.join(os.tmpdir(), "duckdb-ext-"));
+    await bakeExtensions(extensionDir);
+    process.env[DUCKDB_EXTENSION_DIR_ENV] = extensionDir;
     const secretParquet = tables[1]?.file;
     const ordersParquet = tables[0]?.file;
     if (!secretParquet || !ordersParquet) {
@@ -153,6 +165,50 @@ describe("direct httpfs mode", () => {
 
   afterAll(() => {
     server.close();
+    if (originalExtensionDir === undefined) {
+      delete process.env[DUCKDB_EXTENSION_DIR_ENV];
+    } else {
+      process.env[DUCKDB_EXTENSION_DIR_ENV] = originalExtensionDir;
+    }
+    fs.rmSync(extensionDir, { recursive: true, force: true });
+  });
+
+  it("fails loudly when httpfs is not baked, without downloading", async () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "duckdb-ext-empty-"));
+    process.env[DUCKDB_EXTENSION_DIR_ENV] = empty;
+    try {
+      await expect(
+        queryAppData(remoteTables, "SELECT 1", { mode: "direct" }),
+      ).rejects.toThrow(/"httpfs" is not installed in .*duckdb-ext-empty-/);
+      expect(fs.readdirSync(empty)).toEqual([]);
+    } finally {
+      process.env[DUCKDB_EXTENSION_DIR_ENV] = extensionDir;
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("scrubs remote source URLs from results and errors", async () => {
+    const views = await queryAppData(
+      remoteTables,
+      "SELECT sql, current_setting('allowed_paths')::varchar AS paths FROM duckdb_views() WHERE NOT internal",
+      { mode: "direct" },
+    );
+    const text = JSON.stringify(views.rows);
+    expect(text).not.toContain(allowedUrl);
+    expect(text).toContain("__data/orders.parquet");
+    await expect(
+      queryAppData(remoteTables, "SELECT nope FROM orders", {
+        mode: "direct",
+      }),
+    ).rejects.not.toThrow(allowedUrl);
+    const signed =
+      "https://storage.googleapis.com/b/k.parquet?X-Goog-Algorithm=GOOG4&X-Goog-Credential=sa%40p&X-Goog-Signature=abc123";
+    const scrubbed = scrubRemoteSources(
+      `HTTP 403 for ${signed} and ${signed.slice(0, 120)}`,
+      [{ name: "orders", file: signed }],
+    );
+    expect(scrubbed).not.toMatch(/abc123|sa%40p/);
+    expect(scrubbed).toContain("__data/orders.parquet");
   });
 
   it("infers direct mode from remote URLs", () => {
@@ -214,8 +270,7 @@ describe("direct httpfs mode", () => {
     const instance = await DuckDBInstance.create(":memory:");
     const connection = await instance.connect();
     try {
-      await connection.run("INSTALL httpfs");
-      await connection.run("LOAD httpfs");
+      await loadBakedExtension(connection, "httpfs");
       await connection.run("SET allow_persistent_secrets = false");
       const gs = "gs://artifacts/apps/bindings/hash.parquet";
       await connection.run(
@@ -240,8 +295,7 @@ describe("direct httpfs mode", () => {
     const instance = await DuckDBInstance.create(":memory:");
     const connection = await instance.connect();
     try {
-      await connection.run("INSTALL httpfs");
-      await connection.run("LOAD httpfs");
+      await loadBakedExtension(connection, "httpfs");
       await connection.run("SET allow_persistent_secrets = false");
       await connection.run(
         gcsSecretSql({ kind: "bearer", token: "ya29.token" }, [

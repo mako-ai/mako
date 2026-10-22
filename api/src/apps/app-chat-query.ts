@@ -13,13 +13,23 @@
  * Two parquet sources:
  * - `copy` (default): local files copied from the artifact store. Sandbox is
  *   the original locked-down in-memory DB.
- * - `direct`: DuckDB httpfs reads `gs://` or https URLs. httpfs is installed
- *   before lock; `allowed_paths` is exactly those URLs; persistent secrets
- *   are off. A GCS secret, when needed, is SCOPEd to the same gs:// objects.
+ * - `direct`: DuckDB httpfs reads `gs://` or https URLs. httpfs is LOADed
+ *   from the extension directory baked into the image (never downloaded at
+ *   runtime) before lock; `allowed_paths` is exactly those URLs; persistent
+ *   secrets are off. A GCS secret, when needed, is SCOPEd to the same gs://
+ *   objects.
+ *
+ * Signed URLs in direct mode: the agent can see them (`duckdb_views()`,
+ * `current_setting('allowed_paths')`, error text). Results and errors are
+ * scrubbed of the URL and its signature, but a determined query (substring
+ * tricks) could still reconstruct it. That is acceptable: the URL grants a
+ * read of exactly the parquet the viewer's browser already receives a signed
+ * URL for via `__data/<name>.parquet`, it is read-only, and it expires.
  */
 import fs from "node:fs";
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { loggers } from "../logging";
+import { loadBakedExtension } from "./duckdb-extensions";
 
 const logger = loggers.api("apps-chat-query");
 
@@ -142,13 +152,55 @@ async function createBindingViews(
   }
 }
 
-/** Strip CREATE SECRET literals from DuckDB errors so HMAC/bearer never log. */
-export function redactDuckDbError(error: unknown): Error {
+/**
+ * Replace each remote source URL with the path the viewer's browser uses for
+ * it, and blank any GCS V4 signature left over (a partial or re-encoded URL).
+ */
+export function scrubRemoteSources(
+  text: string,
+  tables: AppDataTable[],
+): string {
+  let out = text;
+  for (const table of tables) {
+    if (!isRemoteParquetSource(table.file)) continue;
+    const placeholder = `__data/${table.name}.parquet`;
+    out = out.split(table.file).join(placeholder);
+    const bare = table.file.split("?")[0];
+    if (bare !== table.file) out = out.split(bare).join(placeholder);
+  }
+  return out.replace(
+    /(X-Goog-(?:Signature|Credential)=)[^&\s'"]+/gi,
+    "$1[redacted]",
+  );
+}
+
+function scrubValue(value: unknown, tables: AppDataTable[]): unknown {
+  if (typeof value === "string") return scrubRemoteSources(value, tables);
+  if (Array.isArray(value)) return value.map(v => scrubValue(v, tables));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, scrubValue(v, tables)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * Strip CREATE SECRET literals and remote source URLs from DuckDB errors so
+ * HMAC/bearer secrets never log and signed URLs never reach the agent.
+ */
+export function redactDuckDbError(
+  error: unknown,
+  tables: AppDataTable[] = [],
+): Error {
   const msg = error instanceof Error ? error.message : String(error);
-  const redacted = msg
-    .replace(/SECRET '[^']*'/gi, "SECRET '[redacted]'")
-    .replace(/BEARER_TOKEN '[^']*'/gi, "BEARER_TOKEN '[redacted]'")
-    .replace(/KEY_ID '[^']*'/gi, "KEY_ID '[redacted]'");
+  const redacted = scrubRemoteSources(
+    msg
+      .replace(/SECRET '[^']*'/gi, "SECRET '[redacted]'")
+      .replace(/BEARER_TOKEN '[^']*'/gi, "BEARER_TOKEN '[redacted]'")
+      .replace(/KEY_ID '[^']*'/gi, "KEY_ID '[redacted]'"),
+    tables,
+  );
   if (error instanceof Error && redacted === msg) return error;
   return new Error(redacted, {
     cause: error instanceof Error ? error : undefined,
@@ -179,8 +231,7 @@ async function openLockedDown(
   const connection = await instance.connect();
   try {
     if (mode === "direct") {
-      await connection.run("INSTALL httpfs");
-      await connection.run("LOAD httpfs");
+      await loadBakedExtension(connection, "httpfs");
       // httpfs otherwise tries ~/.duckdb/stored_secrets, which the
       // locked-down filesystem would then refuse (and fail the query).
       await connection.run("SET allow_persistent_secrets = false");
@@ -209,7 +260,7 @@ async function openLockedDown(
   } catch (error) {
     connection.closeSync();
     instance.closeSync();
-    throw redactDuckDbError(error);
+    throw redactDuckDbError(error, tables);
   }
   return { instance, connection, mode };
 }
@@ -243,7 +294,14 @@ export async function queryAppData(
     const reader = await connection.streamAndReadUntil(sql, maxRows + 1);
     const names = reader.columnNames();
     const types = reader.columnTypes();
-    const rows = reader.getRowObjectsJson() as Record<string, unknown>[];
+    const rawRows = reader.getRowObjectsJson() as Record<string, unknown>[];
+    const rows =
+      mode === "direct"
+        ? (rawRows.map(row => scrubValue(row, tables)) as Record<
+            string,
+            unknown
+          >[])
+        : rawRows;
     const queryMs = Date.now() - queryStarted;
     logger.debug("App chat parquet query", {
       mode,
@@ -267,7 +325,7 @@ export async function queryAppData(
     if (options.signal?.aborted) {
       throw new Error("Query cancelled", { cause: error });
     }
-    throw error;
+    throw mode === "direct" ? redactDuckDbError(error, tables) : error;
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", onAbort);
@@ -324,7 +382,7 @@ export async function describeAppData(
           rowCount: null,
           columns: [],
           sampleRows: [],
-          error: error instanceof Error ? error.message : String(error),
+          error: redactDuckDbError(error, tables).message,
         });
       }
     }
