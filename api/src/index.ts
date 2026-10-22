@@ -50,6 +50,7 @@ import {
   shutdownLangfuse,
 } from "./observability/langfuse";
 import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
+import { initAppBindingParquetWriteOptions } from "./utils/parquet-compression";
 import { attachAppsTerminalWs } from "./apps/terminal-ws";
 import {
   isGkeWorkerConfigured,
@@ -368,6 +369,10 @@ async function main(): Promise<void> {
   // production environment. A misconfiguration here must be a loud crash, not
   // a silently weakened login path.
   assertDevLoginSafeAtBoot();
+
+  // A typo in PARQUET_COMPRESSION / PARQUET_ZSTD_LEVEL stops the boot here,
+  // so the revision never serves, instead of failing app binding builds.
+  initAppBindingParquetWriteOptions();
 
   const systemSkillRegistry = discoverSystemSkills();
   const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(

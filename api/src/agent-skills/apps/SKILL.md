@@ -194,8 +194,10 @@ it works before merging to main; errors come back verbatim
 (fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
-Fetch and read with hyparquet or duckdb-wasm; artifacts are
-SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
+Read them through the SDK's DuckDB (`useDuckDB`). Artifacts are
+ZSTD-compressed. A hyparquet reader must pass `compressors` from
+`hyparquet-compressors`; plain hyparquet throws "unsupported compression
+codec: ZSTD".
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
 

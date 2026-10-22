@@ -3,6 +3,12 @@ import path from "path";
 import { promises as fsPromises } from "fs";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { loggers } from "../logging";
+import {
+  SNAPPY_WRITE_OPTIONS,
+  buildParquetCopySql,
+  type ParquetCodec,
+  type ParquetWriteOptions,
+} from "./parquet-compression";
 
 const logger = loggers.api("streaming-parquet-builder");
 
@@ -35,6 +41,12 @@ export interface StreamingParquetResult {
   byteSize: number;
   /** Rows arrived past `rowLimit` and were dropped (only with `onRowLimit: "truncate"`). */
   truncated: boolean;
+  compression: ParquetCodec;
+  /** Only for ZSTD. */
+  zstdLevel?: number;
+  rowGroupSize?: number;
+  /** Wall time of the COPY ... TO parquet statement alone. */
+  encodeDurationMs: number;
 }
 
 export interface StreamingParquetOptions {
@@ -51,6 +63,12 @@ export interface StreamingParquetOptions {
   onRowLimit?: "truncate" | "fail";
   fields?: FieldMeta[];
   onBatchInserted?: (totalRows: number) => Promise<void>;
+  /**
+   * Codec and row-group options for the COPY. Default SNAPPY: the CDC and
+   * sync load paths rely on it. App bindings pass
+   * `appBindingParquetWriteOptions()`.
+   */
+  writeOptions?: ParquetWriteOptions;
 }
 
 /**
@@ -391,13 +409,11 @@ export async function buildParquetFromBatches(
       );
     }
 
-    // SNAPPY, not ZSTD: artifacts are read by arbitrary in-browser consumers
-    // (generated apps typically use plain hyparquet, which cannot decode ZSTD
-    // without an extra compressors bundle). Snappy is the parquet
-    // compatibility default every reader supports.
-    await connection.run(
-      `COPY _data TO '${parquetPath.replace(/'/g, "''")}' (FORMAT PARQUET, COMPRESSION SNAPPY)`,
-    );
+    const writeOptions = options.writeOptions ?? SNAPPY_WRITE_OPTIONS;
+    const encodeStartedAt = Date.now();
+    await connection.run(buildParquetCopySql(parquetPath, writeOptions));
+    const encodeDurationMs = Date.now() - encodeStartedAt;
+    const isZstd = writeOptions.codec === "ZSTD";
 
     const stat = await fsPromises.stat(parquetPath);
 
@@ -411,6 +427,10 @@ export async function buildParquetFromBatches(
       rowCount: totalRows,
       truncated,
       byteSize: stat.size,
+      compression: writeOptions.codec,
+      zstdLevel: isZstd ? writeOptions.zstdLevel : undefined,
+      rowGroupSize: writeOptions.rowGroupSize,
+      encodeDurationMs,
       parquetPath,
       duckDbMemoryLimitMb,
       duckDbThreads,
@@ -421,6 +441,12 @@ export async function buildParquetFromBatches(
       rowCount: totalRows,
       byteSize: stat.size,
       truncated,
+      compression: writeOptions.codec,
+      ...(isZstd ? { zstdLevel: writeOptions.zstdLevel } : {}),
+      ...(writeOptions.rowGroupSize !== undefined
+        ? { rowGroupSize: writeOptions.rowGroupSize }
+        : {}),
+      encodeDurationMs,
     };
   } finally {
     try {

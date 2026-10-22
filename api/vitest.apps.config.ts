@@ -44,6 +44,7 @@ export default defineConfig({
       "src/apps/unregistered-draft-app.test.ts",
       // A binding past the parquet row limit fails its build, never truncates.
       "src/apps/binding-row-limit.test.ts",
+      "src/apps/binding-artifact-format.test.ts",
       // Draft reuse + failure backoff: real Mongo, filesystem artifact store.
       "src/apps/binding-draft-cache.test.ts",
       // Real git + mongo: the pre-push flow-file check reads the workspace

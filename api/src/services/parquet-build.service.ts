@@ -16,6 +16,11 @@
 import { promises as fsPromises } from "fs";
 import type { IDatabaseConnection } from "../database/workspace-schema";
 import {
+  parquetWriteArtifactMetadata,
+  type ParquetCodec,
+  type ParquetWriteOptions,
+} from "../utils/parquet-compression";
+import {
   buildParquetFromBatches,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
@@ -92,6 +97,11 @@ export interface BuildQueryParquetFileInput {
   schemaProbe?: "strict" | "lenient";
   /** Progress callback per inserted batch (heartbeats, run events). */
   onBatchInserted?: (totalRows: number) => Promise<void>;
+  /**
+   * Codec options for the COPY. Omitted = SNAPPY. App bindings pass
+   * `appBindingParquetWriteOptions()` (env-configurable, default ZSTD).
+   */
+  writeOptions?: ParquetWriteOptions;
 }
 
 export interface BuiltParquetFile {
@@ -99,6 +109,10 @@ export interface BuiltParquetFile {
   filePath: string;
   rowCount: number;
   byteSize: number;
+  compression: ParquetCodec;
+  zstdLevel?: number;
+  rowGroupSize?: number;
+  encodeDurationMs: number;
 }
 
 /**
@@ -158,6 +172,7 @@ export async function buildQueryParquetFile(
     filenameBase,
     rowLimit: input.rowLimit ?? PARQUET_ROW_LIMIT,
     onRowLimit: input.onRowLimit,
+    writeOptions: input.writeOptions,
     fields,
     onBatchInserted,
     streamBatches: async insertBatch => {
@@ -190,9 +205,14 @@ export async function storeParquetArtifactFile(input: {
   filePath: string;
   artifactKey: string;
   metadata?: Record<string, string>;
+  build?: BuiltParquetFile;
 }): Promise<void> {
+  const metadata = {
+    ...input.metadata,
+    ...(input.build ? parquetWriteArtifactMetadata(input.build) : {}),
+  };
   try {
-    await storeArtifact(input.filePath, input.artifactKey, input.metadata);
+    await storeArtifact(input.filePath, input.artifactKey, metadata);
   } finally {
     await fsPromises.rm(input.filePath, { force: true }).catch(() => undefined);
   }
