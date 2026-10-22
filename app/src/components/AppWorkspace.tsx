@@ -1774,10 +1774,11 @@ export default function AppWorkspace({
                   position: "relative",
                   zIndex: 1,
                   background: "transparent",
-                  // A frame whose color-scheme differs from its document's
-                  // gets an opaque canvas (white over a dark Mako), which
-                  // would hide the card before the app paints anything.
-                  colorScheme: "light",
+                  // No colorScheme here. The frame's color-scheme becomes the
+                  // app's prefers-color-scheme, so pinning it to "light" made
+                  // every system-following app light. Mako never sets one on
+                  // <html>, so frame and app document are both "normal"
+                  // before the app paints and the canvas stays transparent.
                 }}
               />
               {!pubLoaded && (
