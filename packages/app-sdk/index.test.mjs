@@ -4,7 +4,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { refreshBinding } = await import("./index.js");
+// Skips where react is not installed (the publish job installs nothing).
+let refreshBinding = null;
+let why = "";
+try {
+  ({ refreshBinding } = await import("./index.js"));
+} catch (error) {
+  why = error instanceof Error ? error.message : String(error);
+}
+const opts = { skip: refreshBinding ? false : "index.js not loadable here: " + why };
 
 function ndjson(lines) {
   return new Response(lines.map(l => JSON.stringify(l)).join("\n") + "\n", {
@@ -12,7 +20,7 @@ function ndjson(lines) {
   });
 }
 
-test("refreshBinding asks for phases and reports each one", async () => {
+test("refreshBinding asks for phases and reports each one", opts, async () => {
   const realFetch = globalThis.fetch;
   const asked = [];
   globalThis.fetch = async (url, init = {}) => {
@@ -40,7 +48,7 @@ test("refreshBinding asks for phases and reports each one", async () => {
   assert.deepEqual(seen, ["requesting", "checking", "querying_warehouse", "writing_parquet", null]);
 });
 
-test("a server without phases still refreshes the old way", async () => {
+test("a server without phases still refreshes the old way", opts, async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ success: false, error: "Refreshed recently", retryAfterMs: 9000 }), {
