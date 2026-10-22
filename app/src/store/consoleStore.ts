@@ -222,6 +222,7 @@ interface ConsoleActions {
   openConsoleFromServer: (
     workspaceId: string,
     consoleId: string,
+    options?: { focus?: boolean },
   ) => Promise<void>;
   /**
    * Fetch ONLY the latest server-side run artifact (lastRun) for a console.
@@ -1519,9 +1520,10 @@ export const useConsoleStore = create<ConsoleStore>()(
         }
       },
 
-      openConsoleFromServer: async (workspaceId, consoleId) => {
+      openConsoleFromServer: async (workspaceId, consoleId, options) => {
+        const focus = options?.focus !== false;
         if (get().tabs[consoleId]) {
-          get().setActiveTab(consoleId);
+          if (focus) get().setActiveTab(consoleId);
           return;
         }
         try {
@@ -1534,7 +1536,7 @@ export const useConsoleStore = create<ConsoleStore>()(
           // Re-check: the tab may have appeared while we fetched (e.g. the
           // legacy ui-intent poke and the in-band tool result both firing).
           if (get().tabs[consoleId]) {
-            get().setActiveTab(consoleId);
+            if (focus) get().setActiveTab(consoleId);
             return;
           }
           const isSaved = res.isSaved ?? !!res.path;
@@ -1565,7 +1567,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 res.savedStateHash === undefined,
             },
           );
-          get().setActiveTab(consoleId);
+          if (focus) get().setActiveTab(consoleId);
         } catch (e) {
           console.error("Failed to open console from server", e);
         }

@@ -144,7 +144,9 @@ const flowSchema = z.object({
       connectionId: z.string(),
       database: z.string().optional(),
       schema: z.string().optional(),
-      tableName: z.string(),
+      // Connector flows write one table per entity under `schema`; only
+      // database-source flows name a single table.
+      tableName: z.string().optional(),
       createIfNotExists: z.boolean().optional(),
       partitioning: z
         .object({

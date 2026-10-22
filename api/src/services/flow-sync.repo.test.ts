@@ -147,6 +147,29 @@ describe("markers, reverts, and resolution", () => {
     expect(await ensureFlowDerivedCache(row!)).toBe("ok");
   });
 
+  it("never serves half-defined incremental/conflict blocks", async () => {
+    // Production files carry `conflict: { strategy }` with no key columns,
+    // and rows keep an incremental cursor with no tracking column.
+    await push({
+      "flows/plain.yml": flowYaml("Plain", "conflict:\n  strategy: update\n"),
+    });
+    await syncFlowsFromRepo(WS, "user-42");
+    await Flow.collection.updateOne(
+      { slug: "plain" },
+      { $set: { incrementalConfig: { lastValue: "2026-01-01" } } },
+    );
+    const plain = liveFlowToPlain(
+      (await loadLiveFlows(WS)).find(item => item.def.slug === "plain")!,
+      WS,
+    );
+    // The client's schema rejected these and dropped the whole flow list.
+    expect(plain.incrementalConfig).toBeUndefined();
+    expect(plain.conflictConfig).toEqual({
+      keyColumns: [],
+      strategy: "update",
+    });
+  });
+
   it("a broken file is marked once; reverting to identical content clears it in push-sync", async () => {
     const good = flowYaml("Revertable");
     await push({ "flows/revertable.yml": good });
