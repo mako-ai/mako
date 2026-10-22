@@ -5,16 +5,35 @@
  * app's own binding parquet files: `allowed_paths` names them, external access
  * is then disabled and the configuration locked, so the agent's SQL can read
  * exactly what the app's viewers already download — never another file on
- * the API host, never a network location, never an extension install. A view
- * per binding gives each one its table name; the database is thrown away
- * after the query, so a DROP or CREATE in the agent's SQL touches nothing.
+ * the API host, never a network location (except the opted-in direct-GCS
+ * URLs), never an extension install. A view per binding gives each one its
+ * table name; the database is thrown away after the query, so a DROP or
+ * CREATE in the agent's SQL touches nothing.
+ *
+ * Two parquet sources:
+ * - `copy` (default): local files copied from the artifact store. Sandbox is
+ *   the original locked-down in-memory DB.
+ * - `direct`: DuckDB httpfs reads `gs://` or https URLs. httpfs is installed
+ *   before lock; `allowed_paths` is exactly those URLs; persistent secrets
+ *   are off. A GCS secret, when needed, is SCOPEd to the same gs:// objects.
  */
+import fs from "node:fs";
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
+import { loggers } from "../logging";
+
+const logger = loggers.api("apps-chat-query");
+
+export type AppChatParquetMode = "copy" | "direct";
+
+/** Credentials DuckDB httpfs uses for `gs://` (not for signed https URLs). */
+export type AppChatGcsAuth =
+  | { kind: "hmac"; keyId: string; secret: string }
+  | { kind: "bearer"; token: string };
 
 export interface AppDataTable {
   /** Binding name, used verbatim as the table name. */
   name: string;
-  /** Local parquet file holding the binding's published data. */
+  /** Local parquet path, `gs://bucket/key`, or a signed https URL. */
   file: string;
 }
 
@@ -29,10 +48,31 @@ export interface AppDataQueryOptions {
   maxRows?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Force copy vs direct. When omitted, inferred from the table `file`
+   * values: every path is a URL → direct, otherwise copy.
+   */
+  mode?: AppChatParquetMode;
+  /** Required when any table is a `gs://` object (not a signed https URL). */
+  gcsAuth?: AppChatGcsAuth;
 }
 
 const DEFAULT_MAX_ROWS = 200;
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** Distro CA bundles DuckDB httpfs tries to open for TLS. */
+const CA_CERT_CANDIDATES = [
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+  "/etc/pki/tls/certs/ca-bundle.crt",
+  "/etc/ssl/ca-bundle.pem",
+  "/etc/ssl/cert.pem",
+];
+
+/** First existing system CA bundle, or null if none are present. */
+export function systemCaCertFile(): string | null {
+  return CA_CERT_CANDIDATES.find(candidate => fs.existsSync(candidate)) ?? null;
+}
 
 /** SQL string literal. */
 function literal(value: string): string {
@@ -44,32 +84,134 @@ export function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
+export function isRemoteParquetSource(file: string): boolean {
+  return /^(gs|https?):\/\//i.test(file);
+}
+
+export function inferAppChatParquetMode(
+  tables: AppDataTable[],
+): AppChatParquetMode {
+  if (tables.length > 0 && tables.every(t => isRemoteParquetSource(t.file))) {
+    return "direct";
+  }
+  return "copy";
+}
+
+function gcsObjectUrls(tables: AppDataTable[]): string[] {
+  return tables.map(t => t.file).filter(file => /^gs:\/\//i.test(file));
+}
+
+/** DuckDB `CREATE SECRET` for httpfs `gs://` reads. HMAC or OAuth bearer. */
+export function gcsSecretSql(
+  auth: AppChatGcsAuth,
+  scopeUrls: string[],
+): string {
+  const scope =
+    scopeUrls.length > 0
+      ? `, SCOPE [${scopeUrls.map(literal).join(", ")}]`
+      : "";
+  if (auth.kind === "hmac") {
+    return `CREATE SECRET __mako_gcs (TYPE gcs, KEY_ID ${literal(auth.keyId)}, SECRET ${literal(auth.secret)}${scope})`;
+  }
+  return `CREATE SECRET __mako_gcs (TYPE gcs, PROVIDER config, BEARER_TOKEN ${literal(auth.token)}${scope})`;
+}
+
+async function lockAfterAllowlist(
+  connection: DuckDBConnection,
+  tables: AppDataTable[],
+  extraPaths: string[] = [],
+): Promise<void> {
+  const paths = [...tables.map(t => t.file), ...extraPaths]
+    .map(literal)
+    .join(", ");
+  await connection.run(`SET allowed_paths = [${paths}]`);
+  await connection.run("SET autoinstall_known_extensions = false");
+  await connection.run("SET autoload_known_extensions = false");
+  await connection.run("SET enable_external_access = false");
+  await connection.run("SET lock_configuration = true");
+}
+
+async function createBindingViews(
+  connection: DuckDBConnection,
+  tables: AppDataTable[],
+): Promise<void> {
+  for (const table of tables) {
+    await connection.run(
+      `CREATE VIEW ${quoteIdent(table.name)} AS SELECT * FROM read_parquet(${literal(table.file)})`,
+    );
+  }
+}
+
+/** Strip CREATE SECRET literals from DuckDB errors so HMAC/bearer never log. */
+export function redactDuckDbError(error: unknown): Error {
+  const msg = error instanceof Error ? error.message : String(error);
+  const redacted = msg
+    .replace(/SECRET '[^']*'/gi, "SECRET '[redacted]'")
+    .replace(/BEARER_TOKEN '[^']*'/gi, "BEARER_TOKEN '[redacted]'")
+    .replace(/KEY_ID '[^']*'/gi, "KEY_ID '[redacted]'");
+  if (error instanceof Error && redacted === msg) return error;
+  return new Error(redacted, {
+    cause: error instanceof Error ? error : undefined,
+  });
+}
+
 async function openLockedDown(
   tables: AppDataTable[],
-): Promise<{ instance: DuckDBInstance; connection: DuckDBConnection }> {
+  options: Pick<AppDataQueryOptions, "mode" | "gcsAuth"> = {},
+): Promise<{
+  instance: DuckDBInstance;
+  connection: DuckDBConnection;
+  mode: AppChatParquetMode;
+}> {
+  const mode = options.mode ?? inferAppChatParquetMode(tables);
+  if (
+    tables.some(t => isRemoteParquetSource(t.file)) &&
+    tables.some(t => !isRemoteParquetSource(t.file))
+  ) {
+    throw new Error(
+      "App chat parquet sources must be all local or all remote, not mixed",
+    );
+  }
   const instance = await DuckDBInstance.create(":memory:", {
     threads: "2",
     memory_limit: "512MB",
   });
   const connection = await instance.connect();
   try {
-    const paths = tables.map(t => literal(t.file)).join(", ");
-    await connection.run(`SET allowed_paths = [${paths}]`);
-    await connection.run("SET autoinstall_known_extensions = false");
-    await connection.run("SET autoload_known_extensions = false");
-    await connection.run("SET enable_external_access = false");
-    await connection.run("SET lock_configuration = true");
-    for (const table of tables) {
-      await connection.run(
-        `CREATE VIEW ${quoteIdent(table.name)} AS SELECT * FROM read_parquet(${literal(table.file)})`,
-      );
+    if (mode === "direct") {
+      await connection.run("INSTALL httpfs");
+      await connection.run("LOAD httpfs");
+      // httpfs otherwise tries ~/.duckdb/stored_secrets, which the
+      // locked-down filesystem would then refuse (and fail the query).
+      await connection.run("SET allow_persistent_secrets = false");
+      await connection.run("SET allow_community_extensions = false");
+      const gsUrls = gcsObjectUrls(tables);
+      if (gsUrls.length > 0) {
+        if (!options.gcsAuth) {
+          throw new Error(
+            "Direct GCS parquet reads need HMAC keys or an OAuth bearer token",
+          );
+        }
+        await connection.run(gcsSecretSql(options.gcsAuth, gsUrls));
+      }
+      // httpfs still opens a CA bundle even when verification is off; without
+      // this path in allowed_paths, real HTTPS/gs:// reads fail after lock.
+      const caCert = systemCaCertFile();
+      if (caCert) {
+        await connection.run(`SET ca_cert_file = ${literal(caCert)}`);
+        await connection.run("SET enable_server_cert_verification = true");
+      }
+      await lockAfterAllowlist(connection, tables, caCert ? [caCert] : []);
+    } else {
+      await lockAfterAllowlist(connection, tables);
     }
+    await createBindingViews(connection, tables);
   } catch (error) {
     connection.closeSync();
     instance.closeSync();
-    throw error;
+    throw redactDuckDbError(error);
   }
-  return { instance, connection };
+  return { instance, connection, mode };
 }
 
 /**
@@ -86,7 +228,9 @@ export async function queryAppData(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (options.signal?.aborted) throw new Error("Query cancelled");
 
-  const { instance, connection } = await openLockedDown(tables);
+  const openedAt = Date.now();
+  const { instance, connection, mode } = await openLockedDown(tables, options);
+  const sandboxMs = Date.now() - openedAt;
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -94,11 +238,20 @@ export async function queryAppData(
   }, timeoutMs);
   const onAbort = () => connection.interrupt();
   options.signal?.addEventListener("abort", onAbort, { once: true });
+  const queryStarted = Date.now();
   try {
     const reader = await connection.streamAndReadUntil(sql, maxRows + 1);
     const names = reader.columnNames();
     const types = reader.columnTypes();
     const rows = reader.getRowObjectsJson() as Record<string, unknown>[];
+    const queryMs = Date.now() - queryStarted;
+    logger.debug("App chat parquet query", {
+      mode,
+      queryMs,
+      sandboxMs,
+      totalMs: Date.now() - openedAt,
+      tables: tables.length,
+    });
     return {
       columns: names.map((name, i) => ({ name, type: String(types[i]) })),
       rows: rows.slice(0, maxRows),
@@ -135,9 +288,11 @@ export interface AppTableSummary {
 export async function describeAppData(
   tables: AppDataTable[],
   sampleSize = 3,
+  options: Pick<AppDataQueryOptions, "mode" | "gcsAuth"> = {},
 ): Promise<AppTableSummary[]> {
   if (tables.length === 0) return [];
-  const { instance, connection } = await openLockedDown(tables);
+  const openedAt = Date.now();
+  const { instance, connection, mode } = await openLockedDown(tables, options);
   try {
     const out: AppTableSummary[] = [];
     for (const table of tables) {
@@ -173,6 +328,11 @@ export async function describeAppData(
         });
       }
     }
+    logger.debug("App chat parquet describe", {
+      mode,
+      totalMs: Date.now() - openedAt,
+      tables: tables.length,
+    });
     return out;
   } finally {
     connection.closeSync();

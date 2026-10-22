@@ -75,6 +75,8 @@ WORKDIR /app
 # GitHub repo as an ephemeral read cache for the file explorer (the sandbox
 # does its own in-VM git for pushing). node:*-slim ships without git, so the
 # missing binary surfaced as `spawn git ENOENT` on app creation.
+# `ca-certificates` is required when chat-with-app reads parquet over DuckDB
+# httpfs (HTTPS / gs://): the sandbox allow-lists the system CA bundle.
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-venv \
@@ -82,6 +84,7 @@ RUN apt-get update && apt-get install -y \
     make \
     g++ \
     git \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake a pinned dbt Core venv with the supported warehouse adapters.

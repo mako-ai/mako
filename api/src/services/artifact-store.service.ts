@@ -14,6 +14,7 @@ import { promises as fsPromises } from "fs";
 import crypto from "crypto";
 import path from "path";
 import { Storage } from "@google-cloud/storage";
+import { GoogleAuth } from "google-auth-library";
 import { loggers } from "../logging";
 
 export type ArtifactStoreType = "filesystem" | "gcs" | "s3";
@@ -60,6 +61,18 @@ export interface ArtifactStore {
    * that as "not safe to redirect".
    */
   ensureBrowserCors?(): Promise<boolean>;
+  /**
+   * `gs://bucket/object` for this key. DuckDB httpfs reads this URI when
+   * chat-with-app skips the local copy (`APP_CHAT_PARQUET_DIRECT_GCS`).
+   * Absent on filesystem/S3 stores.
+   */
+  gcsObjectUri?(key: string): string | null;
+  /**
+   * Short-lived OAuth access token from this store's GCS client (ADC /
+   * service account). Used as DuckDB
+   * `CREATE SECRET (TYPE gcs, BEARER_TOKEN …)` when HMAC keys are unset.
+   */
+  getOauthAccessToken?(): Promise<string | null>;
 }
 
 const logger = loggers.api("artifact-store");
@@ -305,6 +318,28 @@ class GcsArtifactStore implements ArtifactStore {
       expires: Date.now() + ttlSeconds * 1000,
     });
     return signedUrl;
+  }
+
+  gcsObjectUri(key: string): string | null {
+    if (!this.bucketName) return null;
+    return `gs://${this.bucketName}/${ensureSafeKey(key)}`;
+  }
+
+  async getOauthAccessToken(): Promise<string | null> {
+    try {
+      // Read-only scope so a DuckDB secret cannot COPY/overwrite parquet
+      // even though the runtime SA may have objectAdmin for uploads.
+      const auth = new GoogleAuth({
+        scopes: ["https://www.googleapis.com/auth/devstorage.read_only"],
+      });
+      const token = await auth.getAccessToken();
+      return token || null;
+    } catch (error) {
+      logger.warn("Could not mint a GCS OAuth token for DuckDB", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   /**

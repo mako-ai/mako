@@ -79,7 +79,10 @@ export function createAppChatTools(input: {
             };
           }
           const tables = queryableTables({ ...loaded, bindings: selected });
-          const summaries = await describeAppData(tables);
+          const summaries = await describeAppData(tables, 3, {
+            mode: loaded.parquetMode,
+            gcsAuth: loaded.gcsAuth,
+          });
           return {
             success: true,
             bindings: selected.map(b => {
@@ -133,7 +136,8 @@ export function createAppChatTools(input: {
       }),
       execute: async ({ sql, max_rows }) => {
         try {
-          const tables = queryableTables(await data());
+          const loaded = await data();
+          const tables = queryableTables(loaded);
           if (tables.length === 0) {
             return {
               success: false,
@@ -145,6 +149,8 @@ export function createAppChatTools(input: {
           const result = await queryAppData(tables, sql, {
             maxRows,
             signal: toolExecutionContext?.signal,
+            mode: loaded.parquetMode,
+            gcsAuth: loaded.gcsAuth,
           });
           const formatted = formatRowsForModel(result.rows, {
             fields: result.columns,
