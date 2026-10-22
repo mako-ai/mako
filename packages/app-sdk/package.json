@@ -1,6 +1,6 @@
 {
   "name": "@makoai/app-sdk",
-  "version": "2.7.3",
+  "version": "2.7.4",
   "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme, and the house dashboard kit (/ui).",
   "license": "MIT",
   "repository": {
@@ -41,6 +41,7 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "progress.js",
     "vite.js",
     "vite.d.ts",
     "credentials.js",

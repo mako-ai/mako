@@ -10,7 +10,7 @@
 // in through props.
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { refreshBinding } from "./index.js";
+import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
 import { formatSeconds as fmtSecs, normalizeTone, refreshOrder } from "./ui-core.js";
 
 export { normalizeTone, refreshOrder };
@@ -446,6 +446,9 @@ export function RefreshAllButton({
   const [open, setOpen] = React.useState(false);
   const [now, setNow] = React.useState(() => Date.now());
   const closeRef = React.useRef(null);
+  // What each running source is waiting on: the warehouse, the link, the
+  // download or DuckDB (progress.js).
+  const progress = useBindingProgress();
 
   const running = state.status === "running";
   const total = sources.length;
@@ -562,7 +565,7 @@ export function RefreshAllButton({
         ? ""
         : "Queued"
       : st === "running"
-        ? "Running"
+        ? bindingPhaseLabel(progress[name]) || "Running"
         : st === "done"
           ? took[name] != null
             ? fmtSecs(took[name])

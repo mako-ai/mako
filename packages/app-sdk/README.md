@@ -58,6 +58,40 @@ or 502 with the query's error.
 Data arrives from `__data/<name>.parquet`, relative to the page — the same
 path in Mako's sandbox, in a published app, and on a laptop.
 
+### What a load is waiting on: `phase` (SDK ≥ 2.7.4)
+
+`useQuery` and `useDuckDB` return `phase` while `loading` or `refreshing`,
+plus `rowsWritten`, `bytes` and `bytesTotal` when known. Caption a progress
+bar with `bindingPhaseLabel(...)`:
+
+```tsx
+import { useQuery, bindingPhaseLabel } from "@makoai/app-sdk";
+
+const q = useQuery("latest_sales");
+if (q.loading) return <Spinner label={bindingPhaseLabel(q)} />;
+// "Building from warehouse · 120,000 rows" → "Getting download link"
+// → "Downloading · 3.1 MB of 10.0 MB" → "Loading into DuckDB" → "Running query"
+```
+
+| Stage (`bindingPhaseStage`) | Phases | What is happening |
+| --- | --- | --- |
+| `building` | `queued`, `querying_warehouse`, `writing_parquet`, `uploading` | Mako runs the query on the warehouse. Seconds to minutes. Only a refresh, a laptop dev build or a sandbox live binding builds. |
+| `linking` | `resolving`, `signing` | The file exists. Mako finds it and signs its download link. Under a second. |
+| `downloading` | `downloading` | The browser fetches the parquet. |
+| `loading` | `loading_duckdb` | DuckDB-WASM boots and registers the file. |
+| `querying` | `running_sql` | Your SQL runs. |
+| `waiting` | `requesting`, `checking` | Sent; the server has not said which yet. |
+
+The SDK learns the server-side phases on the same request: it sends
+`Accept: application/x-ndjson`, and a server that knows phases answers one
+JSON event per line, ending with `{"phase":"ready", …}` (a stored file's
+event carries the signed `url` and `timings`) or `{"phase":"failed",
+"status", "error"}`. A server that predates this answers as before, and the
+SDK still reports `requesting` → `downloading` → `loading_duckdb`.
+`refreshBinding(name, { onProgress })` hears every phase of one refresh;
+`useBindingProgress()` lists every pending binding. `RefreshAllButton`
+captions each running source with its phase.
+
 ### Who is looking: `useViewer()`
 
 ```tsx

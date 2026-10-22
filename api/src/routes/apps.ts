@@ -213,7 +213,11 @@ import {
   materializeAppBinding,
   readBindings,
 } from "../apps/bindings.service";
-import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  refreshBindingHttp,
+  refreshBindingProgress,
+} from "../apps/binding-refresh";
+import { wantsBindingProgress } from "../apps/binding-progress";
 import { DevBuildError, planDevBuild } from "../apps/binding-dev-build";
 import {
   unregisteredDraftAccess,
@@ -3990,6 +3994,7 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     sha,
     assetPath: rest.replace(/^\/+/, ""),
     viewer: viewerOf(c),
+    progress: wantsBindingProgress(c.req.header("accept")),
   });
   if (response && loaded.userId) {
     // A raw `/live/` page load or a frame on another site; the in-Mako views
@@ -4421,15 +4426,20 @@ appsRoutes.post("/:id/live/__data/:name/refresh", async c => {
         404,
       );
     }
+    const input = {
+      project: loaded.project,
+      name: c.req.param("name"),
+      actorId: loaded.userId ?? "api-key",
+      at: sha,
+    };
+    if (wantsBindingProgress(c.req.header("accept"))) {
+      return await withQueryLabels({ mako_trigger: "viewer" }, async () =>
+        refreshBindingProgress(input),
+      );
+    }
     const { status, body, headers } = await withQueryLabels(
       { mako_trigger: "viewer" },
-      () =>
-        refreshBindingHttp({
-          project: loaded.project,
-          name: c.req.param("name"),
-          actorId: loaded.userId ?? "api-key",
-          at: sha,
-        }),
+      () => refreshBindingHttp(input),
     );
     return c.json(body, status, headers);
   } catch (error) {

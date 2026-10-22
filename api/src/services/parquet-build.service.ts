@@ -23,6 +23,7 @@ import { storeArtifact } from "./artifact-store.service";
 import { databaseConnectionService } from "./database-connection.service";
 import { isWrite } from "../access/connection-writes";
 import { checkPreviewQuerySafety } from "./query-pagination.service";
+import { reportBindingPhase } from "../apps/binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("parquet-build");
@@ -118,6 +119,9 @@ export async function buildQueryParquetFile(
   } = input;
 
   assertReadOnlyMaterializationQuery(executableQuery, connection.type);
+  // An app's phase stream (binding-progress.ts): the warehouse has the query
+  // until the first batch lands, then rows are being written.
+  reportBindingPhase("querying_warehouse");
 
   // The driver-level `readOnly` gate is a SQL analyzer: it requires string
   // queries to be a single SELECT/WITH and fails closed for engines it can't
@@ -159,7 +163,10 @@ export async function buildQueryParquetFile(
     rowLimit: input.rowLimit ?? PARQUET_ROW_LIMIT,
     onRowLimit: input.onRowLimit,
     fields,
-    onBatchInserted,
+    onBatchInserted: async totalRows => {
+      reportBindingPhase("writing_parquet", { rowsWritten: totalRows });
+      await onBatchInserted?.(totalRows);
+    },
     streamBatches: async insertBatch => {
       const streamResult =
         await databaseConnectionService.executeStreamingQuery(

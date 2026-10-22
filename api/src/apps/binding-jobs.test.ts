@@ -41,7 +41,9 @@ import {
   serializeBindingJob,
   storeJobDraft,
   type BindingJobDoc,
+  recordBindingJobProgress,
 } from "./binding-jobs";
+import { reportBindingPhase } from "./binding-progress";
 import { runBindingJob, type BindingJobRunnerDeps } from "./binding-job-runner";
 import { DevBuildError } from "./binding-dev-build";
 import { getArtifactStore } from "../services/artifact-store.service";
@@ -125,6 +127,8 @@ function deps(
     storeDraft: storeJobDraft,
     heartbeat: vi.fn(async () => undefined),
     heartbeatMs: 60_000,
+    progress: recordBindingJobProgress,
+    progressMs: 0,
     ...overrides,
   };
 }
@@ -149,6 +153,50 @@ describe("binding jobs", () => {
     expect((await reload(job)).result?.artifactKey).toBe(
       "apps/bindings/c/abc.parquet",
     );
+  });
+
+  it("shows the running build's phase to its poller, from the row", async () => {
+    const job = await newJob({ kind: "materialize", request: {} });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    let reported!: () => void;
+    const seen = new Promise<void>(resolve => {
+      reported = resolve;
+    });
+    const running = runBindingJob(
+      job,
+      deps({
+        progress: async (jobId, event) => {
+          await recordBindingJobProgress(jobId, event);
+          if (event.phase === "writing_parquet") reported();
+        },
+        materialize: vi.fn(async () => {
+          reportBindingPhase("querying_warehouse");
+          reportBindingPhase("writing_parquet", { rowsWritten: 5000 });
+          await gate;
+          return {
+            artifactKey: "apps/bindings/c/abc.parquet",
+            rowCount: 9,
+            byteSize: 90,
+            materializedAt: new Date("2026-09-28T10:00:00Z"),
+          };
+        }),
+      }),
+    );
+    await seen;
+    expect(serializeBindingJob(await reload(job))).toMatchObject({
+      status: "running",
+      phase: "writing_parquet",
+      rowsWritten: 5000,
+    });
+    release();
+    expect(await running).toBe("ready");
+    // A finished job says what it built, not the phase it passed through.
+    const done = serializeBindingJob(await reload(job));
+    expect(done.status).toBe("ready");
+    expect(done).not.toHaveProperty("phase");
   });
 
   it("keeps a draft dev-build under the job's own key", async () => {

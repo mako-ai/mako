@@ -50,6 +50,8 @@ const { refresh, refreshing } = useQuery("recent_orders");
 
 `refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh; a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
 
+From SDK 2.7.4 every hook also returns `phase`: what `loading` or `refreshing` is waiting on. `bindingPhaseLabel(q)` turns it into a caption. "Building from warehouse" means the query is running (a refresh, a laptop dev build, a sandbox live binding). "Getting download link" means the file exists and Mako is signing its URL (well under a second; a published app never builds on a read). "Downloading" and "Loading into DuckDB" are the browser's own work. The server reports its phases on the same request as NDJSON when asked with `Accept: application/x-ndjson`; older servers answer as before.
+
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
 ## House Style: `@makoai/app-sdk/ui`

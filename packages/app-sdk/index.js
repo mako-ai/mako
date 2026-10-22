@@ -1,5 +1,20 @@
 // @makoai/app-sdk — see package.json. Plain ESM on purpose: no build step.
 import * as React from "react";
+import {
+  PROGRESS_ACCEPT,
+  combineBindingProgress,
+  isProgressResponse,
+  progressError,
+  readBytes,
+  readProgressStream,
+} from "./progress.js";
+export {
+  BINDING_PHASES,
+  BINDING_PHASE_LABELS,
+  BINDING_STAGE_LABELS,
+  bindingPhaseLabel,
+  bindingPhaseStage,
+} from "./progress.js";
 
 const DEFAULT_ROW_LIMIT = 500000;
 const DUCKDB_ESM =
@@ -40,26 +55,98 @@ async function responseError(res, what) {
   return error;
 }
 
+// ---------------------------------------------------------------------------
+// Progress — what each pending binding is waiting on (see progress.js). One
+// record per binding while it loads or refreshes, gone when it settles.
+// Notifications are batched: 34 bindings downloading at once must not
+// re-render every hook on every chunk.
+// ---------------------------------------------------------------------------
+let progressState = {};
+const progressListeners = new Set();
+const progressWatchers = new Map(); // name -> Set<(record|null) => void>
+let progressFlush = null;
+function setProgress(name, patch) {
+  const next = { ...progressState };
+  if (patch === null) delete next[name];
+  else next[name] = { ...progressState[name], ...patch };
+  progressState = next;
+  const watchers = progressWatchers.get(name);
+  if (watchers) for (const w of [...watchers]) w(next[name] ?? null);
+  progressFlush ??= setTimeout(() => {
+    progressFlush = null;
+    for (const l of [...progressListeners]) l();
+  }, 50);
+}
+function subscribeProgress(l) {
+  progressListeners.add(l);
+  return () => progressListeners.delete(l);
+}
+function getProgressState() {
+  return progressState;
+}
+function watchProgress(name, fn) {
+  if (!progressWatchers.has(name)) progressWatchers.set(name, new Set());
+  progressWatchers.get(name).add(fn);
+  return () => progressWatchers.get(name)?.delete(fn);
+}
+/** A server event as a progress patch: the phase and whatever it counted. */
+function progressPatch(event) {
+  return {
+    phase: event.phase,
+    ...(typeof event.rowsWritten === "number" ? { rowsWritten: event.rowsWritten } : {}),
+    ...(typeof event.bytes === "number" ? { bytes: event.bytes } : {}),
+  };
+}
+
+/**
+ * Live progress: one binding's record (null when it is not loading), or
+ * every pending binding's when called without a name.
+ */
+export function useBindingProgress(name) {
+  const all = React.useSyncExternalStore(subscribeProgress, getProgressState, getProgressState);
+  return name === undefined ? all : (all[name] ?? null);
+}
+
 async function loadBinding(name, bust) {
-  const res = await fetch(
-    "__data/" + encodeURIComponent(name) + ".parquet" + (bust ? "?refresh=" + Date.now() : ""),
-  );
-  if (!res.ok) {
-    throw await responseError(res, 'Data for binding "' + name + '" could not be loaded');
-  }
-  const buf = new Uint8Array(await res.arrayBuffer());
-  const db = await getDb();
-  if (bust) await db.dropFile(name + ".parquet").catch(() => {});
-  await db.registerFileBuffer(name + ".parquet", buf);
-  const conn = await db.connect();
+  const path = "__data/" + encodeURIComponent(name) + ".parquet";
+  const what = 'Data for binding "' + name + '" could not be loaded';
+  setProgress(name, { phase: "requesting", rowsWritten: null, bytes: null, bytesTotal: null });
   try {
-    // A view per binding so SQL can name tables by binding name.
-    await conn.query(
-      'CREATE OR REPLACE VIEW "' + name.replace(/"/g, '""') +
-        "\" AS SELECT * FROM read_parquet('" + name + ".parquet')",
+    // Ask for phase events: a build (laptop, sandbox live binding) reports
+    // each step, a stored file reports resolving → signing and hands back
+    // the signed URL. A server that predates them answers as it always did.
+    let res = await fetch(path + (bust ? "?refresh=" + Date.now() : ""), {
+      headers: { accept: PROGRESS_ACCEPT },
+    });
+    if (isProgressResponse(res)) {
+      const final = await readProgressStream(res, e => setProgress(name, progressPatch(e)));
+      if (final.phase === "failed") throw progressError(final, what);
+      setProgress(name, { phase: "downloading", rowsWritten: null, bytes: 0 });
+      // No url: the server streams the bytes itself — the same path, asked
+      // plainly, serves them (the build already staged or cached them).
+      res = await fetch(final.url || path);
+    }
+    if (!res.ok) throw await responseError(res, what);
+    const buf = await readBytes(res, (bytes, bytesTotal) =>
+      setProgress(name, { phase: "downloading", rowsWritten: null, bytes, bytesTotal }),
     );
+    setProgress(name, { phase: "loading_duckdb" });
+    const db = await getDb();
+    if (bust) await db.dropFile(name + ".parquet").catch(() => {});
+    await db.registerFileBuffer(name + ".parquet", buf);
+    const conn = await db.connect();
+    try {
+      // A view per binding so SQL can name tables by binding name.
+      await conn.query(
+        'CREATE OR REPLACE VIEW "' + name.replace(/"/g, '""') +
+          "\" AS SELECT * FROM read_parquet('" + name + ".parquet')",
+      );
+    } finally {
+      await conn.close();
+    }
   } finally {
-    await conn.close();
+    // A refresh owns the record until its reload is done (refreshBinding).
+    if (!refreshes.has(name)) setProgress(name, null);
   }
 }
 
@@ -122,17 +209,32 @@ const refreshes = new Map(); // name -> Promise<RefreshResult>
  * built; rejects with an Error carrying `status` (403: not allowed here,
  * 429: refreshed too recently — see `retryAfterMs`, 502: the query failed —
  * the message says why). Concurrent calls for the same binding share one
- * request.
+ * request. `opts.onProgress` hears every phase of it: the build, then the
+ * reload (link, download, DuckDB), then `null` when it is done.
  */
-export function refreshBinding(name) {
+export function refreshBinding(name, opts) {
+  const onProgress = opts && opts.onProgress;
+  const unwatch = onProgress ? watchProgress(name, onProgress) : null;
   const pending = refreshes.get(name);
-  if (pending) return pending;
+  if (pending) {
+    if (unwatch) pending.finally(unwatch).catch(() => {});
+    return pending;
+  }
+  const what = 'Binding "' + name + '" could not be refreshed';
   const run = (async () => {
-    const res = await fetch("__data/" + encodeURIComponent(name) + "/refresh", { method: "POST" });
-    if (!res.ok) {
-      throw await responseError(res, 'Binding "' + name + '" could not be refreshed');
+    setProgress(name, { phase: "requesting", rowsWritten: null, bytes: null, bytesTotal: null });
+    const res = await fetch("__data/" + encodeURIComponent(name) + "/refresh", {
+      method: "POST",
+      headers: { accept: PROGRESS_ACCEPT },
+    });
+    let body;
+    if (isProgressResponse(res)) {
+      body = await readProgressStream(res, e => setProgress(name, progressPatch(e)));
+      if (body.phase === "failed") throw progressError(body, what);
+    } else {
+      if (!res.ok) throw await responseError(res, what);
+      body = await res.json();
     }
-    const body = await res.json();
     await reloadBinding(name);
     setBindingState({ ...bindingState, version: bindingState.version + 1 });
     return {
@@ -148,6 +250,8 @@ export function refreshBinding(name) {
   run
     .finally(() => {
       refreshes.delete(name);
+      setProgress(name, null);
+      if (unwatch) unwatch();
       const refreshing = new Set(bindingState.refreshing);
       refreshing.delete(name);
       setBindingState({ ...bindingState, refreshing });
@@ -336,6 +440,18 @@ function useAsyncQuery(run, deps, isRefreshing) {
   };
 }
 
+// A hook's view of progress: the binding's own record while it loads, else
+// `running_sql` while the hook's SQL runs, else nothing.
+function hookProgress(record, state) {
+  const p = record ?? (state.loading || state.refreshing ? { phase: "running_sql" } : null);
+  return {
+    phase: p ? p.phase : null,
+    rowsWritten: p && typeof p.rowsWritten === "number" ? p.rowsWritten : null,
+    bytes: p && typeof p.bytes === "number" ? p.bytes : null,
+    bytesTotal: p && typeof p.bytesTotal === "number" ? p.bytesTotal : null,
+  };
+}
+
 export function useQuery(name, opts) {
   const rowLimit = opts ? opts.rowLimit : undefined;
   const state = useAsyncQuery(
@@ -350,8 +466,9 @@ export function useQuery(name, opts) {
     [name, rowLimit],
     refreshing => refreshing.has(name),
   );
+  const progress = useBindingProgress(name);
   const refresh = React.useCallback(() => refreshBinding(name), [name]);
-  return { ...state, refresh };
+  return { ...state, ...hookProgress(progress, state), progress, refresh };
 }
 
 /**
@@ -415,9 +532,19 @@ export function useDuckDB(sql, opts) {
       throw error;
     }
   }, [sql, rowLimit], refreshing => refreshing.size > 0);
+  // Every binding the query can read: the combined record says what the
+  // slowest of them is waiting on; `bindings` has each one.
+  const bindings = useBindingProgress();
+  const combined = combineBindingProgress(bindings);
   // A query over every binding refreshes every binding.
   const refresh = React.useCallback(() => refreshBindings(), []);
-  return { ...state, refresh };
+  return {
+    ...state,
+    ...hookProgress(combined, state),
+    progress: combined,
+    bindings,
+    refresh,
+  };
 }
 
 // ---------------------------------------------------------------------------
