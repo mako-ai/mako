@@ -19,6 +19,7 @@ import {
   setCuratedModel,
 } from "../services/model-catalog.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { backfillWorkflowCosts } from "../workflows/cost-backfill";
 
 const logger = loggers.app();
 
@@ -249,5 +250,51 @@ adminRoutes.openapi(
         500,
       );
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/workflows/cost-backfill
+// Match workflow model calls recorded before Mako kept their run to the step
+// they were made in, by time (workflows/cost-backfill.ts). A dry run unless
+// `dryRun: false`: it reports matched, ambiguous and unmatched calls first.
+// ---------------------------------------------------------------------------
+adminRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/workflows/cost-backfill",
+    tags: ["Admin"],
+    summary:
+      "Backfill workflow AI costs: match older model calls to their run and step by time (a dry run unless dryRun is false)",
+    security: AUTH_SECURITY,
+    request: {
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({
+              workspaceId: z
+                .string()
+                .regex(/^[0-9a-f]{24}$/)
+                .optional(),
+              days: z.number().int().min(1).max(90).optional(),
+              dryRun: z.boolean().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const body = c.req.valid("json") ?? {};
+    const dryRun = body.dryRun !== false;
+    const reports = await backfillWorkflowCosts({
+      workspaceId: body.workspaceId,
+      days: body.days ?? 30,
+      dryRun,
+    });
+    logger.info("Workflow cost backfill", { dryRun, reports });
+    return c.json({ success: true, dryRun, reports });
   },
 );
