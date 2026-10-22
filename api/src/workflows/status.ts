@@ -18,7 +18,11 @@ export async function waitForRun(
 ) {
   const sandbox = isSandboxRunId(runId);
   const read = async () => {
-    if (!sandbox) return readRun(await requireTenant(workspaceId), runId);
+    if (!sandbox) {
+      return readRun(await requireTenant(workspaceId), runId, {
+        full: options.full,
+      });
+    }
     if (!userId) throw new Error("A sandbox run is read by its person.");
     return readSandboxRun(workspaceId, userId, runId, { full: options.full });
   };

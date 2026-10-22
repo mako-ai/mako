@@ -46,9 +46,9 @@ import {
   WorkflowQueryError,
   runWorkflowQuery,
 } from "../workflows/query";
-import { readWorkflowsOverview } from "../workflows/runs";
+import { readWorkflowsOverview, retryRun } from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
-import { startSandboxRun } from "../workflows/sandbox";
+import { isSandboxRunId, startSandboxRun } from "../workflows/sandbox";
 import { waitForRun } from "../workflows/status";
 import { isWebhookSecret, setTriggers } from "../workflows/webhook";
 
@@ -102,7 +102,7 @@ workflowRoutes.use("*", unifiedAuthMiddleware, requireWorkspace);
 workflowRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const allowed =
     c.req.method === "GET" ||
-    (c.req.path.endsWith("/run") ? mayRun(c) : mayChange(c));
+    (/\/(run|retry)$/.test(c.req.path) ? mayRun(c) : mayChange(c));
   if (!allowed) {
     return c.json(
       {
@@ -172,6 +172,44 @@ workflowRoutes.openapi(
       { success: true as const, run, ...(done ? {} : { running: true }) },
       200,
     );
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/runs/{id}/retry",
+    tags: ["Workflows"],
+    summary:
+      "Retry a deployed run in place. With `step`: that step and the ones after it run again, on what the earlier steps kept; without, the whole run",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam.extend({
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({ step: z.string().optional() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, id } = c.req.valid("param");
+    if (isSandboxRunId(id)) {
+      throw new HatchetError(
+        "A sandbox run is not kept: start it again instead",
+        400,
+      );
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const step = typeof body?.step === "string" ? body.step : undefined;
+    const retried = await retryRun(await requireTenant(workspaceId), id, step);
+    return c.json({ success: true as const, ...retried }, 200);
   },
 );
 

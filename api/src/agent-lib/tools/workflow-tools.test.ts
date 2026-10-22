@@ -87,14 +87,20 @@ const responses: Record<string, unknown> = {
   },
 };
 globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-  const { pathname } = new URL(String(url));
+  const { pathname, searchParams } = new URL(String(url));
   const method = init?.method ?? "GET";
   requests.push({
     method,
     path: pathname,
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
   });
-  const body = responses[`${method} ${pathname}`];
+  let body = responses[`${method} ${pathname}`];
+  // Log lines as Hatchet pages them: newest first when asked, then limited.
+  if (pathname.endsWith("/logs") && body) {
+    const rows = [...(body as { rows: unknown[] }).rows];
+    if (searchParams.get("order_by_direction") === "DESC") rows.reverse();
+    body = { rows: rows.slice(0, Number(searchParams.get("limit") ?? 50)) };
+  }
   return new Response(JSON.stringify(body ?? { error: "not found" }), {
     status: body ? 200 : 404,
   });

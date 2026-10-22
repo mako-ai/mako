@@ -14,6 +14,9 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  ListItemText,
+  Menu,
+  MenuItem,
   Switch,
   TextField,
   ToggleButton,
@@ -23,7 +26,11 @@ import {
 } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
 import {
+  ArrowLeft as BackIcon,
+  ChevronDown as ChevronIcon,
+  Clock as ScheduleIcon,
   Play as RunIcon,
+  RotateCcw as RetryIcon,
   Sparkles as AskIcon,
   Webhook as WebhookIcon,
 } from "lucide-react";
@@ -39,6 +46,9 @@ import {
 import { useUIStore } from "../store/uiStore";
 import { formatDuration } from "../utils/format";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
+import { describeCron, inTime, nextRunOf } from "../lib/cronText";
+import WorkflowRunDetail from "./WorkflowRunDetail";
+import StatusDot from "./WorkflowStatusDot";
 
 /** A toolbar or header: a padded row closed by a divider. */
 const BAR_SX = {
@@ -262,6 +272,7 @@ function RunsView({
   const fetchRun = useWorkflowsStore(s => s.fetchRun);
   const startRun = useWorkflowsStore(s => s.run);
   const setTriggers = useWorkflowsStore(s => s.setTriggers);
+  const retry = useWorkflowsStore(s => s.retry);
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   // The last sandbox run: shown in place of a selected run until one is
@@ -280,7 +291,6 @@ function RunsView({
       })
     : null;
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listedRun = useWorkflowsStore(s =>
     selectedRunId ? s.runsById[selectedRunId] : undefined,
@@ -342,12 +352,15 @@ function RunsView({
     setSelectedRunId(runId);
   };
 
-  // Land on the newest run.
-  useEffect(() => {
-    if (!selectedRunId && runs.length > 0) setSelectedRunId(runs[0].runId);
-  }, [selectedRunId, runs]);
+  // Back to the workflow's runs.
+  const showRuns = () => {
+    setSandboxRunId(null);
+    setSelectedRunId(null);
+  };
 
-  const schedule = overview?.schedules?.find(s => s.workflowId === workflowId);
+  const schedules = (overview?.schedules ?? []).filter(
+    s => s.workflowId === workflowId,
+  );
   const workflow = overview?.workflows?.find(w => w.workflowId === workflowId);
   const active = Boolean(workflow?.active);
   const webhookUrl = workflow?.webhookUrl;
@@ -373,75 +386,10 @@ function RunsView({
         >
           Run
         </Button>
-        {workflow &&
-          (overview?.mayChange ? (
-            <Tooltip
-              title={
-                active
-                  ? "On: the schedule and webhook start runs."
-                  : "Off: it runs only when you press Run."
-              }
-            >
-              <FormControlLabel
-                sx={{ mr: 0, "& .MuiFormControlLabel-label": { fontSize: 13 } }}
-                label={active ? "Active" : "Inactive"}
-                control={
-                  <Switch
-                    size="small"
-                    checked={active}
-                    onChange={(_e, on) => void change({ active: on })}
-                  />
-                }
-              />
-            </Tooltip>
-          ) : (
-            <Chip
-              label={active ? "Active" : "Inactive"}
-              size="small"
-              variant="outlined"
-              color={active ? "success" : "default"}
-              sx={{ height: 20 }}
-            />
-          ))}
-        <Dim>
-          {schedule
-            ? `Schedule: ${schedule.cron} (UTC)`
-            : workflow
-              ? "No schedule"
-              : "Not on main yet"}
-        </Dim>
         {error && (
           <Typography variant="caption" color="error.main">
             {error}
           </Typography>
-        )}
-        {webhookUrl === null && (
-          <Chip
-            icon={<WebhookIcon size={12} />}
-            label="Add webhook"
-            size="small"
-            variant="outlined"
-            onClick={() => void change({ webhook: true })}
-            sx={{ height: 20, borderStyle: "dashed" }}
-          />
-        )}
-        {webhookUrl && (
-          <Tooltip title="POST JSON to this URL to start a run while the workflow is active. With ?sandbox=<your user id> it runs your sandbox's version instead, any time. Click to copy it; ✕ removes it.">
-            <Chip
-              icon={<WebhookIcon size={12} />}
-              label={copied ? "Copied" : "Webhook"}
-              size="small"
-              variant="outlined"
-              color="primary"
-              onClick={() => {
-                void navigator.clipboard.writeText(webhookUrl);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-              onDelete={() => void change({ webhook: false })}
-              sx={{ height: 20 }}
-            />
-          </Tooltip>
         )}
         <Box sx={{ ml: "auto", display: "flex", gap: 1, flexWrap: "wrap" }}>
           {deployment?.liveSha && (
@@ -466,148 +414,59 @@ function RunsView({
         </Box>
       </Box>
 
-      <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-        <Box
-          sx={{
-            width: 280,
-            flexShrink: 0,
-            overflow: "auto",
-            borderRight: "1px solid",
-            borderColor: "divider",
-          }}
-        >
-          {runs.length === 0 ? (
-            <Note>No runs yet.</Note>
-          ) : (
-            runs.map(run => {
-              const status = statusOf(run.status);
-              return (
-                <Box
-                  key={run.runId}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => select(run.runId)}
-                  onKeyDown={e => e.key === "Enter" && select(run.runId)}
-                  sx={{
-                    px: 1.5,
-                    py: 0.75,
-                    cursor: "pointer",
-                    borderBottom: "1px solid",
-                    borderColor: "divider",
-                    backgroundColor:
-                      !sandboxRun && run.runId === selectedRunId
-                        ? "action.selected"
-                        : "transparent",
-                    "&:hover": { backgroundColor: "action.hover" },
-                  }}
-                >
-                  <Box
-                    sx={{ display: "flex", alignItems: "center", gap: 0.75 }}
-                  >
-                    <Box
-                      sx={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        backgroundColor: status.color,
-                        flexShrink: 0,
-                      }}
-                    />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        flex: 1,
-                        fontWeight: 600,
-                        color: status.color,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.5,
-                      }}
-                    >
-                      {status.label}
-                      {isActiveRun(run.status) && <CircularProgress size={9} />}
-                    </Typography>
-                    {run.durationMs !== undefined && (
-                      <Dim>{formatDuration(run.durationMs)}</Dim>
-                    )}
-                  </Box>
-                  <Box
-                    sx={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 0.5,
-                      mt: 0.25,
-                    }}
-                  >
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ flex: 1 }}
-                    >
-                      {formatRelativeTimeCompact(run.startedAt)}
-                    </Typography>
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ fontSize: "0.65rem" }}
-                    >
-                      {run.trigger ?? "schedule"}
-                    </Typography>
-                  </Box>
-                </Box>
-              );
-            })
-          )}
-        </Box>
-
-        {!selectedSummary ? (
-          <Note>
-            {runs.length === 0
-              ? "Start a run, or wait for the schedule."
-              : "Select a run to see details."}
-          </Note>
-        ) : (
-          <Box
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              display: "flex",
-              flexDirection: "column",
-            }}
+      {selectedSummary && (
+        <Box sx={{ ...BAR_SX, gap: 2 }}>
+          <Button
+            size="small"
+            startIcon={<BackIcon size={14} />}
+            onClick={showRuns}
+            sx={{ textTransform: "none", height: 24 }}
           >
-            <Box sx={{ ...BAR_SX, gap: 2 }}>
-              <Chip
-                size="small"
-                variant="outlined"
-                icon={
-                  isActiveRun(selectedStatus) ? (
-                    <CircularProgress size={10} />
-                  ) : undefined
-                }
-                label={statusOf(selectedStatus).label}
-                sx={{
-                  height: 20,
-                  fontWeight: 600,
-                  color: statusOf(selectedStatus).color,
-                  borderColor: statusOf(selectedStatus).color,
-                }}
-              />
-              {selectedSummary.sandbox && (
-                <Chip
-                  label="sandbox"
-                  size="small"
-                  variant="outlined"
-                  color="info"
-                  sx={{ height: 20 }}
-                />
-              )}
-              <Dim>{formatRelativeTimeCompact(selectedSummary.startedAt)}</Dim>
-              <Dim>
-                {formatDuration(
+            All runs
+          </Button>
+          <RunPicker
+            runs={runs}
+            selected={selectedSummary}
+            status={selectedStatus}
+            onSelect={select}
+          />
+          {selectedSummary.sandbox && (
+            <Chip
+              label="sandbox"
+              size="small"
+              variant="outlined"
+              color="info"
+              sx={{ height: 20 }}
+            />
+          )}
+          {/* A retried run's time spans the retry: say so instead. */}
+          <Dim>
+            {selectedRun?.steps.some(step => (step.attempt ?? 1) > 1)
+              ? "retried"
+              : formatDuration(
                   selectedRun?.durationMs ?? selectedSummary.durationMs,
                 )}
-              </Dim>
-              <Dim>{selectedSummary.trigger ?? "schedule"}</Dim>
+          </Dim>
+          {(selectedStatus === "FAILED" || selectedStatus === "CANCELLED") && (
+            <Box sx={{ ml: "auto", display: "flex", gap: 1 }}>
+              <RetryMenu
+                run={selectedRun}
+                sandbox={Boolean(selectedSummary.sandbox)}
+                onRetry={async step => {
+                  if (!selectedSummary.runId) return;
+                  const result = await retry(
+                    workspaceId,
+                    selectedSummary.runId,
+                    step,
+                  );
+                  setError(result.ok ? null : (result.error ?? "Failed"));
+                  if (result.ok) {
+                    await fetchRun(workspaceId, selectedSummary.runId);
+                    void fetchOverview(workspaceId);
+                  }
+                }}
+                onNewInput={() => setDialogOpen(true)}
+              />
               {selectedStatus === "FAILED" && (
                 <Button
                   size="small"
@@ -620,132 +479,34 @@ function RunsView({
                         fixRequest(workflowId, selectedSummary, selectedRun),
                       )
                   }
-                  sx={{ ml: "auto", textTransform: "none", height: 24 }}
+                  sx={{ textTransform: "none", height: 24 }}
                 >
                   Ask Mako to fix
                 </Button>
               )}
             </Box>
-
-            <Box
-              sx={{
-                borderBottom: "1px solid",
-                borderColor: "divider",
-                overflowX: "auto",
-              }}
-            >
-              <Box
-                component="table"
-                sx={{
-                  width: "100%",
-                  fontSize: "0.75rem",
-                  borderCollapse: "collapse",
-                  "& td, & th": {
-                    borderBottom: "1px solid",
-                    borderColor: "divider",
-                    p: 0.5,
-                    textAlign: "left",
-                    verticalAlign: "top",
-                  },
-                  "& td:first-of-type, & th:first-of-type": { pl: 1.5 },
-                  "& th": { fontWeight: 600, color: "text.secondary" },
-                  "& tr:last-of-type td": { borderBottom: 0 },
-                }}
-              >
-                <thead>
-                  <tr>
-                    <th>Step</th>
-                    <th>Status</th>
-                    <th>Attempt</th>
-                    <th>Time</th>
-                    <th>Output</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(selectedRun?.steps ?? []).map(step => (
-                    <Box
-                      component="tr"
-                      key={step.step}
-                      sx={{
-                        color:
-                          step.status === "FAILED"
-                            ? "error.main"
-                            : isActiveRun(step.status)
-                              ? "primary.main"
-                              : "inherit",
-                      }}
-                    >
-                      <td>{step.step}</td>
-                      <td>
-                        {(step.status ?? "").toLowerCase()}
-                        {step.error ? ` — ${step.error.split("\n")[0]}` : ""}
-                      </td>
-                      <td>{step.attempt ?? ""}</td>
-                      <td>{formatDuration(step.durationMs)}</td>
-                      <Box
-                        component="td"
-                        sx={{
-                          fontFamily: "monospace",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {step.output === "{}" ? "" : step.output}
-                      </Box>
-                    </Box>
-                  ))}
-                </tbody>
-              </Box>
-            </Box>
-
-            {/* Logs, and the full error of a failed step */}
-            <Box
-              sx={{
-                flex: 1,
-                minHeight: 0,
-                overflow: "auto",
-                fontFamily: "monospace",
-                fontSize: "0.72rem",
-                p: 1,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {!selectedRun ? (
-                <CircularProgress size={14} />
-              ) : selectedRun.steps.every(
-                  step => step.logs.length === 0 && !step.error,
-                ) ? (
-                <Dim>
-                  {selectedStatus === "QUEUED" ? "Run queued…" : "No logs."}
-                </Dim>
-              ) : (
-                selectedRun.steps.flatMap(step =>
-                  [...step.logs, step.error].map(
-                    (line, index) =>
-                      line && (
-                        <Box
-                          key={`${step.step}-${index}`}
-                          sx={
-                            index === step.logs.length
-                              ? { color: "error.main" }
-                              : undefined
-                          }
-                        >
-                          <Box
-                            component="span"
-                            sx={{ color: "text.secondary", mr: 1 }}
-                          >
-                            {step.step}
-                          </Box>
-                          {line}
-                        </Box>
-                      ),
-                  ),
-                )
-              )}
-            </Box>
-          </Box>
-        )}
-      </Box>
+          )}
+        </Box>
+      )}
+      {selectedSummary ? (
+        <WorkflowRunDetail
+          key={selectedSummary.runId}
+          run={selectedRun}
+          status={selectedStatus}
+        />
+      ) : (
+        <>
+          <TriggersStrip
+            deployed={Boolean(workflow)}
+            mayChange={Boolean(overview?.mayChange)}
+            active={active}
+            schedules={schedules.map(s => s.cron)}
+            webhookUrl={webhookUrl}
+            onChange={change}
+          />
+          <RunsTable runs={runs} onSelect={select} />
+        </>
+      )}
 
       {dialogOpen && (
         <RunDialog
@@ -771,6 +532,423 @@ function RunsView({
         />
       )}
     </Box>
+  );
+}
+
+/**
+ * What starts the workflow, in plain words: each schedule (set in
+ * workflow.ts) with its next run, the webhook (added here), and the switch
+ * that turns both on or off. Run is always there in the bar.
+ */
+function TriggersStrip({
+  deployed,
+  mayChange,
+  active,
+  schedules,
+  webhookUrl,
+  onChange,
+}: {
+  deployed: boolean;
+  mayChange: boolean;
+  active: boolean;
+  schedules: string[];
+  webhookUrl: string | null | undefined;
+  onChange: (change: { active?: boolean; webhook?: boolean }) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  if (!deployed) {
+    return (
+      <Box sx={BAR_SX}>
+        <Dim>
+          Not on main yet: schedules and the webhook start once it is. Until
+          then, Run tests it.
+        </Dim>
+      </Box>
+    );
+  }
+  const row = {
+    display: "flex",
+    alignItems: "center",
+    gap: 1,
+    minHeight: 24,
+  } as const;
+  const muted = active ? "text.primary" : "text.disabled";
+  return (
+    <Box
+      sx={{
+        px: 1.5,
+        py: 1,
+        borderBottom: "1px solid",
+        borderColor: "divider",
+        display: "flex",
+        flexDirection: "column",
+        gap: 0.5,
+        fontSize: 13,
+      }}
+    >
+      <Box sx={row}>
+        <Typography variant="caption" sx={{ fontWeight: 600, width: 70 }}>
+          Triggers
+        </Typography>
+        {mayChange ? (
+          <FormControlLabel
+            sx={{ mr: 0, "& .MuiFormControlLabel-label": { fontSize: 13 } }}
+            label={active ? "On" : "Off"}
+            control={
+              <Switch
+                size="small"
+                checked={active}
+                onChange={(_e, on) => onChange({ active: on })}
+              />
+            }
+          />
+        ) : (
+          <Chip
+            label={active ? "On" : "Off"}
+            size="small"
+            variant="outlined"
+            color={active ? "success" : "default"}
+            sx={{ height: 20 }}
+          />
+        )}
+        <Dim>
+          {active
+            ? "The schedules and the webhook start runs."
+            : "Only Run starts it: the schedules and the webhook are paused."}
+        </Dim>
+      </Box>
+      {schedules.length === 0 ? (
+        <Box sx={{ ...row, pl: "78px" }}>
+          <ScheduleIcon size={13} />
+          <Dim>
+            No schedule. Add one with `on: {"{"} cron {"}"}` in workflow.ts.
+          </Dim>
+        </Box>
+      ) : (
+        schedules.map(cron => {
+          const next = active ? nextRunOf(cron) : null;
+          return (
+            <Box key={cron} sx={{ ...row, pl: "78px", color: muted }}>
+              <ScheduleIcon size={13} />
+              <Tooltip title={`cron: ${cron} · set in workflow.ts`}>
+                <span>{describeCron(cron)}</span>
+              </Tooltip>
+              {next && <Dim>· next {inTime(next)}</Dim>}
+            </Box>
+          );
+        })
+      )}
+      {webhookUrl !== undefined && (
+        <Box sx={{ ...row, pl: "78px", color: muted }}>
+          <WebhookIcon size={13} />
+          {webhookUrl === null ? (
+            <>
+              <Dim>No webhook.</Dim>
+              <Button
+                size="small"
+                onClick={() => onChange({ webhook: true })}
+                sx={{ textTransform: "none", py: 0, minHeight: 0 }}
+              >
+                Add webhook
+              </Button>
+            </>
+          ) : (
+            <>
+              <span>Webhook: POST JSON to its URL</span>
+              <Tooltip title={webhookUrl}>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(webhookUrl);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                  }}
+                  sx={{ textTransform: "none", py: 0, minHeight: 0 }}
+                >
+                  {copied ? "Copied" : "Copy URL"}
+                </Button>
+              </Tooltip>
+              <Button
+                size="small"
+                color="inherit"
+                onClick={() => onChange({ webhook: false })}
+                sx={{ textTransform: "none", py: 0, minHeight: 0 }}
+              >
+                Remove
+              </Button>
+            </>
+          )}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/** The workflow's runs, newest first; a row opens that run. */
+function RunsTable({
+  runs,
+  onSelect,
+}: {
+  runs: Array<WorkflowRunSummary & { runId: string }>;
+  onSelect: (runId: string) => void;
+}) {
+  if (runs.length === 0) {
+    return <Note>No runs yet. Start one, or wait for the schedule.</Note>;
+  }
+  return (
+    <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <Box
+        component="table"
+        sx={{
+          width: "100%",
+          fontSize: "0.78rem",
+          borderCollapse: "collapse",
+          tableLayout: "fixed",
+          "& td, & th": {
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            px: 1.5,
+            py: 0.75,
+            textAlign: "left",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          },
+          "& th": {
+            fontWeight: 600,
+            color: "text.secondary",
+            position: "sticky",
+            top: 0,
+            backgroundColor: "background.paper",
+          },
+          "& tbody tr": { cursor: "pointer" },
+          "& tbody tr:hover": { backgroundColor: "action.hover" },
+        }}
+      >
+        <colgroup>
+          <col style={{ width: 120 }} />
+          <col style={{ width: 130 }} />
+          <col style={{ width: 90 }} />
+          <col style={{ width: 90 }} />
+          <col />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Started</th>
+            <th>Duration</th>
+            <th>Trigger</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>
+          {/* A retried run starts again: it moves up with its new start. */}
+          {[...runs]
+            .sort((a, b) =>
+              String(b.startedAt ?? "").localeCompare(
+                String(a.startedAt ?? ""),
+              ),
+            )
+            .map(run => {
+              const status = statusOf(run.status);
+              return (
+                <tr
+                  key={run.runId}
+                  tabIndex={0}
+                  onClick={() => onSelect(run.runId)}
+                  onKeyDown={e => e.key === "Enter" && onSelect(run.runId)}
+                >
+                  <td>
+                    <Box
+                      component="span"
+                      sx={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 0.75,
+                        fontWeight: 600,
+                        color: status.color,
+                      }}
+                    >
+                      <StatusDot status={run.status} color={status.color} />
+                      {status.label}
+                    </Box>
+                  </td>
+                  <td title={run.startedAt}>
+                    {formatRelativeTimeCompact(run.startedAt)}
+                  </td>
+                  <td>{formatDuration(run.durationMs)}</td>
+                  <td>{run.trigger ?? "schedule"}</td>
+                  <Box
+                    component="td"
+                    title={run.error}
+                    sx={{ color: "error.main", fontFamily: "monospace" }}
+                  >
+                    {(run.error ?? "").split("\n")[0]}
+                  </Box>
+                </tr>
+              );
+            })}
+        </tbody>
+      </Box>
+    </Box>
+  );
+}
+
+/** One run's status, when and how it started: in the picker and its list. */
+function RunLabel({
+  run,
+  status,
+}: {
+  run: WorkflowRunSummary;
+  status?: string;
+}) {
+  const shown = statusOf(status ?? run.status);
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+      <StatusDot status={status ?? run.status} color={shown.color} />
+      <Typography
+        variant="caption"
+        sx={{ fontWeight: 600, color: shown.color }}
+      >
+        {shown.label}
+      </Typography>
+      <Dim>
+        {run.sandbox
+          ? "sandbox test"
+          : formatRelativeTimeCompact(run.startedAt)}
+      </Dim>
+      <Dim>· {run.sandbox ? "your checkout" : (run.trigger ?? "schedule")}</Dim>
+    </Box>
+  );
+}
+
+/** The run shown, and the workflow's other runs to pick from. */
+function RunPicker({
+  runs,
+  selected,
+  status,
+  onSelect,
+}: {
+  runs: Array<WorkflowRunSummary & { runId: string }>;
+  selected: WorkflowRunSummary;
+  status?: string;
+  onSelect: (runId: string) => void;
+}) {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  return (
+    <>
+      <Button
+        size="small"
+        variant="outlined"
+        color="inherit"
+        endIcon={<ChevronIcon size={14} />}
+        onClick={e => setAnchor(e.currentTarget)}
+        sx={{ textTransform: "none", height: 26, borderColor: "divider" }}
+      >
+        <RunLabel run={selected} status={status} />
+      </Button>
+      <Menu
+        anchorEl={anchor}
+        open={Boolean(anchor)}
+        onClose={() => setAnchor(null)}
+        slotProps={{ paper: { sx: { maxHeight: 420 } } }}
+      >
+        {runs.map(run => (
+          <MenuItem
+            key={run.runId}
+            dense
+            selected={run.runId === selected.runId}
+            onClick={() => {
+              setAnchor(null);
+              onSelect(run.runId);
+            }}
+            sx={{ gap: 2 }}
+          >
+            <RunLabel run={run} />
+            <Box sx={{ ml: "auto" }}>
+              <Dim>{formatDuration(run.durationMs)}</Dim>
+            </Box>
+          </MenuItem>
+        ))}
+      </Menu>
+    </>
+  );
+}
+
+/**
+ * Retry a failed run: from its failed step (the steps before it keep their
+ * outputs), the whole run, or a new run with other input. A sandbox run is
+ * not kept, so it can only be started again.
+ */
+function RetryMenu({
+  run,
+  sandbox,
+  onRetry,
+  onNewInput,
+}: {
+  run: WorkflowRun | undefined;
+  sandbox: boolean;
+  onRetry: (step?: string) => Promise<void>;
+  onNewInput: () => void;
+}) {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const failed = run?.steps.find(step => step.status === "FAILED")?.step;
+  const pick = async (step?: string) => {
+    setAnchor(null);
+    setBusy(true);
+    await onRetry(step);
+    setBusy(false);
+  };
+  return (
+    <>
+      <Button
+        size="small"
+        variant="outlined"
+        startIcon={
+          busy ? <CircularProgress size={12} /> : <RetryIcon size={14} />
+        }
+        disabled={busy}
+        onClick={e => setAnchor(e.currentTarget)}
+        sx={{ textTransform: "none", height: 24 }}
+      >
+        Retry
+      </Button>
+      <Menu
+        anchorEl={anchor}
+        open={Boolean(anchor)}
+        onClose={() => setAnchor(null)}
+      >
+        {!sandbox && failed && (
+          <MenuItem dense onClick={() => void pick(failed)}>
+            <ListItemText
+              primary={`Retry from “${failed}”`}
+              secondary="The steps before it keep their output"
+            />
+          </MenuItem>
+        )}
+        {!sandbox && (
+          <MenuItem dense onClick={() => void pick()}>
+            <ListItemText
+              primary="Retry the whole run"
+              secondary="Every step again, same input"
+            />
+          </MenuItem>
+        )}
+        <MenuItem
+          dense
+          onClick={() => {
+            setAnchor(null);
+            onNewInput();
+          }}
+        >
+          <ListItemText
+            primary={sandbox ? "Run again…" : "Run with other input…"}
+            secondary="A new run; edit its input first"
+          />
+        </MenuItem>
+      </Menu>
+    </>
   );
 }
 

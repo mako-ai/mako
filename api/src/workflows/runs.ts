@@ -23,6 +23,8 @@ import { webhookUrls } from "./webhook";
 
 const RECENT_RUNS_DAYS = 30;
 const LOG_LINES_PER_STEP = 20;
+/** The screen's whole log: a step's newest lines, up to this many. */
+const FULL_LOG_LINES = 5000;
 const MAX_TEXT_CHARS = 2000;
 
 type Row = Record<string, unknown>;
@@ -162,15 +164,31 @@ export async function readWorkflowsOverview(
   };
 }
 
-/** What Hatchet returns for one run, and its tasks' log lines by task id. */
-export type RunDetail = { run?: Row; tasks?: Row[] };
+/**
+ * What Hatchet returns for one run. `shape` is its steps' graph: each step
+ * with the steps that wait for it.
+ */
+export type RunDetail = {
+  run?: Row;
+  tasks?: Row[];
+  shape?: Array<{
+    stepId?: string;
+    taskName?: string;
+    childrenStepIds?: string[];
+  }>;
+};
 
 /**
  * One run as a screen or an agent reads it: its steps in order, each with
- * status, output, error and its last log lines. Pure, so the same shape comes
- * from the workspace's Hatchet and from a sandbox's own engine (sandbox.ts).
+ * the steps it waited for, status, output, error and its last log lines
+ * (every line with `full`). Pure, so the same shape comes from the
+ * workspace's Hatchet and from a sandbox's own engine (sandbox.ts).
  */
-export function shapeRun(detail: RunDetail, logs: Record<string, Row[]>) {
+export function shapeRun(
+  detail: RunDetail,
+  logs: Record<string, Row[]>,
+  { full = false }: { full?: boolean } = {},
+) {
   // A step's `actionId` is `<workflow>:<step>`; Hatchet lists steps in no order.
   const tasks = [...(detail.tasks ?? [])].sort((a, b) =>
     String(a.taskInsertedAt ?? "").localeCompare(
@@ -179,43 +197,127 @@ export function shapeRun(detail: RunDetail, logs: Record<string, Row[]>) {
   );
   const nameOf = (task: Row | undefined, part: 0 | 1) =>
     String(task?.actionId ?? "").split(":")[part];
+  const stepName = (task: Row) => nameOf(task, 1) || String(task.displayName);
+  const nameByStepId = new Map([
+    ...(detail.shape ?? []).map(
+      node => [String(node.stepId), String(node.taskName)] as const,
+    ),
+    ...tasks.map(task => [String(task.stepId), stepName(task)] as const),
+  ]);
+  const parentsOf = (stepId: unknown) =>
+    (detail.shape ?? [])
+      .filter(node => node.childrenStepIds?.includes(String(stepId)))
+      .map(node => nameByStepId.get(String(node.stepId)))
+      .filter((name): name is string => Boolean(name));
+  // Hatchet lists a step once it starts; the run's graph has the rest, which
+  // wait for the steps before them.
+  const started = new Set(tasks.map(task => String(task.stepId)));
+  const waiting = (detail.shape ?? [])
+    .filter(node => node.stepId && !started.has(String(node.stepId)))
+    .map(node => ({
+      step: String(node.taskName),
+      parents: parentsOf(node.stepId),
+      status: "WAITING" as unknown,
+      attempt: undefined as unknown,
+      durationMs: undefined as unknown,
+      output: undefined as string | undefined,
+      error: undefined as string | undefined,
+      logs: [] as Array<string | undefined>,
+    }));
   return {
     ...runSummary(detail.run ?? {}, nameOf(tasks[0], 0)),
     input: cap(inputOf(detail.run?.input)),
     output: cap(detail.run?.output),
-    steps: tasks.map(task => ({
-      step: nameOf(task, 1) || task.displayName,
-      status: task.status,
-      attempt: task.attempt,
-      durationMs: task.duration,
-      output: cap(task.output),
-      error: errorOf(task.errorMessage),
-      logs: (logs[idOf(task) ?? ""] ?? [])
-        .slice(-LOG_LINES_PER_STEP)
-        .map(line => cap(line.message)),
-    })),
+    steps: [
+      ...tasks.map(task => ({
+        step: stepName(task),
+        parents: parentsOf(task.stepId),
+        status: task.status,
+        attempt: task.attempt,
+        durationMs: task.duration,
+        output: cap(task.output),
+        error: errorOf(task.errorMessage),
+        logs: (logs[idOf(task) ?? ""] ?? [])
+          .slice(full ? 0 : -LOG_LINES_PER_STEP)
+          .map(line => cap(line.message)),
+      })),
+      ...waiting,
+    ],
   };
 }
 
-/** One run of the workspace's Hatchet. */
-export async function readRun(tenant: WorkspaceTenant, runId: string) {
+const readDetail = (tenant: WorkspaceTenant, runId: string) => {
   if (!isHatchetId(runId)) throw new HatchetError("Invalid run id", 400);
-  const detail = await tenantJson<RunDetail>(
-    tenant,
-    `/api/v1/stable/workflow-runs/${runId}`,
-  );
+  return tenantJson<RunDetail>(tenant, `/api/v1/stable/workflow-runs/${runId}`);
+};
+
+/** One run of the workspace's Hatchet; `full` keeps every log line. */
+export async function readRun(
+  tenant: WorkspaceTenant,
+  runId: string,
+  { full = false }: { full?: boolean } = {},
+) {
+  const detail = await readDetail(tenant, runId);
   const logs: Record<string, Row[]> = {};
   await Promise.all(
     (detail.tasks ?? []).map(async task => {
       const taskId = idOf(task);
       if (!taskId) return;
+      // Hatchet answers the oldest 50 lines of every attempt unless asked:
+      // ask for the newest lines of the step's last attempt, then put them
+      // back in order.
+      const query = new URLSearchParams({
+        limit: String(full ? FULL_LOG_LINES : LOG_LINES_PER_STEP),
+        order_by_direction: "DESC",
+      });
+      if (typeof task.attempt === "number") {
+        query.set("attempt", String(task.attempt));
+      }
       logs[taskId] = await tenantJson<Rows>(
         tenant,
         `/api/v1/stable/tasks/${taskId}/logs`,
+        { query },
       )
-        .then(l => l.rows ?? [])
+        .then(l => (l.rows ?? []).reverse())
         .catch(() => []);
     }),
   );
-  return shapeRun(detail, logs);
+  return shapeRun(detail, logs, { full });
 }
+
+/**
+ * Retry a run in place (Hatchet's replay). With `step`: that step and the
+ * steps after it run again, on the outputs the steps before it kept. Without:
+ * the whole run, from its first step.
+ */
+export async function retryRun(
+  tenant: WorkspaceTenant,
+  runId: string,
+  step?: string,
+) {
+  let id = runId;
+  if (step) {
+    const detail = await readDetail(tenant, runId);
+    const task = (detail.tasks ?? []).find(
+      t =>
+        String(t.actionId ?? "").split(":")[1] === step ||
+        t.displayName === step,
+    );
+    if (!task) throw new HatchetError(`No step "${step}" in this run`, 404);
+    if (isActiveRun(task.status)) {
+      throw new HatchetError(`Step "${step}" is still running`, 409);
+    }
+    id = String(task.taskExternalId ?? idOf(task));
+  } else if (!isHatchetId(runId)) {
+    throw new HatchetError("Invalid run id", 400);
+  }
+  await tenantJson(
+    tenant,
+    `/api/v1/stable/tenants/${tenant.tenantId}/tasks/replay`,
+    { method: "POST", body: { externalIds: [id] } },
+  );
+  return { runId };
+}
+
+const isActiveRun = (status: unknown) =>
+  status === "QUEUED" || status === "RUNNING";

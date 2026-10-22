@@ -26,8 +26,10 @@ export interface WorkflowRunSummary {
   trigger?: string;
 }
 
-interface WorkflowRunStep {
+export interface WorkflowRunStep {
   step?: string;
+  /** The steps it waited for (a deployed run; a sandbox run has none). */
+  parents?: string[];
   status?: string;
   attempt?: number;
   durationMs?: number;
@@ -82,6 +84,8 @@ interface WorkflowsState {
     input: Record<string, unknown>,
     sandbox: boolean,
   ) => Promise<Result>;
+  /** Retry a deployed run in place: from `step`, or the whole run. */
+  retry: (workspaceId: string, runId: string, step?: string) => Promise<Result>;
   /** Change what starts a workflow: its Active switch, its webhook. */
   setTriggers: (
     workspaceId: string,
@@ -136,8 +140,12 @@ export const useWorkflowsStore = create<WorkflowsState>()(
     fetchRun: async (workspaceId, runId) => {
       try {
         const body = unwrapBody(
+          // Every log line: the screen shows the whole log.
           await api.GET("/api/workspaces/{workspaceId}/workflows/runs/{id}", {
-            params: { path: { workspaceId, id: runId } },
+            params: {
+              path: { workspaceId, id: runId },
+              query: { full: "true" },
+            },
           }),
         ) as { run: WorkflowRun };
         set(s => {
@@ -174,6 +182,23 @@ export const useWorkflowsStore = create<WorkflowsState>()(
         return { ok: true, runId: body.runId };
       } catch (e) {
         return { ok: false, error: message(e, "Failed to start the run") };
+      }
+    },
+
+    retry: async (workspaceId, runId, step) => {
+      try {
+        unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/workflows/runs/{id}/retry",
+            {
+              params: { path: { workspaceId, id: runId } },
+              body: step ? { step } : {},
+            },
+          ),
+        );
+        return { ok: true, runId };
+      } catch (e) {
+        return { ok: false, error: message(e, "Failed to retry the run") };
       }
     },
 
