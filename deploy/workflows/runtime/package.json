@@ -7,7 +7,7 @@
     "@ai-sdk/gateway": "3.0.210",
     "@ai-sdk/mcp": "1.0.91",
     "@hatchet-dev/typescript-sdk": "1.36.0",
-    "@types/node": "20.17.57",
+    "@types/node": "24.19.2",
     "ai": "6.0.301",
     "tsx": "4.19.4",
     "typescript": "5.8.3",

@@ -12,7 +12,7 @@ ARG USE_PREBUILT=0
 # =============================================================================
 # Builder: compile from source (local / docs path)
 # =============================================================================
-FROM node:24-bookworm AS builder-source
+FROM node:24.22.1-bookworm AS builder-source
 WORKDIR /app
 
 RUN npm install -g pnpm
@@ -43,7 +43,7 @@ RUN pnpm --filter @mako/schemas run build \
 # =============================================================================
 # Builder: stage host-built artifacts (CI path)
 # =============================================================================
-FROM node:24-bookworm AS builder-prebuilt
+FROM node:24.22.1-bookworm AS builder-prebuilt
 WORKDIR /app
 
 # Same paths the production stage expects from the source builder
@@ -66,7 +66,7 @@ FROM builder-${USE_PREBUILT} AS builder
 # =============================================================================
 # Production runtime
 # =============================================================================
-FROM node:24-bookworm-slim
+FROM node:24.22.1-bookworm-slim
 WORKDIR /app
 
 # Install build tools needed for native modules (+ venv for the dbt runner).
