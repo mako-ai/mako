@@ -1,11 +1,12 @@
 /**
- * A run's flow as a graph: a card per step, placed one column after the
- * steps it waits for, joined to them by a line. Opened full screen from the
- * run page's View flow.
+ * A flow as a graph: a card per step, placed one column after the steps it
+ * waits for, joined to them by a line. A run's (with each step's status) or
+ * a workflow's own (as its code defines it); shown in place, and full screen
+ * from the expand button.
  */
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Box, Dialog, IconButton, Tooltip, Typography } from "@mui/material";
-import { X as CloseIcon } from "lucide-react";
+import { Maximize2 as ExpandIcon, X as CloseIcon } from "lucide-react";
 import {
   STEP_COLOR,
   columnsOf,
@@ -48,7 +49,7 @@ function StepCard({
       ? `Not run: “${blockedBy}” failed`
       : step.status === "FAILED"
         ? firstLine(step.error)
-        : (step.logs.filter(Boolean).at(-1) ?? "");
+        : (step.note ?? step.logs.filter(Boolean).at(-1) ?? "");
   return (
     <Box
       role="button"
@@ -96,7 +97,7 @@ function StepCard({
             </Typography>
           </Tooltip>
         )}
-        {!isActiveRun(step.status) && (
+        {step.status && !isActiveRun(step.status) && (
           <Dim>{notRun ? "" : formatDuration(step.durationMs)}</Dim>
         )}
       </Box>
@@ -258,15 +259,17 @@ function fitScale(steps: WorkflowRunStep[]): number {
   );
 }
 
-/** The run's flow, full screen and scaled to fit; scrolls when larger. */
-export default function FlowDialog({
+/** The flow full screen, scaled to fit; scrolls when larger. */
+function FlowDialog({
   steps,
+  title,
   open,
   onClose,
   selected,
   onSelect,
 }: {
   steps: WorkflowRunStep[];
+  title: string;
   open: boolean;
   onClose: () => void;
   selected: string | null;
@@ -285,7 +288,7 @@ export default function FlowDialog({
         }}
       >
         <Typography variant="subtitle2" sx={{ flex: 1 }}>
-          Flow of this run · click a step to see its log
+          {title}
         </Typography>
         <IconButton size="small" onClick={onClose} aria-label="Close">
           <CloseIcon size={16} />
@@ -305,5 +308,57 @@ export default function FlowDialog({
         </Box>
       </Box>
     </Dialog>
+  );
+}
+
+/**
+ * The flow in place, scrolling when it is larger than the page, with a button
+ * to open it full screen.
+ */
+export default function FlowPanel({
+  steps,
+  title,
+  selected,
+  onSelect,
+}: {
+  steps: WorkflowRunStep[];
+  title: string;
+  selected: string | null;
+  onSelect: (step: string | null) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (steps.length === 0) {
+    return (
+      <Box sx={{ p: 2 }}>
+        <Dim>No steps to show.</Dim>
+      </Box>
+    );
+  }
+  return (
+    <Box sx={{ flex: 1, minHeight: 0, position: "relative", display: "flex" }}>
+      <Box sx={{ flex: 1, overflow: "auto", display: "flex" }}>
+        <Box sx={{ m: "auto" }}>
+          <FlowCanvas steps={steps} selected={selected} onSelect={onSelect} />
+        </Box>
+      </Box>
+      <Tooltip title="Full screen">
+        <IconButton
+          size="small"
+          onClick={() => setExpanded(true)}
+          sx={{ position: "absolute", top: 6, right: 6 }}
+          aria-label="Open the flow full screen"
+        >
+          <ExpandIcon size={14} />
+        </IconButton>
+      </Tooltip>
+      <FlowDialog
+        steps={steps}
+        title={title}
+        open={expanded}
+        onClose={() => setExpanded(false)}
+        selected={selected}
+        onSelect={onSelect}
+      />
+    </Box>
   );
 }

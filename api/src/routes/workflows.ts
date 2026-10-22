@@ -46,7 +46,11 @@ import {
   WorkflowQueryError,
   runWorkflowQuery,
 } from "../workflows/query";
-import { readWorkflowsOverview, retryRun } from "../workflows/runs";
+import {
+  readWorkflowFlow,
+  readWorkflowsOverview,
+  retryRun,
+} from "../workflows/runs";
 import { WORKFLOWS_ADMIN_ONLY, mayChangeWorkflows } from "../workflows/policy";
 import { isSandboxRunId, startSandboxRun } from "../workflows/sandbox";
 import { waitForRun } from "../workflows/status";
@@ -172,6 +176,24 @@ workflowRoutes.openapi(
       { success: true as const, run, ...(done ? {} : { running: true }) },
       200,
     );
+  },
+);
+
+workflowRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{name}/flow",
+    tags: ["Workflows"],
+    summary:
+      "A deployed workflow's steps as its code defines them: each with the steps it waits for, its retries and timeout",
+    security: AUTH_SECURITY,
+    request: { params: NameParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, name } = c.req.valid("param");
+    const flow = await readWorkflowFlow(await requireTenant(workspaceId), name);
+    return c.json({ success: true as const, ...flow }, 200);
   },
 );
 

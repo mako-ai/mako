@@ -7,14 +7,12 @@
 import { useState, type ReactNode } from "react";
 import {
   Box,
-  Button,
   CircularProgress,
   Tab,
   Tabs,
   TextField,
   Typography,
 } from "@mui/material";
-import { Network as FlowIcon } from "lucide-react";
 import {
   STEP_COLOR,
   columnsOf,
@@ -26,7 +24,7 @@ import {
   type WorkflowRunStep,
 } from "../store/workflowsStore";
 import { formatDuration } from "../utils/format";
-import FlowDialog from "./WorkflowRunFlow";
+import FlowPanel from "./WorkflowRunFlow";
 import StatusDot from "./WorkflowStatusDot";
 
 const Dim = ({ children }: { children: ReactNode }) => (
@@ -170,12 +168,10 @@ function StepList({
   steps,
   selected,
   onSelect,
-  onViewFlow,
 }: {
   steps: WorkflowRunStep[];
   selected: string | null;
   onSelect: (step: string | null) => void;
-  onViewFlow: () => void;
 }) {
   const [unfolded, setUnfolded] = useState<Set<string>>(new Set());
   const { blockedBy } = failureOf(steps);
@@ -214,14 +210,6 @@ function StepList({
         <Dim>
           {steps.length} step{steps.length === 1 ? "" : "s"}
         </Dim>
-        <Button
-          size="small"
-          startIcon={<FlowIcon size={13} />}
-          onClick={onViewFlow}
-          sx={{ ml: "auto", textTransform: "none", py: 0, minHeight: 0 }}
-        >
-          View flow
-        </Button>
       </Box>
       <Box
         role="button"
@@ -433,8 +421,7 @@ export default function WorkflowRunDetail({
 }) {
   // Until the viewer picks a step, a failed run shows its failed step.
   const [picked, setPicked] = useState<string | null | undefined>(undefined);
-  const [tab, setTab] = useState<"log" | "output" | "input">("log");
-  const [flowOpen, setFlowOpen] = useState(false);
+  const [tab, setTab] = useState<"log" | "flow" | "output" | "input">("log");
   if (!run) {
     return (
       <Box sx={{ p: 2 }}>
@@ -462,12 +449,7 @@ export default function WorkflowRunDetail({
         }}
       >
         {steps.length > 0 && (
-          <StepList
-            steps={steps}
-            selected={selected}
-            onSelect={setPicked}
-            onViewFlow={() => setFlowOpen(true)}
-          />
+          <StepList steps={steps} selected={selected} onSelect={setPicked} />
         )}
         <Box
           sx={{
@@ -494,6 +476,7 @@ export default function WorkflowRunDetail({
             }}
           >
             <Tab value="log" label="Log" />
+            <Tab value="flow" label="Flow" />
             <Tab
               value="output"
               label={step ? `Output of “${step.step}”` : "Output"}
@@ -503,19 +486,20 @@ export default function WorkflowRunDetail({
           {tab === "log" && (
             <LogView steps={steps} only={selected} status={status} />
           )}
+          {tab === "flow" && (
+            <FlowPanel
+              steps={steps}
+              title="Flow of this run"
+              selected={selected}
+              onSelect={setPicked}
+            />
+          )}
           {tab === "output" && (
             <Pretty text={step ? step.output : run.output} />
           )}
           {tab === "input" && <Pretty text={run.input} />}
         </Box>
       </Box>
-      <FlowDialog
-        steps={steps}
-        open={flowOpen}
-        onClose={() => setFlowOpen(false)}
-        selected={selected}
-        onSelect={setPicked}
-      />
     </Box>
   );
 }

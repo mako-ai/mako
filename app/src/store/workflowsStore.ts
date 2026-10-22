@@ -30,6 +30,8 @@ export interface WorkflowRunStep {
   step?: string;
   /** The steps it waited for (a deployed run; a sandbox run has none). */
   parents?: string[];
+  /** A line about a step not taken from a run (its retries, its timeout). */
+  note?: string;
   status?: string;
   attempt?: number;
   durationMs?: number;
@@ -99,6 +101,33 @@ interface WorkflowsState {
 
 export const isActiveRun = (status?: string) =>
   status === "RUNNING" || status === "QUEUED";
+
+/** A deployed workflow's steps as its code defines them. */
+export interface WorkflowFlow {
+  workflowId: string;
+  steps: Array<{
+    step: string;
+    parents: string[];
+    retries: number;
+    timeout?: string;
+  }>;
+}
+
+/** A deployed workflow's flow, or an error saying why there is none. */
+export async function fetchWorkflowFlow(
+  workspaceId: string,
+  workflowId: string,
+): Promise<WorkflowFlow | { error: string }> {
+  try {
+    return unwrapBody(
+      await api.GET("/api/workspaces/{workspaceId}/workflows/{name}/flow", {
+        params: { path: { workspaceId, name: workflowId } },
+      }),
+    ) as WorkflowFlow;
+  } catch (e) {
+    return { error: message(e, "Could not read the workflow's steps") };
+  }
+}
 
 /** One file under `workflows/`, or null when it is not on the branch. */
 export async function fetchWorkflowFile(

@@ -6,9 +6,10 @@
  */
 import assert from "node:assert/strict";
 
-import { retryRun, shapeRun } from "./runs";
+import { readWorkflowFlow, retryRun, shapeRun } from "./runs";
 
 const RUN = "22222222-2222-2222-2222-222222222222";
+const WORKFLOW = "33333333-3333-3333-3333-333333333333";
 const tenant = {
   tenantId: "11111111-1111-1111-1111-111111111111",
   token: "t",
@@ -82,7 +83,20 @@ void (async () => {
       url: String(url),
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
-    const body = String(url).includes("/workflow-runs/") ? detail : {};
+    const body = String(url).includes("/workflow-runs/")
+      ? detail
+      : String(url).endsWith(`/tenants/${tenant.tenantId}/workflows`)
+        ? { rows: [{ name: "flow", metadata: { id: WORKFLOW } }] }
+        : String(url).endsWith(`/workflows/${WORKFLOW}/versions`)
+          ? {
+              workflowConfig: {
+                Tasks: [
+                  { ReadableId: "select", Parents: [], Timeout: "60s" },
+                  { ReadableId: "write", Parents: ["select"], Retries: 2 },
+                ],
+              },
+            }
+          : {};
     return new Response(JSON.stringify(body), { status: 200 });
   }) as typeof fetch;
 
@@ -95,6 +109,16 @@ void (async () => {
   assert.deepEqual(sent.at(-1)?.body, { externalIds: [RUN] });
   await assert.rejects(retryRun(tenant, RUN, "nope"), /No step "nope"/);
   await assert.rejects(retryRun(tenant, "../x"), /Invalid run id/);
+
+  // The flow as the code defines it: from the workflow's latest version.
+  assert.deepEqual(await readWorkflowFlow(tenant, "flow"), {
+    workflowId: "flow",
+    steps: [
+      { step: "select", parents: [], retries: 0, timeout: "60s" },
+      { step: "write", parents: ["select"], retries: 2, timeout: undefined },
+    ],
+  });
+  await assert.rejects(readWorkflowFlow(tenant, "other"), /not deployed/);
 
   console.info("runs.test.ts: ok");
 })();

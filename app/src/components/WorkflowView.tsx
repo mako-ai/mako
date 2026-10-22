@@ -18,6 +18,8 @@ import {
   Menu,
   MenuItem,
   Switch,
+  Tab,
+  Tabs,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -38,8 +40,10 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
   fetchWorkflowFile,
+  fetchWorkflowFlow,
   isActiveRun,
   useWorkflowsStore,
+  type WorkflowFlow,
   type WorkflowRun,
   type WorkflowRunSummary,
 } from "../store/workflowsStore";
@@ -48,6 +52,7 @@ import { formatDuration } from "../utils/format";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
 import { describeCron, inTime, nextRunOf } from "../lib/cronText";
 import WorkflowRunDetail from "./WorkflowRunDetail";
+import FlowPanel from "./WorkflowRunFlow";
 import StatusDot from "./WorkflowStatusDot";
 
 /** A toolbar or header: a padded row closed by a divider. */
@@ -352,6 +357,8 @@ function RunsView({
     setSelectedRunId(runId);
   };
 
+  const [homeTab, setHomeTab] = useState<"runs" | "flow">("runs");
+
   // Back to the workflow's runs.
   const showRuns = () => {
     setSandboxRunId(null);
@@ -504,11 +511,37 @@ function RunsView({
             webhookUrl={webhookUrl}
             onChange={change}
           />
-          <RunsTable
-            runs={runs}
-            onSelect={select}
-            unreadable={overview?.hatchetError}
-          />
+          <Tabs
+            value={homeTab}
+            onChange={(_e, value) => setHomeTab(value)}
+            sx={{
+              minHeight: 32,
+              px: 1,
+              borderBottom: "1px solid",
+              borderColor: "divider",
+              "& .MuiTab-root": {
+                minHeight: 32,
+                py: 0,
+                textTransform: "none",
+                fontSize: 13,
+              },
+            }}
+          >
+            <Tab value="runs" label="Runs" />
+            <Tab value="flow" label="Flow" />
+          </Tabs>
+          {homeTab === "runs" ? (
+            <RunsTable
+              runs={runs}
+              onSelect={select}
+              unreadable={overview?.hatchetError}
+            />
+          ) : (
+            <WorkflowFlowView
+              workspaceId={workspaceId}
+              workflowId={workflowId}
+            />
+          )}
         </>
       )}
 
@@ -685,6 +718,59 @@ function TriggersStrip({
         </Box>
       )}
     </Box>
+  );
+}
+
+/**
+ * The workflow's flow as its code defines it (the deployed version): each
+ * step, the steps it waits for, its retries and timeout.
+ */
+function WorkflowFlowView({
+  workspaceId,
+  workflowId,
+}: {
+  workspaceId: string;
+  workflowId: string;
+}) {
+  const [flow, setFlow] = useState<WorkflowFlow | { error: string } | null>(
+    null,
+  );
+  const [selected, setSelected] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void fetchWorkflowFlow(workspaceId, workflowId).then(result => {
+      if (current) setFlow(result);
+    });
+    return () => {
+      current = false;
+    };
+  }, [workspaceId, workflowId]);
+  if (!flow) {
+    return (
+      <Box sx={{ p: 2 }}>
+        <CircularProgress size={14} />
+      </Box>
+    );
+  }
+  if ("error" in flow) return <Note>{flow.error}</Note>;
+  const steps = flow.steps.map(step => ({
+    step: step.step,
+    parents: step.parents,
+    logs: [],
+    note: [
+      step.retries ? `retries ${step.retries}` : "no retries",
+      step.timeout && `timeout ${step.timeout}`,
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  }));
+  return (
+    <FlowPanel
+      steps={steps}
+      title={`Flow of ${workflowId}`}
+      selected={selected}
+      onSelect={setSelected}
+    />
   );
 }
 

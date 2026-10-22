@@ -338,3 +338,38 @@ export async function retryRun(
 
 const isActiveRun = (status: unknown) =>
   status === "QUEUED" || status === "RUNNING";
+
+/**
+ * A deployed workflow's steps as its code defines them, from Hatchet's latest
+ * version of it: each step with the steps it waits for, its retries and its
+ * timeout. The flow before any run, or the same for every run.
+ */
+export async function readWorkflowFlow(tenant: WorkspaceTenant, name: string) {
+  const list = await tenantJson<Rows>(
+    tenant,
+    `/api/v1/tenants/${tenant.tenantId}/workflows`,
+  );
+  const id = idOf((list.rows ?? []).find(row => row.name === name) ?? {});
+  if (!id || !isHatchetId(id)) {
+    throw new HatchetError(`"${name}" is not deployed`, 404);
+  }
+  const version = await tenantJson<{
+    workflowConfig?: {
+      Tasks?: Array<{
+        ReadableId?: string;
+        Parents?: string[];
+        Retries?: number;
+        Timeout?: string;
+      }>;
+    };
+  }>(tenant, `/api/v1/workflows/${id}/versions`);
+  return {
+    workflowId: name,
+    steps: (version.workflowConfig?.Tasks ?? []).map(task => ({
+      step: String(task.ReadableId),
+      parents: task.Parents ?? [],
+      retries: task.Retries ?? 0,
+      timeout: task.Timeout,
+    })),
+  };
+}
