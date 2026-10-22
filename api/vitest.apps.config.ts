@@ -71,6 +71,8 @@ export default defineConfig({
       "src/agent-lib/capabilities/runtime.test.ts",
       "src/apps/preview.service.test.ts",
       "src/apps/deployment.service.test.ts",
+      // One store call per published asset: open + size, 404 on missing.
+      "src/services/artifact-store-open-read.test.ts",
       // Viewer identity (apps.md §28): who an app is talking to, and the
       // domain auto-join that lets a link-clicker become a member.
       "src/apps/app-viewer.service.test.ts",

@@ -42,6 +42,18 @@ export interface ArtifactStore {
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   getSize(key: string): Promise<number | null>;
   /**
+   * Open the object and learn its size in ONE round trip: null when it is
+   * missing, a throw for any other failure. Serving a published app's assets
+   * used to cost exists() + exists() + getMetadata() before the first byte —
+   * three sequential GCS calls per file. The stream is held until the store
+   * has answered, so a missing object is a clean null (→ 404), never a 200
+   * that aborts mid-body. Absent on stores that cannot do better than the
+   * probes; callers fall back to exists/openReadStream/getSize.
+   */
+  openRead?(
+    key: string,
+  ): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null>;
+  /**
    * When the object at `key` was last written, or null when it is missing
    * or the store cannot say. Publish uses it to tell a content-addressed
    * binding artifact that is merely PRESENT from one that is also CURRENT,
@@ -215,6 +227,28 @@ class FilesystemArtifactStore implements ArtifactStore {
     }
   }
 
+  async openRead(
+    key: string,
+  ): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+    let handle: Awaited<ReturnType<typeof fsPromises.open>>;
+    try {
+      handle = await fsPromises.open(this.resolvePath(key), "r");
+    } catch {
+      return null;
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        await handle.close();
+        return null;
+      }
+      return { stream: handle.createReadStream(), size: stat.size };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
   async getLastModified(key: string): Promise<Date | null> {
     try {
       const stat = await fsPromises.stat(this.resolvePath(key));
@@ -236,6 +270,65 @@ class FilesystemArtifactStore implements ArtifactStore {
       .rm(`${targetPath}.meta.json`, { force: true })
       .catch(() => undefined);
   }
+}
+
+/**
+ * Start a GCS media download and wait for its response headers.
+ *
+ * `File.createReadStream()` sends nothing until someone reads, and reports a
+ * missing object only as an error event after that. `read(0)` starts the
+ * request without consuming a byte; the body then buffers in the stream until
+ * the HTTP response pipes it on. A 404 resolves null; any other failure
+ * rejects, as the exists() probe this replaces did.
+ */
+export async function openGcsRead(
+  stream: NodeJS.ReadableStream & {
+    destroy(error?: Error): unknown;
+    read(size?: number): unknown;
+  },
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  // Errors after the handover belong to whoever pipes the stream (it sees
+  // them too). This listener only stops one landing in the gap from crashing
+  // the process as an unhandled 'error' event.
+  stream.on("error", () => undefined);
+  return await new Promise((resolve, reject) => {
+    const done = () => {
+      stream.removeListener("response", onResponse);
+      stream.removeListener("error", onError);
+    };
+    const onResponse = (res: {
+      statusCode?: number;
+      headers?: Record<string, string | string[] | undefined>;
+    }) => {
+      // A failure status: the library destroys the stream with the error
+      // next, and onError classifies it (404 → null).
+      if ((res.statusCode ?? 0) >= 400) return;
+      done();
+      const header = (name: string) => {
+        const value = res.headers?.[name];
+        return Array.isArray(value) ? value[0] : value;
+      };
+      // GCS may answer gzip and the library decompresses: then the wire
+      // length is not the body length, so send no Content-Length at all.
+      const encoded = (header("content-encoding") ?? "identity") !== "identity";
+      const length = Number(header("content-length"));
+      resolve({
+        stream,
+        size:
+          !encoded && header("content-length") !== undefined && length >= 0
+            ? length
+            : null,
+      });
+    };
+    const onError = (error: Error & { code?: number | string }) => {
+      done();
+      if (Number(error.code) === 404) resolve(null);
+      else reject(error);
+    };
+    stream.on("response", onResponse);
+    stream.on("error", onError);
+    stream.read(0);
+  });
 }
 
 class GcsArtifactStore implements ArtifactStore {
@@ -405,6 +498,12 @@ class GcsArtifactStore implements ArtifactStore {
     } catch {
       return null;
     }
+  }
+
+  async openRead(
+    key: string,
+  ): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+    return await openGcsRead(this.file(key).createReadStream());
   }
 
   async getLastModified(key: string): Promise<Date | null> {

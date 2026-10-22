@@ -143,6 +143,65 @@ describe("published deployment artifact source", () => {
     expect(stores.source.openReadStream).toHaveBeenCalledWith(indexKey);
   });
 
+  it("opens an asset in one store call when the store can", async () => {
+    const primary = mockStore([indexKey]);
+    primary.openRead = vi.fn(async (key: string) =>
+      key === indexKey
+        ? { stream: Readable.from([Buffer.from("<html></html>")]), size: 13 }
+        : null,
+    );
+    stores.primary = primary;
+
+    const response = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "index.html",
+    });
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("content-length")).toBe("13");
+    expect(await response?.text()).toBe("<html></html>");
+    expect(primary.openRead).toHaveBeenCalledTimes(1);
+    expect(primary.exists).not.toHaveBeenCalled();
+    expect(primary.getSize).not.toHaveBeenCalled();
+  });
+
+  it("answers a missing asset with null after one call per place looked", async () => {
+    const primary = mockStore([]);
+    primary.openRead = vi.fn(async () => null);
+    stores.primary = primary;
+
+    const response = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "assets/missing.js",
+    });
+
+    expect(response).toBeNull();
+    // The current key, then the legacy key; no SPA fallback for a file path.
+    expect(primary.openRead).toHaveBeenCalledTimes(2);
+    expect(primary.exists).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the read-only source through openRead too", async () => {
+    const primary = mockStore([]);
+    primary.openRead = vi.fn(async () => null);
+    const source = mockStore([indexKey]);
+    source.openRead = vi.fn(async (key: string) =>
+      key === indexKey ? { stream: Readable.from(["src"]), size: null } : null,
+    );
+    stores.primary = primary;
+    stores.source = source;
+
+    const asset = await readDeploymentAsset(projectId, sha, "some/route");
+
+    expect(asset?.size).toBeNull();
+    expect(asset?.contentType).toBe("text/html; charset=utf-8");
+    // some/route misses both stores at both keys, then index.html hits the
+    // source at the current key.
+    expect(source.openRead).toHaveBeenLastCalledWith(indexKey);
+  });
+
   it("prefers the isolated writable store when it has the deployment", async () => {
     stores.primary = mockStore([indexKey]);
     stores.source = mockStore([indexKey]);

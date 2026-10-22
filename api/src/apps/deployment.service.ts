@@ -574,18 +574,53 @@ export async function readDeploymentAsset(
   if (!path.extname(clean)) candidates.push("index.html");
 
   for (const candidate of candidates) {
-    const stored = await existingDeploymentAsset(projectId, sha, candidate);
-    if (!stored) continue;
-    const stream = await stored.store.openReadStream(stored.key);
-    if (stream) {
+    const opened = await openDeploymentAsset(projectId, sha, candidate);
+    if (opened) {
       return {
-        stream,
+        stream: opened.stream,
         contentType: contentTypeFor(candidate),
-        size: await stored.store.getSize(stored.key),
+        size: opened.size,
       };
     }
   }
   return null;
+}
+
+/**
+ * Open one deployment file, searching the same keys and stores in the same
+ * order as existingDeploymentAsset — but as ONE store call per place looked,
+ * not three. On GCS the old exists() + openReadStream()'s own exists() +
+ * getSize() were three sequential metadata round trips before the first byte
+ * of every JS, CSS and HTML file of a published app.
+ */
+async function openDeploymentAsset(
+  projectId: string,
+  sha: string,
+  assetPath: string,
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  const source = getArtifactSourceStore();
+  const stores = source ? [getArtifactStore(), source] : [getArtifactStore()];
+  for (const key of [
+    deploymentKey(projectId, sha, assetPath),
+    legacyDeploymentKey(projectId, sha, assetPath),
+  ]) {
+    for (const store of stores) {
+      const opened = await openStoredFile(store, key);
+      if (opened) return opened;
+    }
+  }
+  return null;
+}
+
+async function openStoredFile(
+  store: ArtifactStore,
+  key: string,
+): Promise<{ stream: NodeJS.ReadableStream; size: number | null } | null> {
+  if (store.openRead) return await store.openRead(key);
+  if (!(await store.exists(key))) return null;
+  const stream = await store.openReadStream(key);
+  if (!stream) return null;
+  return { stream, size: await store.getSize(key) };
 }
 
 /**
