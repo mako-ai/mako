@@ -212,6 +212,16 @@ serves the data). Public share links refuse it unless the owner enabled
 live queries for the link. Prefer this over a cron for "what is it now?"
 buttons; keep `-- schedule:` for data that must be fresh before anyone asks.
 
+**Loading captions (SDK ≥ 2.7.4).** Every hook returns `phase` while
+`loading` / `refreshing` (plus `rowsWritten`, `bytes`, `bytesTotal`).
+Caption spinners with `bindingPhaseLabel(q)`: "Building from warehouse"
+(the query is running; only refresh, laptop dev builds and live bindings
+build), "Getting download link" (the file exists; under a second),
+"Downloading", "Loading into DuckDB", "Running query". Do not wrap `fetch`
+to guess phases, and do not label the whole wait "signing": the SDK reads
+the real phase from the server (`Accept: application/x-ndjson` on the same
+request). `RefreshAllButton` already captions each source.
+
 ## Who is looking: `useViewer()` (SDK ≥ 2.4)
 
 `const { viewer, loading } = useViewer()` — `null` on an anonymous share

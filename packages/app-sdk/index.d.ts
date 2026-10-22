@@ -1,5 +1,88 @@
 import type * as React from "react";
 
+/**
+ * What a pending binding load is waiting on (SDK ≥ 2.7.4).
+ *
+ * - `requesting`: sent, the server has not said yet (or predates phases).
+ * - `queued`, `checking`, `querying_warehouse`, `writing_parquet`,
+ *   `uploading`: Mako is BUILDING the file from the warehouse (seconds to
+ *   minutes). Only a refresh, a laptop dev build or a sandbox live binding
+ *   builds; a published app never builds on a read.
+ * - `resolving`, `signing`: the file exists; Mako is finding it and signing
+ *   its download link (well under a second).
+ * - `downloading`, `loading_duckdb`, `running_sql`: the browser's own work.
+ */
+export type BindingPhase =
+  | "requesting"
+  | "queued"
+  | "checking"
+  | "querying_warehouse"
+  | "writing_parquet"
+  | "uploading"
+  | "resolving"
+  | "signing"
+  | "downloading"
+  | "loading_duckdb"
+  | "running_sql";
+
+/** The phases grouped by the wait a person cares about. */
+export type BindingStage =
+  | "waiting"
+  | "building"
+  | "linking"
+  | "downloading"
+  | "loading"
+  | "querying";
+
+/** One binding's progress while it loads or refreshes. */
+export interface BindingProgress {
+  phase: BindingPhase;
+  /** Rows written so far while building; null when the server does not say. */
+  rowsWritten?: number | null;
+  /** Building: the file's size. Downloading: bytes received so far. */
+  bytes?: number | null;
+  /** Downloading: the file's size, when the server sent Content-Length. */
+  bytesTotal?: number | null;
+}
+
+/** Several bindings at once (useDuckDB): the slowest wait, sums, a count. */
+export interface CombinedBindingProgress {
+  phase: BindingPhase;
+  rowsWritten: number | null;
+  bytes: number | null;
+  bytesTotal: number | null;
+  pending: number;
+}
+
+export const BINDING_PHASES: readonly BindingPhase[];
+export const BINDING_PHASE_LABELS: Record<BindingPhase, string>;
+/** "Building from warehouse", "Getting download link", "Downloading", "Loading into DuckDB", … */
+export const BINDING_STAGE_LABELS: Record<BindingStage, string>;
+export function bindingPhaseStage(phase: BindingPhase | string | null | undefined): BindingStage | null;
+/**
+ * A progress-bar caption: the stage label plus rows or bytes when known,
+ * e.g. "Building from warehouse · 120,000 rows", "Downloading · 3.1 of 10.0 MB".
+ * Empty when nothing is pending. Pass a hook's state (`bindingPhaseLabel(q)`)
+ * or a progress record.
+ */
+export function bindingPhaseLabel(
+  progress:
+    | BindingPhase
+    | {
+        phase: BindingPhase | null;
+        rowsWritten?: number | null;
+        bytes?: number | null;
+        bytesTotal?: number | null;
+      }
+    | null
+    | undefined,
+): string;
+
+/** One binding's progress, or null when it is not loading. */
+export function useBindingProgress(name: string): BindingProgress | null;
+/** Every pending binding's progress, by name. */
+export function useBindingProgress(): Record<string, BindingProgress>;
+
 /** What a refresh built — the server's answer to `POST __data/<name>/refresh`. */
 export interface RefreshResult {
   binding: string;
@@ -28,6 +111,17 @@ export interface QueryState<Row = Record<string, unknown>> {
   refreshing: boolean;
   truncated: boolean;
   /**
+   * What `loading` / `refreshing` is waiting on; null when neither is true.
+   * Caption it with `bindingPhaseLabel(phase)`.
+   */
+  phase: BindingPhase | null;
+  /** While building: rows written so far, when the server says. */
+  rowsWritten: number | null;
+  /** While building: file size; while downloading: bytes received. */
+  bytes: number | null;
+  /** While downloading: the file's size, when known. */
+  bytesTotal: number | null;
+  /**
    * Rematerialize the data behind this query and re-run it. Rejects with a
    * `RefreshError` — the rows on screen are untouched when it does.
    */
@@ -53,19 +147,40 @@ export interface MakoLocation {
 export function useQuery<Row = Record<string, unknown>>(
   name: string,
   opts?: QueryOptions,
-): QueryState<Row> & { refresh: () => Promise<RefreshResult> };
+): QueryState<Row> & {
+  refresh: () => Promise<RefreshResult>;
+  /** The binding's own progress record (null when it is not loading). */
+  progress: BindingProgress | null;
+};
 
 /** Analytical SQL over the app's bindings; table names are binding names. */
 export function useDuckDB<Row = Record<string, unknown>>(
   sql: string,
   opts?: QueryOptions,
-): DuckDBState<Row> & { refresh: () => Promise<RefreshResult[]> };
+): DuckDBState<Row> & {
+  refresh: () => Promise<RefreshResult[]>;
+  /** The slowest pending binding's wait, with sums; null when none. */
+  progress: CombinedBindingProgress | null;
+  /** Every pending binding's progress, by name. */
+  bindings: Record<string, BindingProgress>;
+};
+
+export interface RefreshOptions {
+  /**
+   * Every phase of this refresh: the build, then the reload (link,
+   * download, DuckDB), then `null` once it settles.
+   */
+  onProgress?: (progress: BindingProgress | null) => void;
+}
 
 /**
  * Rematerialize one binding on demand and reload it everywhere it is used.
  * Concurrent calls for the same binding share one request.
  */
-export function refreshBinding(name: string): Promise<RefreshResult>;
+export function refreshBinding(
+  name: string,
+  opts?: RefreshOptions,
+): Promise<RefreshResult>;
 
 /**
  * Refresh several bindings — all of them when `names` is omitted. Every one

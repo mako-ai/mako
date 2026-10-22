@@ -13,10 +13,15 @@ import {
   JOB_HEARTBEAT_MS,
   heartbeatBindingJob,
   markBindingJob,
+  recordBindingJobProgress,
   storeJobDraft,
   type BindingJobDoc,
   type BindingJobResult,
 } from "./binding-jobs";
+import {
+  withBindingProgress,
+  type BindingProgressEvent,
+} from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -39,6 +44,10 @@ export interface BindingJobRunnerDeps {
   storeDraft: typeof storeJobDraft;
   heartbeat: (jobId: string) => Promise<void>;
   heartbeatMs: number;
+  /** Record the build's phase on the job row for its poller. */
+  progress: (jobId: string, event: BindingProgressEvent) => Promise<void>;
+  /** A phase change is written at once; row counts at most this often. */
+  progressMs: number;
 }
 
 const defaultDeps: BindingJobRunnerDeps = {
@@ -51,7 +60,33 @@ const defaultDeps: BindingJobRunnerDeps = {
   storeDraft: storeJobDraft,
   heartbeat: jobId => heartbeatBindingJob(jobId),
   heartbeatMs: JOB_HEARTBEAT_MS,
+  progress: (jobId, event) => recordBindingJobProgress(jobId, event),
+  progressMs: 2_000,
 };
+
+/**
+ * Phases into the job row, throttled: every phase change, and the latest
+ * row count at most every `progressMs` — a 500k-row build reports 100
+ * batches, which is 100 events but only a handful of writes.
+ */
+function jobProgressWriter(
+  jobId: string,
+  deps: BindingJobRunnerDeps,
+): (event: BindingProgressEvent) => void {
+  let lastPhase: string | null = null;
+  let lastAt = 0;
+  let chain = Promise.resolve();
+  return event => {
+    const now = Date.now();
+    if (event.phase === lastPhase && now - lastAt < deps.progressMs) return;
+    lastPhase = event.phase;
+    lastAt = now;
+    // In order, never in parallel: an older count must not land last.
+    chain = chain
+      .then(() => deps.progress(jobId, event))
+      .catch(() => undefined);
+  };
+}
 
 export async function runBindingJob(
   job: BindingJobDoc,
@@ -85,7 +120,10 @@ export async function runBindingJob(
     deps.heartbeat(jobId).catch(() => undefined);
   }, deps.heartbeatMs);
   try {
-    const result = await build(job, project, unregistered, deps);
+    const result = await withBindingProgress(
+      jobProgressWriter(jobId, deps),
+      () => build(job, project, unregistered, deps),
+    );
     await deps.mark(jobId, { status: "ready", result });
     return "ready";
   } catch (error) {

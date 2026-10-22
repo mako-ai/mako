@@ -32,6 +32,11 @@ import {
 } from "../services/artifact-store.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import {
+  bindingProgressResponse,
+  parquetLinkOutcome,
+  serverTimingHeader,
+} from "./binding-progress";
+import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
   materializeAppBinding,
@@ -763,6 +768,12 @@ export async function serveDeploymentFile(input: {
    * nobody known (anonymous share, a token minted before viewers existed).
    */
   viewer?: ViewerIdentity | null;
+  /**
+   * The client asked for phase events (`Accept: application/x-ndjson`):
+   * answer a `__data/<name>.parquet` with resolving → signing → ready + the
+   * signed URL instead of a 302 (binding-progress.ts).
+   */
+  progress?: boolean;
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
   const cache = input.private ? "private, no-cache" : "no-cache";
@@ -816,20 +827,35 @@ export async function serveDeploymentFile(input: {
     // writes: published apps could never see their data (§13.19).
     // The deployment's binding index when it has one (no repository read);
     // a name it does not list is no healthy binding at this commit.
-    const index = await deploymentBindingIndex(projectId, sha);
-    const project = index ? null : await AppProject.findById(projectId);
-    const key = index
-      ? Object.hasOwn(index, dataMatch[1])
-        ? index[dataMatch[1]]
-        : null
-      : project
-        ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
-        : null;
-    if (!key) return null;
-    const store = await artifactStoreForRead(key);
-    if (!store) return null;
-    return await serveParquetArtifact(store, key, {
+    const resolve = async () => {
+      const index = await deploymentBindingIndex(projectId, sha);
+      const project = index ? null : await AppProject.findById(projectId);
+      const key = index
+        ? Object.hasOwn(index, dataMatch[1])
+          ? index[dataMatch[1]]
+          : null
+        : project
+          ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
+          : null;
+      if (!key) return null;
+      const store = await artifactStoreForRead(key);
+      return store ? { store, key } : null;
+    };
+    if (input.progress) {
+      return bindingProgressResponse(() =>
+        parquetLinkOutcome(dataMatch[1], resolve),
+      );
+    }
+    const resolveStart = Date.now();
+    const target = await resolve();
+    if (!target) return null;
+    return await serveParquetArtifact(target.store, target.key, {
       cacheControl: input.private ? "private, no-store" : "no-store",
+      extraHeaders: {
+        "Server-Timing": serverTimingHeader({
+          resolve: Date.now() - resolveStart,
+        }),
+      },
     });
   }
 

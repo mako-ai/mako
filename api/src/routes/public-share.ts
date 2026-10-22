@@ -25,7 +25,11 @@ import { loggers } from "../logging";
 import { serverTiming, timed } from "../middleware/server-timing";
 import { getArtifactStore } from "../services/artifact-store.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
-import { refreshBindingHttp } from "../apps/binding-refresh";
+import {
+  refreshBindingHttp,
+  refreshBindingProgress,
+} from "../apps/binding-refresh";
+import { wantsBindingProgress } from "../apps/binding-progress";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import {
@@ -494,6 +498,7 @@ async function serveSharedApp(c: Context): Promise<Response> {
     private: true,
     // Anonymous: `__data/viewer.json` is null — there is nobody to describe.
     viewer: null,
+    progress: wantsBindingProgress(c.req.header("accept")),
   });
   if (response) {
     // The share page navigates straight here, so this page load IS the view.
@@ -538,17 +543,22 @@ app.post("/:token/app/__data/:name/refresh", async c => {
       403,
     );
   }
+  const input = {
+    project,
+    name: c.req.param("name"),
+    actorId: "",
+    at: project.publishedSha,
+    cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
+  };
+  if (wantsBindingProgress(c.req.header("accept"))) {
+    return await withQueryLabels({ mako_trigger: "public" }, async () =>
+      refreshBindingProgress(input),
+    );
+  }
   try {
     const { status, body, headers } = await withQueryLabels(
       { mako_trigger: "public" },
-      () =>
-        refreshBindingHttp({
-          project,
-          name: c.req.param("name"),
-          actorId: "",
-          at: project.publishedSha,
-          cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
-        }),
+      () => refreshBindingHttp(input),
     );
     return c.json(body, status, headers);
   } catch (error) {

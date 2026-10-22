@@ -15,8 +15,15 @@ import type { Context } from "hono";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import {
   refreshBindingHttp,
+  refreshBindingProgress,
   refreshPathBinding,
 } from "../apps/binding-refresh";
+import {
+  bindingProgressResponse,
+  parquetLinkOutcome,
+  serverTimingHeader,
+  wantsBindingProgress,
+} from "../apps/binding-progress";
 import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
@@ -60,15 +67,17 @@ async function serveAsset(c: Context): Promise<Response> {
     if (!name || !project) {
       return c.json({ success: false, error: "Not found" }, 404);
     }
+    const input = { project, name, actorId: "", at: grant.publishedSha };
+    if (wantsBindingProgress(c.req.header("accept"))) {
+      return await withQueryLabels({ mako_trigger: "preview" }, async () =>
+        refreshBindingProgress(input, {
+          headers: { "Access-Control-Allow-Origin": "*" },
+        }),
+      );
+    }
     const { status, body, headers } = await withQueryLabels(
       { mako_trigger: "preview" },
-      () =>
-        refreshBindingHttp({
-          project,
-          name,
-          actorId: "",
-          at: grant.publishedSha,
-        }),
+      () => refreshBindingHttp(input),
     );
     return c.json(body, status, {
       ...headers,
@@ -91,6 +100,7 @@ async function serveAsset(c: Context): Promise<Response> {
       // (no cookie in the sandboxed iframe) — `__data/viewer.json` is
       // answered from it (apps.md §28).
       viewer: grant.viewer ?? null,
+      progress: wantsBindingProgress(c.req.header("accept")),
     });
     if (!response) {
       return c.json({ success: false, error: "Not found" }, 404);
@@ -126,16 +136,34 @@ async function serveAsset(c: Context): Promise<Response> {
     /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
   );
   if (dataMatch) {
-    const project = await AppProject.findById(grant.projectId);
-    const key = project
-      ? await bindingArtifactKeyByName(project, dataMatch[1], "")
-      : null;
-    const response = key
-      ? await serveParquetArtifact(getArtifactStore(), key, {
+    // A repo read (the binding's definition decides its key): this is the
+    // `resolving` phase a progress client sees.
+    const resolve = async () => {
+      const project = await AppProject.findById(grant.projectId);
+      const key = project
+        ? await bindingArtifactKeyByName(project, dataMatch[1], "")
+        : null;
+      return key ? { store: getArtifactStore(), key } : null;
+    };
+    if (wantsBindingProgress(c.req.header("accept"))) {
+      return bindingProgressResponse(
+        () => parquetLinkOutcome(dataMatch[1], resolve),
+        { headers: { "Access-Control-Allow-Origin": "*" } },
+      );
+    }
+    const resolveStart = Date.now();
+    const target = await resolve();
+    const response = target
+      ? await serveParquetArtifact(target.store, target.key, {
           cacheControl: "no-store",
           // The preview page fetches cross-origin; without ACAO the browser
           // rejects both the stream and the redirect before following it.
-          extraHeaders: { "Access-Control-Allow-Origin": "*" },
+          extraHeaders: {
+            "Access-Control-Allow-Origin": "*",
+            "Server-Timing": serverTimingHeader({
+              resolve: Date.now() - resolveStart,
+            }),
+          },
         })
       : null;
     if (!response) {

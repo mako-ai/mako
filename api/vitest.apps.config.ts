@@ -33,6 +33,10 @@ export default defineConfig({
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
       "src/apps/binding-refresh.test.ts",
+      // Phase events on the request doing the work (NDJSON), no shared state.
+      "src/apps/binding-progress.test.ts",
+      // The generated sandbox launcher parses, and relays build phases.
+      "src/apps/dev-server-launcher.test.ts",
       // Staged binding files are replaced whole, never written in place.
       "src/apps/dev-server-staging.test.ts",
       // Asynchronous binding builds (202 + poll): job rows in real Mongo.

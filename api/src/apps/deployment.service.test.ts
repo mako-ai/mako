@@ -63,6 +63,8 @@ vi.mock("./app-viewer.service", () => ({
 }));
 
 vi.mock("../services/artifact-delivery.service", () => ({
+  SIGNED_URL_TTL_SECONDS: 600,
+  artifactDeliveryMode: vi.fn(async () => "redirect"),
   serveParquetArtifact: vi.fn(
     async (store, key) =>
       new Response(`${store === stores.source}:${key}`, { status: 200 }),
@@ -248,6 +250,27 @@ describe("deployment binding index", () => {
       assetPath: "__data/sales.parquet",
     });
     expect(await data?.text()).toBe(`false:${bindingKey}`);
+
+    // A client that asked for phases gets the signed link on the stream,
+    // not a 302 whose Location fetch() would swallow.
+    store.getSignedUrl = vi.fn(async () => "https://storage.test/s?sig=1");
+    const progress = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/sales.parquet",
+      progress: true,
+    });
+    expect(progress?.headers.get("content-type")).toBe("application/x-ndjson");
+    const lines = (await (progress as Response).text())
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line));
+    expect(lines.map(e => e.phase)).toEqual(["resolving", "signing", "ready"]);
+    expect(lines[2]).toMatchObject({
+      binding: "sales",
+      url: "https://storage.test/s?sig=1",
+    });
+    expect(store.getSignedUrl).toHaveBeenCalledWith(bindingKey, 600);
 
     const names = await serveDeploymentFile({
       projectId,

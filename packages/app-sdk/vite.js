@@ -156,6 +156,54 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// The SDK (>= 2.7.4) asks for phase events with Accept: application/x-ndjson
+// and then hears each step of a build on the same request (see progress.js).
+function wantsProgress(req) {
+  return String(req.headers?.accept ?? "")
+    .split(",")
+    .some((part) => part.split(";")[0].trim().toLowerCase() === "application/x-ndjson");
+}
+
+// Start a phase stream; returns { emit, end(final) }.
+function progressStream(res) {
+  const started = Date.now();
+  res.statusCode = 200;
+  res.setHeader("content-type", "application/x-ndjson");
+  res.setHeader("cache-control", "no-store");
+  const write = (event) => {
+    try {
+      res.write(JSON.stringify({ ...event, elapsedMs: Date.now() - started }) + "\n");
+    } catch {
+      // The page went away; the build carries on and fills the cache.
+    }
+  };
+  return {
+    emit: write,
+    end(final) {
+      write(final);
+      res.end();
+    },
+  };
+}
+
+// One build's phases, for everyone waiting on it (a page mounting several
+// tables at once shares one request): the latest phase first, then the rest.
+function phaseHub(first) {
+  const listeners = new Set(first ? [first] : []);
+  let last = null;
+  return {
+    emit(event) {
+      last = event;
+      for (const l of [...listeners]) l(event);
+    },
+    watch(fn) {
+      if (!fn) return;
+      listeners.add(fn);
+      if (last) fn(last);
+    },
+  };
+}
+
 export function makoData(options = {}) {
   return {
     name: "mako-data",
@@ -216,7 +264,7 @@ export function makoData(options = {}) {
       // edge's 524 — is retried with backoff until the overall deadline; only
       // a definitive 4xx (the job is gone, access was revoked) ends the wait.
       const isTransient = (status) => status === 429 || status >= 500;
-      async function awaitJob(name, jobId) {
+      async function awaitJob(name, jobId, onPhase) {
         const url = `${appBase()}/binding-jobs/${encodeURIComponent(jobId)}`;
         const deadline = Date.now() + buildTimeoutMs;
         let wait = pollMs;
@@ -232,6 +280,14 @@ export function makoData(options = {}) {
             const body = await res.json().catch(() => ({}));
             if (res.ok) {
               if (body.status === "ready") return body;
+              // The job row carries the worker's phase (binding-jobs.ts).
+              if (onPhase && body.status !== "error") {
+                onPhase({
+                  phase: body.phase ?? (body.status === "queued" ? "queued" : "checking"),
+                  ...(typeof body.rowsWritten === "number" ? { rowsWritten: body.rowsWritten } : {}),
+                  ...(typeof body.bytes === "number" ? { bytes: body.bytes } : {}),
+                });
+              }
               if (body.status === "error") {
                 const error = new Error(body.error || `build ${name} failed`);
                 error.status = body.errorStatus ?? 502;
@@ -272,13 +328,13 @@ export function makoData(options = {}) {
       }
       // POST …/materialize, asynchronously when the API supports it.
       // Resolves to the materialize answer ({ rowCount, byteSize, materializedAt }).
-      async function materialize(name) {
+      async function materialize(name, onPhase) {
         const res = await apiFetch(
           `${appBase()}/bindings/${encodeURIComponent(name)}/materialize?async=1`,
           { method: "POST", headers: await headers() },
         );
         const body = await res.json().catch(() => ({}));
-        if (res.status === 202 && body.jobId) return awaitJob(name, body.jobId);
+        if (res.status === 202 && body.jobId) return awaitJob(name, body.jobId, onPhase);
         if (!res.ok) {
           const error = new Error(body.error || `materialize ${name}: HTTP ${res.status}`);
           error.status = res.status;
@@ -287,12 +343,12 @@ export function makoData(options = {}) {
         return body;
       }
 
-      async function fetchArtifact(name) {
+      async function fetchArtifact(name, onPhase) {
         const url = `${appBase()}/bindings/${encodeURIComponent(name)}/artifact`;
         let res = await apiFetch(url, { headers: await headers() });
         if (res.status === 404 && options.materialize !== false) {
           // Never materialized (or a live binding): build it now, then read.
-          await materialize(name);
+          await materialize(name, onPhase);
           res = await apiFetch(url, { headers: await headers() });
         }
         if (!res.ok) {
@@ -352,11 +408,15 @@ export function makoData(options = {}) {
 
       // Build the LOCAL binding text through the API. Concurrent asks for the
       // same text share one request (a page mounting several tables at once).
-      function devBuild(name, source, refresh) {
+      function devBuild(name, source, refresh, onPhase) {
         const fingerprint = bindingFingerprint(source, ctx.dbtEnvironment);
         const key = `${name}:${fingerprint}:${refresh ? 1 : 0}`;
         let pending = inflight.get(key);
-        if (pending) return pending;
+        if (pending) {
+          pending.hub.watch(onPhase);
+          return pending;
+        }
+        const hub = phaseHub(onPhase);
         pending = (async () => {
           const res = await apiFetch(`${appBase()}/bindings/${encodeURIComponent(name)}/dev-build`, {
             method: "POST",
@@ -372,7 +432,7 @@ export function makoData(options = {}) {
           if (res.status === 202) {
             const queued = await res.json().catch(() => ({}));
             if (!queued.jobId) throw new Error(`build ${name}: HTTP 202 without a job id`);
-            jobDone = await awaitJob(name, queued.jobId);
+            jobDone = await awaitJob(name, queued.jobId, hub.emit);
           }
           if (!jobDone && !res.ok) {
             const text = await res.text().catch(() => "");
@@ -427,17 +487,47 @@ export function makoData(options = {}) {
           writeCache(name, buf, meta);
           return { buf, meta };
         })().finally(() => inflight.delete(key));
+        pending.hub = hub;
         inflight.set(key, pending);
         return pending;
+      }
+
+      // Bytes a phase stream just built, handed to the page's follow-up GET
+      // (`?take=<id>`) once, so that GET never builds again — whatever
+      // revalidateMs says, and also when the bytes are a stale fallback.
+      const takes = new Map();
+      function keepForTake(buf) {
+        const id = createHash("sha256").update(String(Math.random()) + Date.now()).digest("hex").slice(0, 16);
+        takes.set(id, buf);
+        setTimeout(() => takes.delete(id), 60_000).unref?.();
+        return id;
       }
 
       // POST __data/<name>/refresh — the SDK's refresh(): rebuild the LOCAL
       // binding through the API (the committed one is re-materialized and
       // stored, an edited one is built as a draft), and cache what came back.
-      async function refreshBinding(name, res) {
+      async function refreshBinding(name, req, res) {
         const source = options.materialize === false || devBuildUnsupported ? null : readSource(name);
+        const stream = wantsProgress(req) ? progressStream(res) : null;
+        if (stream) {
+          stream.emit({ phase: "checking" });
+          // The same answers as below, as the stream's terminal event.
+          res = {
+            code: 200,
+            set statusCode(code) {
+              this.code = code;
+            },
+            setHeader() {},
+            end(text) {
+              const body = JSON.parse(text);
+              const ok = this.code >= 200 && this.code < 300;
+              stream.end({ ...body, phase: ok ? "ready" : "failed", ...(ok ? {} : { status: this.code }) });
+            },
+          };
+        }
+        const onPhase = stream ? stream.emit : undefined;
         try {
-          const built = source === null ? null : await devBuild(name, source, true);
+          const built = source === null ? null : await devBuild(name, source, true, onPhase);
           if (built) {
             return json(res, 200, {
               success: true,
@@ -450,7 +540,7 @@ export function makoData(options = {}) {
           }
           let body;
           try {
-            body = await materialize(name);
+            body = await materialize(name, onPhase);
           } catch (error) {
             return json(res, error?.status ?? 502, {
               success: false,
@@ -512,7 +602,16 @@ export function makoData(options = {}) {
             hint: "Run `mako login` in this repo, or put MAKO_API_URL and MAKO_API_KEY in the repo's .env (see AGENTS.md).",
           });
         }
-        if (isRefresh) return refreshBinding(name, res);
+        if (isRefresh) return refreshBinding(name, req, res);
+        const take = /(^|&)take=([0-9a-f]{16})(&|$)/.exec(query);
+        if (take && takes.has(take[2])) {
+          const buf = takes.get(take[2]);
+          takes.delete(take[2]);
+          res.setHeader("content-type", "application/vnd.apache.parquet");
+          res.setHeader("content-length", String(buf.length));
+          res.setHeader("x-mako-data", "api");
+          return res.end(buf);
+        }
         const cached = cachePath(name);
         const refresh = /(^|&)refresh(=|&|$)/.test(query);
         const source = options.materialize === false || devBuildUnsupported ? null : readSource(name);
@@ -527,15 +626,30 @@ export function makoData(options = {}) {
           res.setHeader("x-mako-data", how);
           return fs.createReadStream(cached).pipe(res);
         };
+        // A build is about to happen: a page that asked hears its phases,
+        // then a "ready" whose url takes the bytes (keepForTake).
+        let stream = null;
         try {
           const stat = fs.statSync(cached, { throwIfNoEntry: false });
           const fresh = stat && Date.now() - stat.mtimeMs < revalidateMs;
           if (!refresh && fresh && cacheMatches()) return serveCached("cache");
+          if (wantsProgress(req)) {
+            stream = progressStream(res);
+            stream.emit({ phase: "checking" });
+          }
+          const onPhase = stream ? stream.emit : undefined;
           let buf = null;
-          if (source !== null) buf = (await devBuild(name, source, false))?.buf ?? null;
+          if (source !== null) buf = (await devBuild(name, source, false, onPhase))?.buf ?? null;
           if (!buf) {
-            buf = await fetchArtifact(name);
+            buf = await fetchArtifact(name, onPhase);
             writeCache(name, buf, null);
+          }
+          if (stream) {
+            return stream.end({
+              phase: "ready",
+              binding: name,
+              url: `__data/${encodeURIComponent(name)}.parquet?take=${keepForTake(buf)}`,
+            });
           }
           res.setHeader("content-type", "application/vnd.apache.parquet");
           res.setHeader("content-length", String(buf.length));
@@ -546,7 +660,20 @@ export function makoData(options = {}) {
           server.config.logger.error(`  mako-data: ${message}`);
           // Stale beats nothing while offline — but only data built from THIS
           // text; an old query's parquet is not a stale copy of a new one.
-          if (fs.existsSync(cached) && cacheMatches()) return serveCached("stale");
+          const stale = fs.existsSync(cached) && cacheMatches();
+          if (stream) {
+            return stream.end(
+              stale
+                ? {
+                    phase: "ready",
+                    binding: name,
+                    stale: true,
+                    url: `__data/${encodeURIComponent(name)}.parquet?take=${keepForTake(fs.readFileSync(cached))}`,
+                  }
+                : { phase: "failed", status: error?.status ?? 502, error: message },
+            );
+          }
+          if (stale) return serveCached("stale");
           json(res, error?.status ?? 502, { error: message });
         }
       });

@@ -41,7 +41,7 @@ function fakeServer(root) {
   };
 }
 
-function request(handler, url, method) {
+function request(handler, url, method, headers = {}) {
   return new Promise(resolve => {
     const chunks = [];
     const res = {
@@ -55,7 +55,7 @@ function request(handler, url, method) {
     // createReadStream(...).pipe(res) support
     res.pipe = undefined;
     const next = () => resolve({ status: "next" });
-    handler({ url, method }, res, next);
+    handler({ url, method, headers }, res, next);
   });
 }
 
@@ -342,7 +342,7 @@ test("refresh against an older API (JSON 404) falls back to materialize", async 
 
 // A fake API that answers dev-build with a job (202) and makes the caller
 // poll it `pending` times before it is ready.
-function jobApi(calls, { pending = 2, fail } = {}) {
+function jobApi(calls, { pending = 2, fail, phases } = {}) {
   let polls = 0;
   return async (url, init = {}) => {
     const u = String(url);
@@ -352,7 +352,11 @@ function jobApi(calls, { pending = 2, fail } = {}) {
     }
     if (u.endsWith("/binding-jobs/j1")) {
       polls++;
-      if (polls <= pending) return new Response(JSON.stringify({ success: true, jobId: "j1", status: "running" }));
+      if (polls <= pending) {
+        return new Response(
+          JSON.stringify({ success: true, jobId: "j1", status: "running", ...(phases?.[polls - 1] ?? {}) }),
+        );
+      }
       if (fail) {
         return new Response(
           JSON.stringify({ success: true, jobId: "j1", status: "error", error: fail, errorStatus: 502 }),
@@ -587,6 +591,86 @@ test("refresh relays the API's refusal with its message", async () => {
       success: false,
       error: "You have read-only access to this app.",
     });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+const NDJSON = { accept: "application/x-ndjson, */*;q=0.5" };
+const lines = r => r.body.toString().trim().split("\n").map(l => JSON.parse(l));
+
+test("a page that asks for phases hears the job's, then takes the bytes once", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi(calls, {
+    phases: [{ phase: "querying_warehouse" }, { phase: "writing_parquet", rowsWritten: 5000 }],
+  });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales.parquet", "GET", NDJSON);
+    assert.equal(r.headers["content-type"], "application/x-ndjson");
+    const events = lines(r);
+    assert.deepEqual(events.map(e => e.phase), ["checking", "querying_warehouse", "writing_parquet", "ready"]);
+    assert.equal(events[2].rowsWritten, 5000);
+    const take = events[3].url;
+    assert.match(take, /^__data\/sales\.parquet\?take=[0-9a-f]{16}$/);
+    // The follow-up GET is the bytes just built, never another build.
+    const before = calls.length;
+    const bytes = await request(handlers[0], "/" + take);
+    assert.equal(bytes.body.toString(), "PAR1:job");
+    assert.equal(calls.length, before);
+    // A take is good once.
+    globalThis.fetch = async () => new Response("unexpected", { status: 500 });
+    const again = await request(handlers[0], "/" + take);
+    assert.equal(again.headers["x-mako-data"], "cache");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a cached binding answers bytes even when the page asks for phases", async () => {
+  const { app } = repo();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi([], { pending: 0 });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    await request(handlers[0], "/__data/sales.parquet");
+    const r = await request(handlers[0], "/__data/sales.parquet", "GET", NDJSON);
+    assert.equal(r.headers["content-type"], "application/vnd.apache.parquet");
+    assert.equal(r.headers["x-mako-data"], "cache");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("refresh with phases ends in ready with the refresh answer, or failed with its status", async () => {
+  const { app } = repo();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jobApi([], { pending: 1, phases: [{ phase: "uploading", rowsWritten: 12, bytes: 9 }] });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST", NDJSON);
+    const events = lines(r);
+    assert.deepEqual(events.map(e => e.phase), ["checking", "uploading", "ready"]);
+    assert.equal(events[2].success, true);
+    assert.equal(events[2].materializedAt, "2026-09-28T11:00:00.000Z");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  globalThis.fetch = jobApi([], { pending: 0, fail: "Syntax error at line 3" });
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ pollIntervalMs: 1 }).configureServer(server);
+    const r = await request(handlers[0], "/__data/sales/refresh", "POST", NDJSON);
+    const events = lines(r);
+    const last = events[events.length - 1];
+    assert.equal(last.phase, "failed");
+    assert.equal(last.status, 502);
+    assert.match(last.error, /Syntax error/);
   } finally {
     globalThis.fetch = realFetch;
   }
