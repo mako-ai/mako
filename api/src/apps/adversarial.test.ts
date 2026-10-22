@@ -899,3 +899,118 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     );
   }, 60_000);
 });
+
+describe("a personal app's row is its owner's alone", () => {
+  // A folder under users/<handle>/apps with no row yet (never published, or a
+  // creation rolled back after its push) used to get its row on the first
+  // sharing-route call, owned by WHOEVER made that call: any member could open
+  // another member's private app, add themselves as owner and share it.
+  const setup = async (files: Record<string, string>) => {
+    const { initRepo, repoDirFor } = await import("./repository.service");
+    const { WorkspaceUserHandle } = await import("../database/workspace-schema");
+    const { invalidateOwnerDirectory } = await import("./user-handles.service");
+    const ws = new Types.ObjectId().toString();
+    const owner = new Types.ObjectId().toString();
+    await WorkspaceUserHandle.create({
+      workspaceId: new Types.ObjectId(ws),
+      userId: owner,
+      handle: "carol",
+    });
+    invalidateOwnerDirectory();
+    await initRepo(repoDirFor(ws), files);
+    await bindTestWorkspaceRepo(ws);
+    return { ws, owner };
+  };
+
+  it("another member's act creates the row for the folder's owner, private, unshareable by them", async () => {
+    const { synthesizeProjectFromFolder, ensureProjectRow } = await import(
+      "./worktree.service"
+    );
+    const { canManageSharing, canReadResource } = await import(
+      "../utils/resource-acl"
+    );
+    const { ws, owner } = await setup({
+      "users/carol/apps/secret/mako.json": JSON.stringify({ title: "Secret" }),
+    });
+    const synth = await synthesizeProjectFromFolder(
+      ws,
+      "users/carol/apps/secret",
+    );
+    expect(synth?.access).toBe("private");
+
+    const intruder = new Types.ObjectId().toString();
+    const row = await ensureProjectRow(synth!, intruder);
+    expect(row.owner_id).toBe(owner);
+    expect(row.createdBy).toBe(owner);
+    expect(row.access).toBe("private");
+    // Not even a workspace admin may share or read it.
+    expect(canManageSharing(row, intruder, "admin")).toBe(false);
+    expect(canReadResource(row, intruder, "admin")).toBe(false);
+    expect(canManageSharing(row, owner, "member")).toBe(true);
+  }, 60_000);
+
+  it("a push-deployed (ownerless) personal row goes to its owner, never to the first caller", async () => {
+    const { synthesizeProjectFromFolder, ensureProjectRow, PUBLISH_ACTOR } =
+      await import("./worktree.service");
+    const { AppProject } = await import("../database/workspace-schema");
+    const { ws, owner } = await setup({
+      "users/carol/apps/pushed/mako.json": JSON.stringify({ title: "Pushed" }),
+    });
+    const synth = await synthesizeProjectFromFolder(
+      ws,
+      "users/carol/apps/pushed",
+    );
+    // An ownerless row as the push-deploy worker used to leave it.
+    await AppProject.create({
+      _id: synth!._id,
+      workspaceId: synth!.workspaceId,
+      title: synth!.title,
+      slug: synth!.slug,
+      path: synth!.path,
+      access: "private",
+      createdBy: "",
+      defaultBranch: "main",
+    });
+    const intruder = new Types.ObjectId().toString();
+    expect((await ensureProjectRow(synth!, intruder)).owner_id).toBe(owner);
+    expect((await ensureProjectRow(synth!, PUBLISH_ACTOR)).owner_id).toBe(
+      owner,
+    );
+    expect((await AppProject.findOne({ _id: synth!._id }))?.owner_id).toBe(
+      owner,
+    );
+  }, 60_000);
+
+  it("a personal folder whose handle nobody holds stays ownerless and unclaimable", async () => {
+    const { synthesizeProjectFromFolder, ensureProjectRow } = await import(
+      "./worktree.service"
+    );
+    const { ws } = await setup({
+      "users/nobody/apps/orphan/mako.json": JSON.stringify({ title: "Orphan" }),
+    });
+    const synth = await synthesizeProjectFromFolder(
+      ws,
+      "users/nobody/apps/orphan",
+    );
+    if (!synth) return; // the index may not list a tree nobody owns: nothing to claim
+    const intruder = new Types.ObjectId().toString();
+    const row = await ensureProjectRow(synth, intruder);
+    expect(row.owner_id ?? undefined).toBeUndefined();
+    expect(row.createdBy || undefined).toBeUndefined();
+    expect(row.access).toBe("private");
+  }, 60_000);
+
+  it("workspace-tree apps keep going to the acting person", async () => {
+    const { synthesizeProjectFromFolder, ensureProjectRow } = await import(
+      "./worktree.service"
+    );
+    const { ws } = await setup({
+      "apps/shared/mako.json": JSON.stringify({ title: "Shared" }),
+    });
+    const synth = await synthesizeProjectFromFolder(ws, "shared");
+    const actor = new Types.ObjectId().toString();
+    const row = await ensureProjectRow(synth!, actor);
+    expect(row.owner_id).toBe(actor);
+    expect(row.access).toBe("workspace");
+  }, 60_000);
+});

@@ -3274,7 +3274,16 @@ export async function ensureProjectRow(
   // ownerless; otherwise the auto-deploy of every repo-imported folder would
   // stamp the literal "publish" as owner_id, nobody could ever restrict or
   // share it, and a private access setting would lock out even admins.
-  const owner = isUserActor(actorId) ? actorId : undefined;
+  const actor = isUserActor(actorId) ? actorId : undefined;
+  // A folder under users/<handle>/apps is its owner's alone (§29): its row is
+  // theirs whoever's action creates it, and nobody else ever claims it. The
+  // owner is the handle mapping's answer for the folder, never the caller —
+  // otherwise any member reaching a sharing route of a row-less personal app
+  // (never published, or a creation rolled back after its push) became its
+  // owner, then shared it. A segment the mapping does not know is nobody's:
+  // the row stays ownerless and unclaimable.
+  const personal = await personalTreeOwner(project);
+  const owner = personal ? personal.ownerId : actor;
   const existing = await AppProject.findOne({
     _id: project._id,
     workspaceId: project.workspaceId,
@@ -3308,7 +3317,7 @@ export async function ensureProjectRow(
       slug: project.slug,
       path: project.path ?? appRootFor(project),
       description: project.description,
-      access: project.access ?? "workspace",
+      access: personal ? "private" : (project.access ?? "workspace"),
       createdBy: project.createdBy || owner || "",
       ...(owner ? { owner_id: owner } : {}),
       defaultBranch: project.defaultBranch || DEFAULT_BRANCH,
@@ -3321,6 +3330,20 @@ export async function ensureProjectRow(
     if (winner) return winner;
     throw new Error("Could not persist the app's project row");
   }
+}
+
+/**
+ * For an app in a personal tree (`users/<handle>/apps/…`): its owner by the
+ * workspace's handle mapping (undefined when the segment is nobody's). Null
+ * for a workspace-tree app, whose row keeps going to the acting person.
+ */
+async function personalTreeOwner(
+  project: IAppProject,
+): Promise<{ ownerId: string | undefined } | null> {
+  const location = parseAppRepoPath(appRootFor(project));
+  if (location?.scope !== "private") return null;
+  const directory = await loadOwnerDirectory(project.workspaceId.toString());
+  return { ownerId: directory.ownerOf(location.ownerHandle) ?? undefined };
 }
 
 /**
