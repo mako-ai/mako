@@ -29,8 +29,14 @@ const h = vi.hoisted(() => {
     fetchOneSourceConnection: vi.fn(),
     closeSourceConnectionTabsFor: vi.fn(),
     focusAppsTab: vi.fn(),
+    closeAppsTabsFor: vi.fn(),
     fetchApps: vi.fn().mockResolvedValue(undefined),
+    fetchViewUrl: vi.fn().mockResolvedValue(undefined),
     apps: [{ id: "app1", slug: "seller-media", title: "Seller Media" }],
+    appsState: {
+      apps: [] as Array<{ id: string; slug: string; title: string }>,
+      appsCacheByWorkspace: {} as Record<string, unknown[]>,
+    },
     consoleState,
     useConsoleStore: Object.assign(
       (selector: (s: typeof consoleState) => unknown) => selector(consoleState),
@@ -85,12 +91,15 @@ vi.mock("../dbt-runtime/shell", () => ({
 }));
 
 vi.mock("../apps-runtime/shell", () => ({
-  closeAppsTabsFor: vi.fn(),
+  closeAppsTabsFor: (...args: unknown[]) => h.closeAppsTabsFor(...args),
   focusAppsFileTab: vi.fn(),
   focusAppsTab: (...args: unknown[]) => h.focusAppsTab(...args),
 }));
 vi.mock("../store/appsStore", () => {
-  const state = { fetchApps: h.fetchApps, apps: h.apps };
+  const state = Object.assign(h.appsState, {
+    fetchApps: h.fetchApps,
+    fetchViewUrl: h.fetchViewUrl,
+  });
   return {
     useAppsStore: Object.assign(
       (selector: (s: typeof state) => unknown) => selector(state),
@@ -112,6 +121,100 @@ describe("UrlSync hydration", () => {
     vi.clearAllMocks();
     h.consoleState.activeTabId = null;
     h.consoleState.tabs = {};
+    // A first visit: nothing cached, GET /apps brings the list.
+    h.appsState.apps = [];
+    h.appsState.appsCacheByWorkspace = {};
+    h.fetchApps.mockImplementation(async () => {
+      h.appsState.apps = h.apps;
+    });
+  });
+
+  it("asks for the view token in parallel with GET /apps, by the link's ref", async () => {
+    let finishList: () => void = () => undefined;
+    h.fetchApps.mockImplementation(
+      () =>
+        new Promise<void>(resolve => {
+          finishList = () => {
+            h.appsState.apps = h.apps;
+            resolve();
+          };
+        }),
+    );
+    window.history.replaceState({}, "", "/apps/seller-media");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.fetchViewUrl).toHaveBeenCalledWith("ws1", "seller-media", {
+        speculative: true,
+      }),
+    );
+    // The list is still loading: no tab yet, the token is already asked for.
+    expect(h.focusAppsTab).not.toHaveBeenCalled();
+    finishList();
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "app1",
+        "Seller Media",
+        "seller-media",
+        "",
+      ),
+    );
+  });
+
+  it("opens a returning visitor's app from the cached list before GET /apps answers", async () => {
+    h.appsState.appsCacheByWorkspace = { ws1: h.apps };
+    h.fetchApps.mockImplementation(() => new Promise<void>(() => undefined));
+    window.history.replaceState({}, "", "/apps/seller-media");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenCalledWith(
+        "app1",
+        "Seller Media",
+        "seller-media",
+        "",
+      ),
+    );
+    // By id: the server answers an id from the app's row, without git.
+    expect(h.fetchViewUrl).toHaveBeenCalledWith("ws1", "app1", {
+      speculative: true,
+    });
+  });
+
+  it("follows the fresh list when the cache named a different app", async () => {
+    h.appsState.appsCacheByWorkspace = {
+      ws1: [{ id: "old", slug: "seller-media", title: "Old Seller Media" }],
+    };
+    window.history.replaceState({}, "", "/apps/seller-media");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.focusAppsTab).toHaveBeenLastCalledWith(
+        "app1",
+        "Seller Media",
+        "seller-media",
+        "",
+      ),
+    );
+    expect(h.focusAppsTab).toHaveBeenCalledTimes(2);
+  });
+
+  it("still clears a dead app link once the fresh list lacks it", async () => {
+    h.fetchApps.mockImplementation(async () => {
+      h.appsState.apps = [];
+    });
+    window.history.replaceState({}, "", "/apps/gone-app");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.closeAppsTabsFor).toHaveBeenCalledWith("gone-app"),
+    );
+    expect(h.focusAppsTab).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/");
   });
 
   /**

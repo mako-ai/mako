@@ -19,7 +19,7 @@ describe("apps workbench never heals (apps.md §13.9)", () => {
   it("restores the view on mount without starting a dev server", () => {
     const start = src.indexOf("// Derive the workbench view from BOX TRUTH");
     expect(start).toBeGreaterThan(-1);
-    const end = src.indexOf("}, [appId, workspaceId]);", start);
+    const end = src.indexOf("}, [appId, workspaceId, repoReadsReady]);", start);
     expect(end).toBeGreaterThan(start);
     // Strip comments first: the effect DESCRIBES the old bug in prose, so we
     // must assert on actual code, not the word appearing in an explanation.

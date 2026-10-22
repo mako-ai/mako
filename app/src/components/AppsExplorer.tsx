@@ -125,6 +125,7 @@ import {
   focusAppsHomeTab,
   focusAppsTab,
 } from "../apps-runtime/shell";
+import { whenAppOpenSettled } from "../lib/app-open-gate";
 
 const AppIcon = TAB_KIND_ICONS["app"];
 const AppsHomeIcon = TAB_KIND_ICONS["apps-home"];
@@ -402,12 +403,19 @@ export default function AppsExplorer() {
   const appsLoaded = apps.length > 0;
   useEffect(() => {
     if (!workspaceId || !appsLoaded) return;
-    void fetchRunningDevApps(workspaceId);
+    // A sandbox round trip (4.8 s on prod): not ahead of the app being opened.
+    let cancelled = false;
+    void whenAppOpenSettled().then(() => {
+      if (!cancelled) void fetchRunningDevApps(workspaceId);
+    });
     const timer = setInterval(
       () => void fetchRunningDevApps(workspaceId),
       30_000,
     );
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [workspaceId, appsLoaded, fetchRunningDevApps]);
 
   const appById = useMemo(() => new Map(apps.map(a => [a.id, a])), [apps]);

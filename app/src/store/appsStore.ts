@@ -384,6 +384,15 @@ interface AppsStore {
    * request used to fall through to.
    */
   viewUrlErrorByApp: Record<string, LoadError | undefined>;
+  /**
+   * What each view URL was minted for: the published commit and when the
+   * token expires. Lets an app that opens with a token already in hand (a
+   * prefetch, a remounted tab) use it instead of asking again.
+   */
+  viewTokenByApp: Record<
+    string,
+    { sha: string; expiresAt: number } | undefined
+  >;
   historyByApp: Record<string, AppCommit[]>;
   /** The published chip's context: commit, age, what main has that is not live. */
   publishStateByApp: Record<string, AppPublishState | undefined>;
@@ -534,8 +543,21 @@ interface AppsStore {
   refreshAppIfStale: (workspaceId: string, appId: string) => void;
   /** Mark every loaded app stale — a workspace-wide change touched them all. */
   markAllAppsStale: () => void;
-  /** Fetch (or refresh) the cookie-free URL for an app's published build. */
-  fetchViewUrl: (workspaceId: string, appId: string) => Promise<void>;
+  /**
+   * Fetch (or refresh) the cookie-free URL for an app's published build.
+   *
+   * `ref` is the app's id, or — for a prefetch before the app list has
+   * loaded — whatever the address bar names (a slug); the answer is filed
+   * under the app id the server resolved. `reuseFresh` joins a request in
+   * flight and keeps a token minted for the current publish with minutes to
+   * spare. `speculative` records nothing on failure: a prefetch for an app
+   * that turns out unpublished must not paint an error.
+   */
+  fetchViewUrl: (
+    workspaceId: string,
+    ref: string,
+    options?: { reuseFresh?: boolean; speculative?: boolean },
+  ) => Promise<void>;
   /** Enter or leave edit mode for an app (see `editingByApp`). */
   setEditing: (workspaceId: string, appId: string, editing: boolean) => void;
   /**
@@ -718,6 +740,14 @@ const appsListFetches = new Map<
   { run: Promise<void>; again: Promise<void> | null }
 >();
 
+/**
+ * View-token requests in flight, by `${workspaceId}:${ref}`. Browser-local by
+ * nature (one tab's own requests); the server keeps no state for them.
+ */
+const viewTokenRequests = new Map<string, Promise<void>>();
+/** A held token is reused only with this much of its 30 minutes left. */
+const VIEW_TOKEN_REUSE_MARGIN_MS = 5 * 60 * 1000;
+
 export const useAppsStore = create<AppsStore>()(
   persist(
     immer((set, get) => ({
@@ -738,6 +768,7 @@ export const useAppsStore = create<AppsStore>()(
       editingByApp: {},
       viewUrlByApp: {},
       viewUrlErrorByApp: {},
+      viewTokenByApp: {},
       historyByApp: {},
       publishStateByApp: {},
       commitFilesByApp: {},
@@ -1495,37 +1526,80 @@ export const useAppsStore = create<AppsStore>()(
         }
       },
 
-      fetchViewUrl: async (workspaceId, appId) => {
+      fetchViewUrl: async (workspaceId, ref, options = {}) => {
+        if (options.reuseFresh) {
+          // A prefetch (UrlSync asks by slug the moment the address bar
+          // names an app, in parallel with GET /apps) may already be on its
+          // way; its answer is filed under the id this caller knows.
+          const pending = [...viewTokenRequests.entries()]
+            .filter(([key]) => key.startsWith(`${workspaceId}:`))
+            .map(([, request]) => request);
+          if (pending.length) await Promise.allSettled(pending);
+          const state = get();
+          const held = state.viewTokenByApp[ref];
+          const publishedSha = state.apps.find(a => a.id === ref)?.publishedSha;
+          if (
+            held &&
+            state.viewUrlByApp[ref] &&
+            (!publishedSha || held.sha === publishedSha) &&
+            held.expiresAt - Date.now() > VIEW_TOKEN_REUSE_MARGIN_MS
+          ) {
+            return;
+          }
+        }
         // A retry reads as loading again, not as the old error.
-        if (get().viewUrlErrorByApp[appId]) {
+        if (!options.speculative && get().viewUrlErrorByApp[ref]) {
           set(s => {
-            s.viewUrlErrorByApp[appId] = undefined;
+            s.viewUrlErrorByApp[ref] = undefined;
           });
         }
+        const key = `${workspaceId}:${ref}`;
+        const request = (async () => {
+          try {
+            const body = unwrapBody(
+              await api.POST(
+                "/api/workspaces/{workspaceId}/apps/{id}/view-token",
+                {
+                  params: { path: { workspaceId, id: ref } },
+                },
+              ),
+            ) as {
+              url?: string;
+              sha?: string;
+              expiresAt?: number;
+              appId?: string;
+            };
+            const appId = body.appId ?? ref;
+            set(s => {
+              s.viewUrlByApp[appId] = body.url;
+              s.viewUrlErrorByApp[appId] = undefined;
+              s.viewTokenByApp[appId] =
+                body.sha && body.expiresAt
+                  ? { sha: body.sha, expiresAt: body.expiresAt }
+                  : undefined;
+            });
+          } catch (e) {
+            if (options.speculative) return;
+            // Not published, or the token could not be minted. The workspace
+            // shows the error for a published app and its "nothing to view
+            // yet" state otherwise — never a broken frame.
+            set(s => {
+              s.viewUrlByApp[ref] = undefined;
+              s.viewTokenByApp[ref] = undefined;
+              s.viewUrlErrorByApp[ref] = toLoadError(
+                e,
+                "The published app could not be opened.",
+              );
+            });
+          }
+        })();
+        viewTokenRequests.set(key, request);
         try {
-          const body = unwrapBody(
-            await api.POST(
-              "/api/workspaces/{workspaceId}/apps/{id}/view-token",
-              {
-                params: { path: { workspaceId, id: appId } },
-              },
-            ),
-          ) as { url?: string };
-          set(s => {
-            s.viewUrlByApp[appId] = body.url;
-            s.viewUrlErrorByApp[appId] = undefined;
-          });
-        } catch (e) {
-          // Not published, or the token could not be minted. The workspace
-          // shows the error for a published app and its "nothing to view
-          // yet" state otherwise — never a broken frame.
-          set(s => {
-            s.viewUrlByApp[appId] = undefined;
-            s.viewUrlErrorByApp[appId] = toLoadError(
-              e,
-              "The published app could not be opened.",
-            );
-          });
+          await request;
+        } finally {
+          if (viewTokenRequests.get(key) === request) {
+            viewTokenRequests.delete(key);
+          }
         }
       },
 

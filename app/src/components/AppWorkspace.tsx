@@ -74,6 +74,12 @@ import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
 import ShareDialog from "./ShareDialog";
 import { appViewerPath } from "../store/shareStore";
+import {
+  APP_OPEN_FALLBACK_MS,
+  appTabReadsReady,
+  isAwaitingPublishedPaint,
+  settleAppOpen,
+} from "../lib/app-open-gate";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -1220,8 +1226,48 @@ export default function AppWorkspace({
   // Until that probe answers, an unpublished app is not yet "never built":
   // it may be about to open its running dev server instead.
   const [devCheckedFor, setDevCheckedFor] = useState<string | null>(null);
+
+  // WHEN THIS TAB MAY READ THE REPO AND THE BOX.
+  //
+  // Files, status, branches and the dev-server probe are git- or
+  // sandbox-backed (3.4–3.7 s each on prod) and none is on screen while the
+  // published app opens. Fired on mount, by every app tab including the
+  // background ones, they queued on 1-vCPU instances in front of what the
+  // person was waiting for. So: the front tab only, once its published app
+  // has loaded (or after a fallback), and at once when nothing is loading —
+  // an unpublished app, the workbench, a dev server already serving. A
+  // background tab reads when it is brought to the front.
+  const awaitingPublishedPaint = isAwaitingPublishedPaint({
+    editing,
+    publishedSha,
+    pubLoaded,
+    devRunning,
+  });
+  const [paintWaitOver, setPaintWaitOver] = useState(false);
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!isFrontTab || !awaitingPublishedPaint) return;
+    const timer = setTimeout(
+      () => setPaintWaitOver(true),
+      APP_OPEN_FALLBACK_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [isFrontTab, awaitingPublishedPaint]);
+  const repoReadsReady = appTabReadsReady({
+    isFrontTab,
+    appKnown: !!app,
+    awaitingPublishedPaint,
+    waitOver: paintWaitOver,
+  });
+  // The page's other boot-time reads wait on the same moment (app-open-gate).
+  useEffect(() => {
+    if (isFrontTab && app && !awaitingPublishedPaint) settleAppOpen();
+  }, [isFrontTab, app, awaitingPublishedPaint]);
+
+  const devProbedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId || !repoReadsReady) return;
+    if (devProbedFor.current === appId) return;
+    devProbedFor.current = appId;
     void useAppsStore
       .getState()
       .checkDevStatus(workspaceId, appId)
@@ -1235,7 +1281,7 @@ export default function AppWorkspace({
     // Run once per app open; `editing` is deliberately not a dependency —
     // exiting dev mode clears it, and re-entering here would fight it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appId, workspaceId]);
+  }, [appId, workspaceId, repoReadsReady]);
 
   // Entering edit mode is "modifying the content" for an app tab: it pins
   // the tab (consoleStore's preview invariant), so a workbench with a dev
@@ -1249,7 +1295,9 @@ export default function AppWorkspace({
   // is opened for viewing and again whenever a publish moves the app on.
   useEffect(() => {
     if (!editing && app?.publishedSha && workspaceId) {
-      void fetchViewUrl(workspaceId, appId);
+      // A token UrlSync prefetched, or one this tab already holds for this
+      // publish, is used as is.
+      void fetchViewUrl(workspaceId, appId, { reuseFresh: true });
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
   // Keep the tab's URL handle honest: a top-level app is addressed by its
@@ -1367,11 +1415,18 @@ export default function AppWorkspace({
   useEffect(() => {
     if (!workspaceId) return;
     if (!app) void fetchApps(workspaceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, appId]);
+  const repoReadFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId || !repoReadsReady) return;
+    if (repoReadFor.current === appId) return;
+    repoReadFor.current = appId;
     void fetchFiles(workspaceId, appId);
     void fetchStatus(workspaceId, appId);
     void fetchBranches(workspaceId, appId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, appId]);
+  }, [workspaceId, appId, repoReadsReady]);
 
   // Repo-wide, deliberately: one worktree serves every app in the monorepo, so
   // Discard throws away the repo-wide set and a branch switch has to get past
@@ -1705,15 +1760,33 @@ export default function AppWorkspace({
                   border: 0,
                   width: "100%",
                   height: "100%",
-                  // Held invisible until the bundle has loaded, so the
-                  // opening card hands straight over to the app instead of
-                  // to a blank white frame.
-                  opacity: pubLoaded ? 1 : 0,
-                  transition: "opacity 150ms ease",
+                  // Visible from the start, ABOVE the opening card. Until the
+                  // app's HTML paints, the frame is transparent and the card
+                  // shows through it; the app's own boot skeleton then
+                  // covers it the moment index.html parses. The frame used
+                  // to be held at opacity 0 until onLoad — after the whole
+                  // bundle — so that skeleton was never seen (5+ s of
+                  // "Opening…" on prod for a 0.5 s app).
+                  position: "relative",
+                  zIndex: 1,
+                  background: "transparent",
+                  // A frame whose color-scheme differs from its document's
+                  // gets an opaque canvas (white over a dark Mako), which
+                  // would hide the card before the app paints anything.
+                  colorScheme: "light",
                 }}
               />
               {!pubLoaded && (
-                <Box sx={{ position: "absolute", inset: 0, display: "flex" }}>
+                // Under the frame, and gone once it has loaded, so an app
+                // without a background never shows the card through it.
+                <Box
+                  sx={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    zIndex: 0,
+                  }}
+                >
                   <AppOpeningState title={app?.title} />
                 </Box>
               )}

@@ -238,7 +238,31 @@ export function UrlSync() {
       const appSearch = window.location.search;
       setLeftPane("apps");
       const store = useAppsStore.getState();
-      void store.fetchApps(currentWorkspace.id).then(() => {
+      // The persisted list from the last visit, if any. It names the app at
+      // once, so the token request and the tab need not wait for GET /apps
+      // (which, with the view token behind it, put two round trips end to
+      // end before the iframe could start). GET /apps below stays the truth.
+      const workspaceId = currentWorkspace.id;
+      const cachedApp = resolveAppRef(
+        store.appsCacheByWorkspace[workspaceId] ?? store.apps,
+        appId,
+      );
+      // By id when known — the server answers an id from the app's row
+      // alone — by the address bar's ref otherwise. Speculative: an
+      // unpublished or unknown app just has no token yet; the tab decides
+      // what to show and asks again itself if it needs to.
+      void store.fetchViewUrl(workspaceId, cachedApp?.id ?? appId, {
+        speculative: true,
+      });
+      if (cachedApp) {
+        focusAppsTab(
+          cachedApp.id,
+          cachedApp.title,
+          appUrlSlug(cachedApp),
+          appSearch,
+        );
+      }
+      void store.fetchApps(workspaceId).then(() => {
         // The path segment may be a slug (the app's folder in the repo) or a
         // legacy Mongo id. Resolve either; the outgoing sync then rewrites the
         // URL to the slug form, so old links upgrade themselves.
@@ -249,6 +273,8 @@ export function UrlSync() {
           // — breadcrumb, terminal, a live Publish button — around nothing,
           // and reloading restored the same dead id, so the page looked
           // permanently stuck. Clear it and fall back to the list instead.
+          // (A tab opened from the cache for a deleted app is already gone:
+          // fetchApps reconciles tabs against the fresh list.)
           closeAppsTabsFor(appId);
           window.history.replaceState(null, "", "/");
           setDeadLinkNotice(
@@ -256,6 +282,8 @@ export function UrlSync() {
           );
           return;
         }
+        // The cache named the same app: its tab is already open and front.
+        if (cachedApp?.id === app.id) return;
         focusAppsTab(app.id, app.title, appUrlSlug(app), appSearch);
       });
     } else if (dbtFileMatch) {

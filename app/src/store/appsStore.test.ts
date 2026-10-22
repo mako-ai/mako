@@ -48,6 +48,9 @@ vi.mock("../api", () => {
     unwrapBody: vi.fn((r: { data?: unknown }) => (r?.data ?? {}) as never),
     ApiError,
     toErrorMessage: (e: unknown) => String(e),
+    toLoadError: (e: unknown, fallback: string) => ({
+      message: e instanceof Error ? e.message : fallback,
+    }),
   };
 });
 vi.mock("../apps-runtime/shell", () => ({
@@ -56,7 +59,7 @@ vi.mock("../apps-runtime/shell", () => ({
   reconcileAppsTabs: vi.fn(),
 }));
 
-import { ApiError, unwrapBody } from "../api";
+import { ApiError, api, unwrapBody } from "../api";
 import { reconcileAppsTabs } from "../apps-runtime/shell";
 import { useAppsStore } from "./appsStore";
 import { useConsoleStore } from "./consoleStore";
@@ -253,5 +256,98 @@ describe("fetchApps on load", () => {
     ];
     await Promise.all([first, ...afterWrites]);
     expect(listCalls()).toBe(2);
+  });
+});
+
+describe("the view token", () => {
+  const APP = "6846e6a01b05af0948070999";
+  const SHA = "38ce8e7b28e8ace0c1d83bdacb95e28df3d5175b";
+  const tokenPosts = () =>
+    (vi.mocked(api.POST).mock.calls as unknown as Array<[string]>).filter(
+      ([path]) => path === "/api/workspaces/{workspaceId}/apps/{id}/view-token",
+    );
+  const answer = (sha = SHA, expiresAt = Date.now() + 30 * 60 * 1000) => ({
+    data: {
+      success: true,
+      url: `/api/apps-preview/tok-${sha.slice(0, 4)}/`,
+      sha,
+      expiresAt,
+      appId: APP,
+    },
+  });
+
+  beforeEach(() => {
+    vi.mocked(api.POST).mockReset();
+    useAppsStore.setState({
+      apps: [{ id: APP, slug: "renewals", publishedSha: SHA } as never],
+      viewUrlByApp: {},
+      viewUrlErrorByApp: {},
+      viewTokenByApp: {},
+    });
+  });
+
+  it("files a prefetch by slug under the app id, and the tab reuses it", async () => {
+    let release: () => void = () => undefined;
+    vi.mocked(api.POST).mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          release = () => resolve(answer() as never);
+        }) as never,
+    );
+    const prefetch = useAppsStore
+      .getState()
+      .fetchViewUrl(WS, "renewals", { speculative: true });
+    // The tab mounts while the prefetch is still in flight.
+    const tab = useAppsStore
+      .getState()
+      .fetchViewUrl(WS, APP, { reuseFresh: true });
+    release();
+    await Promise.all([prefetch, tab]);
+
+    expect(tokenPosts()).toHaveLength(1);
+    expect(useAppsStore.getState().viewUrlByApp[APP]).toBe(
+      "/api/apps-preview/tok-38ce/",
+    );
+  });
+
+  it("asks again once a publish moved the app past the held token", async () => {
+    vi.mocked(api.POST).mockResolvedValueOnce(answer() as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    useAppsStore.setState(s => {
+      (s.apps[0] as { publishedSha?: string }).publishedSha = "b".repeat(40);
+    });
+    vi.mocked(api.POST).mockResolvedValueOnce(answer("b".repeat(40)) as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP, { reuseFresh: true });
+    expect(tokenPosts()).toHaveLength(2);
+    expect(useAppsStore.getState().viewUrlByApp[APP]).toBe(
+      "/api/apps-preview/tok-bbbb/",
+    );
+  });
+
+  it("asks again when the held token is close to expiry", async () => {
+    vi.mocked(api.POST).mockResolvedValueOnce(
+      answer(SHA, Date.now() + 60 * 1000) as never,
+    );
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    vi.mocked(api.POST).mockResolvedValueOnce(answer() as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP, { reuseFresh: true });
+    expect(tokenPosts()).toHaveLength(2);
+  });
+
+  it("always asks when the caller did not opt into reuse (publish, retry)", async () => {
+    vi.mocked(api.POST).mockResolvedValue(answer() as never);
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    await useAppsStore.getState().fetchViewUrl(WS, APP);
+    expect(tokenPosts()).toHaveLength(2);
+  });
+
+  it("records no error for a failed prefetch, but does for the tab's own ask", async () => {
+    vi.mocked(api.POST).mockRejectedValue(new ApiError("nope", 404) as never);
+    await useAppsStore
+      .getState()
+      .fetchViewUrl(WS, "renewals", { speculative: true });
+    expect(useAppsStore.getState().viewUrlErrorByApp.renewals).toBeUndefined();
+    await useAppsStore.getState().fetchViewUrl(WS, APP, { reuseFresh: true });
+    expect(useAppsStore.getState().viewUrlErrorByApp[APP]).toBeDefined();
   });
 });

@@ -98,6 +98,20 @@ afterAll(async () => {
   vi.unstubAllEnvs();
 });
 
+interface TokenBody {
+  success: boolean;
+  token: string;
+  url: string;
+  sha: string;
+  expiresAt: number;
+  appId: string;
+  error?: string;
+}
+
+async function json(response: Response): Promise<TokenBody> {
+  return (await response.json()) as TokenBody;
+}
+
 function viewToken(ref: string) {
   return app.request(`/api/workspaces/${workspaceId}/apps/${ref}/view-token`, {
     method: "POST",
@@ -109,7 +123,7 @@ describe("view token", () => {
     const before = Date.now();
     const response = await viewToken(published._id.toString());
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const body = await json(response);
     expect(resolver.resolveProjectRef).not.toHaveBeenCalled();
     expect(body).toMatchObject({
       success: true,
@@ -158,7 +172,7 @@ describe("view token", () => {
     const response = await viewToken(published._id.toString());
     expect(resolver.resolveProjectRef).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(404);
-    expect((await response.json()).error).toBe(
+    expect((await json(response)).error).toBe(
       "This app has not been published yet",
     );
   });
@@ -171,7 +185,7 @@ describe("view token", () => {
       "renewals",
     );
     expect(response.status).toBe(200);
-    expect((await response.json()).appId).toBe(published._id.toString());
+    expect((await json(response)).appId).toBe(published._id.toString());
   });
 
   it("does not reach another workspace's row by id", async () => {
