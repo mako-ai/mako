@@ -1,6 +1,6 @@
 // Second-load transfer bytes: today's opaque-origin app iframe vs a per-app
 // origin iframe with allow-same-origin. Synthetic server that reproduces the
-// headers Mako sends in each mode; real Chromium (Playwright's build, headed).
+// headers Mako sends in each mode; real Chromium (Playwright's build, headless).
 //
 // usage: CHROMIUM_PATH=<chromium binary> node scripts/app-origin-cache-bench.mjs \
 //          node_modules/.pnpm/playwright-core@<ver>/node_modules/playwright-core
@@ -173,7 +173,7 @@ const server = http.createServer((req, res) => {
 await new Promise(r => server.listen(PORT, "127.0.0.1", r));
 
 const browser = await chromium.launch({
-  headless: false,
+  headless: true,
   executablePath: process.env.CHROMIUM_PATH,
   args: [`--host-resolver-rules=MAP *.test 127.0.0.1`],
 });

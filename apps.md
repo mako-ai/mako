@@ -3512,8 +3512,12 @@ uncached, and puts the session-holding page in the data path.
 `<iframe credentialless>` partitions the cache by a per-document nonce, so it
 caches nothing across loads either.
 
-**Bench** (`scripts/app-origin-cache-bench.mjs`, Chromium 1248, synthetic
-server with Mako's headers, 6 MB WASM + 200 KB bundle + 2 × 3 MB parquet):
+**Bench** (`scripts/app-origin-cache-bench.mjs`, Chrome for Testing 1248,
+synthetic server with Mako's headers, 6 MB WASM + 200 KB bundle + 2 × 3 MB
+parquet). The script now runs headless only. Chrome's headless shell kept the
+cross-site WASM even in the opaque frame (old load 2 = 6.20 MiB, no parquet
+or bundle hits), so it understates today's cost. The table is the full
+Chrome run, which matches the 6060 kB × 2 measured in Joan's Chrome:
 
 | Setup | Load 1 | Load 2 | Session cookie on frame's fetch to Mako |
 | --- | --- | --- | --- |
