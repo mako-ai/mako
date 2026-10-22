@@ -197,6 +197,7 @@ import {
 } from "../services/parquet-build.service";
 import { globFiles, readFile } from "./worktree.service";
 import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
+import { reportBindingPhase } from "./binding-progress";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -773,6 +774,10 @@ export async function materializeAppBinding(
     binding: name,
     ...parquetWriteArtifactMetadata(built),
   };
+  reportBindingPhase("uploading", {
+    rowsWritten: built.rowCount,
+    bytes: built.byteSize,
+  });
   if (opts.keepFile) {
     await storeArtifact(built.filePath, artifactKey, metadata);
   } else {
