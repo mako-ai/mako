@@ -242,6 +242,20 @@ to guess phases, and do not label the whole wait "signing": the SDK reads
 the real phase from the server (`Accept: application/x-ndjson` on the same
 request). `RefreshAllButton` already captions each source.
 
+**Preview rows while loading (SDK ≥ 2.9, opt-in).** `useQuery(name,
+{ snapshot: true })` adds `preview`: the first 500 rows (200 KiB cap) of
+the binding's last build, from `__data/<name>.snapshot.json`, available
+before DuckDB-WASM boots. `data` stays null and `loading` stays true until
+the full parquet is in; `preview` turns null when the rows arrive or the
+load fails. Render `preview.data` as a skeleton table or first paint only.
+It is the first N rows of the build stream in the query's own order (no
+ORDER BY guarantee), so never sum, count or filter it — KPIs, totals and
+charts read `data` or `useDuckDB`. Preview values have the same types as
+`data`. `preview` is null for builds older than this release (refresh the
+binding once), live bindings, laptop drafts still building, and bindings
+with DECIMAL/LIST/STRUCT columns. Leave the option off unless the page has
+a big table worth painting early; without it nothing changes.
+
 ## Who is looking: `useViewer()` (SDK ≥ 2.4)
 
 `const { viewer, loading } = useViewer()` — `null` on an anonymous share

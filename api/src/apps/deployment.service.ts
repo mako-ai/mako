@@ -30,7 +30,11 @@ import {
   getArtifactStore,
   type ArtifactStore,
 } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import {
   bindingProgressResponse,
   parquetLinkOutcome,
@@ -747,7 +751,8 @@ export async function deployBuild(
 
 /**
  * Serve one file of a published app: a build asset, or a materialized data
- * binding at `__data/<name>.parquet`.
+ * binding at `__data/<name>.parquet` (and its instant-open sibling
+ * `__data/<name>.snapshot.json`).
  *
  * The only difference between the signed-in viewer and an anonymous share is
  * WHO is allowed to call it; what gets served is identical — except
@@ -817,7 +822,7 @@ export async function serveDeploymentFile(input: {
   }
 
   const dataMatch = assetPath.match(
-    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.(parquet|snapshot\.json)$/,
   );
   if (dataMatch) {
     // Resolve by name through the binding's DEFINITION, exactly as the
@@ -827,6 +832,22 @@ export async function serveDeploymentFile(input: {
     // writes: published apps could never see their data (§13.19).
     // The deployment's binding index when it has one (no repository read);
     // a name it does not list is no healthy binding at this commit.
+    if (dataMatch[2] === "snapshot.json") {
+      // Only through the index: a snapshot is an optional preview, and the
+      // 404 for an artifact without one must cost no repository read.
+      const index = await deploymentBindingIndex(projectId, sha);
+      const parquetKey =
+        index && Object.hasOwn(index, dataMatch[1])
+          ? index[dataMatch[1]]
+          : null;
+      if (!parquetKey) return null;
+      const snapshotKey = snapshotArtifactKey(parquetKey);
+      const store = await artifactStoreForRead(snapshotKey);
+      if (!store) return null;
+      return await serveJsonArtifact(store, snapshotKey, {
+        cacheControl: input.private ? "private, no-store" : "no-store",
+      });
+    }
     const resolve = async () => {
       const index = await deploymentBindingIndex(projectId, sha);
       const project = index ? null : await AppProject.findById(projectId);

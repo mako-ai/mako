@@ -69,6 +69,10 @@ vi.mock("../services/artifact-delivery.service", () => ({
     async (store, key) =>
       new Response(`${store === stores.source}:${key}`, { status: 200 }),
   ),
+  serveJsonArtifact: vi.fn(
+    async (store, key) =>
+      new Response(`json:${store === stores.source}:${key}`, { status: 200 }),
+  ),
 }));
 
 vi.mock("./box", () => ({
@@ -236,7 +240,8 @@ describe("deployment binding index", () => {
     const sha = "2222222222222222222222222222222222222222";
     const indexKey = deploymentKey(projectId, sha, DEPLOYMENT_BINDING_INDEX);
     const bindingKey = "apps/bindings/warehouse/sales.parquet";
-    const store = mockStore([indexKey, bindingKey]);
+    const snapshotKey = "apps/bindings/warehouse/sales.snapshot.json";
+    const store = mockStore([indexKey, bindingKey, snapshotKey]);
     store.openReadStream = vi.fn(async key =>
       key === indexKey
         ? Readable.from([JSON.stringify({ sales: bindingKey })])
@@ -272,6 +277,13 @@ describe("deployment binding index", () => {
     });
     expect(store.getSignedUrl).toHaveBeenCalledWith(bindingKey, 600);
 
+    const snapshot = await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/sales.snapshot.json",
+    });
+    expect(await snapshot?.text()).toBe(`json:false:${snapshotKey}`);
+
     const names = await serveDeploymentFile({
       projectId,
       sha,
@@ -285,6 +297,15 @@ describe("deployment binding index", () => {
         projectId,
         sha,
         assetPath: `__data/${name}.parquet`,
+      });
+      expect(missing).toBeNull();
+    }
+
+    for (const name of ["other", "constructor"]) {
+      const missing = await serveDeploymentFile({
+        projectId,
+        sha,
+        assetPath: `__data/${name}.snapshot.json`,
       });
       expect(missing).toBeNull();
     }
@@ -306,6 +327,41 @@ describe("deployment binding index", () => {
         .mocked(store.openReadStream)
         .mock.calls.filter(([k]) => k === indexKey),
     ).toHaveLength(1);
+  });
+
+  it("answers a snapshot 404 cheaply: no index means no snapshot, never a repo read", async () => {
+    const sha = "3333333333333333333333333333333333333333";
+    const bindingKey = "apps/bindings/warehouse/sales.parquet";
+    // An older deployment: no binding index, parquet present, no snapshot.
+    stores.primary = mockStore([bindingKey]);
+    expect(
+      await serveDeploymentFile({
+        projectId,
+        sha,
+        assetPath: "__data/sales.snapshot.json",
+      }),
+    ).toBeNull();
+    expect(bindingArtifactKeyByName).not.toHaveBeenCalled();
+
+    // Indexed, but built before snapshots existed.
+    const sha2 = "4444444444444444444444444444444444444444";
+    const indexKey = deploymentKey(projectId, sha2, DEPLOYMENT_BINDING_INDEX);
+    const store = mockStore([indexKey, bindingKey]);
+    store.openReadStream = vi.fn(async key =>
+      key === indexKey
+        ? Readable.from([JSON.stringify({ sales: bindingKey })])
+        : null,
+    );
+    stores.primary = store;
+    expect(
+      await serveDeploymentFile({
+        projectId,
+        sha: sha2,
+        assetPath: "__data/sales.snapshot.json",
+      }),
+    ).toBeNull();
+    expect(bindingArtifactKeyByName).not.toHaveBeenCalled();
+    expect(readBindingsTolerant).not.toHaveBeenCalled();
   });
 });
 

@@ -210,3 +210,91 @@ export function toPlainRows(table, cap) {
   }
   return { rows, fields };
 }
+
+// ---------------------------------------------------------------------------
+// Snapshot: `__data/<name>.snapshot.json`, the first N rows of the build
+// stream, written next to the parquet (api/src/services/binding-snapshot.ts).
+// The server already applied toPlainRows's rules (DATE → "YYYY-MM-DD",
+// TIMESTAMP → ISO 8601). JSON cannot carry two things the parquet path can
+// produce, so the server writes them as strings and this decoder restores
+// them: a 64-bit integer past 2^53 (BigInt) and a non-finite float (NaN,
+// ±Infinity). The server writes no snapshot at all for a column type JSON
+// cannot reproduce (DECIMAL, LIST, STRUCT, …), and any type this decoder does
+// not know rejects the whole snapshot — the app then waits for the parquet.
+// ---------------------------------------------------------------------------
+export const SNAPSHOT_VERSION = 1;
+
+const SNAPSHOT_INT64 = new Set(["BIGINT", "UBIGINT"]);
+const SNAPSHOT_FLOAT = new Set(["DOUBLE", "FLOAT"]);
+const SNAPSHOT_PLAIN = new Set([
+  "BOOLEAN",
+  "TINYINT",
+  "SMALLINT",
+  "INTEGER",
+  "UTINYINT",
+  "USMALLINT",
+  "UINTEGER",
+  "VARCHAR",
+  "DATE",
+  "TIMESTAMP",
+  "TIMESTAMP_S",
+  "TIMESTAMP_MS",
+  "TIMESTAMP_NS",
+  "TIMESTAMP WITH TIME ZONE",
+]);
+
+function snapshotDecoder(type) {
+  if (SNAPSHOT_INT64.has(type)) {
+    return v => (typeof v === "string" ? BigInt(v) : v);
+  }
+  if (SNAPSHOT_FLOAT.has(type)) {
+    return v => (typeof v === "string" ? Number(v) : v);
+  }
+  if (SNAPSHOT_PLAIN.has(type)) return v => v;
+  return null;
+}
+
+export function snapshotUrl(name) {
+  return "__data/" + encodeURIComponent(name) + ".snapshot.json";
+}
+
+/**
+ * A snapshot body as `{ data, fields, rowCount, truncated, builtAt }`, rows
+ * decoded to what the parquet path yields for the same values. Null when the
+ * body is malformed, from another version, or names a type this SDK does not
+ * decode — the caller then waits for the parquet as if there were none.
+ */
+export function parseBindingSnapshot(body, rowLimit) {
+  if (!body || typeof body !== "object" || body.version !== SNAPSHOT_VERSION) return null;
+  if (!Array.isArray(body.rows) || !Array.isArray(body.fields)) return null;
+  const rowCount = Number(body.rowCount);
+  if (!Number.isInteger(rowCount) || rowCount < 0) return null;
+  const names = [];
+  const decoders = [];
+  for (const field of body.fields) {
+    if (!field || typeof field.name !== "string" || !field.name) return null;
+    const decode = snapshotDecoder(String(field.type));
+    if (!decode) return null;
+    names.push(field.name);
+    decoders.push(decode);
+  }
+  const cap = rowLimit === null ? Infinity : rowLimit == null ? Infinity : rowLimit;
+  const data = [];
+  for (const row of body.rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+    if (data.length >= cap) break;
+    const out = {};
+    for (let i = 0; i < names.length; i++) {
+      const v = row[names[i]];
+      out[names[i]] = v == null ? null : decoders[i](v);
+    }
+    data.push(out);
+  }
+  return {
+    data,
+    fields: names,
+    rowCount,
+    truncated: data.length < rowCount,
+    builtAt: typeof body.builtAt === "string" ? body.builtAt : null,
+  };
+}

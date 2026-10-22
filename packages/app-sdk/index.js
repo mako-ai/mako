@@ -23,7 +23,23 @@ import {
   readsCatalog,
   quoteString,
   toPlainRows,
+  parseBindingSnapshot,
+  snapshotUrl,
 } from "./data-core.js";
+
+/**
+ * This package's version, visible at runtime: `window.__MAKO_APP_SDK__`
+ * in a page (or this export) says which SDK a deployed app actually runs.
+ * Kept in step with package.json by snapshot.test.mjs.
+ */
+export const SDK_VERSION = "2.9.0";
+if (typeof window !== "undefined") {
+  try {
+    window.__MAKO_APP_SDK__ = SDK_VERSION;
+  } catch {
+    /* a frozen window: nothing to stamp */
+  }
+}
 
 const DEFAULT_ROW_LIMIT = 500000;
 const DUCKDB_ESM =
@@ -202,6 +218,7 @@ async function loadBinding(name, bust) {
     } finally {
       await engine.dropFile(file).catch(() => {});
     }
+    loadedBindings.add(name);
   } finally {
     // A refresh owns the record until its reload is done (refreshBinding).
     if (!refreshes.has(name)) setProgress(name, null);
@@ -209,6 +226,7 @@ async function loadBinding(name, bust) {
 }
 
 const registered = new Map(); // name -> Promise<void>
+const loadedBindings = new Set(); // names whose table is in DuckDB
 // Refreshed on the server while never loaded on this page: the next load
 // must skip any cache between here and the server.
 const staleBindings = new Set();
@@ -266,6 +284,7 @@ export async function unloadBinding(name) {
   const pending = registered.get(name);
   if (!pending) return;
   registered.delete(name);
+  loadedBindings.delete(name);
   await pending.catch(() => {});
   await withConnection(conn => conn.query("DROP TABLE IF EXISTS " + quoteIdent(name)));
 }
@@ -555,9 +574,53 @@ function hookProgress(record, state) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot preview — opt-in with useQuery(name, { snapshot: true }). The
+// server writes the first N rows of each build next to its parquet as
+// `__data/<name>.snapshot.json`. It is the first N rows of the build stream
+// in whatever order the query produced them, so it is a skeleton for the
+// first paint, never data: `data` stays null and `loading` stays true until
+// the table is in DuckDB (through every load phase), and `preview`
+// disappears the moment either the rows or an error arrive. One request per
+// binding per page, none once the table is already loaded; a binding
+// without a snapshot is one cheap 404.
+// ---------------------------------------------------------------------------
+const snapshots = new Map(); // name -> Promise<body | null>
+function loadSnapshot(name) {
+  if (!snapshots.has(name)) {
+    snapshots.set(
+      name,
+      fetch(snapshotUrl(name))
+        .then(r => (r.ok ? r.json() : null))
+        .catch(() => null),
+    );
+  }
+  return snapshots.get(name);
+}
+
+function useSnapshotPreview(name, enabled, rowLimit) {
+  const [preview, setPreview] = React.useState(null);
+  React.useEffect(() => {
+    setPreview(null);
+    if (!enabled || loadedBindings.has(name)) return;
+    let active = true;
+    loadSnapshot(name).then(body => {
+      if (!active || loadedBindings.has(name)) return;
+      const parsed = parseBindingSnapshot(body, rowLimit);
+      if (parsed) setPreview(parsed);
+    });
+    return () => {
+      active = false;
+    };
+  }, [name, enabled, rowLimit]);
+  return preview;
+}
+
 export function useQuery(name, opts) {
   bootEngine();
   const rowLimit = opts ? opts.rowLimit : undefined;
+  const withSnapshot = Boolean(opts && opts.snapshot);
+  const preview = useSnapshotPreview(name, withSnapshot, rowLimit);
   const state = useAsyncQuery(
     async () => {
       await registerBinding(name);
@@ -569,7 +632,12 @@ export function useQuery(name, opts) {
   );
   const progress = useBindingProgress(name);
   const refresh = React.useCallback(() => refreshBinding(name), [name]);
-  return { ...state, ...hookProgress(progress, state), progress, refresh };
+  const result = { ...state, ...hookProgress(progress, state), progress, refresh };
+  if (!withSnapshot) return result;
+  // Only while nothing final is on screen: not next to rows, not next to an
+  // error (a failed load must not leave preview rows looking final).
+  result.preview = state.loading && state.data === null && state.error === null ? preview : null;
+  return result;
 }
 
 /**

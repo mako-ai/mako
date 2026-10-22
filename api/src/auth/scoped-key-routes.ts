@@ -39,6 +39,12 @@ const BINDING_ROUTES: ReadonlyArray<{
     scope: "query:read",
   },
   {
+    method: "GET",
+    pattern:
+      /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/snapshot\/?$/,
+    scope: "query:read",
+  },
+  {
     method: "POST",
     pattern:
       /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/materialize\/?$/,
@@ -51,6 +57,13 @@ const BINDING_ROUTES: ReadonlyArray<{
     method: "POST",
     pattern:
       /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/dev-build\/?$/,
+    scope: "query:read",
+  },
+  // Its preview: the snapshot of the artifact that same text maps to.
+  {
+    method: "POST",
+    pattern:
+      /^\/api\/workspaces\/[^/]+\/apps\/[^/]+\/bindings\/[^/]+\/dev-snapshot\/?$/,
     scope: "query:read",
   },
   // Polling an asynchronous build (`?async=1` / `async: true` above) and

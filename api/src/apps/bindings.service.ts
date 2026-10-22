@@ -39,6 +39,10 @@ import {
   type ParquetCodec,
 } from "../utils/parquet-compression";
 import {
+  snapshotFromParquetBestEffort,
+  storeParquetWithSnapshot,
+} from "../services/binding-snapshot";
+import {
   DatabaseConnection,
   type IAppProject,
   type IDatabaseConnection,
@@ -778,15 +782,26 @@ export async function materializeAppBinding(
     rowsWritten: built.rowCount,
     bytes: built.byteSize,
   });
-  if (opts.keepFile) {
-    await storeArtifact(built.filePath, artifactKey, metadata);
-  } else {
-    await storeParquetArtifactFile({
-      filePath: built.filePath,
-      artifactKey,
-      metadata,
-    });
-  }
+  // The preview rows for useQuery(name, { snapshot: true }), read back from
+  // the file about to be stored (binding-snapshot.ts).
+  const snapshot = await snapshotFromParquetBestEffort(
+    built.filePath,
+    built.rowCount,
+    { projectId, binding: name },
+  );
+  await storeParquetWithSnapshot({
+    parquetKey: artifactKey,
+    snapshot,
+    context: { projectId, binding: name },
+    uploadParquet: () =>
+      opts.keepFile
+        ? storeArtifact(built.filePath, artifactKey, metadata)
+        : storeParquetArtifactFile({
+            filePath: built.filePath,
+            artifactKey,
+            metadata,
+          }),
+  });
   const materializedAt = new Date();
   await recordBindingRun(projectId, name, {
     at: materializedAt,

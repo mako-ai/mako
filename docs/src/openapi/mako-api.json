@@ -24619,6 +24619,92 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_bindings_name_artifact"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/snapshot": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Serve a binding's preview snapshot (committed definition)",
+        "description": "The first N rows of the committed binding's stored parquet, in build order (schema + total row count), for `useQuery(name, { snapshot: true })` to paint before DuckDB-WASM loads. 404 when the binding was never built, was built before snapshots existed, or has a column type a snapshot cannot carry — callers wait for the parquet.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_bindings_name_snapshot"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/materialize": {
       "post": {
         "tags": [
@@ -24840,6 +24926,120 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_dev_build"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/dev-snapshot": {
+      "post": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "Preview snapshot of the artifact a local binding text maps to",
+        "description": "The laptop `makoData()` plugin's `__data/<name>.snapshot.json`: send the same body as `dev-build`, get the snapshot of exactly the stored artifact that `dev-build` would answer with for that text (the committed artifact, or a cached draft) — never another definition's. 404 when that text has no stored artifact yet (a build is needed) or the artifact has no snapshot. Never builds anything.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 524288
+                  },
+                  "dbtEnvironment": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "dbtDefer": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_dev_snapshot"
       }
     },
     "/api/workspaces/{workspaceId}/apps/{id}/binding-jobs/{jobId}": {

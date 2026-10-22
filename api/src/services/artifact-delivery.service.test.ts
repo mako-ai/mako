@@ -14,6 +14,7 @@ import { Readable } from "node:stream";
 import type { ArtifactStore } from "./artifact-store.service";
 import {
   artifactDeliveryMode,
+  serveJsonArtifact,
   serveParquetArtifact,
   SIGNED_URL_TTL_SECONDS,
 } from "./artifact-delivery.service";
@@ -159,6 +160,43 @@ async function testEnvOverrides() {
   }
 }
 
+async function testJsonArtifactAlwaysStreamsAndSkipsRedirect() {
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    openReadStream: async () =>
+      Readable.from([Buffer.from('{"version":1,"rows":[]}')]),
+    getSize: async () => {
+      throw new Error("a snapshot read needs no size probe");
+    },
+  });
+  const res = await serveJsonArtifact(store, "apps/k.snapshot.json", {
+    cacheControl: "no-store",
+    extraHeaders: { "Access-Control-Allow-Origin": "*" },
+  });
+  assert.ok(res);
+  assert.equal(res.status, 200);
+  assert.equal(
+    res.headers.get("Content-Type"),
+    "application/json; charset=utf-8",
+  );
+  assert.equal(res.headers.get("Content-Length"), "23");
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.equal(await res.text(), '{"version":1,"rows":[]}');
+}
+
+async function testMissingJsonArtifactIsNull() {
+  const store = fakeStore({
+    type: "gcs",
+    ensureBrowserCors: async () => true,
+    openReadStream: async () => null,
+  });
+  const res = await serveJsonArtifact(store, "apps/missing.snapshot.json", {
+    cacheControl: "no-store",
+  });
+  assert.equal(res, null);
+}
+
 async function testModeIsResolvedOncePerStore() {
   let probes = 0;
   const store = fakeStore({
@@ -182,6 +220,8 @@ async function main() {
   await testSigningFailureDegradesToStream();
   await testEnvOverrides();
   await testModeIsResolvedOncePerStore();
+  await testJsonArtifactAlwaysStreamsAndSkipsRedirect();
+  await testMissingJsonArtifactIsNull();
   console.log("artifact-delivery.service tests passed");
 }
 

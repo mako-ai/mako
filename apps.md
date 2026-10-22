@@ -389,7 +389,7 @@ Everything lives in the binding file; nothing in Mongo except derived cache.
 
 **Block 4 — Scheduler.** Derived schedule index rebuilt on commit/merge-to-main (parse front matter during the mirror-push hook) → registry (Mongo now, Postgres later; cache, rebuildable) → Inngest cron materializes due bindings, reusing v1 scheduling patterns.
 
-**Block 5 — Runtime polish.** `__data/<name>.parquet`: Range support + ETag (Content-Length shipped 2026-07-15); skill guidance for hyparquet/duckdb-wasm; consider a tiny v2 SDK helper later.
+**Block 5 — Runtime polish.** `__data/<name>.parquet`: Range support + ETag (Content-Length shipped 2026-07-15); skill guidance for hyparquet/duckdb-wasm; consider a tiny v2 SDK helper later. Opt-in preview snapshots (SDK 2.9, PR #1140): each build writes its first 500 rows / 200 KiB as `<key>.snapshot.json` beside the parquet, read back from the built file and encoded with the SDK's own toPlainRows rules (data-core.js); `useQuery(name, { snapshot: true })` exposes them as `preview` while `data` stays null. Old snapshot deleted before the parquet upload, so no build pairs with another build's preview. Published hosts resolve it through the deployment binding index only.
 
 Order: 1 → 2 → 3; 4 needs 1; 5 independent. Adjacent, already recorded elsewhere: Phase B substrate pivot (GitHub API reads, sandbox clones, delete local git), dev GitHub App callback repoint to app.mako.ai at merge.
 

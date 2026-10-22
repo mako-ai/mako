@@ -237,7 +237,11 @@ import {
   setAppEnvVar,
 } from "../apps/env.service";
 import { getArtifactStore } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import { serverTiming, timed } from "../middleware/server-timing";
 import {
@@ -2636,6 +2640,62 @@ appsRoutes.openapi(
 
 appsRoutes.openapi(
   createRoute({
+    method: "get",
+    path: "/{id}/bindings/{name}/snapshot",
+    tags: ["Apps"],
+    summary: "Serve a binding's preview snapshot (committed definition)",
+    description:
+      "The first N rows of the committed binding's stored parquet, in build " +
+      "order (schema + total row count), for `useQuery(name, { snapshot: " +
+      "true })` to paint before DuckDB-WASM loads. 404 when the binding was " +
+      "never built, was built before snapshots existed, or has a column " +
+      "type a snapshot cannot carry — callers wait for the parquet.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { name } = c.req.valid("param");
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
+        return c.json({ success: false, error: "Invalid binding name" }, 400);
+      }
+      const parquetKey = await bindingArtifactKeyByName(
+        loaded.project,
+        name,
+        loaded.userId ?? "",
+      );
+      const response = parquetKey
+        ? await serveJsonArtifact(
+            getArtifactStore(),
+            snapshotArtifactKey(parquetKey),
+            { cacheControl: "no-store" },
+          )
+        : null;
+      if (!response) {
+        return c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${name}" is not available`,
+          },
+          404,
+        );
+      }
+      return response;
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
     method: "post",
     path: "/{id}/bindings/{name}/materialize",
     tags: ["Apps"],
@@ -2836,6 +2896,90 @@ appsRoutes.openapi(
             : undefined,
         );
       }
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/bindings/{name}/dev-snapshot",
+    tags: ["Apps"],
+    summary: "Preview snapshot of the artifact a local binding text maps to",
+    description:
+      "The laptop `makoData()` plugin's `__data/<name>.snapshot.json`: send " +
+      "the same body as `dev-build`, get the snapshot of exactly the stored " +
+      "artifact that `dev-build` would answer with for that text (the " +
+      "committed artifact, or a cached draft) — never another definition's. " +
+      "404 when that text has no stored artifact yet (a build is needed) or " +
+      "the artifact has no snapshot. Never builds anything.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              source: z
+                .string()
+                .min(1)
+                .max(512 * 1024),
+              dbtEnvironment: z.string().min(1).max(64).optional(),
+              dbtDefer: z.boolean().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { name } = c.req.valid("param");
+      const { source, dbtEnvironment, dbtDefer } = c.req.valid("json");
+      const loaded = await loadDevBuildProject(c, { checkWrite: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const notAvailable = () =>
+        c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${name}" is not available`,
+          },
+          404,
+        );
+      let plan: Awaited<ReturnType<typeof planDevBuild>>;
+      try {
+        plan = await planDevBuild({
+          project: loaded.project,
+          name,
+          actorId: loaded.userId ?? "api-key",
+          userId: loaded.userId,
+          canWrite: loaded.canWrite,
+          source,
+          dbtEnvironment,
+          dbtDefer,
+          refresh: false,
+          unregistered: loaded.unregistered,
+        });
+      } catch (error) {
+        // A refusal for a build is no snapshot either; the parquet request
+        // beside this one reports the reason.
+        if (error instanceof DevBuildError) return notAvailable();
+        throw error;
+      }
+      // "build": nothing stored for this text yet — do not start one here.
+      if (plan.kind !== "artifact") return notAvailable();
+      const response = await serveJsonArtifact(
+        getArtifactStore(),
+        snapshotArtifactKey(plan.artifactKey),
+        { cacheControl: "no-store" },
+      );
+      return response ?? notAvailable();
+    } catch (error) {
       return handleError(c, error);
     }
   },

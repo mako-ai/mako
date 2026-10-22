@@ -135,6 +135,31 @@ export interface DuckDBState<Row = Record<string, unknown>>
 export interface QueryOptions {
   rowLimit?: number | null;
 }
+export interface UseQueryOptions extends QueryOptions {
+  /**
+   * Opt in to the preview: fetch `__data/<name>.snapshot.json` (the first
+   * rows of the last build, no DuckDB-WASM needed) while the parquet loads,
+   * and expose it as `preview`. `data`, `loading`, `phase` and every other
+   * field behave exactly as without it. Default false.
+   */
+  snapshot?: boolean;
+}
+/**
+ * The first rows of the binding's last build, for a skeleton or a first
+ * paint. The first N rows of the build stream in the query's own order: not
+ * a sample, not sorted, not filtered. Never aggregate it.
+ */
+export interface QueryPreview<Row = Record<string, unknown>> {
+  /** At most a few hundred rows, typed exactly as `data` will be. */
+  data: Row[];
+  fields: string[];
+  /** Rows in the whole build, not in `data`. */
+  rowCount: number;
+  /** True when `data` holds fewer rows than `rowCount`. */
+  truncated: boolean;
+  /** ISO 8601, when the snapshot's build ran; null when unknown. */
+  builtAt: string | null;
+}
 export interface DuckDBOptions extends QueryOptions {
   /**
    * "arrow": `data` is DuckDB's Arrow Table as returned (no row objects, no
@@ -168,15 +193,34 @@ export interface MakoLocation {
   searchParams: URLSearchParams;
 }
 
-/** Rows of a named data binding (bindings/<name>.sql, materialized). */
+/**
+ * Rows of a named data binding (bindings/<name>.sql, materialized).
+ *
+ * With `{ snapshot: true }` the result also carries `preview`: the snapshot
+ * rows while `loading` is true and no error has arrived, null otherwise.
+ * `data` stays null until the full parquet is in, so code that sums or
+ * filters `data` never sees a prefix.
+ */
 export function useQuery<Row = Record<string, unknown>>(
   name: string,
-  opts?: QueryOptions,
+  opts: UseQueryOptions & { snapshot: true },
+): QueryState<Row> & {
+  refresh: () => Promise<RefreshResult>;
+  /** The binding's own progress record (null when it is not loading). */
+  progress: BindingProgress | null;
+  preview: QueryPreview<Row> | null;
+};
+export function useQuery<Row = Record<string, unknown>>(
+  name: string,
+  opts?: UseQueryOptions,
 ): QueryState<Row> & {
   refresh: () => Promise<RefreshResult>;
   /** The binding's own progress record (null when it is not loading). */
   progress: BindingProgress | null;
 };
+
+/** This package's version at runtime; pages also get `window.__MAKO_APP_SDK__`. */
+export const SDK_VERSION: string;
 
 /**
  * Analytical SQL over the app's bindings; table names are binding names.

@@ -42,6 +42,34 @@ const { refresh, refreshing } = useQuery("latest_sales");
 </button>
 ```
 
+### Which SDK is running: `SDK_VERSION` (2.9+)
+
+`import { SDK_VERSION } from "@makoai/app-sdk"` is this package's version.
+Importing the SDK also sets `window.__MAKO_APP_SDK__` to it. In DevTools,
+switch the console context to the app's frame and read
+`__MAKO_APP_SDK__` to see which release a deployed app's build resolved.
+
+### Preview rows while the parquet loads (2.9+, opt-in)
+
+```tsx
+const { data, loading, preview } = useQuery("latest_sales", { snapshot: true });
+// loading && preview → paint preview.data as a skeleton table
+// !loading           → data is the full binding; preview is null
+```
+
+Every build writes its first 500 rows (200 KiB cap) next to the parquet as
+`__data/<name>.snapshot.json`. With `snapshot: true` the hook fetches it once
+per page (skipped when the parquet is already loaded) and exposes it as
+`preview` = `{ data, fields, rowCount, truncated, builtAt }`. `data` and
+`loading` behave exactly as without the option, and a failed load clears
+`preview`. Preview values have the same types as `data` (DATE →
+`"YYYY-MM-DD"`, TIMESTAMP → ISO 8601, a 64-bit integer past 2^53 → BigInt).
+The snapshot is the first N rows of the build stream in the query's own
+order, with no `ORDER BY` guarantee. Use it for a skeleton or first paint.
+Never aggregate it. `preview` is null when a binding has no snapshot (built
+before 2.9's server release, live, a laptop draft still building, or a
+DECIMAL/LIST/STRUCT column). Without the option no snapshot is fetched.
+
 `useDuckDB(...).refresh()` refreshes every binding; `refreshBinding(name)` /
 `refreshBindings()` do the same outside a component. A refresh POSTs to
 `__data/<name>/refresh`, the data URL's sibling, so whoever serves the app's
@@ -246,8 +274,9 @@ import { makoData } from "@makoai/app-sdk/vite";
 export default defineConfig({ plugins: [react(), makoData()] });
 ```
 
-`makoData()` answers `__data/index.json` (the app's `bindings/*.sql`) and
-`__data/<name>.parquet` during `vite dev` from the Mako API, and what it asks
+`makoData()` answers `__data/index.json` (the app's `bindings/*.sql`),
+`__data/<name>.parquet` and `__data/<name>.snapshot.json` during `vite dev`
+from the Mako API, and what it asks
 for is **your local binding file**: it sends the text of
 `bindings/<name>.sql` and gets back the parquet of exactly that query, run
 read-only through the workspace connection its front matter names. When the
@@ -257,6 +286,10 @@ from your text and hands it back without storing it — nobody else, and no
 published viewer, ever sees uncommitted SQL. Building needs edit access to the
 app; read-only members get committed artifacts. `POST __data/<name>/refresh`
 (the SDK's `refresh()`) rebuilds from the local text on demand.
+`__data/<name>.snapshot.json` is asked for by the same text: the API answers
+with the snapshot of exactly the stored artifact that text maps to, and 404
+while a draft still needs building. An edited query never paints the
+committed query's preview. Snapshots are not cached locally.
 
 Builds run as jobs: the plugin asks for one (`async`), gets a job id back at
 once, and polls it until the parquet is ready — so a query that runs for

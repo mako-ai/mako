@@ -63,6 +63,23 @@ For anything the hooks do not cover, use the SDK's escape hatches (2.8+) on the 
 
 From SDK 2.7.4 every hook also returns `phase`: what `loading` or `refreshing` is waiting on. `bindingPhaseLabel(q)` turns it into a caption. "Building from warehouse" means the query is running (a refresh, a laptop dev build, a sandbox live binding). "Getting download link" means the file exists and Mako is signing its URL (well under a second; a published app never builds on a read). "Downloading" and "Loading into DuckDB" are the browser's own work. The server reports its phases on the same request as NDJSON when asked with `Accept: application/x-ndjson`; older servers answer as before.
 
+### Preview rows while the data loads (SDK 2.9+)
+
+`useQuery(name, { snapshot: true })` adds a `preview` field. Every build since this release also writes its first 500 rows (200 KiB cap) next to the parquet, served as `__data/<name>.snapshot.json`. That file is a few KB of JSON, so it arrives before DuckDB-WASM boots.
+
+```tsx
+const { data, loading, preview } = useQuery("recent_orders", { snapshot: true });
+if (loading) return <OrdersTable rows={preview?.data ?? []} skeleton />;
+return <OrdersTable rows={data ?? []} />;
+```
+
+- `data` stays null and `loading` stays true until the full parquet is in. Code that sums or filters `data` never sees the preview.
+- `preview` is `{ data, fields, rowCount, truncated, builtAt }` while loading. It turns null when the rows arrive or the load fails.
+- Preview values have the same types as `data`: DATE → `"YYYY-MM-DD"`, TIMESTAMP → ISO 8601, a 64-bit integer past 2^53 → BigInt.
+- The snapshot holds the first N rows of the build stream, in the query's own order. Without an `ORDER BY` that order is the warehouse's choice. Use it for a skeleton or a first paint. Never sum, count or filter it.
+- `preview` stays null for a binding with no snapshot: built before this release (refresh it once), a live binding, a draft still building on a laptop, or a DECIMAL, LIST or STRUCT column. The hook then behaves exactly as without the option.
+- Without the option, `useQuery` behaves exactly as before and fetches no snapshot. `useDuckDB` never reads snapshots.
+
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
 ## House Style: `@makoai/app-sdk/ui`

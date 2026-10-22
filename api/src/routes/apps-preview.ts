@@ -28,7 +28,11 @@ import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
 import { getArtifactStore } from "../services/artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  serveJsonArtifact,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
 import { createRouter } from "../openapi/core";
 
@@ -128,14 +132,40 @@ async function serveAsset(c: Context): Promise<Response> {
     });
   }
 
-  // Data bindings: `__data/<name>.parquet` (app-relative, so it works under
-  // the token prefix in BOTH static and dev previews). Streams the
-  // materialized artifact for this project — served BEFORE the dev proxy so
-  // vite never sees it.
+  // Data bindings: `__data/<name>.parquet` and `__data/<name>.snapshot.json`
+  // (app-relative, so they work under the token prefix in BOTH static and
+  // dev previews). Served BEFORE the dev proxy so vite never sees them.
   const dataMatch = assetPathFor(c, token).match(
-    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.(parquet|snapshot\.json)$/,
   );
   if (dataMatch) {
+    if (dataMatch[2] === "snapshot.json") {
+      const project = await AppProject.findById(grant.projectId);
+      const parquetKey = project
+        ? await bindingArtifactKeyByName(project, dataMatch[1], "")
+        : null;
+      const snapshot = parquetKey
+        ? await serveJsonArtifact(
+            getArtifactStore(),
+            snapshotArtifactKey(parquetKey),
+            {
+              cacheControl: "no-store",
+              extraHeaders: { "Access-Control-Allow-Origin": "*" },
+            },
+          )
+        : null;
+      return (
+        snapshot ??
+        c.json(
+          {
+            success: false,
+            error: `Snapshot for binding "${dataMatch[1]}" is not available`,
+          },
+          404,
+          { "Access-Control-Allow-Origin": "*" },
+        )
+      );
+    }
     // A repo read (the binding's definition decides its key): this is the
     // `resolving` phase a progress client sees.
     const resolve = async () => {

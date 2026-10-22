@@ -714,3 +714,63 @@ test("refresh with phases ends in ready with the refresh answer, or failed with 
     globalThis.fetch = realFetch;
   }
 });
+
+test("snapshot: asked by the LOCAL text, so an edited query never gets the committed preview", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  // The API knows a stored artifact only for the committed text.
+  globalThis.fetch = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ method: init.method ?? "GET", url: String(url).split("/apps/")[1], body });
+    if (String(url).endsWith("/dev-snapshot") && body?.source === "select 1") {
+      return new Response('{"version":1,"rows":[{"a":1}]}', { status: 200 });
+    }
+    return new Response('{"success":false,"error":"Snapshot not available"}', { status: 404 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData().configureServer(server);
+    const r1 = await request(handlers[0], "/__data/sales.snapshot.json");
+    assert.equal(r1.status, 200);
+    assert.equal(r1.body.toString(), '{"version":1,"rows":[{"a":1}]}');
+    assert.deepEqual(calls[0], {
+      method: "POST",
+      url: "my-app/bindings/sales/dev-snapshot",
+      body: { source: "select 1" },
+    });
+
+    // A draft edit: the API has nothing for this text yet → 404, and no
+    // other request (the snapshot route never builds).
+    fs.writeFileSync(path.join(app, "bindings", "sales.sql"), "select 2 as draft");
+    const r2 = await request(handlers[0], "/__data/sales.snapshot.json");
+    assert.equal(r2.status, 404);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].body, { source: "select 2 as draft" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("snapshot: committed by name without a local file; failures are 404s", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  let fail = false;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push((init.method ?? "GET") + " " + String(url).split("/apps/")[1]);
+    if (fail) throw new Error("offline");
+    return new Response('{"version":1,"rows":[]}', { status: 200 });
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ materialize: false }).configureServer(server);
+    assert.equal((await request(handlers[0], "/__data/sales.snapshot.json")).status, 200);
+    assert.deepEqual(calls, ["GET my-app/bindings/sales/snapshot"]);
+    fail = true;
+    assert.equal((await request(handlers[0], "/__data/sales.snapshot.json")).status, 404);
+    assert.equal((await request(handlers[0], "/__data/bad%20name.snapshot.json")).status, 400);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

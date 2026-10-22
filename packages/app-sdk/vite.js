@@ -609,12 +609,55 @@ export function makoData(options = {}) {
         }
       }
 
+      // `__data/<name>.snapshot.json` — the preview for
+      // useQuery(name, { snapshot: true }). It must describe the parquet
+      // this server is serving, never another definition's: with a local
+      // binding file the API is asked by its TEXT (dev-snapshot answers only
+      // for the stored artifact dev-build would answer that text with, and
+      // 404 while a draft still needs building); without one, the committed
+      // artifact by name, as fetchArtifact serves it. Never cached here, and
+      // every failure is a 404: the SDK then just waits for the parquet.
+      async function serveSnapshot(name, res) {
+        const none = () => json(res, 404, { error: "Snapshot not available" });
+        if (problems.length) return none();
+        const source = options.materialize === false || devBuildUnsupported ? null : readSource(name);
+        const base = `${appBase()}/bindings/${encodeURIComponent(name)}`;
+        try {
+          const r =
+            source === null
+              ? await apiFetch(`${base}/snapshot`, { headers: await headers() })
+              : await apiFetch(`${base}/dev-snapshot`, {
+                  method: "POST",
+                  headers: { ...(await headers()), "content-type": "application/json" },
+                  body: JSON.stringify({
+                    source,
+                    ...(ctx.dbtEnvironment ? { dbtEnvironment: ctx.dbtEnvironment } : {}),
+                  }),
+                });
+          if (!r.ok) return none();
+          const buf = Buffer.from(await r.arrayBuffer());
+          res.setHeader("content-type", "application/json; charset=utf-8");
+          res.setHeader("content-length", String(buf.length));
+          res.setHeader("cache-control", "no-store");
+          res.setHeader("x-mako-data", "api");
+          return res.end(buf);
+        } catch {
+          return none();
+        }
+      }
+
       server.middlewares.use(async (req, res, next) => {
         const [pathname, query = ""] = (req.url || "").split("?");
         if (pathname === "/__data/index.json") {
           return json(res, 200, listBindings(ctx.bindingsDir));
         }
         if (pathname === "/__data/viewer.json") return serveViewer(res);
+        const snap = /^\/__data\/([^/]+)\.snapshot\.json$/.exec(pathname);
+        if (snap) {
+          const name = decodeURIComponent(snap[1]);
+          if (!BINDING_NAME.test(name)) return json(res, 400, { error: "invalid binding name" });
+          return serveSnapshot(name, res);
+        }
         const match = /^\/__data\/([^/]+)(\.parquet|\/refresh)$/.exec(pathname);
         if (!match) return next();
         const name = decodeURIComponent(match[1]);

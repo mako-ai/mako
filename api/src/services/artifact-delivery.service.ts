@@ -147,3 +147,36 @@ export async function serveParquetArtifact(
     },
   );
 }
+
+/**
+ * Serve a small JSON artifact (binding snapshots, capped near 200 KiB).
+ * Read through the API, never redirected: a signed-URL hop would cost more
+ * than the bytes. Buffered, so the length comes from the bytes and the store
+ * sees one read, no size probe. Null when missing (an artifact built before
+ * snapshots, or one whose column types a snapshot cannot carry).
+ */
+export async function serveJsonArtifact(
+  store: ArtifactStore,
+  key: string,
+  opts: {
+    cacheControl: string;
+    extraHeaders?: Record<string, string>;
+  },
+): Promise<Response | null> {
+  const stream = await store.openReadStream(key);
+  if (!stream) return null;
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+  }
+  const body = Buffer.concat(chunks);
+  return new Response(new Uint8Array(body), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": String(body.length),
+      "Cache-Control": opts.cacheControl,
+      ...opts.extraHeaders,
+    },
+  });
+}

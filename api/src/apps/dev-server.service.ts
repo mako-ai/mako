@@ -43,6 +43,7 @@ import { boxEnvPath, sh } from "./box";
 import { ensureBoxAgent } from "./box-agent";
 import { getBoxState, probeReachable } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
+import { snapshotArtifactKey } from "../services/binding-snapshot";
 import { resolveAppEnv } from "./env.service";
 import { getArtifactStore } from "../services/artifact-store.service";
 
@@ -290,6 +291,9 @@ process.on("SIGHUP", () => void farewell(129));
 // the same (stageFileAtomically); the suffixes differ so they never collide.
 function stageParquet(name, buf) {
   const file = path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet");
+  // A new build has no snapshot here: drop the old one BEFORE the parquet
+  // moves, so no instant sees the old preview beside the new data.
+  rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".snapshot.json"), { force: true });
   writeFileSync(file + ".writing", buf);
   renameSync(file + ".writing", file);
   rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
@@ -463,6 +467,25 @@ const makoData = {
             });
           }
         })();
+        return;
+      }
+      const snapMatch = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.snapshot\\.json$/.exec(url);
+      if (snapMatch) {
+        const snapFile = path.join(${JSON.stringify(stagedDataDir)}, snapMatch[1] + ".snapshot.json");
+        // A live binding is queried fresh: no stored build, so no preview.
+        const isLive = existsSync(path.join(${JSON.stringify(stagedDataDir)}, snapMatch[1] + ".live"));
+        if (isLive || !existsSync(snapFile)) {
+          res.statusCode = 404;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ error: "Snapshot not available", binding: snapMatch[1] }));
+          return;
+        }
+        const snapBuf = readFileSync(snapFile);
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.setHeader("content-length", String(snapBuf.length));
+        res.setHeader("cache-control", "no-store");
+        res.end(snapBuf);
         return;
       }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
@@ -707,12 +730,14 @@ export async function stageFileAtomically(
   target: string,
   bytes: Uint8Array,
   then?: string,
+  /** Runs (and must succeed) right before the move. */
+  before?: string,
 ): Promise<void> {
   const temp = `${target}.staging`;
   await provider.writeFile(ctx, temp, bytes);
   const moved = await provider.exec(
     ctx,
-    `mv -f ${sh(temp)} ${sh(target)}${then ? ` && ${then}` : ""}`,
+    `${before ? `${before} && ` : ""}mv -f ${sh(temp)} ${sh(target)}${then ? ` && ${then}` : ""}`,
     { timeoutMs: 15_000 },
   );
   if (moved.exitCode !== 0) {
@@ -785,14 +810,30 @@ async function stageBindingData(
     for await (const chunk of stream) {
       chunks.push(Buffer.from(chunk as Buffer));
     }
-    // A stale marker from a previous life mustn't shadow a now-static binding.
+    // A stale marker from a previous life mustn't shadow a now-static
+    // binding. The previous build's snapshot goes BEFORE the parquet moves,
+    // and this build's lands after it: never an old preview beside new data.
     await stageFileAtomically(
       provider,
       ctx,
       `${stageDir}/${binding.name}.parquet`,
       new Uint8Array(Buffer.concat(chunks)),
       `rm -f ${stageDir}/${binding.name}.live`,
+      `rm -f ${stageDir}/${binding.name}.snapshot.json`,
     );
+    const snapshotStream = await store.openReadStream(snapshotArtifactKey(key));
+    if (snapshotStream) {
+      const snapChunks: Buffer[] = [];
+      for await (const chunk of snapshotStream) {
+        snapChunks.push(Buffer.from(chunk as Buffer));
+      }
+      await stageFileAtomically(
+        provider,
+        ctx,
+        `${stageDir}/${binding.name}.snapshot.json`,
+        new Uint8Array(Buffer.concat(snapChunks)),
+      );
+    }
     staged.push(binding.name);
   }
 
