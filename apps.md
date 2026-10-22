@@ -3461,3 +3461,74 @@ on main". Reads, favourites and the explorer are testable there; moves and
 folders are proven by `app-index.service.test.ts`. And the preview's bound
 repo is the REAL workspace repo, so a Workspace-tree move from a preview
 would make prod unpublish that app — test moves in a personal tree only.
+
+## 30. Each app gets its own origin, so the browser cache works (2026-10-22)
+
+Opening an app re-downloaded 12 MB every time in the bench below. The
+published iframe is sandboxed without `allow-same-origin`, so its origin is
+opaque. Chromium gives an opaque-origin frame a transient network isolation
+key and never reads or writes the HTTP cache for it. The 6 MB DuckDB WASM,
+the bundle and every parquet came over the wire on every open.
+
+**Design.** `APPS_ORIGIN_BASE=https://makoapps.dev` (off by default) serves
+each published app from `https://<appId>.makoapps.dev/api/apps-preview/<token>/`
+and frames it WITH `allow-same-origin`. That is §4.7's end state, reached
+through the existing token route instead of a new Worker.
+
+- The origin is foreign to Mako, so the app still gets none of Mako's
+  cookies, storage or DOM. The apps domain must be a separate registrable
+  domain: `appOriginConfig()` refuses a base on CLIENT_URL's site. On a
+  `mako.ai` subdomain the session cookie (SameSite=Lax) rides on any
+  credentialed fetch the app makes to app.mako.ai; the bench shows it.
+- One hostname per app keeps apps apart: two app frames are two origins.
+  Without a PSL entry they share one site, which also means one cache
+  partition, so the WASM downloads once for all apps.
+- An app host answers one thing (`middleware/apps-host-gate.ts`): that
+  app's files under a `pub.` token minted for that app. Any other path, and
+  another app's token, is a 404. Responses carry `frame-ancestors <CLIENT_URL>`,
+  no X-Frame-Options, no Set-Cookie, `Referrer-Policy: no-referrer`.
+- The frame gets `allow-same-origin` only when its URL is cross-origin to
+  the page (`app/src/lib/app-frame.ts`). Message listeners check
+  `event.origin` on top of `event.source`.
+
+**Stable URLs.** A cache hit needs the same URL twice. The view token is now
+a pure function of a 1 h window (`APPS_ORIGIN_TOKEN_WINDOW_SECONDS`), and on
+an app host every deployment file except `viewer.json` is
+`private, max-age=<token life>, immutable`. Parquet 302s point at a signed
+URL fixed for a 6 h window (`APPS_STABLE_SIGNED_URL_WINDOW_SECONDS`; V2
+signatures are deterministic for a fixed `Expires`), and the 302 itself may
+be reused for up to 10 min. Artifact keys are overwritten on refresh, so
+correctness rides on GCS: a signed read of a private object answers
+`Cache-Control: private, max-age=0` with an ETag, the browser revalidates
+every use, and unchanged data is a bodiless 304.
+
+**Also fixed, flag or not.** A token URL opened as a top-level page ran app
+code as app.mako.ai. HTML and SVG from the token route on Mako's origin now
+carry `Content-Security-Policy: sandbox …`, the same flags the iframe sets.
+
+**Rejected.** A parent-page broker (Mako fetches WASM and parquet, posts
+the bytes in) needs SDK changes, still leaves the bundle and DuckDB's worker
+uncached, and puts the session-holding page in the data path.
+`<iframe credentialless>` partitions the cache by a per-document nonce, so it
+caches nothing across loads either.
+
+**Bench** (`scripts/app-origin-cache-bench.mjs`, Chromium 1248, synthetic
+server with Mako's headers, 6 MB WASM + 200 KB bundle + 2 × 3 MB parquet):
+
+| Setup | Load 1 | Load 2 | Session cookie on frame's fetch to Mako |
+| --- | --- | --- | --- |
+| Opaque origin (today) | 12.20 MiB | 12.20 MiB | no |
+| `<id>.makoapps.test` + allow-same-origin | 12.20 MiB | 0.00 MiB (2 × 304) | no |
+| `<id>.apps.mako.test` (same site) | 12.20 MiB | 0.00 MiB | **yes** |
+
+**Open.** Anonymous share links still run app code top-level on
+app.mako.ai (`PublicSharePage` navigates to `/api/share/<t>/app/`), with the
+visitor's session in reach. Moving shares to the app origin needs the
+password-unlock cookie to move with them.
+
+Code: `api/src/apps/app-origin.ts`, `api/src/middleware/apps-host-gate.ts`,
+`routes/apps-preview.ts`, `routes/apps.ts` (view-token),
+`services/artifact-delivery.service.ts`, `cloudflare/app-router/worker.mjs`
+(`APPS_DOMAIN`). Tests: `app-origin.test.ts`,
+`artifact-delivery.service.test.ts`, `app/src/lib/app-frame.test.ts`,
+`worker.test.mjs`.

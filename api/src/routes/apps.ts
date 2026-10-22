@@ -175,6 +175,7 @@ import { publishState } from "../apps/publish-state";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps/box";
 import { mintPreviewGrant, mintPublishedGrant } from "../apps/preview.service";
+import { appOriginFor, tokenWindowMs } from "../apps/app-origin";
 import {
   resolveAppViewer,
   resolveAppViewerByEmail,
@@ -4225,19 +4226,24 @@ appsRoutes.openapi(
           404,
         );
       }
+      const projectId = loaded.project._id.toString();
+      // APPS_ORIGIN_BASE set: the app gets its own origin and a token that
+      // is stable for a window, so the browser cache can work (app-origin.ts).
+      const appOrigin = appOriginFor(projectId);
       const grant = mintPublishedGrant({
         workspaceId: loaded.project.workspaceId.toString(),
-        projectId: loaded.project._id.toString(),
+        projectId,
         sha,
         // Binds the token to this person: the cookie-free serving route
         // answers `__data/viewer.json` from it (apps.md §28).
         viewer: viewerOf(c) ?? undefined,
+        ...(appOrigin ? { stableWindowMs: tokenWindowMs() } : {}),
       });
       return c.json(
         {
           success: true as const,
           token: grant.token,
-          url: `/api/apps-preview/${grant.token}/`,
+          url: `${appOrigin ?? ""}/api/apps-preview/${grant.token}/`,
           sha,
           expiresAt: grant.expiresAt,
           // Which app the ref named: the client may ask by slug before its

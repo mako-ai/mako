@@ -160,3 +160,51 @@ test("streams the upstream response body without consuming it first", async () =
   assert.equal(response.headers.get("Content-Type"), "text/event-stream");
   assert.equal(await response.text(), "data: first\n\ndata: second\n\n");
 });
+
+const APP_ID = "23d9b603172c133a8427e812";
+
+test("app hosts are refused while APPS_DOMAIN is unset", async () => {
+  const response = await worker.fetch(
+    new Request(`https://${APP_ID}.makoapps.dev/api/apps-preview/pub.x.y/`),
+    createEnv({ "route:app.mako.ai": route("https://origin.run.app") }),
+  );
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "unsupported_host" });
+});
+
+test("app hosts proxy only the published asset route, to app.mako.ai's origin", async () => {
+  const env = {
+    ...createEnv({ "route:app.mako.ai": route("https://origin.run.app") }),
+    APPS_DOMAIN: "makoapps.dev",
+  };
+  let upstream;
+  globalThis.fetch = async request => {
+    upstream = request;
+    return new Response("ok");
+  };
+  const ok = await worker.fetch(
+    new Request(`https://${APP_ID}.makoapps.dev/api/apps-preview/pub.x.y/`),
+    env,
+  );
+  assert.equal(ok.status, 200);
+  assert.equal(new URL(upstream.url).host, "origin.run.app");
+  assert.equal(
+    upstream.headers.get("X-Forwarded-Host"),
+    `${APP_ID}.makoapps.dev`,
+  );
+
+  for (const path of ["/", "/api/auth/me", "/api/apps-preview/static-token/"]) {
+    upstream = undefined;
+    const refused = await worker.fetch(
+      new Request(`https://${APP_ID}.makoapps.dev${path}`),
+      env,
+    );
+    assert.equal(refused.status, 404);
+    assert.equal(upstream, undefined);
+  }
+  const badLabel = await worker.fetch(
+    new Request("https://evil.makoapps.dev/api/apps-preview/pub.x.y/"),
+    env,
+  );
+  assert.equal(badLabel.status, 404);
+});

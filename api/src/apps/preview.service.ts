@@ -25,6 +25,7 @@
  *   is all any instance needs to trust the token.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { stableWindow } from "./app-origin";
 import { contentTypeFor } from "./deployment.service";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -162,14 +163,26 @@ export function mintPublishedGrant(input: {
   sha: string;
   /** Binds the token to this person; a tampered email fails the HMAC. */
   viewer?: ViewerIdentity;
+  /**
+   * Make the token a pure function of a fixed time window (app-origin.ts):
+   * every mint for the same viewer, app and commit inside one window is the
+   * SAME string, so the asset URLs under it are the same URLs and the
+   * browser cache can answer them. Expiry = window end + the usual TTL, so a
+   * token is never minted with less than PREVIEW_TTL_MS left.
+   */
+  stableWindowMs?: number;
 }): PreviewGrant {
+  const now = Date.now();
+  const exp = input.stableWindowMs
+    ? stableWindow(now, input.stableWindowMs).end + PREVIEW_TTL_MS
+    : now + PREVIEW_TTL_MS;
   const payload: PublishedTokenPayload = {
     v: 1,
     w: input.workspaceId,
     p: input.projectId,
     s: input.sha,
     ...(input.viewer ? { u: input.viewer.id, e: input.viewer.email } : {}),
-    exp: Date.now() + PREVIEW_TTL_MS,
+    exp,
   };
   const body = Buffer.from(JSON.stringify(payload), "utf8").toString(
     "base64url",

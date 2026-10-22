@@ -74,6 +74,8 @@ export default defineConfig({
       "src/apps/view-token-route.test.ts",
       // Shared apps run CSP-sandboxed; password shares work via a URL grant.
       "src/routes/public-share-sandbox.test.ts",
+      // Per-app origins: host gate, token scope, frame-ancestors, stable URLs.
+      "src/apps/app-origin.test.ts",
       "src/apps/deployment.service.test.ts",
       // One store call per published asset: open + size, 404 on missing.
       "src/services/artifact-store-open-read.test.ts",

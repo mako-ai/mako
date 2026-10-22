@@ -32,6 +32,7 @@ import { useAuth } from "../contexts/auth-context";
 import { appViewerKey, useAppViewerStore } from "../store/appViewerStore";
 import { AppChatPanel } from "../components/AppChatPanel";
 import { referrerKindOf, useAppUsageBeacon } from "../hooks/useAppUsageBeacon";
+import { appFrameMessageOrigin, appFrameSandbox } from "../lib/app-frame";
 
 const CHAT_OPEN_KEY = "mako:app-viewer-chat-open";
 const CHAT_WIDTH_KEY = "mako:app-viewer-chat-width";
@@ -166,6 +167,7 @@ export default function AppViewerPage() {
     const onMessage = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
+      if (event.origin !== appFrameMessageOrigin(frame.src)) return;
       const data = event.data as { type?: unknown; search?: unknown } | null;
       if (
         data?.type !== "mako-app:navigate" ||
@@ -261,13 +263,14 @@ export default function AppViewerPage() {
     >
       <Box sx={{ flex: 1, minWidth: 0, position: "relative" }}>
         {src && (
-          // No allow-same-origin: the app is served from Mako's own origin,
-          // so granting it would let app code out of the sandbox.
+          // No allow-same-origin while the app is served from Mako's own
+          // origin: granting it would let app code out of the sandbox. On the
+          // app's own (foreign) origin it is added, so the cache works.
           <iframe
             ref={frameRef}
             title={app?.title ?? "App"}
             src={src}
-            sandbox="allow-scripts allow-forms"
+            sandbox={appFrameSandbox(src, "allow-scripts allow-forms")}
             onLoad={() => setFrameLoaded(true)}
             style={{
               border: 0,

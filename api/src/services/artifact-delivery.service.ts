@@ -24,6 +24,7 @@
  * service account may not read bucket metadata), "off" as the kill switch.
  */
 import type { ArtifactStore } from "./artifact-store.service";
+import { stableWindow } from "../apps/app-origin";
 import { loggers } from "../logging";
 
 const logger = loggers.api("artifact-delivery");
@@ -81,6 +82,23 @@ async function resolveMode(
 }
 
 /**
+ * The longest a browser may reuse a stable redirect: until two minutes
+ * before the signed URL inside it expires, and never more than ten minutes,
+ * which bounds how long a re-pointed binding could keep resolving to its
+ * previous key.
+ */
+export const STABLE_REDIRECT_MAX_AGE_SECONDS = 600;
+const STABLE_REDIRECT_MARGIN_SECONDS = 120;
+
+function redirectCacheControl(remainingMs: number): string {
+  const maxAge = Math.min(
+    STABLE_REDIRECT_MAX_AGE_SECONDS,
+    Math.floor(remainingMs / 1000) - STABLE_REDIRECT_MARGIN_SECONDS,
+  );
+  return maxAge > 0 ? `private, max-age=${maxAge}` : "private, no-store";
+}
+
+/**
  * Serve one parquet artifact: a 302 to a signed bucket URL when the store
  * supports it, a proxied stream otherwise. Returns null when the artifact
  * does not exist — the route decides what a 404 looks like there.
@@ -97,6 +115,19 @@ export async function serveParquetArtifact(
      * follows it, so ACAO only on the 200 would break the 302 path.
      */
     extraHeaders?: Record<string, string>;
+    /**
+     * Sign a URL that is fixed for this window rather than for "now", and let
+     * the browser keep the redirect until shortly before that URL expires.
+     * Only worth it where the browser cache works at all (an app on its own
+     * origin, app-origin.ts): an opaque-origin frame caches nothing.
+     *
+     * Correctness: artifact keys are definition-addressed and overwritten in
+     * place on refresh, so one URL can name new bytes. GCS answers a signed
+     * read of a non-public object with `Cache-Control: private, max-age=0`
+     * plus an ETag, so the browser revalidates every use: unchanged data is a
+     * 304 with no body, refreshed data a 200 with the new bytes.
+     */
+    stable?: { windowMs: number; now?: number };
   },
 ): Promise<Response | null> {
   if ((await artifactDeliveryMode(store)) === "redirect") {
@@ -104,14 +135,28 @@ export async function serveParquetArtifact(
       // Probe existence first: a redirect to a missing object would surface
       // as the bucket's XML 404, not the route's "not materialized".
       if (!(await store.exists(key))) return null;
-      const url = await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS);
+      const now = opts.stable?.now ?? Date.now();
+      const window = opts.stable
+        ? stableWindow(now, opts.stable.windowMs)
+        : null;
+      // The window's own end plus the usual short TTL: a URL handed out in
+      // the window's last second still outlives the follow-up request.
+      const expiresAt = window ? window.end + SIGNED_URL_TTL_SECONDS * 1000 : 0;
+      const url = window
+        ? await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS, {
+            accessibleAt: new Date(window.start),
+            expiresAt: new Date(expiresAt),
+          })
+        : await store.getSignedUrl(key, SIGNED_URL_TTL_SECONDS);
       if (url) {
         return new Response(null, {
           status: 302,
           headers: {
             Location: url,
-            // Never cache the redirect itself: the signature inside expires.
-            "Cache-Control": "private, no-store",
+            "Cache-Control": window
+              ? redirectCacheControl(expiresAt - now)
+              : // Never cache the redirect itself: the signature inside expires.
+                "private, no-store",
             ...opts.extraHeaders,
           },
         });

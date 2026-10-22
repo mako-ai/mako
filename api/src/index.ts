@@ -18,6 +18,7 @@ import {
 } from "./services/share-og.service";
 import { registerApiRoutes } from "./routes/register-routes";
 import { edgeOriginMiddleware } from "./middleware/edge-origin";
+import { appsHostGate } from "./middleware/apps-host-gate";
 import { apiRateLimitMiddleware } from "./middleware/rate-limit";
 import { mcpOAuthWellKnownRoutes } from "./routes/mcp-oauth.routes";
 import { getOpenApiDocument } from "./openapi";
@@ -86,6 +87,10 @@ const REQUIRED_SYSTEM_SKILLS = [
 const app = new OpenAPIHono<AuthEnv>();
 
 const isProduction = process.env.NODE_ENV === "production";
+
+// App hosts (`<appId>.<apps domain>`) serve one app's files and nothing else.
+// First, so its header rewrite runs after every other middleware's.
+app.use("*", appsHostGate);
 
 // Security headers. CSP is intentionally left unset here because the SPA loads
 // GTM, Google Fonts, and renders sandboxed blob/srcdoc iframes; a tuned CSP is

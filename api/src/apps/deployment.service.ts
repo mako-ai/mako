@@ -814,9 +814,26 @@ export async function serveDeploymentFile(input: {
    * signed URL instead of a 302 (binding-progress.ts).
    */
   progress?: boolean;
+  /**
+   * Epoch ms until which this URL's answer cannot change (app-origin.ts).
+   * A deployment is immutable at its sha, so when the URL itself names the
+   * sha and expires (a stable view token on an app's own origin), every
+   * file except `viewer.json` may be cached until then.
+   */
+  immutableUntil?: number;
+  /** Stable signed parquet redirects; see serveParquetArtifact. */
+  stableData?: { windowMs: number };
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
-  const cache = input.private ? "private, no-cache" : "no-cache";
+  const immutableFor = input.immutableUntil
+    ? Math.floor((input.immutableUntil - Date.now()) / 1000)
+    : 0;
+  const cache =
+    immutableFor > 0
+      ? `private, max-age=${immutableFor}, immutable`
+      : input.private
+        ? "private, no-cache"
+        : "no-cache";
 
   // Who the app is talking to — the SDK's useViewer(). Two small reads
   // (workspace, membership), only on this one request, never per asset.
@@ -912,6 +929,7 @@ export async function serveDeploymentFile(input: {
           resolve: Date.now() - resolveStart,
         }),
       },
+      ...(input.stableData ? { stable: input.stableData } : {}),
     });
   }
 

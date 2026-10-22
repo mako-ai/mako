@@ -80,6 +80,7 @@ import {
   isAwaitingPublishedPaint,
   settleAppOpen,
 } from "../lib/app-open-gate";
+import { appFrameMessageOrigin, appFrameSandbox } from "../lib/app-frame";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -1366,6 +1367,7 @@ export default function AppWorkspace({
     const onMessage = (event: MessageEvent) => {
       const frame = pubIframeRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
+      if (event.origin !== appFrameMessageOrigin(frame.src)) return;
       const data = event.data as { type?: unknown; search?: unknown } | null;
       if (
         !data ||
@@ -1736,9 +1738,11 @@ export default function AppWorkspace({
                   file read and starts no machine — the same reason a hundred
                   viewers can open one app without a hundred microVMs.
 
-                  No allow-same-origin: this is served from Mako's own origin,
-                  so granting it would hand app code our origin and let it out
-                  of the sandbox entirely. */}
+                  No allow-same-origin while this is served from Mako's own
+                  origin: granting it would hand app code our origin and let
+                  it out of the sandbox entirely. On the app's own origin
+                  (APPS_ORIGIN_BASE) the flag is added, because that origin
+                  is foreign and it is what lets the browser cache work. */}
               <iframe
                 key={`pub-${seedKey}`}
                 ref={pubIframeRef}
@@ -1754,7 +1758,7 @@ export default function AppWorkspace({
                         : seededSearch)
                     : viewUrl
                 }
-                sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+                sandbox={appFrameSandbox(viewUrl)}
                 onLoad={() => setPubLoadedUrl(viewUrl)}
                 style={{
                   border: 0,

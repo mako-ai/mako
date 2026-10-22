@@ -19,6 +19,12 @@ import { loggers } from "../logging";
 
 export type ArtifactStoreType = "filesystem" | "gcs" | "s3";
 
+/** A fixed validity window for a deterministic signed URL. */
+export interface SignedUrlWindow {
+  accessibleAt: Date;
+  expiresAt: Date;
+}
+
 export interface ArtifactStore {
   readonly type: ArtifactStoreType;
   exists(key: string): Promise<boolean>;
@@ -38,7 +44,17 @@ export interface ArtifactStore {
     contentType: string,
     metadata?: Record<string, string>,
   ): Promise<void>;
-  getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
+  /**
+   * A signed read URL. With `window`, the URL is fixed by the window instead
+   * of by "now": the same key signed twice inside one window yields the same
+   * string, which is what lets a browser cache answer it (app-origin.ts).
+   * Stores that cannot honour it may ignore it.
+   */
+  getSignedUrl(
+    key: string,
+    ttlSeconds?: number,
+    window?: SignedUrlWindow,
+  ): Promise<string | null>;
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   getSize(key: string): Promise<number | null>;
   /**
@@ -405,11 +421,27 @@ class GcsArtifactStore implements ArtifactStore {
     });
   }
 
-  async getSignedUrl(key: string, ttlSeconds = 3600): Promise<string | null> {
-    const [signedUrl] = await this.file(key).getSignedUrl({
-      action: "read",
-      expires: Date.now() + ttlSeconds * 1000,
-    });
+  async getSignedUrl(
+    key: string,
+    ttlSeconds = 3600,
+    window?: SignedUrlWindow,
+  ): Promise<string | null> {
+    // A V2 signature covers only the resource and `Expires`, and RSA PKCS#1
+    // v1.5 is deterministic: a fixed expiry gives a byte-identical URL.
+    // `accessibleAt` pins V4's X-Goog-Date the same way, should the version
+    // ever change.
+    const [signedUrl] = await this.file(key).getSignedUrl(
+      window
+        ? {
+            action: "read",
+            accessibleAt: window.accessibleAt,
+            expires: window.expiresAt,
+          }
+        : {
+            action: "read",
+            expires: Date.now() + ttlSeconds * 1000,
+          },
+    );
     return signedUrl;
   }
 
