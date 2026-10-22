@@ -135,6 +135,31 @@ export interface DuckDBState<Row = Record<string, unknown>>
 export interface QueryOptions {
   rowLimit?: number | null;
 }
+export interface DuckDBOptions extends QueryOptions {
+  /**
+   * "arrow": `data` is DuckDB's Arrow Table as returned (no row objects, no
+   * date/BigInt normalization, `rowLimit` ignored). Default "rows".
+   */
+  format?: "rows" | "arrow";
+}
+
+/**
+ * The page's shared DuckDB-WASM engine (`AsyncDuckDB` from
+ * @duckdb/duckdb-wasm 1.29), typed loosely so the SDK needs no dependency.
+ * Never close() or terminate() it: every hook on the page reads from it.
+ */
+export interface SharedDuckDB {
+  connect(): Promise<DuckDBConnection>;
+  registerFileBuffer(name: string, buffer: Uint8Array): Promise<void>;
+  dropFile(name: string): Promise<void>;
+  [key: string]: unknown;
+}
+export interface DuckDBConnection {
+  /** Resolves with an Arrow Table. */
+  query(sql: string): Promise<any>;
+  close(): Promise<void>;
+  [key: string]: unknown;
+}
 export interface MakoLocation {
   pathname: string;
   search: string;
@@ -153,11 +178,29 @@ export function useQuery<Row = Record<string, unknown>>(
   progress: BindingProgress | null;
 };
 
-/** Analytical SQL over the app's bindings; table names are binding names. */
+/**
+ * Analytical SQL over the app's bindings; table names are binding names.
+ * Since 2.8 only the bindings the SQL names are downloaded (each decoded
+ * once into a DuckDB table); one it misses loads on DuckDB's "table does
+ * not exist" and the query re-runs. Catalog queries (SHOW TABLES,
+ * information_schema) load every binding.
+ */
 export function useDuckDB<Row = Record<string, unknown>>(
   sql: string,
-  opts?: QueryOptions,
+  opts?: QueryOptions & { format?: "rows" },
 ): DuckDBState<Row> & {
+  refresh: () => Promise<RefreshResult[]>;
+  /** The slowest pending binding's wait, with sums; null when none. */
+  progress: CombinedBindingProgress | null;
+  /** Every pending binding's progress, by name. */
+  bindings: Record<string, BindingProgress>;
+};
+export function useDuckDB(
+  sql: string,
+  opts: DuckDBOptions & { format: "arrow" },
+): Omit<DuckDBState, "data"> & {
+  /** The Arrow Table (apache-arrow 17) DuckDB returned. */
+  data: any | null;
   refresh: () => Promise<RefreshResult[]>;
   /** The slowest pending binding's wait, with sums; null when none. */
   progress: CombinedBindingProgress | null;
@@ -172,6 +215,42 @@ export interface RefreshOptions {
    */
   onProgress?: (progress: BindingProgress | null) => void;
 }
+
+/**
+ * The page's shared DuckDB, booted on first call. Use it for anything the
+ * hooks do not cover instead of importing @duckdb/duckdb-wasm, hyparquet or
+ * apache-arrow readers. Never close or terminate it.
+ */
+export function getDuckDB(): Promise<SharedDuckDB>;
+
+/** Run `fn` on a fresh connection to the shared DuckDB; closed afterwards. */
+export function withConnection<T>(fn: (conn: DuckDBConnection) => Promise<T>): Promise<T>;
+
+/**
+ * Load a binding into the shared DuckDB as a table (once per page;
+ * concurrent callers share the download). Resolves with the table name.
+ */
+export function ensureBinding(name: string): Promise<string>;
+
+/** Drop a loaded binding's table to free memory; the next read reloads it. */
+export function unloadBinding(name: string): Promise<void>;
+
+/**
+ * The binding's raw parquet bytes, not registered anywhere — for an app with
+ * its own reader (register them via getDuckDB().registerFileBuffer to use
+ * read_parquet options). Rejects like a failed load (`status`, message).
+ */
+export function fetchBindingBytes(
+  name: string,
+  opts?: {
+    fresh?: boolean;
+    /**
+     * The same phases a hook reports (requesting → resolving/signing or a
+     * build → downloading with `bytes` / `bytesTotal`), then `null`.
+     */
+    onProgress?: (progress: BindingProgress | null) => void;
+  },
+): Promise<Uint8Array>;
 
 /**
  * Rematerialize one binding on demand and reload it everywhere it is used.

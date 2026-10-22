@@ -195,6 +195,45 @@ test("parquet: built from the LOCAL binding text, cached by that text", async ()
   }
 });
 
+test("an outdated cache of the same text is served at once and rebuilt in the background", async () => {
+  const { app } = repo();
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  const api = devBuildApi(calls);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let asked = 0;
+  globalThis.fetch = async (url, init) => {
+    if (asked++) await gate; // the first build answers; later ones wait
+    return api(url, init);
+  };
+  try {
+    const { server, handlers } = fakeServer(app);
+    makoData({ revalidateMs: 1 }).configureServer(server);
+    const r1 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r1.headers["x-mako-data"], "api");
+    await new Promise(r => setTimeout(r, 5));
+    fs.writeFileSync(path.join(app, "bindings", "sales.sql"), "select 1"); // same text
+    // Past revalidateMs: the copy on disk answers without waiting on the API…
+    const r2 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r2.headers["x-mako-data"], "revalidating");
+    assert.equal(r2.body.toString(), "PAR1:select 1");
+    assert.equal(asked, 2, "…while one rebuild runs");
+    const r3 = await request(handlers[0], "/__data/sales.parquet");
+    assert.equal(r3.headers["x-mako-data"], "revalidating");
+    assert.equal(asked, 2, "concurrent loads share the rebuild");
+    release();
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(calls.length, 2);
+    // ?refresh still waits for a build.
+    const r4 = await request(handlers[0], "/__data/sales.parquet?refresh=1");
+    assert.equal(r4.headers["x-mako-data"], "api");
+    assert.equal(asked, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("offline: stale data only when it was built from the same text", async () => {
   const { app } = repo();
   const calls = [];

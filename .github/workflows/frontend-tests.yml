@@ -80,6 +80,11 @@ jobs:
       - name: CLI tests
         run: pnpm --filter @makoai/cli test
 
+      # node --test in packages/app-sdk: the Vite plugin, the UI helpers and
+      # the golden row-decoder test against real apache-arrow.
+      - name: App SDK tests
+        run: pnpm --filter @makoai/app-sdk test
+
       # The CLI supports Node 20 (`engines`): `mako workflow run` must load a
       # workflow's TypeScript there too, where Node cannot strip types itself.
       # (`mako connector test` needs Node 22.18+ and says so; not run here.)

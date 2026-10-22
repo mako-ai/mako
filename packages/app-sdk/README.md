@@ -29,8 +29,8 @@ import { useQuery, useDuckDB, useSearchParams, useTheme } from "@makoai/app-sdk"
 // Rows of bindings/<name>.sql, materialized to parquet by Mako.
 const { data, loading, error } = useQuery("latest_sales");
 
-// Analytical SQL over every binding (DuckDB-WASM in the browser; table
-// names are binding names).
+// Analytical SQL over the bindings (DuckDB-WASM in the browser; table
+// names are binding names). Only the bindings the SQL names download.
 const totals = useDuckDB("select country, sum(revenue) r from latest_sales group by 1");
 
 // Rematerialize on demand: re-runs the binding's query on the warehouse,
@@ -54,6 +54,38 @@ or 502 with the query's error.
 `useLocation` / `useSearchParams` / `navigate` keep filter state in the URL;
 `useTheme` follows the OS preference. Theme tokens (`--background`,
 `--chart-1`, …) match the ones the scaffold's `styles.css` declares.
+
+### Custom data work: one engine (2.8)
+
+Never import `@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet
+readers in an app. Use the page's engine through the SDK:
+
+```ts
+import { getDuckDB, withConnection, ensureBinding, unloadBinding, fetchBindingBytes, useDuckDB } from "@makoai/app-sdk";
+
+const big = useDuckDB("select lat, lng from listings", { format: "arrow" }); // data: Arrow Table
+const table = await ensureBinding("valuations");          // loaded once, returns "valuations"
+const n = await withConnection(c => c.query(`select count(*) from ${table}`));
+await unloadBinding("valuations");                         // free its memory
+const bytes = await fetchBindingBytes("valuations", { onProgress: p => p && console.log(p.phase, p.bytes, p.bytesTotal) });
+const db = await getDuckDB();                              // shared: never close() or terminate()
+await db.registerFileBuffer("valuations.parquet", bytes);  // read_parquet with your own options
+```
+
+### Loading cost (2.8)
+
+- `useDuckDB` downloads only the bindings its SQL names. A missed name (for
+  example `query_table('x')`) loads when DuckDB reports the table missing,
+  and the query re-runs. `SHOW TABLES` / `information_schema` load all.
+- Each binding is decoded once into a DuckDB table and its file buffer is
+  freed. A refresh swaps the table in one commit, so a running query never
+  sees it missing. A table costs about 3x the parquet in memory (10 MB of
+  parquet, 149k rows: 33 MB).
+- The DuckDB engine and its parquet extension start loading on the first
+  data hook render, in parallel with the first binding download.
+- Rows decode column by column: 149k rows x 16 columns in 190 ms, down
+  from 740 ms. Values are unchanged (DATE as `YYYY-MM-DD`, TIMESTAMP as
+  ISO 8601, BigInt as Number when safe).
 
 Data arrives from `__data/<name>.parquet`, relative to the page — the same
 path in Mako's sandbox, in a published app, and on a laptop.
@@ -231,9 +263,11 @@ once, and polls it until the parquet is ready — so a query that runs for
 minutes is waited for instead of failing when a proxy cuts the request at
 100 s. `pollIntervalMs` / `buildTimeoutMs` tune the wait (1 s, 30 min).
 
-Results are cached under `node_modules/.mako-data/` for five minutes
-(`revalidateMs`; `?refresh` bypasses), next to a fingerprint of the text they
-were built from: after an edit the cache is never served, however long
+Results are cached under `node_modules/.mako-data/` next to a fingerprint of
+the text they were built from. A cached copy of the current text is served
+at once. Once it is older than `revalidateMs` (five minutes), it is also
+rebuilt in the background for the next load. `?refresh` waits for a
+build. A copy from other text is never served: after an edit the cache is never served, however long
 `revalidateMs` is, and while the API is unreachable a stale copy is served
 only if it was built from the same text. It is `apply: "serve"` only —
 production builds never load it.

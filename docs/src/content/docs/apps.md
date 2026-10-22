@@ -32,7 +32,7 @@ Bindings are how apps reach workspace data. A binding is one file — `bindings/
 SELECT category, amount, created_at FROM orders
 ```
 
-Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact; at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
+Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact; at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, In app code, read bindings through `@makoai/app-sdk` — the published npm package (apps depend on it with a caret range; it is no longer vendored into the workspace repo):
 
 ```tsx
 import { useQuery, useDuckDB } from "@makoai/app-sdk"; // apps created before 2026-09: "@mako/app-sdk" (older alias, same package)
@@ -47,6 +47,17 @@ const { data: totals } = useDuckDB(
 // re-renders every hook reading it; the old rows stay while `refreshing`.
 const { refresh, refreshing } = useQuery("recent_orders");
 ```
+
+`useDuckDB` downloads only the bindings its SQL names (SDK 2.8+). Before 2.8 it fetched every binding in `__data/index.json` before running any query. Joins across bindings still work by name, and a binding the name scan misses loads when DuckDB reports its table missing. Each binding is decoded once into an in-memory DuckDB table, so repeated queries skip the parquet decode. `SHOW TABLES` and `information_schema` queries still load every binding.
+
+For anything the hooks do not cover, use the SDK's escape hatches (2.8+) on the same engine. Never import `@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet readers yourself. A second engine means a second ~1 s boot and a second copy of the data.
+
+| Need | Use |
+|---|---|
+| Arrow Table instead of rows | `useDuckDB(sql, { format: "arrow" })` |
+| Your own SQL session | `getDuckDB()` returns the shared engine (never close or terminate it). `withConnection(conn => conn.query(sql))` |
+| A binding as a table | `await ensureBinding("orders")` returns `"orders"`. `unloadBinding(name)` frees it |
+| Raw parquet bytes | `fetchBindingBytes(name, { onProgress, fresh })` |
 
 `refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh; a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
 

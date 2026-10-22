@@ -16,6 +16,15 @@ export {
   bindingPhaseStage,
 } from "./progress.js";
 
+import {
+  missingBinding,
+  mentionedBindings,
+  quoteIdent,
+  readsCatalog,
+  quoteString,
+  toPlainRows,
+} from "./data-core.js";
+
 const DEFAULT_ROW_LIMIT = 500000;
 const DUCKDB_ESM =
   "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
@@ -23,19 +32,46 @@ const DUCKDB_ESM =
 // ---------------------------------------------------------------------------
 // DuckDB: one lazy instance per page, bindings registered on first use. The
 // engine arrives from the CDN at runtime, so this package needs no install
-// step and no dependencies of its own.
+// step and no dependencies of its own. The first data hook to render starts
+// the boot (WASM download + instantiate, ~1 s) so it overlaps the first
+// parquet download instead of waiting for it.
 // ---------------------------------------------------------------------------
 let dbPromise = null;
 function getDb() {
-  dbPromise ??= (async () => {
-    const duckdb = await import(/* @vite-ignore */ DUCKDB_ESM);
-    const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
-    const worker = await duckdb.createWorker(bundle.mainWorker);
-    const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
-    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-    return db;
-  })();
+  if (!dbPromise) {
+    dbPromise = (async () => {
+      const duckdb = await import(/* @vite-ignore */ DUCKDB_ESM);
+      const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+      const worker = await duckdb.createWorker(bundle.mainWorker);
+      const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
+      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+      // read_parquet lives in an extension DuckDB fetches on first use
+      // (~660 kB from extensions.duckdb.org). Load it now, while the
+      // binding bytes are still downloading, not after they arrive.
+      const conn = await db.connect();
+      try {
+        await conn.query("LOAD parquet");
+      } catch {
+        /* autoload on first read_parquet still applies */
+      } finally {
+        await conn.close();
+      }
+      return db;
+    })();
+    // A failed boot (CDN unreachable) is retried by the next query.
+    dbPromise.catch(() => {
+      dbPromise = null;
+    });
+  }
   return dbPromise;
+}
+
+/** Start the engine early; a no-op outside a browser and once started. */
+function bootEngine() {
+  if (typeof window === "undefined" || typeof Worker === "undefined") return;
+  getDb().catch(() => {
+    /* the query that needs it reports the failure */
+  });
 }
 
 // The server answers failures with JSON { error, hint, retryAfterMs } —
@@ -107,42 +143,64 @@ export function useBindingProgress(name) {
   return name === undefined ? all : (all[name] ?? null);
 }
 
-async function loadBinding(name, bust) {
+// Each binding becomes a TABLE, decoded from its parquet once: a view over
+// read_parquet re-decoded the file on every query (SELECT * of a 149k-row
+// binding: 366 ms through a view, 174 ms from a table). The file buffer is
+// dropped as soon as the table exists. CREATE OR REPLACE swaps the new table
+// in with one commit, so a query running during a reload reads the old rows
+// or the new ones, never a missing table. Every load registers its bytes
+// under its own file name, so a reload never drops a file another load is
+// still reading.
+
+/**
+ * A binding's parquet bytes, phase-aware: asks for NDJSON phase events (a
+ * build reports each step, a stored file resolving → signing and a signed
+ * URL) and reports them through `report(patch)`. A server that predates the
+ * events answers with the bytes, as it always did.
+ */
+async function downloadBinding(name, bust, report) {
   const path = "__data/" + encodeURIComponent(name) + ".parquet";
   const what = 'Data for binding "' + name + '" could not be loaded';
-  setProgress(name, { phase: "requesting", rowsWritten: null, bytes: null, bytesTotal: null });
+  report({ phase: "requesting", rowsWritten: null, bytes: null, bytesTotal: null });
+  let res = await fetch(path + (bust ? "?refresh=" + Date.now() : ""), {
+    headers: { accept: PROGRESS_ACCEPT },
+  });
+  if (isProgressResponse(res)) {
+    const final = await readProgressStream(res, e => report(progressPatch(e)));
+    if (final.phase === "failed") throw progressError(final, what);
+    report({ phase: "downloading", rowsWritten: null, bytes: 0 });
+    // No url: the server streams the bytes itself — the same path, asked
+    // plainly, serves them (the build already staged or cached them).
+    res = await fetch(final.url || path);
+  }
+  if (!res.ok) throw await responseError(res, what);
+  return readBytes(res, (bytes, bytesTotal) =>
+    report({ phase: "downloading", rowsWritten: null, bytes, bytesTotal }),
+  );
+}
+
+let fileSeq = 0;
+async function loadBinding(name, bust) {
+  const db = getDb(); // boot in parallel with the download
+  db.catch(() => {});
   try {
-    // Ask for phase events: a build (laptop, sandbox live binding) reports
-    // each step, a stored file reports resolving → signing and hands back
-    // the signed URL. A server that predates them answers as it always did.
-    let res = await fetch(path + (bust ? "?refresh=" + Date.now() : ""), {
-      headers: { accept: PROGRESS_ACCEPT },
-    });
-    if (isProgressResponse(res)) {
-      const final = await readProgressStream(res, e => setProgress(name, progressPatch(e)));
-      if (final.phase === "failed") throw progressError(final, what);
-      setProgress(name, { phase: "downloading", rowsWritten: null, bytes: 0 });
-      // No url: the server streams the bytes itself — the same path, asked
-      // plainly, serves them (the build already staged or cached them).
-      res = await fetch(final.url || path);
-    }
-    if (!res.ok) throw await responseError(res, what);
-    const buf = await readBytes(res, (bytes, bytesTotal) =>
-      setProgress(name, { phase: "downloading", rowsWritten: null, bytes, bytesTotal }),
-    );
+    const buf = await downloadBinding(name, bust, patch => setProgress(name, patch));
     setProgress(name, { phase: "loading_duckdb" });
-    const db = await getDb();
-    if (bust) await db.dropFile(name + ".parquet").catch(() => {});
-    await db.registerFileBuffer(name + ".parquet", buf);
-    const conn = await db.connect();
+    const engine = await db;
+    const file = "mako-" + ++fileSeq + ".parquet";
+    await engine.registerFileBuffer(file, buf);
     try {
-      // A view per binding so SQL can name tables by binding name.
-      await conn.query(
-        'CREATE OR REPLACE VIEW "' + name.replace(/"/g, '""') +
-          "\" AS SELECT * FROM read_parquet('" + name + ".parquet')",
-      );
+      const conn = await engine.connect();
+      try {
+        await conn.query(
+          "CREATE OR REPLACE TABLE " + quoteIdent(name) +
+            " AS SELECT * FROM read_parquet(" + quoteString(file) + ")",
+        );
+      } finally {
+        await conn.close();
+      }
     } finally {
-      await conn.close();
+      await engine.dropFile(file).catch(() => {});
     }
   } finally {
     // A refresh owns the record until its reload is done (refreshBinding).
@@ -151,27 +209,103 @@ async function loadBinding(name, bust) {
 }
 
 const registered = new Map(); // name -> Promise<void>
+// Refreshed on the server while never loaded on this page: the next load
+// must skip any cache between here and the server.
+const staleBindings = new Set();
 function registerBinding(name) {
   if (!registered.has(name)) {
-    const load = loadBinding(name, false);
+    const load = loadBinding(name, staleBindings.delete(name));
     registered.set(name, load);
-    load.catch(() => registered.delete(name));
+    load.catch(() => {
+      if (registered.get(name) === load) registered.delete(name);
+    });
   }
   return registered.get(name);
 }
 
+// ---------------------------------------------------------------------------
+// Escape hatches — the same engine and the same loader the hooks use, for
+// apps that need more than useQuery/useDuckDB. One DuckDB per page: an app
+// that boots its own pays a second ~1 s boot and a second copy of the data.
+// ---------------------------------------------------------------------------
+
+/**
+ * The page's shared DuckDB (an AsyncDuckDB), booted on first call. Never
+ * close or terminate it: every hook on the page reads from it.
+ */
+export function getDuckDB() {
+  return getDb();
+}
+
+/** Run `fn` with a fresh connection to the shared DuckDB; always closed after. */
+export async function withConnection(fn) {
+  const db = await getDb();
+  const conn = await db.connect();
+  try {
+    return await fn(conn);
+  } finally {
+    await conn.close();
+  }
+}
+
+/**
+ * Make sure a binding's table exists in the shared DuckDB, loading it once
+ * per page (concurrent callers share the download). Resolves with the table
+ * name — the binding name; quote it in SQL when it is not a bare identifier.
+ */
+export async function ensureBinding(name) {
+  await registerBinding(name);
+  return name;
+}
+
+/**
+ * Forget a loaded binding: drops its table so its memory is freed. The next
+ * query or ensureBinding() downloads it again.
+ */
+export async function unloadBinding(name) {
+  const pending = registered.get(name);
+  if (!pending) return;
+  registered.delete(name);
+  await pending.catch(() => {});
+  await withConnection(conn => conn.query("DROP TABLE IF EXISTS " + quoteIdent(name)));
+}
+
+/**
+ * The binding's parquet bytes, for an app with its own reader (e.g.
+ * read_parquet options such as file_row_number). Not registered anywhere.
+ * `fresh` skips caches; `onProgress(loaded, total)` reports the download.
+ */
+export async function fetchBindingBytes(name, opts) {
+  const fresh = !!(opts && opts.fresh) || staleBindings.has(name);
+  const onProgress = opts && opts.onProgress;
+  let record = null;
+  try {
+    return await downloadBinding(name, fresh, patch => {
+      record = { ...record, ...patch };
+      if (onProgress) onProgress(record);
+    });
+  } finally {
+    if (onProgress) onProgress(null);
+  }
+}
+
 /** Replace a binding's loaded bytes with what the server has now. */
 async function reloadBinding(name) {
+  const previous = registered.get(name);
+  if (!previous) {
+    // Nothing on this page reads it yet: load it fresh when a query does.
+    staleBindings.add(name);
+    return;
+  }
   // Let a load in flight settle first, or its (older) bytes could land after
   // the fresh ones and win.
-  const previous = registered.get(name);
-  if (previous) await previous.catch(() => {});
+  await previous.catch(() => {});
   const load = loadBinding(name, true);
   registered.set(name, load);
   try {
     await load;
   } catch (error) {
-    registered.delete(name);
+    if (registered.get(name) === load) registered.delete(name);
     throw error;
   }
 }
@@ -342,49 +476,18 @@ function bindingIndex() {
   return indexPromise;
 }
 
-// Arrow → plain JS, with the types apps actually want. DuckDB hands DATE and
-// TIMESTAMP columns to JS as epoch milliseconds; v1 apps (JSON over the wire)
-// always saw strings, and a migrated formatDate() that did
-// new Date(`${d}T00:00:00`) on a number threw and unmounted the whole app
-// (apps.md §15.4). So: DATE → "YYYY-MM-DD", TIMESTAMP → ISO 8601, BigInt →
-// Number when it fits. Everything else passes through untouched.
-function columnDecoder(field) {
-  const type = String(field.type);
-  if (type.startsWith("Date")) {
-    return v => (v == null ? v : new Date(Number(v)).toISOString().slice(0, 10));
-  }
-  if (type.startsWith("Timestamp")) {
-    return v => (v == null ? v : new Date(Number(v)).toISOString());
-  }
-  return v =>
-    typeof v === "bigint" && v >= Number.MIN_SAFE_INTEGER && v <= Number.MAX_SAFE_INTEGER
-      ? Number(v)
-      : v;
-}
-
-function toPlainRows(table, cap) {
-  const rows = [];
-  const fields = table.schema.fields.map(f => f.name);
-  const decoders = table.schema.fields.map(columnDecoder);
-  const limit = cap == null ? Infinity : cap;
-  for (const row of table) {
-    if (rows.length >= limit) break;
-    const out = {};
-    for (let i = 0; i < fields.length; i++) {
-      out[fields[i]] = decoders[i](row[fields[i]]);
-    }
-    rows.push(out);
-  }
-  return { rows, fields };
-}
-
-async function runSql(sql, rowLimit) {
+async function runSql(sql, rowLimit, format) {
   const cap = rowLimit === null ? Infinity : (rowLimit ?? DEFAULT_ROW_LIMIT);
   const db = await getDb();
   const conn = await db.connect();
   try {
     const table = await conn.query(sql);
     const rowCount = table.numRows;
+    if (format === "arrow") {
+      // The Arrow Table as DuckDB returned it: no row objects, no
+      // normalization, no row limit.
+      return { rows: table, fields: table.schema.fields.map(f => f.name), rowCount, truncated: false };
+    }
     const { rows, fields } = toPlainRows(table, cap);
     return { rows, fields, rowCount, truncated: rowCount > rows.length };
   } finally {
@@ -453,14 +556,12 @@ function hookProgress(record, state) {
 }
 
 export function useQuery(name, opts) {
+  bootEngine();
   const rowLimit = opts ? opts.rowLimit : undefined;
   const state = useAsyncQuery(
     async () => {
       await registerBinding(name);
-      const r = await runSql(
-        'SELECT * FROM "' + name.replace(/"/g, '""') + '"',
-        rowLimit,
-      );
+      const r = await runSql("SELECT * FROM " + quoteIdent(name), rowLimit);
       return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
     },
     [name, rowLimit],
@@ -502,24 +603,39 @@ export function useViewer() {
   return state;
 }
 
-export function useDuckDB(sql, opts) {
-  const rowLimit = opts ? opts.rowLimit : undefined;
-  const state = useAsyncQuery(async () => {
-    // Register everything the server staged, so SQL can join across
-    // bindings by name without declaring them first. A binding that fails to
-    // load must not sink the whole query set silently: remember why, and when
-    // the SQL then fails (typically DuckDB's "Table … does not exist"),
-    // surface the load failure — it is the actual cause.
-    const names = await bindingIndex();
-    const failures = new Map();
-    await Promise.all(
-      names.map(n => registerBinding(n).catch(e => failures.set(n, e))),
-    );
+/**
+ * Run `sql` with the bindings it reads loaded — and only those. The ones
+ * its text names start downloading together, alongside the engine boot; a
+ * table the hint missed shows up as DuckDB's "Table with name X does not
+ * exist", which loads X and runs the query again. Joins across bindings
+ * work by name without declaring anything, as before, and an app with 34
+ * bindings no longer downloads all 34 to draw one chart.
+ *
+ * A binding that fails to load must not sink the query silently: when the
+ * SQL then fails, the load failure is what surfaces — it is the cause.
+ */
+async function runOverBindings(sql, rowLimit, format) {
+  const names = await bindingIndex();
+  const failures = new Map();
+  const attempted = new Set();
+  const load = n => {
+    attempted.add(n);
+    return registerBinding(n).catch(e => {
+      failures.set(n, e);
+    });
+  };
+  await Promise.all((readsCatalog(sql) ? names : mentionedBindings(sql, names)).map(load));
+  for (;;) {
     try {
-      const r = await runSql(sql, rowLimit);
-      return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
+      return await runSql(sql, rowLimit, format);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const missing = missingBinding(message, names);
+      if (missing && !attempted.has(missing)) {
+        await load(missing);
+        if (failures.has(missing)) throw failures.get(missing);
+        continue;
+      }
       for (const [n, cause] of failures) {
         if (message.includes(n)) throw cause;
       }
@@ -531,12 +647,23 @@ export function useDuckDB(sql, opts) {
       }
       throw error;
     }
-  }, [sql, rowLimit], refreshing => refreshing.size > 0);
+  }
+}
+
+export function useDuckDB(sql, opts) {
+  bootEngine();
+  const rowLimit = opts ? opts.rowLimit : undefined;
+  const format = opts && opts.format === "arrow" ? "arrow" : "rows";
+  const state = useAsyncQuery(async () => {
+    const r = await runOverBindings(sql, rowLimit, format);
+    return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
+  }, [sql, rowLimit, format], refreshing => refreshing.size > 0);
   // Every binding the query can read: the combined record says what the
   // slowest of them is waiting on; `bindings` has each one.
   const bindings = useBindingProgress();
   const combined = combineBindingProgress(bindings);
-  // A query over every binding refreshes every binding.
+  // A query over every binding refreshes every binding (the ones this page
+  // has not loaded yet are rebuilt and fetched fresh when first read).
   const refresh = React.useCallback(() => refreshBindings(), []);
   return {
     ...state,

@@ -388,9 +388,18 @@ export function makoData(options = {}) {
         }
       }
 
+      // Atomic: a background revalidation can land while a page is still
+      // streaming the previous copy, which keeps reading the old file.
       function writeCache(name, buf, meta) {
         fs.mkdirSync(ctx.cacheDir, { recursive: true });
-        fs.writeFileSync(cachePath(name), buf);
+        const tmp = `${cachePath(name)}.${process.pid}.${Date.now()}.tmp`;
+        fs.writeFileSync(tmp, buf);
+        try {
+          fs.renameSync(tmp, cachePath(name));
+        } catch {
+          fs.rmSync(tmp, { force: true });
+          fs.writeFileSync(cachePath(name), buf);
+        }
         if (meta) fs.writeFileSync(metaPath(name), JSON.stringify(meta));
         else fs.rmSync(metaPath(name), { force: true });
       }
@@ -405,6 +414,24 @@ export function makoData(options = {}) {
       // artifact route reports it.
       let devBuildUnsupported = false;
       const inflight = new Map();
+
+      // One background rebuild per binding at a time; a failure is logged and
+      // the next load tries again.
+      const revalidating = new Set();
+      function revalidate(name, source) {
+        if (revalidating.has(name)) return;
+        revalidating.add(name);
+        (async () => {
+          const built = source !== null ? (await devBuild(name, source, false))?.buf : null;
+          if (!built) writeCache(name, await fetchArtifact(name), null);
+        })()
+          .catch(error => {
+            server.config.logger.error(
+              `  mako-data: background revalidate of ${name}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          })
+          .finally(() => revalidating.delete(name));
+      }
 
       // Build the LOCAL binding text through the API. Concurrent asks for the
       // same text share one request (a page mounting several tables at once).
@@ -631,8 +658,15 @@ export function makoData(options = {}) {
         let stream = null;
         try {
           const stat = fs.statSync(cached, { throwIfNoEntry: false });
-          const fresh = stat && Date.now() - stat.mtimeMs < revalidateMs;
-          if (!refresh && fresh && cacheMatches()) return serveCached("cache");
+          // A copy built from this text is served at once, however old: past
+          // `revalidateMs` it is rebuilt in the background for the next load
+          // (stale-while-revalidate), so a page reload never waits on the API
+          // for data it already has. `?refresh` (the SDK's refresh()) waits.
+          if (!refresh && stat && cacheMatches()) {
+            const fresh = Date.now() - stat.mtimeMs < revalidateMs;
+            if (!fresh) revalidate(name, source);
+            return serveCached(fresh ? "cache" : "revalidating");
+          }
           if (wantsProgress(req)) {
             stream = progressStream(res);
             stream.emit({ phase: "checking" });

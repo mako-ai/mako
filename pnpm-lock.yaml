@@ -537,6 +537,10 @@ importers:
       react-dom:
         specifier: '>=18'
         version: 19.3.0(react@19.3.0)
+    devDependencies:
+      apache-arrow:
+        specifier: 17.0.0
+        version: 17.0.0
 
   packages/cli:
     dependencies:

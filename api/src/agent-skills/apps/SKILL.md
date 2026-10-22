@@ -194,12 +194,32 @@ it works before merging to main; errors come back verbatim
 (fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
-Read them through the SDK's DuckDB (`useDuckDB`). Artifacts are
-ZSTD-compressed. A hyparquet reader must pass `compressors` from
-`hyparquet-compressors`; plain hyparquet throws "unsupported compression
-codec: ZSTD".
+Read data ONLY through `@makoai/app-sdk`. Never import
+`@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet readers in an
+app. A second engine costs a second ~1 s boot and a second copy of every
+binding. Use `useQuery` / `useDuckDB` first. For anything custom (SDK ≥ 2.8):
+- `useDuckDB(sql, { format: "arrow" })` returns the Arrow Table, not rows
+  (map layers, 100k+ rows).
+- `getDuckDB()` returns the page's shared engine, and `withConnection(conn => …)`
+  runs on a connection that is closed for you. Never close or terminate the
+  shared engine.
+- `ensureBinding(name)` loads a binding as a table and returns its name.
+  `unloadBinding(name)` frees it.
+- `fetchBindingBytes(name, { onProgress, fresh })` returns the raw parquet
+  bytes for a custom reader (register them with
+  `getDuckDB().registerFileBuffer`).
+
+Artifacts are ZSTD-compressed. DuckDB reads them as they are. Plain
+hyparquet throws "unsupported compression codec: ZSTD", one more reason
+not to bring your own reader.
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
+
+**`useDuckDB` loads only what its SQL names (SDK ≥ 2.8).** Name bindings
+as tables (`from orders`, `join "my-binding"`) and only those download.
+Building a table name at runtime (`query_table('x')`) still works but costs
+one retry. A dashboard tab that never names the 10 MB binding never
+downloads it. Keep heavy bindings out of queries the first screen runs.
 
 **Refresh on demand (SDK ≥ 2.3).** `useQuery` / `useDuckDB` return
 `refresh()` and `refreshing`: `refresh()` rematerializes the binding (the
