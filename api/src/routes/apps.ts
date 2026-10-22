@@ -179,7 +179,10 @@ import {
   setAppEnvVar,
 } from "../apps/env.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  parquetCacheFromRequest,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("apps");
@@ -3086,8 +3089,14 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     sha,
     assetPath: rest.replace(/^\/+/, ""),
     viewer: viewerOf(c),
+    ...parquetCacheFromRequest(c.req),
   });
-  return response ?? c.json({ success: false, error: "Not found" }, 404);
+  return (
+    response ??
+    c.json({ success: false, error: "Not found" }, 404, {
+      "Cache-Control": "no-store",
+    })
+  );
 }
 
 /** The signed-in person, as the published serving layer wants them. */

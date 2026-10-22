@@ -50,6 +50,8 @@ const { refresh, refreshing } = useQuery("recent_orders");
 
 `refresh()` POSTs to `__data/<name>/refresh`, the data URL's sibling, so the same server that serves the data rebuilds it — signed-in viewers can always refresh (as with a dashboard); a public share link only when its owner enabled live queries, throttled per binding. A refused refresh rejects with `status` 403/429 (with `retryAfterMs`), a failed query with 502 and its error message.
 
+Repeat views of `__data/<name>.parquet` are conditional: the response carries a strong `ETag` derived from the artifact's last content write (a refresh overwrites the same definition-keyed object, so the key itself is not the validator) and `Cache-Control: private, max-age=60, must-revalidate`. A matching `If-None-Match` is answered `304` without minting a new signed URL. `refresh()` still busts the cache (`?refresh=` plus a new ETag after rebuild). Error responses are not cached.
+
 A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
 ## URL State & Routing

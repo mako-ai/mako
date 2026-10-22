@@ -30,7 +30,11 @@ import {
   getDashboardArtifactStore,
   type DashboardArtifactStore,
 } from "../services/dashboard-artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  PARQUET_BROWSER_CACHE_CONTROL,
+  PARQUET_BROWSER_CACHE_VARY,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
 import {
   bindingArtifactKey,
   bindingArtifactKeyByName,
@@ -668,6 +672,10 @@ export async function serveDeploymentFile(input: {
    * nobody known (anonymous share, a token minted before viewers existed).
    */
   viewer?: ViewerIdentity | null;
+  /** Conditional GET for `__data/<name>.parquet` (`If-None-Match`). */
+  ifNoneMatch?: string | null;
+  /** SDK `?refresh=` bust — never 304 the parquet, still emit the current ETag. */
+  cacheBust?: boolean;
 }): Promise<Response | null> {
   const { projectId, sha, assetPath } = input;
   const cache = input.private ? "private, no-cache" : "no-cache";
@@ -721,8 +729,14 @@ export async function serveDeploymentFile(input: {
     if (!key) return null;
     const store = await artifactStoreForRead(key);
     if (!store) return null;
+    // Always `private`: live is cookie-gated, preview/share are token-gated.
+    // Definition-addressed keys are overwritten on refresh, so identity is
+    // the store's last content write (ETag), not the key.
     return await serveParquetArtifact(store, key, {
-      cacheControl: input.private ? "private, no-store" : "no-store",
+      cacheControl: PARQUET_BROWSER_CACHE_CONTROL,
+      ifNoneMatch: input.ifNoneMatch,
+      cacheBust: input.cacheBust,
+      extraHeaders: { Vary: PARQUET_BROWSER_CACHE_VARY },
     });
   }
 

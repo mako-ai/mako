@@ -33,7 +33,10 @@ import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { refreshBindingHttp } from "../apps/binding-refresh";
 import { serveDeploymentFile } from "../apps/deployment.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  parquetCacheFromRequest,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
 
 const logger = loggers.api("public-share");
 
@@ -664,8 +667,14 @@ async function serveSharedApp(c: Context): Promise<Response> {
     private: true,
     // Anonymous: `__data/viewer.json` is null — there is nobody to describe.
     viewer: null,
+    ...parquetCacheFromRequest(c.req),
   });
-  return response ?? c.json({ success: false, error: "Not found" }, 404);
+  return (
+    response ??
+    c.json({ success: false, error: "Not found" }, 404, {
+      "Cache-Control": "no-store",
+    })
+  );
 }
 
 app.get("/:token/app", serveSharedApp);

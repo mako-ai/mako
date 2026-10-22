@@ -20,7 +20,11 @@ import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { serveParquetArtifact } from "../services/artifact-delivery.service";
+import {
+  parquetBrowserServeOptions,
+  parquetCacheFromRequest,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
 import { createRouter } from "../openapi/core";
 
@@ -86,9 +90,12 @@ async function serveAsset(c: Context): Promise<Response> {
       // (no cookie in the sandboxed iframe) — `__data/viewer.json` is
       // answered from it (apps.md §28).
       viewer: grant.viewer ?? null,
+      ...parquetCacheFromRequest(c.req),
     });
     if (!response) {
-      return c.json({ success: false, error: "Not found" }, 404);
+      return c.json({ success: false, error: "Not found" }, 404, {
+        "Cache-Control": "no-store",
+      });
     }
     // The iframe has an OPAQUE origin (sandboxed without allow-same-origin)
     // and ES modules are always fetched in CORS mode — so without this the
@@ -126,17 +133,21 @@ async function serveAsset(c: Context): Promise<Response> {
       ? await bindingArtifactKeyByName(project, dataMatch[1], "")
       : null;
     const response = key
-      ? await serveParquetArtifact(getDashboardArtifactStore(), key, {
-          cacheControl: "no-store",
-          // The preview page fetches cross-origin; without ACAO the browser
-          // rejects both the stream and the redirect before following it.
-          extraHeaders: { "Access-Control-Allow-Origin": "*" },
-        })
+      ? await serveParquetArtifact(
+          getDashboardArtifactStore(),
+          key,
+          parquetBrowserServeOptions(c.req, {
+            // The preview page fetches cross-origin; without ACAO the browser
+            // rejects both the stream and the redirect before following it.
+            "Access-Control-Allow-Origin": "*",
+          }),
+        )
       : null;
     if (!response) {
       return c.json(
         { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
         404,
+        { "Cache-Control": "no-store" },
       );
     }
     return response;

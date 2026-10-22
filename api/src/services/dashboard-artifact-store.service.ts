@@ -25,7 +25,11 @@ export interface DashboardArtifactStore {
     contentType: string,
     metadata?: Record<string, string>,
   ): Promise<void>;
-  getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
+  getSignedUrl(
+    key: string,
+    ttlSeconds?: number,
+    opts?: { responseCacheControl?: string },
+  ): Promise<string | null>;
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   getSize(key: string): Promise<number | null>;
   /**
@@ -287,10 +291,23 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
     });
   }
 
-  async getSignedUrl(key: string, ttlSeconds = 3600): Promise<string | null> {
+  async getSignedUrl(
+    key: string,
+    ttlSeconds = 3600,
+    opts?: { responseCacheControl?: string },
+  ): Promise<string | null> {
     const [signedUrl] = await this.file(key).getSignedUrl({
       action: "read",
       expires: Date.now() + ttlSeconds * 1000,
+      // Signed query override — not object metadata — so dashboard/notebook
+      // streams that still proxy through the API keep their own Cache-Control.
+      ...(opts?.responseCacheControl
+        ? {
+            queryParams: {
+              "response-cache-control": opts.responseCacheControl,
+            },
+          }
+        : {}),
     });
     return signedUrl;
   }

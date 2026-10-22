@@ -2670,6 +2670,37 @@ repeat views. Signing failures degrade to streaming per-response (GCS
 signing needs a private key or `iam signBlob`), so a misconfigured service
 account costs latency, never availability.
 
+### 18.1 Repeat parquet views are 304s (2026-10-22)
+
+`__data/<name>.parquet` used to send `Cache-Control: no-store` on every
+shape, so a second open of the same app re-downloaded the same bytes (and
+re-minted a signed URL) even when the materialization had not changed.
+
+**Identity of the bytes is not the artifact key.** Keys are
+definition-addressed — `apps/bindings/<connectionId>/<definitionHash>.parquet`
+— so two apps (or two commits) with the same SQL share one object, and a
+`POST __data/<name>/refresh` **overwrites** that object. A definition hash
+therefore cannot be the ETag: it would not change on refresh. No extra
+Mongo field was added. The validator is the store's last **content** write
+(`getLastModified`: GCS generation `timeCreated`, filesystem mtime, S3
+`Last-Modified`) plus size, quoted as a strong ETag. After a rebuild the
+mtime/generation moves and the next GET is a cache miss.
+
+| Response | Cache-Control | ETag | Notes |
+| --- | --- | --- | --- |
+| 200 stream (filesystem / CORS fallback) | `private, max-age=60, must-revalidate` | content identity | `Vary: Cookie, Authorization` |
+| 302 to signed GCS URL | same, and `max-age` (60) is strictly less than the 10-minute signature TTL | content identity **plus** an ~8-minute period, so a 304 cannot reuse an expired Location | Signed URL also carries `response-cache-control=private, max-age=540, must-revalidate` (query override, does not change object metadata) |
+| 304 | same as the 200/302 | matching validator | No signed URL is minted |
+| 404 / other errors | `no-store` (or unset) | none | Missing artifacts return null; the route's JSON 404 is uncacheable |
+
+`?refresh=` (the SDK's cache-bust query after `refresh()`) skips 304 even
+when the validator still matches, so the follow-up fetch cannot reuse a
+pre-refresh 302. Public-share `__data` uses the same `private` policy as
+the signed-in viewer: the share token is in the URL, `private` keeps it
+out of shared caches, and `Vary: Cookie` distinguishes a password-unlock
+cookie. Workspace `GET …/bindings/{name}/artifact` (editor download, not
+the app runtime) is still `no-store`.
+
 ### 17.1 Skills followed consoles the same day (2026-08-31, late)
 
 Block D1, at last: the never-merged skills branch was re-ported onto the

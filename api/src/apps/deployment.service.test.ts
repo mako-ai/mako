@@ -62,12 +62,19 @@ vi.mock("./app-viewer.service", () => ({
   ),
 }));
 
-vi.mock("../services/artifact-delivery.service", () => ({
-  serveParquetArtifact: vi.fn(
-    async (store, key) =>
-      new Response(`${store === stores.source}:${key}`, { status: 200 }),
-  ),
-}));
+vi.mock("../services/artifact-delivery.service", async importOriginal => {
+  const actual =
+    await importOriginal<
+      typeof import("../services/artifact-delivery.service")
+    >();
+  return {
+    ...actual,
+    serveParquetArtifact: vi.fn(
+      async (store, key) =>
+        new Response(`${store === stores.source}:${key}`, { status: 200 }),
+    ),
+  };
+});
 
 vi.mock("./box", () => ({
   readBoxDir: vi.fn(async (_ctx, _source, destination: string) => {
@@ -76,6 +83,11 @@ vi.mock("./box", () => ({
   }),
 }));
 
+import {
+  PARQUET_BROWSER_CACHE_CONTROL,
+  PARQUET_BROWSER_CACHE_VARY,
+  serveParquetArtifact,
+} from "../services/artifact-delivery.service";
 import {
   deployBuild,
   deploymentExists,
@@ -163,6 +175,31 @@ describe("published deployment artifact source", () => {
     expect(await response?.text()).toBe(`true:${bindingKey}`);
     expect(stores.primary.exists).toHaveBeenCalledWith(bindingKey);
     expect(stores.source.exists).toHaveBeenCalledWith(bindingKey);
+  });
+
+  it("passes parquet ETag validators and private short cache to delivery", async () => {
+    const bindingKey = "apps/bindings/connection/binding.parquet";
+    stores.source = mockStore([bindingKey]);
+
+    await serveDeploymentFile({
+      projectId,
+      sha,
+      assetPath: "__data/icp_customers.parquet",
+      private: true,
+      ifNoneMatch: '"abc"',
+      cacheBust: true,
+    });
+
+    expect(serveParquetArtifact).toHaveBeenCalledWith(
+      stores.source,
+      bindingKey,
+      {
+        cacheControl: PARQUET_BROWSER_CACHE_CONTROL,
+        ifNoneMatch: '"abc"',
+        cacheBust: true,
+        extraHeaders: { Vary: PARQUET_BROWSER_CACHE_VARY },
+      },
+    );
   });
 
   it("answers __data/viewer.json for the signed-in viewer, and null when nobody is known", async () => {
