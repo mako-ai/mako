@@ -99,6 +99,10 @@ Three guards keep one noisy caller from taking an instance down:
 - **Concurrency pool** — the git and sandbox read routes allow 12 requests at once per instance. A request that waits more than 10 seconds gets `503` with `Retry-After`, so a slow endpoint cannot starve the UI, webhooks and Inngest.
 - **Edge-origin check** — optional; see `EDGE_ORIGIN_SECRET` above.
 
+### BigQuery Cost Attribution
+
+Mako runs every BigQuery job as one service account, so `INFORMATION_SCHEMA.JOBS` cannot split cost by user. Each job therefore carries `mako_*` labels: `mako_source` (`app_binding`, `console`, `adhoc`, `export`, `scheduled_query`, `agent`, `notebook`, `workflow`, `cdc`, `flow`, `metadata`, `connection_test` or `other`) and `mako_workspace`, plus `mako_app`, `mako_binding`, `mako_trigger`, `mako_user`, `mako_console`, `mako_flow`, `mako_table`, `mako_chat` and `mako_tool` where they apply. Group `INFORMATION_SCHEMA.JOBS` by these labels to see what an app refresh, a CDC MERGE or an agent query costs. Values are lowercased, any other character becomes `_`, and they are cut at 63 characters (BigQuery's label rules). The local BigQuery emulator gets no labels.
+
 ### LLM Observability (Langfuse)
 
 Mako can export traces of its AI calls to [Langfuse](https://langfuse.com) for

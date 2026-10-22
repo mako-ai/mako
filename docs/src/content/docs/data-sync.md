@@ -43,6 +43,7 @@ In addition to scheduled batch syncing, Mako supports experimental Change Data C
 
 - **Streaming Sync** — continuous event consumption via webhooks or log streams
 - **Backfills** — historical data backfills run robustly within 1Gi Cloud Run memory limits, safely handling bulk flushes by cycling DuckDB instances
+- **Partition-pruned BigQuery MERGE** — a live CDC batch first runs a narrow probe that lists the partitions holding the batch's keys, then ANDs those partitions into the MERGE's `ON` clause as literal ranges, so a 20-row upsert no longer scans the whole destination table. Matches and inserts are identical to an unpruned MERGE. Mako falls back to the plain MERGE when the partition column is not a `TIMESTAMP`, the probe fails, or the batch spans more than 400 partitions; backfill batches always merge unfiltered. Set `CDC_BQ_MERGE_PARTITION_PRUNE=off` to disable it.
 - **BigQuery Staging** — streams events into region-aligned BigQuery staging tables (safely preserved during recovery)
 
 ### Triggers: Poll, Webhooks, Resync

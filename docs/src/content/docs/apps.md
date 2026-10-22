@@ -125,6 +125,10 @@ In-app links — the app viewer (`/view/<workspace>/<app>`, which the Share dial
 
 Go wild with it: a thumbnail is the app's poster. Headline it with the question the app answers, add one stylised motif of what it shows (a leaderboard, a funnel, a radar), bold type on a strong background — like a YouTube thumbnail rather than a screenshot. Never put numbers on it that look like real data. Design it as an SVG (and export to PNG if it uses fonts or filters), or ask an image model for one. SVG thumbnails are displayed as images only: scripts, external fonts and external images do not load.
 
+**Related apps.** Search lists the word matches first, then appends up to 12 semantically **related** apps (`matchedOn: ["related"]` in `GET /api/workspaces/:wid/apps/search` and `search_apps`), so "acquisition" can find an app that never uses the word in its title. Each app is embedded once per content change from its title, description, folder, tables, UI labels and the start of its README. Related matches need a relative score well above the query's average, so a vague query adds few or none. Without an embedding key, or when the embedding service is slow (over 1.5 s) or fails, search quietly falls back to word matches only. The Apps home search box and the command palette have a clear (x) button.
+
+**Write a one-line description.** The `description` in an app's `mako.json` is shown under the title on the Apps home and is read by search, so say what the app measures, for whom and which markets. The agent's `app_create_app` tool requires it.
+
 ## Access Control
 
 Apps have two access levels:
