@@ -87,7 +87,10 @@ export default function PublicSharePage() {
 
   // A git-backed app is already a complete built deployment. Navigate to its
   // token-gated entrypoint instead of framing it so the app owns the whole
-  // browser viewport and password cookies accompany its module assets.
+  // browser viewport. The server sandboxes that document (opaque origin, so
+  // app code never runs as Mako); a password share's assets and data ride
+  // on a grant the served HTML's <base> carries, since the sandboxed page
+  // cannot send the unlock cookie (api/src/routes/public-share.ts).
   useEffect(() => {
     if (content?.published) {
       window.location.replace(content.entry);
